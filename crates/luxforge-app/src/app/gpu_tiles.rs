@@ -23,11 +23,13 @@
 //!   call or asking for a stream never waits for the worker (rule 12); only the worker waits on its
 //!   device.
 //! - **Order.** Calls are answered in the order queued, each before any export tile still to be
-//!   drawn, so a call waits behind at most the one tile being drawn. An export's tiles are drawn
-//!   one at a time, and only while no call waits. A stream whose band channel already holds
-//!   [`EXPORT_BANDS_IN_FLIGHT`] bands draws nothing until its encoder takes one, which wakes the
-//!   worker ([`BandStream::waking`]), as dropping the stream does; the worker never blocks on a
-//!   full channel.
+//!   submitted. An export keeps at most one tile in flight between its steps, and a step submits
+//!   its next tile before it reads the one before back, so a call waits behind at most two tiles:
+//!   the one its step is reading back and the one the GPU then draws. An export's steps are taken
+//!   only while no call waits. A stream whose band channel already holds, with the bands it is
+//!   assembling, [`EXPORT_BANDS_IN_FLIGHT`] bands submits nothing until its encoder takes one,
+//!   which wakes the worker ([`BandStream::waking`]), as dropping the stream does; the worker never
+//!   blocks on a full channel.
 //! - **A call.** A call reads through one session over its evaluation, which the worker holds only
 //!   while it answers that call (`desktop-keeps-no-stack`). A read plans the tile of its rectangle
 //!   grown by [`READ_RADIUS`] pixels on every side ([`plan_read`]), cuts that tile's window from the
@@ -48,13 +50,18 @@
 //!   every tile the runner's own charge holds within [`GPU_TILE_BUDGET`] less
 //!   [`STREAM_READ_RESERVE`], fixed for the stream from the plan, those constants and the device's
 //!   figures alone; row by row, each tile a fresh evaluation, each row of tiles assembled into one
-//!   band of `width × side × 4` bytes and sent in order. It stops between tiles once the stream's
-//!   cancellation is set or its encoder drops it, and lets go of everything it held for it. A tile
+//!   band of `width × side × 4` bytes and sent in order. Every tile of a band is cut from the
+//!   band's window, its tiles' windows joined, which the runner uploads once for the band; tiles of
+//!   one window shape draw into one slot; and two tiles are in flight, the GPU drawing one while the
+//!   worker encodes the next or reads the one before back ([`TileRunner::submit`]). It stops
+//!   between tiles once the stream's cancellation is set or its encoder drops it, and lets go of
+//!   everything it held for it, its tiles in flight unread. A tile
 //!   the GPU cannot draw ends the stream naming why ([`BandSender::fall_back`]): GPU and reference
 //!   tiles are never mixed in one export, and the export lane renders it again with the reference.
 //! - **Evidence.** [`GpuTiles::figures`]: the status, the adapter, the reads each renderer
-//!   answered, the streams and bands, the tiles drawn, the bytes the runner holds and has held,
-//!   its compiles and the lights it computed.
+//!   answered, the streams and bands, the tiles drawn and in flight, the windows uploaded and the
+//!   slots created, the bytes the runner holds and has held, its compiles, the lights it computed
+//!   and where its tiles' time went.
 use super::gpu_plan::{self, WarpGrid, surface_plan_over};
 use luxforge_core::{
     Cancel, ClientId, CoordinateGrid, Error, GpuFallback, GpuGeometry, GpuPlan, LinearImage,
@@ -71,8 +78,8 @@ use luxforge_ui::{
     photo_surface::{
         Derivation, GpuBoundary, GpuSource,
         gpu_preview::tiles::{
-            GPU_TILE_BUDGET, TileEnd, TileFailure, TileFigures, TilePixels, TileRunner, TileTimes,
-            TileUnavailable as RunnerUnavailable,
+            GPU_TILE_BUDGET, TILES_IN_FLIGHT, Ticket, TileEnd, TileFailure, TileFigures,
+            TilePixels, TileRunner, TileTimes, TileUnavailable as RunnerUnavailable,
         },
     },
 };
@@ -223,6 +230,11 @@ pub(crate) struct TileWorkerFigures {
     /// The bytes the runner holds now, as charged, and the most it has held at once.
     pub(crate) in_use: u64,
     pub(crate) peak: u64,
+    /// An export's tiles submitted and not yet read back; the windows of the source uploaded and
+    /// the slots created, each once for the tiles of a band and of a shape.
+    pub(crate) in_flight: u32,
+    pub(crate) uploads: u64,
+    pub(crate) slots: u64,
     /// Where the runner's last tile's time went, and every tile's summed: lights, the window's
     /// upload, encoding, the wait for the device and the readback ([`TileTimes`]).
     pub(crate) last: TileTimes,
@@ -257,6 +269,9 @@ impl Figures {
             lights: self.runner.lights,
             in_use: self.runner.in_use,
             peak: self.runner.peak,
+            in_flight: self.runner.in_flight,
+            uploads: self.runner.uploads,
+            slots: self.runner.slots,
             last: self.runner.last,
             total: self.runner.total,
         }
@@ -528,7 +543,7 @@ impl TileService for GpuTiles {
             first: Some(plan),
             drawing: None,
             next: 0,
-            band: Vec::new(),
+            open: VecDeque::new(),
             sent: 0,
             ending: None,
         }));
@@ -588,9 +603,11 @@ struct Stream {
     first: Option<StreamPlan>,
     /// What the worker draws it with, once it has begun.
     drawing: Option<Drawing>,
-    /// The next tile to draw, and the band its row is assembled in, empty between bands.
+    /// The next tile to submit, and the bands its tiles in flight and read back are assembled in,
+    /// oldest first: at most two, each counted against the band channel's room from its first
+    /// tile's submission, so sending it never waits.
     next: usize,
-    band: Vec<u8>,
+    open: VecDeque<Assembling>,
     sent: usize,
     /// What ends the stream, which waits for room in its channel.
     ending: Option<End>,
@@ -615,22 +632,93 @@ impl End {
 }
 
 /// A stream being drawn: the plan at the side chosen for it, the source its tiles' windows are cut
-/// from, and a lens warp's grid of the whole output stage.
+/// from, a lens warp's grid of the whole output stage, each band's window of the source, which the
+/// runner uploads once for every tile of the band, and the tiles in flight.
 struct Drawing {
     plan: StreamPlan,
     source: GpuSource,
     grid: Option<CoordinateGrid>,
+    /// Each band's window: every window of its tiles, joined.
+    windows: Vec<Region>,
+    /// Each tile's band.
+    band_of: Vec<usize>,
+    /// The tiles submitted and not yet read back, oldest first, with their index.
+    pending: VecDeque<(Ticket, usize)>,
+}
+
+/// A band whose tiles are being read back into its rows.
+struct Assembling {
+    band: usize,
+    y0: u32,
+    rows: u32,
+    rgba: Vec<u8>,
+    /// Its tiles not read back yet.
+    left: usize,
+}
+
+impl Drawing {
+    /// `plan` drawn over `source`, its tiles grouped in bands by their row.
+    fn new(plan: StreamPlan, source: GpuSource, grid: Option<CoordinateGrid>) -> Self {
+        let (windows, band_of) = bands(&plan.tiles);
+        Self {
+            plan,
+            source,
+            grid,
+            windows,
+            band_of,
+            pending: VecDeque::new(),
+        }
+    }
+}
+
+/// The bands of `tiles`, row by row: each band's window, every window of its tiles joined, and each
+/// tile's band.
+fn bands(tiles: &[RestTile]) -> (Vec<Region>, Vec<usize>) {
+    let mut windows: Vec<Region> = Vec::new();
+    let mut band_of = Vec::with_capacity(tiles.len());
+    let mut row = None;
+    for tile in tiles {
+        let window = tile.window;
+        if row != Some(tile.rect.y0) {
+            row = Some(tile.rect.y0);
+            windows.push(window);
+        } else if let Some(joined) = windows.last_mut() {
+            let (x0, y0) = (joined.x0.min(window.x0), joined.y0.min(window.y0));
+            let (x1, y1) = (joined.x1().max(window.x1()), joined.y1().max(window.y1()));
+            *joined = Region {
+                x0,
+                y0,
+                width: x1 - x0,
+                height: y1 - y0,
+            };
+        }
+        band_of.push(windows.len() - 1);
+    }
+    (windows, band_of)
 }
 
 impl Stream {
-    /// Whether its channel has room for one more band.
+    /// Whether its channel has room for one more band beside the ones it holds and assembles.
     fn room(&self) -> bool {
-        self.sent.saturating_sub(self.taken.load(Ordering::Acquire)) < EXPORT_BANDS_IN_FLIGHT
+        self.sent.saturating_sub(self.taken.load(Ordering::Acquire)) + self.open.len()
+            < EXPORT_BANDS_IN_FLIGHT
+    }
+
+    /// Whether its next tile can be submitted: one remains, and its band is being assembled
+    /// already or the channel has room for it.
+    fn can_submit(&self) -> bool {
+        let Some(drawing) = &self.drawing else {
+            return false;
+        };
+        let Some(&band) = drawing.band_of.get(self.next) else {
+            return false;
+        };
+        self.open.back().is_some_and(|open| open.band == band) || self.room()
     }
 
     /// Whether the worker has a step of it to take: an abandoned stream to let go of, a cancelled
-    /// one to end, one to begin, a tile of the band being assembled, or the first tile of a band
-    /// its channel has room for; an ending stream only once its channel has room for the error.
+    /// one to end, one to begin, a tile in flight to read back, or a tile to submit; an ending
+    /// stream only once its channel has room for the error.
     fn ready(&self) -> bool {
         if self.sender.abandoned() {
             return true;
@@ -640,8 +728,11 @@ impl Stream {
         }
         self.cancel.check().is_err()
             || self.drawing.is_none()
-            || !self.band.is_empty()
-            || self.room()
+            || self
+                .drawing
+                .as_ref()
+                .is_some_and(|drawing| !drawing.pending.is_empty())
+            || self.can_submit()
     }
 }
 
@@ -786,19 +877,62 @@ impl Worker {
         );
         self.figures.borrow_mut().runner = runner.figures();
         drop(runner);
-        drawn.map_err(|failure| {
-            let fallback = fallback_of(failure);
-            if fallback == TileFallback::Unavailable(TileUnavailable::DeviceLost) {
-                self.shared.lock().unavailable = Some(TileUnavailable::DeviceLost);
-                *self.runner.borrow_mut() = None;
-            }
-            fallback
-        })
+        drawn.map_err(|failure| self.failed(failure))
     }
 
-    /// Let go of the window of the source the runner keeps between runs.
+    /// Submit `plan`'s tile over `window` of `source`, read back as `end` once it is finished
+    /// ([`Worker::finish`]), or why the GPU cannot draw it.
+    fn submit(
+        &self,
+        plan: &SurfacePlan,
+        source: &GpuSource,
+        window: Region,
+        end: TileEnd,
+    ) -> Result<Ticket, TileFallback> {
+        let mut runner = self.runner()?;
+        let submitted = runner.submit(
+            plan,
+            source,
+            [window.x0, window.y0, window.width, window.height],
+            end,
+        );
+        self.figures.borrow_mut().runner = runner.figures();
+        drop(runner);
+        submitted.map_err(|failure| self.failed(failure))
+    }
+
+    /// `ticket`'s tile read back, or why it could not be.
+    fn finish(&self, ticket: Ticket) -> Result<TilePixels, TileFallback> {
+        let mut runner = self.runner()?;
+        let finished = runner.finish(ticket);
+        self.figures.borrow_mut().runner = runner.figures();
+        drop(runner);
+        finished.map_err(|failure| self.failed(failure))
+    }
+
+    /// The fallback of `failure`: a lost device is lost for good, the runner going with it.
+    fn failed(&self, failure: TileFailure) -> TileFallback {
+        let fallback = fallback_of(failure);
+        if fallback == TileFallback::Unavailable(TileUnavailable::DeviceLost) {
+            self.shared.lock().unavailable = Some(TileUnavailable::DeviceLost);
+            *self.runner.borrow_mut() = None;
+        }
+        fallback
+    }
+
+    /// Let go of the window of the source and the slot the runner keeps between runs.
     fn release(&self) {
         if let Some(runner) = self.runner.borrow_mut().as_mut() {
+            runner.release();
+            self.figures.borrow_mut().runner = runner.figures();
+        }
+    }
+
+    /// Let go of everything the runner holds for a stream: its tiles in flight, unread, the window
+    /// and the slot.
+    fn release_stream(&self) {
+        if let Some(runner) = self.runner.borrow_mut().as_mut() {
+            runner.abandon();
             runner.release();
             self.figures.borrow_mut().runner = runner.figures();
         }
@@ -873,7 +1007,7 @@ impl Worker {
     fn advance(&self, stream: &mut Stream) -> bool {
         if stream.sender.abandoned() {
             // Its export was abandoned: nothing more is drawn for it.
-            self.release();
+            self.release_stream();
             return false;
         }
         if let Some(end) = stream.ending.take() {
@@ -884,7 +1018,7 @@ impl Worker {
         if let Err(cancelled) = stream.cancel.check() {
             return self.end(stream, End::Error(cancelled));
         }
-        let Some(drawing) = &stream.drawing else {
+        if stream.drawing.is_none() {
             return match self.begin(stream) {
                 Ok(drawing) => {
                     stream.drawing = Some(drawing);
@@ -893,57 +1027,102 @@ impl Worker {
                 }
                 Err(fallback) => self.end(stream, End::Fallback(fallback)),
             };
-        };
-        let tile = drawing.plan.tiles[stream.next];
-        let drawn = self
-            .convert(
-                &drawing.plan.plan,
-                &drawing.source,
-                drawing.grid.as_ref(),
-                tile,
-            )
-            .and_then(|plan| self.run(&plan, &drawing.source, tile.window, TileEnd::Codes));
-        let codes = match drawn {
-            Ok(TilePixels::Codes(codes)) => codes,
-            Ok(TilePixels::Linear(_)) => {
+        }
+        // The next tile submitted, its band opened with its first; the GPU draws it while the
+        // tile before it is read back.
+        let submitted = stream.can_submit();
+        if submitted {
+            let drawing = stream.drawing.as_mut().expect("drawing");
+            let index = stream.next;
+            let tile = drawing.plan.tiles[index];
+            let band = drawing.band_of[index];
+            if stream.open.back().is_none_or(|open| open.band != band) {
+                let width = drawing.plan.output.width as usize;
+                stream.open.push_back(Assembling {
+                    band,
+                    y0: tile.rect.y0,
+                    rows: tile.rect.height,
+                    rgba: vec![0; width * tile.rect.height as usize * 4],
+                    left: drawing.band_of.iter().filter(|of| **of == band).count(),
+                });
+            }
+            let ticket = self
+                .convert(
+                    &drawing.plan.plan,
+                    &drawing.source,
+                    drawing.grid.as_ref(),
+                    tile,
+                )
+                .and_then(|plan| {
+                    self.submit(
+                        &plan,
+                        &drawing.source,
+                        drawing.windows[band],
+                        TileEnd::Codes,
+                    )
+                });
+            match ticket {
+                Ok(ticket) => drawing.pending.push_back((ticket, index)),
+                Err(fallback) => return self.end(stream, End::Fallback(fallback)),
+            }
+            stream.next += 1;
+        }
+        // The oldest tile read back once the next is on its way, or once none can be submitted.
+        let drawing = stream.drawing.as_mut().expect("drawing");
+        let tiles = drawing.plan.tiles.len();
+        let finish = drawing.pending.len() >= TILES_IN_FLIGHT
+            || ((!submitted || stream.next == tiles) && !drawing.pending.is_empty());
+        if finish {
+            let (ticket, index) = drawing.pending.pop_front().expect("a tile in flight");
+            let codes = match self.finish(ticket) {
+                Ok(TilePixels::Codes(codes)) => codes,
+                Ok(TilePixels::Linear(_)) => {
+                    return self.end(
+                        stream,
+                        End::Error(Error::internal("an export's tile read back no codes")),
+                    );
+                }
+                Err(fallback) => return self.end(stream, End::Fallback(fallback)),
+            };
+            let drawing = stream.drawing.as_ref().expect("drawing");
+            let width = drawing.plan.output.width as usize;
+            let rect = drawing.plan.tiles[index].rect;
+            let band = drawing.band_of[index];
+            let Some(open) = stream.open.iter_mut().find(|open| open.band == band) else {
                 return self.end(
                     stream,
-                    End::Error(Error::internal("an export's tile read back no codes")),
+                    End::Error(Error::internal("an export's tile read back into no band")),
                 );
-            }
-            Err(fallback) => return self.end(stream, End::Fallback(fallback)),
-        };
-        let width = drawing.plan.output.width as usize;
-        let rect = tile.rect;
-        if stream.band.is_empty() {
-            stream.band = vec![0; width * rect.height as usize * 4];
-        }
-        let row = rect.width as usize * 4;
-        for (line, pixels) in codes.chunks_exact(row).enumerate() {
-            let at = (line * width + rect.x0 as usize) * 4;
-            stream.band[at..at + row].copy_from_slice(pixels);
-        }
-        stream.next += 1;
-        let tiles = &drawing.plan.tiles;
-        let last = stream.next == tiles.len();
-        if last || tiles[stream.next].rect.y0 != rect.y0 {
-            let band = Band {
-                y0: rect.y0,
-                rows: rect.height,
-                rgba: std::mem::take(&mut stream.band),
             };
-            // The channel had room when the band's first tile was drawn, and its encoder only
-            // makes more: this send never waits.
-            if !stream.sender.send(Ok(band)) {
-                self.release();
-                return false;
+            let row = rect.width as usize * 4;
+            for (line, pixels) in codes.chunks_exact(row).enumerate() {
+                let at = (line * width + rect.x0 as usize) * 4;
+                open.rgba[at..at + row].copy_from_slice(pixels);
             }
-            stream.sent += 1;
-            self.figures.borrow_mut().bands += 1;
+            open.left -= 1;
+            // Every band whose tiles are all read back, in order.
+            while stream.open.front().is_some_and(|open| open.left == 0) {
+                let open = stream.open.pop_front().expect("a band");
+                let band = Band {
+                    y0: open.y0,
+                    rows: open.rows,
+                    rgba: open.rgba,
+                };
+                // The channel had room for the band when its first tile was submitted, and its
+                // encoder only makes more: this send never waits.
+                if !stream.sender.send(Ok(band)) {
+                    self.release_stream();
+                    return false;
+                }
+                stream.sent += 1;
+                self.figures.borrow_mut().bands += 1;
+            }
         }
+        let drawing = stream.drawing.as_ref().expect("drawing");
+        let last = stream.next == drawing.plan.tiles.len() && drawing.pending.is_empty();
         if last {
             // Every band sent: the stream ends as its sender goes.
-            self.release();
+            self.release_stream();
         }
         !last
     }
@@ -971,14 +1150,15 @@ impl Worker {
             };
             let charge = self.largest_charge(&plan, &source, grid.as_ref())?;
             if charge <= budget {
-                return Ok(Drawing { plan, source, grid });
+                return Ok(Drawing::new(plan, source, grid));
             }
             requested = charge;
         }
         Err(TileFallback::Budget { requested, budget })
     }
 
-    /// The most the runner would hold for any one tile of `plan`, by its own charge.
+    /// The most the runner would hold for any one tile of `plan`, by its own charge, over its
+    /// band's window.
     fn largest_charge(
         &self,
         plan: &StreamPlan,
@@ -986,10 +1166,11 @@ impl Worker {
         grid: Option<&CoordinateGrid>,
     ) -> Result<u64, TileFallback> {
         let runner = self.runner()?;
+        let (windows, band_of) = bands(&plan.tiles);
         let mut largest = 0;
-        for tile in &plan.tiles {
+        for (tile, band) in plan.tiles.iter().zip(band_of) {
             let converted = self.convert(&plan.plan, source, grid, *tile)?;
-            let window = tile.window;
+            let window = windows[band];
             let charge = runner
                 .charge(
                     &converted,
@@ -1006,9 +1187,9 @@ impl Worker {
     /// End `stream` with `end`: everything held for it let go, and the end sent once its channel
     /// has room for it. Whether the stream waits for that room.
     fn end(&self, stream: &mut Stream, end: End) -> bool {
-        self.release();
+        self.release_stream();
         stream.drawing = None;
-        stream.band = Vec::new();
+        stream.open.clear();
         if stream.room() {
             end.send(&stream.sender);
             false
@@ -1330,6 +1511,9 @@ impl TileWorkerFigures {
             "lights": self.lights,
             "in_use_bytes": self.in_use,
             "peak_bytes": self.peak,
+            "in_flight": self.in_flight,
+            "uploads": self.uploads,
+            "slots": self.slots,
             // Where the runner's tiles' time went: the last tile's, and every tile's summed.
             "last_tile": times_record(&self.last),
             "tiles_total": times_record(&self.total),
