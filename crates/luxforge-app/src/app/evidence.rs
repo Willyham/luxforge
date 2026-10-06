@@ -501,6 +501,9 @@ pub(crate) enum Settle {
     Capability,
     /// An export step's job has ended — written, failed or cancelled — or its request was refused.
     Export,
+    /// A background export step's job is running and the Performance section's read lists it past
+    /// the section's half-second threshold, so the frame shows it as long work.
+    ExportListed,
     /// An agent step's edit has answered, and the event sync's refresh brought the frame of the
     /// entry it committed to the screen: see [`AgentWait`].
     Agent,
@@ -534,6 +537,7 @@ impl Settle {
             Self::Themes => "themes",
             Self::Capability => "capability",
             Self::Export => "export",
+            Self::ExportListed => "export_listed",
             Self::Agent => "agent",
             Self::AgentHost => "agent_host",
         }
@@ -595,6 +599,19 @@ fn photo_drawn(
                 && content.is_none_or(|content| gpu.drawn_content == Some(content))
         }
     }
+}
+
+/// Whether a Performance read's `activity.list` lists an export running past the section's
+/// half-second threshold, so the section shows it as long work.
+fn export_listed(activity: &Value) -> bool {
+    activity["active"].as_array().is_some_and(|active| {
+        active.iter().any(|job| {
+            job["kind"] == "export"
+                && job["elapsed_ms"]
+                    .as_u64()
+                    .is_some_and(|ms| ms >= crate::state::performance::LONG_JOB_MS)
+        })
+    })
 }
 
 impl Editor {
@@ -1237,10 +1254,21 @@ impl Editor {
 
     /// Press the title bar's Export button, capturing its open menu; or export the displayed entry
     /// into the evidence directory through the chain the menu starts, with the step's file name in
-    /// place of the save dialog's answer, and capture once the job has ended.
+    /// place of the save dialog's answer, and capture once the job has ended, or, for a step that
+    /// leaves it in the background, once the Performance section's read lists it running past the
+    /// section's half-second threshold ([`Settle::ExportListed`]): an export that ends first fails
+    /// the step, and the section must be open to read.
     fn export_step(&mut self, step: ExportStep) -> Task<Message> {
         if let Some(reason) = self.export_refusal() {
             return self.fail_step(reason);
+        }
+        if let ExportStep::File(file) = &step
+            && file.background
+            && !self.performance.expanded
+        {
+            return self.fail_step(
+                "a background export waits for the Performance section's read: open the section",
+            );
         }
         match step {
             ExportStep::Menu => {
@@ -1253,8 +1281,12 @@ impl Editor {
                     return Task::none();
                 };
                 let dir = std::path::absolute(&dir).unwrap_or(dir);
-                self.note_step(json!({"destination":file.name}));
-                self.await_step(Settle::Export);
+                self.note_step(json!({"destination":file.name, "background":file.background}));
+                self.await_step(if file.background {
+                    Settle::ExportListed
+                } else {
+                    Settle::Export
+                });
                 let task = self.export_start(
                     file.keep_metadata,
                     file.reference,
@@ -4658,7 +4690,11 @@ impl Editor {
                         recorded.performance.pop_front();
                     }
                     recorded.performance.push_back((wall_ms, resources));
+                    let exporting = export_listed(&activity);
                     recorded.activity = Some(activity);
+                    if exporting {
+                        self.settle_step(Settle::ExportListed, by);
+                    }
                 }
                 self.settle_step(Settle::Performance, by);
             }
@@ -4721,6 +4757,12 @@ impl Editor {
                 };
                 let plan = evidence.recorded.export_plan.take();
                 let queued = evidence.recorded.export_queued.take();
+                if evidence.awaiting == Some(Settle::ExportListed) {
+                    let _ = self.fail_step(
+                        "the background export ended before the Performance section listed it running",
+                    );
+                    return;
+                }
                 if evidence.awaiting != Some(Settle::Export) {
                     return;
                 }
@@ -5945,6 +5987,54 @@ mod tests {
         assert!(!editor.performance.expanded);
         assert!(evidence(&editor).capture_pending);
         assert_eq!(editor.performance.requested, 1, "closing asks for nothing");
+        finish(editor, catalog);
+    }
+
+    /// A background export step is captured on the first Performance read that lists the export
+    /// running past the section's half-second threshold, not before; one that ends before any read
+    /// lists it fails, and with the section closed, which reads nothing, the step fails at once.
+    #[test]
+    fn a_background_export_step_is_captured_once_the_section_lists_it_running() {
+        let read = |editor: &mut Editor, elapsed_ms: u64| {
+            let (resources, _) =
+                crate::app::tasks::call(&editor.owner, editor.client, "resources.read", json!({}))
+                    .unwrap();
+            let epoch = editor.performance.epoch;
+            let _ = editor.update(Message::Performance(PerformanceMessage::Sampled {
+                epoch,
+                result: Ok(Box::new(crate::app::tasks::PerformanceRead {
+                    resources,
+                    activity: json!({"sequence":1,"active":[{"id":3,"kind":"export","label":"Exporting JPEG","detail":"a.jpg","phase":"rendering","elapsed_ms":elapsed_ms}],"recent":[],"untracked":0}),
+                    wall_ms: 0,
+                })),
+            }));
+        };
+        let script = r#"[{"export":{"file":{"name":"a.jpg","reference":true,"background":true}}}]"#;
+        let (mut editor, catalog, _, _) = scripted(script);
+        let _ = editor.next_step();
+        assert!(editor.export.active(), "the export started");
+        assert_eq!(evidence(&editor).awaiting, Some(Settle::ExportListed));
+        read(&mut editor, 300);
+        assert!(!evidence(&editor).capture_pending, "under the threshold");
+        read(&mut editor, 600);
+        assert!(evidence(&editor).capture_pending, "listed running");
+        assert!(!evidence(&editor).had_errors);
+        finish(editor, catalog);
+
+        let (mut editor, catalog, _, _) = scripted(script);
+        let _ = editor.next_step();
+        editor.outcome(Outcome::ExportEnded {
+            record: None,
+            failure: None,
+        });
+        assert!(evidence(&editor).capture_pending && evidence(&editor).had_errors);
+        finish(editor, catalog);
+
+        let (mut editor, catalog, _, _) = scripted(script);
+        editor.performance.expanded = false;
+        let _ = editor.next_step();
+        assert!(!editor.export.active(), "nothing started");
+        assert!(evidence(&editor).capture_pending && evidence(&editor).had_errors);
         finish(editor, catalog);
     }
 
