@@ -58,6 +58,8 @@ While hidden, lifecycle results are still adopted promptly. Display-only interme
 
 ## Acceptance and evidence
 
+The core job-monitoring contract is also qualified by focused tests in the owner's ARM64 Omarchy VM (Arch Linux, kernel 7.2.6, Rust 1.94.0): bounded waits and cancellation, socket disconnect cleanup and response ordering, and progress/terminal publication. The portable visibility model passes its minimize/hide-only gate test there. These are functional tests, not native Linux event, desktop, GPU or idle-CPU evidence. Linux still reports native visibility facts as unsupported and retains normal UI sampling when a window is minimized.
+
 - With the section open, minimized/hidden windows admit no further resource reads after any in-flight read completes, and create no resource or elapsed-time display timers. Visible unfocused windows retain normal behavior.
 - Restore retains disclosure, reconciles current jobs once and begins a fresh resource history without a rate computed across hidden time.
 - Unchanged queued/running export or capability jobs trigger no periodic `job.read` calls. Progress/partial changes and terminal outcomes wake the correct reader with no polling, lost completion or unbounded queue.
