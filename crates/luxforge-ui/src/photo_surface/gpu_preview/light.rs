@@ -21,9 +21,12 @@
 //!   encodes nothing. A step reading the light folds that key into its passes' keys and draws whole
 //!   when it changes ([`spatial::GpuSpatial::global`]), the slot evaluating its plan whole then
 //!   ([`PhotoPipeline::evaluate_lit`]).
-//! - **Bounds.** A link holds the tile texture, the stage's block plane, every tile's words and
-//!   cut's words, the blocks and the passes' parameters, charged to the GPU-preview budget before
-//!   they are created ([`light_charge`]); the light plane is the slot's pool's, one texel. Nothing
+//! - **Bounds.** A link holds the stage's block plane, every tile's words and cut's words, the
+//!   blocks and the passes' parameters, charged to the GPU-preview budget before they are created;
+//!   the light plane is the slot's pool's, one texel. The tile texture is the surface's one
+//!   ([`Lights`]): the links run one after another, each cutting its tiles into it in turn, so a
+//!   plan's links take one tile texture between them, the largest any of them cuts
+//!   ([`lights_charge`]). Nothing
 //!   is read back and nothing waits for the GPU: the light is never planned from.
 //!
 //! - **Where it runs.** A slot evaluating a plan that reads lights ([`super::GpuPlan::lights`]) runs
@@ -134,21 +137,39 @@ fn region(words: usize) -> u64 {
     ((words * 4) as u64).div_ceil(spatial::PARAMS_STRIDE) * spatial::PARAMS_STRIDE
 }
 
-/// What a light link of `light` over a source whose cut is held as `format` takes of the
+/// What a light link of `light` alone over a source whose cut is held as `format` takes of the
 /// GPU-preview budget on a device whose largest texture is `limit` and whose largest storage
-/// binding is `binding`, as it is charged when created: the tile texture, the stage's block plane,
-/// every tile's words, the blocks, every tile's cut's words and the passes' parameters. Beside it
-/// the slot's pool holds the light plane, one texel ([`spatial::LIGHT_BYTES`]). What the desktop
-/// holds a plan's light links to before any exists; it creates nothing. `None` for steps that are
-/// not a light link's.
+/// binding is `binding`, as it is charged when created: the tile texture it cuts its tiles into,
+/// the stage's block plane, every tile's words, the blocks, every tile's cut's words and the
+/// passes' parameters. Beside it the slot's pool holds the light plane, one texel
+/// ([`spatial::LIGHT_BYTES`]). It creates nothing. `None` for steps that are not a light link's.
 pub fn light_charge(
     light: &GpuLight,
     format: BoundaryFormat,
     limit: u32,
     binding: u64,
 ) -> Option<u64> {
-    let shape = Shape::of(light, format, limit)?;
-    Some(shape.texture_bytes() + shape.buffer_bytes(binding).ok()?)
+    lights_charge(std::slice::from_ref(light), format, limit, binding)
+}
+
+/// What the light links of `lights`, a plan's, take together, as [`light_charge`] charges one:
+/// each link's block plane and buffers, and the one tile texture they cut their tiles into in
+/// turn, the largest any of them needs ([`Lights`]). What the desktop holds a plan's light links
+/// to before any exists; it creates nothing. `None` when any of them is not a light link's.
+pub fn lights_charge(
+    lights: &[GpuLight],
+    format: BoundaryFormat,
+    limit: u32,
+    binding: u64,
+) -> Option<u64> {
+    let mut links = 0;
+    let mut tile = 0;
+    for light in lights {
+        let shape = Shape::of(light, format, limit)?;
+        links += shape.texture_bytes() + shape.buffer_bytes(binding).ok()?;
+        tile = tile.max(shape.tile_bytes());
+    }
+    Some(links + tile)
 }
 
 /// What a link is created for, which decides every resource it holds.
@@ -210,11 +231,16 @@ impl Shape {
         )
     }
 
-    /// The tile texture and the block plane.
+    /// The link's own texture: the block plane.
     fn texture_bytes(&self) -> u64 {
-        let (tile, grid) = (self.tile(), self.grid());
+        let grid = self.grid();
+        u64::from(grid.0) * u64::from(grid.1) * spatial::PlaneFormat::Quad.texel_bytes()
+    }
+
+    /// The tile texture it cuts its tiles into, the surface's one ([`LightTile`]).
+    fn tile_bytes(&self) -> u64 {
+        let tile = self.tile();
         u64::from(tile.0) * u64::from(tile.1) * self.format.texel_bytes() as u64
-            + u64::from(grid.0) * u64::from(grid.1) * spatial::PlaneFormat::Quad.texel_bytes()
     }
 
     /// Each buffer's bytes at the capacity a device whose largest storage binding is `binding`
@@ -248,13 +274,73 @@ impl Shape {
 /// origin ([`super::source`]).
 const CUT_WORDS: u64 = 11;
 
-/// What a light link holds on the GPU, charged to the GPU-preview budget: the tile texture each tile
-/// of the source is cut into in turn and the stage's block plane, which only its own passes read,
-/// and its buffers; and the content key of the light it last wrote.
+/// The tile texture a surface's light links cut each tile of the source into in turn, one tile of
+/// the source at full scale in its boundary format: the links run one after another, in one
+/// encoder, so they take this one between them rather than one each, which only their own passes
+/// read. Charged to the GPU-preview budget as scratch.
+pub(in crate::photo_surface) struct LightTile {
+    format: BoundaryFormat,
+    extent: (u32, u32),
+    texture: PoolTexture,
+    bytes: u64,
+}
+
+impl LightTile {
+    /// A tile texture of `extent` in `format` on `device`, charged by its caller.
+    fn create(device: &wgpu::Device, format: BoundaryFormat, extent: (u32, u32)) -> Self {
+        let texture = PoolTexture::new(device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("luxforge.gpu_light.tile"),
+            size: wgpu::Extent3d {
+                width: extent.0,
+                height: extent.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: format.texture(),
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        }));
+        Self {
+            format,
+            extent,
+            texture,
+            bytes: u64::from(extent.0) * u64::from(extent.1) * format.texel_bytes() as u64,
+        }
+    }
+
+    fn view(&self) -> &wgpu::TextureView {
+        self.texture.view()
+    }
+}
+
+/// A surface's light links, light `k` the `k`-th, and the one tile texture they cut their tiles
+/// into in turn ([`LightTile`]).
+#[derive(Default)]
+pub(in crate::photo_surface) struct Lights {
+    links: Vec<Option<LightLink>>,
+    tile: Option<LightTile>,
+}
+
+impl Lights {
+    /// The links held, and what they and the tile texture hold, as charged.
+    #[cfg(any(test, feature = "qualification"))]
+    fn held(&self) -> (usize, u64) {
+        let links = self.links.iter().flatten();
+        (
+            links.clone().count(),
+            links.map(LightLink::bytes).sum::<u64>()
+                + self.tile.as_ref().map_or(0, |tile| tile.bytes),
+        )
+    }
+}
+
+/// What a light link holds on the GPU, charged to the GPU-preview budget: the stage's block plane,
+/// which only its own passes read, and its buffers; and the content key of the light it last wrote.
+/// It cuts its tiles into its surface's tile texture ([`LightTile`]).
 pub(in crate::photo_surface) struct LightLink {
     shape: Shape,
-    /// One tile of the source at full scale, in the source's boundary format.
-    tile: PoolTexture,
     /// The whole stage's block means beside each block's channel minimum, `rgba32float`.
     blocks: PoolTexture,
     /// Every tile's words, a storage binding's offset apart: the link's packed words with the texel
@@ -289,8 +375,8 @@ impl LightLink {
 }
 
 impl LightLink {
-    /// What a link of `shape` takes on `device`: its textures' bytes and each buffer's, every side
-    /// checked against the device's largest texture first.
+    /// What a link of `shape` takes on `device`: its block plane's bytes and each buffer's, every
+    /// side of it and of the tile it cuts checked against the device's largest texture first.
     fn sized(device: &wgpu::Device, shape: &Shape) -> Result<(u64, Vec<u64>), GpuFallback> {
         let limit = device.limits().max_texture_dimension_2d;
         let (tile, grid) = (shape.tile(), shape.grid());
@@ -316,7 +402,7 @@ impl LightLink {
         (texture_bytes, sizes): (u64, Vec<u64>),
     ) -> Self {
         let buffer_bytes = sizes.iter().sum::<u64>();
-        let (tile, grid) = (shape.tile(), shape.grid());
+        let grid = shape.grid();
         let texture = |label, (width, height), format, usage| {
             PoolTexture::new(device.create_texture(&wgpu::TextureDescriptor {
                 label: Some(label),
@@ -346,12 +432,6 @@ impl LightLink {
             .map(|_| charged("luxforge.gpu_light.cut", next()))
             .collect();
         LightLink {
-            tile: texture(
-                "luxforge.gpu_light.tile",
-                tile,
-                shape.format.texture(),
-                wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT,
-            ),
             blocks: texture(
                 "luxforge.gpu_light.blocks",
                 grid,
@@ -374,7 +454,7 @@ impl LightLink {
 
 impl PhotoPipeline {
     /// A light link of `shape`, charged to the GPU-preview budget before anything is created: its
-    /// textures as the scratch they are, which only its own passes read.
+    /// block plane as the scratch it is, which only its own passes read.
     fn light_link(&self, device: &wgpu::Device, shape: Shape) -> Result<LightLink, GpuFallback> {
         let (texture_bytes, sizes) = LightLink::sized(device, &shape)?;
         let preview = &self.figures.preview;
@@ -387,7 +467,6 @@ impl PhotoPipeline {
     /// its textures as the scratch they were charged as, and its buffers.
     pub(super) fn retire_light(&self, link: LightLink) {
         let LightLink {
-            tile,
             blocks,
             words,
             block_words,
@@ -396,16 +475,49 @@ impl PhotoPipeline {
             texture_bytes,
             ..
         } = link;
-        self.retire_preview(Held::Pool(vec![tile, blocks]), texture_bytes);
+        self.retire_preview(Held::Pool(vec![blocks]), texture_bytes);
         for charged in [words, block_words, params].into_iter().chain(cuts) {
             self.retire_preview(Held::Buffer(charged.buffer), charged.bytes);
         }
     }
 
+    /// Retire `tile` through the retirement worker, still charged as scratch until the GPU is done
+    /// with it.
+    fn retire_light_tile(&self, tile: LightTile) {
+        self.retire_preview(Held::Pool(vec![tile.texture]), tile.bytes);
+    }
+
+    /// Make `tile` a tile texture of `extent` in `format`, a tile of another retiring: charged to
+    /// the GPU-preview budget as scratch before it is created.
+    fn fit_light_tile(
+        &self,
+        device: &wgpu::Device,
+        tile: &mut Option<LightTile>,
+        format: BoundaryFormat,
+        extent: (u32, u32),
+    ) -> Result<(), GpuFallback> {
+        if tile
+            .as_ref()
+            .is_some_and(|held| held.format == format && held.extent == extent)
+        {
+            return Ok(());
+        }
+        if let Some(old) = tile.take() {
+            self.retire_light_tile(old);
+        }
+        let bytes = u64::from(extent.0) * u64::from(extent.1) * format.texel_bytes() as u64;
+        let preview = &self.figures.preview;
+        preview.charge(bytes)?;
+        preview.scratch.fetch_add(bytes, Ordering::AcqRel);
+        *tile = Some(LightTile::create(device, format, extent));
+        Ok(())
+    }
+
     /// Encode `light`'s passes on `encoder`, when the light plane it writes does not hold its light
-    /// already: each tile of its stage cut from the source the pipeline holds and reduced into the
-    /// stage's block plane, then the selection of the light into `pool`'s light plane, whose key it
-    /// records. `link` is fitted to the light first, a link of another shape retiring; `pool` must
+    /// already: each tile of its stage cut from the source the pipeline holds into `tile`, the
+    /// surface's tile texture, and reduced into the stage's block plane, then the selection of the
+    /// light into `pool`'s light plane, whose key it records. `link` is fitted to the light first,
+    /// a link of another shape retiring, and `tile` to the tile it cuts; `pool` must
     /// hold the light plane, as fitting it to a plan whose links read the light, or to the light
     /// itself ([`spatial::PoolKey::with_lights`]), makes it. Answers the light plane's key, the
     /// content key of the light it holds.
@@ -415,9 +527,11 @@ impl PhotoPipeline {
     /// stage, or the steps are not a light link's. Nothing waits for the GPU, and nothing is read
     /// back.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn encode_light(
         &mut self,
         link: &mut Option<LightLink>,
+        tile: &mut Option<LightTile>,
         pool: &mut Pool,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -467,6 +581,8 @@ impl PhotoPipeline {
             }
             *link = Some(self.light_link(device, shape.clone())?);
         }
+        self.fit_light_tile(device, tile, shape.format, shape.tile())?;
+        let tile = tile.as_ref().expect("a fitted tile");
         let held = link.as_mut().expect("a fitted light link");
         // Blocks past what its buffer holds: a larger buffer, charged before it is created, the
         // old one retiring with its charge, every chunk written again.
@@ -505,7 +621,7 @@ impl PhotoPipeline {
             return Ok(key);
         }
         encode_tiles(
-            held,
+            (held, tile.view()),
             (device, queue, encoder),
             (
                 &compiled,
@@ -567,14 +683,23 @@ impl PhotoPipeline {
         }
         let slot = surface.gpu.as_mut().ok_or(GpuFallback::PipelineFailed)?;
         let held: Vec<Option<u64>> = (0..count).map(|k| slot.pool.light_key(k)).collect();
-        surface.gpu_lights.resize_with(plan.lights.len(), || None);
+        let Lights { links, tile } = &mut surface.gpu_lights;
+        links.resize_with(plan.lights.len(), || None);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("luxforge.gpu_light.encoder"),
         });
         let mut encoded = Ok(());
-        for (light, link) in plan.lights.iter().zip(surface.gpu_lights.iter_mut()) {
+        for (light, link) in plan.lights.iter().zip(links.iter_mut()) {
             encoded = self
-                .encode_light(link, &mut slot.pool, device, queue, &mut encoder, light)
+                .encode_light(
+                    link,
+                    tile,
+                    &mut slot.pool,
+                    device,
+                    queue,
+                    &mut encoder,
+                    light,
+                )
                 .map(|_| ());
             if encoded.is_err() {
                 break;
@@ -590,12 +715,18 @@ impl PhotoPipeline {
         self.evaluate(surface, device, queue, plan, change)
     }
 
-    /// Retire every light link of `links` past the first `keep`, through the retirement worker.
-    pub(super) fn retire_lights(&self, links: &mut Vec<Option<LightLink>>, keep: usize) {
-        if links.len() > keep {
-            for link in links.drain(keep..).flatten() {
+    /// Retire every light link of `lights` past the first `keep`, through the retirement worker,
+    /// and with none kept the tile texture they cut into.
+    pub(super) fn retire_lights(&self, lights: &mut Lights, keep: usize) {
+        if lights.links.len() > keep {
+            for link in lights.links.drain(keep..).flatten() {
                 self.retire_light(link);
             }
+        }
+        if keep == 0
+            && let Some(tile) = lights.tile.take()
+        {
+            self.retire_light_tile(tile);
         }
     }
 }
@@ -612,7 +743,7 @@ fn light_key(parts: impl std::hash::Hash) -> u64 {
 /// Encode a light's passes over every tile of its stage, then its selection into `light`, the light
 /// plane's view: what [`PhotoPipeline::encode_light`] runs once it knows the light changed.
 fn encode_tiles(
-    held: &mut LightLink,
+    (held, tile_view): (&mut LightLink, &wgpu::TextureView),
     (device, queue, encoder): (&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder),
     (compiled, support): (&Compiled, &super::Support),
     (source, layouts): (&super::SourceSlot, &super::SourceLayouts),
@@ -622,14 +753,19 @@ fn encode_tiles(
     let places = prepare_tiles(held, queue, light)?;
     for (index, (tile, place)) in held.shape.tiles().into_iter().zip(&places).enumerate() {
         encode_reduce(
-            held,
+            (held, tile_view),
             (device, queue, encoder),
             (compiled, support),
             (source, layouts),
             (index, tile, place),
         )?;
     }
-    encode_select(held, (device, encoder), (compiled, support), light_view)
+    encode_select(
+        (held, tile_view),
+        (device, encoder),
+        (compiled, support),
+        light_view,
+    )
 }
 
 /// Write `light`'s words for every tile of its stage, its texel map at the tile, and every tile's
@@ -707,9 +843,9 @@ const SELECTION: Place = Place {
 };
 
 /// The bind group of the light's programs for tile `index`: its words, a binding's offset apart, the
-/// steps' blocks and the tile texture. The selection binds tile 0's.
+/// steps' blocks and the tile texture, `tile_view`. The selection binds tile 0's.
 fn programs(
-    held: &LightLink,
+    (held, tile_view): (&LightLink, &wgpu::TextureView),
     device: &wgpu::Device,
     support: &super::Support,
     index: usize,
@@ -733,7 +869,7 @@ fn programs(
             },
             wgpu::BindGroupEntry {
                 binding: 2,
-                resource: wgpu::BindingResource::TextureView(held.tile.view()),
+                resource: wgpu::BindingResource::TextureView(tile_view),
             },
         ],
     })
@@ -789,7 +925,7 @@ fn passes(compiled: &Compiled) -> Result<[&spatial::CompiledPass; 2], GpuFallbac
 /// Encode tile `index` of the light's stage, `tile` at `place`: cut from `source`, which holds it,
 /// into the tile texture, and reduced into the block plane's blocks it holds.
 fn encode_reduce(
-    held: &LightLink,
+    (held, tile_view): (&LightLink, &wgpu::TextureView),
     (device, queue, encoder): (&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder),
     (compiled, support): (&Compiled, &super::Support),
     (source, layouts): (&super::SourceSlot, &super::SourceLayouts),
@@ -806,10 +942,10 @@ fn encode_reduce(
         layouts,
         &cut,
         &held.cuts[index].buffer,
-        held.tile.view(),
+        tile_view,
         size,
     );
-    let bindings = programs(held, device, support, index);
+    let bindings = programs((held, tile_view), device, support, index);
     let planes = planes(
         held,
         device,
@@ -830,13 +966,13 @@ fn encode_reduce(
 
 /// Encode the selection of the light from the block plane into `light_view`.
 fn encode_select(
-    held: &LightLink,
+    (held, tile_view): (&LightLink, &wgpu::TextureView),
     (device, encoder): (&wgpu::Device, &mut wgpu::CommandEncoder),
     (compiled, support): (&Compiled, &super::Support),
     light_view: &wgpu::TextureView,
 ) -> Result<(), GpuFallback> {
     let [_, select] = passes(compiled)?;
-    let bindings = programs(held, device, support, 0);
+    let bindings = programs((held, tile_view), device, support, 0);
     let planes = planes(
         held,
         device,
@@ -868,6 +1004,7 @@ pub(super) fn read_light_charge(
     let shape =
         Shape::of(light, source.kind().boundary(), limit).ok_or(GpuFallback::PipelineFailed)?;
     let (textures, sizes) = LightLink::sized(device, &shape)?;
+    let textures = textures + shape.tile_bytes();
     // The largest tile's window of the source, as it holds its pixels whatever their orientation.
     let window = shape
         .tiles()
@@ -901,6 +1038,7 @@ pub(super) fn read_light(
     let shape =
         Shape::of(light, source.kind().boundary(), limit).ok_or(GpuFallback::PipelineFailed)?;
     let sized = LightLink::sized(device, &shape)?;
+    let cut_into = LightTile::create(device, shape.format, shape.tile());
     let mut link = LightLink::create(device, shape, sized);
     link.written_blocks
         .write(queue, &link.block_words.buffer, &light.steps, BLOCK_CHUNK);
@@ -928,7 +1066,7 @@ pub(super) fn read_light(
             label: Some("luxforge.gpu_light.read"),
         });
         encode_reduce(
-            &link,
+            (&link, cut_into.view()),
             (device, queue, &mut encoder),
             (compiled, support),
             (&held, layouts),
@@ -965,7 +1103,7 @@ pub(super) fn read_light(
         label: Some("luxforge.gpu_light.read"),
     });
     encode_select(
-        &link,
+        (&link, cut_into.view()),
         (device, &mut encoder),
         (compiled, support),
         &texture.create_view(&wgpu::TextureViewDescriptor::default()),
@@ -1031,7 +1169,7 @@ pub use bench::{LightBench, Lit};
 mod bench {
     use super::super::super::{PhotoPipeline, SurfaceSlots};
     use super::super::{GpuChange, GpuFallback, GpuPlan, GpuSource, Held, spatial};
-    use super::{GpuLight, LightLink};
+    use super::{GpuLight, LightLink, LightTile};
     use std::sync::Arc;
 
     /// A light read back: its value, `[r, g, b, 1]`, and the stage's block means beside each
@@ -1056,6 +1194,7 @@ mod bench {
         /// The pool a light is drawn into when no plan reads it.
         pool: spatial::Pool,
         link: Option<LightLink>,
+        tile: Option<LightTile>,
         poisoned: bool,
     }
 
@@ -1075,6 +1214,7 @@ mod bench {
                 surface,
                 pool: spatial::Pool::default(),
                 link: None,
+                tile: None,
                 poisoned: false,
             }
         }
@@ -1151,6 +1291,7 @@ mod bench {
                 };
                 let outcome = self.pipeline.encode_light(
                     &mut self.link,
+                    &mut self.tile,
                     pool,
                     &self.device,
                     &self.queue,
@@ -1334,8 +1475,7 @@ mod bench {
 
         /// How many light links the surface holds for its slot, and what they hold, as charged.
         pub fn surface_lights(&self) -> (usize, u64) {
-            let links = self.surface.gpu_lights.iter().flatten();
-            (links.clone().count(), links.map(LightLink::bytes).sum())
+            self.surface.gpu_lights.held()
         }
 
         /// How many spatial passes the slot has dispatched, over every draw.
@@ -1349,9 +1489,11 @@ mod bench {
             (preview.in_use(), preview.scratch())
         }
 
-        /// What the bench's light link holds, as charged.
+        /// What the bench's light link and the tile texture it cuts into hold, as charged.
         pub fn light_bytes(&self) -> Option<u64> {
-            self.link.as_ref().map(LightLink::bytes)
+            self.link
+                .as_ref()
+                .map(|link| link.bytes() + self.tile.as_ref().map_or(0, |tile| tile.bytes))
         }
 
         /// Let everything go — the slot, the light link, the bench's pool's light plane and the
@@ -1361,6 +1503,9 @@ mod bench {
             self.pipeline.release_gpu(&mut self.surface);
             if let Some(link) = self.link.take() {
                 self.pipeline.retire_light(link);
+            }
+            if let Some(tile) = self.tile.take() {
+                self.pipeline.retire_light_tile(tile);
             }
             self.trim();
             // The bench's pool holds light planes alone, charged as the slot's pool's are: fitted

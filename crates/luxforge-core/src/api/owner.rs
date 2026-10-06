@@ -305,6 +305,11 @@ pub struct PreviewRequest {
     /// at a percentage zoom below 100%, whose bounds are the displayed size of the whole stage
     /// ([`crate::GpuView::Fit`]).
     pub gpu_region: Option<(crate::modules::Region, f64)>,
+    /// Over a region, the figure its plan's own bytes pass before the draft is planned at the
+    /// reduced stage of the view's area too ([`crate::GpuPreview::reduced`]):
+    /// [`crate::REDUCED_AFTER_BYTES`] unless a caller names another, as a test of a small
+    /// photograph held to a small budget does.
+    pub gpu_reduce_after: u64,
 }
 
 impl PreviewRequest {
@@ -320,6 +325,7 @@ impl PreviewRequest {
             proxy: None,
             gpu: false,
             gpu_region: None,
+            gpu_reduce_after: crate::REDUCED_AFTER_BYTES,
         }
     }
     /// Show this entry instead of the current one.
@@ -359,6 +365,13 @@ impl PreviewRequest {
     pub fn gpu_region(mut self, rect: crate::modules::Region, magnification: f64) -> Self {
         self.gpu = true;
         self.gpu_region = Some((rect, magnification));
+        self
+    }
+
+    /// Plan the draft at the reduced stage of the view's area beside a region whose plan's own
+    /// figures pass `bytes` ([`Self::gpu_reduce_after`]).
+    pub fn reduce_regions_after(mut self, bytes: u64) -> Self {
+        self.gpu_reduce_after = bytes;
         self
     }
 }
@@ -2181,21 +2194,53 @@ impl Owner {
                     .ok()
                     .map(Box::new);
             }
+            // A truncated job — a crop draft's input stage, the layers before the crop — carries
+            // the prefix's picture at rest on the GPU, its tiles reduced to the view where the
+            // view draws the stage smaller than it is; no gesture draws over it, so no warm list.
+            // A prefix the GPU cannot draw names why in the plan's tiles, and the job's own frame
+            // is the reference's.
+            if let (true, None, Some(view), Some(count)) =
+                (request.gpu, draft, view, request.layer_count)
+            {
+                // The prefix's own evaluation, as the worker truncates the stack: the first
+                // `count` layers, beside the whole mask table, over the job's source and context,
+                // compiled once here. `O(layers)`, no pixel.
+                let evaluation = &job.evaluation;
+                let whole = evaluation.recipe();
+                let prefix = crate::Evaluation::new(
+                    evaluation.registry().clone(),
+                    evaluation.context().clone(),
+                    evaluation.source().clone(),
+                    evaluation.entry().clone(),
+                    crate::Recipe {
+                        layers: whole.layers.iter().take(count).cloned().collect(),
+                        ..whole.clone()
+                    },
+                    None,
+                );
+                job.gpu_rest = crate::render::gpu::plan_rest(&prefix, view)
+                    .ok()
+                    .map(Box::new);
+            }
             if let (true, Some(draft), Some(view), None) =
                 (request.gpu, draft, view, request.layer_count)
             {
                 job.gpu = Some(Box::new(
-                    crate::render::gpu::plan_preview(&job.evaluation, draft, view).unwrap_or_else(
-                        |error| crate::GpuPreview {
-                            answer: crate::GpuAnswer::Fallback(crate::GpuFallback::Unplannable(
-                                error.detail,
-                            )),
-                            boundary: None,
-                            cpu_shape: None,
-                            layer: None,
-                            reduced: None,
-                        },
-                    ),
+                    crate::render::gpu::plan_preview_reducing(
+                        &job.evaluation,
+                        draft,
+                        view,
+                        request.gpu_reduce_after,
+                    )
+                    .unwrap_or_else(|error| crate::GpuPreview {
+                        answer: crate::GpuAnswer::Fallback(crate::GpuFallback::Unplannable(
+                            error.detail,
+                        )),
+                        boundary: None,
+                        cpu_shape: None,
+                        layer: None,
+                        reduced: None,
+                    }),
                 ));
             }
             job

@@ -43,14 +43,14 @@ pub use plan::{
     GpuAnchor, GpuAnswer, GpuBoundary, GpuClipping, GpuComponent, GpuFallback, GpuGeometry,
     GpuMask, GpuOperation, GpuPlan, GpuPlanRequest, GpuPosition, anchored, gpu_plan,
 };
+#[cfg(test)]
+pub(crate) use preview::plan_preview;
 #[cfg(any(test, feature = "qualification"))]
 pub(crate) use preview::plan_rest_tiles;
 #[cfg(test)]
 pub(crate) use preview::plan_warm;
 #[cfg(feature = "qualification")]
 pub(crate) use preview::position;
-#[cfg(feature = "qualification")]
-pub use preview::reduce_regions_after;
 pub use preview::{
     BoundaryKey, GPU_PLAN_LINKS, GPU_WARM_LINKS, GpuPreview, GpuRest, GpuView, GpuWarmList,
     REDUCED_AFTER_BYTES, REST_TILE_BYTES, REST_TILE_SIDES, RestReduction, RestTile, RestTiles,
@@ -58,7 +58,7 @@ pub use preview::{
 };
 #[cfg(test)]
 pub(crate) use preview::{light_link, output_window, warm_links, warm_sequence};
-pub(crate) use preview::{plan_preview, plan_rest, plan_warm_list};
+pub(crate) use preview::{plan_preview_reducing, plan_rest, plan_warm_list};
 #[cfg(test)]
 pub(crate) use program::testing;
 pub use program::{GpuDescription, GpuProgram, GpuProgramKind};

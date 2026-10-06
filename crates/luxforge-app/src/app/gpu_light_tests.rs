@@ -40,7 +40,7 @@ use luxforge_reference::srgb;
 use luxforge_ui::photo_surface::{
     BoundaryFormat, Derivation, GpuBoundary, GpuChange, GpuPlan, GpuSource, TexelMap,
     gpu_preview::{
-        light::{GpuLight, LightBench, Lit, light_charge},
+        light::{GpuLight, LightBench, Lit, light_charge, lights_charge},
         qualification::Qualifier,
     },
 };
@@ -1010,6 +1010,86 @@ fn gpu_light_the_slot_runs_its_plans_light_links_before_its_chain() {
         fresh.release();
         bench.release();
         assert_eq!(bench.surface_lights(), (0, 0), "{path:?}: let go");
+        assert_eq!(bench.charged(), (0, 0), "{path:?}: everything released");
+    }
+}
+
+/// A plan reading two lights runs both links one after another through the surface's one tile
+/// texture: its frame is the harness's over the lights each link computes alone on a bench of its
+/// own, bit for bit, and the surface holds the two links and one tile texture, what
+/// `lights_charge` charges for them. On both paths.
+#[test]
+fn gpu_light_two_light_links_share_one_tile_texture() {
+    let test = "gpu_light_two_light_links_share_one_tile_texture";
+    let Some((mut bench, adapter)) = on_device(test, None) else {
+        return;
+    };
+    let Some(qualifier) = qualifier(test) else {
+        return;
+    };
+    eprintln!("{test}: adapter {adapter}");
+    let mut alone = bench.another();
+    let registry = ModuleRegistry::builtin();
+    let photo = Photo::synthetic(640, 432, 0x5a);
+    let recipe = masked(
+        stack(&[
+            (BASIC_EFFECT, json!({"exposure": 0.3})),
+            (PRESENCE_EFFECT, json!({"dehaze": 60})),
+            (PRESENCE_EFFECT, json!({"dehaze": -40, "clarity": 20})),
+        ]),
+        1,
+        &[radial()],
+    );
+    for (version, path) in [(1, Path::Byte), (2, Path::Linear)] {
+        let gpu = photo.gpu(path, version);
+        let plan = reading_plan(
+            &registry,
+            &recipe,
+            request(&photo, path),
+            whole_cut(&gpu, version),
+        );
+        assert_eq!(plan.lights.len(), 2, "{path:?}: two light links");
+        let drawn = bench.prepare(&gpu, &plan, None).expect("the frame");
+        let lit: Vec<[f32; 4]> = plan
+            .lights
+            .iter()
+            .map(|light| {
+                let lit = alone.light(&gpu, light).expect("a light alone").light;
+                alone.release();
+                lit
+            })
+            .collect();
+        let cut = qualifier.derive(&gpu, &plan.boundary).expect("the cut");
+        let held = GpuBoundary::new(
+            Arc::new(cut),
+            photo.width,
+            photo.height,
+            version,
+            gpu.kind().boundary(),
+        )
+        .expect("the held stage");
+        qualifier.set_lights(lit);
+        let given = qualifier
+            .evaluate_codes(&GpuPlan {
+                boundary: held,
+                ..plan.clone()
+            })
+            .expect("the harness's frame");
+        let differing = drawn.iter().zip(&given).filter(|(a, b)| a != b).count();
+        assert_eq!(differing, 0, "{path:?}: the slot's frame is the harness's");
+        let format = gpu.kind().boundary();
+        let charge = lights_charge(&plan.lights, format, 8192, BINDING).expect("light links");
+        let one = |light| light_charge(light, format, 8192, BINDING).expect("a light link");
+        assert_eq!(
+            bench.surface_lights(),
+            (2, charge),
+            "{path:?}: two links, one tile"
+        );
+        assert!(
+            charge < one(&plan.lights[0]) + one(&plan.lights[1]),
+            "{path:?}: one tile texture, not two"
+        );
+        bench.release();
         assert_eq!(bench.charged(), (0, 0), "{path:?}: everything released");
     }
 }

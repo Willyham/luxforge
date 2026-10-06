@@ -177,7 +177,7 @@ fn motion_a_pan_during_a_paused_drag_plans_its_region_again() {
         "the paused drag's view is planned"
     );
     // The owner's answer: the draft over the new region with its GPU plan.
-    let super::gpu_preview::GpuAsk::Region(rect, magnification) = editor.gpu_ask() else {
+    let super::gpu_preview::GpuAsk::Region(rect, magnification, _) = editor.gpu_ask() else {
         panic!("a region at 400%");
     };
     let draft = editor.session.draft.as_ref().unwrap().draft_id.clone();

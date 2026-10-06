@@ -3525,7 +3525,7 @@ impl PhotoPipeline {
 /// each earlier link's intermediate, every link's kept planes and parameters and the pool once —
 /// beside what needs the device: the boundary, the output in its size bucket and its placement
 /// uniform, and every link's words and blocks buffers at their capacities; and each light link the
-/// slot runs before them ([`light::light_charge`]). For a report and the tests that hold it to the
+/// slot runs before them, which share one tile texture ([`light::lights_charge`]). For a report and the tests that hold it to the
 /// slot's own figure.
 #[cfg(any(test, feature = "qualification"))]
 pub(super) fn slot_charge(device: &wgpu::Device, plan: &GpuPlan) -> Result<u64, GpuFallback> {
@@ -3536,11 +3536,8 @@ pub(super) fn slot_charge(device: &wgpu::Device, plan: &GpuPlan) -> Result<u64, 
         plan.texels.origin[0].max(0.0) as u32,
         plan.texels.origin[1].max(0.0) as u32,
     );
-    let mut lights = 0;
-    for light in &plan.lights {
-        lights += light::light_charge(light, shape.format, limit, binding)
-            .ok_or(GpuFallback::PipelineFailed)?;
-    }
+    let lights = light::lights_charge(&plan.lights, shape.format, limit, binding)
+        .ok_or(GpuFallback::PipelineFailed)?;
     Ok(shape.texture_bytes(limit)
         + slot_buffers(device, plan)?.iter().sum::<u64>()
         + chain_charge(&plan.steps, shape.boundary, origin, shape.format).total()

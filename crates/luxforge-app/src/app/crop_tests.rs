@@ -1867,3 +1867,123 @@ fn a_raw_develops_again_while_a_crop_draft_is_open() {
     assert!(editor.crop().is_some(), "the draft is still open");
     finish(editor, catalog);
 }
+
+/// A crop draft's input stage asked for with the GPU is planned with its prefix's picture at rest:
+/// the layers before the crop, from the source, their tiles reduced to the stage's display bounds,
+/// covering the prefix's whole output stage. A prefix the GPU cannot draw — a developer's pixel
+/// replacement — names why in the plan and its tiles, and the job's own frame is the reference's.
+#[test]
+fn a_crop_drafts_input_stage_is_planned_as_its_prefixs_picture_at_rest() {
+    use luxforge_core::{GpuAnswer, GpuFallback, PreviewRequest, ProxyBounds};
+    use luxforge_testkit::client::{call, mutation, request_id, revision};
+    let catalog = luxforge_testbase::paths::temp_path("crop-stage-rest.sqlite");
+    let (owner, join) = luxforge_core::OwnerHandle::start_with_host(
+        &catalog,
+        std::sync::Arc::new(luxforge_core::ModuleRegistry::developer()),
+        luxforge_core::HostConfig::unconfigured(),
+    )
+    .unwrap();
+    let client = owner.register();
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/s0/orientation-1.jpg");
+    let asset = crate::app::testing::import_and_adopt(&owner, client, &fixture);
+    let id = json!(asset.as_str());
+    let commit = |method: &str, mut params: Value| {
+        params["asset_id"] = id.clone();
+        params["mutation"] = mutation(
+            revision(&owner, client, &id).unwrap(),
+            &request_id("crop-stage"),
+            "agent",
+        );
+        call(&owner, client, method, params).expect("the edit");
+    };
+    commit("edit.set-basic", json!({"exposure": 0.4}));
+    commit(
+        "edit.crop",
+        json!({"angle": 7.0, "x": 0.2, "y": 0.2, "width": 0.5, "height": 0.5}),
+    );
+    // The prefix: every layer before the crop's.
+    let crop_at = || {
+        luxforge_testkit::client::recipe(&owner, client, &id)
+            .unwrap()
+            .layers
+            .iter()
+            .position(|layer| layer.effect_id == luxforge_core::CROP_EFFECT)
+            .expect("the crop layer")
+    };
+    let bounds = ProxyBounds {
+        width: 240,
+        height: 160,
+    };
+    let stage = |count| {
+        crate::app::tasks::ready_preview_job(
+            &owner,
+            PreviewRequest::new(client, asset.clone())
+                .layers(count)
+                .proxy(bounds)
+                .gpu(),
+        )
+        .expect("the input stage's job")
+    };
+    // The prefix holds Basic, over the whole 480 × 320 source.
+    let crop = crop_at();
+    let job = stage(crop);
+    let rest = job
+        .gpu_rest
+        .as_deref()
+        .expect("the prefix's picture at rest");
+    let plan = rest.view.answer.plan().expect("a plan from the source");
+    assert_eq!(plan.content.len(), 1, "Basic");
+    // The view plan, a drag's frame over it, is the prefix at the reduced stage of the bounds:
+    // the whole uncropped source fitted to them.
+    let output = plan.geometry.output();
+    assert_eq!(
+        (output.width, output.height),
+        (240, 160),
+        "no crop in the prefix: the source's stage fitted to the bounds"
+    );
+    let tiles = match rest.tiles.as_ref().expect("tiles") {
+        Ok(tiles) => tiles,
+        Err(reason) => panic!("tiles refused: {reason}"),
+    };
+    assert_eq!((tiles.output.width, tiles.output.height), (480, 320));
+    let covered: u64 = tiles
+        .tiles
+        .iter()
+        .map(|tile| u64::from(tile.rect.width) * u64::from(tile.rect.height))
+        .sum();
+    assert_eq!(covered, 480 * 320, "every pixel of the prefix once");
+    assert_eq!(
+        tiles.reduction.as_ref().map(|reduction| reduction.view),
+        Some((240, 160)),
+        "reduced to the stage's display bounds"
+    );
+    // Without the GPU asked for, nothing is planned.
+    let plain = crate::app::tasks::ready_preview_job(
+        &owner,
+        PreviewRequest::new(client, asset.clone())
+            .layers(crop)
+            .proxy(bounds),
+    )
+    .unwrap();
+    assert!(plain.gpu_rest.is_none());
+    // A pixel replacement in the prefix: the plan names it, and so do the tiles.
+    commit("edit.set-pixel", json!({"x": 3, "y": 2, "rgb": [9, 9, 9]}));
+    let job = stage(crop_at());
+    let rest = job.gpu_rest.as_deref().expect("the prefix's plan");
+    assert!(
+        matches!(
+            rest.view.answer,
+            GpuAnswer::Fallback(GpuFallback::PixelStage { .. })
+        ),
+        "{:?}",
+        rest.view.answer.fallback()
+    );
+    assert!(matches!(
+        rest.tiles,
+        Some(Err(GpuFallback::PixelStage { .. }))
+    ));
+    owner.stop();
+    let _ = join.join();
+    let _ = std::fs::remove_file(&catalog);
+}
