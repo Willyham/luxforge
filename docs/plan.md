@@ -76,10 +76,11 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 **Lens and perspective correction** (implemented; qualification in progress, [design](design/lens-and-perspective.md), [plan](../tasks/lens-and-perspective.json)). Offline Lensfun profile distortion and manual two-axis perspective, with a fixed covered canvas, shared nonlinear mapping for crop and masks, and explicit prevention of duplicate embedded DNG correction. Functional implementation is verified; performance and photographic qualification remain outstanding. Coverage and read bounds are closed forms; the pinned index ships as a separate resource; Perspective is not presettable and strong minification is refused. Qualification needs authentic photographs for the qualified camera, lens and focal combinations.
 
-**Corrections** (proposal, [design](design/corrections.md), [plan](../tasks/corrections.json)). Remove blemishes by hand.
-- Owner decisions: behaviour, repair-stage order, scope
-- Offline Clone and Heal: numerical contract, repair stage, brush masks, desktop workflow
-- The repair layer's frozen-patch operation with prefix invalidation, which AI editing's fills commit through
+**Corrections** (proposal, [design](design/corrections.md), [plan](../tasks/corrections.json)). Remove blemishes by hand; offline Clone/Heal has its own delivery and qualification.
+- Decided: repair after source development and before colour, deletion of `PointReplace`, stale patches kept rendering with export acknowledgement. Open: repair versus Detail restoration placement, correction preset eligibility, Heal numerics, brush/source-edge behaviour and bounded candidate/export shapes
+- Reuse the delivered typed stroke store and drafts, module/capability contracts, Develop/prepare/adopt, Locate/library cleanup and nonlinear geometry; add the production brush interaction and ordered repair module
+- Integrate rendering against the merged GPU-first interfaces and comparison harness; qualify offline UI/API, catalog previews, single/batch export and native performance after feature work
+- Separately extend the same repair layer with frozen patches, bounded candidate jobs and source plus intra-layer prefix invalidation for AI editing; no model/provider prerequisite for the offline milestone
 
 **AI editing** (decided 2026-10-05, [design](design/ai-editing.md), [plan](../tasks/ai-editing.json)). Local, user-downloaded models behind one inference port and one analysis cache; nothing bundled, nothing sent without consent. The plan runs once the GPU-first integration branch has merged, with the Corrections foundation beside its first stage.
 - Decided: scope, quality-first model policy with no licence or provenance gate beyond a one-line use restriction, the runtime by quality then performance then maintainability, plain-language model choices, the effect region, stale patches kept rendering, budgets raised for quality, the 24 GB generative minimum, consent remembered per provider, the repair stage, sky replacement. Open: the first hosted provider, a fine-tune, a Swift shim, CPU-only machines
