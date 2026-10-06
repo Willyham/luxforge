@@ -10,7 +10,7 @@ use crate::{
     app::{
         Boot, Editor,
         message::{Message, select::SelectMessage, select_missing::MissingMessage},
-        select::{evaluate_now, facets_now, job_now},
+        select::{evaluate_now, facets_now},
         select_missing::{cancel_now, facts_now, find_now, locate_now, missing_now, relink_now},
         tasks::request,
     },
@@ -305,20 +305,47 @@ fn read_list(editor: &mut Editor) {
     assert!(!editor.select.state.missing.reading);
 }
 
-/// Read the running jobs as the board's wakes would, until none runs.
+/// Adopt real authoritative observations until every tracked job ends. The executor sleeps in
+/// job.wait between changes; a deadline only bounds a failed test.
 fn poll_until_ended(editor: &mut Editor) {
-    luxforge_testbase::wait_for("Missing originals' jobs to end", || {
-        let (search, locate) = editor.select.state.missing.running_jobs();
-        if search.is_none() && locate.is_none() {
-            return Some(());
-        }
-        let read = |job: String| {
-            let record = job_now(&editor.owner, editor.client, &job);
-            (job, record)
-        };
-        let (search, locate) = (search.map(read), locate.map(read));
-        let _ = editor.update(missing(MissingMessage::Polled { search, locate }));
-        None
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        tokio::time::timeout(luxforge_testbase::HANG, async {
+            let mut tokens = std::collections::BTreeMap::new();
+            loop {
+                let (search, locate) = editor.select.state.missing.running_jobs();
+                if search.is_none() && locate.is_none() {
+                    break;
+                }
+                for (job, searching) in search
+                    .map(|job| (job, true))
+                    .into_iter()
+                    .chain(locate.map(|job| (job, false)))
+                {
+                    let (change, record) = super::job_reads::wait(
+                        &editor.owner,
+                        editor.client,
+                        &job,
+                        tokens.get(&job).copied(),
+                    )
+                    .await
+                    .unwrap();
+                    tokens.insert(job.clone(), change);
+                    let observed = Some((job, Ok(record)));
+                    let (search, locate) = if searching {
+                        (observed, None)
+                    } else {
+                        (None, observed)
+                    };
+                    let _ = editor.update(missing(MissingMessage::Polled { search, locate }));
+                }
+            }
+        })
+        .await
+        .expect("Missing originals' jobs to end")
     });
 }
 
@@ -656,47 +683,24 @@ fn resolve_missing_locate_original_in_develop_reopens_the_photograph() {
     finish(scene);
 }
 
-/// A search is read with `job.read` once as soon as it is named, and again each time long-running
-/// work reads the activity board — which its watch wakes it to do as the search reports each row
-/// and when it ends — one read at a time, a board read while one is out asking for one more. No
-/// timer asks after it.
+/// Real job.wait observations supply partial and final search results without board reads or a
+/// presentation timer, including while hidden.
 #[test]
-fn resolve_missing_follows_a_search_through_the_activity_board() {
+fn resolve_missing_follows_authoritative_search_observations_while_hidden() {
     let mut scene = scene("followed");
     let _ = find(&mut scene.editor, &scene.lake, &scene.archive);
     let editor = &mut scene.editor;
-    assert!(
-        editor.select.state.missing.polling,
-        "read as soon as it is named"
-    );
-    let _ = editor.missing_followed();
-    assert!(
-        editor.select.state.missing.poll_again,
-        "a board read while that read is out asks for one more"
-    );
-    let mut reads = 0;
-    luxforge_testbase::wait_for("the search to end", || {
-        let (search, _) = editor.select.state.missing.running_jobs();
-        let Some(job) = search else {
-            return Some(());
-        };
-        if editor.select.state.missing.polling {
-            // The read that is out answers, as its task would.
-            reads += 1;
-            let record = job_now(&editor.owner, editor.client, &job);
-            let _ = editor.update(missing(MissingMessage::Polled {
-                search: Some((job, record)),
-                locate: None,
-            }));
-        } else {
-            // What long-running work calls after each read of the board.
-            let _ = editor.missing_followed();
-        }
-        None
-    });
+    editor.visibility.evidence_invisible_window = false;
+    editor.visibility.facts.window_hidden = true;
+    let reads = editor.long_work.reads;
+    let requests = editor.owner.job_monitor_stats().requests;
+    poll_until_ended(editor);
     let state = &editor.select.state.missing;
-    assert!(reads >= 1, "the read out when it was named answered");
     assert_eq!(state.searches[&scene.lake].status, SearchStatus::Ended);
-    assert!(!state.polling && !state.poll_again);
+    assert!(editor.owner.job_monitor_stats().requests > requests);
+    assert_eq!(
+        editor.long_work.reads, reads,
+        "no activity-board polling drives adoption"
+    );
     finish(scene);
 }

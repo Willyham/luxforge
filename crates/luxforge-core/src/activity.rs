@@ -201,6 +201,8 @@ struct Watcher {
     wake: ActivityWake,
     /// Woken by the next followed change; disarmed when woken, armed again by a read.
     armed: bool,
+    /// Hidden presentation readers still hear begin/end, without intermediate display progress.
+    progress: bool,
 }
 
 impl std::fmt::Debug for Watcher {
@@ -238,12 +240,12 @@ impl Board {
     }
 
     /// Wake the watchers that follow the active entry `id`, which just changed.
-    fn notify_of(&mut self, id: u64) {
+    fn notify_of(&mut self, id: u64, lifecycle: bool) {
         let Self {
             active, watchers, ..
         } = self;
         if let Some(running) = active.iter().find(|running| running.entry.id == id) {
-            notify(watchers, &running.entry);
+            notify(watchers, &running.entry, lifecycle);
         }
     }
 
@@ -278,11 +280,10 @@ impl Board {
 
 /// Wake every armed watcher that follows `entry`, which just changed, and disarm it: it is not
 /// woken again until it reads the board. Nothing is allocated; each wake only posts a signal.
-fn notify(watchers: &mut [Watcher], entry: &ActivityEntry) {
-    for watcher in watchers
-        .iter_mut()
-        .filter(|watcher| watcher.armed && (watcher.follows)(entry))
-    {
+fn notify(watchers: &mut [Watcher], entry: &ActivityEntry, lifecycle: bool) {
+    for watcher in watchers.iter_mut().filter(|watcher| {
+        watcher.armed && (lifecycle || watcher.progress) && (watcher.follows)(entry)
+    }) {
         watcher.armed = false;
         (watcher.wake)();
     }
@@ -350,12 +351,13 @@ impl ActivityBoard {
         };
         board.changed();
         if let Some(id) = id {
-            board.notify_of(id);
+            board.notify_of(id, true);
         }
         drop(board);
         Activity {
             board: Arc::clone(self),
             id,
+            on_progress: None,
         }
     }
 
@@ -390,6 +392,7 @@ impl ActivityBoard {
             follows,
             wake,
             armed: false,
+            progress: true,
         });
         drop(board);
         Ok(ActivityWatch {
@@ -405,28 +408,32 @@ impl ActivityBoard {
         self.board.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn set_phase(&self, id: u64, phase: &'static str) {
+    fn set_phase(&self, id: u64, phase: &'static str) -> bool {
         let mut board = self.lock();
         let Some(entry) = board.running(id) else {
-            return;
+            return false;
         };
         if entry.phase.as_deref() != Some(phase) {
             entry.phase = Some(Cow::Borrowed(phase));
             board.changed();
-            board.notify_of(id);
+            board.notify_of(id, false);
+            return true;
         }
+        false
     }
 
-    fn set_progress(&self, id: u64, progress: ActivityProgress) {
+    fn set_progress(&self, id: u64, progress: ActivityProgress) -> bool {
         let mut board = self.lock();
         let Some(entry) = board.running(id) else {
-            return;
+            return false;
         };
         if entry.progress.as_ref() != Some(&progress) {
             entry.progress = Some(progress);
             board.changed();
-            board.notify_of(id);
+            board.notify_of(id, false);
+            return true;
         }
+        false
     }
 
     /// The progress this active entry currently reports, if it has any. Reading it costs the same
@@ -452,7 +459,7 @@ impl ActivityBoard {
         // `remove` rather than `swap_remove`: the active list stays oldest first.
         let Running { entry, started } = board.active.remove(index);
         board.changed();
-        notify(&mut board.watchers, &entry);
+        notify(&mut board.watchers, &entry, true);
         // Whatever leaves the board is dropped after the lock is released, so its strings are
         // never freed while another thread waits for the board.
         let discarded = if ended.saturating_duration_since(started) >= self.recent_threshold {
@@ -479,27 +486,48 @@ impl ActivityBoard {
 /// dropping it unfinished records [`Outcome::Cancelled`], or [`Outcome::Failed`] when the thread is
 /// panicking, so an entry can never outlive the work it describes.
 #[must_use = "the activity ends as soon as its guard is dropped"]
-#[derive(Debug)]
 pub(crate) struct Activity {
     board: Arc<ActivityBoard>,
     /// `None` when the board was full and this work is untracked.
     id: Option<u64>,
+    on_progress: Option<ActivityWake>,
+}
+
+impl std::fmt::Debug for Activity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Activity")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Activity {
+    /// Notify an authoritative job signal when observable progress changes. The callback runs
+    /// after releasing the board lock and never signals terminal publication.
+    pub(crate) fn on_progress(&mut self, wake: ActivityWake) {
+        self.on_progress = Some(wake);
+    }
+
     /// Report the phase the work has reached. Reporting the phase it is already in changes nothing.
     pub(crate) fn phase(&self, phase: &'static str) {
-        if let Some(id) = self.id {
-            self.board.set_phase(id, phase);
+        if let Some(id) = self.id
+            && self.board.set_phase(id, phase)
+            && let Some(wake) = &self.on_progress
+        {
+            wake();
         }
     }
 
     /// Report progress: a fraction of 0 to 1 when the work knows a truthful extent, and a short
     /// message. Either may be omitted.
     pub(crate) fn progress(&self, fraction: Option<f64>, message: &str) {
-        if let Some(id) = self.id {
-            self.board
-                .set_progress(id, ActivityProgress::new(fraction, message));
+        if let Some(id) = self.id
+            && self
+                .board
+                .set_progress(id, ActivityProgress::new(fraction, message))
+            && let Some(wake) = &self.on_progress
+        {
+            wake();
         }
     }
 
@@ -507,11 +535,15 @@ impl Activity {
     /// the guard is alive; once the activity has ended a report changes nothing. The fraction is
     /// floored to whole percent, so one piece of work changes the board at most a hundred times.
     pub(crate) fn reporter(&self) -> impl Fn(f64) + Send + Sync + 'static {
-        let (board, id) = (self.board.clone(), self.id);
+        let (board, id, wake) = (self.board.clone(), self.id, self.on_progress.clone());
         move |fraction| {
             if let Some(id) = id {
                 let percent = (fraction * 100.0).floor() / 100.0;
-                board.set_progress(id, ActivityProgress::new(Some(percent), ""));
+                if board.set_progress(id, ActivityProgress::new(Some(percent), ""))
+                    && let Some(wake) = &wake
+                {
+                    wake();
+                }
             }
         }
     }
@@ -566,6 +598,17 @@ impl ActivityWatch {
     /// entry it follows wakes it. Both happen under the board's one lock, so no change can fall
     /// between the snapshot and the arming unseen and unannounced.
     pub fn read(&self) -> ActivitySnapshot {
+        self.read_mode(None)
+    }
+
+    /// Atomically reconcile and select which changes wake presentation: begin/end always do;
+    /// intermediate phase/progress wakes are suppressed while a window is hidden. The snapshot
+    /// and re-arming share the publisher lock, so changing this gate cannot lose a lifecycle wake.
+    pub fn read_with_progress(&self, progress: bool) -> ActivitySnapshot {
+        self.read_mode(Some(progress))
+    }
+
+    fn read_mode(&self, progress: Option<bool>) -> ActivitySnapshot {
         let mut board = self.board.lock();
         let snapshot = board.snapshot(Instant::now());
         if let Some(watcher) = board
@@ -574,6 +617,9 @@ impl ActivityWatch {
             .find(|watcher| watcher.id == self.id)
         {
             watcher.armed = true;
+            if let Some(progress) = progress {
+                watcher.progress = progress;
+            }
         }
         snapshot
     }
@@ -936,6 +982,64 @@ mod tests {
 
     fn catalog(entry: &ActivityEntry) -> bool {
         entry.kind.starts_with("index.")
+    }
+
+    #[test]
+    fn a_hidden_watch_coalesces_progress_but_keeps_lifecycle_wakes() {
+        let board = ActivityBoard::with_recent_threshold(Duration::ZERO);
+        let (watch, woken) = counted(&board, catalog);
+        watch.read_with_progress(false);
+        let job = board.begin(spec("index.refresh"));
+        assert_eq!(wakes(&woken), 1);
+        watch.read();
+        job.phase("listing");
+        job.progress(Some(0.25), "one");
+        job.progress(Some(0.5), "two");
+        assert_eq!(wakes(&woken), 1, "intermediate presentation stays asleep");
+        let restored = watch.read_with_progress(true);
+        assert_eq!(
+            restored.active[0].entry.progress.as_ref().unwrap().fraction,
+            Some(0.5)
+        );
+        job.progress(Some(0.75), "three");
+        assert_eq!(wakes(&woken), 2, "restored readers hear progress again");
+        watch.read_with_progress(false);
+        job.finish(Outcome::Completed);
+        assert_eq!(
+            wakes(&woken),
+            3,
+            "the final lifecycle wake cannot be suppressed"
+        );
+        assert!(watch.read().active.is_empty());
+    }
+
+    #[test]
+    fn job_progress_callbacks_run_after_the_board_lock_and_skip_duplicates() {
+        let board = ActivityBoard::new();
+        let mut job = board.begin(spec("index.refresh"));
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = count.clone();
+        let read = board.clone();
+        job.on_progress(Arc::new(move || {
+            // This would deadlock if the publisher retained the board lock.
+            assert_eq!(read.snapshot().active.len(), 1);
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        job.phase("listing");
+        job.phase("listing");
+        job.progress(Some(0.25), "one");
+        job.progress(Some(0.25), "one");
+        let report = job.reporter();
+        report(0.5);
+        report(0.5);
+        assert_eq!(wakes(&count), 3);
+        job.finish(Outcome::Completed);
+        report(0.75);
+        assert_eq!(
+            wakes(&count),
+            3,
+            "terminal publication is the owner's responsibility"
+        );
     }
 
     /// A watch is woken once by the next change to an entry it follows — a begin, a phase, progress

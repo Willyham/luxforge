@@ -32,6 +32,7 @@ pub(crate) mod settings;
 pub(crate) mod sync;
 pub(crate) mod theme;
 pub(crate) mod view;
+pub(crate) mod visibility;
 
 /// The semantic messages the desktop understands: one variant per seam, each carrying that seam's
 /// own message, which the seam's update function handles. [`Editor::update`](super::Editor::update)
@@ -45,6 +46,7 @@ pub(crate) enum Message {
     Overlay(overlay::OverlayMessage),
     History(history::HistoryMessage),
     View(view::ViewMessage),
+    Visibility(visibility::VisibilityMessage),
     Palette(palette::PaletteMessage),
     Control(control::ControlMessage),
     Action(action::ActionMessage),

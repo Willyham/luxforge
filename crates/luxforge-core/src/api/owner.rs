@@ -1,6 +1,7 @@
 //! One thread owns the catalog and every client session; all clients call it in turn. The owner
 //! loop finds each request's method in the one method table, calls its handler and records the
 //! events the call announced; the owner handlers the table names live here.
+use super::response::ResponseSender;
 use super::{
     ApiEvent, ApiRequest, ApiResponse, ClientAuthority, ClientSession, EventsResult, Origin,
     announce_once,
@@ -102,7 +103,7 @@ struct ParkedRead {
 struct OwnerCall {
     client: ClientId,
     request: ApiRequest,
-    response: SyncSender<ApiResponse>,
+    response: ResponseSender,
 }
 
 enum OwnerMessage {
@@ -115,6 +116,8 @@ enum OwnerMessage {
     /// worker posts it into the owner's own channel, so the owner stays asleep until there is
     /// something to do.
     AnalysisReady,
+    JobChanges,
+    JobMonitorStats(SyncSender<JobMonitorStats>),
     /// A report the desktop's preview worker already produced for this identity, so an API request
     /// for the same identity is a cache hit and no second render happens.
     AnalysisSubmitted {
@@ -191,7 +194,31 @@ pub type EventWake = Arc<dyn Fn() + Send + Sync>;
 #[cfg(test)]
 type Fault = Arc<dyn Fn(&str) + Send + Sync>;
 
-/// One client blocked in [`OwnerHandle::wait_source`], answered by the completion it waits for.
+/// Job monitoring counters for correlated native evidence; no job results are retained here.
+#[derive(Clone, Copy, Debug, Default, serde::Serialize)]
+pub struct JobMonitorStats {
+    pub requests: u64,
+    pub replies: u64,
+    pub held: usize,
+}
+
+struct HeldJobWait {
+    client: ClientId,
+    id: String,
+    job: JobId,
+    after: u64,
+    deadline: Option<Instant>,
+    response: ResponseSender,
+}
+struct PendingJobWait {
+    job: JobId,
+    after: u64,
+    deadline: Option<Instant>,
+}
+const MAX_JOB_WAITERS: usize = 32;
+const MAX_CLIENT_JOB_WAITERS: usize = 16;
+
+/// One client blocked in [`OwnerHandle::wait_source`], answered by its completion.
 struct SourceWaiter {
     client: ClientId,
     job: Option<JobId>,
@@ -214,14 +241,14 @@ struct EventWait {
     /// The newest event sequence this wait has already been checked against, so a wake rescans the
     /// log only when it has moved.
     seen: u64,
-    response: SyncSender<ApiResponse>,
+    response: ResponseSender,
 }
 
 /// Whom one message owes an answer, kept aside before the owner serves it, so that a panic while
 /// serving it still answers: a call or a preview is answered `internal`, a wait is released, and a
 /// source job whose result was being committed fails `internal`.
 enum Owed {
-    Call(String, SyncSender<ApiResponse>),
+    Call(String, ResponseSender),
     Preview(SyncSender<Result<PreviewJob, Error>>),
     Wait(SyncSender<()>),
     Source(JobId),
@@ -784,6 +811,15 @@ host_params! {
 }
 
 host_params! {
+    /// `job.wait`: observe immediately, or hold until this job changes.
+    pub(super) struct JobWaitParams {
+        job_id: JobId = job(),
+        after: Option<u64> = sequence().notes("change token from job.wait; omitted for an immediate first observation"),
+        timeout_ms: Option<u64> = integer(0, MAX_EVENT_WAIT_MS).notes("optional deadline up to 30000 ms; omitted waits without a timer, 0 observes immediately"),
+    }
+}
+
+host_params! {
     /// `source.prepare`.
     pub(super) struct SourcePrepare {
         asset_id: AssetId = asset(),
@@ -914,6 +950,10 @@ impl OwnerHandle {
             }),
             activity.clone(),
         );
+        let job_sender = sender.clone();
+        jobs.set_wake(Arc::new(move || {
+            let _ = job_sender.try_send(OwnerMessage::JobChanges);
+        }));
         let mut sources = SourceQueue::new(source_sender, gate.clone());
         // One collection, queued here rather than on the owner thread or in response to any
         // client: the row query and deletion happen now, on the thread opening the catalog, and
@@ -1108,12 +1148,50 @@ impl OwnerHandle {
             .send(OwnerMessage::Call(OwnerCall {
                 client,
                 request,
-                response: sender,
+                response: ResponseSender::Blocking(sender),
             }))
             .map_err(|_| Error::protocol("catalog owner is unavailable"))?;
         receiver
             .recv()
             .map_err(|_| Error::protocol("catalog owner stopped before responding"))
+    }
+
+    /// Await a shared command answer without blocking the executor. Admission never waits on a full owner channel.
+    pub async fn call_async(
+        &self,
+        client: ClientId,
+        request: ApiRequest,
+    ) -> Result<ApiResponse, Error> {
+        let wake = self.sender.clone();
+        let (response, answer) = super::response::channel(move || {
+            let _ = wake.try_send(OwnerMessage::JobChanges);
+        });
+        self.sender
+            .try_send(OwnerMessage::Call(OwnerCall {
+                client,
+                request,
+                response,
+            }))
+            .map_err(|error| match error {
+                TrySendError::Full(_) => {
+                    Error::resource_limit("catalog owner request queue is full")
+                }
+                TrySendError::Disconnected(_) => Error::protocol("catalog owner is unavailable"),
+            })?;
+        Ok(answer.await)
+    }
+
+    /// Bounded job monitoring counters for native evidence; reading this does not poll jobs.
+    pub fn job_monitor_stats(&self) -> JobMonitorStats {
+        let (reply, answer) = sync_channel(1);
+        if self
+            .sender
+            .send(OwnerMessage::JobMonitorStats(reply))
+            .is_err()
+        {
+            return JobMonitorStats::default();
+        }
+        answer.recv().unwrap_or_default()
     }
 
     pub fn stop(&self) {
@@ -1159,10 +1237,14 @@ fn owner_loop(
     // wakes this loop when it has an outcome and starts its pending job itself; nothing here waits
     // on it or polls for it.
     let pixel_completions = completions.clone();
+    let analysis_started = completions.clone();
     let mut queue = AnalysisQueue::new(Arc::new(move || {
         let _ = completions.send(OwnerMessage::AnalysisReady);
     }));
     queue.set_activity(activity.clone());
+    queue.set_started(Arc::new(move |job| {
+        let _ = analysis_started.send(OwnerMessage::SourceStarted(job));
+    }));
     // History collapses and new RAW photos get their lens profile as the person chose, or by
     // default when the preferences cannot be read: the desktop reports that failure when it reads
     // them itself.
@@ -1193,6 +1275,9 @@ fn owner_loop(
         source_waiters: Vec::new(),
         event_waits: Vec::new(),
         parking: None,
+        job_parking: None,
+        job_waits: Vec::with_capacity(MAX_JOB_WAITERS),
+        job_monitor_stats: JobMonitorStats::default(),
         deferred: None,
         catalog,
         #[cfg(test)]
@@ -1204,6 +1289,7 @@ fn owner_loop(
         // A wait past its deadline is answered before anything else is read, so a busy owner still
         // answers it on time; with none held the owner sleeps on a plain receive.
         owner.expire_event_waits();
+        owner.wake_job_waits();
         let message = match owner.next_event_deadline() {
             None => match receiver.recv() {
                 Ok(message) => message,
@@ -1300,6 +1386,13 @@ fn owner_loop(
                 OwnerMessage::Disconnect(client) => owner.disconnect(client),
                 OwnerMessage::SourceStarted(id) => owner.jobs.start(&id),
                 OwnerMessage::SourceComplete(id, result) => owner.source_complete(&id, *result),
+                OwnerMessage::JobChanges => {}
+                OwnerMessage::JobMonitorStats(reply) => {
+                    let _ = reply.send(JobMonitorStats {
+                        held: owner.job_waits.len(),
+                        ..owner.job_monitor_stats
+                    });
+                }
                 OwnerMessage::AnalysisReady => {
                     // An outcome for a job that is no longer live — superseded, or stopped and
                     // already recorded — is discarded by the table.
@@ -1325,6 +1418,7 @@ fn owner_loop(
         }
         owner.notify_watchers(caller);
         owner.wake_event_waits();
+        owner.wake_job_waits();
     }
     // Every live job is asked to stop first, the source worker's included, so a running export
     // stops at its next row or block and removes its temporary file however long the lanes below
@@ -1481,6 +1575,9 @@ pub(super) struct Owner {
     /// Set by the `events.wait` handler when it cannot answer yet: the wait [`Owner::call`] parks
     /// with the call's own reply channel, which the handler does not hold. Empty between calls.
     parking: Option<PendingWait>,
+    job_parking: Option<PendingJobWait>,
+    job_waits: Vec<HeldJobWait>,
+    job_monitor_stats: JobMonitorStats,
     /// Set by an index lane handler that handed its disk reads to the index lane's threads: the
     /// call [`Owner::call`] parks with its reply until they answer ([`files::defer`]). Empty
     /// between calls.
@@ -1609,6 +1706,19 @@ impl Owner {
             && result.is_ok()
         {
             self.park_event_wait(client, call.request.id, wait, call.response);
+            return;
+        }
+        if let Some(wait) = self.job_parking.take()
+            && result.is_ok()
+        {
+            self.job_waits.push(HeldJobWait {
+                client,
+                id: call.request.id,
+                job: wait.job,
+                after: wait.after,
+                deadline: wait.deadline,
+                response: call.response,
+            });
             return;
         }
         // So is a call waiting for the index lane to read the disk for it.
@@ -1821,7 +1931,7 @@ impl Owner {
         client: ClientId,
         id: String,
         wait: PendingWait,
-        response: SyncSender<ApiResponse>,
+        response: ResponseSender,
     ) {
         if let Some(earlier) = self
             .event_waits
@@ -1855,7 +1965,11 @@ impl Owner {
 
     /// The soonest deadline among the held waits: how long the owner may sleep on its channel.
     fn next_event_deadline(&self) -> Option<Instant> {
-        self.event_waits.iter().map(|held| held.wait.deadline).min()
+        self.event_waits
+            .iter()
+            .map(|held| held.wait.deadline)
+            .chain(self.job_waits.iter().filter_map(|held| held.deadline))
+            .min()
     }
 
     /// Answer every held wait whose deadline has passed, with no events when none arrived.
@@ -1895,6 +2009,45 @@ impl Owner {
         }
         for held in ready {
             self.answer_event_wait(held);
+        }
+    }
+
+    fn job_observation(&self, job: &JobId, client: ClientId) -> Result<Value, Error> {
+        // Read the token first: a concurrent worker update can cause one extra read, never a lost update.
+        let change = self.jobs.change_for(job, client)?;
+        let record = self.read_job(job, client)?;
+        Ok(json!({"change": change, "job": record}))
+    }
+
+    fn wake_job_waits(&mut self) {
+        if self.job_waits.is_empty() {
+            return;
+        }
+        let now = Instant::now();
+        let mut held = std::mem::take(&mut self.job_waits);
+        let before = held.len();
+        held.retain(|wait| {
+            if wait.response.closed() {
+                return false;
+            }
+            let changed = self.jobs.change_for(&wait.job, wait.client);
+            let due = wait.deadline.is_some_and(|deadline| deadline <= now);
+            if !due && changed.as_ref().is_ok_and(|change| *change == wait.after) {
+                return true;
+            }
+            let answer = self.job_observation(&wait.job, wait.client);
+            let response = match answer {
+                Ok(value) => ApiResponse::value(wait.id.clone(), self.log.sequence, value),
+                Err(error) => ApiResponse::failure(wait.id.clone(), self.log.sequence, error),
+            };
+            let _ = wait.response.send(response);
+            self.job_monitor_stats.replies = self.job_monitor_stats.replies.saturating_add(1);
+            false
+        });
+        self.job_waits = held;
+        if self.job_waits.len() != before {
+            self.jobs
+                .watched_jobs(self.job_waits.iter().map(|held| &held.job));
         }
     }
 
@@ -2093,6 +2246,9 @@ impl Owner {
         // A gone client's waits are dropped unanswered: each receiver reports the owner gone.
         self.source_waiters.retain(|waiter| waiter.client != client);
         self.event_waits.retain(|held| held.client != client);
+        self.job_waits.retain(|held| held.client != client);
+        self.jobs
+            .watched_jobs(self.job_waits.iter().map(|held| &held.job));
         self.catalog.disconnect(client, &mut self.jobs);
     }
 
@@ -2227,6 +2383,46 @@ pub(super) fn job_read(
     params: JobParams,
 ) -> Result<Value, Error> {
     owner.read_job(&params.job_id, call.client)
+}
+
+/// First/current observation or a bounded held wait; the shared command table validates every caller.
+pub(super) fn job_wait(
+    owner: &mut Owner,
+    call: &Call<'_>,
+    params: JobWaitParams,
+) -> Result<Value, Error> {
+    owner.job_monitor_stats.requests = owner.job_monitor_stats.requests.saturating_add(1);
+    let observed = owner.job_observation(&params.job_id, call.client)?;
+    let change = observed["change"].as_u64().expect("job change token");
+    let finished = !matches!(
+        observed["job"]["status"].as_str(),
+        Some("queued" | "running")
+    );
+    if params.after != Some(change) || finished || params.timeout_ms == Some(0) {
+        owner.job_monitor_stats.replies = owner.job_monitor_stats.replies.saturating_add(1);
+        return Ok(observed);
+    }
+    if owner.job_waits.len() >= MAX_JOB_WAITERS
+        || owner
+            .job_waits
+            .iter()
+            .filter(|held| held.client == call.client)
+            .count()
+            >= MAX_CLIENT_JOB_WAITERS
+    {
+        return Err(Error::resource_limit(
+            "job monitoring limit reached (32 waits total, 16 per client)",
+        ));
+    }
+    owner.jobs.watch_job(&params.job_id);
+    owner.job_parking = Some(PendingJobWait {
+        job: params.job_id,
+        after: change,
+        deadline: params
+            .timeout_ms
+            .map(|ms| Instant::now() + Duration::from_millis(ms)),
+    });
+    Ok(Value::Null)
 }
 
 /// `job.cancel`, by the job's kind. A source or analysis job, and a catalog job shared by interest

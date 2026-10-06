@@ -1319,3 +1319,123 @@ fn export_refuses_forged_lens_payload_before_publication() {
     assert!(!destination.exists());
     assert_eq!(fs::read(&original).unwrap(), original_bytes);
 }
+
+/// The same held command used by the desktop sleeps without rereads, releases on cancellation,
+/// and answers only after a terminal outcome is readable. A single executor thread can hold sixteen
+/// waits while the owner serves unrelated commands.
+#[test]
+fn job_wait_is_event_driven_bounded_cancel_safe_and_publishes_final_results() {
+    use std::{
+        future::Future,
+        task::{Context, Poll, Waker},
+    };
+    let h = Harness::start("job-wait");
+    let asset = h.import("input.jpg")["asset"]["id"].clone();
+    let (reached, release) = h.hold_at("writing");
+    let accepted = h.export(json!({"asset_id":asset,"destination":h.dir.join("output.jpg")}));
+    reached.recv_timeout(luxforge_testbase::HANG).unwrap();
+    let job = accepted["job_id"].clone();
+    let first = h.ok("job.wait", json!({"job_id":job}));
+    assert_eq!(first["job"]["status"], "running");
+    let token = first["change"].clone();
+    let request = || ApiRequest {
+        id: "monitor".into(),
+        method: "job.wait".into(),
+        params: json!({"job_id":job,"after":token}),
+        token: None,
+    };
+    let mut context = Context::from_waker(Waker::noop());
+    let mut held: Vec<_> = (0..MAX_CLIENT_JOB_WAITERS)
+        .map(|_| Box::pin(h.owner.call_async(h.client, request())))
+        .collect();
+    for wait in &mut held {
+        assert!(wait.as_mut().poll(&mut context).is_pending());
+    }
+    assert_eq!(h.owner.job_monitor_stats().held, MAX_CLIENT_JOB_WAITERS);
+    let before = h.owner.job_monitor_stats();
+    let _ = h.ok("catalog.info", json!({}));
+    assert_eq!(
+        h.owner.job_monitor_stats().requests,
+        before.requests,
+        "other commands do not read monitored jobs"
+    );
+    assert_eq!(
+        h.owner.job_monitor_stats().replies,
+        before.replies,
+        "quiet jobs have no timer-driven replies"
+    );
+    let mut excess = Box::pin(h.owner.call_async(h.client, request()));
+    assert!(excess.as_mut().poll(&mut context).is_pending());
+    let _ = h.owner.job_monitor_stats();
+    let Poll::Ready(Ok(refused)) = excess.as_mut().poll(&mut context) else {
+        panic!("the waiter limit answers immediately");
+    };
+    assert_eq!(refused.error.unwrap().code, "resource-limit");
+    let second = h.owner.register();
+    for _ in 0..MAX_CLIENT_JOB_WAITERS {
+        let mut wait = Box::pin(h.owner.call_async(second, request()));
+        assert!(wait.as_mut().poll(&mut context).is_pending());
+        held.push(wait);
+    }
+    assert_eq!(h.owner.job_monitor_stats().held, MAX_JOB_WAITERS);
+    let third = h.owner.register();
+    let mut global_excess = Box::pin(h.owner.call_async(third, request()));
+    assert!(global_excess.as_mut().poll(&mut context).is_pending());
+    let _ = h.owner.job_monitor_stats();
+    let Poll::Ready(Ok(refused)) = global_excess.as_mut().poll(&mut context) else {
+        panic!("the global waiter limit answers immediately");
+    };
+    assert_eq!(refused.error.unwrap().code, "resource-limit");
+    held.clear();
+    assert_eq!(
+        h.owner.job_monitor_stats().held,
+        0,
+        "dropping futures releases interests while the job runs"
+    );
+    let queued = h.export(json!({"asset_id":asset,"destination":h.dir.join("queued.jpg")}));
+    let queued_id = queued["job_id"].clone();
+    let observed = h.ok("job.wait", json!({"job_id":queued_id}));
+    assert_eq!(observed["job"]["status"], "queued");
+    let mut cancelled = Box::pin(h.owner.call_async(
+        h.client,
+        ApiRequest {
+            id: "queued-cancel".into(),
+            method: "job.wait".into(),
+            params: json!({"job_id":queued_id,"after":observed["change"]}),
+            token: None,
+        },
+    ));
+    assert!(cancelled.as_mut().poll(&mut context).is_pending());
+    assert_eq!(h.owner.job_monitor_stats().held, 1);
+    h.ok("job.cancel", json!({"job_id":queued_id}));
+    let _ = h.owner.job_monitor_stats();
+    let Poll::Ready(Ok(response)) = cancelled.as_mut().poll(&mut context) else {
+        panic!("queued cancellation wakes its waiter");
+    };
+    assert_eq!(response.result.unwrap()["job"]["status"], "cancelled");
+    assert!(!h.dir.join("queued.jpg").exists());
+    assert_eq!(
+        h.ok(
+            "job.wait",
+            json!({"job_id":job,"after":token,"timeout_ms":0})
+        )["job"]["status"],
+        "running",
+        "an explicit zero timeout observes immediately"
+    );
+    let mut final_wait = Box::pin(h.owner.call_async(h.client, request()));
+    assert!(final_wait.as_mut().poll(&mut context).is_pending());
+    assert_eq!(h.owner.job_monitor_stats().held, 1);
+    release.send(()).unwrap();
+    let ready = h.settle(&job);
+    assert_eq!(ready["status"], "ready");
+    let _ = h.owner.job_monitor_stats();
+    let Poll::Ready(Ok(response)) = final_wait.as_mut().poll(&mut context) else {
+        panic!("terminal result wakes its held command");
+    };
+    assert_eq!(response.result.unwrap()["job"], ready);
+    assert_eq!(
+        h.ok("job.wait", json!({"job_id":job,"after":token}))["job"],
+        ready,
+        "completion before rearm is immediate"
+    );
+}

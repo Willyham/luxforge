@@ -1526,12 +1526,21 @@ mod tests {
         );
         assert_eq!(
             &rendered[2..6],
-            [
-                "smoke-detail",
-                "smoke-detail-fit",
-                "smoke-detail-zoom",
-                "smoke-empty"
-            ]
+            if cfg!(target_os = "macos") {
+                [
+                    "smoke-visibility-monitoring",
+                    "smoke-detail",
+                    "smoke-detail-fit",
+                    "smoke-detail-zoom",
+                ]
+            } else {
+                [
+                    "smoke-detail",
+                    "smoke-detail-fit",
+                    "smoke-detail-zoom",
+                    "smoke-empty",
+                ]
+            }
         );
         assert_eq!(rendered.last().unwrap(), "smoke-unavailable");
         assert_eq!(

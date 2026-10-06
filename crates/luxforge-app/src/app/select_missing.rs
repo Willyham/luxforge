@@ -12,10 +12,8 @@
 //!   desktop — and again after this desktop's own Relink or Locate, whose answers wake nothing.
 //! - **Searches.** Find in a folder… asks the native folder dialog and sends `source.find
 //!   {search_root, source_folder}`, a `source-find` job on the library lane, one search at a time.
-//!   The running search and the running Locate are read with `job.read` when each is named, and
-//!   then whenever long-running work reads the activity board, which its watch wakes it to do as
-//!   catalog jobs begin, report progress or end ([`Editor::missing_followed`]) — as the Select
-//!   shell follows `index.refresh` — so no timer asks after them; while a search runs its `result`
+//!   Stable `job.wait` readers observe each job when it is named, then await authoritative changes
+//!   independently of the activity board and presentation visibility. While a search runs its `result`
 //!   is the report so far, each row `checking` until it is settled. Stop search is `job.cancel`: a
 //!   cancelled search remembers nothing, so its group goes back to its header and nothing has
 //!   changed.
@@ -30,7 +28,6 @@
 use crate::app::{
     Before, Editor,
     message::{Message, select::SelectMessage, select_missing::MissingMessage},
-    select::job_now,
     tasks::{call, owner_task, request},
 };
 use crate::state::select_missing::{
@@ -212,11 +209,10 @@ impl Editor {
                     return Task::none();
                 }
                 match result {
-                    // Read once as soon as it is named, which a job that ended before any wake
-                    // reached the desktop needs.
+                    // Naming the job starts its authoritative subscription with an immediate
+                    // observation, including when it has already ended.
                     Ok(job) => {
                         search.status = SearchStatus::Running { job };
-                        return self.poll_jobs();
                     }
                     Err(error) => {
                         self.status.text = format!("Could not search: {error}");
@@ -242,9 +238,6 @@ impl Editor {
                 }
             }
             MissingMessage::Polled { search, locate } => {
-                let state = &mut self.select.state.missing;
-                state.polling = false;
-                let again = std::mem::take(&mut state.poll_again);
                 if let Some((job, result)) = search {
                     self.search_read(&job, result);
                 }
@@ -252,13 +245,7 @@ impl Editor {
                     Some((job, result)) => self.locate_read(&job, result),
                     None => Task::none(),
                 };
-                // The board changed while that read was out: read what still runs once more.
-                let polled = if again {
-                    self.poll_jobs()
-                } else {
-                    Task::none()
-                };
-                return Task::batch([located, polled]);
+                return located;
             }
             MissingMessage::Filter(filter) => {
                 let state = &mut self.select.state.missing;
@@ -341,7 +328,6 @@ impl Editor {
                 match result {
                     Ok(job) => {
                         locating.job = Some(job);
-                        return self.poll_jobs();
                     }
                     Err(error) => {
                         self.status.text =
@@ -415,40 +401,6 @@ impl Editor {
         owner_task(
             move || cancel_now(&owner, client, &job),
             |result| missing(MissingMessage::Stopped(result)),
-        )
-    }
-
-    /// Long-running work has read the activity board, which its watch wakes it to read whenever a
-    /// catalog job begins, reports progress or ends: the running search and Locate are read then,
-    /// so a search's rows fill in as it reports each settled one and its end is heard, and nothing
-    /// polls them.
-    pub(crate) fn missing_followed(&mut self) -> Task<Message> {
-        self.poll_jobs()
-    }
-
-    /// Read the running search and Locate, one read at a time; asked again while one is out, they
-    /// are read once more when it answers.
-    fn poll_jobs(&mut self) -> Task<Message> {
-        let state = &mut self.select.state.missing;
-        let (search, locate) = state.running_jobs();
-        if search.is_none() && locate.is_none() {
-            return Task::none();
-        }
-        if state.polling {
-            state.poll_again = true;
-            return Task::none();
-        }
-        state.polling = true;
-        let (owner, client) = (self.owner.clone(), self.client);
-        owner_task(
-            move || {
-                let read = |job: String| {
-                    let record = job_now(&owner, client, &job);
-                    (job, record)
-                };
-                (search.map(read), locate.map(read))
-            },
-            |(search, locate)| missing(MissingMessage::Polled { search, locate }),
         )
     }
 
