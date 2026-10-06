@@ -745,6 +745,10 @@ impl Editor {
             None => Task::none(),
         };
         let backend = system_information(editor.evidence.is_some());
+        // The GPU tile worker's adapter, named once the window has opened, where the host leaves
+        // no doubt which one it draws with, so the catalog's tiers draw on the GPU in Select.
+        let tile_adapter =
+            renderer::name_once_open(editor.renderer.launch(), editor.renderer.tiles.clone());
         // Tool controls are discovered once, through the same API every other client uses, and the
         // preset library is listed the same way; the event sync keeps it current afterwards.
         let modules = modules_task(editor.owner.clone(), editor.client);
@@ -768,7 +772,16 @@ impl Editor {
         (
             editor,
             Task::batch([
-                scale, trackpad, visibility, placed, backend, modules, presets, themes, first,
+                scale,
+                trackpad,
+                visibility,
+                placed,
+                backend,
+                tile_adapter,
+                modules,
+                presets,
+                themes,
+                first,
             ]),
         )
     }

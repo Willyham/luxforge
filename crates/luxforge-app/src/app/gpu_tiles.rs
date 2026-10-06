@@ -155,6 +155,8 @@ struct State {
     /// The backend and name of the adapter the window's renderer draws with, which the runner is
     /// opened on: given at the start, or named later ([`GpuTiles::adopt_adapter`]).
     adapter: Option<(String, String)>,
+    /// Who named `adapter`, once it is named.
+    named: Option<AdapterNaming>,
     calls: VecDeque<TileCall>,
     /// The streams asked for, the one being drawn first; the worker takes it out while it draws a
     /// step of it.
@@ -177,6 +179,25 @@ impl Shared {
     }
 }
 
+/// Who named the adapter a launch's worker opens on ([`GpuTiles::adopt_adapter`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AdapterNaming {
+    /// The launch, from wgpu's enumeration of the window's backend, while the host offers one
+    /// candidate the window's request can land on.
+    Launch,
+    /// The desktop, from Iced's name for the adapter its window draws with.
+    Window,
+}
+
+impl AdapterNaming {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Launch => "launch",
+            Self::Window => "window",
+        }
+    }
+}
+
 /// What the worker has done and holds, for evidence.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct TileWorkerFigures {
@@ -184,6 +205,8 @@ pub(crate) struct TileWorkerFigures {
     pub(crate) status: TileStatus,
     /// The adapter the runner's device is on, once it is opened.
     pub(crate) adapter: Option<Adapter>,
+    /// Who named the adapter the runner opens on: the launch or the window.
+    pub(crate) named: Option<AdapterNaming>,
     /// What opening the runner was refused with.
     pub(crate) refusal: Option<String>,
     /// Reads the GPU answered, and reads the reference answered naming why.
@@ -219,10 +242,11 @@ struct Figures {
 }
 
 impl Figures {
-    fn report(&self, status: TileStatus) -> TileWorkerFigures {
+    fn report(&self, status: TileStatus, named: Option<AdapterNaming>) -> TileWorkerFigures {
         TileWorkerFigures {
             status,
             adapter: self.adapter.clone(),
+            named,
             refusal: self.refusal.clone(),
             reads: self.reads,
             references: self.references,
@@ -315,6 +339,7 @@ impl GpuTiles {
         Self {
             shared: Arc::new(Shared {
                 state: Mutex::new(State {
+                    named: adapter.as_ref().map(|_| AdapterNaming::Window),
                     adapter,
                     calls: VecDeque::new(),
                     streams: VecDeque::new(),
@@ -335,14 +360,22 @@ impl GpuTiles {
     /// Name the adapter the window's renderer draws with, `name` on `backend`, which a launch's
     /// worker waits for ([`Self::pending`]): from then on its status is the GPU's, and the first
     /// call or stream that needs the runner opens it on that adapter, or names why it cannot.
-    /// Whether it was taken: a worker that already has an adapter, or that the launch refused,
-    /// keeps what it has. Never waits for the worker.
-    pub(crate) fn adopt_adapter(&self, backend: &str, name: &str) -> bool {
+    /// `naming` says who names it: the launch, from wgpu's enumeration while the host offers one
+    /// candidate (`app::renderer::name_at_launch`), or the window, from Iced's own name for it.
+    /// The window's naming follows the launch's: the same adapter is confirmed, and another
+    /// replaces it, the runner opening again on the window's before its next tile. Whether it was
+    /// taken: a worker the window has named, or that the launch refused, keeps what it has. Never
+    /// waits for the worker.
+    pub(crate) fn adopt_adapter(&self, backend: &str, name: &str, naming: AdapterNaming) -> bool {
         let mut state = self.shared.lock();
-        if state.unavailable != Some(TileUnavailable::Pending) {
+        let follows = naming == AdapterNaming::Window
+            && state.named == Some(AdapterNaming::Launch)
+            && state.unavailable.is_none();
+        if state.unavailable != Some(TileUnavailable::Pending) && !follows {
             return false;
         }
         state.adapter = Some((backend.to_owned(), name.to_owned()));
+        state.named = Some(naming);
         state.unavailable = None;
         true
     }
@@ -350,7 +383,9 @@ impl GpuTiles {
     /// What the worker has done and holds, as of the last call or tile it drew.
     pub(crate) fn figures(&self) -> TileWorkerFigures {
         let state = self.shared.lock();
-        state.figures.report(status_of(state.unavailable))
+        state
+            .figures
+            .report(status_of(state.unavailable), state.named)
     }
 
     fn thread(&self) -> MutexGuard<'_, Option<JoinHandle<()>>> {
@@ -698,8 +733,15 @@ impl Worker {
             return Err(TileFallback::Unavailable(reason));
         }
         let mut runner = self.runner.borrow_mut();
+        // The window named another adapter than the launch did: the runner opens on the window's.
+        let named = self.shared.lock().adapter.clone();
+        if let (Some(opened), Some((backend, name))) = (runner.as_ref(), &named)
+            && (opened.adapter().backend != *backend || opened.adapter().name != *name)
+        {
+            *runner = None;
+        }
         if runner.is_none() {
-            let Some((backend, name)) = self.shared.lock().adapter.clone() else {
+            let Some((backend, name)) = named else {
                 return Err(TileFallback::Unavailable(TileUnavailable::NoAdapter));
             };
             // A JPEG's cut reads the core's decode table, which the surface holds once handed it.
@@ -1277,6 +1319,7 @@ impl TileWorkerFigures {
             "adapter": self.adapter.as_ref().map(|adapter| {
                 super::renderer::adapter_record(&adapter.backend, &adapter.name, Some(adapter))
             }),
+            "named": self.named.map(AdapterNaming::as_str),
             "refusal": self.refusal,
             "reads": self.reads,
             "references": self.references,
