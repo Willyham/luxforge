@@ -1569,8 +1569,8 @@ fn a_drag_after_presence_behind_detail_reads_the_light_at_rest() {
     assert_eq!(context.reductions(), 0, "nothing reduced");
 }
 
-/// At Fit behind a straightened crop, whose proxy holds a window of its stage, a drag's light is
-/// the whole exact stage's, as the CPU's windowed proxy is handed: a Presence drag reads it, and a
+/// At Fit behind a straightened crop, whose reduced stage holds a window of its stage, a drag's
+/// light is the whole exact stage's: a Presence drag reads it, and a
 /// Basic drag under Dehaze computes it every tick from the source through the drafted exposure.
 /// Nothing is rendered or stored first, and planning reduces nothing.
 #[test]
