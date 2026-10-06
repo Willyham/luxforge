@@ -152,6 +152,29 @@ struct HeldSource {
 /// surfaces' plain data once converted — the picture, reduced to the view, where the view draws
 /// the stage smaller than it is, and the same tiles for their histogram and clipping counts alone
 /// (`docs/design/gpu-first.md`, stage 2).
+/// A crop draft's input stage the GPU draws ([`Editor::gpu_stage_from`]): the layer prefix's tiles
+/// at full resolution, reduced to the stage's display bounds, as the surfaces are handed them once
+/// converted, or why they cannot be.
+struct StageRest {
+    tiles: Box<luxforge_core::RestTiles>,
+    version: u64,
+    gpu: Option<surface::GpuRest>,
+    refused: Option<&'static str>,
+}
+
+/// Where a crop draft's input stage on the GPU has got to ([`Editor::gpu_stage_state`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StageState {
+    /// No stage is drawn on the GPU.
+    None,
+    /// Its tiles are being converted or drawn.
+    Pending,
+    /// The surface drew its last tile: the stage under the frame is the GPU's.
+    Drawn(u64),
+    /// The GPU cannot draw it, for this reason: the reference renders the stage.
+    Refused(&'static str),
+}
+
 struct HeldRest {
     tiles: Box<luxforge_core::RestTiles>,
     /// Handed to the surfaces, which start over whenever it changes: the picture's version.
@@ -841,6 +864,9 @@ pub(crate) struct GpuPreviews {
     rest: Option<HeldRest>,
     /// The last picture at rest's version handed out.
     rests: u64,
+    /// A crop draft's input stage drawn on the GPU: the layer prefix's picture at rest in tiles,
+    /// reduced to the stage's display bounds ([`Editor::gpu_stage_from`]).
+    stage: Option<StageRest>,
     /// The last picture at rest the surface was found drawing, as evidence records it.
     rest_drawn: Option<u64>,
     /// The last source version handed out: each source is uploaded once.
@@ -1705,6 +1731,7 @@ impl Editor {
         }
         // A picture at rest waiting for this source is drawn from it now.
         self.gpu_convert_rest();
+        self.gpu_convert_stage();
     }
 
     /// The prepared source the surfaces are handed, which every GPU boundary is derived from: none
@@ -1797,6 +1824,7 @@ impl Editor {
         self.gpu.grids.finish(&answer.key, answer.grid);
         // A picture at rest through a lens warp waits for its stage's grid.
         self.gpu_convert_rest();
+        self.gpu_convert_stage();
     }
 
     /// A committed stack's job, about to be queued: the plan of the stack itself it carries
@@ -2063,6 +2091,109 @@ impl Editor {
             wanted: false,
         });
         self.gpu_convert_rest();
+    }
+
+    /// Draw a crop draft's input stage on the GPU: `tiles`, the layer prefix's picture at rest at
+    /// the stage's display bounds, which the owner planned with the stage's job, over `source`,
+    /// the job's prepared source, held for the surfaces. Whether the GPU takes it: not while the
+    /// gate refuses the GPU stage, for tiles with no reduction, or for tiles a conversion refuses
+    /// at once; the reference renders the stage then. `O(tiles × steps)`, no pixel.
+    pub(crate) fn gpu_stage_from(
+        &mut self,
+        tiles: Box<luxforge_core::RestTiles>,
+        source: &PreviewSource,
+    ) -> bool {
+        self.gpu_stage_end();
+        if self.gpu_preview_allowed().is_err() || tiles.reduction.is_none() {
+            return false;
+        }
+        self.gpu_hold_source(source);
+        self.gpu.rests += 1;
+        self.gpu.stage = Some(StageRest {
+            tiles,
+            version: self.gpu.rests,
+            gpu: None,
+            refused: None,
+        });
+        self.gpu_convert_stage();
+        !matches!(self.gpu_stage_state(), StageState::Refused(_))
+    }
+
+    /// Let the crop stage drawn on the GPU go: its draft ended, or the reference draws the stage.
+    pub(crate) fn gpu_stage_end(&mut self) {
+        if let Some(stage) = self.gpu.stage.take() {
+            let version = stage.version;
+            self.event("gpu_stage_released", || json!({"version": version}));
+        }
+    }
+
+    /// Convert the crop stage held for the surfaces, once its source and any lens warp's stage grid
+    /// are held, as [`Self::gpu_convert_rest`] converts the photograph's.
+    pub(crate) fn gpu_convert_stage(&mut self) {
+        let gpu = &mut self.gpu;
+        let Some(held) = gpu
+            .stage
+            .as_mut()
+            .filter(|held| held.gpu.is_none() && held.refused.is_none())
+        else {
+            return;
+        };
+        let detail = match rest_of(
+            gpu.source.as_ref(),
+            &mut gpu.versions,
+            &mut gpu.grids,
+            &held.tiles,
+            held.version,
+        ) {
+            Ok(None) | Err("source-missing") => return,
+            Ok(Some(converted)) => {
+                let detail = json!({"version": held.version, "tiles": converted.tiles.len(),
+                    "view": converted.reduction.as_ref().map(|reduction| [reduction.view.0,
+                        reduction.view.1]),
+                    "output": [held.tiles.output.width, held.tiles.output.height]});
+                held.gpu = Some(converted);
+                detail
+            }
+            Err(reason) => {
+                held.refused = Some(reason);
+                json!({"version": held.version, "refused": reason})
+            }
+        };
+        self.event("gpu_stage", || detail);
+    }
+
+    /// The crop stage the surfaces are handed to draw under the frame: none while the gate refuses
+    /// the GPU stage.
+    pub(crate) fn gpu_stage_handed(&self) -> Option<&surface::GpuRest> {
+        self.gpu_preview_allowed().ok()?;
+        self.gpu.stage.as_ref()?.gpu.as_ref()
+    }
+
+    /// Where the crop stage on the GPU has got to: what the conversion and the surface's last draw
+    /// say of its version.
+    pub(crate) fn gpu_stage_state(&self) -> StageState {
+        let Some(stage) = &self.gpu.stage else {
+            return StageState::None;
+        };
+        if let Some(reason) = stage.refused {
+            return StageState::Refused(reason);
+        }
+        if let Err(reason) = self.gpu_preview_allowed() {
+            return StageState::Refused(reason);
+        }
+        let drawn = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
+        if let Some(figures) = drawn
+            .gpu_rest
+            .filter(|figures| figures.version == stage.version)
+            && let Some(fallback) = figures.fallback
+        {
+            return StageState::Refused(fallback.as_str());
+        }
+        if drawn.drawn_rest == Some(stage.version) {
+            StageState::Drawn(stage.version)
+        } else {
+            StageState::Pending
+        }
     }
 
     /// Convert the picture at rest held for the surfaces, once its source and any lens warp's

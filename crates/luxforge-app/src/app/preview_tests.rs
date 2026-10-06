@@ -484,6 +484,7 @@ fn a_zoom_hands_the_retained_raster_to_the_surface_and_asks_for_no_preview() {
     editor.presentation.reduced_frame = Some(ReducedFrame {
         generation: 7,
         raster: pixels(1),
+        proxy: None,
         approximate_white_balance: false,
         render_ms: 12.0,
     });
@@ -701,6 +702,7 @@ fn the_render_figure_is_the_presented_frames_own_time_not_the_time_since_the_req
         true => Retained::Reduced(ReducedFrame {
             generation,
             raster: raster.clone(),
+            proxy: None,
             approximate_white_balance: false,
             render_ms,
         }),

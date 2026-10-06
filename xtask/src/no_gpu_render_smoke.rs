@@ -2,29 +2,35 @@
 //! photo surface's GPU stage as a machine whose adapter cannot run it does, so the reference
 //! renderer draws everything (`docs/design/gpu-first.md`, "Headless and portability").
 //!
-//! One launch over the quadrant fixture: the photograph opened, a Basic exposure drag and its
-//! release, and the settled frame after it. Every frame records the session's renderer as the
-//! reference for `no-adapter`, the surface's stage as refused by the launch, the photograph drawn
-//! on the CPU path with no plan handed to the surface and nothing charged to the GPU-preview
-//! budget, and the desktop's reason for handing no plan. The status bar says the reference
-//! renderer's notice beside its render slot in every frame, the opened and settled ones at rest
-//! among them. Every tick of the drag takes the CPU path naming `no-adapter` and asks for no
-//! boundary; no dissolve starts, and the desktop reports no other renderer. The adapter that drew
-//! the window is identified in every frame: the window is still composited by it, and only the
-//! photograph's pixels are the reference renderer's. A `render.sample` and an export, which asks
-//! for no renderer, are the reference renderer's too: each names the reference for `refused`, and
-//! the GPU tile worker opened no device and drew nothing.
+//! One launch over the generated 24 MP photograph: the photograph opened, a Basic exposure drag at
+//! Fit and its release, the settled frame after it, then the same at 100%. Every frame records the
+//! session's renderer as the reference for `no-adapter`, the surface's stage as refused by the
+//! launch, the photograph drawn on the CPU path with no plan handed to the surface and nothing
+//! charged to the GPU-preview budget, and the desktop's reason for handing no plan. The status bar
+//! says the reference renderer's notice beside its render slot in every frame, the opened and
+//! settled ones at rest among them. Every tick of a drag takes the CPU path naming `no-adapter` and
+//! asks for no boundary: it asks the reference for the drafted stack's display-size proxy, and the
+//! drag's frames are those proxies, labelled approximate, at Fit's bounds at 100% too, where the
+//! view magnifies them (owner, 2026-10-06). Each release draws the reference's frame of the
+//! committed stack, labelled exact: its reduction at Fit and its exact frame at 100%. No dissolve
+//! starts, and the desktop reports no other renderer. The adapter that drew the window is
+//! identified in every frame: the window is still composited by it, and only the photograph's
+//! pixels are the reference renderer's. A `render.sample` and an export, which asks for no
+//! renderer, are the reference renderer's too: each names the reference for `refused`, and the GPU
+//! tile worker opened no device and drew nothing.
 use crate::{
     gpu_preview_smoke::{named, step_events},
     scenario::{Checked, Checks, Plan, Run, Step, plan::only},
     *,
 };
 use luxforge_core::BASIC_EFFECT;
-use luxforge_evidence::{self as script, SliderStep};
+use luxforge_evidence::{self as script, SliderStep, ViewStep};
 
 pub const SCENARIO: &str = "no-gpu-render";
-/// Four flat quadrants, as the GPU preview scenario opens.
-pub const FIXTURE: &str = "fixtures/s0/orientation-1.jpg";
+/// A photograph larger than Fit's bounds, so a drag's proxy is smaller than its stage.
+pub const FIXTURE: &str = "fixtures/generated/24mp.jpg";
+/// The generated photograph's stage.
+const STAGE: [u32; 2] = [6000, 4000];
 
 /// The reference renderer's notice, as the status bar's table words it.
 const REFERENCE_PHRASE: &str = "Reference renderer";
@@ -35,11 +41,13 @@ const REFERENCE_TOOLTIP: &str = "This graphics device cannot run the GPU rendere
 const BASIC: &str = "set-basic";
 const EXPOSURE: &str = "exposure";
 const DRAGGED: [f64; 3] = [0.25, 0.5, 0.75];
+/// The drag at 100%, from the value the first one committed.
+const DRAGGED_100: [f64; 3] = [0.5, 0.25, 0.1];
 /// The export the launch writes into its evidence directory.
 const EXPORTED: &str = "no-gpu-export.jpg";
 
-/// Every frame, in order: the open, the drag, its release, the frame settled after it and an
-/// export of the committed entry.
+/// Every frame, in order: the open, the drag at Fit, its release and the frame settled after it,
+/// the same at 100%, a sample and an export of the committed entry.
 pub fn plan(_: &[PathBuf]) -> Plan {
     Plan::new(vec![
         Step::opened("opened").no_draft(),
@@ -54,6 +62,22 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         .no_draft()
         .payload(BASIC_EFFECT, json!({ EXPOSURE: DRAGGED[2] })),
         Step::new("settled", script::Step::Wait { ms: 500 })
+            .commits(0)
+            .no_draft(),
+        Step::new("zoomed", ViewStep::Percent(100.0))
+            .commits(0)
+            .no_draft(),
+        Step::new("drag-100", SliderStep::new(BASIC, EXPOSURE, DRAGGED_100))
+            .commits(0)
+            .draft(BASIC, json!({ EXPOSURE: DRAGGED_100[2] })),
+        Step::new(
+            "release-100",
+            SliderStep::new(BASIC, EXPOSURE, [DRAGGED_100[2]]).release(),
+        )
+        .commits(1)
+        .no_draft()
+        .payload(BASIC_EFFECT, json!({ EXPOSURE: DRAGGED_100[2] })),
+        Step::new("settled-100", script::Step::Wait { ms: 500 })
             .commits(0)
             .no_draft(),
         Step::new(
@@ -151,21 +175,78 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         )?;
     }
 
-    // The drag: every tick on the CPU naming the stage's reason, no source held and no boundary
+    // Each drag: every tick on the CPU naming the stage's reason, asking for its display-size
+    // proxy, and every frame it drew a proxy labelled approximate; no source held and no boundary
     // derived, no dissolve at its release, and no renderer reported other than the launch's.
-    let events = step_events(launch, "drag")?;
-    let ticks = named(events, "gpu_preview_tick");
-    ensure(
-        !ticks.is_empty()
-            && ticks.iter().all(|tick| {
-                tick["detail"]["path"] == json!("cpu")
-                    && tick["detail"]["reason"] == json!("no-adapter")
-            }),
-        format!(
-            "The drag's ticks were not the CPU's naming no-adapter: {:?}",
-            ticks.iter().map(|tick| &tick["detail"]).collect::<Vec<_>>()
-        ),
-    )?;
+    for (step, zoom) in [("drag", "Fit"), ("drag-100", "100%")] {
+        let events = step_events(launch, step)?;
+        let ticks = named(events, "gpu_preview_tick");
+        ensure(
+            !ticks.is_empty()
+                && ticks.iter().all(|tick| {
+                    tick["detail"]["path"] == json!("cpu")
+                        && tick["detail"]["reason"] == json!("no-adapter")
+                }),
+            format!(
+                "The {zoom} drag's ticks were not the CPU's naming no-adapter: {:?}",
+                ticks.iter().map(|tick| &tick["detail"]).collect::<Vec<_>>()
+            ),
+        )?;
+        let jobs = named(events, "preview_job_requested");
+        ensure(
+            !jobs.is_empty()
+                && jobs
+                    .iter()
+                    .all(|job| job["detail"]["interactive"] == json!(true)),
+            format!(
+                "The {zoom} drag did not ask for its ticks' proxies alone: {:?}",
+                jobs.iter().map(|job| &job["detail"]).collect::<Vec<_>>()
+            ),
+        )?;
+        let displayed = named(events, "preview_displayed");
+        ensure(
+            !displayed.is_empty()
+                && displayed
+                    .iter()
+                    .all(|frame| frame["detail"]["proxy"] == json!(true)),
+            format!(
+                "The {zoom} drag drew a frame that is not its proxy: {:?}",
+                displayed
+                    .iter()
+                    .map(|frame| &frame["detail"])
+                    .collect::<Vec<_>>()
+            ),
+        )?;
+        let drag = launch.at(step)?;
+        let state = drag.state();
+        let raster: [u32; 2] = serde_json::from_value(state["surface"]["raster"].clone())
+            .map_err(|_| format!("The {zoom} drag's frame records no raster"))?;
+        ensure(
+            state["reference"]["proxy"] == json!(true)
+                && state["reference"]["reduced"] == json!(true)
+                && state["stack"]["displayed"]["dimensions"] == json!(STAGE)
+                && raster[0] < STAGE[0]
+                && raster[1] < STAGE[1]
+                && state["status_bar"]["render"]
+                    .as_str()
+                    .is_some_and(|render| render.starts_with("Approximate render")),
+            format!(
+                "The {zoom} drag's frame is not its display-size proxy of the {STAGE:?} stage: \
+                 reference {}, raster {raster:?}, displayed {}, render {}",
+                state["reference"],
+                state["stack"]["displayed"]["dimensions"],
+                state["status_bar"]["render"]
+            ),
+        )?;
+        checks.note(
+            drag,
+            "every tick of the drag on the CPU path, naming no-adapter, drawn as its proxy",
+            json!({"zoom": zoom, "ticks": ticks.len(), "proxy_jobs": jobs.len(),
+                "proxy_frames": displayed.len(), "raster": raster,
+                "reference": state["reference"],
+                "drag": state["surface"]["gpu"]["gpu_preview"]["drag"]}),
+        );
+    }
     for name in [
         "gpu_source",
         "gpu_boundary",
@@ -179,12 +260,32 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             format!("A launch with no GPU stage logged {name}: {found:?}"),
         )?;
     }
-    let drag = launch.at("drag")?;
-    checks.note(
-        drag,
-        "every tick of the drag on the CPU path, naming no-adapter",
-        json!({"ticks": ticks.len(), "drag": drag.state()["surface"]["gpu"]["gpu_preview"]["drag"]}),
-    );
+    // Each release: the reference's frame of the committed stack, sharp — its reduction to the
+    // view at Fit, its exact frame at 100% — labelled exact.
+    for (step, zoom, reduced) in [("settled", "Fit", true), ("settled-100", "100%", false)] {
+        let settled = launch.at(step)?;
+        let state = settled.state();
+        let raster = &state["surface"]["raster"];
+        ensure(
+            state["reference"]["proxy"] == json!(false)
+                && state["reference"]["reduced"] == json!(reduced)
+                && (reduced || *raster == json!(STAGE))
+                && state["status_bar"]["render"]
+                    .as_str()
+                    .is_some_and(|render| render.starts_with("Exact render")),
+            format!(
+                "The release at {zoom} is not the reference's sharp frame: reference {}, raster \
+                 {raster}, render {}",
+                state["reference"], state["status_bar"]["render"]
+            ),
+        )?;
+        checks.note(
+            settled,
+            "the release drawn by the reference's sharp frame",
+            json!({"zoom": zoom, "raster": raster, "reference": state["reference"],
+                "render": state["status_bar"]["render"]}),
+        );
+    }
 
     // A sample: the reference renderer's, for the launch's refusal.
     let sampled = launch.at("sampled")?;
