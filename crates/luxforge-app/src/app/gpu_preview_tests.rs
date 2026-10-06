@@ -1336,6 +1336,106 @@ fn gpu_preview_a_percentage_spatial_drag_draws_the_shape_the_budget_holds() {
 /// Presence's from the Detail layer, and once the boundary is held every tick is drawn on the GPU
 /// with no preview job, reading the light the stack it started from draws with, which no Detail
 /// layer reads.
+/// A colour drag over Detail with perspective and a straightened crop after it — every colour layer
+/// the host places after Detail and before the geometry, which the CPU runs in Detail's own
+/// segment between its operation and the tail's resample — is drawn on the GPU at Fit with no
+/// preview job per tick: the colour runs on Detail's output at the source's stage, then the tail.
+#[test]
+fn gpu_preview_a_colour_drag_between_detail_and_a_resample_draws_on_the_gpu() {
+    let catalog = catalog("detail-geometry");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/geometry/z6-24-70-35mm-grid.jpg");
+    let (mut editor, asset, client) = super::testing::real_photo_at(&catalog, &fixture);
+    editor.gpu.surface = Some(SurfaceReport::default());
+    commit(&mut editor, "set-detail", "sharpening", 40.0);
+    commit(&mut editor, "set-perspective", "horizontal", 25.0);
+    let parameters = serde_json::Map::from_iter([
+        ("aspect".to_owned(), json!("original")),
+        ("angle".to_owned(), json!(3.0)),
+    ]);
+    let request = editor
+        .request_for_preset("crop-fit", None, Some(&parameters))
+        .expect("a crop request");
+    super::tasks::call(
+        &editor.owner,
+        client,
+        request["method"].as_str().unwrap(),
+        request["params"].clone(),
+    )
+    .expect("the straightened crop commits");
+    let refreshed = super::tasks::refresh(
+        &editor.owner,
+        editor.client,
+        asset,
+        super::tasks::Scope::Elsewhere,
+        None,
+    )
+    .unwrap();
+    let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+        refreshed,
+    )))));
+    deliver_until(&mut editor, "the cropped frame", |editor| {
+        !editor.gpu.has_drag() && !editor.presentation.queue.is_busy()
+    });
+    let effects: Vec<String> = editor
+        .document
+        .state
+        .as_ref()
+        .unwrap()
+        .current_entry
+        .snapshot
+        .recipe
+        .layers
+        .iter()
+        .map(|layer| layer.effect_id.clone())
+        .collect();
+    assert_eq!(
+        effects,
+        [
+            luxforge_core::DETAIL_EFFECT,
+            luxforge_core::PERSPECTIVE_EFFECT,
+            luxforge_core::CROP_EFFECT
+        ],
+        "Detail, then the geometry"
+    );
+    editor.gpu.surface = Some(SurfaceReport::default());
+    let log = attach_log(&mut editor);
+    let _ = slide(&mut editor, ACTION, FIELD, 0.1);
+    let records = logged(&mut editor, &log);
+    assert_eq!(jobs(&records), 0, "the first tick holds the frame");
+    let ticks = events(&records, "gpu_preview_tick");
+    assert_eq!(ticks[0]["reason"], "surface-pending", "{ticks:?}");
+    surface_ready(&mut editor);
+    let log = attach_log(&mut editor);
+    for value in [0.2, 0.3, 0.45, 0.6] {
+        let _ = slide(&mut editor, ACTION, FIELD, value);
+        assert!(editor.surfaces().gpu.is_some(), "the plan is drawn");
+    }
+    let records = logged(&mut editor, &log);
+    assert_eq!(jobs(&records), 0, "no preview job per tick");
+    let ticks = events(&records, "gpu_preview_tick");
+    assert_eq!(ticks.len(), 4);
+    assert!(ticks.iter().all(|tick| tick["path"] == "gpu"), "{ticks:?}");
+    let (plan, _) = editor.gpu.surface_plan().expect("a plan");
+    let mut kinds: Vec<&str> = plan
+        .steps
+        .iter()
+        .map(|step| match step {
+            luxforge_ui::photo_surface::GpuStep::Spatial(_) => "spatial",
+            luxforge_ui::photo_surface::GpuStep::Geometry(_) => "geometry",
+            _ => "colour",
+        })
+        .collect();
+    kinds.dedup();
+    assert_eq!(
+        kinds,
+        ["spatial", "colour", "geometry"],
+        "Detail's operation, Basic's units on its output, then the tail"
+    );
+    let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    finish(editor, catalog);
+}
+
 #[test]
 fn gpu_preview_a_detail_drag_under_presence_draws_on_the_gpu() {
     let catalog = catalog("detail-presence");
