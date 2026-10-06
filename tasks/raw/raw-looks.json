@@ -272,7 +272,8 @@
       "extra_context": [
         "Section before Basic on RAW photos only: the Standard and Neutral choice and Amount with the core draft lifecycle. No Camera choice in phase 1.",
         "Scenario look (xtask/src/look_smoke.rs, registered in SCENARIOS) over the supplied Z6, X100VI and Air 2S files through the owner manifest, launched in the background bundle with an isolated catalog: a new photo opens with Standard; switch to Neutral and back through the section and the API; drag Amount; the catalog tile carries the look; export matches the render. Correlate every frame with asset.state, the draft and the events log. Build the release app first.",
-        "Docs: user guide (RAW development, Settings), feature status (a RAW looks row), initial-raw.md (the neutral development is now the look's input, not the starting rendition), preferences.md, the design's status."
+        "Docs: user guide (RAW development, Settings), feature status (a RAW looks row), initial-raw.md (the neutral development is now the look's input, not the starting rendition), preferences.md, the design's status.",
+        "Status 2026-10-06: the look scenario passes on the Z6, X100VI and Air 2S; quick passes; the rendered tier on the merged tree passed 56 of 57 scenarios, the exception being performance over the 60 MP JPEG (\"the export's last frame must be idle\"), which the look does not touch and which ran on a heavily loaded host. The owner will rerun rendered at lower load; the task completes when it passes. Follow-up: disable Amount on a Neutral look, whose set-look refuses it."
       ],
       "context_links": [
         {
