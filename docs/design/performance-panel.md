@@ -99,18 +99,12 @@ No parameters (refused like `activity.list`'s), no asset required, mutates nothi
   "gpu": {"time_ns": 812400000, "allocated_bytes": 312000000, "unified_memory": true},
   "budgets": {
     "colour_scratch": {"target_bytes": 67108864, "in_use_bytes": 0, "peak_bytes": 3145728},
-    "spatial": {"target_bytes": 268435456, "in_use_bytes": 0, "peak_bytes": 50331648},
-    "reduced_planes": {
-      "limit_bytes": 67108864, "retained_bytes": 12000096, "entries": 1,
-      "render_hits": 6, "render_misses": 1, "tile_hits": 576, "tile_misses": 96,
-      "cells_handed_back": 1500000,
-      "publishes": 1, "evictions": 0, "refusals": 0
-    }
+    "spatial": {"target_bytes": 268435456, "in_use_bytes": 0, "peak_bytes": 50331648}
   }
 }
 ```
 
-`monotonic_ns` is only meaningful as a difference. A counter the platform cannot give is omitted, and its object gains `"unavailable": {"<key>": "<reason>"}`, for example `"gpu": {"unavailable": {"time_ns": "GPU time is not reported on Linux yet", "allocated_bytes": "…"}}`. The two budgets are the owner's render context's colour-scratch and spatial targets with their high-water marks, which every preview and analysis render shares; they are exact and cost nothing to read. `reduced_planes` is the same context's store of reduced planes ([efficiency](efficiency.md#the-reduced-grid-cache)): its limit, the bytes and entries it holds, and since the context was created how many frame renders and their tiles, and how many point-query tiles, read or computed planes, the cells tiles handed back, and the store's publishes, evictions and refusals. Two reads give a hit rate over a gesture.
+`monotonic_ns` is only meaningful as a difference. A counter the platform cannot give is omitted, and its object gains `"unavailable": {"<key>": "<reason>"}`, for example `"gpu": {"unavailable": {"time_ns": "GPU time is not reported on Linux yet", "allocated_bytes": "…"}}`. The two budgets are the owner's render context's colour-scratch and spatial targets with their high-water marks, which every preview and analysis render shares; they are exact and cost nothing to read.
 
 `unified_memory` is omitted, with no reason, when no device was read, since it is a property rather than a counter. A read runs on the owner thread: a handful of system calls plus, with the entry cache warm, a few IORegistry property reads, 4 to 8 µs in all ([verification](#verification)). It is bookkeeping, not frame work (performance rule 5). The first read after `declare_gpu_presenter()` opens the Metal device handle: 0.6 ms in the desktop, whose device already exists, and 37 ms in a process that has none.
 
