@@ -799,12 +799,12 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
     finish(editor, catalog);
 }
 
-/// At Fit a starting draft's input stage is asked for as the photograph's drafted frames are, and
-/// like them it outlives a newer request that finds it rendering: it lands under the frame, and
-/// the draft the other client's commit conflicted is kept for Reapply or Discard rather than ended.
-/// The new entry's frame then becomes the photograph behind the stage.
+/// At Fit a starting draft's input stage the reference renders — the GPU not drawing it — is one
+/// exact job, reduced to the bounds, which a newer request supersedes as it supersedes any: the
+/// starting draft whose stage will not arrive ends explicitly, and the new entry's frame becomes the
+/// photograph. (A stage the GPU draws is no job and is superseded by nothing.)
 #[test]
-fn a_starting_draft_at_fit_keeps_its_input_stage_when_a_newer_request_supersedes_it() {
+fn a_starting_draft_at_fit_whose_reference_stage_a_newer_request_supersedes_ends() {
     let (mut editor, catalog, asset, _) = opened(vec![basic()], 4);
     poll_until(&mut editor, "the opened frame", |editor| {
         editor.presentation.presented_generation > 0 && !editor.presentation.queue.is_busy()
@@ -826,25 +826,14 @@ fn a_starting_draft_at_fit_keeps_its_input_stage_when_a_newer_request_supersedes
     let newer = editor.presentation.preview_generation;
     assert!(newer > draft);
     stage.open();
-    poll_until(&mut editor, "the draft's input stage", |editor| {
-        editor.crop_stage() == Some(StageView::Shown)
-    });
-    assert!(editor.presentation.presenter.stage().is_some());
-    assert!(core_draft(&editor).expect("the draft is kept").conflicted);
-    assert_eq!(
-        editor.draft_generation(),
-        None,
-        "nothing more is on its way"
-    );
-
     frame.open();
     poll_until(&mut editor, "the new entry's frame", |editor| {
         editor.presentation.presented_generation == newer && !editor.presentation.queue.is_busy()
     });
     assert_eq!(editor.presentation.presented_entry.as_ref(), Some(&next.id));
     assert!(
-        editor.crop().is_some() && editor.presentation.presenter.stage().is_some(),
-        "the stage stays under the frame"
+        editor.crop().is_none() && editor.presentation.presenter.stage().is_none(),
+        "the starting draft whose stage was superseded has ended"
     );
     finish(editor, catalog);
 }

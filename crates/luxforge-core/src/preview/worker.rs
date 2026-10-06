@@ -614,15 +614,15 @@ fn milliseconds_since(started: Instant) -> f64 {
 
 /// The exact phase's whole frame reduced to the view's bounds ([`crate::render::reduce_to_view`]):
 /// the frame the reference renderer draws where the view draws the stage smaller than it is, for
-/// every whole-stack job that names its view; none for a layer prefix, a region, an interactive
-/// job, an approximate white balance, or a stage that already fits the bounds.
+/// every job that names its view, a layer prefix's — a crop draft's input stage — among them; none
+/// for a region, an interactive job, an approximate white balance, or a stage that already fits
+/// the bounds.
 pub(super) fn view_frame(
     job: &PreviewJob,
     result: &Result<crate::Raster, Error>,
     cancel: &crate::Cancel,
 ) -> Result<Option<crate::Raster>, Error> {
-    if job.layer_count.is_some()
-        || job.viewport.is_some()
+    if job.viewport.is_some()
         || job.intent == PreviewIntent::Interactive
         || job.evaluation.source().approximate_white_balance()
     {

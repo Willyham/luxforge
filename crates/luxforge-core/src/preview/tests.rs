@@ -2517,8 +2517,7 @@ fn the_view_frame_reduces_final_pixels_and_reduce_only_shares_full_raster() {
 }
 
 #[test]
-fn the_view_frame_is_every_whole_stacks_and_excludes_partial_region_moving_and_approximate_frames()
-{
+fn the_view_frame_is_every_stacks_and_excludes_region_moving_and_approximate_frames() {
     let detail = Layer::new(crate::DETAIL_EFFECT, json!({"luminance":30}));
     let mut whole = stacked(64, 48, vec![detail.clone()], Some(bounds(16, 12)));
     whole.intent = PreviewIntent::Settle;
@@ -2554,8 +2553,15 @@ fn the_view_frame_is_every_whole_stacks_and_excludes_partial_region_moving_and_a
         "a stack without Detail has its view frame too"
     );
 
+    // A layer prefix, a crop draft's input stage, is reduced to its bounds as well.
     let mut partial = whole.clone();
     partial.layer_count = Some(1);
+    assert!(
+        super::worker::view_frame(&partial, &result, &Cancel::never())
+            .unwrap()
+            .is_some(),
+        "a truncated job's view frame"
+    );
     let mut viewport = whole.clone();
     viewport.viewport = Some(crate::Region {
         x0: 0,
@@ -2574,7 +2580,6 @@ fn the_view_frame_is_every_whole_stacks_and_excludes_partial_region_moving_and_a
     });
     approximate.intent = PreviewIntent::Settle;
     for (name, job) in [
-        ("truncated", partial),
         ("viewport", viewport),
         ("interactive", moving),
         ("scale one", fits),

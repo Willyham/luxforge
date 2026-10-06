@@ -117,7 +117,9 @@ pub(crate) fn surface<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Ele
 /// scrollable owns the space instead, so the padding would fight the pan.
 fn photo_area<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Element<'a, Message> {
     let content = match (&model.photo, surfaces.draft, surfaces.stage) {
-        (PhotoView::Draft, Some(draft), Some(stage)) => crop_surface(model, draft, stage),
+        (PhotoView::Draft, Some(draft), Some(stage)) => {
+            crop_surface(model, draft, stage, &surfaces)
+        }
         (PhotoView::Plain, _, _) => match model.dimensions {
             Some(dimensions) if surfaces.photo.is_some() => {
                 plain(model, surfaces.photo, &surfaces, dimensions)
@@ -895,7 +897,11 @@ fn crop_surface<'a>(
     model: &'a CanvasModel,
     draft: &'a crate::crop_draft::CropDraft,
     stage: &'a luxforge_ui::Frame,
+    surfaces: &Surfaces<'a>,
 ) -> Element<'a, Message> {
+    // The GPU's picture of the layer prefix, drawn in place of the stand-in frame, from the
+    // source the surfaces hold.
+    let (source, rest) = (surfaces.gpu_source, surfaces.stage_rest);
     let box_size = draft.box_size();
     let mode = match model.surface_mode {
         SurfaceMode::Pan => Mode::Pan,
@@ -912,6 +918,8 @@ fn crop_surface<'a>(
                 width,
                 height,
             )
+            .gpu_source(source)
+            .gpu_rest(rest)
             .into(),
             canvas(CropCanvas::new(draft, view, mode, option))
                 .width(width)
@@ -1392,6 +1400,7 @@ mod tests {
             current_content: 0,
             region_coverage: None,
             stage: None,
+            stage_rest: None,
             clipping: None,
             coverage: None,
             mask_draft: None,

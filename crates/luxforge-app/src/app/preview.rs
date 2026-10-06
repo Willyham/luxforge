@@ -591,6 +591,7 @@ impl Presentation {
             gpu_warm: None,
             gpu_source: None,
             gpu_rest: None,
+            stage_rest: None,
             gpu_counts: None,
             compare_gpu: None,
             compare_change: None,
@@ -1322,23 +1323,32 @@ impl Editor {
     /// for, and whether it handed a frame to the display — the photograph, or the crop draft's
     /// input stage.
     pub(super) fn preview_ready(&mut self, mut result: PreviewResult) -> (Task<Message>, bool) {
-        // An exact display reduction belongs to one view and one current content generation.
+        // An exact display reduction belongs to one view and one current content generation; the
+        // crop draft's input stage's, to the stage's own bounds alone, its generation the draft's.
         // Its full raster can still be retained when a resize invalidates only the reduction.
-        if let PhaseOutcome::Exact(exact) = &mut result.outcome
-            && exact.display.is_some()
-            && (result.generation != self.presentation.preview_generation
+        let stage = Some(result.generation) == self.draft_generation();
+        let pending_bounds = self
+            .presentation
+            .pending_bounds
+            .get(&result.generation)
+            .copied()
+            .flatten();
+        let stale = if stage {
+            pending_bounds != self.crop_stage_bounds()
+        } else {
+            result.generation != self.presentation.preview_generation
                 || self.presentation.pending_content.get(&result.generation)
                     != Some(&self.presentation.content_serial)
-                || self
-                    .presentation
-                    .pending_bounds
-                    .get(&result.generation)
-                    .copied()
-                    .flatten()
-                    != self.proxy_bounds())
+                || pending_bounds != self.proxy_bounds()
+        };
+        if let PhaseOutcome::Exact(exact) = &mut result.outcome
+            && exact.display.is_some()
+            && stale
         {
             exact.display = None;
-            self.presentation.refit_pending = false;
+            if !stage {
+                self.presentation.refit_pending = false;
+            }
         }
         // The crop draft's truncated preview shares the queue; its generation says which texture
         // the pixels belong to. It is never analysed, because its identity describes the whole
@@ -1354,11 +1364,7 @@ impl Editor {
             return (Task::none(), false);
         }
         if let Some(queue_wait_ms) = result.queue_wait_ms {
-            let phase = if result.proxy().is_some() {
-                "proxy"
-            } else {
-                "exact"
-            };
+            let phase = "exact";
             self.event("preview_result_received", || {
                 json!({
                     "generation":result.generation,
@@ -1451,25 +1457,25 @@ impl Editor {
     /// percentage zoom's; neither is ever reduced, sampled or committed, retained as the
     /// photograph's or held to the photograph's delivery rule.
     fn stage_ready(&mut self, result: PreviewResult) -> (Task<Message>, bool) {
-        let interactive = result.intent == PreviewIntent::Interactive;
+        // The reference's one frame of the stage: reduced to the bounds the job offered, or its
+        // exact stage where the job offered none or the stage already fits them.
+        let bounded = self.crop_stage_bounds().is_some();
         let (frame, proxy, bounded) = match result.outcome {
-            PhaseOutcome::Proxy(outcome) => (Ok(outcome.raster), true, true),
-            // A stage frame is bounded when its job offered bounds, whichever phase answered them.
             PhaseOutcome::Exact(outcome) => {
                 let ExactOutcome {
-                    result,
-                    proxy_declined,
-                    ..
+                    result, display, ..
                 } = *outcome;
-                (result, false, proxy_declined.is_some())
+                match display {
+                    Some(reduced) => (Ok(reduced), true, true),
+                    None => (result, false, bounded),
+                }
             }
-            // A stage job asks for no viewport, so it has no region phase.
+            // A stage job asks for no viewport and no proxy phase.
             _ => return (Task::none(), false),
         };
         match frame {
             Ok(raster) => {
-                let (presented, planned) =
-                    self.crop_stage_ready(&raster, proxy, bounded, !proxy || interactive);
+                let (presented, planned) = self.crop_stage_ready(&raster, proxy, bounded, true);
                 (planned, presented)
             }
             Err(error) => {
@@ -1723,15 +1729,12 @@ impl Editor {
         // arrival or a resize since can have left behind the bounds its frame is drawn at now.
         let planned_at = job.proxy;
         job.proxy = if job.layer_count.is_some() {
-            // A crop draft's input stage takes the photograph's rule over its own stage: a
-            // display-size proxy of the layer prefix wherever the view draws the stage smaller than
-            // it is, and alone, because nothing is ever reduced from the stage. Its exact phase
-            // is asked for only by a view that needs it ([`Self::present_crop_stage`]).
-            let bounds = self.crop_stage_bounds();
-            if bounds.is_some() && job.intent == PreviewIntent::Immediate {
-                job.intent = PreviewIntent::Interactive;
-            }
-            bounds
+            // A crop draft's input stage takes the photograph's rule over its own stage: the
+            // reference's frame of the layer prefix reduced to the bounds wherever the view draws
+            // the stage smaller than it is, where the GPU does not draw it, and the exact stage
+            // only for a view that needs it ([`Self::present_crop_stage`]). No report is reduced
+            // from the stage.
+            self.crop_stage_bounds()
         } else {
             self.proxy_bounds()
         };
