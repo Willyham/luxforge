@@ -25,8 +25,12 @@
 //!   the light its plan's light link computes from the whole stage at full resolution
 //!   ([`super::GpuLight`]), whatever window a tile reads: the plan carries its lights, as the
 //!   picture at rest's does, and the tile worker's runner computes each once from the source
-//!   before the tiles that read it. A light behind a spatial layer is its stand-in, that layer left
-//!   out, as the photo surface draws it.
+//!   before the tiles that read it. A light behind a spatial layer reads that layer's exact output
+//!   over the whole stage, which only a staged sweep writes ([`super::GpuLightInput::Stage`]): an
+//!   export reading one is streamed in staged sweeps ([`plan_stream_sweeps`]), its light reduced
+//!   from the stage texture the sweep before it wrote; a read, which draws one tile, and an export
+//!   whose sweeps do not fit are the reference's (`light-stage`), never drawn with that layer left
+//!   out.
 //! - **The answer.** The output stage's codes are read back as the GPU's output quantizer gives
 //!   them, the picture's own bytes. Every other read is read back as the linear values before that
 //!   quantizer, and its codes are quantized from them by the core's own quantizer
@@ -178,6 +182,7 @@ pub fn plan_read(
     rect: Region,
 ) -> Result<TilePlan, TileFallback> {
     let planned = Planned::of(evaluation, stage)?;
+    planned.unstaged("a read draws one tile, not the sweeps that compute it")?;
     let tile = planned.tile(rect, planned.plan.anchor())?;
     Ok(TilePlan {
         stage,
@@ -231,7 +236,7 @@ pub fn plan_stream_sweeps(
     budget: u64,
 ) -> Result<super::GpuStaging, TileFallback> {
     let planned = Planned::of(evaluation, ReadStage::Output)?;
-    Ok(super::sweeps::plan_sweeps(&super::sweeps::SweepRequest {
+    let staging = super::sweeps::plan_sweeps(&super::sweeps::SweepRequest {
         compiled: &planned.compiled,
         source: (planned.full.width, planned.full.height),
         plan: &planned.plan,
@@ -239,7 +244,14 @@ pub fn plan_stream_sweeps(
         sides: &STREAM_TILE_SIDES,
         budget: Some(budget),
         order: super::sweeps::TileOrder::Rows,
-    }))
+    });
+    // A light behind a spatial layer is computed from a staged sweep's stage texture alone.
+    if let super::GpuStaging::Chained(chained) = &staging
+        && let Some(fallback) = super::preview::staged_light_fallback(&planned.plan, chained)
+    {
+        return Err(TileFallback::Plan(fallback));
+    }
+    Ok(staging)
 }
 
 /// A stage of an evaluation planned for the GPU: its compilation, the plan of it from the source,
@@ -301,6 +313,18 @@ impl<'a> Planned<'a> {
             full,
             source,
         })
+    }
+
+    /// Refused, `why`, where the plan reads a light whose input only a staged sweep computes
+    /// ([`super::GpuLightInput::Stage`]).
+    fn unstaged(&self, why: &str) -> Result<(), TileFallback> {
+        match self.plan.lights.iter().find(|light| light.staged()) {
+            None => Ok(()),
+            Some(light) => Err(TileFallback::Plan(GpuFallback::LightStage {
+                layer: light.layer,
+                why: why.to_owned(),
+            })),
+        }
     }
 
     /// The tile of `rect`: the rectangle clipped to the stage, and the window of the source it

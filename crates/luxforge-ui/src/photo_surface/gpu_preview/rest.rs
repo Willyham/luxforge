@@ -168,6 +168,20 @@ pub struct RestReduction {
 }
 
 impl GpuRest {
+    /// Whether its tiles read a light behind a spatial step, which only its staged sweeps compute
+    /// ([`super::light::LightInput`]): drawn chained it would have none.
+    fn reads_staged_lights(&self) -> bool {
+        self.tiles.iter().any(|tile| {
+            tile.lights.iter().any(|light| {
+                matches!(
+                    light.input,
+                    super::light::LightInput::Kept { stand_in: None, .. }
+                        | super::light::LightInput::Stage { .. }
+                )
+            })
+        })
+    }
+
     /// Whether it can be drawn: every tile a region plan and, with a reduction, a view within the
     /// bounds with coverage tables of its size.
     fn valid(&self) -> bool {
@@ -628,6 +642,8 @@ pub(in super::super) struct RestSlot {
     places: Vec<Place>,
     /// The stage textures a staged picture's sweeps write and read, charged; empty when chained.
     stages: Vec<StageHolder>,
+    /// The format they hold, which a light reduced from one reads ([`super::light::StagesIn`]).
+    stage_format: Option<BoundaryFormat>,
     /// The first tile whose codes are the output's: the last sweep's first, or the first.
     first_output: usize,
     /// The staged sweeps its tiles are drawn in; zero for chained tiles.
@@ -945,7 +961,14 @@ impl PhotoPipeline {
             };
             slot.evaluation.add(&slot.tile.evaluation);
             let evaluated = copied.and_then(|()| {
-                let evaluated = self.evaluate_lit(&mut slot.tile, device, queue, &plan, None);
+                // A light behind a spatial step is reduced from the stage texture the tile's sweep
+                // reads, before its first tile, and kept for the rest.
+                let stages = slot.stage_format.map(|format| super::light::StagesIn {
+                    holders: &slot.stages,
+                    format,
+                });
+                let evaluated =
+                    self.evaluate_staged(&mut slot.tile, device, queue, &plan, None, stages);
                 slot.evaluation.add(&slot.tile.evaluation);
                 evaluated
             });
@@ -1165,6 +1188,9 @@ impl PhotoPipeline {
         // chained otherwise, with what was created let go.
         let mut stages = Vec::new();
         let staged = rest.stages.as_ref().filter(|stages| stages.valid());
+        // Why the stage textures are not held: a picture reading a light only they compute
+        // ([`super::light::LightInput::Stage`]) is not drawn chained, with no light, but refused.
+        let mut unstaged = GpuFallback::PipelineFailed;
         if let Some(planned) = staged {
             for _ in 0..planned.textures {
                 match StageHolder::create(
@@ -1174,7 +1200,10 @@ impl PhotoPipeline {
                     |bytes| self.figures.preview.charge(bytes),
                 ) {
                     Ok(holder) => stages.push(holder),
-                    Err(_) => break,
+                    Err(fallback) => {
+                        unstaged = fallback;
+                        break;
+                    }
                 }
             }
         }
@@ -1199,13 +1228,19 @@ impl PhotoPipeline {
                 )
             }
             _ => {
-                let bytes = stages.iter().map(StageHolder::bytes).sum();
+                let stage_bytes = stages.iter().map(StageHolder::bytes).sum();
                 let textures: Vec<wgpu::Texture> = stages
                     .drain(..)
                     .flat_map(StageHolder::into_textures)
                     .collect();
                 if !textures.is_empty() {
-                    self.retire_preview(Held::Stage(textures), bytes);
+                    self.retire_preview(Held::Stage(textures), stage_bytes);
+                }
+                if rest.reads_staged_lights() {
+                    if let Some(reduce) = reduce {
+                        self.retire_preview(Held::Rest(Box::new(reduce.parts)), bytes);
+                    }
+                    return Err(unstaged);
                 }
                 (Arc::clone(&rest.tiles), Vec::new(), 0, 0)
             }
@@ -1214,6 +1249,7 @@ impl PhotoPipeline {
             version: rest.version,
             tiles,
             places,
+            stage_format: rest.stages.as_ref().map(|planned| planned.format),
             stages,
             first_output,
             sweeps,

@@ -1248,3 +1248,202 @@ fn gpu_light_a_tile_runner_computes_the_slots_light_a_window_at_a_time() {
         );
     }
 }
+
+/// The stacks whose one light reads a spatial layer before it: the owner's masked Dehaze behind
+/// Clarity, Dehaze −100 behind a sharpening Detail, and a masked Dehaze behind Texture and Clarity
+/// with a Basic layer between, whose colour run the sweep before the light runs too.
+fn behind_spatial() -> Vec<(&'static str, Recipe, usize)> {
+    vec![
+        (
+            "a masked Dehaze behind Clarity",
+            masked(
+                stack(&[
+                    (PRESENCE_EFFECT, json!({"clarity": 60})),
+                    (PRESENCE_EFFECT, json!({"dehaze": 60})),
+                ]),
+                1,
+                &[radial()],
+            ),
+            1,
+        ),
+        (
+            "Dehaze -100 behind a sharpening Detail",
+            stack(&[
+                (DETAIL_EFFECT, json!({"sharpening": 100.0, "radius": 1.0})),
+                (PRESENCE_EFFECT, json!({"dehaze": -100})),
+            ]),
+            1,
+        ),
+        (
+            "a masked Dehaze behind Texture, Clarity and Basic",
+            masked(
+                stack(&[
+                    (PRESENCE_EFFECT, json!({"texture": 40, "clarity": 40})),
+                    (BASIC_EFFECT, json!({"exposure": 0.5, "contrast": 20.0})),
+                    (PRESENCE_EFFECT, json!({"dehaze": 50})),
+                ]),
+                2,
+                &[radial()],
+            ),
+            2,
+        ),
+    ]
+}
+
+/// The CPU's preparation of the light from the stage the staged sweep writes: the stack before
+/// layer `layer` drawn whole on this device, held as the stage texture holds it — half floats on
+/// the byte path, clamped where the byte path clamps — then the CPU's 16-pixel reduction of it in
+/// `f64` and Dehaze's selection (`qualification::presence::atmosphere`).
+fn over_staged_prefix(
+    qualifier: &Qualifier,
+    registry: &ModuleRegistry,
+    source: &GpuSource,
+    recipe: &Recipe,
+    layer: usize,
+    photo: &Photo,
+    path: Path,
+) -> [f64; 3] {
+    let prefix = Recipe {
+        layers: recipe.layers[..layer].to_vec(),
+        ..recipe.clone()
+    };
+    let cut = whole_cut(source, 1);
+    let bytes = qualifier.derive(source, &cut).expect("the cut");
+    let boundary = GpuBoundary::new(
+        Arc::new(bytes),
+        photo.width,
+        photo.height,
+        1,
+        source.kind().boundary(),
+    )
+    .expect("the held stage");
+    let plan = reading_plan(registry, &prefix, request(photo, path), boundary);
+    let values = qualifier.evaluate(&plan).expect("the prefix");
+    let len = values.len();
+    let mut planes = vec![0f32; 3 * len];
+    for (index, texel) in values.iter().enumerate() {
+        for channel in 0..3 {
+            planes[channel * len + index] = match path {
+                Path::Byte => {
+                    luxforge_ui::photo_surface::gpu_preview::qualification::held(texel[channel])
+                        .clamp(0.0, 1.0)
+                }
+                Path::Linear => texel[channel],
+            };
+        }
+    }
+    qualification::presence::atmosphere(photo.width, photo.height, &planes)
+}
+
+/// The light behind a spatial layer is computed from that layer's exact output: a picture at rest
+/// drawn in staged sweeps reduces it from the stage texture the sweep before the light writes, and
+/// keeps it. Held within the light's tolerance to the CPU's preparation over the very stage the
+/// sweep wrote, on both paths, and on the linear path, whose stage is the reference's own `f32`
+/// frame, to the reference render's own light and to the CPU's light at full resolution over the
+/// exact prefix. On the byte path the reference hands Dehaze a 16-bit frame where the stage
+/// texture holds half floats: its distance is reported beside it.
+#[test]
+fn gpu_light_a_light_behind_a_spatial_layer_is_the_cpus_over_its_exact_prefix() {
+    let test = "gpu_light_a_light_behind_a_spatial_layer_is_the_cpus_over_its_exact_prefix";
+    let Some(qualifier) = qualifier(test) else {
+        return;
+    };
+    eprintln!("{test}: adapter {}", qualifier.adapter());
+    let registry = ModuleRegistry::builtin();
+    let photos = [
+        (
+            "a 1001 x 667 synthetic photograph",
+            Photo::synthetic(1001, 667, 0x11),
+        ),
+        ("the 1440 x 960 Presence fixture", Photo::presence_fixture()),
+    ];
+    let bounds = luxforge_core::ProxyBounds {
+        width: 320,
+        height: 240,
+    };
+    let mut missed = Vec::new();
+    let mut worst = [0.0_f64; 3];
+    let mut version = 0;
+    for (name, photo) in &photos {
+        for path in [Path::Byte, Path::Linear] {
+            version += 1;
+            let (jpeg, linear) = (photo.jpeg(), photo.linear());
+            let cpu = cpu_source(path, &jpeg, &linear);
+            let gpu = photo.gpu(path, version);
+            let preview = match path {
+                Path::Byte => luxforge_core::PreviewSource::Jpeg(jpeg.clone()),
+                Path::Linear => luxforge_core::PreviewSource::Raw {
+                    image: linear.clone(),
+                    settings: LinearSettings::default(),
+                },
+            };
+            for (case, recipe, layer) in behind_spatial() {
+                let what = format!("{name}, {path:?}, {case}");
+                let evaluation = super::gpu_rest_tests::committed(preview.clone(), recipe.clone());
+                let tiles = qualification::rest_tiles(&evaluation, bounds, 256)
+                    .unwrap_or_else(|reason| panic!("{what}: {reason}"));
+                let luxforge_core::GpuStaging::Staged(planned) = &tiles.staging else {
+                    panic!("{what}: {:?}", tiles.staging);
+                };
+                assert!(
+                    tiles.plan.lights.len() == 1 && tiles.plan.lights[0].staged(),
+                    "{what}: one light behind a spatial layer"
+                );
+                assert!(
+                    planned.sweeps.iter().any(|sweep| sweep.lights == [0]),
+                    "{what}: a sweep reduces it from its stage texture"
+                );
+                let mut surface = qualifier.surface();
+                version += 1;
+                let rest = super::gpu_preview::rest_now(&gpu, &tiles, version).unwrap();
+                let drawn = surface
+                    .rest(&gpu, &rest)
+                    .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"));
+                assert_eq!(
+                    drawn.figures.sweeps,
+                    planned.sweeps.len() as u32,
+                    "{what}: drawn in its sweeps"
+                );
+                let kept = surface.kept_lights().expect("the kept lights");
+                let [light] = kept[..] else {
+                    panic!("{what}: one kept light, not {kept:?}");
+                };
+                let held = largest(
+                    light,
+                    over_staged_prefix(&qualifier, &registry, &gpu, &recipe, layer, photo, path),
+                );
+                let reference = largest(light, reference_light(&registry, cpu, &recipe, layer));
+                let full = largest(
+                    light,
+                    full_resolution_light(&registry, cpu, &recipe, layer, false),
+                );
+                eprintln!(
+                    "{what}: light {:?}; against the CPU over the staged prefix {held:.3e}, the \
+                     reference {reference:.3e}, the CPU at full resolution {full:.3e}",
+                    &light[..3]
+                );
+                worst = [
+                    worst[0].max(held),
+                    worst[1].max(reference),
+                    worst[2].max(full),
+                ];
+                let gated = match path {
+                    Path::Byte => held,
+                    Path::Linear => held.max(reference).max(full),
+                };
+                if gated >= LIGHT_TOLERANCE {
+                    missed.push(format!("{what}: {gated:.3e}"));
+                }
+            }
+        }
+    }
+    eprintln!(
+        "{test}: largest against the staged prefix {:.3e}, the reference {:.3e}, the CPU at full \
+         resolution {:.3e}",
+        worst[0], worst[1], worst[2]
+    );
+    assert!(
+        missed.is_empty(),
+        "lights past {LIGHT_TOLERANCE:e}: {missed:?}"
+    );
+}

@@ -66,9 +66,9 @@ pub(crate) use preview::{plan_preview_reducing, plan_rest, plan_warm_list};
 pub(crate) use program::testing;
 pub use program::{GpuDescription, GpuProgram, GpuProgramKind};
 pub use spatial::{
-    GPU_PASS_INPUTS, GPU_SHARED_VALUES, GPU_WORKGROUP_LANES, GpuApply, GpuLight, GpuLightPasses,
-    GpuLightRestoration, GpuPass, GpuPassShape, GpuPlane, GpuPlaneFormat, GpuPlaneSize, GpuSpatial,
-    GpuSpatialUnit, gpu_lights,
+    GPU_PASS_INPUTS, GPU_SHARED_VALUES, GPU_WORKGROUP_LANES, GpuApply, GpuLight, GpuLightInput,
+    GpuLightPasses, GpuLightRestoration, GpuPass, GpuPassShape, GpuPlane, GpuPlaneFormat,
+    GpuPlaneSize, GpuSpatial, GpuSpatialUnit, gpu_lights,
 };
 pub(crate) use spatial::{Word, Words};
 pub use sweeps::{

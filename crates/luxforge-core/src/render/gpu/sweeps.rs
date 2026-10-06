@@ -10,6 +10,11 @@
 //!   after it, and a stack whose one large reach is its last link is drawn chained, as before. The
 //!   first sweep also runs the content operations before the first spatial one, the last the
 //!   geometry tail and the output operations after the last.
+//! - **Staged lights.** An operation reading a light whose input is the spatial operations before
+//!   it ([`super::GpuLightInput::Stage`], Dehaze behind Clarity or Detail) always starts a sweep,
+//!   whatever the reach, so the stage texture that sweep reads holds the light's exact input; the
+//!   sweep before it covers the whole content stage, and the light is reduced from the texture
+//!   before the reading sweep's first tile ([`GpuSweep::lights`]).
 //! - **Stage textures.** Every sweep but the last writes its tiles' rectangles of its last link's
 //!   output, the content stage in the boundary's format, into a stage texture the size of the
 //!   content stage; the next sweep cuts its windows from it. At most [`SWEEP_STAGE_TEXTURES`] are
@@ -137,6 +142,11 @@ pub struct GpuSweep {
     pub tiles: Vec<RestTile>,
     /// What its middle tile's slot and its light links take by the plan's own figures.
     pub slot_bytes: u64,
+    /// The plan's lights, `k` of [`GpuPlan::lights`], whose input is the stage texture it reads
+    /// ([`super::GpuLightInput::Stage`]): each reduced from the whole texture before its first
+    /// tile, which its first operation reads. Empty for a sweep whose lights, if any, are over the
+    /// source.
+    pub lights: Vec<usize>,
 }
 
 /// What one spatial operation carries into a window: its summed halo and the larger of its
@@ -146,14 +156,30 @@ fn reach(spatial: &super::GpuSpatial) -> u32 {
     spatial.halos.iter().sum::<u32>() + lead.0.max(lead.1)
 }
 
+/// The staged lights operation `spatial` of `plan` reads ([`super::GpuLightInput::Stage`]): their
+/// places among the plan's lights.
+fn staged_lights<'a>(
+    plan: &'a GpuPlan,
+    spatial: &'a [super::GpuSpatial],
+) -> impl Iterator<Item = usize> + 'a {
+    spatial.iter().filter_map(|operation| {
+        operation.light?;
+        plan.light_of(operation.layer)
+            .filter(|k| plan.lights[*k].staged())
+    })
+}
+
 /// `plan`'s spatial operations grouped into sweeps, in order: a sweep ends before an operation
-/// only where the reach of those already in it passes [`SWEEP_SPLIT_REACH`]. One range, `0..0`,
-/// for a plan with none. `O(passes)`.
+/// where the reach of those already in it passes [`SWEEP_SPLIT_REACH`], and before every operation
+/// reading a staged light. One range, `0..0`, for a plan with none. `O(passes)`.
 pub(crate) fn sweep_ranges(plan: &GpuPlan) -> Vec<Range<usize>> {
     let mut ranges = Vec::new();
     let (mut start, mut carried) = (0, 0);
     for (index, spatial) in plan.spatial.iter().enumerate() {
-        if index > start && carried > SWEEP_SPLIT_REACH {
+        let staged = staged_lights(plan, std::slice::from_ref(spatial))
+            .next()
+            .is_some();
+        if index > start && (carried > SWEEP_SPLIT_REACH || staged) {
             ranges.push(start..index);
             (start, carried) = (index, 0);
         }
@@ -242,8 +268,10 @@ pub(crate) fn plan_sweeps(request: &SweepRequest) -> GpuStaging {
                 produced.width, produced.height, stage.width, stage.height
             )));
         }
+        // A sweep before one reading a staged light writes the whole stage the light reduces.
         let covers = match sweeps.last() {
             None => Region::whole(produced),
+            Some(after) if !after.lights.is_empty() => Region::whole(produced),
             Some(after) => bounding(after.tiles.iter().map(|tile| tile.window)),
         };
         let anchor = anchor_of(&plan.spatial[range.clone()]);
@@ -327,6 +355,10 @@ pub(crate) fn plan_sweeps(request: &SweepRequest) -> GpuStaging {
             side,
             tiles,
             slot_bytes,
+            lights: match first {
+                true => Vec::new(),
+                false => staged_lights(plan, &plan.spatial[range.clone()]).collect(),
+            },
         });
     }
     sweeps.reverse();

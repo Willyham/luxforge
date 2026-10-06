@@ -177,6 +177,11 @@ pub enum GpuFallback {
     NoProgram { layer: usize, unit: String },
     /// A program that ships disabled, because it has not met its error limits.
     DisabledProgram { layer: usize, program: &'static str },
+    /// Layer `layer` reads a light whose input is the spatial layers before it, which only a staged
+    /// sweep of the whole stage computes ([`super::GpuLightInput::Stage`]), and the picture at rest
+    /// or the export cannot be drawn in staged sweeps, or the read draws one tile: the reference
+    /// draws it rather than a light with those layers left out. `why` says which.
+    LightStage { layer: usize, why: String },
     /// The draft changes no layer of the stack yet, and drafts no layer of its own: there is
     /// nothing for a plan to start from, and its frame is the entry's.
     Unchanged,
@@ -196,6 +201,7 @@ impl GpuFallback {
             Self::BetweenResamples { .. } => "between-resamples",
             Self::NoProgram { .. } => "no-program",
             Self::DisabledProgram { .. } => "disabled-program",
+            Self::LightStage { .. } => "light-stage",
             Self::Unchanged => "unchanged",
             Self::Unplannable(_) => "unplannable",
         }
@@ -210,7 +216,8 @@ impl GpuFallback {
             | Self::SpatialChain { layer }
             | Self::BetweenResamples { layer }
             | Self::NoProgram { layer, .. }
-            | Self::DisabledProgram { layer, .. } => Some(*layer),
+            | Self::DisabledProgram { layer, .. }
+            | Self::LightStage { layer, .. } => Some(*layer),
             Self::Unchanged | Self::Unplannable(_) => None,
         }
     }
@@ -244,6 +251,11 @@ impl std::fmt::Display for GpuFallback {
             Self::DisabledProgram { layer, program } => {
                 write!(f, "layer {layer} needs the disabled GPU program {program}")
             }
+            Self::LightStage { layer, why } => write!(
+                f,
+                "layer {layer} reads a light behind a spatial layer, which only staged sweeps \
+                 compute: {why}"
+            ),
             Self::Unchanged => write!(f, "the draft changes no layer yet"),
             Self::Unplannable(reason) => {
                 write!(f, "the GPU preview could not be planned: {reason}")

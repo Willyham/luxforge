@@ -783,6 +783,7 @@ impl Editor {
                     luxforge_ui::photo_surface::GpuFallback::Compiling
                         | luxforge_ui::photo_surface::GpuFallback::SourceUploading { .. }
                         | luxforge_ui::photo_surface::GpuFallback::BoundaryUploading { .. }
+                        | luxforge_ui::photo_surface::GpuFallback::LightPending
                 )
             ) {
                 return false;
