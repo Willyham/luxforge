@@ -630,7 +630,7 @@ pub struct EditorService {
     source_cache: RefCell<Option<CachedSource>>,
     pub(crate) pixel_reads: RefCell<pixels::PixelReads>,
     registry: Arc<ModuleRegistry>,
-    /// The budgets and the estimate store every evaluation this service plans shares: its own
+    /// The budgets every evaluation this service plans shares: its own
     /// samples and exports, and the preview and analysis jobs it hands to workers.
     render: RenderContext,
     /// This catalog's own identity, which its artifact root's manifest must name.

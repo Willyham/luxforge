@@ -413,10 +413,10 @@ impl PixelDomain for Linear<'_> {
 
     /// Fingerprint alone does not identify developed pixels: public callers may omit it, two
     /// developments of a file differ, and crop/orientation views share their source's identity.
-    /// The estimate store is keyed by the recipe prefix, which an approximate white balance does not
-    /// change: the drafted recipe names the target gains whichever planes it is evaluated over. So
-    /// an approximate evaluation keys its estimates apart, and a committed render of the same
-    /// recipe never takes one estimated from approximate pixels.
+    /// The store of reduced planes is keyed by the recipe prefix, which an approximate white
+    /// balance does not change: the drafted recipe names the target gains whichever planes it is
+    /// evaluated over. So an approximate evaluation keys its planes apart, and a committed render
+    /// of the same recipe never takes planes computed from approximate pixels.
     fn estimate_prefix<'p>(&self, prefix_hash: &'p str) -> Cow<'p, str> {
         Cow::Owned(estimate_prefix(
             prefix_hash,

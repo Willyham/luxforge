@@ -489,7 +489,7 @@ mod tests {
         for label in CASES.into_iter().filter(|label| label.contains(&filter)) {
             for megapixels in [0.025, 0.05, 0.1, 0.25, 0.5, 0.75, 1.0, 2.0] {
                 let Run { counted, once } = case(label, megapixels);
-                // Warm both ways: the allocator, the estimate store and the tables.
+                // Warm both ways: the allocator and the tables.
                 for way in [false, true] {
                     force(Some(way));
                     once();

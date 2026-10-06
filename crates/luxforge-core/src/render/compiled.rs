@@ -215,7 +215,7 @@ impl Entry {
 
     /// The global estimates this boundary reads as the entry of segment `index` of `evaluation`,
     /// exactly as a frame would resolve them. Empty for a boundary that reads none.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "qualification"))]
     pub(super) fn globals<D: PixelDomain>(
         &self,
         evaluation: &Evaluation<'_, D>,

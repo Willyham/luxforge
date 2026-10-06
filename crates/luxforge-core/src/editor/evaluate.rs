@@ -78,7 +78,7 @@ impl<S> Evaluation<S> {
         &self.bound.registry
     }
 
-    /// The budgets and the estimate store every evaluation of the planning service shares.
+    /// The budgets every evaluation of the planning service shares.
     pub fn context(&self) -> &RenderContext {
         &self.bound.context
     }

@@ -6801,7 +6801,6 @@ mod tests {
         );
         presence(&owner, client, &asset, 1, "dehaze", json!({"dehaze":30.0}));
         let context = owner.render_context();
-        assert_eq!(context.estimates().len(), 0, "the dehaze estimate is cold");
         let (reached, release) = hold_tiles(&owner);
         std::thread::scope(|scope| {
             let _release_on_exit = ReleaseTiles(release.clone());
@@ -6826,11 +6825,6 @@ mod tests {
             assert_eq!(answer.error.expect("a cancelled read").code, "cancelled");
         });
         owner.hold_tiles(None);
-        assert_eq!(
-            context.estimates().len(),
-            0,
-            "a cancelled read publishes no estimate"
-        );
         assert_eq!(context.spatial().in_use(), 0);
         assert_eq!(context.scratch().in_use(), 0);
         owner.stop();

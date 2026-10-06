@@ -328,7 +328,7 @@ pub mod qualification {
             for group in groups {
                 let asked: Vec<u32> = group.iter().map(|&index| factors[index]).collect();
                 let context = crate::RenderContext::new();
-                let render = crate::render(
+                let mut render = crate::render(
                     registry,
                     source,
                     &prefix,
@@ -341,7 +341,7 @@ pub mod qualification {
                     })?;
                     // Every unit of the operation that declares the light's key is handed it;
                     // the others read nothing.
-                    hold_estimates(&render, place, &vec![Some(light); HELD_UNITS])?;
+                    hold_estimates(&mut render, place, &vec![Some(light); HELD_UNITS])?;
                 }
                 cells::arm(&context, &asked)?;
                 let framed = render.frame(crate::SnapshotId::new());
@@ -377,11 +377,11 @@ pub mod qualification {
         Ok(lights)
     }
 
-    /// Hold `estimates`, each unit's values or `None`, in `render`'s estimate store for the
-    /// spatial operation of layer `layer`, under the keys a frame of `render` asks with, as a
-    /// frame that prepared them would: what [`twin_lights`] hands an earlier layer's light by.
+    /// Hand `render`'s spatial operation of layer `layer` `estimates`, each unit's values or
+    /// `None`, in place of the ones its frame would reduce, a unit that declares no estimate key
+    /// keeping none: what [`twin_lights`] hands an earlier layer's light by.
     fn hold_estimates(
-        render: &crate::Render,
+        render: &mut crate::Render,
         layer: usize,
         estimates: &[Option<Vec<f64>>],
     ) -> Result<(), crate::Error> {
@@ -497,22 +497,21 @@ pub mod qualification {
             .map(|light| light.values().to_vec()))
     }
 
-    /// The global estimates the spatial operation of layer `layer` reads in a frame of `render`,
-    /// from its context's estimate store alone: each unit's values, `None` for a unit that
-    /// prepares none. `None` when the store does not hold them, as before any frame of `render`.
-    pub fn held_estimates(
+    /// The global estimates the spatial operation of layer `layer` reads in a frame of `render`:
+    /// each unit's values, `None` for a unit that prepares none, from one reduction of the layer's
+    /// whole input stage, as the frame reduces it.
+    pub fn frame_estimates(
         render: &crate::Render,
         layer: usize,
-    ) -> Result<Option<Vec<Option<Vec<f64>>>>, crate::Error> {
+    ) -> Result<Vec<Option<Vec<f64>>>, crate::Error> {
         let index = render
             .spatial_segment_of(layer)
             .ok_or_else(|| crate::Error::validation(format!("layer {layer} is not spatial")))?;
-        Ok(render.held_spatial_globals(index)?.map(|globals| {
-            globals
-                .into_iter()
-                .map(|global| global.map(|global| global.values().to_vec()))
-                .collect()
-        }))
+        Ok(render
+            .spatial_globals(index)?
+            .into_iter()
+            .map(|global| global.map(|global| global.values().to_vec()))
+            .collect())
     }
 
     #[cfg(test)]
@@ -520,7 +519,7 @@ pub mod qualification {
         use super::*;
         use crate::{
             BASIC_EFFECT, Cancel, Layer, ModuleRegistry, PRESENCE_EFFECT, Recipe, RenderContext,
-            RenderOptions, RenderSource, SnapshotId,
+            RenderOptions, RenderSource,
         };
         use serde_json::json;
 
@@ -542,9 +541,7 @@ pub mod qualification {
                 &context,
             )
             .unwrap();
-            render.frame(SnapshotId::new()).unwrap();
-            held_estimates(&render, layer)
-                .unwrap()
+            frame_estimates(&render, layer)
                 .unwrap()
                 .into_iter()
                 .flatten()
