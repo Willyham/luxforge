@@ -47,17 +47,17 @@ pub use plan::{
 };
 #[cfg(test)]
 pub(crate) use preview::plan_preview;
-#[cfg(any(test, feature = "qualification"))]
-pub(crate) use preview::plan_rest_tiles;
 #[cfg(test)]
 pub(crate) use preview::plan_warm;
 #[cfg(feature = "qualification")]
 pub(crate) use preview::position;
 pub use preview::{
-    BoundaryKey, GPU_PLAN_LINKS, GPU_WARM_LINKS, GpuPreview, GpuRest, GpuView, GpuWarmList,
-    REDUCED_AFTER_BYTES, REST_TILE_BYTES, REST_TILE_SIDES, RestReduction, RestTile, RestTiles,
-    SourceBoundary,
+    BoundaryKey, GPU_PLAN_LINKS, GPU_PREVIEW_BYTES, GPU_WARM_LINKS, GpuPreview, GpuRest, GpuView,
+    GpuWarmList, REDUCED_AFTER_BYTES, REST_SHARE_MAX, REST_TILE_SIDES, REST_TILE_WORK,
+    RestReduction, RestTile, RestTiles, SourceBoundary, rest_light_bytes, rest_slot_bytes,
 };
+#[cfg(any(test, feature = "qualification"))]
+pub(crate) use preview::{RestSizing, plan_rest_tiles};
 #[cfg(test)]
 pub(crate) use preview::{light_link, output_window, warm_links, warm_sequence};
 pub(crate) use preview::{plan_preview_reducing, plan_rest, plan_warm_list};

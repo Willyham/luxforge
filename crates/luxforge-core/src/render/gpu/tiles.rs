@@ -632,9 +632,9 @@ mod tests {
     }
 
     /// A stream is the picture at rest's tiles at full scale: the same plan and, tile for tile,
-    /// the same rectangles and anchored windows the picture at rest plans at that side, row by row
-    /// over the whole output stage, each tile the window a read of its rectangle plans; its bands
-    /// are its rows.
+    /// the same rectangles and anchored windows the picture at rest plans at that side, the stream
+    /// row by row over the whole output stage where the picture at rest draws them by shape, each
+    /// tile the window a read of its rectangle plans; its bands are its rows.
     #[test]
     fn a_stream_is_the_picture_at_rests_tiles_at_full_scale() {
         let bounds = ProxyBounds {
@@ -647,12 +647,18 @@ mod tests {
                 let evaluation = stored(&source, &recipe);
                 for side in [48, 2048] {
                     let stream = plan_stream(&evaluation, side).unwrap();
-                    let rest = super::super::plan_rest_tiles(&evaluation, bounds, Some(side))
-                        .unwrap()
-                        .expect("tiles at bounds smaller than the stage")
-                        .unwrap();
+                    let rest = super::super::plan_rest_tiles(
+                        &evaluation,
+                        bounds,
+                        super::super::RestSizing::Side(side),
+                    )
+                    .unwrap()
+                    .expect("tiles at bounds smaller than the stage")
+                    .unwrap();
                     assert_eq!(stream.plan, rest.plan, "{what}: one plan");
-                    assert_eq!(stream.tiles, rest.tiles, "{what}: the same tiles");
+                    let mut rows = rest.tiles.clone();
+                    rows.sort_by_key(|tile| (tile.rect.y0, tile.rect.x0));
+                    assert_eq!(stream.tiles, rows, "{what}: the same tiles");
                     assert_eq!(stream.output, rest.output, "{what}");
                     assert_eq!(
                         (&stream.source, stream.format),
