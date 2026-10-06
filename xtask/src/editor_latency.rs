@@ -38,7 +38,7 @@ use crate::{
 use luxforge_core::{CanvasInteraction, ModuleRegistry, ParameterKind, SourceTag};
 use luxforge_evidence::{
     self as script, BrushStep, CurveStep, CurveStepEvent, DraftStep, MaskStep, PaintStep,
-    PaletteStep, Reference, SliderEnd, SliderStep, ViewStep, WorkspaceStep,
+    Reference, SliderEnd, SliderStep, ViewStep, WorkspaceStep,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -569,6 +569,16 @@ fn gesture_launch(
     };
     if developer {
         launch.developer()
+    } else {
+        launch
+    }
+}
+
+/// `launch` refusing the GPU stage when `options` asks for the reference renderer's baseline
+/// (`--no-gpu-render`).
+fn rendered_by(launch: Launch, options: &Options) -> Launch {
+    if options.no_gpu_render {
+        launch.no_gpu_render()
     } else {
         launch
     }
@@ -1221,9 +1231,10 @@ pub struct Options<'a> {
     /// before the gesture, so the GPU programs the committed stack's warm list names finish
     /// compiling off the interface thread, as they would before a person's next drag.
     pub warm_ms: Option<u64>,
-    /// Drag and commit modes only: turn the GPU preview off from the palette before anything else,
-    /// as a person does, so every tick takes the CPU path: the same build's baseline for a GPU run.
-    pub gpu_preview_off: bool,
+    /// Drag, commit and paint modes only: launch the editor with `--no-gpu-render`, which refuses
+    /// the photo surface's GPU stage, so the reference renderer draws every frame: the same
+    /// build's baseline for a GPU run.
+    pub no_gpu_render: bool,
     /// Paint mode only: how many masks the recipe holds when the stroke is painted. The first is
     /// the brushed mask the stroke paints into; each further one is a radial mask holding the same
     /// masked adjustments, so a stroke on the first changes the input of every later masked layer.
@@ -1496,12 +1507,7 @@ fn report_geometry(result: &mut Value, options: &Options) {
 
 /// The paint run's script: its preconditions, then the one paced stroke along `path`.
 fn paint_script(options: &Options, path: Vec<[f64; 2]>) -> Vec<script::Step> {
-    let mut steps: Vec<script::Step> = options
-        .gpu_preview_off
-        .then(|| script::Step::Palette(PaletteStep::Run("gpu preview".into())))
-        .into_iter()
-        .collect();
-    steps.extend(geometry_preconditions(options));
+    let mut steps: Vec<script::Step> = geometry_preconditions(options).into_iter().collect();
     if options.basic {
         steps.push(basic_precondition(options));
     }
@@ -1524,12 +1530,7 @@ fn paint_script(options: &Options, path: Vec<[f64; 2]>) -> Vec<script::Step> {
 /// layers asked for, then for a curve its seed (a module's curve only) and its view steps. The
 /// frame captured after the last of them is the one the curve's readiness is checked on.
 fn setup_steps(options: &Options, field: &FieldTarget, source: SourceTag) -> Vec<script::Step> {
-    let mut steps: Vec<script::Step> = options
-        .gpu_preview_off
-        .then(|| script::Step::Palette(PaletteStep::Run("gpu preview".into())))
-        .into_iter()
-        .collect();
-    steps.extend(geometry_preconditions(options));
+    let mut steps: Vec<script::Step> = geometry_preconditions(options).into_iter().collect();
     if options.curve_layer {
         steps.push(crate::scenario::recipe::moderate_curve());
     }
@@ -2391,6 +2392,7 @@ fn paint(run: &mut Run, options: &Options) -> Result {
         options.window,
     )
     .watch(sampled(root, "gesture"));
+    let gesture = rendered_by(gesture, options);
     let Launched {
         dir: evidence,
         watched: usage,
@@ -2919,8 +2921,8 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         ),
     )?;
     ensure(
-        !options.gpu_preview_off || matches!(options.mode, Mode::Drag | Mode::Commit | Mode::Paint),
-        "--no-gpu-preview measures a drag, a commit or a stroke; pass --mode drag, commit or paint",
+        !options.no_gpu_render || matches!(options.mode, Mode::Drag | Mode::Commit | Mode::Paint),
+        "--no-gpu-render measures a drag, a commit or a stroke; pass --mode drag, commit or paint",
     )?;
     if let Some(ms) = options.warm_ms {
         ensure(
@@ -3017,6 +3019,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         options.window,
     )
     .watch(sampled(root, "gesture"));
+    let gesture = rendered_by(gesture, options);
     let Launched {
         dir: evidence,
         watched: usage,
@@ -3160,17 +3163,17 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
             "drawn_gpu_revision": gpu["drawn_gpu_revision"], "gpu_ms": frame["state"]["status_bar"]["gpu_ms"],
             "lights": gpu["gpu_preview"]["drag"]["lights"]}));
     }
-    if options.gpu_preview_off {
+    if options.no_gpu_render {
         ensure(
-            last["state"]["workspace"]["gpu_preview"] == false
+            last["state"]["renderer"]["record"] == "reference"
                 && drained.iter().all(|input| {
                     input.path == FramePath::Cpu
                         && input
                             .reason
                             .as_deref()
-                            .is_none_or(|reason| reason == "preference-off")
+                            .is_none_or(|reason| reason == "no-adapter")
                 }),
-            "--no-gpu-preview left the GPU preview on, or a drained input drew another way",
+            "--no-gpu-render left the GPU stage drawing, or a drained input drew another way",
         )?;
     }
     let unpreviewed = measured.iter().filter(|input| input.unpreviewed).count();
@@ -3488,7 +3491,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
             })
             .collect::<Vec<_>>()
     );
-    result["gpu_preview"] = json!(!options.gpu_preview_off);
+    result["gpu_render"] = json!(!options.no_gpu_render);
     result["paths"] = paths(drained, &events);
     result["compile_queue_before_gesture"] = compile_queue;
     result["contention"] = contended.map_or(Value::Null, |(_, report)| report);
@@ -4157,7 +4160,7 @@ mod tests {
             mask_overlay: false,
             contend: None,
             warm_ms: None,
-            gpu_preview_off: false,
+            no_gpu_render: false,
             masks: 1,
             mask_presence: false,
             window: None,
@@ -4297,7 +4300,7 @@ mod tests {
                             mask_overlay: false,
                             contend: None,
                             warm_ms: None,
-                            gpu_preview_off: false,
+                            no_gpu_render: false,
                             masks: 1,
                             mask_presence: false,
                             window: None,
@@ -4406,7 +4409,7 @@ mod tests {
             mask_overlay: true,
             contend: None,
             warm_ms: None,
-            gpu_preview_off: false,
+            no_gpu_render: false,
             masks: 1,
             mask_presence: false,
             window: None,
@@ -4459,7 +4462,7 @@ mod tests {
             mask_overlay: true,
             contend: None,
             warm_ms: None,
-            gpu_preview_off: true,
+            no_gpu_render: true,
             masks: MAX_MASKS,
             mask_presence: true,
             window: None,
@@ -4523,7 +4526,7 @@ mod tests {
             mask_overlay: false,
             contend: None,
             warm_ms: None,
-            gpu_preview_off: false,
+            no_gpu_render: false,
             masks: 1,
             mask_presence: false,
             window: None,
@@ -4610,7 +4613,7 @@ mod tests {
             mask_overlay: false,
             contend: None,
             warm_ms: None,
-            gpu_preview_off: false,
+            no_gpu_render: false,
             masks: 1,
             mask_presence: false,
             window: None,
@@ -4683,7 +4686,7 @@ mod tests {
             mask_overlay: false,
             contend: None,
             warm_ms: None,
-            gpu_preview_off: false,
+            no_gpu_render: false,
             masks: 1,
             mask_presence: false,
             window: None,
@@ -5057,7 +5060,7 @@ mod tests {
             mask_overlay: false,
             contend: None,
             warm_ms: None,
-            gpu_preview_off: false,
+            no_gpu_render: false,
             masks: 1,
             mask_presence: false,
             window: None,
@@ -5580,7 +5583,7 @@ mod tests {
             mask_overlay: false,
             contend: None,
             warm_ms: None,
-            gpu_preview_off: false,
+            no_gpu_render: false,
             masks: 1,
             mask_presence: false,
             window: None,
@@ -5625,20 +5628,31 @@ mod tests {
             commit,
             gesture_script(&idle, &field, SourceTag::Jpeg, &values, false)
         );
-        // `--no-gpu-preview` turns the preference off from the palette before anything else.
+        // `--no-gpu-render` adds no step: the launch refuses the GPU stage.
         let off = Options {
-            gpu_preview_off: true,
+            no_gpu_render: true,
             masks: 1,
             mask_presence: false,
             window: None,
             ..options
         };
         let steps = measured_script(&off, &field, SourceTag::Jpeg, &values, true, &dir);
-        assert_eq!(
-            steps[0],
-            script::Step::Palette(PaletteStep::Run("gpu preview".into()))
+        assert_eq!(steps[..], plain[..]);
+        let launch = gesture_launch(
+            &dir,
+            "gesture",
+            "gesture-script.json",
+            &steps,
+            Path::new("/photo.jpg"),
+            false,
+            None,
         );
-        assert_eq!(steps[1..], plain[..]);
+        let arguments = rendered_by(launch, &off).command(Path::new("/out"));
+        assert!(
+            arguments
+                .iter()
+                .any(|argument| argument == "--no-gpu-render")
+        );
     }
 
     /// The lane is busy from the first export's acceptance to the end the activity board reads
