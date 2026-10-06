@@ -45,7 +45,7 @@ use std::{
     panic::{self, AssertUnwindSafe},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{Receiver, SyncSender, sync_channel},
     },
     thread::{self, JoinHandle},
@@ -63,6 +63,7 @@ pub(crate) const MAX_READY_REPORTS: usize = 8;
 
 /// The job methods, which serve every kind.
 pub const JOB_READ: &str = "job.read";
+pub const JOB_WAIT: &str = "job.wait";
 pub const JOB_CANCEL: &str = "job.cancel";
 
 /// The reason a job is cancelled when a grant it depends on is revoked.
@@ -288,8 +289,36 @@ impl JobRecord {
 /// owner, and the activity it publishes to once its lane picks it up, which carries its progress.
 /// A job has no activity before that: nothing reports progress before it runs, and a queued job's
 /// progress reads empty.
+#[derive(Default)]
+struct JobChanges {
+    revision: AtomicU64,
+    armed: AtomicBool,
+    wake: Mutex<Option<crate::api::EventWake>>,
+}
+impl std::fmt::Debug for JobChanges {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JobChanges")
+            .field("revision", &self.revision.load(Ordering::Acquire))
+            .finish()
+    }
+}
+impl JobChanges {
+    fn changed(&self) {
+        // A saturated token fails explicitly rather than silently dropping all subsequent changes.
+        self.revision
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_add(1))
+            .expect("job change token exhausted");
+        if self.armed.swap(false, Ordering::AcqRel) {
+            let wake = self.wake.lock().expect("job wake").clone();
+            if let Some(wake) = wake {
+                wake();
+            }
+        }
+    }
+}
 #[derive(Debug, Default)]
 pub struct JobControl {
+    changes: Arc<JobChanges>,
     cancelled: AtomicBool,
     reason: Mutex<Option<String>>,
     activity: Mutex<Option<Activity>>,
@@ -379,7 +408,9 @@ impl JobControl {
 
     /// Attach the activity this job publishes to, once its lane picks it up. Owner-only: called
     /// exactly once, from `Jobs::dispatch`, before the job's work reaches its worker thread.
-    pub(crate) fn begin_activity(&self, activity: Activity) {
+    pub(crate) fn begin_activity(&self, mut activity: Activity) {
+        let changes = self.changes.clone();
+        activity.on_progress(Arc::new(move || changes.changed()));
         *self.activity.lock().expect("job activity") = Some(activity);
     }
 
@@ -404,12 +435,11 @@ impl JobControl {
     /// Called from the job's own worker thread; forgotten once the job ends, when its result, or
     /// its error, is what is read.
     pub(crate) fn update_partial(&self, update: impl FnOnce(&mut Value)) {
-        update(
-            self.partial
-                .lock()
-                .expect("job partial answer")
-                .get_or_insert(Value::Null),
-        );
+        {
+            let mut partial = self.partial.lock().expect("job partial answer");
+            update(partial.get_or_insert(Value::Null));
+        }
+        self.changes.changed();
     }
 
     /// The answer so far, for `job.read` while the job runs.
@@ -697,6 +727,8 @@ fn unknown(job_id: &JobId) -> Error {
 /// The one job table and its lanes. The catalog owner holds the only instance.
 pub(crate) struct Jobs {
     entries: HashMap<JobId, Entry>,
+    wake: Option<crate::api::EventWake>,
+    watched: BTreeSet<JobId>,
     /// Finished jobs in the order they finished, every family together; [`Family::retained`] bounds
     /// each family's share.
     finished: VecDeque<JobId>,
@@ -713,6 +745,8 @@ impl Jobs {
     pub(crate) fn new(deliver: Deliver, board: Arc<ActivityBoard>) -> Self {
         Self {
             entries: HashMap::new(),
+            wake: None,
+            watched: BTreeSet::new(),
             finished: VecDeque::new(),
             keys: HashMap::new(),
             lanes: [
@@ -723,6 +757,36 @@ impl Jobs {
             deliver,
             board,
         }
+    }
+
+    pub(crate) fn set_wake(&mut self, wake: crate::api::EventWake) {
+        self.wake = Some(wake);
+    }
+
+    pub(crate) fn change_for(&self, job: &JobId, client: ClientId) -> Result<u64, Error> {
+        let entry = self
+            .entries
+            .get(job)
+            .filter(|entry| entry.readable_by(client))
+            .ok_or_else(|| unknown(job))?;
+        Ok(entry.control.changes.revision.load(Ordering::Acquire))
+    }
+    pub(crate) fn watch_job(&mut self, job: &JobId) {
+        self.watched.insert(job.clone());
+        if let Some(entry) = self.entries.get(job) {
+            *entry.control.changes.wake.lock().expect("job wake") = self.wake.clone();
+            entry.control.changes.armed.store(true, Ordering::Release);
+        }
+    }
+    pub(crate) fn watched_jobs<'a>(&mut self, watched: impl Iterator<Item = &'a JobId>) {
+        let watched: BTreeSet<_> = watched.cloned().collect();
+        for job in self.watched.difference(&watched) {
+            if let Some(entry) = self.entries.get(job) {
+                entry.control.changes.armed.store(false, Ordering::Release);
+                *entry.control.changes.wake.lock().expect("job wake") = None;
+            }
+        }
+        self.watched = watched;
     }
 
     /// The board this table publishes every running lane job to, for a test that wants to read what
@@ -999,6 +1063,7 @@ impl Jobs {
             && entry.record.status == JobStatus::Queued
         {
             entry.record.status = JobStatus::Running;
+            entry.control.changes.changed();
         }
     }
 
@@ -1120,6 +1185,7 @@ impl Jobs {
             record: entry.read(),
             origin: entry.origin.clone(),
         };
+        entry.control.changes.changed();
         self.retire(job_id);
         Some(finished)
     }
@@ -1138,6 +1204,7 @@ impl Jobs {
             interest.interested.clear();
         }
         let record = entry.read();
+        entry.control.changes.changed();
         self.retire(job_id);
         Some(record)
     }
@@ -1291,6 +1358,7 @@ impl Jobs {
             .expect("a waiting job has an entry");
         let work = entry.work.take().expect("a waiting job holds its work");
         entry.record.status = JobStatus::Running;
+        entry.control.changes.changed();
         let spec = match entry.activity.take() {
             Some(spec) => ActivitySpec {
                 job_id: Some(entry.record.job_id.to_string()),
@@ -2219,5 +2287,73 @@ mod tests {
         jobs.complete(&id, result).unwrap();
         assert_eq!(jobs.of_module("test.module").len(), 1);
         jobs.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod monitoring_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn job_changes_cover_unwatched_progress_rearm_partial_and_terminal_publication() {
+        let board = ActivityBoard::new();
+        let mut jobs = Jobs::new(Arc::new(|_, _| {}), board.clone());
+        let client = ClientId::testing(1);
+        let control = JobControl::new();
+        let job = JobId::new();
+        jobs.open_catalog(CatalogOpened {
+            job_id: job.clone(),
+            kind: JobKind::SourceFind,
+            asset_id: None,
+            origin: None,
+            control: control.clone(),
+        });
+        control.begin_activity(board.begin(ActivitySpec {
+            kind: "catalog.source-find",
+            label: "Find",
+            detail: None,
+            asset_id: None,
+            job_id: Some(job.to_string()),
+        }));
+        let queued = jobs.change_for(&job, client).unwrap();
+        jobs.start(&job);
+        assert!(jobs.change_for(&job, client).unwrap() > queued);
+        let first = jobs.change_for(&job, client).unwrap();
+        control.set_progress(Some(0.2), "found one");
+        let changed = jobs.change_for(&job, client).unwrap();
+        assert!(
+            changed > first,
+            "a change before waiter registration remains observable"
+        );
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let counted = wakes.clone();
+        jobs.set_wake(Arc::new(move || {
+            counted.fetch_add(1, Ordering::Relaxed);
+        }));
+        jobs.watch_job(&job);
+        control.update_partial(|value| *value = json!({"paths": ["one"]}));
+        control.set_progress(Some(0.3), "found two");
+        assert_eq!(
+            wakes.load(Ordering::Relaxed),
+            1,
+            "wakes coalesce until rearm"
+        );
+        assert_eq!(
+            jobs.read_for(&job, client).unwrap().result,
+            Some(json!({"paths": ["one"]}))
+        );
+        jobs.watch_job(&job);
+        jobs.finish(&job, Ok(Output::Value(json!({"paths": ["one", "two"]}))));
+        assert_eq!(wakes.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            jobs.read_for(&job, client).unwrap().status,
+            JobStatus::Ready
+        );
+        assert_eq!(
+            jobs.read_for(&job, client).unwrap().result,
+            Some(json!({"paths": ["one", "two"]}))
+        );
+        jobs.watched_jobs(std::iter::empty());
     }
 }

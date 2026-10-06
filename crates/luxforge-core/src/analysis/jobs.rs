@@ -148,6 +148,7 @@ impl std::fmt::Debug for AnalysisJob {
 struct AnalysisTask {
     job: AnalysisJob,
     board: Option<Arc<ActivityBoard>>,
+    started: Option<Arc<dyn Fn(JobId) + Send + Sync>>,
 }
 
 /// How one analysis job ended, as [`AnalysisQueue::poll`] delivers it. A job withdrawn while it
@@ -175,6 +176,7 @@ const HELD_JOBS: usize = WAITING_RESULTS + 2;
 /// granularity, so a withdrawn analysis stops within a chunk and ends cancelled.
 pub(crate) struct AnalysisQueue {
     worker: Latest<AnalysisTask, AnalysisOutcome>,
+    started: Option<Arc<dyn Fn(JobId) + Send + Sync>>,
     activity: Option<Arc<ActivityBoard>>,
     /// The generation each recent job was requested under, oldest first, bounded by
     /// [`HELD_JOBS`], so a job id can be withdrawn and its slot read.
@@ -188,9 +190,14 @@ impl AnalysisQueue {
         worker.set_waker(waker);
         Self {
             worker,
+            started: None,
             activity: None,
             generations: VecDeque::new(),
         }
+    }
+
+    pub(crate) fn set_started(&mut self, started: Arc<dyn Fn(JobId) + Send + Sync>) {
+        self.started = Some(started);
     }
 
     /// Publish every job submitted from now on to `board` as an `analysis.histogram` activity, from
@@ -207,6 +214,7 @@ impl AnalysisQueue {
         let requested = self.worker.request(AnalysisTask {
             job,
             board: self.activity.clone(),
+            started: self.started.clone(),
         });
         let displaced = requested.replaced.map(|(generation, task)| {
             self.generations.retain(|(_, other)| *other != generation);
@@ -276,7 +284,14 @@ fn analyse(
     task: AnalysisTask,
     running: &Running<'_, AnalysisTask, AnalysisOutcome>,
 ) -> Option<AnalysisOutcome> {
-    let AnalysisTask { job, board } = task;
+    let AnalysisTask {
+        job,
+        board,
+        started,
+    } = task;
+    if let Some(started) = started {
+        started(job.job_id.clone());
+    }
     let AnalysisJob {
         job_id,
         identity,

@@ -16,12 +16,9 @@ use super::{
 };
 use crate::state::MenuTarget;
 use crate::state::palette::PaletteAction;
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::Duration,
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 
 fn start(editor: &mut Editor, keep_metadata: bool) {
@@ -243,21 +240,18 @@ struct ScriptedJob {
 }
 
 impl ScriptedJob {
-    /// A job answering `script`, followed by the reader the desktop would start for it, which
-    /// reads at the pace of a short test interval rather than every 100 ms.
+    /// Feed notifications into the reader's filtering seam without a test clock.
     fn follow(script: Vec<Result<Value, String>>) -> (Arc<Self>, Followed<Message>) {
         let job = Arc::new(Self {
             script,
             reads: AtomicUsize::new(0),
         });
         let held = job.clone();
-        let stream = Followed::new(reads(
-            Duration::from_micros(200),
-            export_pass("job-1".into(), move || {
-                let read = held.reads.fetch_add(1, Ordering::Relaxed);
-                held.script[read.min(held.script.len() - 1)].clone()
-            }),
-        ));
+        let mut pass = export_pass("job-1".into(), move || {
+            let read = held.reads.fetch_add(1, Ordering::Relaxed);
+            held.script[read.min(held.script.len() - 1)].clone()
+        });
+        let stream = Followed::new(reads(move || std::future::ready(pass())));
         (job, stream)
     }
 
@@ -566,15 +560,29 @@ fn an_export_through_the_owner_writes_a_new_file_and_never_replaces_it() {
                 identity: job,
                 owner: editor.owner.clone(),
                 client: editor.client,
+                presentation_visible: true,
             }));
-            let mut sent = 0;
+            let mut previous = None;
             while let Some(message) = reader.next() {
-                sent += 1;
+                let Message::Export(ExportMessage::Read {
+                    result: Ok(record), ..
+                }) = &message
+                else {
+                    panic!("unexpected export message {message:?}");
+                };
+                assert_ne!(
+                    previous.as_ref(),
+                    Some(record),
+                    "unchanged export records never reach update"
+                );
+                previous = Some(record.clone());
                 let _ = editor.update(message);
             }
-            // Queued, running and ready are the most an export's record says: an unchanged read
-            // is never sent, and the end is the reader's last message.
-            assert!((1..=3).contains(&sent), "the reader sent {sent} messages");
+            assert_eq!(
+                previous.unwrap()["status"],
+                "ready",
+                "the terminal record is delivered exactly once"
+            );
             assert!(editor.export.run.is_none(), "the last message was the end");
         }
     };

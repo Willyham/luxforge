@@ -29,9 +29,8 @@
 //!   sent synchronously in the update of the choice (the owner resolves the selection on screen and
 //!   queues the job; the work runs on the library lane's worker). One batch of this desktop's runs
 //!   at a time. Its progress is the activity board's entry for its job, read whenever long-running
-//!   work reads the board; its record is read with `job.read` as soon as it is named and whenever
-//!   the board no longer lists it running, so its end is heard as a board change and no timer asks
-//!   after it. The report says every photograph left out and why. A batch is not a library change:
+//!   work reads the board; its authoritative `job.wait` subscription adopts the final record after
+//!   publication, even while hidden. The report says every photograph left out and why. A batch is not a library change:
 //!   each photograph gets its own history entry, which `Cmd+Z` in Select does not undo.
 //! - **Remove from catalog… and Put back** are library changes of the selection (`asset.remove`,
 //!   `asset.restore`) like the organizing gestures, Remove behind a confirmation. **Empty
@@ -40,7 +39,6 @@
 use crate::app::{
     Before, Editor,
     message::{Message, select::SelectMessage, select_catalog::CatalogMessage},
-    select::job_now,
     tasks::{CallError, call, call_detailed, owner_task, request},
 };
 use crate::coalesce::Coalesce;
@@ -83,13 +81,8 @@ pub(crate) struct SelectCatalog {
     pub(crate) rows_failed: Option<(u64, Vec<(u32, u32)>)>,
     /// `preset.list` for the Apply preset… menu is in flight.
     pub(crate) presets_reading: bool,
-    /// A `job.read` of the running batch is in flight.
-    pub(crate) batch_reading: bool,
-    /// The activity board's read (its version) the running batch was last looked for in; `None`
-    /// while it has not been read since it was named.
-    pub(crate) batch_seen: Option<u64>,
-    /// The batch request this desktop sent last and what the owner answered, and the `job.read`
-    /// record its end was read from, for evidence.
+    /// The batch request this desktop sent last and what the owner answered, and the authoritative
+    /// job record its end was adopted from, for evidence.
     pub(crate) batch_request: Option<Value>,
     pub(crate) batch_record: Option<Value>,
     /// Each `catalog.empty-removed` call of the last Empty Removed… and its answer, for evidence.
@@ -574,7 +567,7 @@ impl Editor {
 
     /// Start a batch of the selection: `batch.apply-preset` or `batch.export`, sent synchronously
     /// in this update as this desktop's actor, so it names the selection on screen. The job it
-    /// starts is followed from here ([`Self::follow_batch`]); its record is read once now.
+    /// starts is observed immediately by its authoritative subscription.
     fn start_batch(&mut self, kind: BatchKind, params: Value) -> Task<Message> {
         if let Some(reason) = self.batch_refusal() {
             self.status.text = reason;
@@ -612,7 +605,6 @@ impl Editor {
                 let state = &mut self.select.state.catalog;
                 state.batch = Some(batch);
                 state.report = false;
-                self.select.catalog.batch_seen = None;
                 self.follow_batch()
             }
             Err(error) => {
@@ -632,10 +624,8 @@ impl Editor {
         }
     }
 
-    /// Follow the running batch through long-running work's reads of the activity board: while the
-    /// board lists its job running, its progress is the entry's; otherwise its record is read with
-    /// `job.read` once for each read of the board since it was last looked for (and once as soon as
-    /// it is named), one read in flight at a time. So its end is heard as a board change.
+    /// Follow visible batch progress from the board. An independent authoritative job reader
+    /// adopts its final record, including when presentation is hidden.
     pub(crate) fn follow_batch(&mut self) -> Task<Message> {
         let Some(job) = self
             .select
@@ -646,7 +636,6 @@ impl Editor {
         else {
             return Task::none();
         };
-        let version = self.long_work.state.version;
         if let Some(running) = self.long_work.state.job(&job) {
             let progress = running
                 .entry
@@ -659,29 +648,13 @@ impl Editor {
             {
                 batch.progress = progress;
             }
-            self.select.catalog.batch_seen = Some(version);
-            return Task::none();
         }
-        let seam = &mut self.select.catalog;
-        if seam.batch_reading || seam.batch_seen == Some(version) {
-            return Task::none();
-        }
-        seam.batch_seen = Some(version);
-        seam.batch_reading = true;
-        let (owner, client) = (self.owner.clone(), self.client);
-        owner_task(
-            move || {
-                let result = job_now(&owner, client, &job);
-                (job, result)
-            },
-            |(job, result)| catalog(CatalogMessage::BatchRead { job, result }),
-        )
+        Task::none()
     }
 
     /// The running batch's record: still queued or running, how far it has got; ended, the status
     /// bar says what it did, its report can be opened, and what it changed is read again.
     fn batch_read(&mut self, job: &str, result: Result<Value, String>) -> Task<Message> {
-        self.select.catalog.batch_reading = false;
         let Some(batch) = self
             .select
             .state
@@ -1036,7 +1009,6 @@ impl Editor {
             && seam.totalling.is_none()
             && seam.reading.is_none()
             && !seam.presets_reading
-            && !seam.batch_reading
             && state.running().is_none()
             && state.emptying.is_none()
             && self.total_wanted().is_none()

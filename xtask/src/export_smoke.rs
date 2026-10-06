@@ -40,7 +40,7 @@ const MENU_CHANGE: f64 = 1.0;
 
 /// Export the edited entry normally and during comparison, then refuse an existing destination.
 pub fn plan(_: &[PathBuf]) -> Plan {
-    Plan::new(vec![
+    let steps = vec![
         Step::opened("opened"),
         Step::new(
             "exposure",
@@ -68,7 +68,35 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             .status(format!(
                 "Not exported: {STRIPPED} already exists; Luxforge never replaces a file"
             )),
-    ])
+    ];
+    let native = |name: &str, action: &str| {
+        Step::new(
+            name,
+            script::Step::WindowVisibility {
+                action: action.into(),
+            },
+        )
+        .commits(0)
+    };
+    let mut monitored = Vec::new();
+    for step in steps {
+        let name = step.name().to_owned();
+        if cfg!(target_os = "macos") && matches!(name.as_str(), "stripped" | "compared" | "refused")
+        {
+            monitored.push(native(&format!("hidden-{name}"), "hide_window"));
+        }
+        monitored.push(step);
+        if cfg!(target_os = "macos") {
+            match name.as_str() {
+                "opened" => monitored.push(native("native-visible", "show_window")),
+                "kept" | "compared" | "refused" => {
+                    monitored.push(native(&format!("restored-{name}"), "show_window"))
+                }
+                _ => {}
+            }
+        }
+    }
+    Plan::new(monitored)
 }
 
 /// One JPEG's marker segments before its scan, as (marker, payload).
@@ -232,6 +260,33 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
     let root = run.root().to_owned();
     let mut checks = Checks::new();
+    if cfg!(target_os = "macos") {
+        for (hidden, outcome) in [
+            ("hidden-stripped", "stripped"),
+            ("hidden-stripped", "kept"),
+            ("hidden-compared", "compared"),
+            ("hidden-refused", "refused"),
+        ] {
+            let before = launch.at(hidden)?;
+            let after = launch.at(outcome)?;
+            ensure(
+                after.state()["visibility"]["window_hidden"] == true
+                    && after.state()["visibility"]["sampling_allowed"] == false
+                    && after.state()["visibility"]["evidence_invisible_window_override"] == false,
+                "An export outcome was not adopted under the native hidden gate",
+            )?;
+            ensure(
+                before.state()["performance"]["reads_requested"]
+                    == after.state()["performance"]["reads_requested"],
+                "Hidden export work admitted resource sampling",
+            )?;
+            checks.note(
+                after,
+                "export outcome adopted while native hidden",
+                after.state()["visibility"].clone(),
+            );
+        }
+    }
 
     // The two edits: a brighter photograph whose output is 16:9 in the rotated orientation.
     let cropped = launch.at("cropped")?;
