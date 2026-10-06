@@ -955,12 +955,12 @@ fn written(name: &str, width: u32, height: u32) -> std::path::PathBuf {
 #[test]
 fn gpu_window_a_region_past_the_budget_draws_the_reduced_stage_scaled_to_the_view() {
     use super::gpu_preview_tests::surface_ready;
-    // Every region plan carries its reduced stage, as one past the figure does.
-    luxforge_core::qualification::reduce_regions_after(Some(0));
     let catalog = catalog("softer");
     let photograph = written("softer", 3000, 2000);
     let (mut editor, asset, agent) = crate::app::testing::real_photo_at(&catalog, &photograph);
     masked_chain(&mut editor, &asset, agent);
+    // Every region plan carries its reduced stage, as one past the core's figure does.
+    editor.gpu.reduce_after = Some(0);
     at_100(&mut editor);
     let stage = editor
         .presentation
@@ -1046,7 +1046,6 @@ fn gpu_window_a_region_past_the_budget_draws_the_reduced_stage_scaled_to_the_vie
     let _ = editor.update(Message::Draft(
         crate::app::message::draft::DraftMessage::Cancel,
     ));
-    luxforge_core::qualification::reduce_regions_after(None);
     finish(editor, catalog);
 }
 

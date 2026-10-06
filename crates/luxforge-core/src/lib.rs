@@ -132,7 +132,6 @@ pub use source::{LinearImage, OpticalIdentity, SourceImage, SourceOptics, open_s
 pub mod qualification {
     pub use crate::modules::detail_qualification as detail;
     pub use crate::modules::presence_qualification as presence;
-    pub use crate::render::gpu::reduce_regions_after;
 
     /// The proxy plan a Fit job's worker builds for `recipe` over `render`'s source within
     /// `bounds`, as the GPU preview's plan reads it, and the window of the whole proxy stage the
