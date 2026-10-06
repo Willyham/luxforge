@@ -1425,6 +1425,14 @@ impl Worker {
             drawing.staged = Some(Staged::new(sweeps));
             return Ok(drawing);
         }
+        // A light behind a spatial layer is computed from a staged sweep's stage texture alone: a
+        // stream drawn chained has none, and the reference draws it rather than a stand-in.
+        if let Some(light) = first.plan.lights.iter().find(|light| light.staged()) {
+            return Err(TileFallback::Plan(luxforge_core::GpuFallback::LightStage {
+                layer: light.layer,
+                why: "the export is streamed chained, not in the sweeps that compute it".into(),
+            }));
+        }
         let mut requested = 0;
         for &side in &stream.sides {
             let plan = if side == first.side {

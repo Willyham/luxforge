@@ -41,7 +41,10 @@
 //!   the plan then reads that light from its light plane, written before its passes
 //!   ([`super::spatial::Pool::write_light`]). The runner keeps the last [`TILE_LIGHTS`] lights it
 //!   computed, keyed by the source's version and the link's steps, words and blocks, so a stream's
-//!   tiles and a call's reads compute each light once.
+//!   tiles and a call's reads compute each light once. A light behind a spatial step
+//!   ([`light::LightInput::Stage`]) is reduced instead from the stage texture the sweep before the
+//!   reading one wrote ([`light::read_staged_light`]), once, before that sweep's first tile, and
+//!   kept under its input's identity.
 //! - **Bounds.** Everything a tile creates is charged to [`GPU_TILE_BUDGET`], beside and apart from
 //!   the photo surface's GPU-preview budget, before anything is created: the window of the source,
 //!   the boundary, each link's intermediate, words and blocks, every link's kept planes and the
@@ -816,13 +819,21 @@ impl TileRunner {
         Ok(most)
     }
 
-    /// What computing `light` from `source` holds ([`light::read_light_charge`]).
+    /// What computing `light` holds: from `source` ([`light::read_light_charge`]), or for a light
+    /// behind a spatial step from a stage texture in the source's boundary format
+    /// ([`light::read_staged_light_charge`]).
     fn light_charge(
         &self,
         source: &GpuSource,
         light: &light::GpuLight,
     ) -> Result<u64, TileFailure> {
-        light::read_light_charge(&self.device, source, light).map_err(TileFailure::Plan)
+        match light.input {
+            light::LightInput::Stage { .. } => {
+                light::read_staged_light_charge(&self.device, source.kind().boundary(), light)
+            }
+            _ => light::read_light_charge(&self.device, source, light),
+        }
+        .map_err(TileFailure::Plan)
     }
 
     /// `plan` drawn over a boundary cut from `window` (`[x, y, width, height]` of the content
@@ -1150,12 +1161,26 @@ impl TileRunner {
             ] {
                 self.device.push_error_scope(filter);
             }
-            let read = light::read_light(
-                (&self.device, &self.queue),
-                (&compiled, &self.support, layouts),
-                source,
-                computed,
-            );
+            // A light behind a spatial step is reduced from the stage texture the sweep before it
+            // wrote, which the stream's tiles before this one have finished writing.
+            let read = match computed.input {
+                light::LightInput::Stage { texture, .. } => match self.stages.get(texture as usize)
+                {
+                    Some(holder) => light::read_staged_light(
+                        (&self.device, &self.queue),
+                        (&compiled, &self.support),
+                        (holder, source.kind().boundary()),
+                        computed,
+                    ),
+                    None => Err(GpuFallback::PipelineFailed),
+                },
+                _ => light::read_light(
+                    (&self.device, &self.queue),
+                    (&compiled, &self.support, layouts),
+                    source,
+                    computed,
+                ),
+            };
             let answers: Vec<_> = (0..3)
                 .map(|_| answered(self.device.pop_error_scope()))
                 .collect();
@@ -1818,6 +1843,13 @@ fn texel_origin(plan: &GpuPlan) -> (u32, u32) {
 /// steps' programs, words and blocks.
 fn light_key(source: &GpuSource, light: &light::GpuLight) -> u64 {
     use std::hash::{Hash, Hasher};
+    // A light behind a spatial step is kept under its input's identity, as the photo surface keeps
+    // it, whichever light plane a sweep's plan numbers it.
+    if let light::LightInput::Stage { key, .. } = light.input {
+        let mut hasher = std::hash::DefaultHasher::new();
+        ("stage", source.version(), light.stage, key).hash(&mut hasher);
+        return hasher.finish();
+    }
     let mut words = Vec::new();
     chain::pack_words(super::TexelMap::IDENTITY, (0, 0), &light.steps, &mut words);
     let mut hasher = std::hash::DefaultHasher::new();

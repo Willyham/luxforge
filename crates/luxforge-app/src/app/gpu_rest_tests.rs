@@ -1250,7 +1250,9 @@ fn gpu_rest_a_stream_is_planned_in_staged_sweeps_within_its_budget() {
 /// `tiles` reduced to the output stage's own size: every view pixel one output pixel at weight
 /// one, so the rest output is the stage's codes, which the reduction decodes and quantizes again
 /// to the same code. The full-resolution codes a picture at rest draws, through its own drawing.
-fn at_full_size(tiles: &luxforge_core::RestTiles) -> luxforge_ui::photo_surface::RestReduction {
+pub(super) fn at_full_size(
+    tiles: &luxforge_core::RestTiles,
+) -> luxforge_ui::photo_surface::RestReduction {
     let output = tiles.output;
     luxforge_ui::photo_surface::RestReduction {
         view: (output.width, output.height),
