@@ -850,9 +850,10 @@ pub const REST_TILE_SIDES: [u32; 4] = [2048, 1024, 512, 256];
 pub const GPU_PREVIEW_BYTES: u64 = 2 << 30;
 
 /// The most a picture at rest's tile slot may take by the plan's own figures, whatever the budget
-/// leaves beside the source, the view plan and the accumulator ([`RestTiles::share`]): half the
-/// GPU-preview budget, so a gesture's slot still fits beside it.
-pub const REST_SHARE_MAX: u64 = 1 << 30;
+/// leaves beside the source, the view plan and the accumulator ([`RestTiles::share`]): 1.25 GiB,
+/// which the 60 MP drag stack's 2048 px tile fits, so the rest stays within five eighths of the
+/// GPU-preview budget wherever that budget leaves more.
+pub const REST_SHARE_MAX: u64 = 5 << 28;
 
 /// The most work one tile of a picture at rest may carry: its window's texels times the plan's
 /// spatial links, about 24 MP·links, estimated at 50 to 70 ms of the M4's GPU at 2 to 4 ms a
@@ -910,6 +911,11 @@ pub struct RestTiles {
     /// view plan's slot and the accumulator with its rest output, at most [`REST_SHARE_MAX`].
     /// `None` for tiles of a side their caller named.
     pub share: Option<u64>,
+    /// The same stack in staged sweeps within the same share, the stage textures charged in it, or
+    /// why it is drawn chained ([`super::GpuStaging`]): the tiles above are the chained drawing,
+    /// kept as the fallback, and a staged picture's last sweep is drawn, reduced and counted as
+    /// they are. Planned, not yet drawn.
+    pub staging: super::GpuStaging,
     /// The output stage the tiles cover.
     pub output: Stage,
     /// Where the view draws the output stage smaller than it is, the reduction of the tiles to the
@@ -992,19 +998,55 @@ pub fn rest_slot_bytes(
     output: (u32, u32),
     region: bool,
 ) -> u64 {
+    let links = Links {
+        spatial: 0..plan.spatial.len(),
+        first: true,
+        last: true,
+    };
+    links_bytes(plan, &links, window, format, output, region)
+}
+
+/// The links of a plan a slot runs: the plan's spatial operations `spatial`, each with the colour
+/// operations after it; with the content operations before them when `first`, and the geometry
+/// tail and output operations after them when `last`. A slot that runs the whole plan runs both; a
+/// staged sweep's runs a part of it ([`super::GpuSweep`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Links {
+    pub(crate) spatial: std::ops::Range<usize>,
+    pub(crate) first: bool,
+    pub(crate) last: bool,
+}
+
+/// [`rest_slot_bytes`] for the slot running `links` of `plan`. A slot that is not the last's
+/// writes its last link's output as an intermediate, which a staged sweep copies into its stage
+/// texture, rather than codes, so it holds an intermediate for every link and no tail; it still
+/// holds an output, charged as the last's is. `O(planes)`.
+pub(crate) fn links_bytes(
+    plan: &GpuPlan,
+    links: &Links,
+    window: Region,
+    format: crate::BoundaryFormat,
+    output: (u32, u32),
+    region: bool,
+) -> u64 {
     let texels = u64::from(window.width) * u64::from(window.height);
     let (origin, size) = ((window.x0, window.y0), (window.width, window.height));
+    let spatial = &plan.spatial[links.spatial.clone()];
     // The links the surface splits the steps into: one at each spatial step, and one before the
     // first for the colour steps a content operation gives.
-    let ahead = plan
-        .content
-        .iter()
-        .any(|operation| operation.mask.is_some() || !operation.units.is_empty());
-    let links = match plan.spatial.len() as u64 {
+    let ahead = links.first
+        && plan
+            .content
+            .iter()
+            .any(|operation| operation.mask.is_some() || !operation.units.is_empty());
+    let count = match spatial.len() as u64 {
         0 => 1,
         spatial => spatial + u64::from(ahead),
     };
-    let tail = if has_tail(plan) {
+    // The boundary and an intermediate a link before the last, or a link each for a slot that
+    // writes its last link's output as an intermediate.
+    let textures = if links.last { count } else { count + 1 };
+    let tail = if links.last && has_tail(plan) {
         let texel = if plan.geometry.clamps {
             4
         } else if plan.linear {
@@ -1035,7 +1077,7 @@ pub fn rest_slot_bytes(
     let mut kept = 0;
     let mut pool: Vec<((super::GpuPlaneFormat, super::GpuPlaneSize), u64)> = Vec::new();
     let mut lights = 0;
-    for spatial in &plan.spatial {
+    for spatial in spatial {
         let mut scratch: Vec<((super::GpuPlaneFormat, super::GpuPlaneSize), u64)> = Vec::new();
         for (number, plane) in spatial.planes.iter().enumerate() {
             if spatial.light == Some(number) {
@@ -1081,7 +1123,7 @@ pub fn rest_slot_bytes(
         })
         .sum::<u64>()
         + lights * LIGHT_PLANE_BYTES;
-    texels * format.texel_bytes() as u64 * links + tail + output + kept + pool
+    texels * format.texel_bytes() as u64 * textures + tail + output + kept + pool
 }
 
 /// What the light links of `plan` take beside a slot whose boundary is held in `format`, by the
@@ -1090,9 +1132,24 @@ pub fn rest_slot_bytes(
 /// blocks, and the one tile texture of the source in `format` they cut their tiles into in turn,
 /// the largest any of them needs. A link the surface cannot run is charged nothing. `O(lights)`.
 pub fn rest_light_bytes(plan: &GpuPlan, format: crate::BoundaryFormat) -> u64 {
+    lights_bytes(plan, 0..plan.spatial.len(), format)
+}
+
+/// [`rest_light_bytes`] for the light links the spatial operations `spatial` of `plan` read alone,
+/// which a slot running those links runs before them. `O(lights)`.
+pub(crate) fn lights_bytes(
+    plan: &GpuPlan,
+    spatial: std::ops::Range<usize>,
+    format: crate::BoundaryFormat,
+) -> u64 {
+    let read = |light: &GpuLight| {
+        plan.spatial[spatial.clone()]
+            .iter()
+            .any(|operation| operation.light.is_some() && operation.layer == light.layer)
+    };
     let mut blocks = 0;
     let mut tile = 0;
-    for light in &plan.lights {
+    for light in plan.lights.iter().filter(|light| read(light)) {
         let link = match light.stand_in.as_deref() {
             Some(stand_in) if !light.over_source() => stand_in,
             _ => light,
@@ -1226,7 +1283,7 @@ pub(crate) enum RestSizing {
 /// `tiles`, given row by row, in the order a picture at rest draws them: by their slot's shape,
 /// the window's size and the rectangle's, each shape's tiles together in their row-by-row order,
 /// the shapes in the order that walk first meets them. `O(tiles)`.
-fn by_shape(tiles: Vec<RestTile>) -> Vec<RestTile> {
+pub(crate) fn by_shape(tiles: Vec<RestTile>) -> Vec<RestTile> {
     let mut shapes = std::collections::HashMap::new();
     let mut keyed: Vec<(usize, RestTile)> = tiles
         .into_iter()
@@ -1377,10 +1434,26 @@ fn plan_tiles(
             }
         }
     }
+    // The same stack in staged sweeps, each sweep's side chosen within the same share, or at the
+    // side a caller names.
+    let sides: &[u32] = match share {
+        Some(_) => &REST_TILE_SIDES,
+        None => std::slice::from_ref(&side),
+    };
+    let staging = super::sweeps::plan_sweeps(&super::sweeps::SweepRequest {
+        compiled,
+        source,
+        plan: &plan,
+        format,
+        sides,
+        budget: share,
+        order: super::sweeps::TileOrder::ByShape,
+    });
     Ok(Ok(Box::new(RestTiles {
         plan,
         tiles: by_shape(tiles),
         share,
+        staging,
         output,
         reduction: view.map(|view| RestReduction {
             view,
