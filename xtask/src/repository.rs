@@ -345,8 +345,10 @@ const SOURCE_RULES: &[SourceRule] = &[
     // and each seam's app/message/<variant>.rs, such as the crop's `PreviewReady`), the
     // owner tasks that plan and answer with it (app/tasks.rs), the preview request that hands it to
     // the worker (app/preview.rs), and the two answers that read one on its way there, a
-    // `draft.set`'s (app/gesture.rs) and the thumbnails' (app/thumbnails.rs). A crop draft keeps
-    // frames only; the editor, the view model and the other gestures name no job at all. A token
+    // `draft.set`'s (app/gesture.rs) and the thumbnails' (app/thumbnails.rs), and the drag ticks
+    // the GPU does not draw, which wait there for the frame in flight (app/motion.rs). A crop
+    // draft keeps frames only; the editor, the view model and the other gestures name no job at
+    // all. A token
     // rule reads names, not types: it cannot see a job kept inside one of those files, nor one
     // kept inside a carrier type that holds one (`Refresh`, `PreviewPayload`).
     SourceRule {
@@ -364,6 +366,9 @@ const SOURCE_RULES: &[SourceRule] = &[
             // The preview request's GPU presentation: a committed job the GPU presents is read
             // where it is requested and kept only as its identity.
             "crates/luxforge-app/src/app/gpu_counts.rs",
+            // A drag tick the GPU does not draw: at most one held tick's job and one waiting for
+            // the reference frame in flight, each the newest of its draft, let go with the draft.
+            "crates/luxforge-app/src/app/motion.rs",
         ],
         mode: Match::Whole,
         tests: false,

@@ -475,9 +475,9 @@ fn passing(reason: &Value) -> bool {
 
 /// The drags below 100%, each over the displayed-size proxy of the whole stage, planned as Fit's
 /// is at the view's bounds: the first tick drawn from the boundary the view's own job derived from
-/// the source, reduced to that proxy, or one the tick derives, on the CPU only for a reason that
-/// passes, with nothing said of the zoom; the boundary held the whole proxy stage at the view's
-/// bounds, the size of the CPU frame the view draws; the later ticks drawn on the GPU from a whole
+/// the source, reduced to that proxy, or one the tick derives, held only for a reason that passes,
+/// with nothing said of the zoom; the boundary held the whole proxy stage at the view's bounds;
+/// the later ticks drawn on the GPU from a whole
 /// frame's plan with no preview job and nothing derived again, each frame's boundary, revision,
 /// budget figures and label its state's, the same settings drawn twice to the same bytes; the
 /// release's committed proxy frame dissolving in from the last GPU frame, whose pixels are the CPU
@@ -520,9 +520,8 @@ fn drawn_on_the_gpu_below_100(launch: &Checked, checks: &mut Checks) -> Result {
         let state = held.state();
         let summary = &state["surface"]["gpu"]["gpu_preview"]["drag"];
         let boundary = &summary["boundary"];
-        // The view's proxy at its bounds, the size of the frame the CPU's proxy phase draws there,
-        // whichever frame the CPU last presented.
-        let (bounds, raster) = (&state["proxy"]["bounds"], &state["surface"]["raster"]);
+        // The view's proxy at its bounds, the bounds the reference's frame is reduced to there.
+        let (bounds, raster) = (&state["reference"]["bounds"], &state["surface"]["raster"]);
         ensure(
             summary["boundaries_derived"] == derived
                 && summary["zoom"] == json!(zoom)

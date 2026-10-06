@@ -811,6 +811,11 @@ impl Editor {
         let Some(wanted) = self.desired_view_for(stage) else {
             return false;
         };
+        // A gesture's GPU frame of a region holding the view is at full detail, once the surface
+        // has evaluated it.
+        if self.gpu_draws_view(wanted) {
+            return false;
+        }
         // The GPU's picture at rest of the content on screen holds the view at full detail, once
         // the surface has evaluated it.
         if self.gpu_holds_view(wanted)

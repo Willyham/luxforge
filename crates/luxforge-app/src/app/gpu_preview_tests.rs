@@ -194,6 +194,8 @@ fn gpu_preview_a_pause_in_a_drag_drawn_on_the_gpu_settles_nothing() {
     assert!(run_commit(&mut editor));
     deliver_until(&mut editor, "the committed frame", |editor| {
         !editor.gpu.has_drag()
+            && !editor.presentation.queue.is_busy()
+            && !editor.presentation.queue.ready()
     });
     let log = attach_log(&mut editor);
     let _ = slide(&mut editor, ACTION, FIELD, 0.3);
@@ -205,7 +207,6 @@ fn gpu_preview_a_pause_in_a_drag_drawn_on_the_gpu_settles_nothing() {
     );
     assert_ne!(editor.presentation.displayed_draft_revision, Some(revision));
     // The pause: the desktop wakes, and nothing is asked for.
-    std::thread::sleep(std::time::Duration::from_millis(150));
     let _ = editor.update(Message::Preview(PreviewMessage::Poll));
     assert!(!editor.view_plan.in_flight, "no settlement starts");
     assert!(

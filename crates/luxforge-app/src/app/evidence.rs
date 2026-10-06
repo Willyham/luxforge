@@ -895,7 +895,14 @@ impl Editor {
                 // grid belongs to one generation, and a newer frame presented after it leaves the
                 // canvas drawing the photograph alone. This subscription runs per window frame, so
                 // waiting costs nothing and the grid of that newer frame arrives a message later.
-                if overlay_wanted && self.presentation.coverage().is_none() {
+                if overlay_wanted
+                    && self.presentation.coverage().is_none()
+                    && self
+                        .presentation
+                        .presenter
+                        .region_coverage(self.presentation.presented_generation)
+                        .is_none()
+                {
                     return Task::none();
                 }
                 let Some(evidence) = &mut self.evidence else {
