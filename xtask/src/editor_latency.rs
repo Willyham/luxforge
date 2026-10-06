@@ -648,6 +648,11 @@ struct Input {
     /// a RAW draft whose development is not in memory, while a redevelopment is in flight — so the
     /// input has no frame of its own.
     unpreviewed: bool,
+    /// Why the tick that answered it held its frame (`gpu_preview_tick` with `path: "held"`): the
+    /// surface draws the tick's plan once the wait passes, or the newest held tick's reference
+    /// frame is rendered once the hold lasts (`gpu_preview_reference`). `None` for a tick that did
+    /// not hold.
+    held: Option<String>,
 }
 
 impl Input {
@@ -664,7 +669,14 @@ impl Input {
             path,
             reason: None,
             unpreviewed: false,
+            held: None,
         }
+    }
+
+    /// A held input never drawn: a later input's frame superseded it before the hold passed. Not
+    /// a failure; it has no frame of its own to time.
+    fn superseded(&self) -> bool {
+        self.held.is_some() && !self.displayed_ms.is_finite()
     }
 
     /// The input's row of a report.
@@ -674,6 +686,7 @@ impl Input {
             "value": self.value,
             "path": self.path.name(),
             "reason": self.reason,
+            "held": self.held,
             "draft_id": self.draft_id,
             "draft_revision": self.draft_revision,
             "generation": self.generation,
@@ -692,6 +705,14 @@ impl Input {
 /// repeats; a GPU tick's carries the draft and its revision, which the surface's draw of its plan
 /// repeats (`surface_frame_drawn`). The value is checked on both ends of a CPU tick, so a
 /// mispairing fails the run instead of producing a number.
+///
+/// A held tick (`gpu_preview_tick` with `path: "held"`) queues nothing and keeps the frame on
+/// screen until its wait passes. It answers its set as a GPU input of its revision, marked with the
+/// reason it held, and is drawn by the surface's first draw of that revision's plan; a later `gpu`
+/// tick of the same revision answers no set and is ignored. A hold that lasts renders the held
+/// tick's reference frame (`gpu_preview_reference`), which presents it as a CPU frame of that
+/// generation. A held input never drawn is superseded ([`Input::superseded`]); a set with no
+/// answer at all still fails the run.
 fn event_value(value: &Value, control: Control) -> Option<f64> {
     match control {
         Control::Slider => value.as_f64(),
@@ -719,12 +740,14 @@ fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec
             }
             Some("gpu_preview_tick") => {
                 let detail = &event["detail"];
-                if detail["path"] != "gpu" {
+                let held = detail["path"] == "held";
+                if detail["path"] != "gpu" && !held {
                     reason = detail["reason"].as_str().map(str::to_owned);
                     continue;
                 }
-                // The tick drawn on the GPU answers the draft.set of its own update; one with no
-                // slider set before it is another gesture's.
+                // The tick drawn on the GPU, or held for it, answers the draft.set of its own
+                // update; one with no slider set before it is another gesture's, or a later tick
+                // of a held revision.
                 let Some((value, sent_ms)) = pending.take() else {
                     continue;
                 };
@@ -735,7 +758,31 @@ fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec
                         .ok_or("A GPU tick names no draft revision")?,
                 );
                 input.draft_id = detail["draft_id"].as_str().map(str::to_owned);
+                if held {
+                    input.held = Some(
+                        detail["reason"]
+                            .as_str()
+                            .unwrap_or("none logged")
+                            .to_owned(),
+                    );
+                }
                 inputs.push(input);
+            }
+            // A hold that lasted: the held tick's reference frame, of this generation, presents it
+            // as a CPU frame.
+            Some("gpu_preview_reference") => {
+                let detail = &event["detail"];
+                let revision = detail["draft_revision"].as_u64();
+                if let Some(input) = inputs.iter_mut().rev().find(|input| {
+                    input.held.is_some()
+                        && input.generation.is_none()
+                        && input.draft_revision == revision
+                        && (detail["draft_id"].is_null()
+                            || detail["draft_id"].as_str() == input.draft_id.as_deref())
+                }) {
+                    input.generation = detail["generation"].as_u64();
+                    input.path = FramePath::Cpu;
+                }
             }
             Some("slider_draft_preview") => {
                 let (value, sent_ms) = pending
@@ -3146,7 +3193,8 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
     for (index, input) in drained.iter().enumerate() {
         let frame = frame_at(frames, first_input + index + 1, "a drained input's step")?;
         let gpu = &frame["state"]["surface"]["gpu"];
-        if input.path == FramePath::Gpu {
+        // A held input another input superseded has no frame of its own to check.
+        if input.path == FramePath::Gpu && !input.superseded() {
             ensure(
                 gpu["drawing_path"] == "gpu"
                     && gpu["drawn_gpu_revision"].as_u64() == input.draft_revision,
@@ -3186,20 +3234,27 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
             field.action
         ),
     )?;
+    // A held input another input superseded before its hold passed has no frame of its own: it is
+    // reported, not failed.
     ensure(
-        drained.iter().all(|input| input.displayed_ms.is_finite()),
+        drained
+            .iter()
+            .all(|input| input.displayed_ms.is_finite() || input.superseded()),
         "An input's frame was never presented — a CPU tick's preview job never displayed, or a GPU \
          tick's plan never drawn — so the gesture was not drained per step",
     )?;
 
     // Each path's figures over the drained inputs it drew: `to - from`, where both were observed.
-    let span = |path: Option<FramePath>, to: fn(&Input) -> f64, from: fn(&Input) -> f64| {
+    let spans = |keep: &dyn Fn(&Input) -> bool, to: fn(&Input) -> f64, from: fn(&Input) -> f64| {
         drained
             .iter()
-            .filter(|input| path.is_none_or(|path| input.path == path))
+            .filter(|input| keep(input))
             .map(|input| to(input) - from(input))
             .filter(|ms| ms.is_finite())
             .collect::<Vec<f64>>()
+    };
+    let span = |path: Option<FramePath>, to: fn(&Input) -> f64, from: fn(&Input) -> f64| {
+        spans(&|input| path.is_none_or(|path| input.path == path), to, from)
     };
     let presented: fn(&Input) -> f64 = |input| input.displayed_ms;
     let drawn: fn(&Input) -> f64 = |input| input.drawn_ms;
@@ -3207,7 +3262,13 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
     let sent: fn(&Input) -> f64 = |input| input.sent_ms;
     let input_to_frame = span(None, presented, sent);
     let set_round_trip = span(None, queued, sent);
-    let render_and_upload = span(Some(FramePath::Cpu), presented, queued);
+    // A held input's reference job was queued when its hold lasted, not at its tick: its render is
+    // not timed from the tick.
+    let render_and_upload = spans(
+        &|input| input.path == FramePath::Cpu && input.held.is_none(),
+        presented,
+        queued,
+    );
     let contended = match options.contend {
         Some(count) => Some(contention_windows(&events, &app, count)?),
         None => None,
@@ -3267,11 +3328,22 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         ),
         stats::row("press_to_first_draft_set", "ms", press_to_first_set),
         stats::row("press_to_first_presented_frame", "ms", press_to_first_frame),
+        stats::row(
+            "held_input_to_presented_frame",
+            "ms",
+            spans(&|input| input.held.is_some(), presented, sent),
+        ),
+        stats::row(
+            "unheld_input_to_presented_frame",
+            "ms",
+            spans(&|input| input.held.is_none(), presented, sent),
+        ),
     ];
     let contended_samples: Vec<f64> = drained
         .iter()
         .filter(|input| in_contention(input))
         .map(|input| input.displayed_ms - input.sent_ms)
+        .filter(|ms| ms.is_finite())
         .collect();
     if let Some((_, report)) = &contended {
         ensure(
@@ -3518,7 +3590,10 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
 /// ticks by path as the editor logged them.
 fn paths(drained: &[Input], events: &[Value]) -> Value {
     let mut reasons = BTreeMap::<String, usize>::new();
-    for input in drained.iter().filter(|input| input.path == FramePath::Cpu) {
+    for input in drained
+        .iter()
+        .filter(|input| input.path == FramePath::Cpu && input.held.is_none())
+    {
         *reasons
             .entry(input.reason.clone().unwrap_or_else(|| "none logged".into()))
             .or_default() += 1;
@@ -3529,13 +3604,46 @@ fn paths(drained: &[Input], events: &[Value]) -> Value {
             .filter(|event| event["event"] == "gpu_preview_tick" && event["detail"]["path"] == path)
             .count()
     };
+    let drawn = |path| {
+        drained
+            .iter()
+            .filter(|input| input.path == path && !input.superseded())
+            .count()
+    };
     json!({
-        "gpu_frames": drained.iter().filter(|input| input.path == FramePath::Gpu).count(),
-        "cpu_frames": drained.iter().filter(|input| input.path == FramePath::Cpu).count(),
+        "gpu_frames": drawn(FramePath::Gpu),
+        "cpu_frames": drawn(FramePath::Cpu),
         "cpu_reasons": reasons,
+        "held": held(drained),
         "run_gpu_ticks": ticks("gpu"),
         "run_cpu_ticks": ticks("cpu"),
-        "note": "gpu_frames and cpu_frames count the drained inputs by the path that drew each one's frame; cpu_reasons is what each CPU tick's gpu_preview_tick named (surface-pending for a tick whose plan the surface has not evaluated yet). run_gpu_ticks and run_cpu_ticks count every tick of the run, its release and burst step's included.",
+        "run_held_ticks": ticks("held"),
+        "note": "gpu_frames and cpu_frames count the drained inputs by the path that drew each one's frame, a held input's among them; cpu_reasons is what each CPU tick's gpu_preview_tick named (surface-pending for a tick whose plan the surface has not evaluated yet). held counts the drained inputs whose tick held its frame, by the reason it held, how many the surface then drew on the GPU, how many their reference frame presented once the hold lasted, and how many a later input superseded before either. run_gpu_ticks, run_cpu_ticks and run_held_ticks count every tick of the run, its release and burst step's included.",
+    })
+}
+
+/// The drained inputs whose tick held its frame: how many, by the reason each held, and how each
+/// ended — drawn on the GPU, presented by its reference frame, or superseded.
+fn held(drained: &[Input]) -> Value {
+    let mut reasons = BTreeMap::<&str, usize>::new();
+    let (mut gpu, mut reference, mut superseded) = (0, 0, 0);
+    for input in drained {
+        let Some(reason) = input.held.as_deref() else {
+            continue;
+        };
+        *reasons.entry(reason).or_default() += 1;
+        match (input.superseded(), input.path) {
+            (true, _) => superseded += 1,
+            (false, FramePath::Gpu) => gpu += 1,
+            (false, FramePath::Cpu) => reference += 1,
+        }
+    }
+    json!({
+        "inputs": gpu + reference + superseded,
+        "reasons": reasons,
+        "drawn_on_gpu": gpu,
+        "presented_by_reference": reference,
+        "superseded": superseded,
     })
 }
 
@@ -5554,6 +5662,89 @@ mod tests {
         // A GPU tick whose plan was never drawn is not presented.
         let undrawn = inputs(&events[..8], Control::Slider, &field).unwrap();
         assert!(undrawn[1].displayed_ms.is_nan());
+    }
+
+    /// A held tick answers its own set and is drawn by the surface's first draw of its revision; a
+    /// later `gpu` tick of that revision answers nothing. A held tick never drawn is superseded,
+    /// not a failure; one whose hold lasted is presented by its reference frame. A set with no
+    /// answer at all still fails the run.
+    #[test]
+    fn a_held_tick_is_paired_with_its_set_and_drawn_or_superseded() {
+        let field = FieldTarget::basic_exposure();
+        let set = |at: f64, value: f64| {
+            json!({"event":"slider_draft_set","elapsed_ms":at,
+                "detail":{"fields":{"exposure":value}}})
+        };
+        let held = |at: f64, revision: u64| {
+            json!({"event":"gpu_preview_tick","elapsed_ms":at,"detail":{"path":"held",
+                "reason":"boundary-pending","draft_id":"d","draft_revision":revision}})
+        };
+        let gpu = |at: f64, revision: u64| {
+            json!({"event":"gpu_preview_tick","elapsed_ms":at,"detail":{"path":"gpu",
+                "draft_id":"d","draft_revision":revision,"boundary":1}})
+        };
+        let drawn = |at: f64, revision: u64| {
+            json!({"event":"surface_frame_drawn","elapsed_ms":at + 1.0,"detail":{"path":"gpu",
+                "drawn_ms":at,"draft_id":"d","draft_revision":revision,"boundary":1}})
+        };
+        let events = vec![
+            // Held, then drawn once its boundary is held; the GPU tick of the same revision that
+            // follows answers no set.
+            set(10.0, 0.1),
+            held(10.5, 1),
+            gpu(30.0, 1),
+            drawn(34.0, 1),
+            // Held, and superseded by the next set's GPU tick before it was drawn.
+            set(40.0, 0.2),
+            held(40.5, 2),
+            set(50.0, 0.3),
+            gpu(50.5, 3),
+            drawn(55.0, 3),
+            // Held until the hold lasted: its reference frame presents it.
+            set(60.0, 0.4),
+            held(60.5, 4),
+            json!({"event":"gpu_preview_reference","elapsed_ms":560.0,
+                "detail":{"draft_id":"d","draft_revision":4,"generation":9}}),
+            json!({"event":"preview_displayed","elapsed_ms":600.0,
+                "detail":{"generation":9,"draft_revision":4}}),
+            json!({"event":"surface_frame_drawn","elapsed_ms":610.0,
+                "detail":{"path":"cpu","drawn_ms":605.0,"generation":9,"picture":4}}),
+        ];
+        let paired = inputs(&events, Control::Slider, &field).unwrap();
+        assert_eq!(paired.len(), 4);
+        let first = &paired[0];
+        assert_eq!(
+            (first.path, first.held.as_deref(), first.draft_revision),
+            (FramePath::Gpu, Some("boundary-pending"), Some(1))
+        );
+        assert_eq!((first.queued_ms, first.displayed_ms), (10.5, 34.0));
+        assert!(!first.superseded());
+        assert_eq!(first.sample()["held"], "boundary-pending");
+        let superseded = &paired[1];
+        assert!(superseded.superseded());
+        assert!(superseded.displayed_ms.is_nan());
+        let next = &paired[2];
+        assert_eq!((next.held.as_deref(), next.displayed_ms), (None, 55.0));
+        let lasted = &paired[3];
+        assert_eq!(
+            (lasted.path, lasted.generation, lasted.held.as_deref()),
+            (FramePath::Cpu, Some(9), Some("boundary-pending"))
+        );
+        assert_eq!((lasted.displayed_ms, lasted.drawn_ms), (600.0, 605.0));
+        let report = super::held(&paired);
+        assert_eq!(report["inputs"], 3);
+        assert_eq!(report["reasons"]["boundary-pending"], 3);
+        assert_eq!(
+            (
+                &report["drawn_on_gpu"],
+                &report["presented_by_reference"],
+                &report["superseded"]
+            ),
+            (&json!(1), &json!(1), &json!(1))
+        );
+        // A set no tick answered is still a failure.
+        let unanswered = vec![set(10.0, 0.1), set(20.0, 0.2), gpu(20.5, 1)];
+        assert!(inputs(&unanswered, Control::Slider, &field).is_err());
     }
 
     /// `--warm` and `--contend` put their steps between the preconditions and the first input, and
