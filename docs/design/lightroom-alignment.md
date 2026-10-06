@@ -1,6 +1,6 @@
 # Lightroom alignment
 
-Status: decided and planned (2026-10-06); nothing is built and implementation is not authorized ([task plan](../../tasks/lightroom-alignment.json)). The owner decided every question on 2026-10-06 ([decided](#decided)): Luxforge's sliders follow Lightroom Classic's responses (level B) for every supported setting, with targeted algorithm changes (level C) where a dimension still differs widely.
+Status: decided and planned (2026-10-06); nothing is built and implementation is not authorized ([task plan](../../tasks/lightroom/lightroom-alignment.json)). The owner decided every question on 2026-10-06 ([decided](#decided)): Luxforge's sliders follow Lightroom Classic's responses (level B) for every supported setting, with targeted algorithm changes (level C) where a dimension still differs widely.
 
 It stands alone. [Preset import](presets.md#import) and the proposed [Lightroom import](lightroom-import.md) use its results to convert values, and every Luxforge user gains from controls that behave the way photographers coming from Lightroom expect, but neither importer waits on it.
 

@@ -202,9 +202,9 @@ Decided on 2026-09-27. The owner accepted the viewport behavior and authorized i
 - Immediate adjustment feedback takes priority while dragging. A briefly softer image at 100% is acceptable during motion, with full detail restored on pause or release and the full-image histogram marked updating meanwhile.
 - Clipping follows the displayed viewport while exact region pixels are outstanding: the overlay is marked approximate, uses the existing OR-of-clipped-pixels rule on a viewport-bounded grid with the existing 4096-cells-per-side cap, and is replaced by a matching exact-region overlay on refinement. Region, content and quality identity travel with the overlay; missing or stale tiles have no overlay. Viewport clipping never substitutes for whole-image counts.
 - Exact settled pixels, full-image analysis, sampling and export remain the reference. The viewport implementation uses the documented half-scale proxy during motion and exact visible-region refinement under the shared quiet policy; unsupported stacks use their named fallback.
-- The implementation authorization is not a latency or total-memory qualification result. Additional quality levels, guide approximation and GPU preview arithmetic, plus their numerical error limits, remain open in [product decisions](../tasks/product-decisions.json).
+- The implementation authorization is not a latency or total-memory qualification result. Additional quality levels, guide approximation and GPU preview arithmetic, plus their numerical error limits, remain open in [product decisions](../tasks/project/product-decisions.json).
 
-The owner provisionally accepted on 2026-09-27 the surface's temporary overlap ceiling: one current and one retiring full-photo allocation of at most 512 MiB each, plus two region sets of at most 32 MiB each, for up to 1088 MiB of photo textures including retirement. This is an engineering ceiling for those slots, not a total editor or GPU product budget. Since the region sets were deleted the slots are one current and one retiring full allocation of at most 512 MiB each, within 1 GiB for every surface together ([performance rule 6](engineering/performance-rules.md#rules)). Crop GPU textures and tiles, overlays and backend upload staging are outside that total and are not fully measured. Their residency must be measured and bounded before a total-memory guarantee; the follow-up is in the [rendering plan](../tasks/rendering.json).
+The owner provisionally accepted on 2026-09-27 the surface's temporary overlap ceiling: one current and one retiring full-photo allocation of at most 512 MiB each, plus two region sets of at most 32 MiB each, for up to 1088 MiB of photo textures including retirement. This is an engineering ceiling for those slots, not a total editor or GPU product budget. Since the region sets were deleted the slots are one current and one retiring full allocation of at most 512 MiB each, within 1 GiB for every surface together ([performance rule 6](engineering/performance-rules.md#rules)). Crop GPU textures and tiles, overlays and backend upload staging are outside that total and are not fully measured. Their residency must be measured and bounded before a total-memory guarantee; the follow-up is in the [rendering plan](../tasks/rendering/gpu-memory.json).
 
 ## Export
 
@@ -251,7 +251,7 @@ The owner requests [interaction repairs](design/masking-interactions.md): unplac
 
 ## Plan refresh
 
-Decided by the owner on 2026-09-28, accepting the recommendations recorded in [product decisions](../tasks/product-decisions.json) when the post-consolidation plans were refreshed after the speed wave.
+Decided by the owner on 2026-09-28, accepting the recommendations recorded in [product decisions](../tasks/project/product-decisions.json) when the post-consolidation plans were refreshed after the speed wave.
 
 - **Bayer highlight latitude is retained**, so the Z6 and the Air 2S keep values above sensor white through the demosaic as the X100VI does, provided the rendering change measured on the supplied Z6 and Air 2S files shows no new highlight artefacts such as false-colour clipped highlights. If it does, the Bayer path keeps its clip at sensor white and the [RAW design](design/initial-raw.md#pixel-and-color-contract) documents it as that path's limit. The RAW high-precision qualification carries the change and its measurement.
 - **The RAW memory budget has two parts:** the one-development working set, whose investigation target stays 1.5 GiB of process CPU RSS until the whole-editor RAW measurement attributes today's miss, and the retained second development under its own 600 MiB byte budget (`luxforge_raw::RETAINED_DEVELOPMENT_BYTES`). GPU memory is reported separately. Only that measurement's numbers count against the budget; if a measured total is unacceptable, the choice is between a higher target, a smaller slot and a compare that shows only the proxy.
@@ -269,7 +269,7 @@ Decided by the owner on 2026-09-30, after the [popularity study](research/popula
 
 ## Detail
 
-Selected on 2026-09-30 under the owner's explicit delegation to plan the module, make sensible choices and record their rationale without owner review. These are design decisions, not implementation authorization or qualification results; [design](design/detail.md), [plan](../tasks/detail.json).
+Selected on 2026-09-30 under the owner's explicit delegation to plan the module, make sensible choices and record their rationale without owner review. These are design decisions, not implementation authorization or qualification results; [design](design/detail.md), [plan](../tasks/editing/detail.json).
 
 - Detail performs manual noise reduction followed by capture sharpening in a new `restoration` placement stage, after prepared source/pixel edits and before Basic, mixer and Presence. It reuses the host's spatial primitive. This avoids amplifying noise before denoising and keeps tone changes from changing the denoiser's input; Basic remains one composite. RAW sensor white balance and required source corrections stay upstream; JPEG relative white balance remains in Basic.
 - Use bounded three-level wavelet shrinkage and thresholded, edge-gated unsharp masking, with numerical mappings frozen against independent references before production. Zero strength defaults on RAW and JPEG preserve Original and avoid automatic double sharpening of camera JPEGs. No AI, camera noise profiles or new module capabilities.
@@ -423,7 +423,7 @@ The owner accepted the design's recorded defaults the same day ([design](design/
 
 ## Lightroom import
 
-Decided by the owner on 2026-10-06 for the [Lightroom import](design/lightroom-import.md#decided), which is planned and not authorized for implementation ([plan](../tasks/lightroom-import.json)):
+Decided by the owner on 2026-10-06 for the [Lightroom import](design/lightroom-import.md#decided), which is planned and not authorized for implementation ([plan](../tasks/lightroom/lightroom-import.json)):
 
 - **Only the photographs worked on in Lightroom enter the catalog** (L1): edited, picked, in a plain collection, or a virtual copy. The rest stay on disk and Select browses their folders.
 - **Ratings and colour labels become collections** (L2) in a "From Lightroom" group; the catalog's no-ratings decision stands. **Keywords** are kept in the import record and not shown (L3).
@@ -449,11 +449,11 @@ Decided the same day ([design](design/lightroom-alignment.md#decided)):
 - **Validation on the owner's real edits** runs locally, figures only, with consent asked each run (A7).
 - **A setting gets an algorithm change** (A8) when, after its rescaling, its median ΔE2000 against Lightroom's response exceeds 2 at values of ±25 and beyond, or it differs in kind; the change targets that dimension.
 
-The [task plan](../tasks/lightroom-alignment.json) is written; whether it is authorized remains open.
+The [task plan](../tasks/lightroom/lightroom-alignment.json) is written; whether it is authorized remains open.
 
 ## Open product questions
 
-Tracked in [product decisions](../tasks/product-decisions.json).
+Tracked in [product decisions](../tasks/project/product-decisions.json).
 
 - How should catalog backup, portability, sidecars, folder relinking and external-drive sync work?
 - Beyond the supplied files, which RAW recording modes/firmware and controlled quality scenes should be prioritized? The implemented decoder/developer and neutral defaults are explicit; broad visual acceptance, the measured resource target and additional DJI modes/scenes remain in [RAW qualification](design/initial-raw.md#remaining-qualification-and-decisions).
@@ -463,7 +463,7 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
 - Which of the [UI themes proposals](design/ui-themes.md#proposals-with-recorded-defaults) stand? They are the six bundled Omarchy themes; the contrast floors, with an imported theme's own text or accent moved to meet them; the Omarchy forms read; a Theme choice for the canvas background as its default; the Appearance tab; and leaving Omarchy's current theme and the system appearance for later.
 - [AI editing](design/ai-editing.md) was decided on 2026-10-05 ([above](#ai-editing)); still open: the first hosted provider, whether to fund a removal fine-tune, whether a macOS 27 Swift shim is worth a Mac-only accelerator, and what a CPU-only machine is offered.
-- Are the [Lightroom import](../tasks/lightroom-import.json) and [Lightroom alignment](../tasks/lightroom-alignment.json) plans authorized for implementation? Every design question was decided on 2026-10-06 ([above](#lightroom-alignment)).
+- Are the [Lightroom import](../tasks/lightroom/lightroom-import.json) and [Lightroom alignment](../tasks/lightroom/lightroom-alignment.json) plans authorized for implementation? Every design question was decided on 2026-10-06 ([above](#lightroom-alignment)).
 - Which measured workloads and responsiveness budgets become acceptance requirements?
 - For interactive previews, which additional measured quality levels and approximation error bounds are acceptable beyond the authorized viewport baseline? Temporary softness, the updating histogram, and viewport-bounded clipping are accepted above. For GPU previews the owner chose speed first ([above](#gpu-previews)); do the [proposed limits](design/gpu-preview.md#the-preview-error-limit) stand?
 - Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand? RAW white balance import converts values without calibration ([source-kind controls](#source-kind-controls)).

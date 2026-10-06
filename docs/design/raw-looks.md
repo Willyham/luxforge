@@ -1,6 +1,6 @@
 # RAW looks
 
-Status: planned. The owner decided on 2026-10-05 that new RAW photos start from a Luxforge look rather than the bare neutral development, with matching the camera's own preview as a setting, and accepted the design's defaults the same day ([decided](#decided)). Phase 1, the Standard look, is to be built first. Phase 2, Match camera, follows on the same layer and payload. [Task plan](../../tasks/raw-looks.json).
+Status: planned. The owner decided on 2026-10-05 that new RAW photos start from a Luxforge look rather than the bare neutral development, with matching the camera's own preview as a setting, and accepted the design's defaults the same day ([decided](#decided)). Phase 1, the Standard look, is to be built first. Phase 2, Match camera, follows on the same layer and payload. [Task plan](../../tasks/raw/raw-looks.json).
 
 ## Why
 
