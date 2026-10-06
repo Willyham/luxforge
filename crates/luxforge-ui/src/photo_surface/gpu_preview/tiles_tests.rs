@@ -298,6 +298,16 @@ fn a_tile_runner_refuses_past_its_budget_before_creating_anything() {
         (figures.peak, figures.in_use, figures.compiles, figures.runs),
         (charge, u64::from(SIDE * SIDE * 4), 1, 1)
     );
+    // Where the tile's time went: its own times are the total's, a second tile's added to them.
+    let first = figures.last;
+    assert_eq!(figures.total, first, "one tile's times");
+    assert!(first.encode_us + first.wait_us > 0, "{first:?}");
+    run_codes(&mut runner, &small, &source, window);
+    let figures = runner.figures();
+    let mut both = first;
+    both.add(&figures.last);
+    assert_eq!(figures.total, both, "the tiles' times summed");
+    eprintln!("{test}: first {first:?}, second {:?}", figures.last);
     runner.release();
     assert_eq!(runner.figures().in_use, 0);
 }
