@@ -105,43 +105,11 @@ pub struct GpuReport {
     pub unavailable: Reasons,
 }
 
-/// A render context's working-memory budgets and its store of reduced planes: exact, and free to
-/// read.
+/// A render context's working-memory budgets: exact, and free to read.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BudgetsReport {
     pub colour_scratch: BudgetReport,
     pub spatial: BudgetReport,
-    /// The store of reduced planes ([`ReducedPlanesReport`]); every read from a context has it.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reduced_planes: Option<ReducedPlanesReport>,
-}
-
-/// The render context's store of the reduced planes a spatial unit that runs first in its
-/// operation computes before any coefficient (`docs/design/efficiency.md`, "The reduced-grid
-/// cache"): its limit and what it holds now, and since the context was created how often a frame
-/// render and its tiles found planes, what the renders handed back and
-/// published, and what the store evicted and refused. Every figure but the limit, the retained
-/// bytes and the entries only grows, so a hit rate over a gesture comes from two reads.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReducedPlanesReport {
-    pub limit_bytes: u64,
-    pub retained_bytes: u64,
-    pub entries: u64,
-    /// Frame renders of a cacheable unit that found an entry for their key and estimate.
-    pub render_hits: u64,
-    /// Frame renders of a cacheable unit that found none.
-    pub render_misses: u64,
-    /// Tiles of those renders that read held planes.
-    pub tile_hits: u64,
-    /// Tiles of those renders that computed the planes, because nothing held covered their reach.
-    pub tile_misses: u64,
-    /// Cells tiles handed back to their render's pending planes.
-    pub cells_handed_back: u64,
-    pub publishes: u64,
-    pub evictions: u64,
-    /// Entries the store would not hold because they alone pass the limit, and renders that did
-    /// not collect planes because the whole grid's would.
-    pub refusals: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -179,7 +147,6 @@ pub fn read(context: &RenderContext) -> ResourceReport {
                 in_use_bytes: spatial.in_use(),
                 peak_bytes: spatial.peak(),
             },
-            reduced_planes: Some(context.reduced().counts()),
         },
     )
 }
@@ -347,24 +314,9 @@ mod tests {
             json!(crate::RenderContext::new().spatial().target())
         );
         assert_eq!(
-            keys(&report["budgets"]["reduced_planes"]),
-            [
-                "cells_handed_back",
-                "entries",
-                "evictions",
-                "limit_bytes",
-                "publishes",
-                "refusals",
-                "render_hits",
-                "render_misses",
-                "retained_bytes",
-                "tile_hits",
-                "tile_misses",
-            ]
-        );
-        assert_eq!(
-            report["budgets"]["reduced_planes"]["limit_bytes"],
-            json!(crate::modules::REDUCED_STORE_BYTES)
+            keys(&report["budgets"]),
+            ["colour_scratch", "spatial"],
+            "the budgets and nothing else"
         );
         if cfg!(any(target_os = "macos", target_os = "linux", windows)) {
             assert!(report["cpu"].get("unavailable").is_none(), "{report}");
@@ -414,7 +366,6 @@ mod tests {
             BudgetsReport {
                 colour_scratch: budget,
                 spatial: budget,
-                reduced_planes: None,
             },
         );
         let value = serde_json::to_value(&reported).unwrap();

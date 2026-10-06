@@ -87,20 +87,14 @@ impl Entry {
         matches!(self, Self::Resample(entry) if entry.resample.map.has_warp())
     }
 
-    /// A spatial boundary. `prefix_hash` is the SHA-256 of the canonical JSON of the layers before
-    /// this one, which together with the source and the stage identifies what a global estimate
-    /// was prepared from.
+    /// A spatial boundary.
     #[cfg(test)]
-    pub(crate) fn spatial(operation: SpatialOperation, prefix_hash: String) -> Self {
-        Self::Spatial(SpatialEntry::new(operation, prefix_hash))
+    pub(crate) fn spatial(operation: SpatialOperation) -> Self {
+        Self::Spatial(SpatialEntry::new(operation))
     }
 
-    pub(crate) fn spatial_tagged(
-        operation: SpatialOperation,
-        prefix_hash: String,
-        stage: crate::EffectStage,
-    ) -> Self {
-        let mut entry = SpatialEntry::new(operation, prefix_hash);
+    pub(crate) fn spatial_tagged(operation: SpatialOperation, stage: crate::EffectStage) -> Self {
+        let mut entry = SpatialEntry::new(operation);
         entry.stage = stage;
         Self::Spatial(entry)
     }

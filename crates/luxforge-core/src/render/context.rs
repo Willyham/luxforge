@@ -1,6 +1,5 @@
-//! The state a render reads besides its source and its recipe: the colour scratch budget, the
-//! spatial budget and the store of reduced planes ([`super::reduced`]), with their high-water marks
-//! and counters.
+//! The state a render reads besides its source and its recipe: the colour scratch budget and the
+//! spatial budget, with their high-water marks and counters.
 //!
 //! None of it is process-global. One [`RenderContext`] is created by whoever owns the evaluations
 //! that should share it — the editor service, and through it the catalog owner, the preview jobs
@@ -8,8 +7,7 @@
 //! share a context share its budgets, which is what paces a render that overlaps another; two that
 //! do not share nothing, which is what lets a test measure one render alone.
 
-use super::reduced::ReducedStore;
-use crate::modules::{REDUCED_STORE_BYTES, SPATIAL_BUDGET_BYTES};
+use crate::modules::SPATIAL_BUDGET_BYTES;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -18,7 +16,7 @@ use std::sync::{
 /// The default aggregate target for transient float scratch: 64 MiB across every active render.
 pub(crate) const DEFAULT_SCRATCH_BYTES: u64 = 64 * 1024 * 1024;
 
-/// The budgets and the stores every render in one context shares. Cloning it clones one
+/// The budgets every render in one context shares. Cloning it clones one
 /// `Arc`: the clone is the same context, not a copy of it.
 #[derive(Clone)]
 pub struct RenderContext(Arc<Shared>);
@@ -26,7 +24,6 @@ pub struct RenderContext(Arc<Shared>);
 struct Shared {
     scratch: ScratchBudget,
     spatial: SpatialBudget,
-    reduced: ReducedStore,
     /// How many stacks [`super::render`] compiled in this context, for the tests that prove a
     /// preview job compiles once per stage it renders at.
     #[cfg(test)]
@@ -46,39 +43,27 @@ struct Shared {
 impl RenderContext {
     /// A context with empty budgets at their default targets.
     pub fn new() -> Self {
-        Self::targeted(
-            DEFAULT_SCRATCH_BYTES,
-            SPATIAL_BUDGET_BYTES,
-            REDUCED_STORE_BYTES,
-        )
+        Self::targeted(DEFAULT_SCRATCH_BYTES, SPATIAL_BUDGET_BYTES)
     }
 
     /// A context whose scratch budget has this target: how a test watches a colour pass meet a
     /// target smaller than the default, in a context nothing else renders through.
     #[cfg(test)]
     pub(crate) fn with_scratch_target(bytes: u64) -> Self {
-        Self::targeted(bytes, SPATIAL_BUDGET_BYTES, REDUCED_STORE_BYTES)
+        Self::targeted(bytes, SPATIAL_BUDGET_BYTES)
     }
 
     /// A context whose spatial budget has this target, for a test that narrows the tile windows of
     /// the renders it makes through it.
     #[cfg(test)]
     pub(crate) fn with_spatial_target(bytes: u64) -> Self {
-        Self::targeted(DEFAULT_SCRATCH_BYTES, bytes, REDUCED_STORE_BYTES)
+        Self::targeted(DEFAULT_SCRATCH_BYTES, bytes)
     }
 
-    /// A context whose store of reduced planes holds at most `bytes`, for a test that watches it
-    /// evict or refuse at a small stage.
-    #[cfg(test)]
-    pub(crate) fn with_reduced_limit(bytes: u64) -> Self {
-        Self::targeted(DEFAULT_SCRATCH_BYTES, SPATIAL_BUDGET_BYTES, bytes)
-    }
-
-    fn targeted(scratch: u64, spatial: u64, reduced: u64) -> Self {
+    fn targeted(scratch: u64, spatial: u64) -> Self {
         Self(Arc::new(Shared {
             scratch: ScratchBudget::new(scratch),
             spatial: SpatialBudget::new(spatial),
-            reduced: ReducedStore::new(reduced),
             #[cfg(test)]
             compiles: AtomicU64::new(0),
             #[cfg(test)]
@@ -98,11 +83,6 @@ impl RenderContext {
     /// The spatial budget: the working sets of spatial tiles.
     pub(crate) fn spatial(&self) -> &SpatialBudget {
         &self.0.spatial
-    }
-
-    /// The reduced planes of spatial units that run first in their operations.
-    pub(crate) fn reduced(&self) -> &ReducedStore {
-        &self.0.reduced
     }
 
     #[cfg(test)]
