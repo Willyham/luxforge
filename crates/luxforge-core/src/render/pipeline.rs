@@ -1053,7 +1053,7 @@ impl SpatialEntry {
             return Ok(globals.as_ref().clone());
         }
         resolve_globals(
-            context.estimates(),
+            context,
             &self.operation,
             stage,
             domain.fingerprint(),

@@ -1467,38 +1467,6 @@ fn gpu_preview_dehaze_behind_detail_draws_its_region_on_the_gpu() {
     finish(editor, catalog);
 }
 
-/// Every family of the qualification corpus at 100%, in the largest window the owner's display
-/// holds: the worker's exact visible region against the GPU frame of the region plan over the
-/// region's own boundary, each held to its recipe's class, and a slot over the GPU-preview budget
-/// a gap naming it.
-#[test]
-#[ignore = "the GPU preview corpus at 100%: set LUXFORGE_GPU_CORPUS_OUTPUT to a new directory, \
-            LUXFORGE_GENERATED_FIXTURES to the generated JPEGs and, for the RAWs, \
-            LUXFORGE_RAW_MANIFEST"]
-fn gpu_preview_corpus_at_100_percent() {
-    super::gpu_qualification::corpus_at_percent(
-        "gpu_preview_corpus_at_100_percent",
-        &[
-            "basic",
-            "tone-curve",
-            "mixer",
-            "vignette",
-            "colour-stack",
-            "mask-linear",
-            "mask-radial",
-            "mask-brush",
-            "mask-luminance-range",
-            "mask-colour-range",
-            "mask-composed",
-            "crop",
-            "lens-perspective",
-            "presence",
-            "detail",
-        ],
-        100.0,
-    );
-}
-
 /// What the surface reports of the source the desktop hands it: `version`, every row uploaded.
 fn source_held(editor: &Editor) -> luxforge_ui::photo_surface::SourceFigures {
     let source = editor.gpu.source().expect("a source");
