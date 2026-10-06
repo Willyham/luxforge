@@ -1159,7 +1159,9 @@ impl Worker {
         let submitted = staged.next < tiles && staged.pending.len() < TILES_IN_FLIGHT;
         if submitted {
             let tile = sweep.tiles[staged.next];
-            let writes = sweep.writes.ok_or_else(|| unplannable("a sweep writes nothing"))?;
+            let writes = sweep
+                .writes
+                .ok_or_else(|| unplannable("a sweep writes nothing"))?;
             let (input, window) = match sweep.reads {
                 None => (
                     TileInput::Source,
