@@ -38,10 +38,10 @@ The layer compiles to **one pointwise unit** that runs four steps in this order,
 **Payload** (current shape only):
 
 ```json
-{"look": "standard", "amount": 100, "tone": [[0, 0], …, [x_max, 1]], "chroma": 1.2, "fit": null}
+{"look": "standard", "amount": 100, "tone": [[0, 0], …, [x_max, 1]], "chroma": 1.2, "knee": 0.8, "fit": null}
 ```
 
-`look` is `standard`, `camera` or `neutral`. The resolved `tone` knots and `chroma` are **stored in every payload**, so a render depends only on the recipe: retuning Standard later never changes a photo already edited, and a camera fit never needs its preview again, not to export, not after the original goes missing. A Neutral payload is `{"look": "neutral"}`. `fit` is `null` except on a Camera look, where it records the fit's provenance ([Match camera](#phase-2-match-camera)).
+`look` is `standard`, `camera` or `neutral`. The resolved `tone` knots, `chroma` and path-to-white `knee` are **stored in every payload**, so a render depends only on the recipe: retuning Standard later never changes a photo already edited, and a camera fit never needs its preview again, not to export, not after the original goes missing. A Neutral payload is `{"look": "neutral"}`. `fit` is `null` except on a Camera look, where it records the fit's provenance ([Match camera](#phase-2-match-camera)).
 
 ### The Standard look
 
