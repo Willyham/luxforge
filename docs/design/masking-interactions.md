@@ -85,8 +85,8 @@ Continuous drawing lets an accepted snapshot finish while a newer snapshot waits
 feedback stays within one draft and one unchanged source, base entry, layer stack, other masks,
 target and view; revisions cannot move backwards. A bound mask's grid is shown only with its
 matching photograph content. Selection and commit results retain strict identity checks. Exact
-coverage with unchanged inputs can be rebound to a refined photograph generation/quality without
-recomputing or uploading photograph pixels.
+coverage with unchanged inputs can be rebound to a newer photograph generation of the same content
+without recomputing or uploading photograph pixels.
 
 Coverage-only changes reuse photograph pixels. An unbound candidate or mask-only commit may also
 reuse settled photograph pixels when the pixel-content identity and view agree and no old photo
@@ -94,9 +94,10 @@ completion is pending. Logical entry/draft metadata and a matching exact report 
 A changed bound mask still renders its adjustments through the ordinary photo pipeline. Missing
 providers and exact pixel-input refusals remain explicit.
 
-Fit and viewport requests use the same content transform and exact evaluator. The grid is a
-quantized coverage display, independent of whether the photograph is currently a proxy or exact
-frame. Green/white tint and both black presentations paint that one grid once on the coverage
+Whole-stage and visible-region requests use the same content transform and exact evaluator: at
+100% and above over the GPU's visible region a grid of that region, otherwise a grid of the whole
+stage. The grid is a quantized coverage display, independent of which renderer drew the
+photograph. Green/white tint and both black presentations paint that one grid once on the coverage
 worker, using an exact 256-code palette. Delivered results retain identity, dimensions and shared
 RGBA; the cache alone keeps the coverage plane. A handoff lease bounds worker and consumer
 buffers through adoption or replacement of a waiting result, and semantic cancellation wakes a
@@ -179,7 +180,7 @@ repair.
 | Selected mask/component, armed brush and visible coverage agree | Selection and delayed-result tests; disjoint native A/B pixels and subsequent stroke target |
 | Actual flow, feather, retracing, composition and commit coverage | Frozen independent mask-reference tests, exact candidate grids and native live/committed probes; no separate painted-path layer |
 | O/manual visibility, extra UI modes and hidden eyes | Key/controller tests, stored/effective state and native renderer captures |
-| Crop/rotation, percentage zoom and refinement | Content-map tests, transformed live-gradient captures and native viewport scenarios |
+| Crop/rotation and percentage zoom | Content-map tests, transformed live-gradient captures and native viewport scenarios |
 | Cancellation, conflict, invalid capture and resource refusal | Actual-owner/worker tests and brush/range recovery scenarios; source/hash/history checks |
 | RAW development can continue after coverage work | Dedicated background native RAW coverage/redevelopment checks |
 | Hover and continuous painting remain bounded and progress | Real widget-route diagnostic, photo-sized paced strokes, capture-limit and progressive-worker tests |
@@ -213,7 +214,7 @@ record photo-sized native scope separately from rendered correctness and from di
 The whole-recipe `editor-performance` before/after matrix was not rerun: no effect equation or
 renderer kernel changes, and the measured bottleneck was the desktop hover query path. Targeted
 native hover and paint diagnostics are the performance evidence, with exact `render.sample` and
-frozen reference tests preserving query/effect correctness. Retained raster and source/region
+frozen reference tests preserving query/effect correctness. Retained raster and source
 sharing tests prove the reuse claims. Coverage outcomes and narrow owner responses preserve
 UI/API parity, source hashes and committed history.
 
