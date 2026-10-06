@@ -862,10 +862,16 @@ fn picture(
             let drawn = surface
                 .rest(gpu, &handed)
                 .map_err(|fallback| format!("the picture at rest in tiles: {fallback:?}"))?;
+            // Drawn in staged sweeps where the editor plans them and their stage textures fit,
+            // the tiles drawn being the sweeps'.
+            let renderer = match drawn.figures.sweeps {
+                0 => "the picture at rest in tiles".to_owned(),
+                sweeps => format!("the picture at rest in {sweeps} staged sweeps"),
+            };
             (
                 rgb_codes(&drawn.codes),
-                "the picture at rest in tiles".to_owned(),
-                Some(handed.tiles.len()),
+                renderer,
+                Some(drawn.figures.tiles as usize),
             )
         }
         (Some(Err(reason)), _) => (
