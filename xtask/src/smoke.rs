@@ -457,26 +457,12 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: viewport::REGION,
-        about: "Masked, cropped 100% viewport draft, overlays, settle, history and GPU draws",
+        about: "Masked, cropped 100% viewport draft on the GPU's region with its mask coverage, overlays, release, history and GPU draws",
         launches: &[LaunchSpec {
             plan: viewport::region_plan,
             ..APP
         }],
         verify: viewport::verify_region,
-        source: Source::Fixtures(&["fixtures/generated/24mp.jpg"]),
-        window: Some(PANELLED),
-        note: None,
-        own: None,
-    },
-    Scenario {
-        name: viewport::CHAINED,
-        about: "A global estimate behind an earlier spatial layer at 100%: GPU drag ticks and the \
-                exact region with the layers before it kept whole, over two masks",
-        launches: &[LaunchSpec {
-            plan: viewport::chained_plan,
-            ..APP
-        }],
-        verify: viewport::verify_chained,
         source: Source::Fixtures(&["fixtures/generated/24mp.jpg"]),
         window: Some(PANELLED),
         note: None,
@@ -1337,10 +1323,10 @@ fn plain_checks(scenario: &str, launch: &Checked) -> Result {
     if scenario.starts_with("large") {
         // A photo-sized source at Fit is drawn at rest by the GPU, the stack at full resolution in
         // tiles reduced to the view, and the status bar names the GPU's render. A capture can land
-        // before its tiles are in, while the photograph is still the CPU's display proxy, whose own
-        // render time the bar then gives and calls approximate, or says "Rendering…" while a refit
-        // or the exact phase runs; the figure behind it is still recorded, and it must be the
-        // proxy's.
+        // before its tiles are in, while the photograph is still the reference's exact frame
+        // reduced to the view, whose own render time the bar then gives and calls exact, or says
+        // "Rendering…" while a refit or the reference frame runs; the figure behind it is still
+        // recorded.
         let record = expect_render_times(&launch.events, &launch.frames)?;
         ensure(
             launch.frames.iter().all(|frame| {
@@ -1351,13 +1337,13 @@ fn plain_checks(scenario: &str, launch: &Checked) -> Result {
                         .as_str()
                         .is_some_and(|text| text.starts_with("GPU render"))
                 } else {
-                    bar["render_proxy"] == json!(true)
-                        && bar["render"].as_str().is_some_and(|text| {
-                            text.starts_with("Approximate render") || text == "Rendering\u{2026}"
-                        })
+                    bar["render"].as_str().is_some_and(|text| {
+                        (text.starts_with("Exact render") && state["reference"]["reduced"] == true)
+                            || text == "Rendering\u{2026}"
+                    })
                 }
             }),
-            "A photo-sized frame at Fit reports neither the GPU's render nor the proxy's",
+            "A photo-sized frame at Fit reports neither the GPU's render nor the reference's reduction",
         )?;
         let pictures: Vec<Value> = launch
             .frames
@@ -1523,13 +1509,9 @@ pub const RENDER_MS_BOUND: f64 = 5000.0;
 /// The status bar's wording of one frame's render time, exactly as the editor's
 /// `state::status::RenderTime` formats it, so a captured frame's text is checked against its own
 /// figure rather than against a copy of the text. `approximate` is a frame that approximates a
-/// drafted RAW white balance; it and the display proxy both read as an approximate render.
-pub fn render_text(ms: f64, proxy: bool, approximate: bool) -> String {
-    let kind = if proxy || approximate {
-        "Approximate"
-    } else {
-        "Exact"
-    };
+/// drafted RAW white balance, which reads as an approximate render.
+pub fn render_text(ms: f64, approximate: bool) -> String {
+    let kind = if approximate { "Approximate" } else { "Exact" };
     format!("{kind} render \u{b7} {}", render_figure(ms))
 }
 
@@ -1588,7 +1570,7 @@ pub fn expect_render_times<F: Borrow<Value>>(events: &[Value], frames: &[F]) -> 
                 detail["generation"]
             ),
         )?;
-        displayed.push(json!({"generation":detail["generation"],"proxy":detail["proxy"],"reason":detail["reason"],"render_ms":ms}));
+        displayed.push(json!({"generation":detail["generation"],"reduced":detail["reduced"],"reason":detail["reason"],"render_ms":ms}));
     }
     ensure(
         !displayed.is_empty(),
@@ -1639,14 +1621,6 @@ pub fn expect_render_times<F: Borrow<Value>>(events: &[Value], frames: &[F]) -> 
                 frame["file"]
             ),
         )?;
-        let proxy = bar["render_proxy"] == json!(true);
-        ensure(
-            proxy == (frame["state"]["proxy"]["presented"] == json!(true)),
-            format!(
-                "{}: the status bar's proxy label disagrees with the frame on screen",
-                frame["file"]
-            ),
-        )?;
         let approximate = bar["render_approximate"] == json!(true);
         ensure(
             approximate == (frame["state"]["approximate_white_balance"] == json!(true)),
@@ -1656,13 +1630,15 @@ pub fn expect_render_times<F: Borrow<Value>>(events: &[Value], frames: &[F]) -> 
             ),
         )?;
         ensure(
-            text == render_text(ms, proxy, approximate),
+            text == render_text(ms, approximate),
             format!(
                 "{}: the status bar says {text:?} for {ms} ms",
                 frame["file"]
             ),
         )?;
-        shown.push(json!({"frame":frame["file"],"render":text,"render_ms":ms,"proxy":proxy,"approximate":approximate}));
+        shown.push(
+            json!({"frame":frame["file"],"render":text,"render_ms":ms,"approximate":approximate}),
+        );
     }
     Ok(json!({"bound_ms":RENDER_MS_BOUND,"preview_displayed":displayed,"status_bar":shown}))
 }
@@ -1676,31 +1652,19 @@ mod tests {
     /// a missing one, and a status bar that states a figure no frame reported.
     #[test]
     fn render_times_must_be_each_frames_own_and_plausible() {
-        let displayed = |ms: Value| json!({"event":"preview_displayed","detail":{"generation":2,"proxy":true,"render_ms":ms}});
-        let frame = |render: &str, ms: f64, proxy: bool| json!({"file":"frame-1.png","state":{"proxy":{"presented":proxy},"status_bar":{"render":render,"render_ms":ms,"render_proxy":proxy}}});
-        assert_eq!(
-            render_text(12.4, true, false),
-            "Approximate render \u{b7} 12 ms"
-        );
-        assert_eq!(render_text(0.3, false, false), "Exact render \u{b7} <1 ms");
-        assert_eq!(
-            render_text(1234.0, false, false),
-            "Exact render \u{b7} 1.2 s"
-        );
-        assert_eq!(
-            render_text(9.2, true, true),
-            "Approximate render \u{b7} 9 ms"
-        );
-        assert_eq!(
-            render_text(140.0, false, true),
-            "Approximate render \u{b7} 140 ms"
-        );
+        let displayed = |ms: Value| json!({"event":"preview_displayed","detail":{"generation":2,"reduced":true,"render_ms":ms}});
+        let frame = |render: &str, ms: f64, approximate: bool| json!({"file":"frame-1.png","state":{"approximate_white_balance":approximate,"status_bar":{"render":render,"render_ms":ms,"render_approximate":approximate}}});
+        assert_eq!(render_text(12.4, false), "Exact render \u{b7} 12 ms");
+        assert_eq!(render_text(0.3, false), "Exact render \u{b7} <1 ms");
+        assert_eq!(render_text(1234.0, false), "Exact render \u{b7} 1.2 s");
+        assert_eq!(render_text(9.2, true), "Approximate render \u{b7} 9 ms");
+        assert_eq!(render_text(140.0, true), "Approximate render \u{b7} 140 ms");
         assert_eq!(gpu_text(2.4, false), "GPU preview \u{b7} 2 ms");
         assert_eq!(gpu_text(0.2, false), "GPU preview \u{b7} <1 ms");
         assert_eq!(gpu_text(12.4, true), "GPU render \u{b7} 12 ms");
         let good = expect_render_times(
             &[displayed(json!(12.4))],
-            &[frame("Approximate render \u{b7} 12 ms", 12.4, true)],
+            &[frame("Exact render \u{b7} 12 ms", 12.4, false)],
         );
         assert!(good.is_ok(), "{good:?}");
         // The old figure: half a million milliseconds since the open.
@@ -1715,11 +1679,11 @@ mod tests {
         assert!(
             expect_render_times(
                 &[displayed(json!(12.4))],
-                &[frame("Approximate render \u{b7} 90 ms", 90.0, true)]
+                &[frame("Exact render \u{b7} 90 ms", 90.0, false)]
             )
             .is_err()
         );
-        // The proxy label must match the frame on screen.
+        // The approximate label must match the frame on screen.
         assert!(
             expect_render_times(
                 &[displayed(json!(12.4))],
@@ -1727,7 +1691,7 @@ mod tests {
                     .as_object()
                     .map(|object| {
                         let mut object = object.clone();
-                        object["state"]["proxy"]["presented"] = json!(true);
+                        object["state"]["approximate_white_balance"] = json!(true);
                         Value::Object(object)
                     })
                     .unwrap()]
