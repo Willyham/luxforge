@@ -552,6 +552,44 @@ fn filmstrip_moves_through_the_set_drawing_the_cached_preview_first() {
     finish(scene);
 }
 
+/// A warm open's GPU picture stands over the cached preview of the photograph moved to, which stays
+/// the surface's base: once the GPU presents the open photograph's content, its picture is the
+/// photograph on screen, so the preview is let go of — not withdrawn from under it — and the
+/// status bar no longer calls the picture a cached preview.
+#[test]
+fn filmstrip_a_warm_opens_gpu_picture_replaces_the_cached_preview() {
+    let (mut scene, set) = developed("warm-move");
+    let editor = &mut scene.editor;
+    decode(editor, &set[1..2]);
+    send(editor, DevelopMessage::Step(1));
+    let preview = editor
+        .develop
+        .state
+        .preview
+        .clone()
+        .expect("a cached preview");
+    run_open(editor);
+    assert!(
+        editor.develop.state.preview.is_some(),
+        "until a picture of the entry is on screen"
+    );
+    // The GPU presents the open photograph's content over the preview, as a warm open does.
+    editor.presentation.gpu_presented = Some(editor.presentation.presented_content);
+    // Any message's hooks then see it.
+    let _ = editor.update(Message::Preview(PreviewMessage::Poll));
+    assert!(
+        editor.develop.state.preview.is_none(),
+        "the GPU's picture replaced it"
+    );
+    assert_eq!(
+        editor.presentation.presenter.photo_version(),
+        preview.version,
+        "the preview stays the surface's base under the GPU's picture"
+    );
+    assert_ne!(editor.workspace.status.render, "Cached preview");
+    finish(scene);
+}
+
 /// A move with nothing decoded for it takes the photograph before it off the surface; a decode or
 /// an open of a photograph moved past that lands after the next move is never drawn for the
 /// photograph moved to, whose own preview is drawn as soon as it lands.
