@@ -353,7 +353,9 @@ impl LookModule {
                     )
                 }],
                 controls: vec![
-                    Control::choice(SET_LOOK, LOOK, "Look").into(),
+                    Control::choice(SET_LOOK, LOOK, "Look")
+                        .labels(["Standard", "Neutral"])
+                        .into(),
                     Control::number(SET_LOOK, AMOUNT, "Amount").into(),
                 ],
                 reset: Some(ResetAction {
@@ -454,8 +456,9 @@ impl ToolModule for LookModule {
 
     /// `Look Standard` (with its amount when it is not 100) or `Look Neutral`, the values `look`,
     /// `amount`, `chroma`, the knot count `knots` and `fit`, and neutral exactly when the look is
-    /// the current Standard at amount 100 or Neutral: the look a new RAW photo starts from or none,
-    /// so a client's edited mark stays dark for it. A neutral report still renders the look.
+    /// the current Standard at amount 100, the look a new RAW photo starts from, so a client's
+    /// edited mark stays dark for it and lights for Neutral or another amount (the owner's
+    /// decision). A neutral report still renders the look.
     fn describe(
         &self,
         effect_id: &str,
@@ -466,7 +469,7 @@ impl ToolModule for LookModule {
             Payload::Neutral => LayerReport {
                 summary: "Look Neutral".into(),
                 values: Map::from_iter([(LOOK.into(), json!(NEUTRAL))]),
-                neutral: true,
+                neutral: false,
             },
             Payload::Standard(look) => LayerReport {
                 summary: if look.amount == FULL_AMOUNT {

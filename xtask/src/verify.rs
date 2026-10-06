@@ -267,7 +267,7 @@ pub fn authentic(root: &Path, manifest_path: &Path, out: &Path) -> Result {
 ///
 /// `manifest` is the manifest's own sources, `(id, absolute path)`, read once by the caller through
 /// the one RAW manifest reader; `None` when `--manifest` was not given. Building one `raw-editor`
-/// and one `raw-panel` component per source and one RAW `performance` component needs the source
+/// one `raw-panel` and one `look` component per source and one RAW `performance` component needs the source
 /// list itself, not just whether a manifest was given.
 fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> Vec<Spec> {
     let mut specs = Vec::new();
@@ -371,6 +371,18 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
                     &format!("raw-panel-{id}"),
                     "full",
                     &["smoke", "--scenario", "raw-panel", "--source", &path],
+                )
+            });
+        }
+        for (id, path) in sources {
+            let path = path.to_string_lossy().into_owned();
+            specs.push(Spec {
+                result: Some("result.json"),
+                binary: true,
+                ..spec(
+                    &format!("look-{id}"),
+                    "full",
+                    &["smoke", "--scenario", "look", "--source", &path],
                 )
             });
         }
@@ -1631,11 +1643,11 @@ mod tests {
         ];
         let full = plan(Tier::Full, Some(&sources), true);
         let names: Vec<&str> = full.iter().map(|s| s.name.as_str()).collect();
-        // One `raw-editor`, `raw-detail` and `raw-panel` component per manifest source, named by source id,
+        // One `raw-editor`, `raw-detail`, `raw-panel` and `look` component per manifest source, named by source id,
         // around `raw-authentic`, and one RAW `performance` run over the first source, all before
         // the timing tier, with `hardening` last in `full`'s own part of the plan.
         assert_eq!(
-            &names[names.len() - 13..],
+            &names[names.len() - 15..],
             [
                 "raw-editor-z6",
                 "raw-editor-x100vi",
@@ -1644,6 +1656,8 @@ mod tests {
                 "raw-authentic",
                 "raw-panel-z6",
                 "raw-panel-x100vi",
+                "look-z6",
+                "look-x100vi",
                 "raw-performance",
                 "hardening",
                 "editor-performance",
@@ -1717,6 +1731,7 @@ mod tests {
         // Without a manifest there is no source to run any of them over.
         let without = plan(Tier::Full, None, true);
         assert!(without.iter().all(|s| !s.name.starts_with("raw-panel")
+            && !s.name.starts_with("look-")
             && !s.name.starts_with("raw-editor-")
             && s.name != "raw-performance"));
     }

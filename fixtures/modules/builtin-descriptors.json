@@ -2387,6 +2387,10 @@
             "action": "set-look",
             "kind": "choice",
             "label": "Look",
+            "labels": [
+              "Standard",
+              "Neutral"
+            ],
             "parameter": "look"
           },
           {
