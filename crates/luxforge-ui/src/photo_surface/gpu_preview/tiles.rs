@@ -71,12 +71,14 @@
 //!   reason the stage cannot run it — `pipeline-failed`, `texture-limit`, `buffer-limit` or
 //!   `source-missing` for a window whose pixels were let go — exactly as the surface names them.
 use super::{
-    BLOCK_CHUNK, Charged, Compiled, Derivation, GpuFallback, GpuPlan, GpuSource, GpuStep,
+    BLOCK_CHUNK, BoundaryFormat, Charged, Compiled, Derivation, GpuFallback, GpuPlan, GpuSource,
+    GpuStep,
     MIN_BUFFER, OUTPUT_FORMAT, SAMPLED_FORMAT, Shape, SourceLayouts, SourceSlot, SpatialSlot,
     Support, answered, blocks, buffer_capacity, chain, chain_charge, compile, encode_pass_over,
     gpu_stage_refused, intermediate_bytes, intermediate_format, le_bytes, light, output_offset,
     region_drawable, spatial, storage_buffer, supported,
 };
+use super::staged::StageHolder;
 use crate::adapters::{self, Adapter, Unopened};
 use std::sync::{
     Arc,
@@ -218,6 +220,8 @@ pub struct TileFigures {
     pub in_use: u64,
     /// Tiles submitted and not yet read back.
     pub in_flight: u32,
+    /// Of `in_use`, the stage textures a staged stream holds ([`TileRunner::hold_stages`]).
+    pub stage_bytes: u64,
     /// Slots it created, one a window shape: a run of the shape its slot holds reuses it.
     pub slots: u64,
     /// Windows of the source it uploaded: a run of the window it holds reads it again.
@@ -278,6 +282,10 @@ pub struct TileRunner {
     /// Readback copies a tile read back left, for the next tiles to copy into.
     readbacks: Vec<(wgpu::Buffer, u64)>,
     tickets: u64,
+    /// The stage textures a staged stream's sweeps write and read ([`TileRunner::hold_stages`]),
+    /// and what they are charged.
+    stages: Vec<StageHolder>,
+    stage_bytes: u64,
     sequences: Lru<Key, Sequence>,
     /// The lights it computed last, each under its key ([`light_key`]).
     lights: Lru<u64, [f32; 4]>,
@@ -325,21 +333,67 @@ fn holds(key: &Key, steps: &[GpuStep], format: wgpu::TextureFormat) -> bool {
             .eq(steps.iter().flat_map(GpuStep::signature))
 }
 
-/// A tile submitted, which [`TileRunner::finish`] reads back.
+/// A tile submitted, which [`TileRunner::finish`] reads back, or [`TileRunner::finish_stage`] waits
+/// for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Ticket(u64);
 
-/// A tile's work on the GPU, submitted: the readback copy, its mapping's answer and its layout,
-/// its submission, and what it holds until the GPU is done with it.
-struct InFlight {
-    ticket: u64,
-    index: wgpu::SubmissionIndex,
-    readback: wgpu::Buffer,
-    readback_bytes: u64,
+/// What a tile's boundary is cut from: a window of the source, or the stage texture a staged
+/// sweep before it wrote ([`TileRunner::hold_stages`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TileInput {
+    Source,
+    /// Stage texture `k`: the window is copied out of it, texel for texel.
+    Stage(u32),
+}
+
+/// What a tile's last link writes: its output, read back as [`TileEnd`] asks; or, for a staged
+/// sweep before the last, its last link's intermediate — linear, unclamped, as a chain's link
+/// writes it — of which `rect` (`[x0, y0, x1, y1)` of the content stage) is copied into stage
+/// texture `writes` at `rect`, nothing read back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TileOutput {
+    Read(TileEnd),
+    Stage { writes: u32, rect: [u32; 4] },
+}
+
+impl TileOutput {
+    /// What is read back, if anything.
+    fn end(self) -> Option<TileEnd> {
+        match self {
+            Self::Read(end) => Some(end),
+            Self::Stage { .. } => None,
+        }
+    }
+}
+
+/// The format a tile's last pass writes: `end`'s, or the chain's intermediate over `boundary` for
+/// a tile whose output is copied into a stage texture.
+fn end_format(end: Option<TileEnd>, boundary: BoundaryFormat) -> wgpu::TextureFormat {
+    end.map_or_else(|| intermediate_format(boundary), TileEnd::format)
+}
+
+/// The bytes a texel of a tile's output takes, as [`end_format`] writes it.
+fn end_texel_bytes(end: Option<TileEnd>, boundary: BoundaryFormat) -> u32 {
+    end.map_or(boundary.texel_bytes() as u32, TileEnd::texel_bytes)
+}
+
+/// A tile's output copied out: the readback copy, its mapping's answer and its layout.
+struct Readback {
+    buffer: wgpu::Buffer,
+    bytes: u64,
     mapped: mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>,
     size: (u32, u32),
     padded: u32,
     end: TileEnd,
+}
+
+/// A tile's work on the GPU, submitted: its readback copy, when it has one, its submission, and
+/// what it holds until the GPU is done with it.
+struct InFlight {
+    ticket: u64,
+    index: wgpu::SubmissionIndex,
+    readback: Option<Readback>,
     /// The window and the slot it read and drew into, by generation, with their bytes: what it
     /// still holds once the runner lets them go, until the GPU is known to be done with it.
     window: (u64, u64),
@@ -349,13 +403,20 @@ struct InFlight {
     times: TileTimes,
 }
 
+impl InFlight {
+    fn readback_bytes(&self) -> u64 {
+        self.readback.as_ref().map_or(0, |readback| readback.bytes)
+    }
+}
+
 /// What decides every texture and buffer of a tile's slot but its spatial planes and its pool,
 /// which follow their own keys: the boundary's size and format, the output's size and what it is
-/// read back as, a geometry tail's intermediate, and how many links come before the last.
+/// read back as — or none, for a staged sweep's intermediate — a geometry tail's intermediate, and
+/// how many links come before the last.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct SlotKey {
     shape: Shape,
-    end: TileEnd,
+    end: Option<TileEnd>,
     links: usize,
 }
 
@@ -405,11 +466,12 @@ impl Slot {
         let size = key.shape.boundary;
         let mut slot = Self {
             key,
+            // Cut from the source by a pass, or copied out of a stage texture.
             boundary: texture(
                 "luxforge.tiles.boundary",
                 size,
                 key.shape.format.texture(),
-                drawn,
+                drawn | wgpu::TextureUsages::COPY_DST,
             ),
             links: (0..key.links)
                 .map(|_| {
@@ -435,7 +497,7 @@ impl Slot {
             output: texture(
                 "luxforge.tiles.output",
                 key.shape.output,
-                key.end.format(),
+                end_format(key.end, key.shape.format),
                 wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             ),
             bytes: 0,
@@ -463,7 +525,9 @@ impl Slot {
             + self.words.bytes
             + self.blocks.bytes
             + tail
-            + u64::from(width) * u64::from(height) * u64::from(self.key.end.texel_bytes());
+            + u64::from(width)
+                * u64::from(height)
+                * u64::from(end_texel_bytes(self.key.end, self.key.shape.format));
     }
 }
 
@@ -560,6 +624,8 @@ impl TileRunner {
             in_flight: std::collections::VecDeque::new(),
             readbacks: Vec::new(),
             tickets: 0,
+            stages: Vec::new(),
+            stage_bytes: 0,
             sequences: Lru::new(TILE_PIPELINE_CACHE),
             lights: Lru::new(TILE_LIGHTS),
             support,
@@ -636,18 +702,66 @@ impl TileRunner {
                         bytes
                     }
                 };
-                tile.readback_bytes + stale(tile.window, window) + stale(tile.slot, slot)
+                tile.readback_bytes() + stale(tile.window, window) + stale(tile.slot, slot)
             })
             .sum()
     }
 
-    /// What the runner holds now, as charged: the window, the slot and what its tiles in flight
-    /// hold.
+    /// What the runner holds now, as charged: the window, the slot, the stage textures and what
+    /// its tiles in flight hold.
     fn holding(&self) -> u64 {
         self.window.as_ref().map_or(0, |(_, bytes)| *bytes)
             + self.slot.as_ref().map_or(0, |slot| slot.bytes)
+            + self.stage_bytes
             + self.pinned()
             + self.spare()
+    }
+
+    /// Hold `count` stage textures of `stage` in `format`, each a content stage in at most 2 × 2
+    /// textures ([`StageHolder`]), for a staged stream's sweeps to write and read: charged to
+    /// [`GPU_TILE_BUDGET`] beside everything the runner holds before any is created, refused
+    /// (`tiles-budget`, or `texture-limit` past 2 × 2) having created none. Any held before go
+    /// first. They stay until [`TileRunner::release_stages`]; a call's tiles never touch them.
+    pub fn hold_stages(
+        &mut self,
+        stage: (u32, u32),
+        format: BoundaryFormat,
+        count: u32,
+    ) -> Result<(), TileFailure> {
+        self.release_stages();
+        let limit = self.device.limits().max_texture_dimension_2d;
+        let each = StageHolder::charge(stage, format.texture(), limit).map_err(TileFailure::Plan)?;
+        let requested = self.holding() + u64::from(count) * each;
+        if requested > GPU_TILE_BUDGET {
+            return Err(TileFailure::Budget {
+                requested,
+                budget: GPU_TILE_BUDGET,
+            });
+        }
+        for _ in 0..count {
+            let holder = StageHolder::create(&self.device, stage, format.texture(), |_| {
+                Ok::<(), GpuFallback>(())
+            })
+            .map_err(TileFailure::Plan)?;
+            self.stage_bytes += holder.bytes();
+            self.stages.push(holder);
+        }
+        self.figures.peak = self.figures.peak.max(self.holding());
+        self.account();
+        Ok(())
+    }
+
+    /// Let the stage textures go: a staged stream ended, drawn whole, cancelled, abandoned or
+    /// fallen back. A tile in flight that wrote or read them keeps them until the GPU is done.
+    pub fn release_stages(&mut self) {
+        self.stages.clear();
+        self.stage_bytes = 0;
+        self.account();
+    }
+
+    /// The stage textures held, and what they are charged.
+    pub fn stages(&self) -> (usize, u64) {
+        (self.stages.len(), self.stage_bytes)
     }
 
     /// The readback copies tiles read back left for the next to copy into.
@@ -658,6 +772,7 @@ impl TileRunner {
     fn account(&mut self) {
         self.figures.in_use = self.holding();
         self.figures.in_flight = self.in_flight.len() as u32;
+        self.figures.stage_bytes = self.stage_bytes;
     }
 
     /// Wait for every tile in flight to be done on the GPU, so what they held of a window or a slot
@@ -688,8 +803,10 @@ impl TileRunner {
         window: [u32; 4],
         end: TileEnd,
     ) -> Result<u64, TileFailure> {
-        let held = self.checked(plan, source, window)?;
-        let run = held.bytes() + self.slot_bytes(plan, end)?;
+        let held = self
+            .checked(plan, source, window, TileInput::Source)?
+            .ok_or(TileFailure::PIPELINE_FAILED)?;
+        let run = held.bytes() + self.slot_bytes(plan, Some(end))?;
         // A light is computed on its own before the run, beside the window kept between runs.
         let mut most = run;
         for light in &plan.lights {
@@ -751,6 +868,37 @@ impl TileRunner {
         window: [u32; 4],
         end: TileEnd,
     ) -> Result<Ticket, TileFailure> {
+        self.submit_to(plan, source, window, TileInput::Source, TileOutput::Read(end))
+    }
+
+    /// [`TileRunner::submit`] for a tile of a staged sweep (`docs/design/gpu-first.md`, "Staged
+    /// sweeps"): its boundary, `window` of the content stage, cut from `source` or copied out of a
+    /// stage texture (`input`), and its last link's output read back or, for a sweep before the
+    /// last, its intermediate's rectangle copied into a stage texture (`output`), which
+    /// [`TileRunner::finish_stage`] waits for. The stage textures must be held
+    /// ([`TileRunner::hold_stages`]). The lights the plan reads are computed from `source`, as every
+    /// tile's are.
+    pub fn submit_to(
+        &mut self,
+        plan: &GpuPlan,
+        source: &GpuSource,
+        window: [u32; 4],
+        input: TileInput,
+        output: TileOutput,
+    ) -> Result<Ticket, TileFailure> {
+        let end = output.end();
+        let stage = |k: u32, stages: &[StageHolder]| {
+            stages
+                .get(k as usize)
+                .map(|_| ())
+                .ok_or(TileFailure::PIPELINE_FAILED)
+        };
+        if let TileInput::Stage(k) = input {
+            stage(k, &self.stages)?;
+        }
+        if let TileOutput::Stage { writes, .. } = output {
+            stage(writes, &self.stages)?;
+        }
         if self.lost() {
             // Nothing it held outlives its device.
             self.in_flight.clear();
@@ -764,7 +912,8 @@ impl TileRunner {
             // Opened before the output encoding was installed: the cut's passes, made now.
             self.layouts = SourceLayouts::new(&self.device).ok();
         }
-        let held = self.checked(plan, source, window)?;
+        // A window of the source for a tile cut from it; none for one copied out of a stage texture.
+        let held = self.checked(plan, source, window, input)?;
         let lit = Instant::now();
         let lights = self.lit(&plan.lights, source)?;
         let mut times = TileTimes {
@@ -772,7 +921,8 @@ impl TileRunner {
             ..TileTimes::default()
         };
         let slot_bytes = self.slot_bytes(plan, end)?;
-        let single = held.bytes() + slot_bytes;
+        let window_bytes = held.as_ref().map_or(0, GpuSource::bytes);
+        let single = window_bytes + slot_bytes + self.stage_bytes;
         if single > GPU_TILE_BUDGET {
             return Err(TileFailure::Budget {
                 requested: single,
@@ -782,11 +932,12 @@ impl TileRunner {
         let pipelines = self.pipelines(plan, end)?;
         // A window of another rectangle, or of another source, and a slot of another shape go
         // before the tile's own are created: the runner holds what it was charged, never more.
-        if self
-            .window
-            .as_ref()
-            .is_some_and(|(slot, _)| !slot.holds(&held))
-        {
+        // A tile copied out of a stage texture reads no window of the source.
+        if held.as_ref().is_none_or(|held| {
+            self.window
+                .as_ref()
+                .is_some_and(|(slot, _)| !slot.holds(held))
+        }) {
             self.drop_window();
         }
         let key = SlotKey {
@@ -818,7 +969,12 @@ impl TileRunner {
             self.device.push_error_scope(filter);
         }
         let submitted = self.encode(
-            plan, &held, key, slot_bytes, &pipelines, &lights, &mut times,
+            plan,
+            (held.as_ref(), input, output),
+            (window, key, slot_bytes),
+            &pipelines,
+            &lights,
+            &mut times,
         );
         // Every scope is popped, whatever the first one answers.
         let answers: Vec<_> = (0..3)
@@ -857,10 +1013,44 @@ impl TileRunner {
     /// callers. A lost device, or a copy that could not be mapped, is `device-lost`, every tile in
     /// flight let go with it; a ticket not in flight is `pipeline-failed`.
     pub fn finish(&mut self, ticket: Ticket) -> Result<TilePixels, TileFailure> {
+        let (mut tile, wait_us) = self.complete(ticket, true)?;
+        let readback = tile.readback.take().ok_or(TileFailure::PIPELINE_FAILED)?;
+        let reading = Instant::now();
+        let read = Self::read(&readback);
+        tile.times.wait_us = wait_us;
+        tile.times.read_us = micros(reading);
+        if self.readbacks.len() < TILES_IN_FLIGHT {
+            self.readbacks.push((readback.buffer, readback.bytes));
+        }
+        self.finished(&tile);
+        Ok(read)
+    }
+
+    /// Wait for `ticket`'s tile, a staged sweep's whose output went into a stage texture
+    /// ([`TileOutput::Stage`]), to be done on the device: what a sweep after it may read. A lost
+    /// device is `device-lost`, every tile in flight let go with it.
+    pub fn finish_stage(&mut self, ticket: Ticket) -> Result<(), TileFailure> {
+        let (mut tile, wait_us) = self.complete(ticket, false)?;
+        tile.times.wait_us = wait_us;
+        self.finished(&tile);
+        Ok(())
+    }
+
+    /// One more tile done: its times counted.
+    fn finished(&mut self, tile: &InFlight) {
+        self.figures.runs += 1;
+        self.figures.last = tile.times;
+        self.figures.total.add(&tile.times);
+        self.account();
+    }
+
+    /// Wait for `ticket`'s tile to be done on the device, and take it out of flight with how long
+    /// the wait took; its copy, when `mapped` asks for one, mapped.
+    fn complete(&mut self, ticket: Ticket, mapped: bool) -> Result<(InFlight, u64), TileFailure> {
         let Some(at) = self
             .in_flight
             .iter()
-            .position(|tile| tile.ticket == ticket.0)
+            .position(|tile| tile.ticket == ticket.0 && tile.readback.is_some() == mapped)
         else {
             return Err(TileFailure::PIPELINE_FAILED);
         };
@@ -877,9 +1067,13 @@ impl TileRunner {
         for tile in self.in_flight.iter_mut().take(at + 1) {
             tile.done = true;
         }
-        let mut tile = self.in_flight.remove(at).expect("found above");
-        let mapped = waited && matches!(tile.mapped.try_recv(), Ok(Ok(())));
-        if !mapped {
+        let tile = self.in_flight.remove(at).expect("found above");
+        let done = waited
+            && tile
+                .readback
+                .as_ref()
+                .is_none_or(|readback| matches!(readback.mapped.try_recv(), Ok(Ok(()))));
+        if !done {
             // A submission the device refused never completes: the device's maintenance then runs
             // a destroyed or lost device's callback.
             let _ = self.device.poll(wgpu::PollType::Wait {
@@ -887,24 +1081,13 @@ impl TileRunner {
                 timeout: None,
             });
         }
-        if self.lost() || !mapped {
+        if self.lost() || !done {
             // Nothing it held outlives its device.
             self.in_flight.clear();
             self.release();
             return Err(TileFailure::Unavailable(TileUnavailable::DeviceLost));
         }
-        let reading = Instant::now();
-        let read = Self::read(&tile);
-        tile.times.wait_us = wait_us;
-        tile.times.read_us = micros(reading);
-        if self.readbacks.len() < TILES_IN_FLIGHT {
-            self.readbacks.push((tile.readback, tile.readback_bytes));
-        }
-        self.figures.runs += 1;
-        self.figures.last = tile.times;
-        self.figures.total.add(&tile.times);
-        self.account();
-        Ok(read)
+        Ok((tile, wait_us))
     }
 
     /// Tests only: `light` computed from `source` as a run computes each light its plan reads, or
@@ -1016,7 +1199,8 @@ impl TileRunner {
         plan: &GpuPlan,
         source: &GpuSource,
         window: [u32; 4],
-    ) -> Result<GpuSource, TileFailure> {
+        input: TileInput,
+    ) -> Result<Option<GpuSource>, TileFailure> {
         let Some((version, Derivation::Cut { origin: cut })) = plan.boundary.derivation() else {
             return Err(TileFailure::PIPELINE_FAILED);
         };
@@ -1069,6 +1253,18 @@ impl TileRunner {
             }
         }
         let (cut_width, cut_height) = shape.boundary;
+        if let TileInput::Stage(_) = input {
+            // Copied out of a stage texture: the window is the boundary's own, inside the stage.
+            let stage = source.stage();
+            let exact = [x, y, width, height] == [cut.0, cut.1, cut_width, cut_height]
+                && u64::from(x) + u64::from(width) <= u64::from(stage.0)
+                && u64::from(y) + u64::from(height) <= u64::from(stage.1);
+            return if exact {
+                Ok(None)
+            } else {
+                Err(TileFailure::PIPELINE_FAILED)
+            };
+        }
         let inside = cut.0 >= x
             && cut.1 >= y
             && u64::from(cut.0) + u64::from(cut_width) <= u64::from(x) + u64::from(width)
@@ -1076,14 +1272,17 @@ impl TileRunner {
         if !inside {
             return Err(TileFailure::PIPELINE_FAILED);
         }
-        source.window(window).ok_or(TileFailure::PIPELINE_FAILED)
+        source
+            .window(window)
+            .map(Some)
+            .ok_or(TileFailure::PIPELINE_FAILED)
     }
 
     /// What the tile's slot takes beside the window of the source, as [`TileRunner::charge`] counts
     /// it: the slot's own figures ([`Shape`], [`super::chain_charge`], each buffer at the capacity
     /// the device gives it) with the output at its exact size in `end`'s format and its readback
     /// copy, row by row padded as a copy lays it out.
-    fn slot_bytes(&self, plan: &GpuPlan, end: TileEnd) -> Result<u64, TileFailure> {
+    fn slot_bytes(&self, plan: &GpuPlan, end: Option<TileEnd>) -> Result<u64, TileFailure> {
         let device = &self.device;
         let shape = Shape::of(plan);
         let texels = u64::from(shape.boundary.0) * u64::from(shape.boundary.1);
@@ -1108,9 +1307,10 @@ impl TileRunner {
             texels * u64::from(format.block_copy_size(None).unwrap_or(16))
         });
         let (width, height) = shape.output;
-        let row = width * end.texel_bytes();
+        let row = width * end_texel_bytes(end, shape.format);
         let output = u64::from(row) * u64::from(height);
-        let readback = u64::from(padded(row)) * u64::from(height);
+        // A stage sweep's output is copied into a stage texture: nothing is read back.
+        let readback = end.map_or(0, |_| u64::from(padded(row)) * u64::from(height));
         Ok(texels * shape.format.texel_bytes() as u64
             + held
             + chain_charge(&plan.steps, shape.boundary, origin, shape.format).total()
@@ -1125,15 +1325,17 @@ impl TileRunner {
     fn pipelines(
         &mut self,
         plan: &GpuPlan,
-        end: TileEnd,
+        end: Option<TileEnd>,
     ) -> Result<Vec<(Compiled, u64)>, TileFailure> {
         let chain = chain::chain(&plan.steps);
         let intermediate = intermediate_format(plan.boundary.format());
+        // A stage sweep's last link writes an intermediate, as the same link of a chain does.
+        let last = end_format(end, plan.boundary.format());
         let sequences = chain
             .links
             .iter()
             .map(|steps| (*steps, intermediate))
-            .chain(std::iter::once((chain.last, end.format())));
+            .chain(std::iter::once((chain.last, last)));
         let mut ready = Vec::new();
         for (steps, format) in sequences {
             ready.push(self.sequence(steps, format)?);
@@ -1173,20 +1375,20 @@ impl TileRunner {
     /// state, kept planes and pool are the tile's own, a fresh evaluation, and go as it returns, so
     /// the device frees them once the GPU is done with them; the slot's textures and buffers stay
     /// for the next tile of its shape, each written whole before it is read.
-    #[allow(clippy::too_many_arguments)]
     fn encode(
         &mut self,
         plan: &GpuPlan,
-        held: &GpuSource,
-        key: SlotKey,
-        slot_bytes: u64,
+        (held, input, output): (Option<&GpuSource>, TileInput, TileOutput),
+        (tile_window, key, slot_bytes): ([u32; 4], SlotKey, u64),
         pipelines: &[(Compiled, u64)],
         lights: &[[f32; 4]],
         times: &mut TileTimes,
     ) -> Result<InFlight, TileFailure> {
         let layouts = self.layouts.as_ref().ok_or(TileFailure::PIPELINE_FAILED)?;
         let started = Instant::now();
-        if self.window.is_none() {
+        if let Some(held) = held
+            && self.window.is_none()
+        {
             let mut slot = SourceSlot::new(&self.device, held, layouts, |_| Ok(()))
                 .map_err(TileFailure::Plan)?;
             while !slot.ready() {
@@ -1217,10 +1419,16 @@ impl TileRunner {
             .derivation()
             .map(|(_, derivation)| derivation)
             .ok_or(TileFailure::PIPELINE_FAILED)?;
-        let (window, _) = self.window.as_ref().expect("the window held");
-        let cut = window
-            .words(derivation, size)
-            .ok_or(TileFailure::PIPELINE_FAILED)?;
+        // The cut's words, for a boundary cut from the window of the source the runner holds.
+        let cut = match input {
+            TileInput::Source => {
+                let (window, _) = self.window.as_ref().expect("the window held");
+                window
+                    .words(derivation, size)
+                    .ok_or(TileFailure::PIPELINE_FAILED)?
+            }
+            TileInput::Stage(_) => Vec::new(),
+        };
         if self.slot.is_none() {
             self.slot = Some(Slot::create(&self.device, key)?);
             self.figures.slots += 1;
@@ -1270,20 +1478,28 @@ impl TileRunner {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("luxforge.tiles.encoder"),
         });
-        // The boundary, cut from the window by the derivation's own pass.
-        queue.write_buffer(&slot.cut.buffer, 0, &le_bytes(&cut));
-        let (window, _) = self.window.as_ref().expect("the window held");
-        window.encode(
-            device,
-            &mut encoder,
-            layouts,
-            derivation,
-            &slot.cut.buffer,
-            &slot
-                .boundary
-                .create_view(&wgpu::TextureViewDescriptor::default()),
-            size,
-        );
+        match input {
+            // The boundary, cut from the window by the derivation's own pass.
+            TileInput::Source => {
+                queue.write_buffer(&slot.cut.buffer, 0, &le_bytes(&cut));
+                let (window, _) = self.window.as_ref().expect("the window held");
+                window.encode(
+                    device,
+                    &mut encoder,
+                    layouts,
+                    derivation,
+                    &slot.cut.buffer,
+                    &slot
+                        .boundary
+                        .create_view(&wgpu::TextureViewDescriptor::default()),
+                    size,
+                );
+            }
+            // Copied out of the stage texture the sweep before wrote, texel for texel.
+            TileInput::Stage(k) => {
+                self.stages[k as usize].copy_out(&mut encoder, &slot.boundary, tile_window);
+            }
+        }
         // The pool every link's scratch planes are taken from, fitted to every link before any
         // link's planes, as the slot fits its own; the tile's own, charged with it.
         let mut pool = spatial::Pool::default();
@@ -1414,61 +1630,93 @@ impl TileRunner {
             ),
             _ => return Err(TileFailure::PIPELINE_FAILED),
         }
-        // The output copied out, each row padded to the copy's alignment, into a copy a tile read
-        // back left or a new one.
-        let end = key.end;
-        let (width, height) = output_size;
-        let padded = padded(width * end.texel_bytes());
-        let readback_bytes = u64::from(padded) * u64::from(height);
-        let readback = match self
-            .readbacks
-            .iter()
-            .position(|(_, bytes)| *bytes == readback_bytes)
-        {
-            Some(at) => self.readbacks.swap_remove(at).0,
-            None => device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("luxforge.tiles.readback"),
-                size: readback_bytes,
-                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-                mapped_at_creation: false,
-            }),
+        let readback = match output {
+            // The output copied out, each row padded to the copy's alignment, into a copy a tile
+            // read back left or a new one.
+            TileOutput::Read(end) => {
+                let (width, height) = output_size;
+                let padded = padded(width * end.texel_bytes());
+                let readback_bytes = u64::from(padded) * u64::from(height);
+                let buffer = match self
+                    .readbacks
+                    .iter()
+                    .position(|(_, bytes)| *bytes == readback_bytes)
+                {
+                    Some(at) => self.readbacks.swap_remove(at).0,
+                    None => device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("luxforge.tiles.readback"),
+                        size: readback_bytes,
+                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                        mapped_at_creation: false,
+                    }),
+                };
+                encoder.copy_texture_to_buffer(
+                    slot.output.as_image_copy(),
+                    wgpu::TexelCopyBufferInfo {
+                        buffer: &buffer,
+                        layout: wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(padded),
+                            rows_per_image: Some(height),
+                        },
+                    },
+                    wgpu::Extent3d {
+                        width,
+                        height,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                Some((buffer, readback_bytes, padded, end))
+            }
+            // The tile's rectangle of its last link's intermediate, which covers its boundary from
+            // the cut's origin, into the stage texture at the rectangle.
+            TileOutput::Stage { writes, rect } => {
+                let Derivation::Cut { origin: (x, y) } = derivation else {
+                    return Err(TileFailure::PIPELINE_FAILED);
+                };
+                let (width, height) = output_size;
+                if rect[0] < *x
+                    || rect[1] < *y
+                    || u64::from(rect[2]) > u64::from(*x) + u64::from(width)
+                    || u64::from(rect[3]) > u64::from(*y) + u64::from(height)
+                {
+                    return Err(TileFailure::PIPELINE_FAILED);
+                }
+                self.stages[writes as usize].copy_in(
+                    &mut encoder,
+                    &slot.output,
+                    (rect[0] - x, rect[1] - y),
+                    rect,
+                );
+                None
+            }
         };
-        encoder.copy_texture_to_buffer(
-            slot.output.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &readback,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padded),
-                    rows_per_image: Some(height),
-                },
-            },
-            wgpu::Extent3d {
-                width,
-                height,
-                depth_or_array_layers: 1,
-            },
-        );
         let index = queue.submit([encoder.finish()]);
-        let (sender, mapped) = mpsc::channel();
-        readback
-            .slice(..)
-            .map_async(wgpu::MapMode::Read, move |result| {
-                let _ = sender.send(result);
-            });
+        let readback = readback.map(|(buffer, bytes, padded, end)| {
+            let (sender, mapped) = mpsc::channel();
+            buffer
+                .slice(..)
+                .map_async(wgpu::MapMode::Read, move |result| {
+                    let _ = sender.send(result);
+                });
+            Readback {
+                buffer,
+                bytes,
+                mapped,
+                size: output_size,
+                padded,
+                end,
+            }
+        });
         times.encode_us = micros(encoding);
         self.tickets += 1;
         let (window_generation, slot_generation) = self.generations;
+        let readback_bytes = readback.as_ref().map_or(0, |readback| readback.bytes);
         Ok(InFlight {
             ticket: self.tickets,
             index,
             readback,
-            readback_bytes,
-            mapped,
-            size: output_size,
-            padded,
-            end,
-            window: (window_generation, held.bytes()),
+            window: (window_generation, held.map_or(0, GpuSource::bytes)),
             slot: (slot_generation, slot_bytes - readback_bytes),
             done: false,
             times: *times,
@@ -1476,10 +1724,10 @@ impl TileRunner {
     }
 
     /// The mapped copy's rows, unpadded, as its tile's end reads them; the copy unmapped.
-    fn read(tile: &InFlight) -> TilePixels {
+    fn read(tile: &Readback) -> TilePixels {
         let (width, height) = tile.size;
         let row = (width * tile.end.texel_bytes()) as usize;
-        let mapped = tile.readback.slice(..).get_mapped_range();
+        let mapped = tile.buffer.slice(..).get_mapped_range();
         let rows = mapped
             .chunks_exact(tile.padded as usize)
             .take(height as usize)
@@ -1511,7 +1759,7 @@ impl TileRunner {
             }
         };
         drop(mapped);
-        tile.readback.unmap();
+        tile.buffer.unmap();
         pixels
     }
 
