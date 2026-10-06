@@ -1911,10 +1911,23 @@ fn job_wait_is_event_driven_bounded_cancel_safe_and_publishes_final_results() {
         before.replies,
         "quiet jobs have no timer-driven replies"
     );
+    // A refusal is answered as the owner reads the call, so the first poll may already see it;
+    // otherwise it is ready once the owner has served a later message.
+    fn answered_now<F: Future>(
+        call: &mut std::pin::Pin<Box<F>>,
+        context: &mut Context<'_>,
+        h: &Harness,
+    ) -> Poll<F::Output> {
+        match call.as_mut().poll(context) {
+            Poll::Ready(answer) => Poll::Ready(answer),
+            Poll::Pending => {
+                let _ = h.owner.job_monitor_stats();
+                call.as_mut().poll(context)
+            }
+        }
+    }
     let mut excess = Box::pin(h.owner.call_async(h.client, request()));
-    assert!(excess.as_mut().poll(&mut context).is_pending());
-    let _ = h.owner.job_monitor_stats();
-    let Poll::Ready(Ok(refused)) = excess.as_mut().poll(&mut context) else {
+    let Poll::Ready(Ok(refused)) = answered_now(&mut excess, &mut context, &h) else {
         panic!("the waiter limit answers immediately");
     };
     assert_eq!(refused.error.unwrap().code, "resource-limit");
@@ -1927,9 +1940,7 @@ fn job_wait_is_event_driven_bounded_cancel_safe_and_publishes_final_results() {
     assert_eq!(h.owner.job_monitor_stats().held, MAX_JOB_WAITERS);
     let third = h.owner.register();
     let mut global_excess = Box::pin(h.owner.call_async(third, request()));
-    assert!(global_excess.as_mut().poll(&mut context).is_pending());
-    let _ = h.owner.job_monitor_stats();
-    let Poll::Ready(Ok(refused)) = global_excess.as_mut().poll(&mut context) else {
+    let Poll::Ready(Ok(refused)) = answered_now(&mut global_excess, &mut context, &h) else {
         panic!("the global waiter limit answers immediately");
     };
     assert_eq!(refused.error.unwrap().code, "resource-limit");
