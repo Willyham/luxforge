@@ -88,6 +88,7 @@ fn defaults() -> Value {
         "performance_expanded": true,
         "auto_collapse_history": true,
         "auto_lens_profile": true,
+        "raw_look": "standard",
         "mask_overlay_colour": "green",
         "canvas_background": "theme",
         "interface_size": 100,
@@ -132,6 +133,7 @@ fn preferences_read_answers_every_default_and_set_round_trips_every_field() {
         "performance_expanded": false,
         "auto_collapse_history": false,
         "auto_lens_profile": false,
+        "raw_look": "neutral",
         "mask_overlay_colour": "white",
         "canvas_background": "grey",
         "interface_size": 125,
@@ -205,6 +207,10 @@ fn every_bad_preference_is_refused_by_name_and_writes_nothing() {
         (
             json!({"canvas_background": "white"}),
             "parameter canvas_background must be one of dark, black, grey, theme",
+        ),
+        (
+            json!({"raw_look": "camera"}),
+            "parameter raw_look must be one of standard, neutral",
         ),
         (
             json!({"interface_size": 120}),
@@ -306,6 +312,8 @@ fn only_a_change_to_a_general_row_is_announced() {
         ("collapse", json!({"auto_collapse_history": false})),
         ("collapse-again", json!({"auto_collapse_history": false})),
         ("lens", json!({"auto_lens_profile": false})),
+        ("look-default", json!({"raw_look": "standard"})),
+        ("look", json!({"raw_look": "neutral"})),
         ("colour", json!({"mask_overlay_colour": "white"})),
         ("background", json!({"canvas_background": "black"})),
         ("size", json!({"interface_size": 110})),
@@ -323,6 +331,7 @@ fn only_a_change_to_a_general_row_is_announced() {
         [
             "collapse",
             "lens",
+            "look",
             "colour",
             "background",
             "size",
