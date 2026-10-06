@@ -105,8 +105,8 @@ pub struct ProxyOutcome {
 #[derive(Debug)]
 pub struct ExactOutcome {
     /// The frame in `result` reduced to the job's view bounds ([`crate::PreviewJob::proxy`]), the
-    /// reference frame of a whole stack at rest the view draws smaller than it is; `None` for an
-    /// interactive or truncated job, a region, an approximate white balance, a failure, or a
+    /// reference frame of a stack, a layer prefix's among them, the view draws smaller than it is;
+    /// `None` for an interactive job, a region, an approximate white balance, a failure, or a
     /// stage that already fits the bounds.
     pub display: Option<Raster>,
     /// The frame, the failure, or [`ErrorKind::Cancelled`] when a newer request or

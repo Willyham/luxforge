@@ -12,9 +12,10 @@ use crate::{
         Editor,
         draft::{CoreDraft, Event},
         gesture::{Kind, Starting},
+        gpu_preview::StageState,
         message::{Message, control::ControlMessage, crop::CropMessage, crop::CropPointer},
         outcome::{Outcome, Requested},
-        tasks::{Refresh, crop_preview_task, mutation},
+        tasks::{Refresh, StageAsk, crop_preview_task, mutation},
     },
     crop_draft::{CropDraft, Modifiers as DraftModifiers},
     state::{
@@ -48,8 +49,10 @@ pub(crate) struct CropGesture {
 }
 
 /// The crop layer's input stage as the draft holds it, by the one rule the photograph follows
-/// ([`Editor::proxy_bounds_for`]): a display-size proxy of the layer prefix wherever the view draws
-/// the stage smaller than it is, and the exact stage only at a percentage zoom that needs it. Each
+/// ([`Editor::proxy_bounds_for`]): wherever the view draws the stage smaller than it is, the layer
+/// prefix's picture at rest drawn by the GPU at the stage's display bounds, or where the GPU cannot
+/// draw it the reference's frame of the prefix reduced to them; and the reference's exact stage
+/// only at a percentage zoom that needs it. Each
 /// frame is kept once delivered, so a zoom that crosses back hands it over again. The planned job
 /// is never kept: it holds its stack, and a RAW development's planes hold the source worker's
 /// memory gate, so a kept one would keep a development the owner needs waiting for as long as the
@@ -63,10 +66,15 @@ pub(crate) struct StageFrames {
     planned: Option<Box<luxforge_core::analysis::AnalysisIdentity>>,
     /// A zoom's plan of the stage is on its way, so a second is not asked for.
     replanning: bool,
-    /// The frame for a view that draws the stage smaller than it is: the prefix's proxy, or the
-    /// exact stage when the worker declined one (the stage already fits the bounds, or a layer of
-    /// the prefix has no proxy).
+    /// The frame for a view that draws the stage smaller than it is where the GPU does not draw it:
+    /// the reference's frame of the prefix reduced to the bounds, or its exact stage where the
+    /// stage already fits them.
     bounded: Option<StageFrame>,
+    /// The GPU draws the bounded stage: the version of the prefix's picture at rest it was handed
+    /// ([`Editor::gpu_stage_from`]).
+    gpu: Option<u64>,
+    /// The GPU refused the stage for this draft, which the reference draws from then on.
+    gpu_refused: bool,
     /// The exact stage, for a percentage zoom that draws it at or above its size.
     exact: Option<luxforge_core::Raster>,
     /// What the presenter holds.
@@ -79,11 +87,26 @@ struct StageFrame {
     proxy: bool,
 }
 
-/// Which frame of the stage is on screen: one a bounded job delivered, and whether it is a proxy.
+/// Which frame of the stage is on screen: one a bounded job delivered, whether it is reduced to
+/// the bounds (`proxy`), and whether it is the GPU's picture of the prefix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Shown {
     bounded: bool,
     proxy: bool,
+    gpu: bool,
+}
+
+/// What the presenter holds as the stage's frame while the GPU draws the stage in its place: one
+/// texel of the canvas's dark, which the surface's placement of a crop stage does not read the size
+/// of.
+fn gpu_stand_in() -> luxforge_core::Raster {
+    luxforge_core::Raster {
+        width: 1,
+        height: 1,
+        rgba: std::sync::Arc::new(vec![32, 32, 32, 255]),
+        source_fingerprint: String::new(),
+        snapshot_id: luxforge_core::SnapshotId::new(),
+    }
 }
 
 impl Shown {
@@ -349,7 +372,12 @@ impl Editor {
             CropMessage::PreviewReady(StagePlan::Zoom(entry), result) => {
                 let planned = result.as_ref().map(|job| (&job.identity, job.layer_count));
                 if self.crop_stage_replanned(&entry, planned)
-                    && let Ok(job) = result
+                    && let Ok(mut job) = result
+                    && !self.crop_stage_on_gpu(
+                        job.proxy,
+                        job.gpu_rest.take(),
+                        job.evaluation.source(),
+                    )
                 {
                     let generation = self.request_preview(*job);
                     self.set_draft_generation(Some(generation));
@@ -362,18 +390,26 @@ impl Editor {
                 Ok(job) if !self.crop_stage_current(&job.evaluation.entry().id) => {
                     self.draft_preview_superseded(None);
                 }
-                Ok(job) => {
+                Ok(mut job) => {
                     // Only the stack's identity is kept, for a zoom that needs the stage's other
-                    // phase: the job goes to the preview worker.
+                    // phase: the job goes to the preview worker, or the GPU draws the stage.
                     if let Some(crop) = self.crop_gesture_mut() {
                         crop.frames.planned = Some(Box::new(job.identity.clone()));
                     }
                     // A job an earlier start asked for is no longer the draft's once this one is
                     // requested, so this request superseding it ends nothing.
                     self.set_draft_generation(None);
-                    let generation = self.request_preview(*job);
-                    self.set_draft_generation(Some(generation));
-                    self.status.text = "Rendering the crop's input stage…".into();
+                    if self.crop_stage_on_gpu(
+                        job.proxy,
+                        job.gpu_rest.take(),
+                        job.evaluation.source(),
+                    ) {
+                        self.status.text = "Drawing the crop's input stage…".into();
+                    } else {
+                        let generation = self.request_preview(*job);
+                        self.set_draft_generation(Some(generation));
+                        self.status.text = "Rendering the crop's input stage…".into();
+                    }
                 }
                 Err(error) => {
                     if matches!(self.crop_stage(), Some(StageView::Rendering { .. })) {
@@ -508,6 +544,7 @@ impl Editor {
             asset,
             layer_index,
             StagePlan::Open,
+            self.crop_stage_ask(),
         );
         self.status.text = "Preparing the crop's input stage…".into();
         let focus = operation::snap_to(
@@ -556,6 +593,7 @@ impl Editor {
         // for it is stopped and held below the delivery floor, so neither is drawn under the
         // rebased frame nor taken up as the photograph.
         self.presentation.presenter.end_stage();
+        self.gpu_stage_end();
         if rendering.is_some() {
             self.presentation.preview_generation = self.cancel_preview_queue();
         }
@@ -571,6 +609,7 @@ impl Editor {
             asset,
             row.layer_index,
             StagePlan::Open,
+            self.crop_stage_ask(),
         );
         Task::batch([fields, rebase, stage])
     }
@@ -603,6 +642,147 @@ impl Editor {
             input.width, input.height
         );
         self.report_crop_stage();
+    }
+
+    /// How the crop draft's input stage is asked for now: at its display bounds, the GPU's picture
+    /// of the prefix planned at them unless the GPU cannot draw for this launch or refused the
+    /// stage for this draft; or exactly, where the view needs the exact stage.
+    pub(crate) fn crop_stage_ask(&self) -> StageAsk {
+        let bounds = self.crop_stage_bounds();
+        let refused = self
+            .crop_gesture()
+            .is_some_and(|crop| crop.frames.gpu_refused);
+        StageAsk {
+            bounds,
+            gpu: bounds.is_some() && !refused && self.gpu_preview_allowed().is_ok(),
+        }
+    }
+
+    /// Draw the stage a job planned at `bounds` on the GPU where it carries `rest`, the prefix's
+    /// picture at rest over `source`, and the GPU takes it ([`Editor::gpu_stage_from`]): the presenter holds a
+    /// stand-in for the stage's frame, which the surface draws the GPU's picture in place of, and
+    /// the stage is on screen once the surface has drawn its last tile ([`after_message`]). The
+    /// job is dropped. Otherwise the reference renders it, the reason named. Whether the GPU drew
+    /// it.
+    fn crop_stage_on_gpu(
+        &mut self,
+        bounds: Option<luxforge_core::ProxyBounds>,
+        rest: Option<Box<luxforge_core::GpuRest>>,
+        source: &luxforge_core::PreviewSource,
+    ) -> bool {
+        let bounded = bounds.is_some() && self.crop_stage_bounds().is_some();
+        let Some(rest) = rest.filter(|_| bounded) else {
+            return false;
+        };
+        let tiles = match rest.tiles {
+            Some(Ok(tiles)) => tiles,
+            Some(Err(reason)) => {
+                let reason = reason.code();
+                self.event("crop_stage_reference", || json!({ "reason": reason }));
+                return false;
+            }
+            None => return false,
+        };
+        // The reasons the GPU does not take the stage, before it is asked: the gate's, or a stage
+        // the view draws at its own size, whose tiles hold no reduction to draw.
+        let before = match (self.gpu_preview_allowed(), tiles.reduction.is_none()) {
+            (Err(reason), _) => Some(reason),
+            (Ok(()), true) => Some("at-own-size"),
+            (Ok(()), false) => None,
+        };
+        if let Some(reason) = before {
+            self.event("crop_stage_reference", || json!({ "reason": reason }));
+            return false;
+        }
+        if !self.gpu_stage_from(tiles, source) {
+            let reason = match self.gpu_stage_state() {
+                StageState::Refused(reason) => reason,
+                _ => "unrunnable",
+            };
+            self.gpu_stage_end();
+            self.event("crop_stage_reference", || json!({ "reason": reason }));
+            return false;
+        }
+        let Some(crop) = self.crop_gesture_mut() else {
+            self.gpu_stage_end();
+            return true;
+        };
+        crop.frames.gpu = Some(crop.frames.gpu.map_or(1, |held| held + 1));
+        crop.frames.shown = Some(Shown {
+            bounded: true,
+            proxy: true,
+            gpu: true,
+        });
+        if !self.presentation.presenter.show_stage(&gpu_stand_in()) {
+            self.gpu_stage_end();
+            return false;
+        }
+        self.event("crop_stage_gpu", || json!({}));
+        true
+    }
+
+    /// Whether the stage under the frame is the GPU's picture of the prefix, which the surfaces
+    /// are handed to draw in place of the stand-in.
+    pub(crate) fn crop_stage_gpu_shown(&self) -> bool {
+        self.crop_gesture()
+            .and_then(|crop| crop.frames.shown)
+            .is_some_and(|shown| shown.gpu)
+    }
+
+    /// After every message: a crop stage the GPU draws is on screen once the surface has drawn its
+    /// last tile; one the GPU refused is rendered by the reference instead, the reason named, and
+    /// the GPU is not asked again for this draft.
+    fn follow_gpu_stage(&mut self) -> Task<Message> {
+        let Some(crop) = self.crop_gesture() else {
+            return Task::none();
+        };
+        if crop.frames.gpu.is_none() {
+            return Task::none();
+        }
+        let rendering = matches!(crop.stage, StageView::Rendering { .. });
+        match self.gpu_stage_state() {
+            StageState::Drawn(_) if rendering => {
+                self.crop_stage_shown();
+                Task::none()
+            }
+            StageState::Refused(reason) => {
+                self.gpu_stage_end();
+                self.event("crop_stage_reference", || json!({ "reason": reason }));
+                let Some(crop) = self.crop_gesture_mut() else {
+                    return Task::none();
+                };
+                crop.frames.gpu = None;
+                crop.frames.gpu_refused = true;
+                crop.frames.shown = None;
+                let (layer_count, planned) = (
+                    crop.frame.layer_index,
+                    crop.frames
+                        .planned
+                        .as_ref()
+                        .map(|planned| (planned.asset_id.clone(), planned.entry_id.clone())),
+                );
+                let Some((asset, entry)) = planned else {
+                    return Task::none();
+                };
+                let plan = if rendering {
+                    StagePlan::Open
+                } else {
+                    if let Some(crop) = self.crop_gesture_mut() {
+                        crop.frames.replanning = true;
+                    }
+                    StagePlan::Zoom(entry)
+                };
+                crop_preview_task(
+                    self.owner.clone(),
+                    self.client,
+                    asset,
+                    layer_count,
+                    plan,
+                    self.crop_stage_ask(),
+                )
+            }
+            _ => Task::none(),
+        }
     }
 
     /// The bounds the crop draft's input stage is rendered at for the view now: the photograph's
@@ -653,7 +833,11 @@ impl Editor {
         if !proxy {
             crop.frames.exact = Some(raster.clone());
         }
-        let shown = Shown { bounded, proxy };
+        let shown = Shown {
+            bounded,
+            proxy,
+            gpu: false,
+        };
         let first = matches!(crop.stage, StageView::Rendering { .. });
         if !first && !shown.serves(wants_bounded) {
             return (false, Task::none());
@@ -695,12 +879,14 @@ impl Editor {
         let (asset, entry) = (planned.asset_id.clone(), planned.entry_id.clone());
         let layer_count = crop.frame.layer_index;
         crop.frames.replanning = true;
+        let ask = self.crop_stage_ask();
         crop_preview_task(
             self.owner.clone(),
             self.client,
             asset,
             layer_count,
             StagePlan::Zoom(entry),
+            ask,
         )
     }
 
@@ -719,13 +905,23 @@ impl Editor {
         {
             return false;
         }
-        let held = if wants_bounded {
+        let held = if wants_bounded && crop.frames.gpu.is_some() {
+            Some((
+                gpu_stand_in(),
+                Shown {
+                    bounded: true,
+                    proxy: true,
+                    gpu: true,
+                },
+            ))
+        } else if wants_bounded {
             crop.frames.bounded.as_ref().map(|frame| {
                 (
                     frame.raster.clone(),
                     Shown {
                         bounded: true,
                         proxy: frame.proxy,
+                        gpu: false,
                     },
                 )
             })
@@ -736,6 +932,7 @@ impl Editor {
                     Shown {
                         bounded: false,
                         proxy: false,
+                        gpu: false,
                     },
                 )
             })
@@ -800,7 +997,11 @@ impl Editor {
             return Value::Null;
         };
         json!({
-            "phase": frames.shown.map(|shown| if shown.proxy { "proxy" } else { "exact" }),
+            "phase": frames.shown.map(|shown| match shown {
+                Shown { gpu: true, .. } => "gpu",
+                Shown { proxy: true, .. } => "reduced",
+                _ => "exact",
+            }),
             "size": self.presentation.presenter.stage().map(|frame| [frame.size().0, frame.size().1]),
             "held_bounded": frames.bounded.is_some(),
             "held_exact": frames.exact.is_some(),
@@ -1046,6 +1247,7 @@ impl Editor {
     /// that failed — comes through here.
     pub(crate) fn end_crop_view(&mut self, rendering: Option<u64>) {
         self.presentation.presenter.end_stage();
+        self.gpu_stage_end();
         // A stage still rendering is stopped and held below the delivery floor, so it can never be
         // taken up as the photograph once nothing marks it as the draft's.
         if rendering.is_some() {
@@ -1151,7 +1353,8 @@ impl Editor {
 /// After every message: a start whose stage will not arrive is discarded
 /// ([`Editor::close_abandoned_crop`]).
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
-    editor.close_abandoned_crop()
+    let gpu = editor.follow_gpu_stage();
+    Task::batch([editor.close_abandoned_crop(), gpu])
 }
 
 #[cfg(test)]
