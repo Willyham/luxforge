@@ -333,6 +333,9 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | Photographs one `catalog.empty-removed` deletes | 50,000, earliest removed first; `remaining` says how many are left | `MAX_LIBRARY_BATCH`, `crates/luxforge-core/src/library/remove.rs` |
 | Activity entries | 64 active and 16 recent | `MAX_ACTIVE` and `MAX_RECENT`, `crates/luxforge-core/src/activity.rs` |
 | Activity board watchers | 8 per board | `MAX_WATCHERS`, `crates/luxforge-core/src/activity.rs` |
+| Held authoritative job waits | 32 per owner, 16 per client; watched jobs cannot exceed held requests | `MAX_JOB_WAITERS`, `MAX_CLIENT_JOB_WAITERS`, `crates/luxforge-core/src/api/owner.rs` |
+| Job change wake storage | One coalescing wake per watched job; monotonic u64 token, exhaustion fails rather than wrapping | `JobChanges`, `crates/luxforge-core/src/jobs.rs` |
+| Native desktop visibility | One retained monitor and one latest-facts mailbox, with coalesced hidden edges | `crates/luxforge-input/src/macos/visibility.rs`, `crates/luxforge-app/src/app/visibility.rs` |
 | Items one browse view's source may hold; the owner keeps 16 bytes per item of each client's view | 1,000,000 | `MAX_VIEW_ITEMS`, `crates/luxforge-core/src/catalog_types/browse.rs` |
 | Rows per `browse.rows` window | 1000 | `MAX_VIEW_ROWS`, `crates/luxforge-core/src/catalog_types/browse.rs` |
 | Items one `browse.select` names | 50,000 | `MAX_LIBRARY_BATCH`, `crates/luxforge-core/src/catalog_types/library.rs` |

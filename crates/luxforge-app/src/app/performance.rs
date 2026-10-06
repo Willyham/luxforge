@@ -1,7 +1,8 @@
 //! The Performance section's sampler: the one-second read of `resources.read` and the activity
 //! board behind the state panel's last block, and the gate that keeps it asleep.
 //!
-//! The section samples only while it is expanded **and** the state panel is on screen. Collapsed,
+//! The section samples only while it is expanded **and** the state panel is on screen and the
+//! window is neither minimized nor explicitly hidden. Covered or unfocused windows keep sampling. Collapsed,
 //! with the panel hidden or with the component gallery in its place, it sets no timer and makes no
 //! request, so an idle editor stays asleep (performance rule 8). Whenever sampling starts, the
 //! history is cleared and one read is sent at once rather than a second later; whenever it starts
@@ -171,7 +172,7 @@ impl Editor {
             // The section is pinned under the state panel in Develop and the sources panel in
             // Select.
             self.left_panel_shown() && self.gallery_page().is_none(),
-        )
+        ) && self.visibility.sampling_allowed()
     }
 
     /// Called after every message. Whatever route changed the gate — the heading, the palette, a

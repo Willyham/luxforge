@@ -194,11 +194,6 @@ pub(crate) struct MissingState {
     pub(crate) locating: Option<Locating>,
     /// `source.relink` is in flight.
     pub(crate) relinking: bool,
-    /// A `job.read` of the running jobs is in flight.
-    pub(crate) polling: bool,
-    /// The board changed while that read was in flight: the running jobs are read once more when it
-    /// answers.
-    pub(crate) poll_again: bool,
 }
 
 impl MissingState {
@@ -283,7 +278,6 @@ impl MissingState {
     pub(crate) fn quiet(&self, shown: bool, serial: u64) -> bool {
         !self.reading
             && !self.relinking
-            && !self.polling
             && self.live_search().is_none()
             && self.locating.is_none()
             && self.facts_reading.is_none()

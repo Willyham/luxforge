@@ -5,6 +5,8 @@ use objc2_app_kit::{NSEvent, NSEventMask, NSView};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::{cell::RefCell, ptr::NonNull, sync::Arc};
 
+pub(crate) mod visibility;
+
 thread_local! {
     // Created and destroyed only on AppKit's main thread. AppKit owns the copied callback block.
     static MONITOR: RefCell<Option<Monitor>> = const { RefCell::new(None) };

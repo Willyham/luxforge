@@ -8,6 +8,8 @@ use serde_json::Value;
 pub(crate) enum EvidenceMessage {
     /// The evidence deadline check.
     Tick,
+    /// A native evidence operation returned. A separate native callback proves its transition.
+    VisibilityOperated(Result<(), String>),
     /// The one gated deadline of a `view_idle` step, before any evidence capture can redraw.
     ViewIdleDeadline,
     /// The end of an `idle` step's settle or of its window.

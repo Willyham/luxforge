@@ -15,7 +15,7 @@ use crate::{
         Boot,
         loupe_frames::{Decoded, Slot},
         message::{preview::PreviewMessage, sync::SyncMessage},
-        select::{job_now, refresh_now},
+        select::refresh_now,
         select_owner_tests::{answer_reads, evaluate, read_rows},
         testing::{descriptors, hold_slider, patch_control},
     },
@@ -33,7 +33,7 @@ use luxforge_core::{
 };
 use luxforge_testbase::{
     paths::{fixture, temp_dir},
-    wait_for, wait_until,
+    wait_until,
 };
 use std::{fs, path::PathBuf, sync::atomic::AtomicU64};
 
@@ -120,12 +120,32 @@ fn scene(name: &str) -> Scene {
     let job = refresh_now(&editor.owner, editor.client, &source);
     let _ = editor.update(Message::Select(SelectMessage::Reading(job.clone())));
     let job = job.unwrap();
-    let record = wait_for("the folder's index.refresh to end", || {
-        let record = job_now(&editor.owner, editor.client, &job).unwrap();
-        (!matches!(record["status"].as_str(), Some("queued" | "running"))).then_some(record)
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap();
+    let record = runtime.block_on(async {
+        tokio::time::timeout(luxforge_testbase::HANG, async {
+            let mut after = None;
+            loop {
+                let (change, record) =
+                    crate::app::job_reads::wait(&editor.owner, editor.client, &job, after)
+                        .await
+                        .unwrap();
+                after = Some(change);
+                if !matches!(record["status"].as_str(), Some("queued" | "running")) {
+                    break record;
+                }
+            }
+        })
+        .await
+        .expect("the folder's index.refresh to end")
     });
     assert_eq!(record["status"], "ready", "{record}");
-    let _ = editor.update(Message::Select(SelectMessage::ReadAnswered(Ok(record))));
+    let _ = editor.update(Message::Select(SelectMessage::ReadWatched {
+        job,
+        result: Ok(record),
+    }));
     evaluate(&mut editor);
     let _ = editor.update(Message::Select(SelectMessage::Viewport(Size::new(
         1000.0, 700.0,

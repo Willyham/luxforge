@@ -442,12 +442,20 @@ fn a_first_look_is_followed_to_its_end_through_the_board() {
     assert!(waiting.name.ends_with("-look") && !waiting.card);
     let record = ended(&editor, &job);
     assert_eq!(record["status"], "ready");
-    // Named, the job's record was asked for at once; the board's news of its end asks again once
-    // that answers, rather than beside it.
     tick(&mut editor);
-    assert!(editor.select.read_in_flight);
     assert!(editor.long_work.state.job(&job).is_none());
-    let _ = editor.update(Message::Select(SelectMessage::ReadAnswered(Ok(record))));
+    // A reader created after the job finished still observes its authoritative final result.
+    let mut reader = job_reader(&super::super::job_reads::Reader {
+        identity: Tracked::Reading(job.clone()),
+        owner: editor.owner.clone(),
+        client: editor.client,
+        presentation_visible: true,
+    });
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let message = runtime.block_on(reader.next()).unwrap();
+    let _ = editor.update(message);
     assert!(editor.select.reading.is_none(), "the folder is read");
     assert!(editor.select.state.loading, "and viewed");
     assert_eq!(editor.long_work.state.waiting, None);
@@ -502,5 +510,83 @@ fn the_status_bar_job_opens_the_performance_section() {
     let _ = editor.update(Message::LongWork(LongWorkMessage::OpenPerformance));
     assert!(editor.select.state.sources_panel && editor.performance.expanded);
     assert!(editor.performance_sampling());
+    finish(editor, catalog);
+}
+
+/// A final owner result arrives through its own watch even without a display tick or another
+/// activity-board read. This covers the worker-end/owner-publication race hidden gates expose.
+#[test]
+fn a_hidden_first_look_finishes_through_authoritative_job_waiting() {
+    let (mut editor, catalog) = boot();
+    editor.visibility.facts.window_hidden = true;
+    let _ = editor.long_work_visibility_changed();
+    let folder = files(&catalog, "hidden-look", 20);
+    let gate = hold_listings(&editor, &folder);
+    let job = refresh_now(
+        &editor.owner,
+        editor.client,
+        &ReadSource::Folder(folder.clone()),
+    )
+    .unwrap();
+    gate.wait_reached(1, "the hidden listing's first folder");
+    editor.select.reading = Some(Reading {
+        source: ReadSource::Folder(folder.clone()),
+        job: Some(job.clone()),
+    });
+    let _ = editor.long_work_visibility_changed();
+    assert_eq!(
+        editor.long_work.timers(),
+        Timers::default(),
+        "running hidden work has no display timer"
+    );
+    let reads = editor.long_work.reads;
+    gate.open();
+    let record = ended(&editor, &job);
+    assert_eq!(record["status"], "ready");
+    // Creating the reader after completion must still return the authoritative final record.
+    let mut stream = job_reader(&super::super::job_reads::Reader {
+        identity: Tracked::Reading(job),
+        owner: editor.owner.clone(),
+        client: editor.client,
+        presentation_visible: false,
+    });
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let message = runtime.block_on(stream.next()).unwrap();
+    assert!(
+        matches!(&message, Message::Select(SelectMessage::ReadWatched { result: Ok(record), .. }) if record["status"] == "ready")
+    );
+    let _ = editor.update(message);
+    assert!(editor.select.reading.is_none());
+    assert!(
+        editor.select.state.loading,
+        "the required folder view is being evaluated"
+    );
+    assert_eq!(
+        editor.long_work.reads, reads,
+        "no periodic or board read was needed"
+    );
+    assert!(!editor.performance_sampling());
+    assert!(runtime.block_on(stream.next()).is_none());
+    std::fs::remove_dir_all(folder).unwrap();
+    finish(editor, catalog);
+}
+
+#[test]
+fn a_late_terminal_reader_cannot_complete_a_different_first_look() {
+    let (mut editor, catalog) = boot();
+    editor.select.reading = Some(Reading {
+        source: ReadSource::Folder("new-folder".into()),
+        job: Some("job-new".into()),
+    });
+    let _ = editor.update(Message::Select(SelectMessage::ReadWatched {
+        job: "job-old".into(),
+        result: Ok(json!({"status":"ready","result":{"roots":["old-folder"]}})),
+    }));
+    assert_eq!(
+        editor.select.reading.as_ref().unwrap().job.as_deref(),
+        Some("job-new")
+    );
     finish(editor, catalog);
 }

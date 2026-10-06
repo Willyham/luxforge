@@ -125,20 +125,40 @@ fn settle(editor: &mut Editor) {
                         result,
                     }));
                 }
-                // The listing's record, read once its job has ended, as the activity board's
-                // change at its end has the desktop read it.
-                Some(job) if adding.reading => {
-                    let record = wait_for("the folder's listing to end", || {
-                        let record = job_now(&editor.owner, editor.client, &job).unwrap();
-                        (!matches!(record["status"].as_str(), Some("queued" | "running")))
-                            .then_some(record)
+                // The authoritative reader waits for the listing result, independently of the
+                // activity board and without a polling interval.
+                Some(job) => {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_time()
+                        .build()
+                        .unwrap();
+                    let record = runtime.block_on(async {
+                        tokio::time::timeout(luxforge_testbase::HANG, async {
+                            let mut after = None;
+                            loop {
+                                let (change, record) = super::job_reads::wait(
+                                    &editor.owner,
+                                    editor.client,
+                                    &job,
+                                    after,
+                                )
+                                .await
+                                .unwrap();
+                                after = Some(change);
+                                if !matches!(record["status"].as_str(), Some("queued" | "running"))
+                                {
+                                    break record;
+                                }
+                            }
+                        })
+                        .await
+                        .expect("the folder's listing to end")
                     });
                     let _ = editor.update(Message::Select(SelectMessage::AddListed {
                         job,
                         result: Ok(record),
                     }));
                 }
-                Some(_) => {}
             }
         }
         if editor.select_reads_quiet() {

@@ -69,6 +69,7 @@ mod theme_smoke;
 mod verify;
 mod viewport_smoke;
 mod vignette_smoke;
+mod visibility_smoke;
 mod workspace_smoke;
 mod zone_plate;
 mod zoom_smoke;

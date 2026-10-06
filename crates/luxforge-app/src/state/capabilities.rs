@@ -273,6 +273,29 @@ impl CapabilityStore {
                 == Some(record)
     }
 
+    /// Display-only progress can replace the latest held record without deriving a hidden UI.
+    /// Every lifecycle, partial result, error and subject change still takes the normal route.
+    pub(crate) fn only_progress_changed(&self, module: &str, record: &JobRecord) -> bool {
+        !record.status.is_finished()
+            && self
+                .module(module)
+                .jobs
+                .iter()
+                .find(|held| held.job_id == record.job_id)
+                .is_some_and(|held| {
+                    held.kind == record.kind
+                        && held.status == record.status
+                        && held.asset_id == record.asset_id
+                        && held.module_id == record.module_id
+                        && held.resource_id == record.resource_id
+                        && held.identity == record.identity
+                        && held.result == record.result
+                        && held.error == record.error
+                        && held.first_open == record.first_open
+                        && held.request_id == record.request_id
+                })
+    }
+
     /// One module's state, or the state of a module nothing has been read for.
     pub(crate) fn module(&self, module: &str) -> &ModuleCapabilities {
         self.modules.get(module).unwrap_or(&UNREAD)

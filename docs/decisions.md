@@ -2,6 +2,14 @@
 
 Accepted owner decisions and the questions still open. Proposals stay proposals until the owner decides; record each answer here and in the affected spec.
 
+## Window visibility and job monitoring
+
+Decided on 2026-10-05 for the planned [visibility and monitoring](design/visibility-and-monitoring.md) work:
+
+- Scope is visibility and event monitoring only; proxy CPU work, rendering, preview scheduling and CPU-pool scheduling are excluded.
+- Pause presentation sampling only when the window is minimized or explicitly hidden. A visible window keeps sampling when unfocused or fully covered by other windows.
+- Background jobs and required result handling continue; pausing presentation does not cancel work.
+
 ## Product and platform
 
 - A fast, non-destructive desktop editor for professional and prosumer collections on macOS, Windows and Linux.

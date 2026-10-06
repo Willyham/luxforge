@@ -113,8 +113,6 @@ pub(crate) struct Select {
     /// The card or folder being read before it is viewed: `index.refresh` lists it and reads its
     /// headers.
     pub(crate) reading: Option<Reading>,
-    /// A `job.read` of the reading source's job is in flight.
-    pub(crate) read_in_flight: bool,
     /// The view on screen went stale while the card or folder being read waited to replace it: it
     /// is read again, quietly, only if the reading ends without replacing it.
     pub(crate) stale_while_reading: bool,
@@ -137,9 +135,6 @@ pub(crate) struct Select {
     pub(crate) label: Option<u64>,
     /// The last library request this desktop sent and what the owner answered, for evidence.
     pub(crate) library: Option<Value>,
-    /// The board changed while that read was in flight, so a `queued` or `running` answer is read
-    /// again once.
-    pub(crate) read_again: bool,
     /// The grid's decoded previews: each cell's handle, made once and held under the byte budget.
     pub(crate) previews: SelectPreviews,
     /// The loupe's decoded frames and focus check (`app/loupe.rs`).
@@ -164,10 +159,6 @@ pub(crate) struct Adding {
     /// The `index.refresh` job that lists it, once `index.add-folder` has answered with it; none
     /// while that request is in flight.
     pub(crate) job: Option<String>,
-    /// The activity board's version the job was last looked for at.
-    pub(crate) seen: Option<u64>,
-    /// A `job.read` of the job is in flight.
-    pub(crate) reading: bool,
 }
 
 /// Why a view is being evaluated, which the status bar says once it is.
@@ -209,7 +200,6 @@ impl Default for Select {
             evidence_indexed: false,
             reread: Reread::Asked,
             reading: None,
-            read_in_flight: false,
             stale_while_reading: false,
             disks: Coalesce::default(),
             adding: None,
@@ -219,7 +209,6 @@ impl Default for Select {
             own_change: None,
             label: None,
             library: None,
-            read_again: false,
             previews: SelectPreviews::default(),
             loupe: crate::app::loupe::Loupe::default(),
             catalog: SelectCatalog::default(),
@@ -523,7 +512,18 @@ impl Editor {
                     }
                 }
             },
-            SelectMessage::ReadAnswered(result) => return self.reading_answered(result),
+            SelectMessage::ReadWatched { job, result } => {
+                if self
+                    .select
+                    .reading
+                    .as_ref()
+                    .and_then(|reading| reading.job.as_ref())
+                    != Some(&job)
+                {
+                    return Task::none();
+                }
+                return self.reading_answered(result);
+            }
             SelectMessage::Toggle(path) => return self.toggle_disk(path),
             SelectMessage::Listed { path, result } => {
                 self.select.listing.remove(&path);
@@ -844,7 +844,8 @@ impl Editor {
     /// and reads each file's header (`index.refresh`, a job), and it is viewed once the job has
     /// ended. The status bar says it is reading until then, and a first look that takes a while
     /// shows its progress sheet (long-running work). The job's progress and end reach the desktop
-    /// through the activity board ([`Editor::reading_followed`]): nothing polls it.
+    /// through the activity board ([`Editor::reading_followed`]); its authoritative `job.wait`
+    /// reader adopts the final result independently of presentation visibility.
     pub(crate) fn read_source(&mut self, source: ReadSource) -> Task<Message> {
         match &source {
             ReadSource::Folder(path) => self.select.state.folder = Some(path.clone()),
@@ -926,13 +927,9 @@ impl Editor {
         )
     }
 
-    /// Long-running work has read the activity board, which wakes the desktop whenever catalog work
-    /// begins, reports progress or ends. While the reading source's job runs on it, its progress is
-    /// the status line. When it does not, and it was just named or the catalog jobs running have
-    /// changed since the last read — this one ended, or another ended ahead of it — its record is
-    /// read once, which says how it ended or that it is still queued. So the job's end is heard as
-    /// a board change, and no timer asks after it.
-    pub(crate) fn reading_followed(&mut self, changed: bool) -> Task<Message> {
+    /// The board supplies visible status progress. Final adoption is owned by the job reader,
+    /// which waits for the authoritative record after its result has been published.
+    pub(crate) fn reading_followed(&mut self) -> Task<Message> {
         let Some(reading) = &self.select.reading else {
             return Task::none();
         };
@@ -956,38 +953,13 @@ impl Editor {
                 }
                 Task::none()
             }
-            None if changed => self.poll_reading(),
             None => Task::none(),
         }
-    }
-
-    /// Read the reading source's job, one read at a time; asked again while one is in flight, it is
-    /// read once more when that answers.
-    fn poll_reading(&mut self) -> Task<Message> {
-        let Some(job) = self
-            .select
-            .reading
-            .as_ref()
-            .and_then(|reading| reading.job.clone())
-        else {
-            return Task::none();
-        };
-        if std::mem::replace(&mut self.select.read_in_flight, true) {
-            self.select.read_again = true;
-            return Task::none();
-        }
-        let (owner, client) = (self.owner.clone(), self.client);
-        owner_task(
-            move || job_now(&owner, client, &job),
-            |result| Message::Select(SelectMessage::ReadAnswered(result)),
-        )
     }
 
     /// The reading source's job answered: still running, it says how far it has got; ended, the
     /// card or folder is viewed; failed or cancelled, the status bar says so and nothing is viewed.
     fn reading_answered(&mut self, result: Result<Value, String>) -> Task<Message> {
-        self.select.read_in_flight = false;
-        let again = std::mem::take(&mut self.select.read_again);
         let Some(reading) = self.select.reading.clone() else {
             return Task::none();
         };
@@ -1005,9 +977,6 @@ impl Editor {
                     Some(progress) => format!("Reading {name} \u{b7} {progress}"),
                     None => format!("Reading {name}\u{2026}"),
                 };
-                if again {
-                    return self.poll_reading();
-                }
                 Task::none()
             }
             Some("ready") => {
@@ -1540,66 +1509,26 @@ impl Editor {
                 self.select.adding = Some(Adding {
                     request: params,
                     job: Some(job),
-                    ..Adding::default()
                 });
                 self.select.state.adding = Some(added.folder.folder.path.clone());
             }
             None => self.select.adding = None,
         }
         let answered = self.library_answered(LibraryGesture::AddFolder, &added.change);
-        Task::batch([answered, self.read_disks(), self.follow_listing()])
+        Task::batch([answered, self.read_disks()])
     }
 
-    /// Follow the added folder's listing through long-running work's reads of the activity board:
-    /// while the board lists its job running nothing is read; otherwise its record is read with
-    /// `job.read` once for each version of the board since it was last looked for, and once as soon
-    /// as it is named. So its end is heard as a board change, and no timer asks after it.
-    pub(crate) fn follow_listing(&mut self) -> Task<Message> {
-        let version = self.long_work.state.version;
-        let running = self
+    /// The added folder's authoritative listing completion: the indexed folders and the events
+    /// are read again, and a listing that did not complete says so.
+    fn add_listed(&mut self, job: &str, result: Result<Value, String>) -> Task<Message> {
+        let Some(_) = self
             .select
             .adding
             .as_ref()
-            .and_then(|adding| adding.job.as_deref())
-            .is_some_and(|job| self.long_work.state.job(job).is_some());
-        let Some(adding) = self.select.adding.as_mut() else {
-            return Task::none();
-        };
-        let Some(job) = adding.job.clone() else {
-            return Task::none();
-        };
-        if running {
-            adding.seen = Some(version);
-            return Task::none();
-        }
-        if adding.reading || adding.seen == Some(version) {
-            return Task::none();
-        }
-        adding.seen = Some(version);
-        adding.reading = true;
-        let (owner, client) = (self.owner.clone(), self.client);
-        owner_task(
-            move || {
-                let result = job_now(&owner, client, &job);
-                (job, result)
-            },
-            |(job, result)| Message::Select(SelectMessage::AddListed { job, result }),
-        )
-    }
-
-    /// The added folder's listing record: still queued or running, it is read again when the board
-    /// next changes; ended, the indexed folders and the events are read again, and a listing that
-    /// did not complete says so.
-    fn add_listed(&mut self, job: &str, result: Result<Value, String>) -> Task<Message> {
-        let Some(adding) = self
-            .select
-            .adding
-            .as_mut()
             .filter(|adding| adding.job.as_deref() == Some(job))
         else {
             return Task::none();
         };
-        adding.reading = false;
         let name = self
             .select
             .state
@@ -2110,12 +2039,10 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     let rows = editor.request_rows();
     let previews = editor.want_previews();
     let check = editor.start_check();
-    // A folder being added is followed to the end of its listing wherever the person is.
-    let listing = editor.follow_listing();
     if editor.evidence.is_some() && editor.select_shown() && editor.select_quiet() {
         editor.outcome(Outcome::SelectSettled);
     }
-    Task::batch([rows, previews, check, listing])
+    Task::batch([rows, previews, check])
 }
 
 fn previews_message(message: SelectPreviewMessage) -> Message {
@@ -2123,8 +2050,8 @@ fn previews_message(message: SelectPreviewMessage) -> Message {
 }
 
 /// The grid's decoded previews' signal, while Select is shown; a signal posted meanwhile waits for
-/// it. The reading source's job needs no timer: long-running work's watch on the activity board
-/// hears it end.
+/// it. Authoritative job readers retain catalog completion interests independently of this
+/// presentation subscription.
 pub(super) fn subscription(editor: &Editor) -> iced::Subscription<Message> {
     if editor.select_shown() {
         crate::app::select_previews::subscription().map(previews_message)

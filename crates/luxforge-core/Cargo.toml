@@ -28,6 +28,9 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 toml_edit.workspace = true
+# Existing pinned runtime, with one current-thread event loop on each already bounded TCP client
+# thread: a held job wait races its reply against socket EOF without polling or waiter threads.
+tokio = { workspace = true, features = ["rt", "net", "io-util"] }
 url.workspace = true
 uuid.workspace = true
 zeroize.workspace = true

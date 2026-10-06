@@ -166,6 +166,7 @@ mod view_state;
 #[cfg(test)]
 mod view_state_tests;
 mod view_zoom;
+pub(crate) mod visibility;
 pub(crate) mod waker;
 mod window;
 
@@ -398,12 +399,12 @@ pub(crate) struct Editor {
     #[cfg(test)]
     pub(crate) capability_started: Vec<(String, state::capabilities::Operation)>,
     /// How many updates ran the whole route, hooks, derive and all, rather than a fast path, so a
-    /// test can tell that a message skipped it.
-    #[cfg(test)]
+    /// test or evidence observation can tell that a message skipped it.
     pub(crate) full_updates: u64,
     /// The state panel's Performance section: its flag, what it has read and its one read in
     /// flight. It samples only while expanded with the state panel shown.
     pub(crate) performance: performance::Sampler,
+    pub(crate) visibility: visibility::WindowVisibility,
     /// The one export this window runs, from the press to its last read.
     pub(crate) export: export::Exporting,
     /// The Select workspace: which workspace is shown, what Select last read, its grid and what is
@@ -472,9 +473,10 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 22] = [
+const AFTER_MESSAGE: [AfterMessage; 23] = [
     view_state::after_message,
     performance::after_message,
+    visibility::after_message,
     slider::after_message,
     evidence::after_message,
     controls::after_message,
@@ -508,9 +510,10 @@ const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 4] = [
 
 /// Every seam's subscription, each listed once. A seam with nothing to listen to returns
 /// [`Subscription::none`], so no timer or stream exists that no seam gates.
-const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 14] = [
+const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 15] = [
     keymap::subscription,
     view_state::subscription,
+    visibility::subscription,
     mask_panel::subscription,
     preview::subscription,
     sync::subscription,
@@ -558,6 +561,8 @@ impl Editor {
             evidence.gpu_identity = config.gpu_identity.then(Default::default);
             evidence
         });
+        let visibility = visibility::WindowVisibility::new(config.hidden, evidence.is_some());
+        let presentation_visible = visibility.sampling_allowed();
         let initial = config.files.pop_front();
         // The whole answer is held from launch: the Performance section starts from it, and so
         // does anything else that applies a preference.
@@ -611,12 +616,12 @@ impl Editor {
             capabilities: Default::default(),
             #[cfg(test)]
             capability_started: Vec::new(),
-            #[cfg(test)]
             full_updates: 0,
             performance: performance::Sampler::new(expanded),
+            visibility,
             export: Default::default(),
             select: Default::default(),
-            long_work: long_work::LongWork::watching(&owner),
+            long_work: long_work::LongWork::watching(&owner, presentation_visible),
             develop: Default::default(),
             gpu: Default::default(),
             gpu_settle: Default::default(),
@@ -682,6 +687,7 @@ impl Editor {
             .and_then(iced::window::scale_factor)
             .map(|value| Message::View(ViewMessage::ScaleFactor(value)));
         let trackpad = view_state::install_trackpad();
+        let visibility = visibility::install();
         // A window opened at its remembered frame is checked against the display it opened on.
         let placed = match config.opening {
             Some(_) => crate::window_frame::report().map(|report| {
@@ -716,7 +722,7 @@ impl Editor {
         (
             editor,
             Task::batch([
-                scale, trackpad, placed, backend, modules, presets, themes, first,
+                scale, trackpad, visibility, placed, backend, modules, presets, themes, first,
             ]),
         )
     }
@@ -758,6 +764,14 @@ impl Editor {
     /// Route the message to its seam, then run every seam's hook in [`AFTER_MESSAGE`], derive the
     /// screen again, run the hooks that read it in [`AFTER_DERIVE`], and wake the workers' poll.
     fn update_inner(&mut self, message: Message) -> Task<Message> {
+        if self.hidden_progress_only(&message) {
+            self.visibility.progress_coalesced += 1;
+            let task = self.dispatch(message);
+            let mut timing = self.log.loop_timing.get();
+            timing.last_rederive_ms = 0.0;
+            self.log.loop_timing.set(timing);
+            return task;
+        }
         if self.update_is_quiet() {
             // An idle resource sample changes only this section. Keep the same sampling
             // resolution, but avoid rebuilding all tool controls, masks, history and histogram for
@@ -795,10 +809,7 @@ impl Editor {
                 return task;
             }
         }
-        #[cfg(test)]
-        {
-            self.full_updates += 1;
-        }
+        self.full_updates += 1;
         let before = Before::of(self);
         let mut tasks = vec![self.dispatch(message)];
         tasks.extend(AFTER_MESSAGE.iter().map(|hook| hook(self, &before)));
@@ -983,6 +994,7 @@ impl Editor {
             Message::Preset(message) => self.preset_update(message),
             Message::Capability(message) => self.capability_update(message),
             Message::Performance(message) => self.performance_update(message),
+            Message::Visibility(message) => self.visibility_update(message),
             Message::Settings(message) => self.settings_update(message),
             Message::Preferences(message) => self.preferences_update(message),
             Message::Theme(message) => self.theme_update(message),
