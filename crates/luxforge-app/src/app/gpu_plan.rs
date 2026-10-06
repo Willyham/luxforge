@@ -184,6 +184,108 @@ pub(crate) fn surface_plan_over(
     })
 }
 
+/// One tile of `sweep`, a staged sweep of `plan` ([`luxforge_core::GpuSweep`]), as the surface
+/// draws it over `boundary`, whose texel `(0, 0)` is pixel `origin` of the stage the sweep reads,
+/// the rectangle `rect` of the stage it writes, through `grid`, its part of a lens warp's grid when
+/// the last sweep draws through one: its steps — the content operations' for the first sweep, each
+/// of its spatial operations with the colour operations after it, then the geometry tail and the
+/// output operations for the last, or for an earlier sweep an identity tail, whose intermediate
+/// holds its last link's output over the window, unclamped, which the surface copies into the
+/// stage — and the light links its operations read, numbered again from zero.
+pub(crate) fn sweep_plan_over(
+    plan: &luxforge_core::GpuPlan,
+    sweep: &luxforge_core::GpuSweep,
+    boundary: GpuBoundary,
+    origin: (u32, u32),
+    grid: Option<&WarpGrid>,
+    rect: Region,
+) -> Result<GpuPlan, Unrunnable> {
+    let spatial = &plan.spatial[sweep.spatial.clone()];
+    // The lights its operations read, in the plan's order, and each one's place among them.
+    let read: Vec<usize> = (0..plan.lights.len())
+        .filter(|k| {
+            spatial.iter().any(|operation| {
+                operation.light.is_some() && plan.light_of(operation.layer) == Some(*k)
+            })
+        })
+        .collect();
+    let renumbered = |operation: &GpuSpatial| {
+        operation
+            .light
+            .and(plan.light_of(operation.layer))
+            .and_then(|k| read.iter().position(|held| *held == k))
+            .map(|k| u32::try_from(k).expect("a light index"))
+    };
+    let mut steps = Vec::new();
+    if sweep.first {
+        for operation in &plan.content {
+            operation_steps(operation, &mut steps)?;
+        }
+    }
+    for operation in spatial {
+        steps.push(spatial_step(operation, renumbered(operation))?);
+        for after in &operation.after {
+            operation_steps(after, &mut steps)?;
+        }
+    }
+    let stage = if sweep.last {
+        geometry_steps(
+            plan,
+            &mut steps,
+            Grid::Held(grid),
+            Some((rect.width, rect.height)),
+        )?;
+        let output = plan.geometry.output();
+        (output.width, output.height)
+    } else {
+        let stage = plan.boundary.stage;
+        let tail = GpuTail::affine(
+            (rect.width, rect.height),
+            [0, 0, stage.width, stage.height],
+            false,
+            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
+        );
+        steps.push(GpuStep::Geometry(if plan.linear {
+            tail.preserve_f32()
+        } else {
+            tail
+        }));
+        (stage.width, stage.height)
+    };
+    let lights = read
+        .iter()
+        .enumerate()
+        .map(|(k, held)| {
+            let light = &plan.lights[*held];
+            let link = match light.over_source() {
+                true => light,
+                false => light
+                    .stand_in
+                    .as_deref()
+                    .ok_or(Unrunnable::Light { layer: light.layer })?,
+            };
+            surface_light(link, u32::try_from(k).expect("a light index"))
+        })
+        .collect::<Result<_, _>>()?;
+    if rect.is_empty() || rect.x1() > stage.0 || rect.y1() > stage.1 {
+        return Err(Unrunnable::Region);
+    }
+    Ok(GpuPlan {
+        texels: TexelMap {
+            origin: [origin.0 as f32, origin.1 as f32],
+            step: [1.0, 1.0],
+        },
+        boundary,
+        steps,
+        region: Some(GpuRegion {
+            rect: [rect.x0, rect.y0, rect.x1(), rect.y1()],
+            stage,
+            full_stage: stage,
+        }),
+        lights,
+    })
+}
+
 /// `plan`, a whole frame of a reduced stage, as a region of its own stage holding all of it, placed
 /// over `full`, the photograph's full output stage at a percentage zoom of 100% or more: the softer
 /// drag frame, which the surface magnifies to fill the photograph as it places a region.
