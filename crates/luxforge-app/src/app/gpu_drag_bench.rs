@@ -632,9 +632,9 @@ fn table(document: &Value) -> String {
         let full = &stack["views"]["100%"];
         let export = match stack["export"]["status"].as_str() {
             Some("measured") => match stack["export"]["warm_s"].as_f64() {
-                Some(warm) => format!("{warm:.1} s"),
+                Some(warm) => format!("{warm:.2} s"),
                 None => format!(
-                    "{:.1} s (cold)",
+                    "{:.2} s (cold)",
                     stack["export"]["cold_s"].as_f64().unwrap_or(f64::NAN)
                 ),
             },
