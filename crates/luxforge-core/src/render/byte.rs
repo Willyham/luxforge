@@ -1003,39 +1003,4 @@ mod tests {
         super::super::parallel::force(None);
         assert_eq!(pooled.rgba, serial.rgba);
     }
-    #[test]
-    fn byte_region_and_window_equal_whole_through_a_wide_hand_off() {
-        let registry = ModuleRegistry::builtin();
-        let source = gradient(97, 73);
-        let context = RenderContext::new();
-        let recipe = wide_stack();
-        let render = super::super::render(
-            &registry,
-            &source,
-            &recipe,
-            RenderOptions::default(),
-            &context,
-        )
-        .unwrap();
-        let frame = render.frame(SnapshotId::new()).unwrap();
-        let region = Region {
-            x0: 19,
-            y0: 13,
-            width: 39,
-            height: 31,
-        };
-        let super::super::RegionRenderOutcome::Rendered(cut) =
-            render.region(SnapshotId::new(), region).unwrap()
-        else {
-            panic!("wide stage supports a region")
-        };
-        for y in 0..region.height {
-            for x in 0..region.width {
-                assert_eq!(
-                    cut.raster.pixel(x, y),
-                    frame.pixel(region.x0 + x, region.y0 + y)
-                );
-            }
-        }
-    }
 }

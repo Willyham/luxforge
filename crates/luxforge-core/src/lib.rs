@@ -100,7 +100,7 @@ pub use preview::{
     AssetSelection, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,
     MaskCoverageTarget, MaskOverlayOutcome, PREVIEW_PROGRESS_QUIET, PhaseOutcome, PreviewIntent,
     PreviewJob, PreviewPhase, PreviewProgress, PreviewQueue, PreviewResult, PreviewSession,
-    PreviewSource, ProxyOutcome, Queued, RegionOutcome, ViewState, Zoom,
+    PreviewSource, ProxyOutcome, Queued, ViewState, Zoom,
 };
 pub use proxy::{
     ProxyApproximation, ProxyBounds, ProxyCoverage, ProxyIdentity, ProxyPlan, area_coverage,
@@ -120,9 +120,8 @@ pub use render::gpu::{
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{
     ContentPoint, GeometryMap, INPUT_GRID_MAX_CELLS, InputGridCache, LinearSettings, MapError,
-    MappingDescriptor, MappingShape, Raster, RegionFrame, Render, RenderContext, RenderOptions,
-    RenderSource, Sample, ScratchBudget, StageSize, WhiteBalanceApproximation, render,
-    stage_transform,
+    MappingDescriptor, MappingShape, Raster, Render, RenderContext, RenderOptions, RenderSource,
+    Sample, ScratchBudget, StageSize, WhiteBalanceApproximation, render, stage_transform,
 };
 pub use source::{LinearImage, OpticalIdentity, SourceImage, SourceOptics, open_source};
 
@@ -794,7 +793,6 @@ pub(crate) use modules::{
     valid_name,
 };
 pub(crate) use proxy::{ProxyCache, ProxyKey, ProxyWindow};
-pub(crate) use render::RegionRenderOutcome;
 pub(crate) use source::{open_source_bytes, read_bounded_file};
 
 // The crate root paths only the core's unit tests use.
@@ -807,5 +805,3 @@ pub(crate) use modules::{
     APPLY_PRESET, BasicModule, CapabilitiesProofModule, MAX_COLOR_UNITS, PROOF_PALETTE_GAINS,
     PresenceModule,
 };
-#[cfg(test)]
-pub(crate) use render::ProxyRegionPlan;

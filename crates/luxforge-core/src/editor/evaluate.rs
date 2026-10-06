@@ -1416,30 +1416,17 @@ mod tests {
         .unwrap()
         .frame(evaluation.entry().snapshot.id.clone())
         .unwrap();
-        // A region wholly outside the stage clips to nothing, which declines to the whole frame.
-        let outside = crate::Region {
-            x0: 10_000,
-            y0: 10_000,
-            width: 4,
-            height: 4,
-        };
         let mut queue = PreviewQueue::default();
-        for viewport in [None, Some(outside)] {
-            let mut job = job.clone();
-            job.viewport = viewport;
-            job.intent = crate::PreviewIntent::Settle;
-            queue.request(job);
-            let result = luxforge_testbase::wait_for("the preview worker's exact answer", || {
-                queue.poll().filter(|result| result.exact().is_some())
-            });
-            assert_eq!(result.viewport_declined.is_some(), viewport.is_some());
-            let frame = result.into_raster().unwrap();
-            assert_eq!(frame.rgba.as_ref(), reference.rgba.as_ref(), "{viewport:?}");
-        }
+        queue.request(job.clone());
+        let result = luxforge_testbase::wait_for("the preview worker's exact answer", || {
+            queue.poll().filter(|result| result.exact().is_some())
+        });
+        let frame = result.into_raster().unwrap();
+        assert_eq!(frame.rgba.as_ref(), reference.rgba.as_ref());
         assert_eq!(
             context.compiles() - before,
             1,
-            "the worker rendered the owner's compilation, the region's fallback included"
+            "the worker rendered the owner's compilation"
         );
         drop(service);
         std::fs::remove_file(catalog).unwrap();

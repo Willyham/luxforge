@@ -283,79 +283,6 @@ fn drain_until(
     delivered
 }
 
-fn viewport_job(intent: PreviewIntent) -> PreviewJob {
-    let mut job = stacked(128, 96, Vec::new(), None);
-    job.viewport = Some(crate::Region {
-        x0: 17,
-        y0: 13,
-        width: 31,
-        height: 23,
-    });
-    job.intent = intent;
-    job.analyse = true;
-    job
-}
-
-#[test]
-fn interactive_viewport_delivers_one_bounded_region_without_a_report() {
-    let mut queue = PreviewQueue::default();
-    let generation = queue.request(viewport_job(PreviewIntent::Interactive));
-    let results = drain_all(&mut queue);
-    assert_eq!(
-        results.len(),
-        1,
-        "moving input ends after its first visible phase"
-    );
-    let result = &results[0];
-    assert_eq!(
-        (result.generation, result.phase()),
-        (generation, PreviewPhase::Region)
-    );
-    let region = result.region().expect("visible region");
-    assert_eq!(
-        (
-            region.frame.full_stage.width,
-            region.frame.full_stage.height
-        ),
-        (128, 96)
-    );
-    assert!(region.frame.full_rect.x0 <= 17 && region.frame.full_rect.x1() >= 48);
-    assert_eq!(
-        (region.frame.stage.width, region.frame.stage.height),
-        (64, 48)
-    );
-    assert!(region.frame.raster.width <= 64 && region.frame.raster.height <= 48);
-    assert!(region.frame.approximation.reduced_detail);
-    assert!(result.viewport_declined.is_none());
-    assert!(
-        result.exact().is_none(),
-        "no whole-image histogram during motion"
-    );
-}
-
-#[test]
-fn settled_viewport_delivers_exact_region_then_whole_report() {
-    let mut queue = PreviewQueue::default();
-    let generation = queue.request(viewport_job(PreviewIntent::Settle));
-    let results = drain_all(&mut queue);
-    assert_eq!(results.len(), 2);
-    assert_eq!(results[0].phase(), PreviewPhase::Region);
-    assert_eq!(results[1].phase(), PreviewPhase::Exact);
-    assert_eq!(results[0].generation, generation);
-    assert_eq!(results[1].generation, generation);
-    let region = results[0].region().unwrap();
-    assert_eq!(
-        region.frame.stage, region.frame.full_stage,
-        "settled region is exact detail"
-    );
-    let exact = results[1].exact().unwrap();
-    assert!(exact.result.is_ok());
-    assert!(
-        exact.report.is_some(),
-        "only the whole image may supply the histogram"
-    );
-}
-
 /// The live overlay's coverage over a visible rectangle is the core's region reduction of that
 /// rectangle, and over the whole stage the whole-stage reduction, each at its own cells.
 #[test]
@@ -2467,7 +2394,7 @@ fn the_view_frame_reduces_final_pixels_and_reduce_only_shares_full_raster() {
         }),
     );
     wanted.analyse = true;
-    wanted.intent = PreviewIntent::Settle;
+    wanted.intent = PreviewIntent::Immediate;
     let mut queue = PreviewQueue::default();
     queue.request(wanted.clone());
     let settled = drain_all(&mut queue);
@@ -2517,11 +2444,10 @@ fn the_view_frame_reduces_final_pixels_and_reduce_only_shares_full_raster() {
 }
 
 #[test]
-fn the_view_frame_is_every_whole_stacks_and_excludes_partial_region_moving_and_approximate_frames()
-{
+fn the_view_frame_is_every_whole_stacks_and_excludes_partial_moving_and_approximate_frames() {
     let detail = Layer::new(crate::DETAIL_EFFECT, json!({"luminance":30}));
     let mut whole = stacked(64, 48, vec![detail.clone()], Some(bounds(16, 12)));
-    whole.intent = PreviewIntent::Settle;
+    whole.intent = PreviewIntent::Immediate;
     let raster = whole
         .evaluation
         .exact(&Cancel::never())
@@ -2556,13 +2482,6 @@ fn the_view_frame_is_every_whole_stacks_and_excludes_partial_region_moving_and_a
 
     let mut partial = whole.clone();
     partial.layer_count = Some(1);
-    let mut viewport = whole.clone();
-    viewport.viewport = Some(crate::Region {
-        x0: 0,
-        y0: 0,
-        width: 16,
-        height: 12,
-    });
     let mut moving = whole.clone();
     moving.intent = PreviewIntent::Interactive;
     let mut fits = whole.clone();
@@ -2572,10 +2491,9 @@ fn the_view_frame_is_every_whole_stacks_and_excludes_partial_region_moving_and_a
     let mut approximate = rebuilt(raw_job(Some(approximation())), |parts| {
         parts.recipe.layers.push(detail)
     });
-    approximate.intent = PreviewIntent::Settle;
+    approximate.intent = PreviewIntent::Immediate;
     for (name, job) in [
         ("truncated", partial),
-        ("viewport", viewport),
         ("interactive", moving),
         ("scale one", fits),
         ("unbounded", unbounded),
@@ -2619,7 +2537,7 @@ fn the_view_frame_is_every_whole_stacks_and_excludes_partial_region_moving_and_a
 }
 
 #[test]
-fn a_superseded_settle_returns_no_view_frame_or_report() {
+fn a_superseded_reference_frame_returns_no_view_frame_or_report() {
     let gate = Arc::new(luxforge_testbase::Gate::new());
     let mut older = rebuilt(held(&gate, Some(bounds(16, 12))), |parts| {
         parts
@@ -2627,7 +2545,7 @@ fn a_superseded_settle_returns_no_view_frame_or_report() {
             .layers
             .insert(0, Layer::new(crate::DETAIL_EFFECT, json!({"luminance":30})));
     });
-    older.intent = PreviewIntent::Settle;
+    older.intent = PreviewIntent::Immediate;
     older.analyse = true;
     let mut queue = PreviewQueue::default();
     gate.shut();

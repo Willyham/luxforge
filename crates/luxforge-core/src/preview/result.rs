@@ -3,7 +3,7 @@
 #[cfg(doc)]
 use super::{PreviewQueue, PreviewSource};
 use crate::{
-    EntryId, Error, ErrorKind, ProxyApproximation, Raster, RegionFrame,
+    EntryId, Error, ErrorKind, ProxyApproximation, Raster,
     analysis::{AnalysisIdentity, Report},
 };
 
@@ -15,7 +15,6 @@ use crate::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PreviewPhase {
     Proxy,
-    Region,
     Exact,
 }
 
@@ -31,11 +30,8 @@ pub struct PreviewResult {
     /// displayed frame correlates with the gesture settings that produced it.
     pub draft_revision: Option<u64>,
     /// The admission policy this result was produced under. An interactive result has no
-    /// following whole-frame report; settlement is requested by the desktop's quiet gate.
+    /// following whole-frame report.
     pub intent: super::PreviewIntent,
-    /// A viewport request that could not take the region path names its fallback class. The
-    /// worker then takes the eligible bounded whole-output proxy or the existing exact path.
-    pub viewport_declined: Option<String>,
     /// What this phase produced, and what only that phase can say.
     pub outcome: PhaseOutcome,
     /// Whether this frame approximates a RAW white balance the developed planes do not hold — a
@@ -74,15 +70,7 @@ pub struct PreviewResult {
 #[derive(Debug)]
 pub enum PhaseOutcome {
     Proxy(ProxyOutcome),
-    Region(RegionOutcome),
     Exact(Box<ExactOutcome>),
-}
-
-/// A visible region, either half-scale interactive detail or full-detail refinement. Its raster
-/// is never a source of whole-image histogram or clipping counts.
-#[derive(Debug)]
-pub struct RegionOutcome {
-    pub frame: RegionFrame,
 }
 
 /// The display-size frame a job presents first.
@@ -106,7 +94,7 @@ pub struct ProxyOutcome {
 pub struct ExactOutcome {
     /// The frame in `result` reduced to the job's view bounds ([`crate::PreviewJob::proxy`]), the
     /// reference frame of a whole stack at rest the view draws smaller than it is; `None` for an
-    /// interactive or truncated job, a region, an approximate white balance, a failure, or a
+    /// interactive or truncated job, an approximate white balance, a failure, or a
     /// stage that already fits the bounds.
     pub display: Option<Raster>,
     /// The frame, the failure, or [`ErrorKind::Cancelled`] when a newer request or
@@ -128,7 +116,6 @@ impl PreviewResult {
     pub fn phase(&self) -> PreviewPhase {
         match self.outcome {
             PhaseOutcome::Proxy(_) => PreviewPhase::Proxy,
-            PhaseOutcome::Region(_) => PreviewPhase::Region,
             PhaseOutcome::Exact(_) => PreviewPhase::Exact,
         }
     }
@@ -137,7 +124,6 @@ impl PreviewResult {
     pub fn raster(&self) -> Result<&Raster, &Error> {
         match &self.outcome {
             PhaseOutcome::Proxy(proxy) => Ok(&proxy.raster),
-            PhaseOutcome::Region(region) => Ok(&region.frame.raster),
             PhaseOutcome::Exact(exact) => exact.result.as_ref(),
         }
     }
@@ -147,7 +133,6 @@ impl PreviewResult {
     pub(crate) fn into_raster(self) -> Result<Raster, Error> {
         match self.outcome {
             PhaseOutcome::Proxy(proxy) => Ok(proxy.raster),
-            PhaseOutcome::Region(region) => Ok(region.frame.raster),
             PhaseOutcome::Exact(exact) => exact.result,
         }
     }
@@ -156,14 +141,6 @@ impl PreviewResult {
     pub fn proxy(&self) -> Option<&ProxyOutcome> {
         match &self.outcome {
             PhaseOutcome::Proxy(proxy) => Some(proxy),
-            _ => None,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn region(&self) -> Option<&RegionOutcome> {
-        match &self.outcome {
-            PhaseOutcome::Region(region) => Some(region),
             _ => None,
         }
     }
@@ -183,9 +160,6 @@ impl PreviewResult {
     pub(crate) fn proxy_approximate(&self) -> bool {
         self.proxy()
             .is_some_and(|proxy| proxy.approximation.is_approximate())
-            || self
-                .region()
-                .is_some_and(|region| region.frame.approximation.is_approximate())
     }
 
     /// Whether this is an exact phase that a newer request or [`PreviewQueue::cancel`] stopped: it
