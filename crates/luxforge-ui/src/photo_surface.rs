@@ -953,13 +953,14 @@ impl PhotoSurface {
     }
 
     /// The picture at rest this surface draws: a whole-frame photograph's, and a percentage view's
-    /// when it is drawn for its counts alone, which puts nothing on screen; a crop stage draws
-    /// none, and asks for no frame for one.
+    /// when it is drawn for its counts alone, which puts nothing on screen; and a crop stage's,
+    /// the layer prefix reduced to the stage's display bounds, drawn in place of the stage's frame,
+    /// turned and dimmed as it is.
     fn rest_drawn(&self) -> Option<&GpuRest> {
         match (&self.base, &self.viewport) {
             (Base::Photo(_), None) => self.rest.as_ref(),
             (Base::Photo(_), Some(_)) => self.rest.as_ref().filter(|rest| rest.reduction.is_none()),
-            _ => None,
+            (Base::Stage(_), _) => self.rest.as_ref().filter(|rest| rest.reduction.is_some()),
         }
     }
 
@@ -1875,6 +1876,16 @@ impl shader::Primitive for PhotoPrimitive {
                 if *layer == Layer::Clipping
                     && (surface.gpu_output().is_some() || surface.rest_output().is_some())
                 {
+                    continue;
+                }
+                // A crop stage's picture at rest, once its last tile is in, in place of the
+                // stage's frame, turned and dimmed as the stage is.
+                if *layer == Layer::Stage
+                    && self.rest.is_some()
+                    && let Some(rest) = surface.rest_output()
+                {
+                    draw_picture(render_pass, rest);
+                    drawn_rest = Some(rest.version);
                     continue;
                 }
                 // The picture at rest, once its last tile is in, in place of the photograph's
