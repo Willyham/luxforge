@@ -2986,8 +2986,8 @@ spike). The X100VI gains most because its normalization was serial and it has th
 p95 figures carry the host's load and no tail claim is made. Concurrent Fit proxies against this
 development are not measured in the core; the last core-only same-pool Fit proxy figures predate
 RCD's tile jobs ([further performance](../research/further-performance.md#bayer-normalization-batching)).
-That contention is left to the RAW plan's whole-editor measurement, which measures the owner's
-responsiveness and cancellation through the editor.
+That contention is not measured through the editor: the whole-editor RAW measurement was closed
+unrun on 2026-10-06.
 The per-site table is at most one CFA and black-repeat period, each row widened to at least 64
 sites: 396 sites for a 6 × 6 X-Trans period and 128 for a 2 × 2 Bayer one without a repeat pattern.
 
