@@ -274,7 +274,7 @@ fn make(generated: &Path, raw: Option<&Path>) -> Result<Value> {
 }
 
 /// Each photograph's large preview as the cache holds it after the run, rendered from its current
-/// entry: its path and size.
+/// entry: its path, size, key and the renderer that drew it.
 fn after(generated: &Path, expected: &Value) -> Result<Value> {
     let catalog = generated.join(generate_catalog::CATALOG);
     with_owner(&catalog, |owner, client| {
@@ -294,10 +294,20 @@ fn after(generated: &Path, expected: &Value) -> Result<Value> {
                     format!("{asset}'s large preview was never rendered: {answer}"),
                 )?;
             };
+            // A rendered tier names the renderer that drew it: the desktop's GPU tile worker, or
+            // the reference naming why (this reader's own owner draws with the reference alone).
+            ensure(
+                matches!(
+                    preview["renderer"]["record"].as_str(),
+                    Some("gpu" | "reference")
+                ),
+                format!("{asset}'s large preview names no renderer: {preview}"),
+            )?;
             previews.insert(
                 asset.as_str().unwrap_or_default().to_owned(),
                 json!({"path": preview["path"], "width": preview["width"],
-                    "height": preview["height"], "key": preview["key"]}),
+                    "height": preview["height"], "key": preview["key"],
+                    "renderer": preview["renderer"]}),
             );
         }
         Ok(json!({"previews": previews}))
