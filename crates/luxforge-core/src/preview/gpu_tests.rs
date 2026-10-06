@@ -378,10 +378,10 @@ fn a_fallback_carries_its_layers_label_from_the_stack_it_was_planned_over() {
     assert_eq!(preview.layer, None, "a plan names no layer");
 }
 
-/// At Fit a drag's boundary is the source reduced to the job's proxy: the key names the proxy plan
-/// the worker's proxy phase builds at the job's bounds, with the window of it the crop reads, and
-/// the plan addresses that whole proxy stage; the photo surface derives the boundary from the
-/// source it holds, so the job asks the worker for nothing more than its frame.
+/// At Fit a drag's boundary is the source reduced to the view: the key names the reduced stage the
+/// GPU plans at the job's bounds, with the window of it the crop reads, and the plan addresses that
+/// whole reduced stage; the photo surface derives the boundary from the source it holds, so the job
+/// asks the worker for nothing.
 #[test]
 fn a_fit_boundary_is_the_source_reduced_to_the_jobs_proxy() {
     let (job, draft) = draft_job(
@@ -395,12 +395,18 @@ fn a_fit_boundary_is_the_source_reduced_to_the_jobs_proxy() {
     assert_eq!(request.format, crate::BoundaryFormat::Half, "a JPEG's");
     assert_eq!(request.window, None, "the proxy plan names its window");
     let plan = request.key.plan().expect("a proxy");
-    let exact = job.evaluation.exact(&crate::Cancel::never()).unwrap();
-    let worker = exact.proxy_plan(bounds()).expect("a proxy at the bounds");
-    let worker = exact
-        .proxy_window(job.evaluation.registry(), job.evaluation.recipe(), worker)
-        .plan();
-    assert_eq!(plan, worker, "the worker's proxy, its window included");
+    let reduced = crate::gpu_fit_plan(
+        job.evaluation.registry(),
+        job.evaluation.recipe(),
+        job.evaluation.source().dimensions(),
+        bounds(),
+    )
+    .unwrap()
+    .expect("a reduced stage at the bounds");
+    assert_eq!(
+        plan, reduced,
+        "the GPU's reduced stage, its window included"
+    );
     let window = plan.window.expect("the crop's window");
     assert_eq!(
         plan.held(),

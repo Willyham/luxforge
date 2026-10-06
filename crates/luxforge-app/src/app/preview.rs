@@ -1147,7 +1147,11 @@ impl Editor {
                 .filter(|_| !self.gpu_held())
                 .map(|(plan, _)| plan)?,
         };
-        let region = plan.region?;
+        // The softer drag frame is a reduced whole frame placed over the full stage: its coverage is
+        // the whole stage's grid, as below 100%.
+        let region = plan
+            .region
+            .filter(|region| region.stage == region.full_stage)?;
         let [x0, y0, x1, y1] = region.rect;
         Some(ViewRegion {
             rect: Region {

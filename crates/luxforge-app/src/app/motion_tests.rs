@@ -92,23 +92,25 @@ fn motion_a_hold_that_lasts_renders_the_newest_ticks_reference_frame() {
     finish(editor, catalog);
 }
 
-/// A drag the GPU cannot draw for a reason that lasts — a Perspective drag over a stack with no
-/// layer before the geometry, `boundary-stage` — has the reference draw one whole frame at a time:
+/// A drag the GPU cannot draw for a reason that lasts — a 100% slot past the GPU-preview budget
+/// even at its reduced stage, `budget-exceeded` — has the reference draw one whole frame at a time:
 /// the first tick's at once, and each later tick's waiting for it, the newest replacing the older,
-/// so the frame that lands last is the newest revision's. The status bar names the layer.
+/// so the frame that lands last is the newest revision's. The status bar names the budget.
 #[test]
 fn motion_a_lasting_reason_renders_one_reference_frame_at_a_time_the_newest_next() {
     let catalog = catalog("motion-reference");
     let (mut editor, _, _) = real_photo(&catalog);
     editor.gpu.surface = Some(SurfaceReport::default());
+    zoomed(&mut editor);
+    editor.gpu.budget = Some(1);
     let log = attach_log(&mut editor);
-    for value in [20.0, 30.0, 40.0] {
-        let _ = slide(&mut editor, "set-perspective", "horizontal", value);
+    for value in [0.1, 0.2, 0.3] {
+        let _ = slide(&mut editor, ACTION, FIELD, value);
     }
     let revision = editor.session.draft.as_ref().unwrap().draft_revision;
     assert_eq!(
         editor.gpu_plan_fallback().as_deref(),
-        Some("boundary-stage")
+        Some("budget-exceeded")
     );
     assert!(editor.drag_frame_waiting(), "the newest tick waits");
     let first = logged(&mut editor, &log);
@@ -118,7 +120,7 @@ fn motion_a_lasting_reason_renders_one_reference_frame_at_a_time_the_newest_next
     assert!(
         ticks
             .iter()
-            .all(|tick| tick["path"] == "cpu" && tick["reason"] == "boundary-stage")
+            .all(|tick| tick["path"] == "cpu" && tick["reason"] == "budget-exceeded")
     );
     assert_eq!(
         ticks.iter().filter(|tick| tick["waits"] == true).count(),
@@ -145,7 +147,7 @@ fn motion_a_lasting_reason_renders_one_reference_frame_at_a_time_the_newest_next
             .fallback
             .as_ref()
             .map(|notice| notice.phrase.as_str()),
-        Some("Not on the GPU: Perspective")
+        Some("GPU memory full")
     );
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     finish(editor, catalog);
