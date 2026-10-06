@@ -6,12 +6,20 @@
 //! The launch builds one ([`launch`]) and hands it to the catalog owner through `HostConfig`, which
 //! submits every pixel read to it — `render.sample`, the modules' queries that read pixels (the
 //! neutral picker, `mask.sample-input`) and a mutation's planning read (a colour-limited stroke's
-//! seed) — and whose export lane streams every export through it (`docs/design/export.md`).
+//! seed) — and whose export lane streams every export through it (`docs/design/export.md`), as its
+//! preview lane streams a developed photograph's catalog tiers (`docs/design/catalog.md`).
 //!
 //! - **The window's adapter.** Iced hands the photo surface a device, not the adapter it came from,
 //!   and names that adapter only in its system information. The launch's worker opens nothing until
-//!   the desktop has named it ([`GpuTiles::adopt_adapter`], from `app::renderer` once the surface
-//!   has checked its GPU stage), and answers the reference as `surface-pending` until then.
+//!   its adapter is named ([`GpuTiles::adopt_adapter`]), and answers the reference as
+//!   `surface-pending` until then. The launch names it as its window opens where the host leaves no
+//!   doubt which adapter the window draws with — the one hardware adapter, or the one software
+//!   adapter a launch drawing on it is offered (`app::renderer::name_once_open`) — and the desktop
+//!   names it again from Iced's system information once the photo surface has checked its GPU
+//!   stage, the only naming on a host with several adapters. The window's naming confirms the
+//!   launch's, or replaces it: between jobs the worker then lets go of its runner, its tiles in
+//!   flight unread, and a stream begun on it ends naming `adapter-mismatch`, so no output mixes two
+//!   adapters' tiles.
 //! - **One thread.** `luxforge-gpu-tiles`, started by the first call or stream and asleep on its
 //!   condition variable while nothing waits (performance rule 8). It owns the runner, which the
 //!   first call or stream that needs it opens on the adapter the window's renderer reports drawing
@@ -644,6 +652,9 @@ struct Drawing {
     band_of: Vec<usize>,
     /// The tiles submitted and not yet read back, oldest first, with their index.
     pending: VecDeque<(Ticket, usize)>,
+    /// The runner it began on ([`Worker::runners`]): its tiles in flight and its window are that
+    /// runner's, so it ends if the worker opens another.
+    runner: u64,
 }
 
 /// A band whose tiles are being read back into its rows.
@@ -658,7 +669,7 @@ struct Assembling {
 
 impl Drawing {
     /// `plan` drawn over `source`, its tiles grouped in bands by their row.
-    fn new(plan: StreamPlan, source: GpuSource, grid: Option<CoordinateGrid>) -> Self {
+    fn new(plan: StreamPlan, source: GpuSource, grid: Option<CoordinateGrid>, runner: u64) -> Self {
         let (windows, band_of) = bands(&plan.tiles);
         Self {
             plan,
@@ -667,6 +678,7 @@ impl Drawing {
             windows,
             band_of,
             pending: VecDeque::new(),
+            runner,
         }
     }
 }
@@ -751,6 +763,7 @@ fn work(shared: &Arc<Shared>) {
         reference: ReferenceReads,
         versions: Cell::new(0),
         figures: RefCell::new(Figures::default()),
+        runners: Cell::new(0),
     };
     loop {
         let job = {
@@ -774,6 +787,7 @@ fn work(shared: &Arc<Shared>) {
         };
         #[cfg(test)]
         worker.hooks(&job);
+        worker.follow_adapter();
         match job {
             Job::Call(call) => {
                 call.run(&worker);
@@ -809,9 +823,37 @@ struct Worker {
     /// What every source and boundary handed the runner is told apart by.
     versions: Cell<u64>,
     figures: RefCell<Figures>,
+    /// How many runners the worker has let go of for another adapter: the runner a stream began on
+    /// is this count then ([`Drawing::runner`]).
+    runners: Cell<u64>,
 }
 
 impl Worker {
+    /// Between jobs, never within one: when the window has named another adapter than the one the
+    /// runner is open on (it replaced the launch's), let go of the runner, its tiles in flight
+    /// abandoned unread, so the next job opens one on the window's. A stream drawn on the old one
+    /// ends at its next step naming `adapter-mismatch`, and its export or tiers are drawn again by
+    /// the reference: no output mixes two adapters' tiles.
+    fn follow_adapter(&self) {
+        let named = self.shared.lock().adapter.clone();
+        let mut runner = self.runner.borrow_mut();
+        let moved = match (runner.as_ref(), &named) {
+            (Some(opened), Some((backend, name))) => {
+                opened.adapter().backend != *backend || opened.adapter().name != *name
+            }
+            _ => false,
+        };
+        if moved {
+            if let Some(old) = runner.as_mut() {
+                old.abandon();
+                old.release();
+                self.figures.borrow_mut().runner = old.figures();
+            }
+            *runner = None;
+            self.runners.set(self.runners.get() + 1);
+        }
+    }
+
     /// Why the runner cannot draw, when it cannot.
     fn unavailable(&self) -> Option<TileUnavailable> {
         self.shared.lock().unavailable
@@ -824,15 +866,8 @@ impl Worker {
             return Err(TileFallback::Unavailable(reason));
         }
         let mut runner = self.runner.borrow_mut();
-        // The window named another adapter than the launch did: the runner opens on the window's.
-        let named = self.shared.lock().adapter.clone();
-        if let (Some(opened), Some((backend, name))) = (runner.as_ref(), &named)
-            && (opened.adapter().backend != *backend || opened.adapter().name != *name)
-        {
-            *runner = None;
-        }
         if runner.is_none() {
-            let Some((backend, name)) = named else {
+            let Some((backend, name)) = self.shared.lock().adapter.clone() else {
                 return Err(TileFallback::Unavailable(TileUnavailable::NoAdapter));
             };
             // A JPEG's cut reads the core's decode table, which the surface holds once handed it.
@@ -1018,6 +1053,19 @@ impl Worker {
         if let Err(cancelled) = stream.cancel.check() {
             return self.end(stream, End::Error(cancelled));
         }
+        if stream
+            .drawing
+            .as_ref()
+            .is_some_and(|drawing| drawing.runner != self.runners.get())
+        {
+            // Begun on a runner let go of for the window's adapter: its tiles in flight went with
+            // it, and the rest is not drawn on another adapter.
+            stream.drawing = None;
+            return self.end(
+                stream,
+                End::Fallback(TileFallback::Unavailable(TileUnavailable::AdapterMismatch)),
+            );
+        }
         if stream.drawing.is_none() {
             return match self.begin(stream) {
                 Ok(drawing) => {
@@ -1150,7 +1198,7 @@ impl Worker {
             };
             let charge = self.largest_charge(&plan, &source, grid.as_ref())?;
             if charge <= budget {
-                return Ok(Drawing::new(plan, source, grid));
+                return Ok(Drawing::new(plan, source, grid, self.runners.get()));
             }
             requested = charge;
         }
