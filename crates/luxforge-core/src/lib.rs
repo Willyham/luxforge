@@ -112,9 +112,10 @@ pub use render::gpu::{
     GpuComponent, GpuDescription, GpuFallback, GpuGeometry, GpuLight, GpuLightPasses,
     GpuLightRestoration, GpuMask, GpuOperation, GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest,
     GpuPlane, GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuPreview, GpuProgram, GpuProgramKind,
-    GpuRest, GpuSpatial, GpuSpatialUnit, GpuView, GpuWarmList, REST_TILE_BYTES, REST_TILE_SIDES,
-    RestReduction, RestTile, RestTiles, STREAM_TILE_SIDES, SourceBoundary, StreamPlan, TilePlan,
-    anchored, gpu_lights, gpu_plan, plan_read, plan_stream,
+    GpuRest, GpuSpatial, GpuSpatialUnit, GpuView, GpuWarmList, REDUCED_AFTER_BYTES,
+    REST_TILE_BYTES, REST_TILE_SIDES, RestReduction, RestTile, RestTiles, STREAM_TILE_SIDES,
+    SourceBoundary, StreamPlan, TilePlan, anchored, gpu_fit_plan, gpu_lights, gpu_plan, plan_read,
+    plan_stream,
 };
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{
@@ -131,6 +132,7 @@ pub use source::{LinearImage, OpticalIdentity, SourceImage, SourceOptics, open_s
 pub mod qualification {
     pub use crate::modules::detail_qualification as detail;
     pub use crate::modules::presence_qualification as presence;
+    pub use crate::render::gpu::reduce_regions_after;
 
     /// The proxy plan a Fit job's worker builds for `recipe` over `render`'s source within
     /// `bounds`, as the GPU preview's plan reads it, and the window of the whole proxy stage the

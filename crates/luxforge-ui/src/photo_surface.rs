@@ -1080,7 +1080,7 @@ impl PhotoSurface {
                         .clone()
                         .filter(|plan| match (&self.viewport, plan.region) {
                             (None, None) => true,
-                            (Some(view), Some(region)) => region.stage == view.full_stage,
+                            (Some(view), Some(region)) => region.full_stage == view.full_stage,
                             _ => false,
                         })
                 }

@@ -24,7 +24,7 @@ const MEMORY: (&str, &str) = (
      on the CPU, which is slower. Fewer masked Presence or Detail layers, or Fit, draw on the GPU.",
 );
 const STACK: (&str, &str) = (
-    "Not on the GPU: Perspective",
+    "Not on the GPU: Pixel",
     "The GPU preview cannot draw this layer yet, so this drag is drawn on the CPU.",
 );
 const REFERENCE: (&str, &str) = (
@@ -220,26 +220,84 @@ fn gpu_preview_the_notice_says_nothing_of_a_zoom_below_100() {
     }
 }
 
-/// A layer the plan cannot hold names itself: a Perspective drag changes a geometry layer, which
-/// no plan from its input can hold, so the reason is `boundary-stage` and the notice names the
-/// layer by the label the recipe list gives it.
+/// A Perspective drag on a photograph whose stack holds no content layer is planned from the
+/// source, its geometry the plan's tail, where it once named `boundary-stage`: every tick derives
+/// the boundary its output reads from the source and hands the surface its plan, saying nothing
+/// while the surface evaluates it.
 #[test]
-fn gpu_preview_the_notice_names_the_layer_the_stack_cannot_draw() {
-    let catalog = catalog("notice-stack");
+fn gpu_preview_a_geometry_drag_on_a_fresh_photo_is_planned_for_the_gpu() {
+    let catalog = catalog("notice-geometry");
     let (mut editor, _, _) = real_photo(&catalog);
     editor.gpu.surface = Some(SurfaceReport::default());
     for value in [20.0, 40.0] {
         let _ = slide(&mut editor, "set-perspective", "horizontal", value);
-        assert_eq!(latest_reason(&editor), json!("boundary-stage"));
-        assert_says(&editor, "boundary-stage", Some(STACK));
+        assert!(
+            editor.gpu.holds_boundary(),
+            "{value}: the source's boundary, derived"
+        );
+        let (plan, _) = editor.gpu.planned().expect("a plan");
+        assert!(plan.content.is_empty(), "{value}: no content layer");
+        assert!(
+            plan.geometry.projective().is_some(),
+            "{value}: the perspective is the tail"
+        );
+        assert!(
+            editor.gpu.surface_plan().is_some(),
+            "{value}: handed to the surface"
+        );
+        assert_says(&editor, "surface-pending", None);
     }
-    // Another gesture over the same stack names its own reason, and the layer goes with the last:
-    // at a region, whose boundary the drag derives, a slot over a test budget.
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
-    zoomed(&mut editor);
-    editor.gpu.budget = Some(1);
-    let _ = slide(&mut editor, ACTION, FIELD, 0.1);
-    assert_says(&editor, "budget-exceeded", Some(MEMORY));
+    finish(editor, catalog);
+}
+
+/// A layer the plan cannot hold names itself: over a developer's pixel replacement, which addresses
+/// content pixels no program replaces, a Basic drag's reason is `pixel-stage`, and the notice names
+/// the layer by the label the recipe list gives it.
+#[test]
+fn gpu_preview_the_notice_names_the_layer_the_stack_cannot_draw() {
+    let catalog = catalog("notice-stack");
+    let _ = std::fs::remove_file(&catalog);
+    let (owner, join) = luxforge_core::OwnerHandle::start_with_host(
+        &catalog,
+        std::sync::Arc::new(luxforge_core::ModuleRegistry::developer()),
+        luxforge_core::HostConfig::unconfigured(),
+    )
+    .unwrap();
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/s0/orientation-1.jpg");
+    let (mut editor, asset, other) =
+        crate::app::testing::real_photo_on(owner.clone(), join, &fixture, crate::Config::default());
+    {
+        use luxforge_testkit::client::{call, mutation, request_id, revision};
+        let id = json!(asset.as_str());
+        call(
+            &owner,
+            other,
+            "edit.set-pixel",
+            json!({"asset_id": id, "x": 3, "y": 2, "rgb": [9, 9, 9],
+                   "mutation": mutation(revision(&owner, other, &id).unwrap(),
+                                        &request_id("notice"), "agent")}),
+        )
+        .expect("a pixel replacement");
+    }
+    let refreshed = crate::app::tasks::refresh(
+        &owner,
+        editor.client,
+        asset,
+        crate::app::tasks::Scope::Open,
+        editor.drawn(),
+    )
+    .unwrap();
+    let _ = editor.update(Message::Sync(super::message::sync::SyncMessage::Refreshed(
+        Ok(Box::new(refreshed)),
+    )));
+    editor.gpu.surface = Some(SurfaceReport::default());
+    for value in [0.2, 0.4] {
+        let _ = slide(&mut editor, ACTION, FIELD, value);
+        assert_eq!(latest_reason(&editor), json!("pixel-stage"));
+        assert_says(&editor, "pixel-stage", Some(STACK));
+    }
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     finish(editor, catalog);
 }
