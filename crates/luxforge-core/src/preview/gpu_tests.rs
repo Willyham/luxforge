@@ -1667,13 +1667,21 @@ fn committed_over(context: RenderContext, source: PreviewSource, layers: Vec<Lay
 
 /// At Fit, where the view draws the output stage smaller than it is, a committed stack's picture
 /// at rest is planned process-first: the whole stack's plan at the exact stage from the source,
-/// over tiles that cover the output stage once, row by row, each with the window of the source it
-/// reads, anchored to the plan; reduced to the proxy frame's size by the proxy build's own area
-/// average. A view that draws the stage at its own size, or 100%, plans the same tiles unreduced,
-/// the histogram's alone, and a Presence stack's
-/// windows start on its anchor's multiples.
+/// over tiles that cover the output stage once, each slot shape's tiles together and row by row,
+/// each with the window of the source it reads, anchored to the plan; reduced to the proxy frame's
+/// size by the proxy build's own area average. A view that draws the stage at its own size, or
+/// 100%, plans the same tiles unreduced, the histogram's alone, and a Presence stack's windows
+/// start on its anchor's multiples.
 #[test]
 fn a_picture_at_rest_is_planned_in_anchored_tiles_of_the_output_stage() {
+    let shape = |tile: &crate::RestTile| {
+        (
+            tile.window.width,
+            tile.window.height,
+            tile.rect.width,
+            tile.rect.height,
+        )
+    };
     for (what, layers, anchor) in [
         (
             "Basic",
@@ -1730,11 +1738,24 @@ fn a_picture_at_rest_is_planned_in_anchored_tiles_of_the_output_stage() {
                 "{what}: anchored"
             );
             if index > 0 {
-                let before = tiles.tiles[index - 1].rect;
+                let before = tiles.tiles[index - 1];
+                if shape(&before) == shape(tile) {
+                    assert!(
+                        (rect.y0, rect.x0) > (before.rect.y0, before.rect.x0),
+                        "{what}: row by row within a shape"
+                    );
+                }
+            }
+        }
+        // Each slot shape's tiles together, so the slot is refitted once a shape.
+        let mut seen = Vec::new();
+        for pair in tiles.tiles.windows(2) {
+            if shape(&pair[0]) != shape(&pair[1]) {
                 assert!(
-                    (rect.y0, rect.x0) > (before.y0, before.x0),
-                    "{what}: row by row"
+                    !seen.contains(&shape(&pair[1])),
+                    "{what}: a shape's tiles are drawn together"
                 );
+                seen.push(shape(&pair[0]));
             }
         }
     }
