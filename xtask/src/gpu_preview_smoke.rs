@@ -514,11 +514,7 @@ pub(crate) fn gpu_drawn(frame: &Frame) -> Result<Value> {
     )?;
     let ms = bar["gpu_ms"].as_f64().unwrap_or(f64::NAN);
     ensure(
-        bar["render"]
-            == json!(crate::smoke::gpu_text(
-                ms,
-                crate::smoke::gpu_at_rest(frame.state())
-            )),
+        bar["render"] == json!(crate::smoke::frame_gpu_text(ms, frame.state())),
         format!(
             "{}: the status bar says {} for a GPU frame",
             frame["file"], bar["render"]
@@ -1107,9 +1103,7 @@ pub(crate) fn at_rest_after(events: &[Value], frame: &Frame, what: &str) -> Resu
         committed.is_empty()
             && gpu["drawing_path"] == json!("gpu")
             && (gpu["picture"] == json!("view") || gpu["picture"] == json!("rest"))
-            && render
-                .as_str()
-                .is_some_and(|text| text.starts_with("GPU render")),
+            && render.as_str().is_some_and(crate::smoke::names_gpu_render),
         format!(
             "{what}: the committed stack is not the GPU's at rest in {}: path {}, picture {}, \
              render {render}, dissolves into the committed frame {:?}",

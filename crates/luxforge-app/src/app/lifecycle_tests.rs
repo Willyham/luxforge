@@ -116,6 +116,43 @@ fn fallback_a_forced_launch_tells_the_owner_the_reference_before_its_window_open
     assert!(!evidence.exists(), "choosing creates nothing");
 }
 
+/// A host whose only adapter is a software one, not adopted, is the reference renderer for
+/// `no-adapter` from before the window opens, as a forced launch is, and its tile worker answers
+/// every export with the reference for `no-adapter` and takes no adapter; a launch that asked for
+/// the software adapter waits for its surface like any other, and its worker for the window's
+/// adapter.
+#[test]
+fn fallback_a_software_only_host_tells_the_owner_its_renderer_before_its_window_opens() {
+    use luxforge_core::tiles::{TileFallback, TileService, TileStatus, TileUnavailable};
+    use luxforge_core::{Renderer, RendererReason};
+    use luxforge_ui::adapters::{LaunchRenderer, Refusal};
+    let evidence = std::env::temp_dir().join("luxforge-evidence-software");
+    let launch = |chosen| {
+        let mut config = Config {
+            evidence: Some(evidence.clone()),
+            launch_renderer: Some(chosen),
+            ..Config::default()
+        };
+        config.paths = config.resolve_paths();
+        host_of(&config).renderer
+    };
+    assert_eq!(
+        launch(LaunchRenderer::Reference(Refusal::SoftwareNotAdopted)),
+        Renderer::reference(RendererReason::NoAdapter)
+    );
+    assert_eq!(
+        launch(LaunchRenderer::Gpu { software: true }),
+        Renderer::reference(RendererReason::SurfacePending)
+    );
+    let unavailable = |reason| TileStatus::Reference(Some(TileFallback::Unavailable(reason)));
+    let worker = GpuTiles::unavailable(TileUnavailable::NoAdapter);
+    assert_eq!(worker.status(), unavailable(TileUnavailable::NoAdapter));
+    assert!(!worker.adopt_adapter("Vulkan", "llvmpipe (LLVM 19.1.7, 128 bits)"));
+    assert_eq!(worker.status(), unavailable(TileUnavailable::NoAdapter));
+    assert!(!worker.started());
+    assert!(!evidence.exists(), "choosing creates nothing");
+}
+
 /// The launch hands the owner its GPU tile worker, which starts nothing until an export asks it
 /// and waits for the desktop to name the adapter its window draws with, answering the reference as
 /// `surface-pending` until then: named once, it is the GPU's. A `--no-gpu-render` launch's worker is

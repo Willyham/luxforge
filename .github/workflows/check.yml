@@ -86,8 +86,11 @@ jobs:
           # what runs on software Vulkan, and only these are run here: the original renderer smoke,
           # the histogram, the GPU stage's identity frame, gestures drawn on the GPU stage, and a
           # launch with the GPU stage refused. A name `smoke --list` does not have fails the step.
+          # Lavapipe is not adopted as the fallback for a host without a hardware adapter
+          # (docs/specs/performance.md, "Software adapters"), so the editor refuses the GPU stage
+          # on this lane unless asked: every launch passes --software-adapter to draw on it.
           for scenario in empty load replacement invalid repeated alternating large24 large60 histogram gpu-identity gpu-preview no-gpu-render; do
-            xvfb-run -a cargo xtask smoke --binary artifacts/package/Luxforge/luxforge --scenario "$scenario" --output "artifacts/headless-$scenario"
+            xvfb-run -a cargo xtask smoke --binary artifacts/package/Luxforge/luxforge --scenario "$scenario" --output "artifacts/headless-$scenario" --editor-software-adapter
           done
           # Every launch's result.json records the adapter that drew it; on this lane each must be
           # the software one.

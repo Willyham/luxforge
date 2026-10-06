@@ -58,17 +58,33 @@ pub(super) fn host_config(config: &Config, tiles: Arc<GpuTiles>) -> HostConfig {
         launch_flags: config.launch_flags.clone(),
         // What the launch knows of its renderer before the window opens, which every client's
         // session reports until the photo surface has checked its GPU stage.
-        renderer: super::renderer::launched(config.no_gpu_render),
+        renderer: super::renderer::launched(config.launch_renderer().refused()),
         tiles: Some(tiles),
         ..HostConfig::unconfigured()
     }
 }
 
-pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
+pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
+    // The renderer, chosen before the window opens from what the host offers: off macOS, an
+    // enumeration of the renderer's backends, so a host whose only adapter is a software one is
+    // known before Iced draws on it ([`luxforge_ui::adapters::choose`]).
+    let offered = if config.no_gpu_render {
+        luxforge_ui::adapters::Offered::NotProbed
+    } else {
+        luxforge_ui::adapters::probe()
+    };
+    let launch = luxforge_ui::adapters::choose(
+        config.no_gpu_render,
+        config.software_adapter,
+        luxforge_ui::adapters::SOFTWARE_ADAPTER_ADOPTED,
+        &offered,
+    );
+    config.launch_renderer = Some(launch);
     // Refused before the window, and so before Iced creates the photo surface's pipeline, whose
     // capability check then answers unavailable: the editor runs as on a machine whose adapter
-    // cannot run the GPU stage.
-    if config.no_gpu_render {
+    // cannot run the GPU stage. `--no-gpu-render` refuses it, and so does a host whose only
+    // adapter is a software one that is neither adopted nor asked for.
+    if launch.refused() {
         luxforge_ui::photo_surface::refuse_gpu_stage();
     }
     // Evidence runs never touch a real catalog: theirs lives inside the new evidence directory.
@@ -82,7 +98,7 @@ pub(crate) fn run(config: Config, size: (f32, f32)) -> Result<(), String> {
     let registry = Arc::new(ModuleRegistry::assemble(&config.registry_options())?);
     // The launch's one GPU tile worker, refused with the GPU stage: the owner's export lane
     // streams through it, and the renderer report names it the window's adapter once known.
-    let tiles = super::gpu_tiles::launch(config.no_gpu_render);
+    let tiles = super::gpu_tiles::launch(launch);
     let host = host_config(&config, tiles);
     let (owner, join) =
         OwnerHandle::start_with_host(&catalog, registry, host).map_err(|error| {

@@ -248,6 +248,20 @@ const HIDDEN_WINDOW: &str = "--hidden-window";
 /// before any window.
 const GPU_ADAPTERS: &str = "--gpu-adapters";
 
+/// The editor's switch that draws through the GPU stage on a host whose only graphics adapter is a
+/// software one (lavapipe), before the software adapter is adopted.
+const SOFTWARE_ADAPTER: &str = "--software-adapter";
+
+/// Every later launch of this run passes [`SOFTWARE_ADAPTER`] ([`draw_on_a_software_adapter`]).
+static SOFTWARE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Have every later editor launch of this run pass `--software-adapter`, as `smoke
+/// --editor-software-adapter` asks: the CI's software-adapter lane runs its journeys through the GPU
+/// stage on lavapipe so. The editor ignores it on a host with a hardware adapter.
+pub fn draw_on_a_software_adapter() {
+    SOFTWARE.store(true, std::sync::atomic::Ordering::Release);
+}
+
 /// The background bundle's identifier, which names the per-application caches macOS keeps for
 /// it, Metal's compiled shaders among them. Evidence of a cold shader cache sets a fresh suffix
 /// through [`BUNDLE_SUFFIX_ENV`], whose caches start empty, without touching any other cache.
@@ -309,10 +323,15 @@ pub fn gpu_adapters(root: &Path) -> Result<Option<Vec<Value>>> {
 }
 
 /// The arguments an automated editor launch runs with: the runner's own, behind the hidden-window
-/// flag. Every harness launch of the editor goes through this, so the flag has one home and the
-/// recorded command array shows exactly what ran.
+/// flag and, in a run that asked for it, the software-adapter switch
+/// ([`draw_on_a_software_adapter`]). Every harness launch of the editor goes through this, so the
+/// flags have one home and the recorded command array shows exactly what ran.
 pub fn editor_args(args: &[OsString]) -> Vec<OsString> {
+    let software = SOFTWARE
+        .load(std::sync::atomic::Ordering::Acquire)
+        .then(|| OsString::from(SOFTWARE_ADAPTER));
     std::iter::once(HIDDEN_WINDOW.into())
+        .chain(software)
         .chain(args.iter().cloned())
         .collect()
 }

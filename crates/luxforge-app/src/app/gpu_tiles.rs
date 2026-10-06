@@ -17,7 +17,9 @@
 //!   first call or stream that needs it opens on the adapter the window's renderer reports drawing
 //!   with, never another ([`TileRunner::open`]): a host without that adapter answers
 //!   `tiles-unavailable adapter-mismatch`, a launch with `--no-gpu-render` `refused`, a desktop
-//!   that named no adapter `no-adapter`, and a lost device `device-lost` from then on. Submitting a
+//!   that named no adapter, or a launch that refused the GPU stage on a host whose only adapter is
+//!   a software one not adopted, `no-adapter`, and a lost device `device-lost` from then on. A
+//!   launch drawing on the software adapter names it as any other, so its worker opens on it. Submitting a
 //!   call or asking for a stream never waits for the worker (rule 12); only the worker waits on its
 //!   device.
 //! - **Order.** Calls are answered in the order queued, each before any export tile still to be
@@ -90,10 +92,22 @@ use std::{
 static LAUNCHED: OnceLock<Arc<GpuTiles>> = OnceLock::new();
 
 /// The launch's one worker, which the catalog owner's export lane streams every export through:
-/// waiting for the desktop to name the adapter its window draws with, or refused for a launch with
-/// `--no-gpu-render` ([`GpuTiles::pending`]). Made once; a second call answers the first's.
-pub(crate) fn launch(refused: bool) -> Arc<GpuTiles> {
-    Arc::clone(LAUNCHED.get_or_init(|| Arc::new(GpuTiles::pending(refused))))
+/// waiting for the desktop to name the adapter its window draws with ([`GpuTiles::pending`]);
+/// refused for a launch with `--no-gpu-render`; and for a launch that refused the GPU stage on a
+/// host whose only adapter is a software one, not adopted, or with no adapter, answering the
+/// reference as `no-adapter` ([`GpuTiles::unavailable`]). Made once; a second call answers the
+/// first's.
+pub(crate) fn launch(launch: luxforge_ui::adapters::LaunchRenderer) -> Arc<GpuTiles> {
+    use luxforge_ui::adapters::{LaunchRenderer, Refusal};
+    Arc::clone(LAUNCHED.get_or_init(|| {
+        Arc::new(match launch {
+            LaunchRenderer::Gpu { .. } => GpuTiles::pending(false),
+            LaunchRenderer::Reference(Refusal::Requested) => GpuTiles::pending(true),
+            LaunchRenderer::Reference(Refusal::SoftwareNotAdopted | Refusal::NoAdapter) => {
+                GpuTiles::unavailable(TileUnavailable::NoAdapter)
+            }
+        })
+    }))
 }
 
 /// The launch's one worker, once the launch has made it; none in a test, which makes its own.
@@ -248,6 +262,13 @@ impl GpuTiles {
         } else {
             TileUnavailable::Pending
         };
+        Self::with_state(TILE_QUEUE_CAPACITY, None, Some(reason))
+    }
+
+    /// A launch's worker that never opens anything, answering every read and export with the
+    /// reference for `reason`: for a launch that refused the GPU stage because its host offers no
+    /// adapter it draws on. Starts no thread before the first call or stream.
+    pub(crate) fn unavailable(reason: TileUnavailable) -> Self {
         Self::with_state(TILE_QUEUE_CAPACITY, None, Some(reason))
     }
 

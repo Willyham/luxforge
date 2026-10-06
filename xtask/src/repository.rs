@@ -930,6 +930,7 @@ const SOURCE_RULES: &[SourceRule] = &[
             "\"--window-size\"",
             "\"--evidence-gpu-identity\"",
             "\"--no-gpu-render\"",
+            "\"--software-adapter\"",
             "\"--gpu-adapters\"",
             "spawn_editor",
             "editor_args",
