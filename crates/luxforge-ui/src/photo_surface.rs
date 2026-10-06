@@ -117,9 +117,9 @@ pub use gpu_preview::{
     EvaluationFigures, GPU_PREVIEW_BUDGET, GpuBoundary, GpuChange, GpuFallback, GpuPlan,
     GpuProgram, GpuRegion, GpuRest, GpuSource, GpuStageState, GpuStep, GpuTail, GpuWarm,
     MaskedColour, OutputEncoding, PIPELINE_CACHE, PRELUDE, PositionMap, REST_TILES_PER_FRAME,
-    REST_VIEW_PIXELS, Reduction, RestFigures, RestReduction, SourceFigures, SourceKind, TexelMap,
-    TickCounts, WarmUpFigures, install_output_encoding, output_encoding, refuse_gpu_stage,
-    validate_step,
+    REST_VIEW_PIXELS, Reduction, RestFigures, RestReduction, RestStages, RestSweep, SourceFigures,
+    SourceKind, TexelMap, TickCounts, WarmUpFigures, install_output_encoding, output_encoding,
+    refuse_gpu_stage, validate_step,
 };
 
 /// Which photo surface a primitive draws. The pipeline keeps one set of textures per id, so two
