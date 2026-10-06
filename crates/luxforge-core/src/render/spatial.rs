@@ -142,6 +142,7 @@ impl SpatialPlan {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn working_set(&self) -> u64 {
         self.working_set
     }
