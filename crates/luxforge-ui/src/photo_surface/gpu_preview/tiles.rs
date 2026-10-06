@@ -48,6 +48,9 @@
 //!   it once that wait ends; dropping the runner releases the rest. The window's upload passes
 //!   through wgpu's staging, one copy of the window's bytes until the wait ends, which, as the
 //!   photo surface's own uploads, is not charged.
+//! - **Figures.** Each run's time on its caller's thread, split into the lights it computed, the
+//!   window's upload, creating and encoding its work, the wait for its device and the readback
+//!   ([`TileTimes`]): the last tile's and every tile's summed ([`TileFigures`]).
 //! - **Determinism.** One device, one driver: the same plan over the same window draws the same
 //!   bytes every run, each a fresh evaluation in a fixed order with no float atomics.
 //! - **Why the reference would answer instead.** Every failure is shaped as the core's tile
@@ -68,6 +71,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc,
 };
+use std::time::Instant;
 
 /// What one tile runner may hold on its device at once: the window of the source, the tile's slot
 /// and its readback copy, the most a run holds. Proposed, not decided: 1 GiB, a budget of its own
@@ -202,6 +206,36 @@ pub struct TileFigures {
     pub runs: u64,
     /// Lights it has computed and read back, each once for every tile that reads it.
     pub lights: u64,
+    /// Where its last tile's time went, and every tile's summed ([`TileTimes`]).
+    pub last: TileTimes,
+    pub total: TileTimes,
+}
+
+/// Where a tile's time went on the runner's thread, in microseconds: what attributes a slow
+/// stream. Each is a wall-clock span of the run, read with two clock reads.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TileTimes {
+    /// Computing the lights the plan reads that the runner did not keep ([`light::read_light`]),
+    /// each waited for.
+    pub light_us: u64,
+    /// Uploading the window of the source, when the runner did not hold it already.
+    pub upload_us: u64,
+    /// Creating the run's textures and buffers and encoding and submitting its passes.
+    pub encode_us: u64,
+    /// Waiting for the device to finish them: the GPU's work, an upper bound on it.
+    pub wait_us: u64,
+    /// Reading the output back and unpadding its rows.
+    pub read_us: u64,
+}
+
+impl TileTimes {
+    fn add(&mut self, other: &Self) {
+        self.light_us += other.light_us;
+        self.upload_us += other.upload_us;
+        self.encode_us += other.encode_us;
+        self.wait_us += other.wait_us;
+        self.read_us += other.read_us;
+    }
 }
 
 /// One tile of a stack drawn on a device of its own and read back, on its caller's thread (the
@@ -263,6 +297,14 @@ struct Submitted {
     mapped: mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>,
     size: (u32, u32),
     padded: u32,
+    /// The window's upload, and the rest of the run's creation, encoding and submission.
+    upload_us: u64,
+    encode_us: u64,
+}
+
+/// Microseconds since `since`.
+fn micros(since: Instant) -> u64 {
+    since.elapsed().as_micros() as u64
 }
 
 impl TileRunner {
@@ -423,7 +465,12 @@ impl TileRunner {
             self.layouts = SourceLayouts::new(&self.device).ok();
         }
         let held = self.checked(plan, source, window)?;
+        let lit = Instant::now();
         let lights = self.lit(&plan.lights, source)?;
+        let mut times = TileTimes {
+            light_us: micros(lit),
+            ..TileTimes::default()
+        };
         let requested = held.bytes() + self.slot_bytes(plan, end)?;
         if requested > GPU_TILE_BUDGET {
             return Err(TileFailure::Budget {
@@ -453,7 +500,13 @@ impl TileRunner {
         }
         let waited = self
             .submit(plan, &held, end, &pipelines, &lights)
-            .map(|submitted| self.wait(submitted));
+            .map(|submitted| {
+                (times.upload_us, times.encode_us) = (submitted.upload_us, submitted.encode_us);
+                let waiting = Instant::now();
+                let waited = self.wait(submitted);
+                times.wait_us = micros(waiting);
+                waited
+            });
         // Every scope is popped, whatever the first one answers.
         let answers: Vec<_> = (0..3)
             .map(|_| answered(self.device.pop_error_scope()))
@@ -475,8 +528,12 @@ impl TileRunner {
         if !mapped {
             return Err(TileFailure::Unavailable(TileUnavailable::DeviceLost));
         }
+        let reading = Instant::now();
         let read = Self::read(&submitted, end);
+        times.read_us = micros(reading);
         self.figures.runs += 1;
+        self.figures.last = times;
+        self.figures.total.add(&times);
         Ok(read)
     }
 
@@ -753,6 +810,7 @@ impl TileRunner {
         lights: &[[f32; 4]],
     ) -> Result<Submitted, TileFailure> {
         let layouts = self.layouts.as_ref().ok_or(TileFailure::PIPELINE_FAILED)?;
+        let started = Instant::now();
         if self.window.is_none() {
             let mut slot = SourceSlot::new(&self.device, held, layouts, |_| Ok(()))
                 .map_err(TileFailure::Plan)?;
@@ -763,6 +821,8 @@ impl TileRunner {
             }
             self.window = Some((slot, held.bytes()));
         }
+        let upload_us = micros(started);
+        let encoding = Instant::now();
         let (device, queue) = (&self.device, &self.queue);
         let (window, _) = self.window.as_ref().expect("the window held");
         let shape = Shape::of(plan);
@@ -1007,6 +1067,8 @@ impl TileRunner {
             mapped,
             size: output_size,
             padded,
+            upload_us,
+            encode_us: micros(encoding),
         })
     }
 

@@ -16,7 +16,7 @@
 use crate::{
     AssetId, Error, MutationOutcome, SkippedSetting,
     atomic_file::file_error,
-    catalog_types::{BatchReport, BatchSettingsSkipped, BatchSkip},
+    catalog_types::{BatchReport, BatchSettingsSkipped, BatchSkip, BatchWritten},
     editor::{ActionResult, library_rows},
     export::publish::{self, Destination},
     jobs::JobControl,
@@ -246,16 +246,17 @@ impl<'a> Progress<'a> {
         progress
     }
 
-    /// A photograph done, with the file it wrote or the settings it was done without.
+    /// A photograph done, with the file it wrote and its renderer, or the settings it was done
+    /// without.
     pub(crate) fn done(
         &mut self,
         asset: AssetId,
-        written: Option<PathBuf>,
+        written: Option<BatchWritten>,
         settings: Vec<SkippedSetting>,
     ) {
         self.push("done", json!(asset));
-        if let Some(path) = &written {
-            self.push("written", json!(path));
+        if let Some(written) = &written {
+            self.push("written", json!(written));
         }
         if !settings.is_empty() {
             let skipped = BatchSettingsSkipped {

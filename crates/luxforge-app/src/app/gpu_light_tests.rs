@@ -20,8 +20,11 @@
 //!   bit.
 //! - **The global rule.** A light that changes redraws the link reading it whole, whatever the
 //!   tick's own change, every scratch plane starting from NaN.
-//! - **Bounds.** The light link and the light plane are charged to the GPU-preview budget and
-//!   leave it when released.
+//! - **Bounds.** The light link, the light plane and the light the pipeline keeps are charged to
+//!   the GPU-preview budget and leave it when released.
+//! - **Refits.** A slot refitted to another shape copies its unchanged light in from the lights
+//!   the pipeline keeps, encoding no light pass, and draws a fresh slot's frame; a changed light is
+//!   encoded; the pipeline keeps at most `LIGHT_CACHE`, charged.
 //! - **The tile runner.** A tile runner, which holds a window of the source for each tile it draws,
 //!   computes a light over a stage of several of the link's tiles from a window of the source for
 //!   each: the slot's light over the whole source, bit for bit, on its own device, and once.
@@ -38,9 +41,9 @@ use luxforge_core::{
 };
 use luxforge_reference::srgb;
 use luxforge_ui::photo_surface::{
-    BoundaryFormat, Derivation, GpuBoundary, GpuChange, GpuPlan, GpuSource, TexelMap,
+    BoundaryFormat, Derivation, GpuBoundary, GpuChange, GpuPlan, GpuRegion, GpuSource, TexelMap,
     gpu_preview::{
-        light::{GpuLight, LightBench, Lit, light_charge, lights_charge},
+        light::{GpuLight, LIGHT_CACHE, LightBench, Lit, light_charge, lights_charge},
         qualification::Qualifier,
     },
 };
@@ -874,15 +877,17 @@ fn gpu_light_the_light_planes_are_charged_and_released() {
         eprintln!(
             "{path:?}: the light link {link} B, its textures {textures} B, in use {in_use} B"
         );
+        // The light plane, and the light the pipeline keeps beside it.
+        assert_eq!(bench.kept_lights(), (1, 16), "{path:?}: the light kept");
         assert_eq!(
             in_use,
-            gpu.bytes() + 16 + link,
-            "{path:?}: the source, light and link"
+            gpu.bytes() + 16 + 16 + link,
+            "{path:?}: the source, light, kept light and link"
         );
         assert_eq!(
             scratch,
-            16 + textures,
-            "{path:?}: the light plane and the link's textures"
+            16 + 16 + textures,
+            "{path:?}: the light plane, the kept light and the link's textures"
         );
         bench.release();
         assert_eq!(bench.charged(), (0, 0), "{path:?}: everything released");
@@ -1005,6 +1010,105 @@ fn gpu_light_the_slot_runs_its_plans_light_links_before_its_chain() {
         fresh.release();
         bench.release();
         assert_eq!(bench.surface_lights(), (0, 0), "{path:?}: let go");
+        assert_eq!(bench.charged(), (0, 0), "{path:?}: everything released");
+    }
+}
+
+/// A slot refitted to another shape — a region of the same boundary, as a picture at rest's edge
+/// tile refits to its window — copies its unchanged light in from the lights the pipeline keeps:
+/// no light pass is encoded, and its frame is a fresh slot's, which computes the light, bit for
+/// bit. A changed light is encoded. The pipeline keeps at most [`LIGHT_CACHE`] lights, each
+/// charged, and lets them go with the source. On both paths.
+#[test]
+fn gpu_light_a_refit_slot_restores_its_unchanged_light() {
+    let test = "gpu_light_a_refit_slot_restores_its_unchanged_light";
+    let Some((mut bench, adapter)) = on_device(test, None) else {
+        return;
+    };
+    eprintln!("{test}: adapter {adapter}");
+    let registry = ModuleRegistry::builtin();
+    let photo = Photo::synthetic(640, 432, 0x88);
+    let presence = json!({"dehaze": 70, "clarity": 30});
+    let reader = stack(&[(PRESENCE_EFFECT, presence.clone())]);
+    let brighter = stack(&[
+        (BASIC_EFFECT, json!({"exposure": 1.0})),
+        (PRESENCE_EFFECT, presence),
+    ]);
+    for (version, path) in [(1, Path::Byte), (2, Path::Linear)] {
+        let mut fresh = bench.another();
+        let gpu = photo.gpu(path, version);
+        let request = request(&photo, path);
+        let plan = reading_plan(&registry, &reader, request, whole_cut(&gpu, version));
+        let counts = bench.light_counts();
+        bench.prepare(&gpu, &plan, None).expect("the whole frame");
+        let after_whole = bench.light_counts();
+        assert_eq!(
+            (after_whole.0 - counts.0, after_whole.1 - counts.1),
+            (1, 0),
+            "{path:?}: the first frame encodes its light"
+        );
+        // A region of the same boundary: another output, so another slot and pool.
+        let region = GpuPlan {
+            region: Some(GpuRegion {
+                rect: [0, 0, 320, 216],
+                stage: (photo.width, photo.height),
+                full_stage: (photo.width, photo.height),
+            }),
+            ..plan.clone()
+        };
+        let refit = bench.prepare(&gpu, &region, None).expect("the region");
+        let evaluation = bench.evaluation();
+        let after_refit = bench.light_counts();
+        eprintln!("{path:?}: the refit's evaluation {evaluation:?}");
+        assert_eq!(evaluation.refits, 1, "{path:?}: the slot was refitted");
+        assert_eq!(
+            (evaluation.lights_encoded, evaluation.lights_restored),
+            (0, 1),
+            "{path:?}: the unchanged light is copied in"
+        );
+        assert_eq!(after_refit.0, after_whole.0, "{path:?}: no light pass");
+        let whole = fresh.prepare(&gpu, &region, None).expect("a fresh slot");
+        let differing = refit.iter().zip(&whole).filter(|(a, b)| a != b).count();
+        assert_eq!(
+            differing, 0,
+            "{path:?}: the restored light draws a fresh slot's frame"
+        );
+        // A changed light over the refitted slot is computed.
+        let (_, second) = light_of(&registry, &brighter, request, GpuLightRestoration::LeftOut);
+        let changed = GpuPlan {
+            lights: vec![second],
+            ..region.clone()
+        };
+        bench
+            .prepare(&gpu, &changed, None)
+            .expect("the changed light");
+        assert_eq!(
+            bench.light_counts().0 - after_refit.0,
+            1,
+            "{path:?}: the changed light is encoded"
+        );
+        assert_eq!(bench.kept_lights(), (2, 32), "{path:?}: both lights kept");
+        // More lights than the cache holds: the least recently used are overwritten.
+        for step in 0..LIGHT_CACHE {
+            let exposure = stack(&[
+                (BASIC_EFFECT, json!({"exposure": 0.1 * (step + 1) as f64})),
+                (PRESENCE_EFFECT, json!({"dehaze": 40})),
+            ]);
+            let (_, light) = light_of(&registry, &exposure, request, GpuLightRestoration::LeftOut);
+            bench.light(&gpu, &light).expect("a light");
+        }
+        assert_eq!(
+            bench.kept_lights(),
+            (LIGHT_CACHE, LIGHT_CACHE as u64 * 16),
+            "{path:?}: the cache's bound, charged"
+        );
+        fresh.release();
+        bench.release();
+        assert_eq!(
+            bench.kept_lights(),
+            (0, 0),
+            "{path:?}: let go with the source"
+        );
         assert_eq!(bench.charged(), (0, 0), "{path:?}: everything released");
     }
 }

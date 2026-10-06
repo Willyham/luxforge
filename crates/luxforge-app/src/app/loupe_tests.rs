@@ -322,6 +322,7 @@ fn warm_up(editor: &mut Editor) {
         .iter()
         .map(|item| {
             let preview = PreviewInfo {
+                renderer: None,
                 item: item.item.clone(),
                 tier: PreviewTier::Loupe,
                 path: PathBuf::from("/c.index/previews/loupe.jpg"),
@@ -605,6 +606,7 @@ fn loupe_strip_borrows_the_grids_files_and_holds_its_own_photographs() {
         rgba: vec![0; (width * height * 4) as usize],
     };
     let info = |item: PreviewItem, key: &str| PreviewInfo {
+        renderer: None,
         item,
         tier: PreviewTier::Grid,
         path: PathBuf::from(format!("/c.index/previews/{key}.jpg")),
