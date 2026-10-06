@@ -159,13 +159,6 @@ impl ProxyStage {
     pub(crate) fn plan(&self) -> ProxyPlan {
         self.plan
     }
-
-    /// The stack's compilation at the whole proxy stage, before any window cuts it, or why it
-    /// does not compile there.
-    #[cfg(feature = "qualification")]
-    pub(crate) fn compiled(&self) -> Result<&Compiled, Error> {
-        self.compiled.as_ref().map_err(Clone::clone)
-    }
 }
 
 /// At most 32 MiB of returned RGBA8 pixels in one viewport frame. Intermediate/source windows
