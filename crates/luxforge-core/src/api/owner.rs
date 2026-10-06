@@ -2194,6 +2194,34 @@ impl Owner {
                     .ok()
                     .map(Box::new);
             }
+            // A truncated job — a crop draft's input stage, the layers before the crop — carries
+            // the prefix's picture at rest on the GPU, its tiles reduced to the view where the
+            // view draws the stage smaller than it is; no gesture draws over it, so no warm list.
+            // A prefix the GPU cannot draw names why in the plan's tiles, and the job's own frame
+            // is the reference's.
+            if let (true, None, Some(view), Some(count)) =
+                (request.gpu, draft, view, request.layer_count)
+            {
+                // The prefix's own evaluation, as the worker truncates the stack: the first
+                // `count` layers, beside the whole mask table, over the job's source and context,
+                // compiled once here. `O(layers)`, no pixel.
+                let evaluation = &job.evaluation;
+                let whole = evaluation.recipe();
+                let prefix = crate::Evaluation::new(
+                    evaluation.registry().clone(),
+                    evaluation.context().clone(),
+                    evaluation.source().clone(),
+                    evaluation.entry().clone(),
+                    crate::Recipe {
+                        layers: whole.layers.iter().take(count).cloned().collect(),
+                        ..whole.clone()
+                    },
+                    None,
+                );
+                job.gpu_rest = crate::render::gpu::plan_rest(&prefix, view)
+                    .ok()
+                    .map(Box::new);
+            }
             if let (true, Some(draft), Some(view), None) =
                 (request.gpu, draft, view, request.layer_count)
             {
