@@ -34,6 +34,9 @@ pub(crate) mod compare_after;
 pub(crate) mod controls;
 #[cfg(test)]
 mod controls_tests;
+pub(crate) mod cpu_proxy;
+#[cfg(test)]
+mod cpu_proxy_tests;
 pub(crate) mod crop;
 pub(crate) mod draft;
 pub(crate) mod evidence;
