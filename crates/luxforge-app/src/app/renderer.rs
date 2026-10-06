@@ -27,16 +27,28 @@
 //! - **The adapter.** Iced hands the surface a device, not the adapter it came from. An evidence
 //!   run records the adapter that drew from Iced's own name for it and an enumeration of its
 //!   backend on the blocking pool ([`identify`], [`adapter_record`]).
-//! - **The tile worker's adapter.** The launch's GPU tile worker, which the owner's export lane
-//!   streams through, opens its own device on the adapter the window draws with and on no other
-//!   (`app::gpu_tiles`). Once the photo surface has checked its GPU stage, the desktop names that
-//!   adapter to it, once, by Iced's name for it ([`after_message`]): from the system information an
-//!   evidence run asks for at launch, or, in any other launch, from one request for it made then.
-//!   Iced answers that request by walking the host's processes on a thread of its own, which is why
-//!   a launch waits for its first photograph rather than asking at once. Until it is named the
+//! - **The tile worker's adapter.** The launch's GPU tile worker, which the owner's export lane and
+//!   its preview lane's catalog tiers stream through, opens its own device on the adapter the
+//!   window draws with and on no other (`app::gpu_tiles`). The launch names it at once where the
+//!   host leaves no doubt which adapter the window's request lands on ([`name_once_open`]): once
+//!   the window has opened, and so once Iced's renderer has loaded the platform's driver, a thread
+//!   of its own, off the update loop and the owner, enumerates wgpu's adapters of the window's
+//!   backends as Iced's renderer does, and names the one hardware adapter, or, for a launch
+//!   drawing on the software adapter, the one adapter there is ([`launch_candidate`]). Where the
+//!   host offers several, it names nothing. Enumerating before the window opened took 0.6 to
+//!   1.2 s on the M4, the driver's first load, and delayed the window's first frame by about
+//!   0.2 s at the median; after it opens, the driver is loaded. Once the photo surface has checked its GPU stage,
+//!   the desktop names the adapter again, once, by Iced's name for it ([`after_message`]): from the
+//!   system information an evidence run asks for at launch, or, in any other launch, from one
+//!   request for it made then, which Iced answers by walking the host's processes on a thread of
+//!   its own, why the launch does not ask Iced. The window's naming confirms the launch's, or
+//!   replaces it with another adapter, which the worker then opens on. Until either names it the
 //!   worker answers the reference as `surface-pending`; a `--no-gpu-render` launch names nothing.
 use super::{
-    Before, Editor, gpu_tiles::GpuTiles, message::Message, message::renderer::RendererMessage,
+    Before, Editor,
+    gpu_tiles::{AdapterNaming, GpuTiles},
+    message::Message,
+    message::renderer::RendererMessage,
     tasks,
 };
 use iced::Task;
@@ -46,7 +58,10 @@ use luxforge_ui::{
     photo_surface::GpuStageState,
 };
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::{
+    sync::{Arc, OnceLock},
+    time::Instant,
+};
 
 /// What the desktop has told the owner of its renderer, and its GPU tile worker of its window's
 /// adapter.
@@ -69,6 +84,8 @@ pub(crate) struct RendererReport {
     /// What the desktop knows of the adapter its window draws with, and whether the worker has been
     /// told.
     adapter: WindowAdapter,
+    /// The launch's naming of the worker's adapter has been recorded in the events.
+    launch_naming_recorded: bool,
     /// A test's stand-in for the surface's stage, which no pipeline publishes in a unit test.
     #[cfg(test)]
     pub(crate) stage: Option<GpuStageState>,
@@ -101,6 +118,7 @@ impl RendererReport {
             in_flight: false,
             tiles: super::gpu_tiles::launched(),
             adapter: WindowAdapter::Unknown,
+            launch_naming_recorded: false,
             #[cfg(test)]
             stage: None,
         }
@@ -248,6 +266,7 @@ impl Editor {
 /// holds, report it, one report at a time, off the update loop. The answer's own update reports
 /// any change that came while it was on its way.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
+    record_launch_naming(editor);
     let named = name_adapter(editor);
     let reported = report(editor);
     match named {
@@ -267,7 +286,7 @@ fn name_adapter(editor: &mut Editor) -> Option<Task<Message>> {
     let tiles = editor.renderer.tiles.clone()?;
     match std::mem::take(&mut editor.renderer.adapter) {
         WindowAdapter::Named { backend, name } => {
-            let adopted = tiles.adopt_adapter(&backend, &name);
+            let adopted = tiles.adopt_adapter(&backend, &name, AdapterNaming::Window);
             editor.event(
                 "gpu_tiles_adapter",
                 || json!({"backend": backend, "adapter": name, "adopted": adopted}),
@@ -439,4 +458,138 @@ mod tests {
         );
         assert_eq!(identify("Noop", "Unknown"), None, "no backend of that name");
     }
+}
+
+/// What the launch did to name its GPU tile worker's adapter ([`name_at_launch`]), for the
+/// launch's events.
+#[derive(Clone, Debug)]
+pub(crate) struct LaunchNaming {
+    /// The adapters wgpu offers the window's backends.
+    pub(crate) offered: Vec<Adapter>,
+    /// The one the launch named, when the host left no doubt.
+    pub(crate) named: Option<Adapter>,
+    /// Whether the worker took it: not once the window has named its own.
+    pub(crate) adopted: bool,
+    /// How long the enumeration took on its thread, and when the thread began and named it,
+    /// since the launch began ([`launch_began`]).
+    pub(crate) enumerate_ms: f64,
+    pub(crate) began_ms: f64,
+    pub(crate) named_ms: f64,
+}
+
+/// When the launch began: before it chose its renderer and opened its catalog.
+static LAUNCH_BEGAN: OnceLock<Instant> = OnceLock::new();
+
+/// Note that the launch begins now, the origin of the launch naming's times; the first call wins.
+pub(crate) fn launch_began() -> Instant {
+    *LAUNCH_BEGAN.get_or_init(Instant::now)
+}
+
+/// Milliseconds from the launch's beginning to `at`.
+fn since_launch(at: Instant) -> f64 {
+    at.saturating_duration_since(launch_began()).as_secs_f64() * 1000.0
+}
+
+/// The launch's naming, once its thread has finished.
+static LAUNCH_NAMING: OnceLock<LaunchNaming> = OnceLock::new();
+
+/// The adapter among `offered`, wgpu's adapters of the window's backends, that a launch which
+/// chose `launch` knows its window draws on before the window opens: the one hardware adapter,
+/// which wgpu's request ranks before any software one; for a launch drawing on the software
+/// adapter, the one adapter there is. None where the host offers several the request could land
+/// on, and for a launch that refused the GPU stage.
+pub(crate) fn launch_candidate(launch: LaunchRenderer, offered: &[Adapter]) -> Option<&Adapter> {
+    use luxforge_ui::adapters::is_software;
+    match launch {
+        LaunchRenderer::Reference(_) => None,
+        LaunchRenderer::Gpu { software: false } => {
+            let mut hardware = offered
+                .iter()
+                .filter(|adapter| !is_software(&adapter.device_type));
+            match (hardware.next(), hardware.next()) {
+                (Some(only), None) => Some(only),
+                _ => None,
+            }
+        }
+        LaunchRenderer::Gpu { software: true } => match offered {
+            [only] if is_software(&only.device_type) => Some(only),
+            _ => None,
+        },
+    }
+}
+
+/// A task that names `tiles` its adapter ([`name_at_launch`]) once the window has opened: the
+/// window's opening is all it waits for. Nothing for a launch that refused the stage or has no
+/// worker.
+pub(crate) fn name_once_open(
+    launch: LaunchRenderer,
+    tiles: Option<Arc<GpuTiles>>,
+) -> Task<Message> {
+    let Some(tiles) = tiles.filter(|_| !launch.refused()) else {
+        return Task::none();
+    };
+    iced::window::oldest().then(move |_| {
+        name_at_launch(launch, Arc::clone(&tiles));
+        Task::none()
+    })
+}
+
+/// Name `tiles` its adapter where the host leaves no doubt ([`launch_candidate`]): on a thread of
+/// its own, which enumerates wgpu's adapters of the window's backends, names the one, records what
+/// it did for the launch's events ([`record_launch_naming`]) and ends. Never on the update loop or
+/// the owner; nothing waits for it. Nothing for a launch that refused the stage.
+pub(crate) fn name_at_launch(launch: LaunchRenderer, tiles: Arc<GpuTiles>) {
+    if launch.refused() {
+        return;
+    }
+    // A thread that could not start names nothing: the window names the adapter as before.
+    let _ = std::thread::Builder::new()
+        .name("luxforge-adapter-naming".into())
+        .spawn(move || {
+            let started = Instant::now();
+            let offered =
+                luxforge_ui::adapters::enumerate(luxforge_ui::adapters::renderer_backends());
+            let enumerate_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let named = launch_candidate(launch, &offered).cloned();
+            let adopted = named.as_ref().is_some_and(|adapter| {
+                tiles.adopt_adapter(&adapter.backend, &adapter.name, AdapterNaming::Launch)
+            });
+            let _ = LAUNCH_NAMING.set(LaunchNaming {
+                offered,
+                named,
+                adopted,
+                enumerate_ms,
+                began_ms: since_launch(started),
+                named_ms: since_launch(Instant::now()),
+            });
+        });
+}
+
+/// Record the launch's naming of the worker's adapter in the events, once, after the first message
+/// that finds it done.
+fn record_launch_naming(editor: &mut Editor) {
+    if editor.renderer.launch_naming_recorded {
+        return;
+    }
+    let Some(naming) = LAUNCH_NAMING.get() else {
+        return;
+    };
+    editor.renderer.launch_naming_recorded = true;
+    editor.event("gpu_tiles_adapter_launch", || {
+        json!({
+            "offered": naming.offered.iter().map(|adapter| json!({
+                "backend": adapter.backend, "adapter": adapter.name,
+                "device_type": adapter.device_type,
+            })).collect::<Vec<_>>(),
+            "named": naming.named.as_ref().map(|adapter| json!({
+                "backend": adapter.backend, "adapter": adapter.name,
+            })),
+            "adopted": naming.adopted,
+            // On the launch's clock, which began before the editor's (`editor_began_ms`).
+            "enumerate_ms": naming.enumerate_ms,
+            "began_ms": naming.began_ms,
+            "named_ms": naming.named_ms,
+            "editor_began_ms": since_launch(editor.log.started),
+        })
+    });
 }
