@@ -2546,22 +2546,24 @@ impl Editor {
     }
 
     /// Whether the view shows what `plan` draws: at Fit and below 100% a whole frame's, the view
-    /// drawing its photograph's frame alone as Fit does; at 100% and above a region's while that region holds the view, or, over a stack the
-    /// GPU presented with no CPU frame, while a pan's region is planned: the region is the only
-    /// picture of that stack, and the frame under it an earlier stack's.
+    /// drawing its photograph's frame alone as Fit does; at 100% and above a region's while that
+    /// region holds the view. Over a stack the GPU presented with no CPU frame, the plan it has is
+    /// shown at 100% and above while the view's region is planned — a pan's region, or the whole
+    /// frame's plan a zoom from Fit leaves: it is the only picture of that stack, and the frame
+    /// under it an earlier stack's.
     fn gpu_plan_shown(&self, plan: &surface::GpuPlan) -> bool {
+        let presented =
+            self.presentation.gpu_presented == Some(self.presentation.presented_content);
         match (&self.session.preview.view.zoom, plan.region) {
             (luxforge_core::Zoom::Fit, None) => true,
             (luxforge_core::Zoom::Percent { value }, None) if *value < 100.0 => true,
-            (luxforge_core::Zoom::Percent { value }, Some(region)) if *value >= 100.0 => {
-                let presented =
-                    self.presentation.gpu_presented == Some(self.presentation.presented_content);
-                self.presentation
-                    .dimensions
-                    .filter(|stage| *stage == region.full_stage)
-                    .and_then(|stage| self.desired_view_for(stage))
-                    .is_some_and(|wanted| presented || holds_view(region, wanted))
-            }
+            (luxforge_core::Zoom::Percent { .. }, None) => presented,
+            (luxforge_core::Zoom::Percent { value }, Some(region)) if *value >= 100.0 => self
+                .presentation
+                .dimensions
+                .filter(|stage| *stage == region.full_stage)
+                .and_then(|stage| self.desired_view_for(stage))
+                .is_some_and(|wanted| presented || holds_view(region, wanted)),
             _ => false,
         }
     }
