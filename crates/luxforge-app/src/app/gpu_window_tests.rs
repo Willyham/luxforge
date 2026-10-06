@@ -1731,12 +1731,13 @@ fn gpu_window_the_paint_harness_masks_at_100_fit_the_budget_up_to_a_count() {
 /// surface holds and charges to the GPU-preview budget) under the recipe's cap of masked Presence
 /// layers, each of all three fields through a radial mask of its own. At Fit the slot of its view
 /// plan — the frame a drag draws, and the reduced stage a 100% drag past the budget falls back to —
-/// beside the source, against the 2 GiB budget; at 100% over the largest view's region, what the
+/// beside the source within the 2 GiB budget, its light links sharing one tile texture; at 100%
+/// over the largest view's region, what the
 /// region's slot takes against what the budget leaves it beside the source. Allocates the planes,
 /// 722 MB. `cargo test --release -p luxforge-app sixty_mp_raw -- --ignored --nocapture`.
 #[test]
 #[ignore = "allocates a 60 MP RAW's planes"]
-fn gpu_window_a_sixty_mp_raw_at_the_masked_presence_cap_against_the_budget_beside_its_source() {
+fn gpu_window_a_sixty_mp_raw_at_the_masked_presence_cap_fits_the_budget_beside_its_source() {
     use luxforge_core::{
         AssetId, Component, ComponentMode, EntryId, Evaluation, GpuView, HistoryEntry,
         MAX_MASKED_SPATIAL_LAYERS, Mask, Snapshot, SnapshotId,
@@ -1839,4 +1840,5 @@ fn gpu_window_a_sixty_mp_raw_at_the_masked_presence_cap_against_the_budget_besid
         megabytes(at_100),
         megabytes(budget - source)
     );
+    assert!(fit + source <= budget, "the Fit slot beside the source");
 }

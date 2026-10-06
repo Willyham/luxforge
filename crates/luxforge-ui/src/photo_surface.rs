@@ -2571,7 +2571,7 @@ struct SurfaceSlots {
     gpu: Option<gpu_preview::GpuSlot>,
     /// The light links writing the slot's light planes, light `k` the `k`-th, each charged to the
     /// GPU-preview budget, kept with the slot ([`gpu_preview::light`]).
-    gpu_lights: Vec<Option<gpu_preview::light::LightLink>>,
+    gpu_lights: gpu_preview::light::Lights,
     /// This frame's GPU stage: the boundary version it evaluated, or why the frame is the CPU's.
     /// `None` when the frame was handed no plan.
     gpu_outcome: Option<Result<u64, GpuFallback>>,
@@ -2837,7 +2837,7 @@ impl PhotoPipeline {
             shown: false,
             drawn_status: AtomicU8::new(status),
             gpu: None,
-            gpu_lights: Vec::new(),
+            gpu_lights: Default::default(),
             gpu_outcome: None,
             gpu_hold: false,
             gpu_tag: None,

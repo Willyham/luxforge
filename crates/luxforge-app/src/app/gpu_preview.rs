@@ -948,23 +948,24 @@ pub(crate) fn region_charge(plan: &CorePlan, request: &SourceBoundary) -> Option
     ))
 }
 
-/// What the light links of `plan` take of the GPU-preview budget, as the surface charges each one
-/// it creates ([`surface::gpu_preview::light::light_charge`]): its tile of the source, the whole
-/// stage's block plane and its buffers, whatever window the plan draws over. Lights the surface
-/// cannot run are charged nothing; the tick that converts the plan refuses them.
+/// What the light links of `plan` take of the GPU-preview budget, as the surface charges them
+/// ([`surface::gpu_preview::light::lights_charge`]): each link's block plane of the whole stage and
+/// its buffers, and the one tile texture of the source they cut into in turn, whatever window the
+/// plan draws over. Lights the surface cannot run are charged nothing; the tick that converts the
+/// plan refuses them.
 pub(crate) fn light_charge(plan: &CorePlan, format: luxforge_core::BoundaryFormat) -> u64 {
     gpu_plan::surface_lights(plan).map_or(0, |lights| {
-        lights
-            .iter()
-            .filter_map(|light| {
-                surface::gpu_preview::light::light_charge(
-                    light,
-                    gpu_plan::boundary_format(format),
-                    super::compare_after::DEVICE_TEXTURE_LIMIT,
-                    super::compare_after::DEVICE_STORAGE_BINDING,
-                )
-            })
-            .sum()
+        let runnable: Vec<_> = lights
+            .into_iter()
+            .filter(|light| light.index().is_some())
+            .collect();
+        surface::gpu_preview::light::lights_charge(
+            &runnable,
+            gpu_plan::boundary_format(format),
+            super::compare_after::DEVICE_TEXTURE_LIMIT,
+            super::compare_after::DEVICE_STORAGE_BINDING,
+        )
+        .unwrap_or(0)
     })
 }
 
