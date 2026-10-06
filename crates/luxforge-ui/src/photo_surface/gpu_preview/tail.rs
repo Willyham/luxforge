@@ -193,7 +193,7 @@ impl GpuTail {
         // The first node's column and row on the stage's lattice, so the pass needs no division
         // by the spacing that depends on where the grid starts.
         let spacing = spacing.max(1);
-        debug_assert!(origin.0 % spacing == 0 && origin.1 % spacing == 0);
+        debug_assert!(origin.0.is_multiple_of(spacing) && origin.1.is_multiple_of(spacing));
         words.extend([
             origin.0 / spacing,
             origin.1 / spacing,
