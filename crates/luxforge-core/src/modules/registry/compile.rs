@@ -175,11 +175,12 @@ impl ModuleRegistry {
 
     /// [`Self::compile`] with the way this render samples its masks as a parameter.
     ///
-    /// Every exact render point samples, which is the frozen field; only the proxy phase passes
-    /// [`MaskSampling::ThinFeature`], and only a mask that draws a feature narrower than two pixels
-    /// *at the stage compiled here* is affected by it. Nothing else about compiling changes, which
-    /// is what keeps a proxy frame byte for byte the exact recipe over the exact downscale wherever
-    /// the rule does not fire.
+    /// Every exact render point samples, which is the frozen field. A stage compiled smaller than
+    /// the source passes [`MaskSampling::ThinFeature`] — the no-GPU session's CPU proxy, and the
+    /// GPU's reduced stage and proxy plans (`render::gpu::fit`, `render::gpu::preview`) — and only
+    /// a mask that draws a feature narrower than two pixels *at the stage compiled here* is
+    /// affected by it. Nothing else about compiling changes, which is what keeps a reduced frame
+    /// byte for byte the exact recipe over the exact downscale wherever the rule does not fire.
     pub(crate) fn compile_sampled(
         &self,
         source_width: u32,

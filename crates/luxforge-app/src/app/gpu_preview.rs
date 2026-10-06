@@ -21,21 +21,22 @@
 //!   plan in the frame after the update that handled the input. Once the surface reports that it
 //!   evaluated this boundary's plan with no fallback — its pipeline is ready and its slot holds the
 //!   boundary — a tick makes no preview job and no upload: the converted plan's words are all it
-//!   changes. Until then, and whenever the surface falls back, the tick's job goes to the worker as
-//!   today, so a gesture never waits on the GPU.
-//! - **Settlement.** The shared quiet policy and the release settle on the CPU as before. When the
-//!   CPU frame of the drawn revision is presented, the surface holds the plan behind it: the CPU
-//!   frame is the reference, and the next tick draws again with no upload.
+//!   changes. A tick the GPU does not draw holds its frame for a reason that passes within a tick
+//!   or an upload, and otherwise has the reference renderer draw one whole frame of the drafted
+//!   stack, the newest tick's next (`Editor::cpu_tick`), so a gesture never waits on the GPU.
+//! - **Settlement.** The release commits, and the GPU draws the committed stack at rest from its
+//!   job's plans, dissolving in from the drag's last GPU frame; where the GPU cannot plan the
+//!   committed stack, the reference's frame of it dissolves in instead (`super::gpu_settle`).
 //! - **Lifetime.** A drag's boundary is held while its draft is open and, once the draft ends —
-//!   commit or cancel — and the frame that replaces the drafted one is presented, kept as the
-//!   resident boundary, with the stack's own plan held behind the CPU frame, so the screen never
-//!   falls back to an older drafted frame and the next gesture over the stack starts from it. A
-//!   tick whose plan names another key releases it; so does another photograph.
+//!   commit or cancel — and the frame that replaces the drafted one is drawn, kept as the resident
+//!   boundary, with the stack's own plan drawn at rest, so the screen never falls back to an older
+//!   drafted frame and the next gesture over the stack starts from it. A tick whose plan names
+//!   another key releases it; so does another photograph.
 //! - **The resident boundary.** A committed stack's preview job carries the stack's own plan and
 //!   the boundary every gesture over it starts from (its `gpu_rest` field's view plan): at the
 //!   job's bounds, at Fit and below 100%, and for a view at 100% or more over its region. The
-//!   boundary is derived from the source as the job is queued and held as the resident one, with
-//!   the stack's plan behind the frame on screen, so a gesture's first tick draws on the GPU.
+//!   boundary is derived from the source as the job is planned and held as the resident one, the
+//!   stack's plan drawn at rest, so a gesture's first tick draws on the GPU.
 //! - **Incremental ticks.** Every plan handed to the surface carries a serial and what changed
 //!   since a plan of the last 16 handed that the surface evaluated (`Stamps::hand`, from the core's
 //!   `GpuPlan::changes_since`): a painted tick's rectangle, so the surface evaluates each link of
@@ -45,20 +46,20 @@
 //! - **Below 100%.** A percentage view below 100% draws the displayed-size proxy of the whole
 //!   stage, as Fit draws the display-bounded one, so a tick asks for Fit's plan at the job's bounds
 //!   ([`GpuAsk::Fit`]), which there are the stage's displayed size: the boundary, the resident
-//!   boundary and the warm list are that proxy's, held, keyed and bounded as Fit's, and a pan, which
-//!   leaves the proxy as it is, keeps them. The surface draws the plan's whole frame in place of
-//!   the CPU proxy frame, through its placement, snapping and filter.
+//!   boundary and the warm list are that size's, held, keyed and bounded as Fit's, and a pan, which
+//!   leaves the whole frame as it is, keeps them. The surface draws the plan's whole frame in place
+//!   of the reference's frame, through its placement, snapping and filter.
 //! - **At 100% and above.** A tick asks for the plan over the visible region of the output stage
 //!   at full scale ([`GpuAsk::Region`]), or over the region its drag already asked for while that
 //!   still holds the view, so a pan inside it keeps the boundary. The boundary is that region's
 //!   window, and the surface draws the plan's frame alone at the region's place in the
-//!   photograph. While the frame holds the view it answers it: no region job until the shared
-//!   quiet policy settles the view exactly. A view the region does not hold withdraws the plan, so
-//!   the CPU's frames are drawn, never a mix of the two, until a tick plans the new region and its
-//!   boundary is held. A region whose slot — everything the surface charges it but its links' words
-//!   and blocks buffers ([`region_charge`]) — would pass the GPU-preview budget derives no
-//!   boundary and keeps the CPU path, naming the budget; so does one the surface finds over it once
-//!   held. The mask overlay's region coverage is laid over the GPU region frame.
+//!   photograph. While the frame holds the view it answers it, and nothing is rendered on the CPU.
+//!   A pan past it plans the view again as the drag's next tick ([`Editor::drag_view_planned`]),
+//!   the frame on screen held until the new region's boundary is. A region whose slot — everything
+//!   the surface charges it but its links' words and blocks buffers ([`region_charge`]) — would
+//!   pass the GPU-preview budget is drawn as the softer frame from the GPU's reduced stage, and
+//!   held or drawn by the reference past that, naming the budget. The mask overlay's region
+//!   coverage is laid over the GPU region frame.
 use super::{Editor, gpu_plan};
 use crate::state::status::CpuReason;
 use luxforge_core::{
