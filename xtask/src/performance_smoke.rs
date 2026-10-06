@@ -3,18 +3,22 @@
 //!
 //! Its frames, in [`plan`] order: the photograph opened with the section open, as every launch
 //! starts it, and sampling; a 3.6 s wait, by which the one-second sampler has read at least four
-//! times; a 3° straighten; a Presence commit of all three fields over it, whose exact render at
-//! 60 MP runs long enough to be listed as long work; a wait after which that render is listed as finished; the
-//! section collapsed; a 2.5 s wait in which nothing more is read; and the section opened again,
-//! captured on its first read of a fresh window.
+//! times; a 3° straighten, Detail and a Presence commit of all three fields over them, each drawn
+//! by the GPU; the heavy stack exported through the reference renderer and left running, the long
+//! work, captured once the section's read lists it running; three 5 s waits, one of which lists it
+//! finished and the last of which finds the editor idle; the section collapsed; a 2.5 s wait in
+//! which nothing more is read; and the section opened again, captured on its first read of a fresh
+//! window.
 //!
 //! Each frame is checked against its own recorded answers, re-derived here without the editor's
 //! code: the memory figure against the recorded `resources.read`, the CPU and GPU figures against a
 //! rate computed from the last two recorded reads, the series lengths against the sample count, and
 //! the job rows and heading caption against the recorded `activity.list` under the section's display
 //! rules. The runner also reads the editor's memory from outside while it runs — `ps` for resident
-//! memory and `footprint` for the physical footprint Activity Monitor shows — and compares each
-//! frame's recorded figures with its own readings taken at the same wall-clock moment. The collapsed
+//! memory and `footprint` for the physical footprint Activity Monitor shows — and holds each settled
+//! frame's recorded figures to its own readings taken at the same wall-clock moment: a wait step's
+//! frame with nothing on the activity board. The frames captured while the GPU draws the heavy
+//! stack or the reference exports it are compared and recorded, not gated. The collapsed
 //! frames prove the section asleep: the reads asked for and the samples held stay exactly where
 //! they were, and the reopened frame proves that opening clears the window and reads at once.
 //! Everything compared is written to `app/performance-checks.json`.
@@ -41,8 +45,16 @@ pub const FIXTURE: &str = "fixtures/generated/60mp.jpg";
 pub const READINGS: &str = "process-readings.json";
 /// Long enough for three more ticks of the one-second timer after the photograph opens.
 const FILL_WAIT_MS: u64 = 3_600;
-/// Long enough for the heavy render's exact phase to end and a read to see it in `recent`.
-const FINISHED_WAIT_MS: u64 = 2_500;
+/// The reference export of the heavy stack, written beside the run's frames. Its step is captured
+/// on the first read that lists it running past the section's 0.5 s threshold.
+const EXPORT_FILE: &str = "heavy.jpg";
+/// The frames after it, each this far apart: under the section's 10 s for a finished row, so one
+/// of them lists the export finished whenever it ends before the last.
+const EXPORT_WAIT_MS: u64 = 5_000;
+/// The frames after the running one, which wait out the export: it ends before the last of them,
+/// whose editor is idle. The reference renders the heavy 60 MP stack in about two seconds on the
+/// owner's M4, so the first lists it finished.
+const EXPORT_WAITS: [&str; 3] = ["exported", "export-idle", "export-settled"];
 /// Two and a half sampler intervals, in which a collapsed section must read nothing.
 const ASLEEP_WAIT_MS: u64 = 2_500;
 /// The straighten under the heavy edit, whose interpolation the heavy edit's exact phase then
@@ -63,44 +75,61 @@ const FOOTPRINT_EVERY: usize = 2;
 const BRACKET_MS: u64 = 1_000;
 /// How far outside the runner's two bracketing readings a recorded figure may lie. `ps`, `footprint`
 /// and `resources.read` all read the same kernel counters, so while the editor idles they agree to
-/// the byte; while it works, a figure read between two of the runner's readings lies between them
-/// unless the process allocated and freed again inside that interval. The slack, 512 pages of
-/// 16 KiB, covers small movements of that kind; `performance-checks.json` records the differences.
+/// the byte, and only an idle frame is held to them. While it works the process allocates and frees
+/// tens to hundreds of megabytes inside one of the runner's intervals — the GPU's 60 MP picture at
+/// rest, a reference export — so a figure read then is recorded beside the readings, not gated. The
+/// slack, 512 pages of 16 KiB, covers small movements; `performance-checks.json` records the
+/// differences.
 const MEMORY_SLACK: u64 = 8 << 20;
 
 /// Every frame, in order, over the source the run opens. What each step commits is planned here:
-/// nothing but the two edits commits anything. What the section shows, `verify` checks.
+/// nothing but the three edits commits anything. What the section shows, `verify` checks.
 pub fn plan(_sources: &[PathBuf]) -> Plan {
     // The heavy commit is labelled by the Presence module: every field at once by its title alone.
     // The heavy edit: all three Presence fields at full strength, spatial operations over the
-    // whole frame at its exact phase, on a JPEG and a RAW alike. Clarity alone at 60 MP over the
-    // straighten renders in about 0.35 s on the owner's M4, under the section's 0.5 s threshold,
-    // and so does a RAW photograph's Clarity with Texture; all three render for over a second at
-    // 60 MP.
+    // whole frame, on a JPEG and a RAW alike, over Detail's noise reduction. The GPU draws it; the
+    // reference renderer's whole frame of it, which the export renders, takes about 1.8 s at 60 MP
+    // on the owner's M4 (1.4 s without Detail), so the export runs for more than one of the
+    // sampler's one-second intervals past the section's 0.5 s threshold, and a read lists it.
     let heavy = Step::new("heavy", crate::scenario::recipe::full_presence())
         .commits(1)
         .label("Presence".to_owned());
-    let steps = vec![
+    let mut steps = vec![
         // The photograph opened with the section open and sampling, as every launch starts it.
         Step::opened("opened"),
         // The window fills; the section has sampled since the photograph opened.
         Step::new("filled", script::Step::wait(FILL_WAIT_MS)).commits(0),
-        // The straighten, then the heavy edit over it, each one entry, captured on its exact frame.
+        // The straighten, then the heavy edit over it, each one entry, each drawn by the GPU.
         Step::new(
             "straightened",
             script::Step::call("edit.crop-fit", json!({"aspect":"16:9","angle":ANGLE})),
         )
         .commits(1)
         .label("Crop 16:9"),
+        // Detail under Presence, whose noise reduction the reference renders over the whole frame.
+        Step::new("detailed", crate::scenario::recipe::moderate_detail()).commits(1),
         heavy,
-        // Its render listed as finished.
-        Step::new("finished", script::Step::wait(FINISHED_WAIT_MS)).commits(0),
+        // The heavy stack exported through the reference renderer, left running, the long work:
+        // captured once the section lists it running.
+        Step::new(
+            "exporting",
+            script::Step::export_reference_in_background(EXPORT_FILE),
+        )
+        .commits(0),
+    ];
+    // Listed finished in one of these, and the last idle.
+    steps.extend(
+        EXPORT_WAITS
+            .iter()
+            .map(|name| Step::new(*name, script::Step::wait(EXPORT_WAIT_MS)).commits(0)),
+    );
+    steps.extend([
         // Collapsed, then asleep.
         Step::new("collapsed", script::Step::performance(false)).commits(0),
         Step::new("asleep", script::Step::wait(ASLEEP_WAIT_MS)).commits(0),
         // Opened again, captured on the first read of a fresh window.
         Step::new("reopened", script::Step::performance(true)).commits(0),
-    ];
+    ]);
     // The section lives in the state panel, which every frame shows.
     Plan::new(
         steps
@@ -368,58 +397,105 @@ fn expected_jobs(activity: &Value) -> Result<(Vec<Value>, Value, Value)> {
     Ok((vec![row], Value::Null, Value::Null))
 }
 
-/// The recorded entry behind the "finished" frame's one job row, which must be the heavy edit's
-/// own render: a finished "Rendering preview" row whose entry began after every entry the frame
-/// before the heavy edit recorded. The section lists the newest long entry that ended in the last
-/// 10 s, so without the second condition a long job from before the edit, such as the open's
-/// "Preparing original" a few seconds earlier, would stand in for a heavy edit that ran short.
-fn heavy_work_listed(before: &Value, finished: &Value) -> Result<Value> {
-    let jobs = performance(finished)["jobs"]
+/// The highest activity-board entry id `frame`'s recorded `activity.list` holds, active or recent:
+/// every piece of work that starts later has a higher one.
+fn last_entry(step: &str, frame: &Value) -> Result<u64> {
+    let activity = &performance(frame)["activity"];
+    let mut last = 0;
+    for list in ["active", "recent"] {
+        let jobs = activity[list]
+            .as_array()
+            .ok_or_else(|| format!("Step {step:?}: no recorded activity.list"))?;
+        last = jobs
+            .iter()
+            .filter_map(|job| job["id"].as_u64())
+            .fold(last, u64::max);
+    }
+    Ok(last)
+}
+
+/// The heavy stack's reference export as the section lists it while it runs: the one running row,
+/// "Exporting JPEG" with its file, from an `export` entry of the recorded board that began after
+/// every entry the frame before the export recorded, so no earlier work stands in for it. Returns
+/// that entry.
+fn export_listed_running(before: &Value, running: &Value) -> Result<Value> {
+    let earlier = last_entry("heavy", before)?;
+    let jobs = performance(running)["jobs"]
         .as_array()
         .cloned()
         .unwrap_or_default();
     ensure(
         jobs.len() == 1
-            && jobs[0]["running"] == json!(false)
+            && jobs[0]["running"] == json!(true)
+            && jobs[0]["label"] == json!("Exporting JPEG")
             && jobs[0]["detail"]
                 .as_str()
-                .is_some_and(|detail| detail.starts_with("Finished "))
-            && jobs[0]["label"] == json!("Rendering preview"),
-        format!("Step \"finished\": the heavy edit's work is not listed as finished: {jobs:?}"),
+                .is_some_and(|detail| detail.starts_with(EXPORT_FILE)),
+        format!("Step \"exporting\": the export is not listed running: {jobs:?}"),
     )?;
-    let listed = performance(finished)["activity"]["recent"]
+    let entry = performance(running)["activity"]["active"]
         .as_array()
-        .and_then(|recent| {
-            recent.iter().find(|job| {
-                job["duration_ms"]
-                    .as_u64()
-                    .is_some_and(|ms| ms >= LONG_JOB_MS)
-                    && job["ended_ms_ago"]
-                        .as_u64()
-                        .is_some_and(|ms| ms <= RECENT_JOB_MS)
-            })
-        })
+        .and_then(|active| active.iter().find(|job| job["kind"] == json!("export")))
         .cloned()
-        .ok_or("Step \"finished\": no recorded activity.list entry gives the finished row")?;
-    let activity = &performance(before)["activity"];
-    let mut earlier = 0;
-    for list in ["active", "recent"] {
-        let jobs = activity[list]
-            .as_array()
-            .ok_or("The frame before the heavy edit recorded no activity.list")?;
-        earlier = jobs
-            .iter()
-            .filter_map(|job| job["id"].as_u64())
-            .fold(earlier, u64::max);
-    }
+        .ok_or("Step \"exporting\": the recorded board has no running export")?;
     ensure(
-        listed["id"].as_u64().is_some_and(|id| id > earlier),
+        entry["id"].as_u64().is_some_and(|id| id > earlier),
         format!(
-            "Step \"finished\": the finished row is entry {}, which began before the heavy edit: the frame before it recorded entries up to {earlier}",
-            listed["id"]
+            "Step \"exporting\": the running export is entry {}, which began before the export step: the frame before it recorded entries up to {earlier}",
+            entry["id"]
         ),
     )?;
-    Ok(listed)
+    Ok(entry)
+}
+
+/// The first frame after the running one that lists the same export finished: the one row,
+/// "Exporting JPEG" finished, from the recorded board's completed entry of the same id. Returns
+/// that frame's step and the entry.
+fn export_listed_finished(launch: &Checked, entry: &Value) -> Result<(&'static str, Value)> {
+    for name in EXPORT_WAITS {
+        let frame = launch.at(name)?;
+        let jobs = performance(frame)["jobs"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        let finished = jobs.len() == 1
+            && jobs[0]["running"] == json!(false)
+            && jobs[0]["label"] == json!("Exporting JPEG")
+            && jobs[0]["detail"]
+                .as_str()
+                .is_some_and(|detail| detail.starts_with("Finished "));
+        if !finished {
+            continue;
+        }
+        let recorded = performance(frame)["activity"]["recent"]
+            .as_array()
+            .and_then(|recent| recent.iter().find(|job| job["id"] == entry["id"]))
+            .cloned()
+            .ok_or_else(|| {
+                format!(
+                    "Step {name:?}: the finished row's export is not entry {}",
+                    entry["id"]
+                )
+            })?;
+        ensure(
+            recorded["outcome"] == json!("completed"),
+            format!("Step {name:?}: the export ended {}", recorded["outcome"]),
+        )?;
+        return Ok((name, recorded));
+    }
+    Err(format!(
+        "No frame of {EXPORT_WAITS:?} lists export entry {} finished",
+        entry["id"]
+    )
+    .into())
+}
+
+/// Whether `frame` was captured with the editor idle: its recorded board has nothing running — no
+/// export, no reference render, no GPU warm-up.
+fn idle(frame: &Value) -> bool {
+    performance(frame)["activity"]["active"]
+        .as_array()
+        .is_some_and(Vec::is_empty)
 }
 
 fn performance(frame: &Value) -> &Value {
@@ -729,62 +805,83 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         compared,
     );
 
-    // Filled through finished, and reopened: each frame against its own answers, and, except the
-    // reopened frame, against the runner's readings. The reopened frame is captured on its first
-    // read, so that read coincides with the capture's own readback of the whole window (about
-    // 20 MB at 2880 × 1800, allocated and freed between two of the runner's polls), which is the
-    // harness's memory, not the section's.
+    // Filled through the export's last frame, and reopened: each frame against its own answers.
+    // The memory figures are held to the runner's readings only where the editor is settled: a
+    // wait step's frame whose recorded board has nothing running. While the GPU draws a 60 MP
+    // stack's picture at rest or the reference exports it, the footprint moves by tens to hundreds
+    // of megabytes inside one of the runner's intervals, so those frames' figures are compared and
+    // recorded, not gated. The reopened frame is captured on its first read, which coincides with
+    // the capture's own readback of the whole window (about 20 MB at 2880 × 1800, allocated and
+    // freed between two of the runner's polls), the harness's memory, not the section's.
     let mut gpu_times = Vec::new();
+    let mut gated = Vec::new();
     let reopened = launch.index("reopened")?;
-    for index in (launch.index("filled")?..=launch.index("finished")?).chain([reopened]) {
+    let last = launch.index(EXPORT_WAITS[EXPORT_WAITS.len() - 1])?;
+    for index in (launch.index("filled")?..=last).chain([reopened]) {
         let (step, frame) = (launch.names()[index].as_str(), &launch.frames[index]);
         let mut compared = expect_expanded(step, frame)?;
+        let section = performance(frame);
+        if let Some(time) = section["resources"]["gpu"]["time_ns"].as_u64() {
+            gpu_times.push(time);
+        }
         if index == reopened {
-            if let Some(time) = performance(frame)["resources"]["gpu"]["time_ns"].as_u64() {
-                gpu_times.push(time);
-            }
             checks.note(frame, "the section against its own answers", compared);
             continue;
         }
-        let section = performance(frame);
+        let settled = (step == "filled" || EXPORT_WAITS.contains(&step)) && idle(frame);
         let at = section["wall_ms"]
             .as_u64()
             .ok_or_else(|| format!("Step {step:?}: no wall-clock time for the sample"))?;
         let resident = section["resources"]["memory"]["resident_bytes"]
             .as_u64()
             .ok_or_else(|| format!("Step {step:?}: no resident memory"))?;
-        compared["resident"] = compare_memory(
-            step,
+        let mut figures = vec![(
+            "resident",
             "resident memory",
             resident,
-            at,
-            &readings,
             "ps",
             "resident_bytes",
-        )?;
+        )];
         if watched["footprint_error"].is_null() {
             let bytes = section["resources"]["memory"]["bytes"]
                 .as_u64()
                 .unwrap_or_default();
-            compared["footprint"] = compare_memory(
-                step,
+            figures.push((
+                "footprint",
                 "footprint",
                 bytes,
-                at,
-                &readings,
                 "footprint",
                 "footprint_bytes",
-            )?;
+            ));
         }
-        if let Some(time) = section["resources"]["gpu"]["time_ns"].as_u64() {
-            gpu_times.push(time);
+        for (key, what, recorded, tool, field) in figures {
+            let result = compare_memory(step, what, recorded, at, &readings, tool, field);
+            compared[key] = match (settled, result) {
+                (true, result) => result?,
+                (false, Ok(value)) => value,
+                (false, Err(error)) => json!({"recorded": recorded, "outside": error.to_string()}),
+            };
+        }
+        compared["gated"] = json!(settled);
+        if settled {
+            gated.push(step);
         }
         checks.note(
             frame,
-            "the section against its own answers and the runner's readings",
+            if settled {
+                "the section against its own answers and, settled, the runner's readings"
+            } else {
+                "the section against its own answers; its memory beside the runner's readings, recorded and not gated while work runs"
+            },
             compared,
         );
     }
+    ensure(
+        gated.contains(&"filled") && gated.contains(&EXPORT_WAITS[EXPORT_WAITS.len() - 1]),
+        format!(
+            "The settled frames held to the runner's readings were {gated:?}: \"filled\" and the export's last frame must be idle"
+        ),
+    )?;
     let filled = count(launch.at("filled")?, "samples")?;
     ensure(
         filled >= 4,
@@ -795,9 +892,23 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         format!("GPU time decreased across frames: {gpu_times:?}"),
     )?;
 
-    // Finished: the heavy edit's own render is listed as finished, not a long job from before it.
-    let (straightened, heavy) = (launch.at("straightened")?, launch.at("heavy")?);
-    let listed = heavy_work_listed(straightened, launch.at("finished")?)?;
+    // The long work: the heavy stack's reference export, listed running and then finished, its own
+    // entry and not work from before it, and its file written.
+    let heavy = launch.at("heavy")?;
+    let running = export_listed_running(heavy, launch.at("exporting")?)?;
+    let (finished_at, finished) = export_listed_finished(launch, &running)?;
+    let written = std::fs::metadata(evidence.join(EXPORT_FILE))
+        .map(|metadata| metadata.len())
+        .unwrap_or_default();
+    ensure(
+        written > 0,
+        format!("The export wrote nothing to {EXPORT_FILE}"),
+    )?;
+    checks.note(
+        launch.at(finished_at)?,
+        "the heavy stack's reference export, listed running and then finished",
+        json!({"running": running, "finished": finished, "bytes": written}),
+    );
 
     // Collapsed, then asleep: nothing more is read or adopted.
     let (collapsed, asleep) = (launch.at("collapsed")?, launch.at("asleep")?);
@@ -852,8 +963,9 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         evidence,
         "performance",
         json!({
-            "edits": [launch.at("straightened")?["step"]["request"], heavy["step"]["request"]],
-            "heavy_work_listed": listed,
+            "edits": [launch.at("straightened")?["step"]["request"], launch.at("detailed")?["step"]["request"], heavy["step"]["request"]],
+            "export_listed": {"running": running["id"], "finished_at": finished_at},
+            "memory_gated": gated,
             "gpu_time_ns": gpu_times,
             "runner": {
                 "pid": pid,
@@ -866,7 +978,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             "tolerance": {
                 "bracket_ms": BRACKET_MS,
                 "memory_slack_bytes": MEMORY_SLACK,
-                "rule": "the recorded figure lies between the runner's last observation interval of the same counter ending at or before the sample's wall-clock time and its first starting at or after, widened by the slack; both whole observation intervals within the bracket distance of the sample",
+                "rule": "on a settled frame, a wait step's whose recorded board has nothing running, the recorded figure lies between the runner's last observation interval of the same counter ending at or before the sample's wall-clock time and its first starting at or after, widened by the slack; both whole observation intervals within the bracket distance of the sample. Other frames' comparisons are recorded, not gated",
             },
             "scope": "Displayed text against the frame's own recorded resources.read and activity.list, re-derived without the editor's code; resident memory and footprint against ps and footprint run by the runner on the same pid. A consistency check of the section against the process, not a measurement of the sampler's cost.",
         }),
@@ -1059,41 +1171,42 @@ mod tests {
         assert_eq!(rows[0]["progress"], Value::Null);
     }
 
-    /// The finished row must be the heavy edit's own render. A RAW whose heavy edit ran short once
-    /// passed on the open's "Preparing original", still inside the section's 10 s window, and then
-    /// failed once pooled RCD brought the preparation under 0.5 s; neither run listed the edit.
+    /// The running row must be the export's own: an `export` entry begun after everything the frame
+    /// before the export recorded, listed with its file. Work from before it, such as the open's
+    /// "Preparing original", or an export the frame before already recorded, does not stand in.
     #[test]
-    fn the_finished_row_is_the_heavy_edits_own_render() {
+    fn the_running_row_is_the_exports_own() {
         let preparing = json!({"id":1,"kind":"source.prepare","label":"Preparing original","outcome":"completed","duration_ms":566,"ended_ms_ago":7162});
         let before = frame(json!([]), json!([preparing.clone()]), json!([]));
+        let export = json!({"id":5,"kind":"export","label":"Exporting JPEG","detail":EXPORT_FILE,"phase":"rendering","elapsed_ms":1400});
+        let row = json!([{"label":"Exporting JPEG","trailing":"1.4 s","detail":format!("{EXPORT_FILE} \u{b7} rendering phase"),"running":true,"progress":null,"job_id":null,"cancelling":false}]);
+        let running = frame(
+            json!([export.clone()]),
+            json!([preparing.clone()]),
+            row.clone(),
+        );
+        assert_eq!(export_listed_running(&before, &running).unwrap(), export);
+        assert!(!idle(&running), "an export runs");
 
-        // The heavy edit's render, begun after everything the frame before it recorded.
-        let render = json!({"id":5,"kind":"preview.render","label":"Rendering preview","phase":"exact","outcome":"completed","duration_ms":762,"ended_ms_ago":2061});
+        // The frame before the export already recorded the entry.
+        let earlier = frame(json!([export.clone()]), json!([]), json!([]));
+        assert!(export_listed_running(&earlier, &running).is_err());
+
+        // A long job of another kind.
+        let render = frame(
+            json!([{"id":6,"kind":"preview.render","label":"Rendering preview","phase":"exact","elapsed_ms":1400}]),
+            json!([]),
+            json!([{"label":"Rendering preview","trailing":"1.4 s","detail":"exact phase","running":true,"progress":null,"job_id":null,"cancelling":false}]),
+        );
+        assert!(export_listed_running(&before, &render).is_err());
+
+        // Finished already: nothing running, which is idle.
         let finished = frame(
             json!([]),
-            json!([render.clone(), preparing.clone()]),
-            finished_row("Rendering preview"),
+            json!([preparing]),
+            finished_row("Exporting JPEG"),
         );
-        assert_eq!(heavy_work_listed(&before, &finished).unwrap(), render);
-
-        // The heavy edit ran short: only the open's preparation is long, and it is not the edit's.
-        let stale = frame(
-            json!([]),
-            json!([preparing.clone()]),
-            finished_row("Preparing original"),
-        );
-        assert!(heavy_work_listed(&before, &stale).is_err());
-
-        // A render row that the frame before the edit already recorded is not the edit's either.
-        let earlier = frame(json!([]), json!([render.clone()]), json!([]));
-        assert!(heavy_work_listed(&earlier, &finished).is_err());
-
-        // Nothing long at all.
-        let idle = frame(
-            json!([]),
-            json!([]),
-            json!([{"label":"No background work","trailing":"","detail":null,"running":false,"progress":null,"job_id":null,"cancelling":false}]),
-        );
-        assert!(heavy_work_listed(&before, &idle).is_err());
+        assert!(export_listed_running(&before, &finished).is_err());
+        assert!(idle(&finished));
     }
 }

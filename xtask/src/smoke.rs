@@ -830,11 +830,11 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: performance::SCENARIO,
-        about: "The Performance section while a heavy edit renders, against the runner's own readings",
+        about: "The Performance section over a 60 MP heavy edit and its reference export, listed running and finished, its memory held to the runner's own readings on idle frames",
         launches: &[LaunchSpec {
             plan: performance::plan,
             watch: Some((performance::READINGS, performance::watch)),
-            // This functional scenario waits for a full 60 MP neighbourhood render and fixed
+            // This functional scenario waits for a 60 MP reference export of the heavy stack and fixed
             // sampling windows. Let the editor's 60-second script deadline report a failure
             // before the parent reaps it; latency budgets belong to the quiet-host timing tier.
             deadline: Some(Duration::from_secs(75)),
