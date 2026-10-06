@@ -118,6 +118,9 @@ pub(crate) struct Select {
     /// The view on screen went stale while the card or folder being read waited to replace it: it
     /// is read again, quietly, only if the reading ends without replacing it.
     pub(crate) stale_while_reading: bool,
+    /// The last reading's job whose end Select put in words, cancelled or failed: long work leaves
+    /// it no sentence of its own, so the status bar says it once, whichever hears of it first.
+    pub(crate) worded: Option<String>,
     /// `card.list`, `volume.list` and `index.folders`: one read in flight, one waiting.
     pub(crate) disks: Coalesce<()>,
     /// A folder this desktop is adding: its `index.add-folder` in flight, then its first listing
@@ -204,6 +207,7 @@ impl Default for Select {
             reread: Reread::Asked,
             reading: None,
             stale_while_reading: false,
+            worded: None,
             disks: Coalesce::default(),
             adding: None,
             counts: Coalesce::default(),
@@ -1010,9 +1014,11 @@ impl Editor {
             }
             Some("cancelled") => {
                 self.status.text = format!("Cancelled reading {name}");
+                self.select.worded = reading.job.clone();
                 self.reading_ended()
             }
             other => {
+                self.select.worded = reading.job.clone();
                 let reason = record["error"]["message"]
                     .as_str()
                     .map(str::to_owned)
@@ -1170,8 +1176,10 @@ impl Editor {
                     self.select.scroll = 0.0;
                     self.select.anchor = None;
                 }
+                self.loupe_replay_held(true);
             }
             Err(error) => {
+                self.loupe_replay_held(false);
                 let state = &mut self.select.state;
                 state.summary = None;
                 state.rows.reset(0, 0);
