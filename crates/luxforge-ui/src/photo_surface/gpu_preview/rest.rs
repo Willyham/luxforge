@@ -40,6 +40,10 @@
 //!   a view row and column; the tile slot what a 100% region's slot over the tile's window takes;
 //!   the counts the surface's reduction's 3,096 bytes and its kernel's table. Each is charged to
 //!   the GPU-preview budget before it is created, and leaves through the retirement worker.
+//! - **Figures.** What its tiles did, for attributing a slow picture at rest
+//!   ([`RestFigures`]): their evaluations summed — refits, rebinds, links run, lights encoded or
+//!   restored, window texels — the frames a tile waited for a retirement, and each tile's GPU span
+//!   from its preparation to when the queue reported it done ([`TileClock`]). Counters only.
 use super::super::{PhotoPipeline, Picture, SurfaceSlots, Tile, TileLayout, UNIFORM_SIZE};
 use super::histogram::{
     Counts, HistogramError, HistogramReadback, HistogramRect, HistogramReduction,
@@ -151,6 +155,82 @@ fn reach(coverage: &AxisCoverage, from: u32, to: u32) -> (u32, u32) {
     reached.unwrap_or((0, 0))
 }
 
+/// What one frame's evaluation of a surface's slot did ([`PhotoPipeline::evaluate_lit`]): the
+/// figures a measurement attributes a slow tick or tile by. Plain counters, added as the slot
+/// works, so they cost nothing per texel and allocate nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct EvaluationFigures {
+    /// Slots replaced by one of another shape: a window of another size refits the slot, its pool
+    /// and its light planes with it.
+    pub refits: u32,
+    /// Buffers outgrown and bound again — the last link's or a link's words or blocks, a light
+    /// link's blocks — each forgetting what the link it binds held, so the link runs whole.
+    pub rebinds: u32,
+    /// The chain's links that encoded passes, its last among them, over every evaluation of the
+    /// frame: a refit evaluates the plan once to fit the slot and again with its lights.
+    pub links_run: u32,
+    /// Compute passes the spatial steps dispatched.
+    pub spatial_passes: u64,
+    /// Light links whose passes were encoded, and lights copied in from the pipeline's kept lights
+    /// instead ([`super::light::LightCache`]).
+    pub lights_encoded: u32,
+    pub lights_restored: u32,
+    /// The boundary's texels, the window the links run over, and those texels times the links
+    /// that ran: what the frame's links drew.
+    pub window_texels: u64,
+    pub link_texels: u64,
+}
+
+impl EvaluationFigures {
+    /// `other` added to these, a window's texels summed.
+    fn add(&mut self, other: &Self) {
+        self.refits += other.refits;
+        self.rebinds += other.rebinds;
+        self.links_run += other.links_run;
+        self.spatial_passes += other.spatial_passes;
+        self.lights_encoded += other.lights_encoded;
+        self.lights_restored += other.lights_restored;
+        self.window_texels += other.window_texels;
+        self.link_texels += other.link_texels;
+    }
+}
+
+/// When the GPU finished each tile of a picture at rest, as far as the interface learns it without
+/// waiting ([`super::timing`]): from the start of the tile's preparation to the first submit or
+/// poll after the GPU finished every submission so far, an upper bound. The device Iced creates has
+/// no timestamp queries, so this is the per-tile GPU span. Summed and its largest kept.
+#[derive(Default)]
+struct TileClock {
+    tiles: std::sync::atomic::AtomicU64,
+    total_us: std::sync::atomic::AtomicU64,
+    max_us: std::sync::atomic::AtomicU64,
+}
+
+impl TileClock {
+    /// Ask the queue to report the tile prepared since `started` once the GPU has finished every
+    /// submission so far. Call it right after the tile's last submit.
+    fn follow(self: &Arc<Self>, queue: &wgpu::Queue, started: std::time::Instant) {
+        let clock = Arc::clone(self);
+        queue.on_submitted_work_done(move || {
+            use std::sync::atomic::Ordering;
+            let us = started.elapsed().as_micros() as u64;
+            clock.tiles.fetch_add(1, Ordering::Relaxed);
+            clock.total_us.fetch_add(us, Ordering::Relaxed);
+            clock.max_us.fetch_max(us, Ordering::Relaxed);
+        });
+    }
+
+    /// The tiles reported, their spans' sum and the largest, in microseconds.
+    fn read(&self) -> (u32, u64, u64) {
+        use std::sync::atomic::Ordering;
+        (
+            self.tiles.load(Ordering::Relaxed) as u32,
+            self.total_us.load(Ordering::Relaxed),
+            self.max_us.load(Ordering::Relaxed),
+        )
+    }
+}
+
 /// What a surface's diagnostics say of its picture at rest.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RestFigures {
@@ -174,6 +254,17 @@ pub struct RestFigures {
     pub fallback: Option<GpuFallback>,
     /// The tiles are drawn for their counts alone ([`GpuRest::reduction`] `None`).
     pub counts_only: bool,
+    /// What its tiles' evaluations did, summed over the tiles drawn: refits, rebinds, links run,
+    /// lights encoded or restored, and the windows' texels.
+    pub evaluation: EvaluationFigures,
+    /// Frames a tile waited for slots released before it to retire, the budget holding it only
+    /// then.
+    pub retirement_waits: u32,
+    /// The tiles whose GPU span the queue has reported, the spans' sum and the largest, in
+    /// microseconds ([`TileClock`]): an upper bound, the wait for the next submit in it.
+    pub gpu_tiles: u32,
+    pub gpu_us: u64,
+    pub gpu_max_us: u64,
 }
 
 /// The histogram and clipping counts of a picture at rest's tiles, or of a gesture's frame, as
@@ -476,6 +567,11 @@ pub(in super::super) struct RestSlot {
     prepare_us: u64,
     /// The tiles' histogram and clipping counts.
     counts: RestCounts,
+    /// What the tiles' evaluations did, summed, and the frames a tile waited for a retirement.
+    evaluation: EvaluationFigures,
+    retirement_waits: u32,
+    /// Each tile's GPU span, as the queue reports it.
+    clock: Arc<TileClock>,
 }
 
 impl RestSlot {
@@ -488,7 +584,13 @@ impl RestSlot {
     }
 
     pub(in super::super) fn figures(&self) -> RestFigures {
+        let (gpu_tiles, gpu_us, gpu_max_us) = self.clock.read();
         RestFigures {
+            evaluation: self.evaluation,
+            retirement_waits: self.retirement_waits,
+            gpu_tiles,
+            gpu_us,
+            gpu_max_us,
             version: self.version,
             tiles: self.tiles.len() as u32,
             drawn: self.next as u32,
@@ -737,7 +839,12 @@ impl PhotoPipeline {
                 tile.forget_evaluation();
             }
             slot.waiting = false;
-            match self.evaluate_lit(&mut slot.tile, device, queue, &plan, None) {
+            let started = std::time::Instant::now();
+            let evaluated = self.evaluate_lit(&mut slot.tile, device, queue, &plan, None);
+            // What the evaluation did, whatever it answered: a refit or a light encoded before a
+            // wait is work done.
+            slot.evaluation.add(&slot.tile.evaluation);
+            match evaluated {
                 Ok(_) => {}
                 Err(GpuFallback::Compiling | GpuFallback::SourceUploading { .. }) => {
                     slot.waiting = true;
@@ -754,6 +861,7 @@ impl PhotoPipeline {
                         > 0 =>
                 {
                     slot.waiting = true;
+                    slot.retirement_waits += 1;
                     return;
                 }
                 Err(fallback) => {
@@ -810,6 +918,7 @@ impl PhotoPipeline {
                 }
             }
             queue.submit([encoder.finish()]);
+            slot.clock.follow(queue, started);
             slot.next += 1;
         }
         if slot.next < slot.tiles.len() {
@@ -872,6 +981,9 @@ impl PhotoPipeline {
             waiting: false,
             prepare_us: 0,
             counts: RestCounts::Counting,
+            evaluation: EvaluationFigures::default(),
+            retirement_waits: 0,
+            clock: Arc::default(),
         })
     }
 

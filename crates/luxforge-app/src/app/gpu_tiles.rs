@@ -71,7 +71,7 @@ use luxforge_ui::{
     photo_surface::{
         Derivation, GpuBoundary, GpuSource,
         gpu_preview::tiles::{
-            GPU_TILE_BUDGET, TileEnd, TileFailure, TileFigures, TilePixels, TileRunner,
+            GPU_TILE_BUDGET, TileEnd, TileFailure, TileFigures, TilePixels, TileRunner, TileTimes,
             TileUnavailable as RunnerUnavailable,
         },
     },
@@ -200,6 +200,10 @@ pub(crate) struct TileWorkerFigures {
     /// The bytes the runner holds now, as charged, and the most it has held at once.
     pub(crate) in_use: u64,
     pub(crate) peak: u64,
+    /// Where the runner's last tile's time went, and every tile's summed: lights, the window's
+    /// upload, encoding, the wait for the device and the readback ([`TileTimes`]).
+    pub(crate) last: TileTimes,
+    pub(crate) total: TileTimes,
 }
 
 /// The worker's own counts, which [`TileWorkerFigures`] reports.
@@ -229,8 +233,22 @@ impl Figures {
             lights: self.runner.lights,
             in_use: self.runner.in_use,
             peak: self.runner.peak,
+            last: self.runner.last,
+            total: self.runner.total,
         }
     }
+}
+
+/// A tile's times as evidence records them, in milliseconds.
+fn times_record(times: &TileTimes) -> Value {
+    let ms = |us: u64| us as f64 / 1000.0;
+    json!({
+        "light_ms": ms(times.light_us),
+        "upload_ms": ms(times.upload_us),
+        "encode_ms": ms(times.encode_us),
+        "wait_ms": ms(times.wait_us),
+        "read_ms": ms(times.read_us),
+    })
 }
 
 /// The GPU while the runner may draw, and the reference naming why once it cannot.
@@ -1269,6 +1287,9 @@ impl TileWorkerFigures {
             "lights": self.lights,
             "in_use_bytes": self.in_use,
             "peak_bytes": self.peak,
+            // Where the runner's tiles' time went: the last tile's, and every tile's summed.
+            "last_tile": times_record(&self.last),
+            "tiles_total": times_record(&self.total),
         })
     }
 }
