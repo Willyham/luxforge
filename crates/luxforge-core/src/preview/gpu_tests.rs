@@ -817,7 +817,7 @@ fn a_region_boundary_holds_the_window_its_region_reads_at_full_scale() {
             false,
         ),
     ] {
-        let (mut job, draft) = draft_job("set-basic", entry, drafted, 2);
+        let (job, draft) = draft_job("set-basic", entry, drafted, 2);
         let view = crate::GpuView::Region {
             rect,
             magnification: 2.0,
@@ -833,7 +833,6 @@ fn a_region_boundary_holds_the_window_its_region_reads_at_full_scale() {
         };
         let other = plan_preview(&job.evaluation, &draft, moved).unwrap();
         assert_ne!(other.boundary.unwrap().key, request.key, "{what}");
-        job.viewport = Some(rect);
         let exact = job.evaluation.exact(&crate::Cancel::never()).unwrap();
         let frame = exact
             .region_boundary(rect, (0, 0), request.format)
@@ -1417,7 +1416,7 @@ fn behind_detail_a_region_plan_reads_the_light_at_rest_or_its_stand_in() {
     let stand_in = light.stand_in.as_deref().expect("its stand-in");
     assert!(stand_in.over_source() && stand_in.left_out == [0]);
 
-    let (preview, mut job) = plan_of("set-presence", &presence_drag);
+    let (preview, job) = plan_of("set-presence", &presence_drag);
     let plan = planned(&preview);
     assert_eq!(plan.lights, at_rest, "the light at rest");
     assert_eq!(
@@ -1434,7 +1433,6 @@ fn behind_detail_a_region_plan_reads_the_light_at_rest_or_its_stand_in() {
     // The window planned on the owner, which the photo surface cuts from the source it holds, is
     // the one the CPU's reference render of the region's boundary at the source holds, its origin
     // moved by the plan's lead and rounded down to its multiple.
-    job.viewport = Some(rect);
     let exact = job.evaluation.exact(&crate::Cancel::never()).unwrap();
     let cut = exact
         .region_boundary(rect, (0, 0), request.format)

@@ -275,6 +275,7 @@ impl LinearImage {
 
     /// A rectangle in this image's *oriented output* coordinates, composed into its existing
     /// base-plane view. The new image shares the same planar allocation and development identity.
+    #[cfg(any(test, feature = "qualification"))]
     pub(crate) fn window(&self, region: crate::Region) -> Result<Self, Error> {
         if region.is_empty() || region.x1() > self.width() || region.y1() > self.height() {
             return Err(Error::validation(

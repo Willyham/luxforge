@@ -232,7 +232,7 @@ impl PreviewQueue {
 
     /// How far the whole-frame exact phase the worker is rendering has got, while one runs. The
     /// worker wakes the consumer as it advances ([`crate::PREVIEW_PROGRESS_QUIET`]), so a consumer
-    /// reads this when woken and never polls it. A viewport job's region phases publish nothing.
+    /// reads this when woken and never polls it.
     pub fn progress(&self) -> Option<PreviewProgress> {
         self.progress.read()
     }

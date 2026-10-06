@@ -1,7 +1,7 @@
 //! What one preview job renders — the evaluation it was planned with — and how it presents it.
 
 use crate::{
-    Error, Evaluation, LinearImage, LinearSettings, ProxyBounds, Region, RenderSource, SourceImage,
+    Error, Evaluation, LinearImage, LinearSettings, ProxyBounds, RenderSource, SourceImage,
     analysis::AnalysisIdentity,
 };
 #[cfg(doc)]
@@ -66,24 +66,20 @@ impl<'a> From<&'a PreviewSource> for RenderSource<'a> {
     }
 }
 
-/// How much work the one preview lane may do for this request. An interactive request — a draft's
-/// tick the GPU does not draw — produces visible pixels only, from a proxy when its bounds plan
-/// one; the desktop asks for settlement once its shared quiet gate opens or the gesture commits.
-/// Every other request renders no proxy: its exact frame, reduced to the view's bounds when it
-/// names them, is the reference frame of a stack at rest, whose picture is the GPU's. A crop
-/// draft's input stage is asked for interactively whenever it has bounds, since nothing is reduced
-/// from it, and without bounds as a normal exact-only job.
+/// How much work the one preview lane may do for this request. An interactive request — a drag in
+/// a session the GPU does not draw, or a crop draft's input stage — produces visible pixels only,
+/// from a display-sized proxy when its bounds plan one, and ends there. Every other request renders
+/// no proxy: its exact whole frame, reduced to the view's bounds when it names them, is the
+/// reference frame of a stack at rest. A crop draft's input stage is asked for interactively
+/// whenever it has bounds, since nothing is reduced from it, and without bounds as a normal
+/// exact-only job.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PreviewIntent {
     #[default]
     Immediate,
     Interactive,
-    Settle,
     /// Reduce a retained exact frame to new Fit bounds without rendering its recipe again.
     Reduce,
-    /// A paused draft's view at 100% and above: its exact visible region alone, the full detail a
-    /// pause restores, and no whole frame, which no pause in a gesture renders.
-    Refine,
 }
 
 #[derive(Clone, Debug)]
@@ -120,16 +116,9 @@ pub struct PreviewJob {
     /// rendering the proxy declines it in [`ExactOutcome::proxy_declined`] and the exact phase runs
     /// unchanged.
     pub proxy: Option<ProxyBounds>,
-    /// The visible output-stage rectangle at a percentage zoom, in full-stage pixels. `None` is
-    /// the Fit path. The worker clips it against its uncut compilation and explicitly reports a
-    /// region decline rather than interpreting it as a recipe crop.
-    pub viewport: Option<Region>,
-    /// Whether to produce only the interactive frame, or refine it and finish whole-frame
-    /// analysis. The desktop sets this after the owner has planned the immutable stack.
+    /// Whether to produce only the interactive frame, or the exact whole frame and its analysis.
+    /// The desktop sets this after the owner has planned the immutable stack.
     pub intent: PreviewIntent,
-    /// Worker-only reason a region was declined before the existing proxy/exact fallback ran.
-    /// Owner-planned jobs start with `None`; the worker fills it in its own owned job.
-    pub viewport_declined: Option<String>,
     /// An open draft's GPU preview, planned with this job when its request asked
     /// (`PreviewRequest::gpu`): the plan a tick is drawn from, or why the gesture takes the CPU
     /// path, and the boundary it starts from. Preview state, never an API result.
@@ -149,7 +138,7 @@ pub struct PreviewJob {
 
 impl PreviewJob {
     /// A job that renders `evaluation` whole, exactly and at once: no layer prefix, no report, no
-    /// proxy phase and no viewport, which the caller sets afterwards. Its identity
+    /// proxy phase, which the caller sets afterwards. Its identity
     /// is the evaluation's ([`Evaluation::identity`]), which hashes the stack: `O(recipe)`.
     pub fn new(evaluation: Evaluation) -> Result<Self, Error> {
         Ok(Self {
@@ -159,9 +148,7 @@ impl PreviewJob {
             layer_count: None,
             analyse: false,
             proxy: None,
-            viewport: None,
             intent: PreviewIntent::Immediate,
-            viewport_declined: None,
             gpu: None,
             gpu_warm: None,
             gpu_rest: None,

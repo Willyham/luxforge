@@ -248,25 +248,6 @@ fn detail_and_curve_keep_warp_full_point_and_window_pixels_identical() {
         ] {
             assert_eq!(rendered.sample(x, y).unwrap().rgba, frame.pixel(x, y));
         }
-        let rect = Region {
-            x0: frame.width / 3,
-            y0: frame.height / 4,
-            width: frame.width / 3,
-            height: frame.height / 3,
-        };
-        let RegionRenderOutcome::Rendered(window) =
-            rendered.region(SnapshotId::new(), rect).unwrap()
-        else {
-            panic!("combined restoration and warp window declined")
-        };
-        for y in 0..rect.height {
-            for x in 0..rect.width {
-                assert_eq!(
-                    window.raster.pixel(x, y),
-                    frame.pixel(rect.x0 + x, rect.y0 + y)
-                );
-            }
-        }
         match &source {
             crate::PreviewSource::Jpeg(image) => {
                 assert!(Arc::ptr_eq(&image.rgba, &original_bytes));
@@ -516,62 +497,6 @@ fn warp_serial_equals_pool() {
         };
         parallel::force(old);
         assert_eq!(serial.rgba, pool.rgba);
-    }
-}
-#[test]
-fn warp_region_equals_full_slice_for_windows_straddling_centre_lines() {
-    let r = registry();
-    let s = gradient(3000, 2000);
-    let linear = image(
-        3000,
-        2000,
-        &(0..6_000_000)
-            .map(|i| {
-                [
-                    (i % 17) as f32 / 19.0,
-                    (i % 31) as f32 / 29.0,
-                    (i % 43) as f32 / 41.0,
-                ]
-            })
-            .collect::<Vec<_>>(),
-    );
-    for lens in [
-        lens([-0.079, 0.0, 0.0]),
-        layer(
-            LENS,
-            json!({"model":"ptlens","terms":[0.03474,-0.10048,0.07369],"unit":1.0}),
-        ),
-    ] {
-        let p = recipe(vec![lens, perspective()]);
-        for raw in [false, true] {
-            let context = RenderContext::new();
-            let source = if raw {
-                testing::linear(&linear, LinearSettings::default())
-            } else {
-                RenderSource::from(&s)
-            };
-            let render = super::render(&r, source, &p, RenderOptions::default(), &context).unwrap();
-            let full = render.frame(SnapshotId::new()).unwrap();
-            let rect = crate::Region {
-                x0: 650,
-                y0: 250,
-                width: 1500,
-                height: 1500,
-            };
-            let RegionRenderOutcome::Rendered(region) =
-                render.region(SnapshotId::new(), rect).unwrap()
-            else {
-                panic!("region declined")
-            };
-            for y in 0..1500 {
-                let from = ((rect.y0 + y) * full.width + rect.x0) as usize * 4;
-                let got = y as usize * 1500 * 4;
-                assert_eq!(
-                    &full.rgba[from..from + 6000],
-                    &region.raster.rgba[got..got + 6000]
-                );
-            }
-        }
     }
 }
 #[test]

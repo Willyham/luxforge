@@ -63,12 +63,8 @@ use compiled::ResampleEntry;
 use compiled::mapped_replacements;
 pub(crate) use compiled::{Compiled, Entry, Segment};
 pub use context::{RenderContext, ScratchBudget};
-#[cfg(test)]
-pub(crate) use entry::ProxyRegionPlan;
-pub(crate) use entry::{
-    MaskInputMode, ProxyStage, RegionRenderOutcome, StagePixels, layer_input, prefix_pixels,
-};
-pub use entry::{RegionFrame, Render, RenderOptions, RenderSource, render};
+pub(crate) use entry::{MaskInputMode, ProxyStage, StagePixels, layer_input, prefix_pixels};
+pub use entry::{Render, RenderOptions, RenderSource, render};
 use geometry::{bilinear, nearest_index, resample_frame};
 pub(crate) use input_grid::{GridRequest, grid_input};
 pub use input_grid::{INPUT_GRID_MAX_CELLS, InputGridCache};
