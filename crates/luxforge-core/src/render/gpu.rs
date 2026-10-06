@@ -21,6 +21,7 @@ mod plan;
 mod preview;
 mod program;
 mod spatial;
+mod sweeps;
 pub(crate) mod tiles;
 
 #[cfg(test)]
@@ -70,4 +71,9 @@ pub use spatial::{
     GpuSpatialUnit, gpu_lights,
 };
 pub(crate) use spatial::{Word, Words};
-pub use tiles::{STREAM_TILE_SIDES, StreamPlan, TilePlan, plan_read, plan_stream};
+pub use sweeps::{
+    Chained, GpuStaging, GpuSweep, GpuSweeps, SWEEP_SPLIT_REACH, SWEEP_STAGE_TEXTURES,
+};
+pub use tiles::{
+    STREAM_TILE_SIDES, StreamPlan, TilePlan, plan_read, plan_stream, plan_stream_sweeps,
+};
