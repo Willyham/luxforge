@@ -296,7 +296,7 @@ fn detail() -> Layer {
 /// The stacks the rest is measured on (`docs/specs/performance.md`, "GPU-first against the
 /// 2026-10-04 baseline"), each over a source of its photograph's size: the 60 MP drag stack, the
 /// Air 2S's masked stack and three-segment stack, and Detail alone on a 24 MP JPEG.
-fn measured_stacks() -> Vec<(&'static str, PreviewSource, Recipe)> {
+pub(super) fn measured_stacks() -> Vec<(&'static str, PreviewSource, Recipe)> {
     let presence = |fields: serde_json::Value| Layer::new(PRESENCE_EFFECT, fields);
     let full_presence = || presence(json!({"texture": 100.0, "clarity": 100.0, "dehaze": 100.0}));
     let masked_presence = || presence(json!({"clarity": 50.0, "texture": 40.0}));

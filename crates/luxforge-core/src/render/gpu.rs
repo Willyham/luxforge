@@ -76,4 +76,5 @@ pub use sweeps::{
 };
 pub use tiles::{
     STREAM_TILE_SIDES, StreamPlan, TilePlan, plan_read, plan_stream, plan_stream_sweeps,
+    plan_stream_sweeps_at,
 };
