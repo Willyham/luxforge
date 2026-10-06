@@ -179,7 +179,8 @@ fn write(
             tier: tier.key.tier,
             renderer: i64::from(RENDERER_GENERATION),
             origin: PreviewOrigin::Rendered,
-            approximate: tier.approximate(),
+            // The reference's exact frame area-averaged: never approximate.
+            approximate: false,
             name: &name,
             jpeg: &tier.jpeg,
             width: tier.width,

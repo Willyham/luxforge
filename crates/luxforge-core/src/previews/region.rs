@@ -88,9 +88,8 @@
 //! planes, then the planes and the rendered RGBA8 frame; only the frame is kept.
 
 use crate::{
-    Cancel, Error, LayerId, LinearSettings, ModuleRegistry, PreviewSource, ProxyBounds, ProxyPlan,
-    RawPayload, Recipe, RenderContext, RenderOptions, RenderSource, SnapshotId, SourceImage,
-    SourceTag,
+    Cancel, Error, LayerId, LinearSettings, ModuleRegistry, ProxyBounds, ProxyPlan, RawPayload,
+    Recipe, RenderContext, RenderOptions, RenderSource, SnapshotId, SourceImage, SourceTag,
     catalog_types::{FileSignature, LOUPE_MAX_SIDE, PixelRect, PreviewOrigin},
     export::metadata::jpeg_orientation,
     read_bounded_file,
@@ -674,8 +673,8 @@ fn developed_cut(
     })
 }
 
-/// A kept development downscaled to `max_side` on its long edge through the proxy's area-average
-/// downscale of display bytes, or the development itself when it already fits.
+/// A kept development downscaled to `max_side` on its long edge through the view's area average
+/// of display bytes, or the development itself when it already fits.
 fn downscaled(
     frame: &DevelopedFrame,
     max_side: u32,
@@ -694,17 +693,15 @@ fn downscaled(
             frame: frame.size,
         });
     };
-    let source = PreviewSource::Jpeg(SourceImage {
+    let source = SourceImage {
         width: frame.size.width,
         height: frame.size.height,
         rgba: Arc::clone(&frame.rgba),
         fingerprint: String::new(),
         orientation: 1,
         capture: Arc::default(),
-    });
-    let PreviewSource::Jpeg(scaled) = source.proxy_cancellable(plan, cancel)? else {
-        return Err(Error::internal("a byte proxy came back as planes"));
     };
+    let scaled = crate::proxy::downscale_bytes(&source, plan, cancel)?;
     Ok(DevelopedPreview {
         width: scaled.width,
         height: scaled.height,

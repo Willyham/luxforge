@@ -1,15 +1,16 @@
-//! The GPU preview's hand-off on the desktop: the `gpu_preview` preference every GPU plan is gated
-//! on, and the status bar's figure for a GPU frame on screen.
+//! The GPU preview's hand-off on the desktop: the gate every GPU plan passes — the GPU stage able
+//! to draw at all — and the status bar's figure for a GPU frame on screen.
 //!
-//! The preference is per-client workspace state the owner holds (`workspace.set {gpu_preview}`, on
-//! by default). The palette's toggle sends the same request an API client sends, and the desktop
-//! keeps no copy of it outside the session it adopts back. [`Editor::gpu_preview_allowed`] is the
-//! one question the desktop asks before it hands the photo surface a plan, and [`Editor::gpu_plan`]
-//! the one place a plan is handed from: with the preference off it hands none, every frame is the
-//! CPU's, and evidence names [`PREFERENCE_OFF`].
+//! [`Editor::gpu_preview_allowed`] is the one question the desktop asks before it hands the photo
+//! surface a plan, and [`Editor::gpu_plan`] the one place a plan is handed from: while the
+//! surface's GPU stage cannot draw on its device, or the launch refused it (`--no-gpu-render`), it
+//! hands none, every frame is the reference renderer's, and evidence names the stage's reason
+//! (`no-adapter` or `device-lost`, [`super::renderer`]).
 //!
 //! The status bar's render slot reads "GPU preview · N ms" while the surface draws the GPU stage's
-//! output for the plan the desktop handed it ([`Editor::gpu_frame_us`]). Iced's compositor creates
+//! output for a gesture's plan, and "GPU render · N ms" while it draws the committed stack at rest,
+//! its view plan or its picture at rest in tiles, N then the interface thread's time over the
+//! frames that drew the tiles ([`Editor::gpu_frame_us`]). Iced's compositor creates
 //! its device with no optional features, so the device the surface receives has no timestamp
 //! queries on any adapter; N is therefore the interface thread's own time to prepare that frame in
 //! the surface's `prepare` — writing its words, uploading a new boundary, encoding and submitting
@@ -27,16 +28,6 @@ use luxforge_ui::{
     photo_surface::{ClipMarks, Dissolve, DrawingPath, GpuPlan, GpuStep},
 };
 use serde_json::{Value, json};
-
-/// Why the desktop hands the surface no GPU plan while this client's `gpu_preview` preference is
-/// off, as evidence names it beside the surface's own fallback reasons.
-pub(crate) const PREFERENCE_OFF: &str = "preference-off";
-
-/// The `workspace.set` body the palette's GPU preview entry sends: the preference flipped, and
-/// nothing else.
-pub(crate) fn toggle_params(workspace: &WorkspaceState) -> Value {
-    json!({ "gpu_preview": !workspace.gpu_preview })
-}
 
 /// The clipping overlay's classes, shadows and highlights, while this client shows one.
 pub(crate) fn clip_flags(workspace: &WorkspaceState) -> Option<[bool; 2]> {
@@ -77,20 +68,20 @@ pub(crate) fn marked(
 }
 
 impl Editor {
-    /// Whether the desktop may hand the photo surface a GPU plan at all: `Err` with
-    /// [`PREFERENCE_OFF`] while this client's `gpu_preview` preference is off, so every frame is
-    /// the CPU's. Every route that hands the surface a plan asks this first.
+    /// Whether the desktop may hand the photo surface a GPU plan at all: `Err` with the stage's
+    /// reason while the surface's GPU stage cannot draw on its device or the launch refused it
+    /// ([`Editor::gpu_stage_refusal`]), so every frame is the reference renderer's. Every route
+    /// that hands the surface a plan asks this first.
     pub(crate) fn gpu_preview_allowed(&self) -> Result<(), &'static str> {
-        if self.session.workspace.gpu_preview {
-            Ok(())
-        } else {
-            Err(PREFERENCE_OFF)
+        match self.gpu_stage_refusal() {
+            Some(reason) => Err(reason),
+            None => Ok(()),
         }
     }
 
-    /// The GPU plan the photograph `photo` is drawn from in place of its frame: none while the
-    /// preference is off. An evidence run's GPU identity hook gives one; otherwise the open
-    /// gesture's plan does ([`Editor::gesture_gpu_plan`]).
+    /// The GPU plan the photograph `photo` is drawn from in place of its frame: none while the gate
+    /// refuses ([`Editor::gpu_preview_allowed`]). An evidence run's GPU identity hook gives one;
+    /// otherwise the open gesture's plan does ([`Editor::gesture_gpu_plan`]).
     pub(crate) fn gpu_plan<'a>(&'a self, photo: Option<&'a Frame>) -> Option<&'a GpuPlan> {
         self.gpu_preview_allowed().ok()?;
         if let Some(hook) = self
@@ -108,8 +99,18 @@ impl Editor {
     /// when that draw was the GPU stage's output over the boundary of the plan handed to it now.
     /// `None` whenever the photograph is the CPU's frame, a fallback's or a dissolve's included.
     pub(crate) fn gpu_frame_us(&self) -> Option<u64> {
-        let plan = self.surfaces().gpu?;
         let drawn = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
+        // The picture at rest in tiles, once the surface draws it: the interface thread's time
+        // its tiles and their quantization took over the frames that drew them.
+        if let Some(rest) = self.gpu_rest_handed()
+            && drawn.drawn_rest == Some(rest.version)
+        {
+            return drawn
+                .gpu_rest
+                .filter(|figures| figures.version == rest.version)
+                .map(|figures| figures.prepare_us);
+        }
+        let plan = self.surfaces().gpu?;
         if drawn.drawn_path == Some(DrawingPath::Gpu)
             && drawn.drawn_gpu_boundary == Some(plan.boundary.version())
         {
@@ -136,7 +137,8 @@ struct Shown {
 /// What a dissolve's CPU frame shows, which a newer frame of the same content keeps it running to.
 #[derive(Clone, Debug, PartialEq)]
 enum Content {
-    /// A frame of the open draft at this revision: the shared quiet policy's settlement.
+    /// A frame of the open draft at this revision: the reference's frame of a tick the GPU did
+    /// not draw.
     Draft(DraftId, u64),
     /// The frame of the entry the draft committed.
     Committed(Option<EntryId>),
@@ -154,14 +156,16 @@ impl Content {
 /// The clipping overlays shown, and how the photograph is drawn.
 type SettleView = (Option<[bool; 2]>, SettleZoom);
 
-/// How the photograph is drawn, as far as a dissolve is concerned: at Fit or at a percentage zoom
-/// of 100% or more, where a gesture's GPU frame settles into the CPU's, or any other way, a
-/// comparison included, where none dissolves.
+/// How the photograph is drawn, as far as a dissolve is concerned: at Fit or at a percentage zoom,
+/// where a gesture's GPU frame settles into the CPU's, or with a comparison on screen, where none
+/// dissolves.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum SettleZoom {
     Fit,
-    /// A percentage zoom of 100% or more, its value.
+    /// A percentage zoom, its value: below 100% a whole frame, the displayed-size proxy, as at Fit;
+    /// at 100% or more the view's whole frame or region.
     Percent(f32),
+    /// A comparison.
     Other,
 }
 
@@ -231,8 +235,8 @@ impl Editor {
     fn shown_content(&self, shown: &Shown) -> Option<Content> {
         let displayed = &self.presentation;
         if displayed.displayed_draft_id.as_ref() == Some(&shown.draft) {
-            // The shared quiet policy, or the release, settled the drafted settings on the CPU:
-            // never a revision older than the GPU frame's.
+            // The reference drew the drafted settings on the CPU: never a revision older than the
+            // GPU frame's.
             let revision = displayed.displayed_draft_revision?;
             return (revision >= shown.revision)
                 .then(|| Content::Draft(shown.draft.clone(), revision));
@@ -248,7 +252,7 @@ impl Editor {
     }
 
     /// Whether the CPU frame on screen still shows `content`: a newer frame of the same settings,
-    /// such as the exact phase after the proxy, keeps the dissolve running to it.
+    /// such as the exact frame after its reduction, keeps the dissolve running to it.
     fn shows(&self, content: &Content) -> bool {
         let displayed = &self.presentation;
         match content {
@@ -269,34 +273,30 @@ impl Editor {
         }
         match self.session.preview.view.zoom {
             luxforge_core::Zoom::Fit => SettleZoom::Fit,
-            luxforge_core::Zoom::Percent { value } if value >= 100.0 => SettleZoom::Percent(value),
-            luxforge_core::Zoom::Percent { .. } => SettleZoom::Other,
+            luxforge_core::Zoom::Percent { value } => SettleZoom::Percent(value),
         }
     }
 
-    /// The version of the CPU frame the photograph is drawn from now: at Fit its frame; at a
-    /// percentage zoom the view's whole frame of the current content, or else its region of it,
-    /// as the canvas hands them to the percentage view.
+    /// The version of the CPU frame the photograph is drawn from now: at Fit and below 100% its
+    /// frame, the reference's reduction to the view; at 100% or more the view's whole frame of the
+    /// current content, which a GPU region frame dissolves into, as the canvas hands it to the
+    /// percentage view.
     fn settle_frame(&self, zoom: SettleZoom) -> Option<u64> {
         let surfaces = self.surfaces();
         match zoom {
-            SettleZoom::Percent(_) => {
-                if surfaces.photo_content == Some(surfaces.current_content) {
-                    surfaces.photo.map(Frame::version)
-                } else {
-                    surfaces
-                        .region
-                        .filter(|region| region.content_id == surfaces.current_content)
-                        .map(|region| region.frame.version())
-                }
+            SettleZoom::Percent(value) if value >= 100.0 => surfaces
+                .photo
+                .filter(|_| surfaces.photo_content == Some(surfaces.current_content))
+                .map(Frame::version),
+            SettleZoom::Fit | SettleZoom::Percent(_) | SettleZoom::Other => {
+                surfaces.photo.map(Frame::version)
             }
-            SettleZoom::Fit | SettleZoom::Other => surfaces.photo.map(Frame::version),
         }
     }
 
     /// After every message: follow the GPU frame on screen, and when the CPU frame of its content
-    /// replaces it at Fit or at a percentage zoom of 100% or more — the drafted settings settled on
-    /// the CPU, or the entry the draft committed — dissolve from one to the other. A cancel or any
+    /// replaces it — the drafted settings settled on the CPU, or the entry the draft committed —
+    /// dissolve from one to the other, at every zoom with no comparison on screen. A cancel or any
     /// older content is a plain swap. The running dissolve ends after its 150 ms, follows a newer
     /// frame of the same content, and is cancelled by any input: a newer tick of the draft, another
     /// gesture, or a change of what is drawn over the photograph or of the view, a pan included.
@@ -308,7 +308,7 @@ impl Editor {
             .draft
             .as_ref()
             .map(|draft| (draft.draft_id.clone(), draft.draft_revision));
-        let fit = zoom.dissolves();
+        let dissolves = zoom.dissolves();
         let pan = matches!(zoom, SettleZoom::Percent(_)).then_some(self.view_state.local_pan);
         let view = (clip_flags(&self.session.workspace), zoom);
         if self.gpu_settle.view.replace(view) != Some(view) {
@@ -372,7 +372,7 @@ impl Editor {
             && photo != shown.photo
         {
             self.gpu_settle.shown = None;
-            let content = self.shown_content(&shown).filter(|_| fit);
+            let content = self.shown_content(&shown).filter(|_| dissolves);
             let decision = match (&content, photo) {
                 (Some(content), Some(to)) => {
                     let dissolve = Dissolve::start(shown.revision, to);
@@ -389,7 +389,7 @@ impl Editor {
                         "to": to, "gpu_boundary": shown.boundary})
                 }
                 _ => json!({"dissolve": false, "from": shown.revision, "to": photo,
-                    "why": if fit { "older content" } else { "not fit" }}),
+                    "why": if dissolves { "older content" } else { "comparison" }}),
             };
             self.event(
                 if content.is_some() && photo.is_some() {
@@ -437,53 +437,10 @@ mod tests {
     use super::*;
     use crate::app::{
         gpu_identity::GpuIdentity,
-        message::{Message, palette::PaletteMessage, view::ViewMessage},
-        tasks::call,
         testing::{finish, opened, scripted_evidence},
     };
-    use crate::state::palette::PaletteAction;
-    use luxforge_core::ClientSession;
     use luxforge_ui::photo_surface::GpuBoundary;
     use std::sync::Arc;
-
-    #[test]
-    fn the_toggle_flips_only_the_preference() {
-        let mut workspace = WorkspaceState::default();
-        assert!(workspace.gpu_preview, "on by default");
-        assert_eq!(toggle_params(&workspace), json!({"gpu_preview": false}));
-        workspace.gpu_preview = false;
-        assert_eq!(toggle_params(&workspace), json!({"gpu_preview": true}));
-    }
-
-    /// Run the palette's GPU preview entry as a person does — open, type, Enter — and then the
-    /// `workspace.set` its message sends, on the desktop's own client, as the runtime's executor
-    /// would, adopting the owner's answer. Returns the entry that ran.
-    fn run_palette_entry(editor: &mut Editor) -> crate::state::palette::PaletteEntry {
-        let _ = editor.update(Message::Palette(PaletteMessage::Open));
-        let _ = editor.update(Message::Palette(PaletteMessage::Query(
-            "gpu preview".into(),
-        )));
-        let entry = editor
-            .workspace
-            .palette
-            .entries
-            .first()
-            .cloned()
-            .expect("a GPU preview entry");
-        let before = editor.session.clone();
-        let body = toggle_params(&editor.session.workspace);
-        let _ = editor.update(Message::Palette(PaletteMessage::Run));
-        assert!(!editor.workspace.palette.open, "running an entry closes it");
-        assert!(!editor.busy, "a preference never takes the mutation path");
-        assert_eq!(
-            editor.session, before,
-            "the desktop holds no flag of its own: nothing changes until the owner answers"
-        );
-        let (answer, _) = call(&editor.owner, editor.client, "workspace.set", body).unwrap();
-        let session: ClientSession = serde_json::from_value(answer).unwrap();
-        let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
-        entry
-    }
 
     /// A captured frame reports the GPU-preview budget's figures as the surface counts them, the
     /// slots' scratch pools among them: part of what is in use, each pool counted once.
@@ -500,66 +457,10 @@ mod tests {
         assert!(figure("gpu_preview_in_use_bytes") <= figure("gpu_preview_peak_bytes"));
     }
 
-    /// Pillar 2's parity: the palette entry and an agent's `workspace.set {gpu_preview}` produce the
-    /// same session state, which `session.state`, the desktop's adopted session and its evidence all
-    /// report; with the preference off the desktop names it as the reason it hands no plan.
+    /// With the GPU stage refused the desktop hands the surface no plan, whatever would give one;
+    /// with it able again, the same plan is handed.
     #[test]
-    fn the_palette_entry_and_the_api_produce_the_same_preference() {
-        let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
-        let agent = editor.owner.register();
-        let workspace = |editor: &Editor, client| {
-            call(&editor.owner, client, "session.state", json!({}))
-                .unwrap()
-                .0["workspace"]
-                .clone()
-        };
-        assert_eq!(editor.gpu_preview_allowed(), Ok(()), "on by default");
-        assert_eq!(
-            editor.snapshot()["surface"]["gpu"]["plan_fallback"],
-            Value::Null
-        );
-
-        let entry = run_palette_entry(&mut editor);
-        assert_eq!(entry.label, "Turn off GPU preview");
-        assert_eq!(entry.detail, "workspace.set");
-        assert_eq!(entry.action, PaletteAction::ToggleGpuPreview);
-        let (by_api, _) = call(
-            &editor.owner,
-            agent,
-            "workspace.set",
-            json!({"gpu_preview": false}),
-        )
-        .unwrap();
-        assert_eq!(workspace(&editor, editor.client), by_api["workspace"]);
-        assert_eq!(workspace(&editor, agent), by_api["workspace"]);
-        assert_eq!(editor.snapshot()["workspace"], by_api["workspace"]);
-        assert_eq!(by_api["workspace"]["gpu_preview"], json!(false));
-        assert_eq!(editor.gpu_preview_allowed(), Err(PREFERENCE_OFF));
-        assert_eq!(
-            editor.snapshot()["surface"]["gpu"]["plan_fallback"],
-            json!({"reason": "preference-off"})
-        );
-
-        // And back on, the entry naming what it now does.
-        let entry = run_palette_entry(&mut editor);
-        assert_eq!(entry.label, "Turn on GPU preview");
-        let (by_api, _) = call(
-            &editor.owner,
-            agent,
-            "workspace.set",
-            json!({"gpu_preview": true}),
-        )
-        .unwrap();
-        assert_eq!(workspace(&editor, editor.client), by_api["workspace"]);
-        assert_eq!(editor.snapshot()["workspace"], by_api["workspace"]);
-        assert_eq!(editor.gpu_preview_allowed(), Ok(()));
-        finish(editor, catalog);
-    }
-
-    /// With the preference off the desktop hands the surface no plan, whatever would give one; on
-    /// again, the same plan is handed.
-    #[test]
-    fn with_the_preference_off_no_plan_reaches_the_surface() {
+    fn with_the_stage_refused_no_plan_reaches_the_surface() {
         let (mut editor, catalog, _, _) = opened(Vec::new(), 4);
         let photo = Frame::new(Arc::new(vec![0, 128, 255, 255]), 1, 1, 21).unwrap();
         let mut hook = GpuIdentity::default();
@@ -579,20 +480,15 @@ mod tests {
                 .map(|plan| plan.boundary.version()),
             Some(21)
         );
-        let mut session = editor.session.clone();
-        session.revision += 1;
-        session.workspace.gpu_preview = false;
-        let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
+        editor.renderer.stage = Some(luxforge_ui::photo_surface::GpuStageState::DeviceLost);
+        assert_eq!(editor.gpu_preview_allowed(), Err("device-lost"));
         assert!(editor.gpu_plan(Some(&photo)).is_none());
         assert_eq!(
             editor.gpu_frame_us(),
             None,
             "no GPU frame can be named either"
         );
-        let mut session = editor.session.clone();
-        session.revision += 1;
-        session.workspace.gpu_preview = true;
-        let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
+        editor.renderer.stage = Some(luxforge_ui::photo_surface::GpuStageState::Available);
         assert!(editor.gpu_plan(Some(&photo)).is_some());
         editor.evidence = None;
         finish(editor, catalog);

@@ -32,10 +32,10 @@ These are the core principles that development follows.
 
 1. **Originals are sacred.** Source files are never modified. Edits are ordered layers in a recipe with immutable history. Incompatible data is refused, never quietly discarded.
 2. **Everything is programmable.** Every operation has a discoverable, schema-described equivalent through the same command service. A GUI gesture is never the only way in, and UI/API parity is tested, not assumed.
-3. **Fast, bounded and honest.** Responsiveness, bounded memory and image correctness are architectural requirements, measured on photo-sized inputs.
+3. **Fast, bounded and honest.** Responsiveness, bounded memory and image correctness are architectural requirements, measured on photo-sized inputs. The GPU is the renderer of record, and its correctness is a declared tolerance against the whole-frame CPU reference, measured on the corpus.
 4. **Small core, deliberate extension points.** The core owns transactions, history and shared invariants. Tools own their own validation, controls and processing.
 5. **Open source, first on the owner's Mac.** GPL-3.0-or-later project code and open-source dependencies, targeting an M4 MacBook Pro first while keeping Windows and Linux portable.
-6. **Prove it.** Claims about behavior come with evidence: exact-buffer tests, correlated state, logs and captures for UI, and recorded measurements with their scope.
+6. **Prove it.** Claims about behavior come with evidence: exact-buffer tests for the reference renderer, reference-buffer tests within the declared tolerance for the GPU, correlated state, logs and captures for UI, and recorded measurements with their scope.
 7. **Beautiful defaults, familiar feel.** A small, focused workspace that feels familiar if you've used Lightroom's Library and Develop.
 
 ## What it does today
@@ -51,7 +51,7 @@ Luxforge is pre-release. Everything is v0, formats change without migrations, an
 - **Presets**, including import of Lightroom Classic XMP and `.lrtemplate` presets, with a report of anything that couldn't be carried over.
 - **JPEG export** from JPEG or RAW originals: an exact saved edit at its output size, quality 90, with an embedded sRGB profile. Metadata is stripped by default or kept for supported EXIF fields. Exports never replace an existing file or touch the original.
 - **An RGB histogram** with clipping overlays and a pixel readout, plus original comparison, a command palette and **Copy as JSON request** on controls.
-- **Instant previews**: a quick preview first, then a cancellable exact render, with visible-region refinement at 100% and above.
+- **GPU rendering**: the GPU draws every drag and the finished picture at every zoom, the histogram, samples and exports too, each held within a declared tolerance to a whole-frame CPU reference renderer, which draws whatever the GPU cannot.
 - **Live performance counters** for memory, CPU and GPU, alongside background jobs.
 - **Live agents**: if a script commits an edit while you're mid-drag, Luxforge keeps your draft and asks whether to discard it or reapply it on top.
 

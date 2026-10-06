@@ -1,7 +1,7 @@
 //! A boundary held over the window its output reads (`docs/design/gpu-preview.md`, "The held input
 //! boundary"): the GPU frame over the window is the frame over the whole boundary stage, and at Fit
-//! a crop drawn at its exact stage asks for that window and is held to the bound and the budget
-//! before it is rendered.
+//! a crop drawn at its exact stage derives that window and is held to the bound and the budget
+//! before it is derived.
 //!
 //! - **The same frame.** For an affine tail (a straightened crop), a projective one (a perspective
 //!   warp with the crop) and a lens warp's coordinate grid, on both boundary formats, the surface's
@@ -13,8 +13,8 @@
 //!   (Texture and Clarity) over the window, which the planner grows by its filters' margin, draws
 //!   the same frame too.
 //! - **At Fit.** A tight crop of a photograph that fits the display is drawn at its exact stage:
-//!   the tick asks for the window its output reads, the boundary held is that window, and a slot
-//!   over the budget asks for no boundary and names it.
+//!   the tick derives the window its output reads, the boundary held is that window, and a slot
+//!   over the budget derives no boundary and names it.
 //! - **A chain's charge.** Before its boundary exists, a chained masked plan is held to the slot's
 //!   own charge, each link's intermediate and the shared scratch pool counted, over a 100% region
 //!   and at Fit's exact stage; the budget reads that pooled figure.
@@ -38,8 +38,8 @@ use luxforge_core::{
 };
 use luxforge_ui::photo_surface::gpu_preview::qualification::{boundary_as, held};
 
-const WIDTH: u32 = 360;
-const HEIGHT: u32 = 240;
+pub(super) const WIDTH: u32 = 360;
+pub(super) const HEIGHT: u32 = 240;
 
 /// A value with detail at every scale, so a tap that reads another texel, or the same one with
 /// another weight, changes the frame.
@@ -52,7 +52,7 @@ fn value(x: u32, y: u32, channel: u32) -> f64 {
 
 /// The photograph on either path: a JPEG's codes, or a RAW's linear planes, some values past
 /// white and below black.
-fn source(format: BoundaryFormat) -> PreviewSource {
+pub(super) fn source(format: BoundaryFormat) -> PreviewSource {
     match format {
         BoundaryFormat::Half => {
             let mut rgba = Vec::with_capacity((WIDTH * HEIGHT * 4) as usize);
@@ -92,7 +92,7 @@ fn source(format: BoundaryFormat) -> PreviewSource {
 
 /// The boundary of a stack whose first layer is its boundary: the source's own values, each a
 /// JPEG code's linear value or a RAW's `f32`, row by row.
-fn whole(source: &PreviewSource) -> Vec<[f32; 3]> {
+pub(super) fn whole(source: &PreviewSource) -> Vec<[f32; 3]> {
     match source {
         PreviewSource::Jpeg(image) => {
             let table = luxforge_core::colour::srgb::decode_table();
@@ -110,7 +110,7 @@ fn whole(source: &PreviewSource) -> Vec<[f32; 3]> {
 }
 
 /// `pixels`, a whole stage's, cut to `window`.
-fn cut(pixels: &[[f32; 3]], window: Region) -> Vec<[f32; 3]> {
+pub(super) fn cut(pixels: &[[f32; 3]], window: Region) -> Vec<[f32; 3]> {
     (window.y0..window.y0 + window.height)
         .flat_map(|y| {
             let at = (y * WIDTH + window.x0) as usize;
@@ -569,8 +569,8 @@ pub(super) fn answered(
     answer
 }
 
-/// A Fit drag over a tight crop drawn at its exact stage asks for the window its output reads,
-/// and holds that window, not the whole photograph; the charge it is held to before rendering is
+/// A Fit drag over a tight crop drawn at its exact stage derives the window its output reads,
+/// and holds that window, not the whole photograph; the charge it is held to before deriving it is
 /// that window's.
 #[test]
 fn gpu_window_an_exact_fit_crop_holds_the_window_its_output_reads() {
@@ -581,13 +581,14 @@ fn gpu_window_an_exact_fit_crop_holds_the_window_its_output_reads() {
     let _ = slide(&mut editor, "set-basic", "exposure", 0.2);
     let records = logged(&mut editor, &log);
     let ticks = events(&records, "gpu_preview_tick");
-    assert_eq!(ticks[0]["reason"], "boundary-pending", "{ticks:?}");
+    assert_eq!(ticks[0]["reason"], "surface-pending", "{ticks:?}");
     let (boundary, slot) = editor
         .gpu
         .region_charge()
         .expect("held to the bound and budget");
-    deliver_until(&mut editor, "the boundary", |editor| {
-        editor.gpu.holds_boundary()
+    assert!(editor.gpu.holds_boundary(), "derived at the tick");
+    deliver_until(&mut editor, "the tick's frame", |editor| {
+        !editor.presentation.queue.is_busy() && !editor.presentation.queue.ready()
     });
     let (width, height) = editor.presentation.dimensions.expect("the crop's output");
     let summary = editor.gpu.summary();
@@ -615,13 +616,15 @@ fn gpu_window_an_exact_fit_crop_holds_the_window_its_output_reads() {
     finish(editor, catalog);
 }
 
-/// At Fit at the exact stage a slot the GPU-preview budget would not hold asks for no boundary:
+/// At Fit at the exact stage a slot the GPU-preview budget would not hold derives no boundary:
 /// every tick takes the CPU path naming the budget, with the bytes and the budget they pass.
 #[test]
 fn gpu_window_an_exact_fit_slot_over_the_budget_keeps_the_cpu_path() {
     let catalog = catalog("budget");
     let mut editor = cropped_photo(&catalog);
-    editor.gpu.budget = Some(1);
+    // A byte beside the source the surface holds, which the budget charges too.
+    let source = editor.gpu.source().map_or(0, |source| source.bytes());
+    editor.gpu.budget = Some(source + 1);
     let log = attach_log(&mut editor);
     let _ = slide(&mut editor, "set-basic", "exposure", 0.2);
     let _ = slide(&mut editor, "set-basic", "exposure", 0.3);
@@ -633,7 +636,7 @@ fn gpu_window_an_exact_fit_slot_over_the_budget_keeps_the_cpu_path() {
             .all(|tick| tick["path"] == "cpu" && tick["reason"] == "budget-exceeded"),
         "{ticks:?}"
     );
-    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is asked for");
+    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is derived");
     let (_, slot) = editor.gpu.region_charge().expect("a charge");
     assert_eq!(
         editor.gpu.summary()["drag"]["over_budget"],
@@ -646,7 +649,7 @@ fn gpu_window_an_exact_fit_slot_over_the_budget_keeps_the_cpu_path() {
 }
 
 /// On the corpus's Z6 and Air 2S, whose lens profile the crop is fused with, a Fit drag of Basic
-/// over a 16:9 crop straightened by 7°, the corpus's, and by 45° asks for a windowed proxy's
+/// over a 16:9 crop straightened by 7°, the corpus's, and by 45° derives a windowed proxy's
 /// boundary, holds it within the 256 MiB bound, and draws its later ticks on the GPU with no
 /// preview job once the surface has evaluated it. The surface is stood in for, as in every desktop
 /// test; the corpus draws the same plans on the device.
@@ -848,14 +851,15 @@ fn gpu_window_a_chained_masked_plan_is_held_to_the_slots_own_charge() {
     }
 }
 
-/// The budget a chained masked plan's boundary is held to before it is asked for reads the pooled
-/// figure. Over a 100% region, a budget the slot fits to the byte asks for the boundary, though the
-/// figure the desktop held a plan to before the pool — every plane of every spatial step in a
-/// texture of its own, with the passes' parameters and no link's intermediate — passes it, and so
-/// does that figure with the intermediates, what each link holding its own scratch charged. A byte
-/// less names `budget-exceeded`, with the pooled figure and the budget in `over_budget`.
+/// The budget a chained masked plan's boundary is held to before it is derived reads the pooled
+/// figure, beside the source the surface holds, which the same budget charges. Over a 100% region,
+/// a budget the slot and the source fit to the byte derives the boundary, though the figure the
+/// desktop held a plan to before the pool — every plane of every spatial step in a texture of its
+/// own, with the passes' parameters and no link's intermediate — passes it, and so does that figure
+/// with the intermediates, what each link holding its own scratch charged. A byte less names
+/// `budget-exceeded`, with the pooled figure and what the budget leaves the slot in `over_budget`.
 #[test]
-fn gpu_window_a_chained_masked_plan_asks_for_its_boundary_when_its_pooled_slot_fits() {
+fn gpu_window_a_chained_masked_plan_derives_its_boundary_when_its_pooled_slot_fits() {
     use luxforge_ui::photo_surface::gpu_preview::chain_charge;
     let catalog = catalog("chain-budget");
     let (mut editor, asset, agent) = real_photo(&catalog);
@@ -895,8 +899,9 @@ fn gpu_window_a_chained_masked_plan_asks_for_its_boundary_when_its_pooled_slot_f
         unshared + intermediates
     );
     assert!(pooled < unshared, "{pooled} B, {unshared} B apart");
-    // A byte less than the pooled figure.
-    editor.gpu.budget = Some(pooled - 1);
+    // A byte less than the pooled figure beside the source.
+    let source = editor.gpu.source().map_or(0, |source| source.bytes());
+    editor.gpu.budget = Some(source + pooled - 1);
     let log = attach_log(&mut editor);
     let _ = slide(&mut editor, "set-basic", "exposure", 0.5);
     let records = logged(&mut editor, &log);
@@ -908,18 +913,136 @@ fn gpu_window_a_chained_masked_plan_asks_for_its_boundary_when_its_pooled_slot_f
                 .all(|tick| tick["path"] == "cpu" && tick["reason"] == "budget-exceeded"),
         "{ticks:?}"
     );
-    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is asked for");
+    assert_eq!(editor.gpu.ticks().2, 0, "no boundary is derived");
     assert_eq!(
         editor.gpu.summary()["drag"]["over_budget"],
         serde_json::json!({"requested": pooled, "budget": pooled - 1})
     );
     // The pooled figure exactly, which the old figure and the slot of unshared links both pass.
-    editor.gpu.budget = Some(pooled);
+    editor.gpu.budget = Some(source + pooled);
     let _ = slide(&mut editor, "set-basic", "exposure", 0.6);
     let summary = editor.gpu.summary();
-    assert_eq!(editor.gpu.ticks().2, 1, "the boundary is asked for");
-    assert_eq!(summary["drag"]["reason"], "boundary-pending");
+    assert_eq!(editor.gpu.ticks().2, 1, "the boundary is derived");
+    assert_eq!(summary["drag"]["reason"], "surface-pending");
     assert_eq!(summary["drag"]["over_budget"], Value::Null);
+    let _ = editor.update(Message::Draft(
+        crate::app::message::draft::DraftMessage::Cancel,
+    ));
+    finish(editor, catalog);
+}
+
+/// A photograph of `width` × `height` with detail at every scale, written as a JPEG into a directory
+/// of its own: one the view shows a part of at 100%.
+fn written(name: &str, width: u32, height: u32) -> std::path::PathBuf {
+    let dir = luxforge_testbase::paths::temp_dir(&format!("gpu-window-{name}"));
+    let path = dir.join("photograph.jpg");
+    let image = image::RgbImage::from_fn(width, height, |x, y| {
+        image::Rgb([0, 1, 2].map(|channel| (value(x, y, channel) * 255.0).round() as u8))
+    });
+    let file = std::io::BufWriter::new(std::fs::File::create(&path).unwrap());
+    image::codecs::jpeg::JpegEncoder::new_with_quality(file, 95)
+        .encode_image(&image)
+        .expect("the photograph is written");
+    path
+}
+
+/// A region drag at 100% whose slot, beside the source, passes the budget is drawn from the draft's
+/// plan at the reduced stage of the view's area, the softer frame: the boundary is the source
+/// reduced to that stage, the plan's frame its whole output placed over the photograph's full
+/// stage, every tick drawn on the GPU while the notice says the frame is softer, and the drag stays
+/// at that stage at this zoom; the picture at rest after its release is the region's, its own plan
+/// at full scale.
+#[test]
+fn gpu_window_a_region_past_the_budget_draws_the_reduced_stage_scaled_to_the_view() {
+    use super::gpu_preview_tests::surface_ready;
+    let catalog = catalog("softer");
+    let photograph = written("softer", 3000, 2000);
+    let (mut editor, asset, agent) = crate::app::testing::real_photo_at(&catalog, &photograph);
+    masked_chain(&mut editor, &asset, agent);
+    // Every region plan carries its reduced stage, as one past the core's figure does.
+    editor.gpu.reduce_after = Some(0);
+    at_100(&mut editor);
+    let stage = editor
+        .presentation
+        .dimensions
+        .expect("the photograph's stage");
+    let wanted = editor.desired_view_for(stage).expect("a visible region");
+    assert!(
+        wanted.width < stage.0 && wanted.height < stage.1,
+        "the view shows part of the photograph: {wanted:?} of {stage:?}"
+    );
+    editor.gpu.surface = Some(SurfaceReport::default());
+    // Within the budget: the region at full scale.
+    let _ = slide(&mut editor, "set-basic", "exposure", 0.4);
+    let (_, region) = editor.gpu.region_charge().expect("a region plan");
+    assert!(
+        editor.gpu.planned().unwrap().1.key.region().is_some(),
+        "the region"
+    );
+    // A byte less than the region's slot beside the source.
+    let source = editor.gpu.source().map_or(0, |source| source.bytes());
+    editor.gpu.budget = Some(source + region - 1);
+    let _ = slide(&mut editor, "set-basic", "exposure", 0.5);
+    let summary = editor.gpu.summary();
+    assert_eq!(
+        summary["drag"]["softer"],
+        serde_json::json!(100.0),
+        "{summary}"
+    );
+    let (_, request) = editor.gpu.planned().expect("the tick's plan");
+    let reduced = request.key.plan().expect("the reduced stage");
+    assert_eq!(request.key.region(), None, "a whole frame");
+    assert!(
+        reduced.width < stage.0 && reduced.height < stage.1,
+        "{reduced:?} of {stage:?}"
+    );
+    eprintln!(
+        "softer: the region's slot {region} B, the reduced stage {}x{} of {stage:?}",
+        reduced.width, reduced.height
+    );
+    // Its boundary is derived; once the surface has evaluated it, the tick draws on the GPU.
+    assert!(editor.gpu.holds_boundary(), "the reduced source, derived");
+    surface_ready(&mut editor);
+    let _ = slide(&mut editor, "set-basic", "exposure", 0.6);
+    assert_eq!(editor.gpu.ticks().0, 1, "a tick on the GPU");
+    let (plan, _) = editor
+        .gpu
+        .surface_plan()
+        .expect("the plan the surface draws");
+    let placed = plan.region.expect("placed as a region");
+    assert_eq!(placed.full_stage, stage, "over the photograph's full stage");
+    assert_eq!(
+        placed.stage,
+        (reduced.width, reduced.height),
+        "the reduced stage"
+    );
+    assert_eq!(
+        placed.rect,
+        [0, 0, reduced.width, reduced.height],
+        "all of it"
+    );
+    assert!(
+        editor.gpu_draws_view(wanted),
+        "the GPU frame holds the view"
+    );
+    assert_eq!(
+        editor.gpu_plan_fallback().as_deref(),
+        Some(super::gpu_preview::SOFTER)
+    );
+    assert_eq!(
+        editor
+            .workspace
+            .status
+            .fallback
+            .as_ref()
+            .map(|notice| notice.phrase.as_str()),
+        Some("Softer while dragging")
+    );
+    // At this zoom the drag stays at the reduced stage, whatever the budget does.
+    editor.gpu.budget = Some(u64::MAX);
+    let _ = slide(&mut editor, "set-basic", "exposure", 0.7);
+    assert!(editor.gpu.planned().unwrap().1.key.plan().is_some());
+    assert_eq!(editor.gpu.ticks().0, 2, "on the GPU");
     let _ = editor.update(Message::Draft(
         crate::app::message::draft::DraftMessage::Cancel,
     ));
@@ -1402,8 +1525,7 @@ fn gpu_window_the_paint_harness_masks_at_100_grow_the_window_by_every_links_halo
                 1,
                 format,
             )
-            .expect("a boundary")
-            .resident();
+            .expect("a boundary");
             let surface = super::gpu_plan::surface_plan_over(plan, held, origin, None, Some(rect))
                 .expect("a runnable plan");
             let charged = qualifier.charged_bytes(&surface).expect("a charge");
@@ -1441,7 +1563,7 @@ fn gpu_window_the_paint_harness_masks_at_100_grow_the_window_by_every_links_halo
                  {}; region_charge (boundary {:.1} MB, slot {:.1} MB); steps converted \
                  {converted}; chain {:.1} MB: {} intermediates of {:.1} MB, kept {:.1} MB a \
                  Presence link, pool {:.1} MB; the slot's own charge {:.1} MB, {:.1} KB more \
-                 (the links' buffers); over the budget: {over}; boundaries asked for: {}",
+                 (the links' buffers); over the budget: {over}; boundaries derived: {}",
                 view.name,
                 shown(rect),
                 halos[0],
@@ -1479,14 +1601,13 @@ fn gpu_window_the_paint_harness_masks_at_100_grow_the_window_by_every_links_halo
 
 /// How many of the paint harness's masks a 100% drag of the first mask's exposure holds within the
 /// GPU-preview budget, in the harness's view and the corpus's ([`VIEWS`]): for every N from 1 to 16
-/// masks of the harness's layout, the window the drag's boundary request names, the slot the
+/// masks of the harness's layout, the window the drag's boundary names, the slot the
 /// desktop holds it to and whether that fits, and the largest N that does in each view. It holds
 /// only what does not depend on the figures: the window is the region grown by every link's halo,
-/// the slot never falls as N grows, and a tick asks for no boundary exactly when its slot passes
+/// the slot never falls as N grows, and a tick derives no boundary exactly when its slot passes
 /// the budget. With Dehaze beside Clarity and Texture in every masked Presence layer the same drag
-/// has no plan to charge at any N: the drag changes the input of every Dehaze layer, whose estimate
-/// at 100% is the exact stage's, which the store cannot hold for a drafted value, so every tick
-/// names `region-estimate` before the budget is asked.
+/// changes the input of every Dehaze layer, so each tick computes every layer's light from the
+/// whole stage over the source, a light a layer, its light links charged beside the slot.
 ///
 /// ```text
 /// LUXFORGE_GENERATED_FIXTURES=fixtures/generated cargo test --release -p luxforge-app \
@@ -1534,7 +1655,7 @@ fn gpu_window_the_paint_harness_masks_at_100_fit_the_budget_up_to_a_count() {
             assert_eq!(
                 editor.gpu.ticks().2 == 0,
                 over,
-                "{masks} masks, {}: a boundary is asked for exactly when the slot fits",
+                "{masks} masks, {}: a boundary is derived exactly when the slot fits",
                 view.name
             );
             assert_eq!(
@@ -1575,7 +1696,7 @@ fn gpu_window_the_paint_harness_masks_at_100_fit_the_budget_up_to_a_count() {
             view.name
         );
     }
-    // With Dehaze 25 beside them: the drag's first tick at 100% has no plan to charge.
+    // With Dehaze 25 beside them: a light a layer, computed every tick, charged with the slot.
     let mut dehaze = harness_presence();
     dehaze["dehaze"] = serde_json::json!(25.0);
     for masks in [1, 2] {
@@ -1589,15 +1710,134 @@ fn gpu_window_the_paint_harness_masks_at_100_fit_the_budget_up_to_a_count() {
                 "exposure",
                 0.8 + 0.1 * number as f64,
             );
-            let summary = editor.gpu.summary();
-            assert!(editor.gpu.planned().is_none(), "{summary}");
-            assert_eq!(summary["drag"]["reason"], "region-estimate", "{summary}");
+            let (plan, _) = editor.gpu.planned().expect("a 100% plan");
+            assert_eq!(plan.lights.len(), masks, "{masks} masks, {}", view.name);
+            let (_, slot) = editor.gpu.region_charge().expect("a region's charge");
             eprintln!(
-                "{test}: with Dehaze 25, {masks} masks, {}: the tick names {}",
-                view.name, summary["drag"]["reason"]
+                "{test}: with Dehaze 25, {masks} masks, {}: {} lights, slot {:.1} MB, fits {}",
+                view.name,
+                plan.lights.len(),
+                megabytes(slot),
+                slot <= GPU_PREVIEW_BUDGET
             );
             cancel_draft(&mut editor);
         }
         finish(editor, catalog);
     }
+}
+
+/// Measurement, not a gate: a 60 MP RAW's planes (9504 × 6336, 12 bytes a pixel, the source the
+/// surface holds and charges to the GPU-preview budget) under the recipe's cap of masked Presence
+/// layers, each of all three fields through a radial mask of its own. At Fit the slot of its view
+/// plan — the frame a drag draws, and the reduced stage a 100% drag past the budget falls back to —
+/// beside the source within the 2 GiB budget, its light links sharing one tile texture; at 100%
+/// over the largest view's region, what the
+/// region's slot takes against what the budget leaves it beside the source. Allocates the planes,
+/// 722 MB. `cargo test --release -p luxforge-app sixty_mp_raw -- --ignored --nocapture`.
+#[test]
+#[ignore = "allocates a 60 MP RAW's planes"]
+fn gpu_window_a_sixty_mp_raw_at_the_masked_presence_cap_fits_the_budget_beside_its_source() {
+    use luxforge_core::{
+        AssetId, Component, ComponentMode, EntryId, Evaluation, GpuView, HistoryEntry,
+        MAX_MASKED_SPATIAL_LAYERS, Mask, Snapshot, SnapshotId,
+    };
+    let (width, height) = (9504u32, 6336u32);
+    let planes = vec![0.18f32; 3 * (width * height) as usize];
+    let image = LinearImage::new(width, height, planes).expect("finite planes");
+    let mut recipe = Recipe::default();
+    for index in 0..MAX_MASKED_SPATIAL_LAYERS {
+        let t = index as f64 / MAX_MASKED_SPATIAL_LAYERS as f64;
+        let mut mask = Mask::new(format!("Mask {}", index + 1));
+        let name = mask.next_component_name("radial");
+        mask.components.push(Component::new(
+            name,
+            ComponentMode::Add,
+            "radial",
+            serde_json::json!({"x": 0.1 + 0.8 * t, "y": 0.5, "radius_x": 0.12,
+                               "radius_y": 0.2, "angle": 0.0, "feather": 40.0}),
+        ));
+        recipe.layers.push(Layer {
+            mask: Some(mask.id.clone()),
+            ..Layer::new(
+                luxforge_core::PRESENCE_EFFECT,
+                serde_json::json!({"texture": 40, "clarity": 50, "dehaze": 15}),
+            )
+        });
+        recipe.masks.push(mask);
+    }
+    let asset = AssetId::new();
+    let entry = HistoryEntry {
+        id: EntryId::new(),
+        asset_id: asset.clone(),
+        sequence: 1,
+        action_id: "set-presence".into(),
+        label: "Presence".into(),
+        parameters: serde_json::json!({}),
+        actor: "test".into(),
+        timestamp_ms: 0,
+        request_id: None,
+        base_revision: 0,
+        result_revision: 1,
+        snapshot: Snapshot {
+            id: SnapshotId::new(),
+            asset_id: asset,
+            recipe: recipe.clone(),
+        },
+        undo_parent: None,
+        restore_target: None,
+    };
+    let evaluation = Evaluation::new(
+        std::sync::Arc::new(ModuleRegistry::builtin()),
+        RenderContext::new(),
+        PreviewSource::Raw {
+            image,
+            settings: LinearSettings::default(),
+        },
+        entry,
+        recipe,
+        None,
+    );
+    let source = u64::from(width) * u64::from(height) * 12;
+    let budget = luxforge_ui::photo_surface::gpu_preview::GPU_PREVIEW_BUDGET;
+    let megabytes = |bytes: u64| bytes as f64 / 1e6;
+    let planned = |view: GpuView| {
+        let rest = luxforge_core::qualification::rest_plan(&evaluation, view).expect("a rest plan");
+        match (rest.view.answer, rest.view.boundary) {
+            (GpuAnswer::Plan(plan), Some(request)) => (plan, request),
+            (answer, _) => panic!("no plan: {:?}", answer.fallback()),
+        }
+    };
+    let (plan, request) = planned(GpuView::Fit(super::gpu_qualification::fit_bounds()));
+    assert_eq!(plan.spatial.len(), MAX_MASKED_SPATIAL_LAYERS);
+    let fit = super::gpu_preview::reduced_charge(&plan, &request);
+    let lights = (
+        super::gpu_preview::light_charge(&plan, request.format),
+        plan.lights.len(),
+    );
+    let region = super::gpu_qualification::largest_view((width, height), 100.0).unwrap();
+    let (plan, request) = planned(GpuView::Region {
+        rect: region,
+        magnification: 1.0,
+    });
+    let (_, at_100) = super::gpu_preview::region_charge(&plan, &request).expect("a region");
+    let verdict = if fit + source <= budget {
+        "within"
+    } else {
+        "past"
+    };
+    eprintln!(
+        "60 MP RAW, {MAX_MASKED_SPATIAL_LAYERS} masked Presence layers: source {:.1} MB; at Fit \
+         the slot {:.1} MB ({:.1} MB of it its {} light links), with the source {:.1} MB, {verdict} \
+         the {:.1} MB budget; at 100% the region's slot {:.1} MB against the {:.1} MB the budget \
+         leaves it",
+        megabytes(source),
+        megabytes(fit),
+        megabytes(lights.0),
+        lights.1,
+        megabytes(fit + source),
+        megabytes(budget),
+        megabytes(at_100),
+        megabytes(budget - source)
+    );
+    assert!(fit + source <= budget, "the Fit slot beside the source");
 }

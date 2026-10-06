@@ -22,12 +22,13 @@
 //! - `regions.rs`: the region worker, one thread apart from the extraction workers, that answers
 //!   `preview.region` jobs one at a time and writes each answer's JPEG.
 //! - `rendered.rs`: developed photographs' grid and large tiers, planned on the owner and rendered
-//!   through the Fit preview's proxy path off the editor's cache, their keys and their stale rows.
+//!   exactly by the reference renderer and area-averaged off the editor's cache, their keys and
+//!   their stale rows.
 //! - `renders.rs`: the render worker, one thread apart from the others, that renders one
 //!   photograph at a time, writes its tiers, collects its stale rows and keeps the large tier's
 //!   budget; and the discard of other renderer generations' rows.
 //! - `photos.rs`: developed photographs' rows in the index's `photo_previews` and their files —
-//!   rendered tiers, labelled approximate as their proxy renders are, and camera previews — what is
+//!   rendered tiers, never approximate, and camera previews — what is
 //!   served and what stands in meanwhile, writes, collection, forgetting the photographs that
 //!   leave the catalog, and the grid's states.
 //! - `camera.rs`: a developed photograph's camera preview, which it shows until its first render,

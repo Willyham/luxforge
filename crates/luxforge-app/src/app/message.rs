@@ -25,6 +25,7 @@ pub(crate) mod pointer;
 pub(crate) mod preferences;
 pub(crate) mod preset;
 pub(crate) mod preview;
+pub(crate) mod renderer;
 pub(crate) mod select;
 pub(crate) mod select_catalog;
 pub(crate) mod select_missing;
@@ -71,6 +72,8 @@ pub(crate) enum Message {
     /// One export gesture or answer.
     Export(export::ExportMessage),
     Evidence(evidence::EvidenceMessage),
+    /// The owner's answer to the desktop's report of which renderer draws its picture.
+    Renderer(renderer::RendererMessage),
     /// One Select workspace gesture or owner answer.
     Select(select::SelectMessage),
     /// Long-running work: the status bar's busiest job, a job's Cancel, the progress sheet.
@@ -110,7 +113,6 @@ impl Message {
                 V::TogglePanel(_)
                     | V::ToggleThirds
                     | V::ToggleInformation
-                    | V::ToggleGpuPreview
                     | V::SetMode(_)
                     | V::Gallery(_)
                     | V::OpenMenu(_)

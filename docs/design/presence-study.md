@@ -107,7 +107,7 @@ halo_presence   = halo_dehaze + halo_texture + halo_clarity       (the units are
 
 `halo_formulas_match_the_study_note_and_fit_the_host_bound` asserts every row and the bound.
 
-**Point-sample cost.** A `render.sample` through a Presence layer evaluates the compiled prefix over the point's neighbourhood: `(2 * halo_presence + 1)^2` input pixels, so 301 thousand at 24 MP and 805 thousand at 60 MP, plus one 1/16-scale reduction of the stage on a global-estimate cache miss. This is the O(halo² × layers) exception the design declares.
+**Point-sample cost.** A point sample that evaluates the compiled prefix over the point's neighbourhood reads `(2 * halo_presence + 1)^2` input pixels, so 301 thousand at 24 MP and 805 thousand at 60 MP, plus one 1/16-scale reduction of the stage for the global estimate. The editor does not sample that way: a read through a Presence layer is answered by the tile service, one GPU tile around the pixel on the desktop, or on the reference renderer the spatial layer's whole frame materialized once per call ([design](presence-mixer-vignette.md#presence-the-spatial-primitive)).
 
 ## The compressive gain
 

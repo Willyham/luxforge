@@ -286,18 +286,12 @@ fn settled_current(frame: &Frame) -> Result {
         "The combined current GPU capture is blank or stale",
     )?;
     let state = frame.state();
-    let proxy = &state["proxy"];
     ensure(
         state["requested_generation"] == state["displayed_generation"]
             && state["stack"]["displayed"]["entry"] == state["stack"]["entry"]
             && state["surface"]["detail_updating"] == false
             && state["histogram"]["stale"] == false
-            && state["approximate_white_balance"] == false
-            && (proxy["presented"] == false
-                || (proxy["presented"] == true
-                    && proxy["settled_from_exact"] == true
-                    && proxy["approximate"] == false
-                    && proxy["approximate_reason"].is_null())),
+            && state["approximate_white_balance"] == false,
         "The combined current capture has not settled exact pixels and analysis",
     )
 }

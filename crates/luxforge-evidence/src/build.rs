@@ -197,6 +197,30 @@ impl Step {
         Self::Export(ExportStep::File(ExportFile {
             name: name.into(),
             keep_metadata,
+            reference: false,
+            background: false,
+        }))
+    }
+
+    /// Export the displayed entry to `name` in the run's evidence directory through the reference
+    /// renderer, as the palette's Export reference render… does.
+    pub fn export_reference(name: impl Into<String>) -> Self {
+        Self::Export(ExportStep::File(ExportFile {
+            name: name.into(),
+            keep_metadata: false,
+            reference: true,
+            background: false,
+        }))
+    }
+
+    /// [`Self::export_reference`], captured once the export has started: it runs on under the steps
+    /// after this one.
+    pub fn export_reference_in_background(name: impl Into<String>) -> Self {
+        Self::Export(ExportStep::File(ExportFile {
+            name: name.into(),
+            keep_metadata: false,
+            reference: true,
+            background: true,
         }))
     }
 

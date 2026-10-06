@@ -1,8 +1,8 @@
 use crate::*;
 use luxforge_core::{
     BASIC_EFFECT, CROP_EFFECT, CURVE_EFFECT, Cancel, CropPayload, CropStage, EditorService, Layer,
-    LayerId, ModuleRegistry, Mutation, PRESENCE_EFFECT, PreviewSource, ProxyBounds, Raster, Recipe,
-    RenderContext, RenderOptions, SnapshotId, Transform, analysis, render,
+    LayerId, ModuleRegistry, Mutation, PreviewSource, Raster, Recipe, RenderContext, RenderOptions,
+    SnapshotId, Transform, analysis, render,
 };
 use std::time::Instant;
 
@@ -109,87 +109,6 @@ fn basic_full_layer() -> Layer {
         mask: None,
         artifacts: Vec::new(),
     }
-}
-
-/// The Presence layer the small-display proxy rows measure: every field at full strength, so the
-/// compiled spatial operation holds all three of its neighbourhood units, as `editor-latency
-/// --presence` commits it.
-fn presence_full_layer() -> Layer {
-    Layer {
-        id: LayerId::new(),
-        effect_id: PRESENCE_EFFECT.into(),
-        effect_format: 1,
-        payload: json!({ "texture": 100.0, "clarity": 100.0, "dehaze": 100.0 }),
-        mask: None,
-        artifacts: Vec::new(),
-    }
-}
-
-/// The display the proxy rows are sized for: the owner's 2880 × 1800 physical window, which is
-/// also the upper bound of what a Fit preview can show on it.
-const PROXY_DISPLAY: ProxyBounds = ProxyBounds {
-    width: 2880,
-    height: 1800,
-};
-
-/// A small window's display: a 1280 × 800 bound, which fits a 3:2 photograph's whole proxy in
-/// 1200 × 800 (0.96 megapixels), so every pass of a Fit render there is below one megapixel.
-const SMALL_PROXY_DISPLAY: ProxyBounds = ProxyBounds {
-    width: 1280,
-    height: 800,
-};
-
-/// The rows of one recipe rendered against one proxy source, and the SHA-256 of its frame, so two
-/// builds' proxy frames can be compared.
-fn proxy_recipe_samples(
-    registry: &ModuleRegistry,
-    source: &PreviewSource,
-    recipe: &Recipe,
-    samples: usize,
-) -> Result<(Vec<f64>, (u32, u32), String)> {
-    let (timings, stage) = recipe_render_samples(registry, source, recipe, samples)?;
-    let sha256 = frame_sha256(
-        &render(
-            registry,
-            source,
-            recipe,
-            RenderOptions::default(),
-            &RenderContext::new(),
-        )?
-        .frame(SnapshotId::new())?,
-    );
-    Ok((timings, stage, sha256))
-}
-
-/// A proxy source for `recipe` over `source` fitted to `bounds`, built as the preview worker
-/// builds a whole-stage proxy, and the time each of `samples` builds took.
-fn small_proxy(
-    registry: &ModuleRegistry,
-    source: &PreviewSource,
-    recipe: &Recipe,
-    samples: usize,
-) -> Result<(PreviewSource, (u32, u32), Vec<f64>)> {
-    let plan = render(
-        registry,
-        source,
-        recipe,
-        RenderOptions::default(),
-        &RenderContext::new(),
-    )?
-    .proxy_plan(SMALL_PROXY_DISPLAY)
-    .ok_or("The photo-sized source needs no proxy for a 1280x800 display")?;
-    let mut timings = Vec::with_capacity(samples);
-    let mut built = None;
-    for _ in 0..samples {
-        let started = Instant::now();
-        built = Some(source.proxy(plan)?);
-        timings.push(milliseconds(started));
-    }
-    Ok((
-        built.ok_or("No proxy was built")?,
-        (plan.width, plan.height),
-        timings,
-    ))
 }
 
 /// Render one recipe repeatedly through a given registry, the way the preview worker does.
@@ -474,10 +393,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
     )?;
     let white_balance_render = white_balance_samples;
 
-    // The proxy rows: the same crop stack with every Basic field non-neutral, rendered at full
-    // resolution and against the display-bounded proxy the preview worker builds for a 2880 × 1800
-    // window. The proxy build is timed on its own (a cache miss, once per gesture or resize) and
-    // the proxy renders are what a slider tick costs at Fit.
+    // The same crop stack with every Basic field non-neutral, at full resolution.
     let mut full_basic = stack.clone();
     full_basic.layers.insert(index, basic_full_layer());
     let (full_basic_samples, full_basic_stage) = recipe_render_samples(
@@ -491,106 +407,6 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
         "The full Basic layer changed the output stage",
     )?;
     let full_basic_render = full_basic_samples;
-    let plan = render(
-        &colour_registry,
-        colour_job.evaluation.source(),
-        &full_basic,
-        RenderOptions::default(),
-        &RenderContext::new(),
-    )?
-    .proxy_plan(PROXY_DISPLAY)
-    .ok_or("The photo-sized source needs no proxy for a 2880x1800 display")?;
-    let mut proxy_build = Vec::with_capacity(samples);
-    let mut proxy_source = None;
-    for _ in 0..samples {
-        let started = Instant::now();
-        let built = colour_job.evaluation.source().proxy(plan)?;
-        proxy_build.push(milliseconds(started));
-        proxy_source = Some(built);
-    }
-    let proxy_source = proxy_source.ok_or("No proxy was built")?;
-    let (proxy_identity_samples, _) =
-        recipe_render_samples(&colour_registry, &proxy_source, &identity, samples)?;
-    let (proxy_stack_samples, proxy_stack_stage) =
-        recipe_render_samples(&colour_registry, &proxy_source, &stack, samples)?;
-    let (proxy_exposure_samples, proxy_exposure_stage) =
-        recipe_render_samples(&colour_registry, &proxy_source, &coloured, samples)?;
-    let (proxy_full_basic_samples, proxy_full_basic_stage) =
-        recipe_render_samples(&colour_registry, &proxy_source, &full_basic, samples)?;
-    ensure(
-        proxy_stack_stage == proxy_exposure_stage && proxy_stack_stage == proxy_full_basic_stage,
-        "A colour operation changed the proxy output stage",
-    )?;
-    ensure(
-        proxy_stack_stage.0 <= PROXY_DISPLAY.width && proxy_stack_stage.1 <= PROXY_DISPLAY.height,
-        "The proxy output stage does not fit the display",
-    )?;
-
-    // The small-display rows: a 1280 × 800 bound, where a Fit render of the upright photograph is
-    // below one megapixel in every pass, with a full Basic layer and with a full-strength Presence
-    // layer; then the crop stack's proxy for the same bound, whose resample writes a sub-megapixel
-    // output from a proxy stage above one megapixel.
-    let with_layer = |recipe: &Recipe, layer: Layer| {
-        let mut recipe = recipe.clone();
-        let index = colour_registry.insertion_index_for(&recipe.layers, &layer.effect_id);
-        recipe.layers.insert(index, layer);
-        recipe
-    };
-    let upright_basic = with_layer(&identity, basic_full_layer());
-    let upright_presence = with_layer(&identity, presence_full_layer());
-    let stack_presence = with_layer(&stack, presence_full_layer());
-    let (small_upright_source, small_upright_plan, small_upright_build) = small_proxy(
-        &colour_registry,
-        colour_job.evaluation.source(),
-        &upright_basic,
-        samples,
-    )?;
-    let (small_stack_source, small_stack_plan, small_stack_build) = small_proxy(
-        &colour_registry,
-        colour_job.evaluation.source(),
-        &full_basic,
-        samples,
-    )?;
-    let mut small_rows = Vec::new();
-    let mut small_frames = serde_json::Map::new();
-    let mut small_stages = serde_json::Map::new();
-    for (metric, source, recipe) in [
-        (
-            "proxy_1280x800_upright_full_basic_layer",
-            &small_upright_source,
-            &upright_basic,
-        ),
-        (
-            "proxy_1280x800_upright_presence_layer",
-            &small_upright_source,
-            &upright_presence,
-        ),
-        (
-            "proxy_1280x800_same_stack_with_full_basic_layer",
-            &small_stack_source,
-            &full_basic,
-        ),
-        (
-            "proxy_1280x800_same_stack_with_presence_layer",
-            &small_stack_source,
-            &stack_presence,
-        ),
-    ] {
-        let (timings, stage, sha256) =
-            proxy_recipe_samples(&colour_registry, source, recipe, samples)?;
-        ensure(
-            stage.0 <= SMALL_PROXY_DISPLAY.width && stage.1 <= SMALL_PROXY_DISPLAY.height,
-            format!("{metric} does not fit a 1280x800 display"),
-        )?;
-        small_rows.push((metric, timings));
-        small_frames.insert(metric.into(), json!(sha256));
-        small_stages.insert(metric.into(), json!([stage.0, stage.1]));
-    }
-
-    let proxy_identity_render = proxy_identity_samples;
-    let proxy_stack_render = proxy_stack_samples;
-    let proxy_exposure_render = proxy_exposure_samples;
-    let proxy_full_basic_render = proxy_full_basic_samples;
 
     // The neutral picker: 25 point samples of the stage the Basic layer receives, each evaluated
     // through the compiled stack at O(layers). No frame is allocated and nothing is written, so
@@ -781,32 +597,8 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             white_balance_render,
         ),
         ("colour_same_stack_with_full_basic_layer", full_basic_render),
-        ("proxy_build_for_2880x1800", proxy_build),
-        ("proxy_identity_render", proxy_identity_render),
-        ("proxy_same_stack_without_colour", proxy_stack_render),
-        (
-            "proxy_same_stack_with_one_1ev_basic_layer",
-            proxy_exposure_render,
-        ),
-        (
-            "proxy_same_stack_with_full_basic_layer",
-            proxy_full_basic_render,
-        ),
         ("neutral_picker_query_25_point_samples", neutral_picker),
     ] {
-        rows.push(stats::row(metric, "ms", samples));
-    }
-    rows.push(stats::row(
-        "proxy_build_for_1280x800_upright",
-        "ms",
-        small_upright_build,
-    ));
-    rows.push(stats::row(
-        "proxy_build_for_1280x800_same_stack",
-        "ms",
-        small_stack_build,
-    ));
-    for (metric, samples) in small_rows {
         rows.push(stats::row(metric, "ms", samples));
     }
     for (metric, value) in [
@@ -828,18 +620,6 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             "input":[crop_input.width,crop_input.height],
             "angle_deg":crop_payload.angle,
             "output":[crop_rect.width,crop_rect.height],
-        },
-        "proxy":{
-            "bounds":[PROXY_DISPLAY.width,PROXY_DISPLAY.height],
-            "source":[plan.width,plan.height],
-            "output":[proxy_stack_stage.0,proxy_stack_stage.1],
-        },
-        "small_proxy":{
-            "bounds":[SMALL_PROXY_DISPLAY.width,SMALL_PROXY_DISPLAY.height],
-            "upright_source":[small_upright_plan.0,small_upright_plan.1],
-            "same_stack_source":[small_stack_plan.0,small_stack_plan.1],
-            "outputs":small_stages,
-            "frame_sha256":small_frames,
         },
         "samples_per_recipe":samples,
         "lens":lens_measurement,
@@ -867,9 +647,7 @@ pub fn run(root: &Path, source: &Path, out: &Path, samples: usize) -> Result {
             "One Tone curve layer holding the s-curve [[0, 0], [0.25, 0.2], [0.75, 0.8], [1, 1]], compiled into one real pointwise unit by the real luxforge.curve module, renders the same stage as the stack without it",
             "One Basic layer with vibrance 50 and saturation 20, compiled to two real Oklab colour units, renders the same stage as the stack without it",
             "One temperature 30 / tint -10 Basic layer renders the same stage as the stack without it; its unit is one composite 3x3 linear-sRGB multiply per pixel",
-            "One Basic layer with all ten fields non-neutral renders the same stage as the stack without it, at full resolution and against the display-bounded proxy",
-            "The proxy source built for a 2880x1800 display renders the crop stack into an output stage that fits that display",
-            "Proxy sources built for a 1280x800 display render the upright photograph and the crop stack, each with a full Basic layer and with a full-strength Presence layer, into output stages that fit that display",
+            "One Basic layer with all ten fields non-neutral renders the same stage as the stack without it",
             "The neutral picker query evaluates 25 point samples of the stage the Basic layer receives at O(layers) each and allocates no frame",
             "Catalog reopen reconstructs the original historical state",
             "Source SHA-256 is unchanged"

@@ -5,10 +5,8 @@
 use super::*;
 use crate::{
     Component, ComponentMode, DETAIL_EFFECT, GPU_PLAN_LINKS, GPU_WARM_LINKS,
-    MAX_MASKED_SPATIAL_LAYERS, Mask, PRESENCE_EFFECT,
-    mask::Stroke,
-    path::StrokeTable,
-    render::gpu::{plan_warm, warm_links},
+    MAX_MASKED_SPATIAL_LAYERS, Mask, PRESENCE_EFFECT, mask::Stroke, path::StrokeTable,
+    render::gpu::warm_links,
 };
 
 /// The mask kinds the recipe's masks take in turn.
@@ -118,16 +116,30 @@ fn warmed(stack: &Recipe, context: &RenderContext) -> (Vec<GpuPlan>, Vec<Vec<Str
         stack.clone(),
         0,
     );
-    let plans = plan_warm(&job.evaluation, crate::GpuView::Fit(bounds())).unwrap();
+    let warm =
+        crate::render::gpu::plan_warm_list(&job.evaluation, crate::GpuView::Fit(bounds())).unwrap();
+    // Every link of each plan's chain, then the light links the list warms.
     let mut links: Vec<Vec<String>> = Vec::new();
-    for plan in &plans {
+    for plan in &warm.plans {
         for link in warm_links(plan) {
-            if !links.contains(&link) {
+            if !is_light(&link) && !links.contains(&link) {
                 links.push(link);
             }
         }
     }
-    (plans, links)
+    for (_, light) in &warm.lights {
+        let link = crate::render::gpu::light_link(light);
+        if !links.contains(&link) {
+            links.push(link);
+        }
+    }
+    (warm.plans, links)
+}
+
+/// Whether `link` is a light link's, which [`warmed`] counts by the list's own lights.
+fn is_light(link: &[String]) -> bool {
+    link.first()
+        .is_some_and(|first| first.starts_with("light link"))
 }
 
 /// The links a drag of `stack`'s layer `index` through `action` draws, `fields` moved; or, with no
@@ -163,17 +175,24 @@ fn unwarmed(links: &[Vec<String>], warmed: &[Vec<String>]) -> usize {
 /// the stack's own plan and one drag for each distinct drafted shape, so the drag of every masked
 /// spatial layer, Detail's and Presence's, draws only links the list warms and begins on the GPU
 /// over a warm cache. Each such drag draws a link a layer, its own drafted and the stack's own
-/// others. The list stays within its link bound, and here it warms the drag of every Basic layer
-/// too.
+/// others, and the one light link the stand-ins of its Dehaze layers' lights share, Detail before
+/// them left out. The list stays within its link bound. A Basic drag computes the light every tick
+/// through its drafted layer, a light link of its own, so each Basic candidate takes two links: here
+/// the drags of the first nine Basic layers are warmed and the last eight left out.
 #[test]
 fn the_warm_list_holds_a_drag_of_each_of_sixteen_masked_spatial_layers() {
     let stack = sixteen(false);
     let context = RenderContext::new();
     let (plans, links) = warmed(&stack, &context);
     let own = warm_links(&plans[0]);
-    assert_eq!(own.len(), MAX_MASKED_SPATIAL_LAYERS, "the stack's own plan");
+    assert_eq!(
+        own.len(),
+        MAX_MASKED_SPATIAL_LAYERS + 1,
+        "the stack's own plan and its light link"
+    );
     assert!(links.len() <= GPU_WARM_LINKS, "{} links", links.len());
     let mut shapes: Vec<Vec<String>> = Vec::new();
+    let mut colours = Vec::new();
     for (index, layer) in stack.layers.iter().enumerate() {
         let (action, fields) = match layer.effect_id.as_str() {
             DETAIL_EFFECT => ("set-detail", json!({"sharpening": 55})),
@@ -182,13 +201,17 @@ fn the_warm_list_holds_a_drag_of_each_of_sixteen_masked_spatial_layers() {
             _ => continue,
         };
         let drag = drag_links(&stack, &context, action, Some(index), fields);
+        if action == "set-basic" {
+            colours.push(unwarmed(&drag, &links));
+            continue;
+        }
         assert_eq!(
             unwarmed(&drag, &links),
             0,
             "layer {index} ({action}): every link it draws is warmed"
         );
-        if action != "set-basic" {
-            assert_eq!(drag.len(), MAX_MASKED_SPATIAL_LAYERS, "layer {index}");
+        {
+            assert_eq!(drag.len(), MAX_MASKED_SPATIAL_LAYERS + 1, "layer {index}");
             assert!(
                 unwarmed(&drag, &own) <= 1,
                 "layer {index}: the stack's own links but its drafted one"
@@ -202,11 +225,17 @@ fn the_warm_list_holds_a_drag_of_each_of_sixteen_masked_spatial_layers() {
     }
     eprintln!(
         "the warm list of sixteen masked spatial layers: {} plans, {} links of {GPU_WARM_LINKS}; \
-         the stack's own plan {} links, {} drafted shapes it does not hold",
+         the stack's own plan {} links, {} drafted shapes it does not hold; the Basic drags' \
+         unwarmed links {colours:?}",
         plans.len(),
         links.len(),
         own.len(),
         shapes.len()
+    );
+    let warm = colours.iter().take_while(|missing| **missing == 0).count();
+    assert!(
+        warm == 9 && colours[warm..].iter().all(|missing| *missing == 2),
+        "the first colour drags warmed, the last left out: {colours:?}"
     );
     // The stack's own links and each drafted shape it does not hold stay within twice the largest
     // plan, which leaves the colour candidates room under the bound.
@@ -217,9 +246,12 @@ fn the_warm_list_holds_a_drag_of_each_of_sixteen_masked_spatial_layers() {
 /// its own, and with them the colour candidates would add more links than the list's bound leaves:
 /// the list fills to its bound, and the drag of every masked spatial layer still finds each link it
 /// draws warmed, because those drags are chosen first. The colour candidates past the bound, the
-/// last of them in stack order, are left out and begin compiling: here the last masked Basic
-/// layer's drag and the first drags of the Tone curve, the colour mixer and the vignette, which
-/// the stack does not hold.
+/// last of them in stack order, are left out and begin compiling. A drag of a colour layer before
+/// the Dehaze layers computes their light every tick through its drafted layer, a light link of its
+/// own, so each such candidate takes two links: here the drags of the last ten masked Basic layers
+/// are left out, each missing its drafted link and its light link, and the first drags of the Tone
+/// curve and the colour mixer likewise, and the vignette's, after every Dehaze layer, its drafted
+/// link alone.
 #[test]
 fn past_its_bound_the_warm_list_keeps_every_spatial_drag_and_leaves_out_colour_ones() {
     let stack = sixteen(true);
@@ -257,11 +289,87 @@ fn past_its_bound_the_warm_list_keeps_every_spatial_drag_and_leaves_out_colour_o
         plans.len(),
         links.len()
     );
-    let (last, before) = colours.split_last().expect("Basic layers");
-    assert!(before.iter().all(|missing| *missing == 0), "{colours:?}");
-    assert_eq!(*last, 1, "the last masked Basic layer's drag is left out");
+    let warm = colours.iter().take_while(|missing| **missing == 0).count();
     assert!(
-        firsts.iter().all(|(_, missing)| *missing == 1),
-        "the first drags are left out: {firsts:?}"
+        warm > 0 && colours[warm..].iter().all(|missing| *missing == 2),
+        "the first colour drags warmed, the last left out: {colours:?}"
+    );
+    assert_eq!(colours.len() - warm, 10, "{colours:?}");
+    assert_eq!(
+        firsts,
+        [("set-curve", 2), ("set-mixer", 2), ("set-vignette", 1)],
+        "the first drags are left out"
+    );
+}
+
+/// The warm list's own order: the open stack's plans first — a drag of each layer it holds — then
+/// the rest of the program set, the first drag of each module it does not hold, Detail's and
+/// Presence's among them, so the surface compiles what a gesture over the photograph on screen
+/// draws before anything else. Every drag of a layer the stack holds draws only links the open
+/// part warms, and the first drag of a module it does not hold, a spatial one included, draws a
+/// link only the rest warms.
+#[test]
+fn the_open_stacks_drags_warm_before_the_first_drags_of_the_rest() {
+    let stack = recipe(vec![basic(json!({"exposure": 0.3}))]);
+    let context = RenderContext::new();
+    let (job, _) = draft_job_of(
+        context.clone(),
+        source(),
+        "set-basic",
+        stack.clone(),
+        stack.clone(),
+        0,
+    );
+    let warm =
+        crate::render::gpu::plan_warm_list(&job.evaluation, crate::GpuView::Fit(bounds())).unwrap();
+    assert!(
+        warm.open > 0 && warm.open < warm.plans.len(),
+        "{}",
+        warm.open
+    );
+    let links_of = |plans: &[GpuPlan]| {
+        let mut links: Vec<Vec<String>> = Vec::new();
+        for link in plans.iter().flat_map(warm_links) {
+            if !links.contains(&link) {
+                links.push(link);
+            }
+        }
+        links
+    };
+    let (open, all) = (links_of(&warm.plans[..warm.open]), links_of(&warm.plans));
+    assert!(all.len() <= GPU_WARM_LINKS);
+    let held = drag_links(
+        &stack,
+        &context,
+        "set-basic",
+        Some(0),
+        json!({"exposure": 0.6}),
+    );
+    assert_eq!(
+        unwarmed(&held, &open),
+        0,
+        "the Basic layer's drag is the open stack's"
+    );
+    let firsts = [
+        "set-curve",
+        "set-mixer",
+        "set-vignette",
+        "set-detail",
+        "set-presence",
+    ];
+    for action in firsts {
+        let first = drag_links(&stack, &context, action, None, json!({}));
+        assert_eq!(unwarmed(&first, &all), 0, "{action}'s first drag is warmed");
+        assert!(
+            unwarmed(&first, &open) > 0,
+            "{action}'s first drag is the rest's, after the open stack's"
+        );
+    }
+    eprintln!(
+        "a Basic stack's warm list: {} plans, the first {} the open stack's, {} links; the rest \
+         warms the first drags of {firsts:?}",
+        warm.plans.len(),
+        warm.open,
+        all.len()
     );
 }

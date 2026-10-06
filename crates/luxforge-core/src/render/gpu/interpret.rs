@@ -38,6 +38,12 @@ fn colour(
     match unit.program.entry {
         "lf_test_exposure" | "lf_test_disabled" => rgb.map(|channel| channel * word(0)),
         "lf_test_positional" => [rgb[0] + pos[0] / word(0), rgb[1] + pos[1] / word(1), rgb[2]],
+        // A RAW white-balance draft's leading step, which no layer's CPU unit describes: the one
+        // 3 x 3 multiply its program runs, each row summed left to right.
+        "lf_basic_white_balance" if !units.contains_key(&layer) => {
+            let row = |at: usize| [word(at), word(at + 1), word(at + 2)];
+            [row(0), row(3), row(6)].map(|row| row[0] * rgb[0] + row[1] * rgb[1] + row[2] * rgb[2])
+        }
         other if other.starts_with("lf_test_") => {
             panic!("the reference executor has no twin of {other}")
         }
@@ -299,7 +305,18 @@ pub(super) fn execute_with(
         "the boundary is its stage's texels"
     );
     let mut texels = boundary.to_vec();
+    // A texel the tail never reads, outside a straight crop, is left as it is once no spatial step
+    // reads it either: a positional unit addresses the frame the crop keeps, which its CPU unit
+    // refuses a coordinate outside of, and the frame does not depend on it.
+    let reads = plan.geometry.reads;
+    let read = |index: usize, last: bool| {
+        let (x, y) = (index as u32 % stage.width, index as u32 / stage.width);
+        !last || (x >= reads.x0 && y >= reads.y0 && x < reads.x1() && y < reads.y1())
+    };
     for (index, texel) in texels.iter_mut().enumerate() {
+        if !read(index, plan.spatial.is_empty()) {
+            continue;
+        }
         let (x, y) = (
             (index as u32 % stage.width) as i64,
             (index as u32 / stage.width) as i64,
@@ -309,10 +326,14 @@ pub(super) fn execute_with(
             .iter()
             .fold(*texel, |value, step| operation(units, step, value, x, y));
     }
-    for step in &plan.spatial {
+    for (at, step) in plan.spatial.iter().enumerate() {
         spatial(spatials, step, stage, &mut texels)?;
         // The colour operations its segment holds run on its output before the next one.
+        let last = at + 1 == plan.spatial.len();
         for (index, texel) in texels.iter_mut().enumerate() {
+            if !read(index, last) {
+                continue;
+            }
             let (x, y) = (
                 (index as u32 % stage.width) as i64,
                 (index as u32 / stage.width) as i64,

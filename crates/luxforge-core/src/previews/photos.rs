@@ -62,9 +62,8 @@ pub(crate) struct PhotoRow {
     pub width: u32,
     pub height: u32,
     pub bytes: u64,
-    /// A rendered tier made through an approximate proxy
-    /// ([`RenderedTier::approximate`](super::rendered::RenderedTier::approximate)); never a camera
-    /// preview.
+    /// Whether the tier approximates its entry: never, since a rendered tier is the reference's
+    /// exact frame area-averaged, and never a camera preview; the index keeps the column.
     pub approximate: bool,
 }
 
@@ -235,7 +234,8 @@ pub(crate) struct NewTier<'a> {
     /// [`RENDERER_GENERATION`] for a render, [`CAMERA_RENDERER`] for a camera preview.
     pub renderer: i64,
     pub origin: PreviewOrigin,
-    /// A rendered tier made through an approximate proxy; `false` for a camera preview.
+    /// Whether the tier approximates its entry: `false` for a rendered tier, the reference's exact
+    /// frame area-averaged, and for a camera preview.
     pub approximate: bool,
     /// Relative to `<catalog>.index/previews/`.
     pub name: &'a Path,

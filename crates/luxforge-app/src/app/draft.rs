@@ -7,9 +7,10 @@
 //! driver must take next. The driver in [`crate::app::gesture`] runs the step against the owner and
 //! feeds the answer back, so every rule of the lifecycle lives here once:
 //!
-//! - `draft.begin`, `draft.set`, `draft.reapply` and `draft.cancel` are answered in the update that
-//!   sends them, so `draft.commit` is the one round trip that outlives an update, and nothing else is
-//!   sent while it is in flight;
+//! - `draft.begin` and `draft.cancel` are answered in the update that sends them, and so are
+//!   `draft.set` and `draft.reapply` unless their plan reads a pixel — a colour-limited stroke's
+//!   seed — which the interface thread never waits for; those and `draft.commit` outlive an update,
+//!   and nothing else is sent while one is in flight;
 //! - the newest offered fields win, and fields equal to the ones already accepted are not re-sent;
 //! - a gesture whose fields are costly to build — a brush stroke's decimated path — only says it
 //!   changed ([`Event::Changed`]), and its fields are built when they can be sent, once per send;
@@ -26,12 +27,14 @@ use serde_json::{Value, json};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) struct GestureId(pub(crate) u64);
 
-/// The owner round trip a draft is waiting on. `draft.set` is answered in the update that sends it,
-/// so it is in flight only between [`Step::Set`] and the [`Event::Set`] that follows it; the commit
-/// is the one owner task, in flight until its answer arrives as a message.
+/// The owner round trip a draft is waiting on. `draft.set` and `draft.reapply` are in flight from
+/// [`Step::Set`] or [`Step::Reapply`] to the [`Event::Set`] or [`Event::Reapplied`] that answers
+/// it: in the same update, unless the call reads a pixel and answers as a message. The commit is
+/// always an owner task, in flight until its answer arrives as a message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Round {
     Set,
+    Reapply,
     Commit,
 }
 
@@ -52,7 +55,7 @@ pub(crate) enum Event {
     /// otherwise once the round trip in flight has answered. A brush stroke's path is decimated and
     /// serialized once per `draft.set`, however many moves changed it meanwhile.
     Changed,
-    /// The synchronous `draft.set` answered: the draft it accepted, or why no frame follows.
+    /// The `draft.set` answered: the draft it accepted, or why no frame follows.
     Set(Result<Draft, String>),
     /// The pointer was released, a key came up or Apply was pressed: commit once.
     Release,
@@ -60,7 +63,7 @@ pub(crate) enum Event {
     Cancel,
     /// The Changed elsewhere notice's Reapply.
     Reapply,
-    /// The synchronous `draft.reapply` that [`Step::Reapply`] asked for answered.
+    /// The `draft.reapply` that [`Step::Reapply`] asked for answered.
     Reapplied(Result<Draft, String>),
     /// `draft.commit` answered: `Ok` for an entry or a no-op, which ends the gesture, the refusal
     /// otherwise.
@@ -74,7 +77,8 @@ pub(crate) enum Event {
 pub(crate) enum Step {
     /// Nothing to send.
     None,
-    /// Send these fields with `draft.set`, synchronously, and feed the answer back.
+    /// Send these fields with `draft.set`, and feed the answer back: at once, or as a message when
+    /// the set reads a pixel.
     Set { draft_id: DraftId, fields: Value },
     /// Commit the core draft once, expecting the revision it is based on.
     Commit {
@@ -83,8 +87,8 @@ pub(crate) enum Step {
     },
     /// End the core draft with `draft.cancel`, synchronously: the gesture is over.
     Cancel(DraftId),
-    /// Rebase the core draft on the current revision with `draft.reapply`, synchronously, and feed
-    /// the answer back.
+    /// Rebase the core draft on the current revision with `draft.reapply`, and feed the answer
+    /// back: at once, or as a message when the rebased draft reads a pixel.
     Reapply(DraftId),
     /// The draft has just become conflicted: say so, keep it.
     Conflicted,
@@ -105,8 +109,8 @@ pub(crate) struct CoreDraft {
     /// The newest fields the gesture offered that no `draft.set` has carried yet.
     pending: Option<Value>,
     /// The gesture changed while a round trip was in flight, and its fields are still to be built
-    /// ([`Event::Changed`]). Never set between updates, since `draft.set` answers in the update
-    /// that sends it.
+    /// ([`Event::Changed`]): within an update, or across updates while a set or reapply that reads
+    /// a pixel or the commit is out.
     changed: bool,
     /// The fields the last accepted `draft.set` carried.
     sent: Option<Value>,
@@ -258,9 +262,14 @@ impl CoreDraft {
                 if self.in_flight.is_some() || self.finish.is_some() {
                     return Step::None;
                 }
+                self.in_flight = Some(Round::Reapply);
                 Step::Reapply(self.draft_id.clone())
             }
             Event::Reapplied(answer) => {
+                if self.in_flight != Some(Round::Reapply) {
+                    return Step::None;
+                }
+                self.in_flight = None;
                 if let Ok(rebased) = answer {
                     self.base_revision = rebased.base_revision;
                     self.draft_revision = rebased.draft_revision;
@@ -548,6 +557,28 @@ mod tests {
         );
         assert!(draft.conflicted && draft.base_revision == 4);
         assert_eq!(draft.handle(Event::Release), Step::Refused);
+    }
+
+    /// A reapply that reads a pixel answers in a later update. Meanwhile it is in flight: a second
+    /// Reapply sends nothing, a move is held, and a Discard waits for the answer, which then ends
+    /// the gesture rather than re-sending its fields.
+    #[test]
+    fn a_reapply_answered_later_is_in_flight_until_it_answers() {
+        let (mut draft, id) = begun();
+        set(&mut draft, 0.5, 1);
+        draft.handle(Event::Revision(5));
+        assert_eq!(draft.handle(Event::Reapply), Step::Reapply(id.clone()));
+        assert_eq!(draft.in_flight(), Some(Round::Reapply));
+        assert!(draft.frame_pending());
+        assert_eq!(draft.handle(Event::Reapply), Step::None);
+        assert_eq!(draft.handle(Event::Offer(fields(0.7))), Step::None);
+        assert_eq!(draft.handle(Event::Cancel), Step::None);
+        let mut rebased = answer(5);
+        rebased.draft_id = id.clone();
+        assert_eq!(
+            draft.handle(Event::Reapplied(Ok(rebased))),
+            Step::Cancel(id)
+        );
     }
 
     #[test]

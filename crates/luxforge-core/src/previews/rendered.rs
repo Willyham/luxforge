@@ -1,7 +1,8 @@
 //! Rendered previews of developed photographs (`docs/design/catalog.md`, "The index and previews
 //! cache"): a photograph's **grid** (512 px) and **large** (2048 px) tiers, rendered from one of its
-//! entries — the current one unless another is named — through the Fit preview's proxy path, so each
-//! tier is the entry approximated at that size and labelled as the Fit preview labels it.
+//! entries — the current one unless another is named — by the reference renderer and area-averaged
+//! to each tier, as a session without a GPU draws its picture at rest at Fit, so a tier is never
+//! an approximation of its entry.
 //!
 //! These are the domain functions the preview lane runs `preview.read {item: photo}` and its
 //! render worker with (`renders.rs`, `photos.rs`, and the owner's `api/owner/previews/renders.rs`),
@@ -27,22 +28,16 @@
 //! not keep ready are read and verified the same way. Nothing prepared is handed back to the
 //! service: the render owns its source, and it is gone when the render returns.
 //!
-//! # The proxy path
+//! # The exact path
 //!
-//! Each tier is the entry rendered against a proxy source fitted to the tier's square bounds
-//! (`PHOTO_GRID_SIDE`, `PHOTO_LARGE_SIDE`) by the steps the preview worker's Fit proxy phase takes:
-//! the stack compiled at the exact stage, the proxy plan read from its output stage, the proxy stage
-//! compiled once with the window its stack reads, the source area-averaged to that plan, and the
-//! proxy stage rendered with the exact stage's spatial estimates. A tier is therefore byte for byte
-//! the Fit preview's proxy frame at the same bounds, and it carries the same
-//! [`ProxyApproximation`]: a spatial layer's neighbourhoods scale with the stage, and a mask thinner
-//! than two proxy pixels is supersampled. A stage that already fits the tier is rendered exactly, as
-//! the Fit preview presents its exact phase. A stack that is not proxy-eligible (a pixel-stage
-//! layer), or whose proxy fails, takes the exact path and says why ([`TierPath::Exact`]): the entry
-//! is rendered exactly once and area-averaged to each tier. Both tiers come from one preparation;
-//! the exact frame, when one is needed, is rendered once for both. A tier is labelled
-//! `approximate` exactly when its proxy render is ([`RenderedTier::approximate`]); the lane stores
-//! the label in its row, so a tier read from the cache says the same.
+//! The entry is rendered once, exactly, at its output stage by the reference renderer, and each
+//! tier is that frame area-averaged to the tier's square bounds (`PHOTO_GRID_SIDE`,
+//! `PHOTO_LARGE_SIDE`) by the view's area average (`crate::proxy::reduce_raster`), or the frame
+//! itself when it already fits. Both tiers come from one preparation and one exact frame. The CPU
+//! proxy, a session without a GPU's drag path (`crate::cpu_proxy`), is not used: a tier is the
+//! reference's picture at rest reduced, never labelled `approximate`. The GPU, the renderer of
+//! record for the editor's picture (`docs/design/gpu-first.md`), does not render tiers: the
+//! preview lane runs in the core, which names no GPU crate, off the owner's tile service.
 //!
 //! A tier is upright sRGB display bytes, encoded as a baseline JPEG at [`RENDERED_JPEG_QUALITY`]
 //! with 4:2:0 chroma and no metadata or profile.
@@ -61,7 +56,7 @@
 //! # Never delaying Develop
 //!
 //! Nothing here uses or waits on the editor's source worker, its one-slot source cache, the
-//! desktop's preview worker (`preview/queue.rs`), its proxy cache or the point worker: a render
+//! desktop's preview worker (`preview/queue.rs`), its proxy cache or the tile service: a render
 //! reads the file itself on the lane's thread and renders with a [`RenderContext`] of its own
 //! ([`rendered_context`]), so a backlog of rendered previews never holds a budget, a queue slot or a
 //! lock an open Develop preview needs. It competes with Develop only for CPU on the shared Rayon
@@ -74,24 +69,24 @@
 //! One render holds one preparation. At its peak, by the sizes of its buffers (not measured), a
 //! JPEG holds its file's bytes (within `MAX_JPEG_BYTES`, 128 MiB) while they decode into the RGBA8
 //! frame (within the 512 MiB evaluated-frame limit, `luxforge_raw::MAX_FRAME_BYTES`): about 230 MiB
-//! of frame for a 60 MP JPEG, plus one proxy of at most 16 MiB at 2048 px and its rendered frame. A
+//! of frame for a 60 MP JPEG, plus its exact frame and one tier of at most 16 MiB at 2048 px. A
 //! RAW holds its file's bytes (within `luxforge_raw::MAX_SOURCE_BYTES`) and the mosaic while it
 //! decodes, then the mosaic and the float planes (within `luxforge_raw::MAX_RGB_BYTES`) while it
 //! develops, then the planes alone — the mosaic is dropped before rendering — about 110 MiB of
-//! bytes and mosaic and 460 MiB of planes for a 40 MP RAW, plus a proxy of at most 48 MiB of planes
-//! at 2048 px and its frame. The exact path adds one exact frame (within the evaluated-frame limit)
-//! while both tiers are made from it. The render is synchronous, so a lane worker holds at most one
+//! bytes and mosaic and 460 MiB of planes for a 40 MP RAW, then one exact frame (within the
+//! evaluated-frame limit) while both tiers are made from it, the planes released once it is
+//! rendered. The render is synchronous, so a lane worker holds at most one
 //! preparation at a time; the lane keeps the design's one RAW at a time off the editor's cache by
 //! running every render on its one render worker (`renders.rs`).
 //!
 //! Every pass checks the caller's [`Cancel`]: the reads and the RAW decode and development through
-//! its flag, the proxy downscale per row, every rendering pass per row or chunk, and the JPEG
+//! its flag, every rendering pass per row or chunk, the area average per row, and the JPEG
 //! encode per strip. A cancelled render returns `cancelled` and nothing else.
 
 use crate::{
     AssetId, Cancel, EditorService, EntryId, Error, ErrorKind, HistoryEntry, LinearSettings,
-    ModuleRegistry, PreparedArtifact, PreviewSource, ProxyApproximation, ProxyBounds, ProxyPlan,
-    Raster, Recipe, Render, RenderContext, RenderOptions, SourceImage,
+    ModuleRegistry, PreparedArtifact, PreviewSource, ProxyBounds, ProxyPlan, Raster, Recipe,
+    RenderContext, RenderOptions,
     artifacts::{ArtifactId, ArtifactRead},
     catalog_types::{
         PHOTO_GRID_SIDE, PHOTO_LARGE_SIDE, PreviewInfo, PreviewItem, PreviewOrigin, PreviewTier,
@@ -109,10 +104,11 @@ use std::{
 
 /// The renderer generation every rendered tier is made and keyed under, recorded in the index's
 /// `photo_previews.renderer` column. **Bump it whenever a change makes a rendered tier's bytes
-/// differ** — a module's or the renderer's arithmetic, the proxy downscale, the tier sides, the JPEG
+/// differ** — a module's or the renderer's arithmetic, the area average, the tier sides, the JPEG
 /// settings — so every tier of the old generation is discarded and rendered again rather than shown
-/// for the new one.
-pub(crate) const RENDERER_GENERATION: u32 = 1;
+/// for the new one. Generation 2: tiers are the reference's exact frame area-averaged, never a CPU
+/// proxy's render.
+pub(crate) const RENDERER_GENERATION: u32 = 2;
 
 /// The quality a rendered tier's JPEG is written at, with 4:2:0 chroma: an edited Nikon Z 6
 /// photograph's grid tier takes 33 KB and its large tier 272 KB.
@@ -215,20 +211,7 @@ pub(crate) fn is_current(
     RenderedKey::new(asset_id, entry_id, tier).is_ok_and(|key| key.preview_key() == preview_key)
 }
 
-/// How one tier was rendered, which its `approximate` label is read from
-/// ([`RenderedTier::approximate`]) and the lane stores with its row.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum TierPath {
-    /// Against a proxy source fitted to the tier: the Fit preview's proxy frame at the tier's
-    /// bounds, approximate for the reasons it names when [`ProxyApproximation::is_approximate`].
-    Proxy { approximation: ProxyApproximation },
-    /// The exact render, area-averaged to the tier when it is larger. `declined` says why there is
-    /// no proxy: the stage already fits the tier, the stack is not proxy-eligible, or its proxy
-    /// failed.
-    Exact { declined: String },
-}
-
-/// One rendered tier: its key, its size and its JPEG, and how it was rendered.
+/// One rendered tier: its key, its size and its JPEG.
 #[derive(Clone, Debug)]
 pub(crate) struct RenderedTier {
     pub key: RenderedKey,
@@ -236,17 +219,9 @@ pub(crate) struct RenderedTier {
     pub height: u32,
     /// Baseline JPEG, upright sRGB, [`RENDERED_JPEG_QUALITY`], 4:2:0, no metadata.
     pub jpeg: Vec<u8>,
-    pub path: TierPath,
 }
 
 impl RenderedTier {
-    /// Whether the tier approximates its entry: rendered through a proxy whose render is
-    /// approximate ([`ProxyApproximation::is_approximate`]: a spatial layer, a thin mask), as the
-    /// Fit preview labels the same frame. An exact render, area-averaged to the tier, is not.
-    pub(crate) fn approximate(&self) -> bool {
-        matches!(self.path, TierPath::Proxy { approximation } if approximation.is_approximate())
-    }
-
     /// The preview this tier is once the lane has written it at `path`, under
     /// `<catalog>.index/previews/`.
     pub(crate) fn info(&self, path: PathBuf) -> PreviewInfo {
@@ -257,7 +232,8 @@ impl RenderedTier {
             width: self.width,
             height: self.height,
             origin: PreviewOrigin::Rendered,
-            approximate: self.approximate(),
+            // The exact frame area-averaged: never an approximation of its entry.
+            approximate: false,
             bytes: self.jpeg.len() as u64,
             key: self.key.preview_key(),
         }
@@ -374,16 +350,15 @@ pub(crate) fn plan_render(
 }
 
 /// Render `request` on the calling thread, a preview-lane worker's: prepare its original off the
-/// editor's cache, then each tier through the proxy path and encode it. See the module
+/// editor's cache, render its entry exactly once, then area-average and encode each tier. See the module
 /// documentation for what it reads, holds and refuses.
 pub(crate) fn render(request: &RenderRequest, cancel: &Cancel) -> Result<Vec<RenderedTier>, Error> {
-    render_with(request, cancel, prepare, |key, raster, path| {
+    render_with(request, cancel, prepare, |key, raster| {
         Ok(RenderedTier {
             width: raster.width,
             height: raster.height,
             jpeg: encode(&raster, cancel)?,
             key,
-            path,
         })
     })
 }
@@ -489,25 +464,24 @@ fn render_with<T>(
     request: &RenderRequest,
     cancel: &Cancel,
     prepare: impl FnOnce(&RenderRequest, &Cancel) -> Result<PreparedRender, Error>,
-    mut finish: impl FnMut(RenderedKey, Raster, TierPath) -> Result<T, Error>,
+    mut finish: impl FnMut(RenderedKey, Raster) -> Result<T, Error>,
 ) -> Result<Vec<T>, Error> {
     cancel.check()?;
     let PreparedRender { source, verified } = prepare(request, cancel)?;
     cancel.check()?;
     let recipe = bound(&request.entry.snapshot.recipe, &request.ready, verified);
-    let snapshot = &request.entry.snapshot.id;
-    // The stack's one compilation at the exact stage, as the preview worker makes it: every tier's
-    // proxy plan reads its output stage, and the exact frame, when one is needed, renders it. A
-    // layer this build cannot evaluate is refused here, naming its layers.
-    let exact = crate::render(
+    // The entry's one exact frame, rendered by the reference renderer at the output stage: a layer
+    // this build cannot evaluate is refused here, naming its layers. The source goes once it is
+    // rendered; both tiers are area-averaged from the frame.
+    let frame = crate::render(
         &request.registry,
         source.input(),
         &recipe,
         RenderOptions::exact(cancel),
         &request.context,
-    )?;
-    let eligible = request.registry.proxy_eligible(&recipe);
-    let mut exact_frame: Option<Raster> = None;
+    )?
+    .frame(request.entry.snapshot.id.clone())?;
+    drop(source);
     let mut rendered = Vec::with_capacity(request.tiers.len());
     for key in request.keys() {
         cancel.check()?;
@@ -516,76 +490,19 @@ fn render_with<T>(
             width: side,
             height: side,
         };
-        // In the Fit preview's order: eligibility, then whether the stage already fits.
-        let declined = match (&eligible, exact.proxy_plan(bounds)) {
-            (Err(ineligible), _) => ineligible.detail.clone(),
-            (Ok(()), None) => "the stage already fits the tier".to_owned(),
-            (Ok(()), Some(plan)) => {
-                match proxy_tier(&exact, &recipe, &source, plan, request, cancel) {
-                    Ok((raster, approximation)) => {
-                        rendered.push(finish(key, raster, TierPath::Proxy { approximation })?);
-                        continue;
-                    }
-                    Err(error) if error.kind == ErrorKind::Cancelled => return Err(error),
-                    Err(error) => error.detail,
-                }
-            }
-        };
-        let frame = match &exact_frame {
-            Some(frame) => frame,
-            None => exact_frame.insert(exact.frame(snapshot.clone())?),
-        };
-        let raster = fitted(frame, bounds, cancel)?;
-        rendered.push(finish(key, raster, TierPath::Exact { declined })?);
+        rendered.push(finish(key, fitted(&frame, bounds, cancel)?)?);
     }
     Ok(rendered)
 }
 
-/// The Fit preview's proxy phase at `plan`, as the preview worker renders it: the proxy stage
-/// compiled with the window its stack reads, the source downscaled to it and that compilation
-/// rendered, with the frame's approximation read from it.
-fn proxy_tier(
-    exact: &Render<'_>,
-    recipe: &Recipe,
-    source: &PreviewSource,
-    plan: ProxyPlan,
-    request: &RenderRequest,
-    cancel: &Cancel,
-) -> Result<(Raster, ProxyApproximation), Error> {
-    let stage = exact.proxy_window(&request.registry, recipe, plan);
-    let proxy = source.proxy_cancellable(stage.plan(), cancel)?;
-    let render = exact.render_proxy(proxy.input(), stage, cancel, &request.context)?;
-    Ok((
-        render.frame(request.entry.snapshot.id.clone())?,
-        render.approximation(),
-    ))
-}
-
-/// An exact frame fitted to `bounds` by the proxy's area-average downscale of display bytes, or
-/// the frame itself, shared, when it already fits.
+/// An exact frame fitted to `bounds` by the view's area average of display bytes
+/// ([`crate::proxy::reduce_raster`]), or the frame itself, shared, when it already fits.
 fn fitted(frame: &Raster, bounds: ProxyBounds, cancel: &Cancel) -> Result<Raster, Error> {
     let size = (frame.width, frame.height);
-    let Some(plan) = ProxyPlan::fit(size, size, bounds) else {
-        return Ok(frame.clone());
-    };
-    let upright = PreviewSource::Jpeg(SourceImage {
-        width: frame.width,
-        height: frame.height,
-        rgba: Arc::clone(&frame.rgba),
-        fingerprint: frame.source_fingerprint.clone(),
-        orientation: 1,
-        capture: Arc::default(),
-    });
-    let PreviewSource::Jpeg(scaled) = upright.proxy_cancellable(plan, cancel)? else {
-        return Err(Error::internal("a byte proxy came back as planes"));
-    };
-    Ok(Raster {
-        width: scaled.width,
-        height: scaled.height,
-        rgba: scaled.rgba,
-        source_fingerprint: frame.source_fingerprint.clone(),
-        snapshot_id: frame.snapshot_id.clone(),
-    })
+    match ProxyPlan::fit(size, size, bounds) {
+        Some(plan) => crate::proxy::reduce_raster(frame, plan, cancel),
+        None => Ok(frame.clone()),
+    }
 }
 
 /// `recipe` bound with every artifact it references: as it is when its own table already holds

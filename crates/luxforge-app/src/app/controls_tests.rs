@@ -1580,7 +1580,6 @@ fn a_curve_in_a_hidden_tab_queries_no_samples() {
 fn a_curve_module_that_does_not_apply_to_the_photo_queries_no_samples() {
     let mut raw_only = controls_descriptor();
     raw_only.effects = vec![luxforge_core::EffectDescriptor {
-        fit_settle: Default::default(),
         id: "fixture.raw-only".into(),
         format: 1,
         stage: luxforge_core::EffectStage::Color,

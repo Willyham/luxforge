@@ -12,59 +12,12 @@ use crate::{
     },
     render::{
         Compiled, Entry, Segment,
-        spatial::{SpatialPlan, Tiling, prefix_hash},
+        spatial::{SpatialPlan, Tiling},
     },
 };
 use std::collections::HashSet;
 
 impl ModuleRegistry {
-    /// Whether this stack may be rendered against a downscaled proxy source.
-    ///
-    /// A source-stage, colour-stage, geometry-stage or finish-stage effect is resolution
-    /// independent: the source development is pointwise, a colour unit is pointwise, the geometry
-    /// payloads are normalized to their own input stage and a finish unit's mask is normalized to
-    /// the output stage, so the same recipe compiles unchanged against a smaller content stage and
-    /// produces the same picture at display size. A spatial-stage effect is eligible too, but its
-    /// neighbourhoods scale with the stage, so its proxy frame is an approximation of the exact
-    /// render at display size rather than the same picture; [`crate::Render::approximation`] says
-    /// when a stack renders that way, and the exact phase still produces every number. A pixel-stage
-    /// effect is not eligible: its payload addresses content pixels, which a rescaled stage no
-    /// longer has. An effect no provider declares is ineligible too, because nothing can say what
-    /// stage it addresses.
-    ///
-    /// Cost is `O(layers)` and reads no pixels. The error names the first ineligible layer's effect
-    /// identity and its index, so the caller reports the reason rather than silently taking the
-    /// exact path.
-    pub(crate) fn proxy_eligible(&self, recipe: &Recipe) -> Result<(), Error> {
-        for (index, layer) in recipe.layers.iter().enumerate() {
-            match self.effect_stage(&layer.effect_id) {
-                Some(
-                    EffectStage::Source
-                    | EffectStage::Restoration
-                    | EffectStage::Color
-                    | EffectStage::Spatial
-                    | EffectStage::Geometry
-                    | EffectStage::Finish,
-                ) => {}
-                Some(EffectStage::Pixel) => {
-                    return Err(Error::validation(format!(
-                        "layer {index} is not proxy-eligible: effect {} is at the pixel stage, \
-                         whose coordinates are content pixels and cannot be rescaled",
-                        layer.effect_id
-                    )));
-                }
-                None => {
-                    return Err(Error::validation(format!(
-                        "layer {index} is not proxy-eligible: no provider declares effect {}, so \
-                         its stage is unknown",
-                        layer.effect_id
-                    )));
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// Structural validation stays in the model; effect availability, whether the effect may
     /// reference artifacts and payload validation are the registry's.
     pub fn validate_layer(&self, layer: &Layer) -> Result<(), Error> {
@@ -201,19 +154,6 @@ impl ModuleRegistry {
         Error::unavailable_effect(effect_id, &holding)
     }
 
-    /// The leading source/pixel/restoration run, before the first later-stage layer.
-    pub(crate) fn restoration_prefix(&self, layers: &[Layer]) -> usize {
-        layers
-            .iter()
-            .take_while(|layer| {
-                matches!(
-                    self.effect_stage(&layer.effect_id),
-                    Some(EffectStage::Source | EffectStage::Pixel | EffectStage::Restoration)
-                )
-            })
-            .count()
-    }
-
     /// Validate a recipe against the source dimensions and fold its exact geometry into one mapping
     /// per rasterizing pass. A resample is a stage boundary, so it closes the current pass and opens
     /// the next one. Cost is linear in the layer count and allocates only the operation lists.
@@ -235,11 +175,12 @@ impl ModuleRegistry {
 
     /// [`Self::compile`] with the way this render samples its masks as a parameter.
     ///
-    /// Every exact render point samples, which is the frozen field; only the proxy phase passes
-    /// [`MaskSampling::ThinFeature`], and only a mask that draws a feature narrower than two pixels
-    /// *at the stage compiled here* is affected by it. Nothing else about compiling changes, which
-    /// is what keeps a proxy frame byte for byte the exact recipe over the exact downscale wherever
-    /// the rule does not fire.
+    /// Every exact render point samples, which is the frozen field. A stage compiled smaller than
+    /// the source passes [`MaskSampling::ThinFeature`] — the no-GPU session's CPU proxy, and the
+    /// GPU's reduced stage and proxy plans (`render::gpu::fit`, `render::gpu::preview`) — and only
+    /// a mask that draws a feature narrower than two pixels *at the stage compiled here* is
+    /// affected by it. Nothing else about compiling changes, which is what keeps a reduced frame
+    /// byte for byte the exact recipe over the exact downscale wherever the rule does not fire.
     pub(crate) fn compile_sampled(
         &self,
         source_width: u32,
@@ -524,15 +465,11 @@ impl ModuleRegistry {
                     // Nothing is rewritten or reduced to fit, and what a tile costs in memory,
                     // which a mask adds two tile planes to, never refuses it.
                     SpatialPlan::new(&operation, stage, Tiling::Halo)?;
-                    let prefix_hash = prefix_hash(&layers[..index], masks, sampling)?;
                     segments.push(Segment::new(
                         Some(Entry::spatial_tagged(
                             operation,
-                            prefix_hash,
                             self.effect_stage(&layer.effect_id)
                                 .unwrap_or(EffectStage::Spatial),
-                            self.effect(&layer.effect_id)
-                                .map_or(crate::FitSettle::Proxy, |(_, effect)| effect.fit_settle),
                         )),
                         stage.width,
                         stage.height,

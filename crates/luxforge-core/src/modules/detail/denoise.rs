@@ -226,7 +226,7 @@ impl SpatialUnit for Denoise {
         }
         finish(input, output, lab, delta, geometry, parallelism, cancel)
     }
-    fn gpu(&self, _: Option<&Global>) -> Option<GpuSpatialUnit> {
+    fn gpu(&self) -> Option<GpuSpatialUnit> {
         super::gpu::denoise(
             &self.kernels,
             &self.thresholds,

@@ -38,10 +38,9 @@ use crate::{
     },
 };
 
-/// The Detail program: every kernel and apply its two units describe. Enabled: every Detail
-/// recipe of the corpus met the spatial limits at Fit against the CPU's moving proxy it stands in
-/// for, as the owner decided a stack that settles from the exact render is judged
-/// (`gpu_detail_corpus_at_fit`, `docs/specs/performance.md`, "GPU Detail program").
+/// The Detail program: every kernel and apply its two units describe. Enabled, and held by the
+/// release gate (`cargo xtask gpu-qualification`) against the reference renderer's frame on the
+/// corpus's Detail family (`docs/specs/performance.md`, "GPU Detail program").
 pub static DETAIL_PROGRAM: GpuProgram = GpuProgram {
     entry: "lf_detail",
     source: include_str!("detail.wgsl"),
@@ -170,7 +169,6 @@ pub(super) fn denoise(
             words: first,
             identity: false,
         },
-        estimated: false,
     })
 }
 
@@ -220,7 +218,6 @@ pub(super) fn sharpen(
             words: first,
             identity: false,
         },
-        estimated: false,
     })
 }
 
@@ -241,10 +238,10 @@ pub(crate) fn functions() -> (Vec<&'static str>, Vec<&'static str>) {
     let scale = crate::modules::SamplingScale { x: 1.0, y: 1.0 };
     let units = [
         super::denoise::Denoise::new(40.0, 50.0, 40.0, 50.0, scale)
-            .gpu(None)
+            .gpu()
             .expect("noise reduction's description"),
         super::sharpen::Sharpen::new(50.0, 1.0, 25.0, 30.0, scale)
-            .gpu(None)
+            .gpu()
             .expect("sharpening's description"),
     ];
     let mut kernels: Vec<&'static str> = Vec::new();
@@ -276,7 +273,7 @@ mod tests {
 
     fn denoise_unit(luminance: f64, detail: f64, colour: f64, at: SamplingScale) -> GpuSpatialUnit {
         super::super::denoise::Denoise::new(luminance, detail, colour, detail, at)
-            .gpu(None)
+            .gpu()
             .unwrap_or_else(|| panic!("noise reduction's description at {at:?}"))
     }
 
@@ -288,7 +285,7 @@ mod tests {
         at: SamplingScale,
     ) -> GpuSpatialUnit {
         super::super::sharpen::Sharpen::new(amount, radius, detail, masking, at)
-            .gpu(None)
+            .gpu()
             .unwrap_or_else(|| panic!("sharpening's description at {at:?}"))
     }
 
@@ -441,11 +438,11 @@ mod tests {
         let make = || super::super::denoise::Denoise::new(40.0, 50.0, 40.0, 50.0, at);
         let (first, second) = (make(), make());
         assert_eq!(first.describe(), second.describe());
-        assert_eq!(first.gpu(None), second.gpu(None));
+        assert_eq!(first.gpu(), second.gpu());
         let make = || super::super::sharpen::Sharpen::new(60.0, 1.4, 25.0, 30.0, at);
         let (first, second) = (make(), make());
         assert_eq!(first.describe(), second.describe());
-        assert_eq!(first.gpu(None), second.gpu(None));
+        assert_eq!(first.gpu(), second.gpu());
     }
 
     /// A Detail layer's GPU shape — what a GPU plan's drafted layer is compiled in — holds both
@@ -479,7 +476,7 @@ mod tests {
             operation
                 .units()
                 .iter()
-                .map(|unit| unit.gpu(None).expect("a description"))
+                .map(|unit| unit.gpu().expect("a description"))
                 .collect::<Vec<_>>()
         };
         let structure = |units: &[GpuSpatialUnit]| {

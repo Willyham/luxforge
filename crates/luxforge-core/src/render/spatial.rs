@@ -1,14 +1,12 @@
 //! Executing the spatial primitive: the tiling, the unit chain and the global estimates. The budget
-//! and the estimate store themselves belong to the [`RenderContext`](super::RenderContext) every
-//! evaluation is handed.
+//! itself belongs to the [`RenderContext`](super::RenderContext) every evaluation is handed.
 //!
 //! The contract a module writes against is in [`crate::modules::SpatialUnit`]. This module owns the
-//! other half: how much one tile costs, how many tiles may be in flight, where the intermediate
-//! planes come from and how a point query evaluates only the tiles it needs, each once, so that a
-//! sampled byte is the byte a render of that tile produces.
+//! other half: how much one tile costs, how many tiles may be in flight and where the intermediate
+//! planes come from. A read of a pixel through a spatial operation is the reference renderer's
+//! whole frame of it ([`super::pipeline::Evaluation::framed`]), never a tile of its own.
 
-use super::context::{EstimateKey, EstimateStore, SpatialBudget, SpatialReservation};
-use super::reduced::{ReducedEntry, ReducedStore};
+use super::context::{SpatialBudget, SpatialReservation};
 use crate::Cancel;
 #[cfg(test)]
 use crate::ErrorKind;
@@ -16,16 +14,18 @@ use crate::{
     Error,
     mask_field::{MaskField, MaskSampling},
     modules::{
-        Cells, ESTIMATE_REDUCTION, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism,
-        Planes, PlanesMut, Reduced, Reduction, Region, SpatialOperation, Stage,
+        ESTIMATE_REDUCTION, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes,
+        PlanesMut, Reduction, Region, SpatialOperation, Stage,
     },
 };
 use rayon::prelude::*;
 use sha2::{Digest, Sha256};
 #[cfg(test)]
+use std::sync::Arc;
+#[cfg(test)]
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 
 #[cfg(test)]
 const MIB: f64 = (1024 * 1024) as f64;
@@ -142,6 +142,7 @@ impl SpatialPlan {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn working_set(&self) -> u64 {
         self.working_set
     }
@@ -155,6 +156,7 @@ impl SpatialPlan {
     }
 
     /// The side of this plan's tiles.
+    #[cfg(test)]
     pub(crate) fn tile(&self) -> u32 {
         self.tile
     }
@@ -182,7 +184,8 @@ impl SpatialPlan {
         tiles
     }
 
-    /// The stage-aligned tile one pixel falls in. A point sample evaluates exactly this tile.
+    /// The stage-aligned tile one pixel falls in.
+    #[cfg(test)]
     pub(crate) fn tile_containing(&self, x: u32, y: u32) -> Region {
         let x0 = (x / self.tile) * self.tile;
         let y0 = (y / self.tile) * self.tile;
@@ -371,8 +374,7 @@ fn widest_regions(length: u32, tile: u32, halos: &[u32], summed_halo: u32) -> Ve
 }
 
 /// The buffers one tile slot reuses from tile to tile, instead of allocating and zero-filling them
-/// per tile and per unit: each worker of [`run_tiles`] keeps one for the tiles it runs, and a point
-/// query's tile and a restoration region start from an empty one.
+/// per tile and per unit: each worker of [`run_tiles`] keeps one for the tiles it runs.
 ///
 /// - **Two plane buffers**, ping-ponged along the unit chain. Buffer 0 holds the tile's input and
 ///   the outputs of the odd units (1, 3, …), buffer 1 the outputs of the even units (0, 2, …): unit
@@ -393,9 +395,9 @@ fn widest_regions(length: u32, tile: u32, halos: &[u32], summed_halo: u32) -> Ve
 /// A slot built for a plan ([`Self::for_plan`]), which every render slot is, grows each buffer once,
 /// straight to the largest request any tile of that plan makes ([`SlotValues`]), so a render
 /// allocates its planes once per slot, not once per tile or unit: the corner tile a slot often
-/// starts with asks for less than an interior tile. A default slot runs one tile and grows each
-/// buffer to exactly what that tile asks, which is what a point query or a one-pixel restoration
-/// window held before slots were reused. Either way a slot holds two of the chain's rectangles,
+/// starts with asks for less than an interior tile. A default slot, which the oracles and tests
+/// build, runs one tile and grows each buffer to exactly what that tile asks. Either way a slot
+/// holds two of the chain's rectangles,
 /// which the tile's reservation already charges to the spatial budget among all of them (see
 /// [`SlotValues`] for the one geometry the charge has always under-counted).
 #[derive(Debug, Default)]
@@ -432,30 +434,6 @@ impl TileScratch {
         match held {
             Held::Planes { buffer, len } => &self.planes[buffer][..len],
             Held::Snapshot => &self.snapshot,
-        }
-    }
-
-    /// The tile's own three planes, owned, for a point query that holds them past its slot: the
-    /// buffer that holds them taken out of the slot and cut to its length in place when their
-    /// rectangle is the tile, and otherwise the tile copied out of that rectangle ([`cut_out`]).
-    /// The slot's other buffers are released first. A point query holds exactly the tile, as it did
-    /// before slots were reused, and copies it only when the last unit's rectangle is wider.
-    fn into_tile(mut self, held: Held, region: Region, tile: Region) -> Vec<f32> {
-        let (mut values, len) = match held {
-            Held::Planes { buffer, len } => (std::mem::take(&mut self.planes[buffer]), len),
-            Held::Snapshot => {
-                let snapshot = std::mem::take(&mut self.snapshot);
-                let len = snapshot.len();
-                (snapshot, len)
-            }
-        };
-        drop(self);
-        if region == tile {
-            values.truncate(len);
-            values.shrink_to_fit();
-            values
-        } else {
-            cut_out(region, &values[..len], tile)
         }
     }
 
@@ -598,7 +576,7 @@ pub(crate) fn run_tile<'s>(
     cancel: &Cancel,
     fill: impl Fn(Region, &mut [f32]) -> Result<(), Error>,
 ) -> Result<(Region, &'s [f32]), Error> {
-    let (region, held, _) = run_tile_in(
+    let (region, held) = run_tile_in(
         plan,
         operation,
         globals,
@@ -606,66 +584,9 @@ pub(crate) fn run_tile<'s>(
         parallelism,
         scratch,
         cancel,
-        TilePlanes::None,
         fill,
     )?;
     Ok((region, scratch.held(held)))
-}
-
-/// What a tile does with the reduced planes of its operation's first unit, when that unit declares
-/// any ([`crate::modules::SpatialUnit::reduced_grid`]): never asked of a later unit, whose input is
-/// the earlier units' output over its tile's own rectangles.
-#[derive(Clone, Copy)]
-pub(crate) enum TilePlanes<'a> {
-    /// Nothing: the unit computes its planes as it always has. A windowed render, a restoration
-    /// region and a unit without a grid take this.
-    None,
-    /// Read `held` when it covers the unit's reach in the grid, and otherwise compute the planes,
-    /// handing the tile's own cells back when `hand` says so (a frame render collecting them) and
-    /// not otherwise (a point query, which never fills the store).
-    Store {
-        held: Option<&'a ReducedEntry>,
-        hand: bool,
-    },
-}
-
-/// What one tile did with its first unit's reduced planes.
-#[derive(Debug)]
-pub(crate) enum PlaneUse {
-    /// Nothing: no planes, or a masked tile copied without evaluating a unit.
-    None,
-    /// It read held planes, and its input held only the unit's output rectangle.
-    Served,
-    /// It computed them, handing back these cells when asked to.
-    Computed(Option<Cells>),
-}
-
-/// [`run_tile`] with its operation's first unit's reduced planes as `planes` says, answering what
-/// the tile did with them beside its values.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn run_tile_planned<'s>(
-    plan: &SpatialPlan,
-    operation: &SpatialOperation,
-    globals: &[Option<Global>],
-    tile: Region,
-    parallelism: Parallelism,
-    scratch: &'s mut TileScratch,
-    cancel: &Cancel,
-    planes: TilePlanes<'_>,
-    fill: impl Fn(Region, &mut [f32]) -> Result<(), Error>,
-) -> Result<(Region, &'s [f32], PlaneUse), Error> {
-    let (region, held, used) = run_tile_in(
-        plan,
-        operation,
-        globals,
-        tile,
-        parallelism,
-        scratch,
-        cancel,
-        planes,
-        fill,
-    )?;
-    Ok((region, scratch.held(held), used))
 }
 
 /// [`run_tile`], answering where in the slot the tile's values were left rather than borrowing
@@ -679,20 +600,13 @@ fn run_tile_in(
     parallelism: Parallelism,
     slot: &mut TileScratch,
     cancel: &Cancel,
-    planes: TilePlanes<'_>,
     fill: impl Fn(Region, &mut [f32]) -> Result<(), Error>,
-) -> Result<(Region, Held, PlaneUse), Error> {
+) -> Result<(Region, Held), Error> {
     cancel.check()?;
     #[cfg(test)]
     OBSERVED_TILES.with(|counter| {
         if let Some(counter) = &*counter.borrow() {
             counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        }
-    });
-    #[cfg(test)]
-    TILE_CHECKPOINT.with(|checkpoint| {
-        if let Some(checkpoint) = &*checkpoint.borrow() {
-            checkpoint(cancel);
         }
     });
     let stage = plan.stage;
@@ -724,20 +638,11 @@ fn run_tile_in(
             MASKED_TILES_COPIED.fetch_add(1, Ordering::Relaxed);
             #[cfg(test)]
             slot.check_held(plan);
-            return Ok((tile, Held::Planes { buffer: 0, len }, PlaneUse::None));
+            return Ok((tile, Held::Planes { buffer: 0, len }));
         }
     }
-    let mut regions = plan.regions(tile);
-    // Every unit's scratch is what it asks for the input rectangle it reads without held planes,
-    // which bounds what it takes with them; the slot and the charge stay what they were.
+    let regions = plan.regions(tile);
     let scratch = scratch_values(operation, &regions);
-    let mut reduced = Planned::decide(operation, stage, tile, &regions, planes);
-    if let Planned::Read(_) = reduced {
-        // The first unit reads its reduced grid from the held planes, so its input is only the
-        // rectangle it fills, as today's chain gives it; every later unit's rectangles are
-        // today's.
-        regions[0] = regions[1];
-    }
     let input = reused(&mut slot.planes[0], len_of(regions[0]), largest.planes[0]);
     fill(regions[0], input)?;
     // The snapshot of the tile's own input, taken before the chain runs because from its second
@@ -769,7 +674,7 @@ fn run_tile_in(
         MASKED_TILES_COPIED.fetch_add(1, Ordering::Relaxed);
         #[cfg(test)]
         slot.check_held(plan);
-        return Ok((tile, Held::Snapshot, PlaneUse::None));
+        return Ok((tile, Held::Snapshot));
     }
     #[cfg(test)]
     if mask.is_some() {
@@ -792,30 +697,14 @@ fn run_tile_in(
         let mut output = PlanesMut::new(stage, regions[index + 1], next)?;
         let global = globals.get(index).and_then(Option::as_ref);
         let unit_scratch = reused(&mut slot.units, scratch, largest.scratch);
-        let handed = match (index, &mut reduced) {
-            (0, Planned::Read(entry)) => Some(Reduced::Held(entry.planes())),
-            (0, Planned::Hand(cells)) => Some(Reduced::Hand(cells)),
-            _ => None,
-        };
-        match handed {
-            Some(handed) => unit.apply_reduced(
-                &input,
-                &mut output,
-                global,
-                unit_scratch,
-                parallelism,
-                cancel,
-                handed,
-            )?,
-            None => unit.apply_cancellable(
-                &input,
-                &mut output,
-                global,
-                unit_scratch,
-                parallelism,
-                cancel,
-            )?,
-        }
+        unit.apply_cancellable(
+            &input,
+            &mut output,
+            global,
+            unit_scratch,
+            parallelism,
+            cancel,
+        )?;
         let finite = match parallelism {
             Parallelism::Pool => next.par_iter().all(|value| value.is_finite()),
             Parallelism::Serial => next.iter().all(|value| value.is_finite()),
@@ -840,58 +729,7 @@ fn run_tile_in(
             &mut slot.planes[buffer][..len],
         );
     }
-    Ok((region, Held::Planes { buffer, len }, reduced.used()))
-}
-
-/// What [`run_tile_in`] decided for its first unit's reduced planes on one tile.
-enum Planned<'a> {
-    /// No planes to read or hand back: the unit runs as it always has.
-    None,
-    /// Read from this entry.
-    Read(&'a ReducedEntry),
-    /// Computed, the tile's cells handed back into these.
-    Hand(Cells),
-    /// Computed and not handed back.
-    Computed,
-}
-
-impl<'a> Planned<'a> {
-    /// Read `planes`' entry if it covers the first unit's reach from the output rectangle today's
-    /// chain gives it (`regions[1]`), and otherwise compute, handing the tile's cells back if
-    /// asked. Only the first unit is ever asked: its input is the operation's input.
-    fn decide(
-        operation: &SpatialOperation,
-        stage: Stage,
-        tile: Region,
-        regions: &[Region],
-        planes: TilePlanes<'a>,
-    ) -> Self {
-        let TilePlanes::Store { held, hand } = planes else {
-            return Self::None;
-        };
-        let Some((unit, grid)) = operation
-            .units()
-            .first()
-            .and_then(|unit| Some((unit, unit.reduced_grid()?)))
-        else {
-            return Self::None;
-        };
-        let reach = unit.reduced_reach(regions[1], stage);
-        match held {
-            Some(entry) if entry.covers(reach) => Self::Read(entry),
-            _ if hand => Self::Hand(Cells::for_tile(&grid, tile)),
-            _ => Self::Computed,
-        }
-    }
-
-    fn used(self) -> PlaneUse {
-        match self {
-            Self::None => PlaneUse::None,
-            Self::Read(_) => PlaneUse::Served,
-            Self::Hand(cells) => PlaneUse::Computed(Some(cells)),
-            Self::Computed => PlaneUse::Computed(None),
-        }
-    }
+    Ok((region, Held::Planes { buffer, len }))
 }
 
 /// What evaluating a mask over one tile proved, in the tile's row-major pixel order.
@@ -993,8 +831,7 @@ fn reaches(bounds: Region, tile: Region) -> bool {
 /// It is built with `with_capacity` and `extend_from_slice` rather than a zeroed `vec!`, because
 /// every value is written before any is read and zeroing one tile plane per tile is a page fault
 /// per 4 KiB for nothing. The RAW float frame's write-back takes each tile's planes out of its slot
-/// this way, in the parallel phase, and a point query the tile it holds when the last unit's
-/// rectangle is wider.
+/// this way, in the parallel phase.
 pub(super) fn cut_out(region: Region, values: &[f32], tile: Region) -> Vec<f32> {
     let mut out = Vec::with_capacity(tile.pixels() as usize * 3);
     append_tile(region, values, tile, &mut out);
@@ -1115,16 +952,6 @@ fn tile_copy() -> TileCopy {
 thread_local! {
     static TILE_COPY: std::cell::Cell<TileCopy> = const { std::cell::Cell::new(TileCopy::Proved) };
     static OBSERVED_TILES: std::cell::RefCell<Option<Arc<AtomicU64>>> = const { std::cell::RefCell::new(None) };
-    static TILE_CHECKPOINT: std::cell::RefCell<Option<TileCheckpoint>> = const { std::cell::RefCell::new(None) };
-}
-
-#[cfg(test)]
-type TileCheckpoint = Arc<dyn Fn(&Cancel) + Send + Sync>;
-
-/// A deterministic test checkpoint inside tile work, also when an estimate reduction pulls it.
-#[cfg(test)]
-pub(crate) fn observe_tile_checkpoint(checkpoint: TileCheckpoint) {
-    TILE_CHECKPOINT.with(|held| *held.borrow_mut() = Some(checkpoint));
 }
 
 /// Observe evaluations only on the current thread, proving the owner never evaluates a tile.
@@ -1460,9 +1287,7 @@ pub(crate) fn tile_count(operation: &SpatialOperation, stage: Stage, tiling: Til
 /// then: on the pool only for a stage at or above the parallel threshold whose window is narrower
 /// than the pool has workers, which is when the budget rather than the pool limits the window. A
 /// window as wide as the pool already occupies every worker, and splitting its tiles' passes as
-/// well measured 20 to 40% slower (Texture or Dehaze alone at 24 and 60 MP). A point sample never
-/// comes through here; it runs serially on its calling thread, where a pass on the pool would queue
-/// behind a render holding it.
+/// well measured 20 to 40% slower (Texture or Dehaze alone at 24 and 60 MP).
 pub(crate) fn tile_parallelism(large: bool, tiles: usize, workers: usize) -> Parallelism {
     if large && tiles < workers {
         Parallelism::Pool
@@ -1472,365 +1297,49 @@ pub(crate) fn tile_parallelism(large: bool, tiles: usize, workers: usize) -> Par
 }
 
 // ---------------------------------------------------------------------------------------------
-// Point queries.
-// ---------------------------------------------------------------------------------------------
-
-/// The fewest tiles a point query holds whatever the target is. One row of a tile's input region,
-/// grown by at most one tile of halo, crosses at most four tiles of the stage below it, and a nested
-/// evaluation holds its own beside them; below this a lowered target could make every row of a fill
-/// miss the tiles the row before it read.
-const POINT_TILES_FLOOR: usize = 16;
-
-/// The spatial tiles one point query has evaluated, of every spatial segment it reads through: the
-/// one cache the byte and the linear point paths share.
-///
-/// A point through a spatial segment evaluates the stage-aligned tile that contains it with
-/// [`run_tile`], the plan, the global estimates and the input pulls the render uses, so the value is
-/// the rendered value by construction. That tile's input region is the tile grown by the summed halo,
-/// at most one tile on each side, so when the stage it reads comes through an earlier spatial
-/// segment the region covers at most 3 × 3 of that segment's tiles (in the host's stage order, where
-/// no geometry separates two spatial layers), and the fill reads them from here. Each tile is
-/// evaluated on its first read and held for the rest of the query, so the four neighbours a
-/// resample blends, the points of a grid and a reduction of a stage behind a spatial segment share
-/// them. Nothing is materialized.
-///
-/// **The bound.** The cache holds at most as many tiles as the spatial target has bytes for, counted
-/// in the largest tile any segment of the query has used — 85 tiles of 3 MiB at 512 px, 21 of 12 MiB
-/// at 1024 px — and never fewer than [`POINT_TILES_FLOOR`]; each is charged to the
-/// budget while held, so a render running beside the query paces itself around it, and all of them
-/// are released with the query. Past that the least recently read tile is released, and a later
-/// read evaluates it again: slower, never refused. While what a query reads fits, each (segment,
-/// tile) is evaluated at most once. One point through `k` spatial segments reads at most
-/// `Σ (2d + 1)²` tiles over `d < k` — 10 for two, 35 for three, 84 for four — and `Σ (2d + 2)²`
-/// behind a resample — 4 for one, 20 for two, 56 for three.
-///
-/// A reduction of a stage behind a spatial segment ([`Self::reduce`]) reads it one tile at a time,
-/// each once and as a whole, so each of that segment's tiles is evaluated once. Two things can
-/// still be evaluated again once the stage has more tiles than the cap: the at most 3 × 3 tiles the
-/// point's own halo reads after the reduction, which it may have released by then, and, behind two
-/// spatial segments, the tiles of the earlier one, which a walk keeps reading across three of its
-/// tile rows and so holds only while those rows and the walked row fit the cap: on stages up to
-/// about 10,700 px wide in 512 px tiles, 60 MP included, and about 5,300 px wide in 1024 px tiles.
-///
-/// Evaluating a tile reserves one working set while it runs, released before the tile is held; a
-/// tile whose fill reads an earlier segment's missing tile holds its own reservation while that one
-/// is evaluated, so a point through `k` spatial segments holds at most `k`.
-///
-/// Every evaluation here runs serially on the calling thread: on the pool it would queue behind a
-/// render holding it. The lock is never held across an evaluation, because an evaluation reads
-/// through this cache itself and its global estimate may reduce a stage on the pool.
-pub(crate) struct PointTiles<'a> {
-    budget: &'a SpatialBudget,
-    /// The store a segment's first unit reads its reduced planes from when it holds them, which a
-    /// point query never fills.
-    reduced: &'a ReducedStore,
-    tiling: Tiling,
-    state: Mutex<PointState<'a>>,
-    /// Every (segment, tile) this query evaluated, in order.
-    #[cfg(test)]
-    evaluated: Mutex<Vec<(usize, Region)>>,
-}
-
-#[derive(Default)]
-struct PointState<'a> {
-    prepared: Vec<Arc<Prepared>>,
-    /// The largest tile side of any segment prepared so far, which sets the cap.
-    largest: u32,
-    /// The held tiles, most recently read first.
-    held: Vec<HeldTile<'a>>,
-}
-
-/// One spatial segment's plan and global estimates, resolved for its first tile.
-struct Prepared {
-    segment: usize,
-    plan: SpatialPlan,
-    globals: Vec<Option<Global>>,
-    /// The entry of the first unit's reduced planes the store held when the segment was first
-    /// read, `Some(None)` when it held none, and `None` for a segment whose planes are never read
-    /// (a window, or no unit that runs first declares a grid).
-    planes: Option<Option<Arc<ReducedEntry>>>,
-}
-
-/// One evaluated tile of one spatial segment: exactly the tile's three planes, taken out of the
-/// slot it ran in ([`TileScratch::into_tile`]), and the budget it is charged to.
-struct HeldTile<'a> {
-    segment: usize,
-    tile: Region,
-    values: Vec<f32>,
-    _reservation: SpatialReservation<'a>,
-}
-
-impl PointState<'_> {
-    fn read(&mut self, segment: usize, x: u32, y: u32) -> Option<[f32; 3]> {
-        let index = self
-            .held
-            .iter()
-            .position(|held| held.segment == segment && held.tile.contains(x, y))?;
-        self.held[..=index].rotate_right(1);
-        let held = &self.held[0];
-        Some(plane_pixel(held.tile, &held.values, x, y))
-    }
-}
-
-impl<'a> PointTiles<'a> {
-    /// An empty cache for one query whose segments are cut into tiles by `tiling`, holding at most
-    /// what `budget`'s target has bytes for.
-    pub(crate) fn new(
-        tiling: Tiling,
-        budget: &'a SpatialBudget,
-        reduced: &'a ReducedStore,
-    ) -> Self {
-        Self {
-            budget,
-            reduced,
-            tiling,
-            state: Mutex::default(),
-            #[cfg(test)]
-            evaluated: Mutex::default(),
-        }
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, PointState<'a>> {
-        self.state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
-
-    /// How many tiles the query may hold: as many of the largest tile its segments have used so far
-    /// as the target has bytes for, and never fewer than [`POINT_TILES_FLOOR`].
-    fn capacity(&self, largest: u32) -> usize {
-        let tile_bytes = Region {
-            x0: 0,
-            y0: 0,
-            width: largest.max(1),
-            height: largest.max(1),
-        }
-        .plane_bytes();
-        usize::try_from(self.budget.target() / tile_bytes)
-            .unwrap_or(usize::MAX)
-            .max(POINT_TILES_FLOOR)
-    }
-
-    /// One pixel of the output of spatial segment `segment`, whose operation reads and writes
-    /// `stage`: from the held tile that contains it, or else from that tile evaluated now. `globals`
-    /// resolves the operation's estimates once for the segment's first tile, and `planes` then
-    /// looks up the store's entry of its first unit's reduced planes for those estimates, `None`
-    /// for a segment that never reads one ([`Prepared::planes`]). A tile reads the entry when it
-    /// covers the unit's reach and otherwise computes the planes as a render does, handing nothing
-    /// back: both give the same values. `fill` reads one rectangle of the stage the operation
-    /// reads into three planes, on this thread.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn pixel(
-        &self,
-        segment: usize,
-        operation: &SpatialOperation,
-        stage: Stage,
-        x: u32,
-        y: u32,
-        cancel: &Cancel,
-        globals: impl FnOnce() -> Result<Vec<Option<Global>>, Error>,
-        planes: impl FnOnce(&[Option<Global>]) -> Option<Option<Arc<ReducedEntry>>>,
-        fill: impl Fn(Region, &mut [f32]) -> Result<(), Error>,
-    ) -> Result<[f32; 3], Error> {
-        let prepared = {
-            let mut state = self.lock();
-            if let Some(value) = state.read(segment, x, y) {
-                return Ok(value);
-            }
-            state
-                .prepared
-                .iter()
-                .find(|prepared| prepared.segment == segment)
-                .cloned()
-        };
-        let prepared = match prepared {
-            Some(prepared) => prepared,
-            None => {
-                let plan = SpatialPlan::new(operation, stage, self.tiling)?;
-                let globals = globals()?;
-                let planes = planes(&globals);
-                let prepared = Arc::new(Prepared {
-                    segment,
-                    plan,
-                    globals,
-                    planes,
-                });
-                let mut state = self.lock();
-                state.largest = state.largest.max(prepared.plan.tile);
-                state.prepared.push(prepared.clone());
-                prepared
-            }
-        };
-        let Prepared {
-            plan,
-            globals,
-            planes,
-            ..
-        } = &*prepared;
-        let tile = plan.tile_containing(x, y);
-        let planes = match planes {
-            Some(held) => TilePlanes::Store {
-                held: held.as_deref(),
-                hand: false,
-            },
-            None => TilePlanes::None,
-        };
-        // The tile runs in a slot of its own, whose buffers fit what this tile asks, and the tile's
-        // planes are taken out of it, all under the tile's working set.
-        let values = {
-            let _reservation = self.budget.reserve(plan.working_set, 1);
-            let mut slot = TileScratch::default();
-            let (region, held, used) = run_tile_in(
-                plan,
-                operation,
-                globals,
-                tile,
-                Parallelism::Serial,
-                &mut slot,
-                cancel,
-                planes,
-                &fill,
-            )?;
-            match used {
-                PlaneUse::Served => self.reduced.note_point(true),
-                PlaneUse::Computed(_) => self.reduced.note_point(false),
-                PlaneUse::None => {}
-            }
-            slot.into_tile(held, region, tile)
-        };
-        let value = plane_pixel(tile, &values, x, y);
-        #[cfg(test)]
-        self.evaluated
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .push((segment, tile));
-        let mut state = self.lock();
-        if !state
-            .held
-            .iter()
-            .any(|held| held.segment == segment && held.tile == tile)
-        {
-            let capacity = self.capacity(state.largest);
-            state.held.truncate(capacity - 1);
-            let bytes = tile.plane_bytes();
-            state.held.insert(
-                0,
-                HeldTile {
-                    segment,
-                    tile,
-                    values,
-                    _reservation: self.budget.reserve(bytes, 1),
-                },
-            );
-        }
-        Ok(value)
-    }
-
-    /// The reduction of `stage` a global estimate of this query is prepared from, on a store miss,
-    /// read through `fill` ([`build_reduction_cancellable`]). When the stage comes through an
-    /// earlier spatial segment, whose tile side is `through`, it is read on this thread through
-    /// this cache one of that segment's tiles at a time, so each of them is evaluated once;
-    /// otherwise it is read as a render reads it, on the pool above the parallel threshold.
-    pub(crate) fn reduce(
-        &self,
-        stage: Stage,
-        through: Option<u32>,
-        cancel: &Cancel,
-        fill: impl Fn(Region, &mut [f32]) -> Result<(), Error> + Sync,
-    ) -> Result<Reduction, Error> {
-        match through {
-            Some(tile) => build_reduction_by_tiles(stage, tile, cancel, fill),
-            None => build_reduction_cancellable(stage, cancel, fill),
-        }
-    }
-
-    /// Every (segment, tile) this query evaluated, in order.
-    #[cfg(test)]
-    pub(crate) fn evaluated(&self) -> Vec<(usize, Region)> {
-        self.evaluated
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-    }
-
-    /// How many tiles the query holds right now.
-    #[cfg(test)]
-    pub(crate) fn held(&self) -> usize {
-        self.lock().held.len()
-    }
-}
-
-// ---------------------------------------------------------------------------------------------
 // Global estimates.
 // ---------------------------------------------------------------------------------------------
 
 /// The global estimate of every unit of an operation, in unit order: `None` for a unit that
 /// declares no estimate key, which is never prepared and never reduces anything, and for every
-/// other unit the store's entry under its key, or else one preparation from one reduction of the
-/// operation's input stage. The reduction is built at most once, and only when a unit that declares
-/// a key is missing from the store: a stack evaluated twice reduces nothing the second time, and
-/// neither does one whose units changed only in coefficients their keys do not name.
-/// Qualification only: the last reduction a global estimate was prepared from, for the corpus to
-/// prepare an estimate from a reduction it changes.
-#[cfg(feature = "qualification")]
-pub(crate) static CAPTURED_REDUCTION: std::sync::Mutex<Option<crate::modules::Reduction>> =
-    std::sync::Mutex::new(None);
-
+/// other unit one preparation from one reduction of the operation's input stage. The reduction is
+/// built at most once, and only when a unit declares a key; two units that declare the same key
+/// share one preparation. Each frame reduces its own stage: nothing is kept between renders.
 pub(crate) fn resolve_globals(
-    store: &EstimateStore,
+    context: &super::RenderContext,
     operation: &SpatialOperation,
-    stage: Stage,
-    fingerprint: &str,
-    prefix_hash: &str,
     reduce: impl FnOnce() -> Result<Reduction, Error>,
 ) -> Result<Vec<Option<Global>>, Error> {
     let units = operation.units();
-    let keys: Vec<Option<EstimateKey>> = units
-        .iter()
-        .map(|unit| {
-            unit.estimate_key().map(|estimate| EstimateKey {
-                fingerprint: fingerprint.to_owned(),
-                prefix_hash: prefix_hash.to_owned(),
-                width: stage.width,
-                height: stage.height,
-                estimate,
-            })
-        })
-        .collect();
+    let keys: Vec<Option<std::borrow::Cow<'static, str>>> =
+        units.iter().map(|unit| unit.estimate_key()).collect();
     let mut globals: Vec<Option<Global>> = vec![None; units.len()];
-    let mut missing: Vec<(usize, &EstimateKey)> = Vec::new();
-    for (index, key) in keys.iter().enumerate() {
-        if let Some(key) = key {
-            match store.cached(key) {
-                Some(global) => globals[index] = global,
-                None => missing.push((index, key)),
-            }
-        }
-    }
-    if missing.is_empty() {
+    if keys.iter().all(Option::is_none) {
         return Ok(globals);
     }
+    #[cfg(test)]
+    context.note_reduction();
+    // Qualification only: the reduction this thread builds now is `context`'s render's.
+    #[cfg(any(test, feature = "qualification"))]
+    let reducing = cells::Reducing::context(context);
+    #[cfg(not(any(test, feature = "qualification")))]
+    let _ = context;
     let reduction = reduce()?;
-    #[cfg(feature = "qualification")]
-    {
-        *CAPTURED_REDUCTION
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(reduction.clone());
-    }
-    // Two units of one operation that declare the same key share one preparation, as they would
-    // share one stored entry.
-    let mut prepared: Vec<(&EstimateKey, Option<Global>)> = Vec::with_capacity(missing.len());
-    for (index, key) in missing {
-        let global = match prepared.iter().find(|(done, _)| *done == key) {
+    #[cfg(any(test, feature = "qualification"))]
+    drop(reducing);
+    let mut prepared: Vec<(&std::borrow::Cow<'static, str>, Option<Global>)> = Vec::new();
+    for (index, key) in keys.iter().enumerate() {
+        let Some(key) = key else {
+            continue;
+        };
+        globals[index] = match prepared.iter().find(|(done, _)| *done == key) {
             Some((_, global)) => global.clone(),
             None => {
                 let global = units[index].prepare(&reduction);
-                store.remember(key.clone(), global.clone());
                 prepared.push((key, global.clone()));
                 global
             }
         };
-        globals[index] = global;
     }
     Ok(globals)
 }
@@ -1884,7 +1393,10 @@ pub(crate) fn build_reduction_cancellable(
             .enumerate()
             .try_for_each(|(j, values)| row(&mut planes, j, values))?;
     }
-    reduction_from(stage, &blocks)
+    let reduction = reduction_from(stage, &blocks)?;
+    #[cfg(any(test, feature = "qualification"))]
+    cells::capture(stage, cancel, &fill, &reduction)?;
+    Ok(reduction)
 }
 
 /// [`build_reduction_cancellable`] over a stage `fetch` answers one pixel at a time, for a test
@@ -1897,42 +1409,6 @@ pub(crate) fn build_reduction(
     build_reduction_cancellable(stage, &Cancel::never(), |region, planes| {
         fill_planes(region, planes, Parallelism::Serial, &fetch)
     })
-}
-
-/// [`build_reduction_cancellable`] read one stage-aligned `tile` × `tile` square at a time,
-/// row-major, on the calling thread: what a point query does when the stage comes through an
-/// earlier spatial segment's tiles in its [`PointTiles`]. Each of those tiles is then read once, as
-/// a whole, one block row of it per fill, so the walk holds the tile it reads and what that tile's
-/// own halo reads, rather than a whole row of tiles that a block-row walk reads again for every
-/// block row. Every block is summed in the same order either way, so the reduction is the same.
-fn build_reduction_by_tiles(
-    stage: Stage,
-    tile: u32,
-    cancel: &Cancel,
-    fill: impl Fn(Region, &mut [f32]) -> Result<(), Error>,
-) -> Result<Reduction, Error> {
-    let (width, mut blocks) = reduction_blocks(stage)?;
-    let height = blocks.len() as u32 / width;
-    let side = (tile / ESTIMATE_REDUCTION).max(1);
-    let mut planes = Vec::new();
-    for j0 in (0..height).step_by(side as usize) {
-        for i0 in (0..width).step_by(side as usize) {
-            let i1 = (i0 + side).min(width);
-            for j in j0..(j0 + side).min(height) {
-                cancel.check()?;
-                let row = (j * width) as usize;
-                block_means(
-                    stage,
-                    j,
-                    i0,
-                    &mut blocks[row + i0 as usize..row + i1 as usize],
-                    &mut planes,
-                    &fill,
-                )?;
-            }
-        }
-    }
-    reduction_from(stage, &blocks)
 }
 
 /// The reduced frame's width and its zeroed blocks, or the bound it would exceed.
@@ -1998,6 +1474,248 @@ fn reduction_from(stage: Stage, blocks: &[[f32; 3]]) -> Result<Reduction, Error>
         planes.extend(blocks.iter().map(|block| block[channel]));
     }
     Reduction::new(stage, ESTIMATE_REDUCTION, planes)
+}
+
+/// Qualification only: the reductions one render's global estimates are prepared from, and their
+/// stage's exact means over cells of other sides, for the measurement that chooses the per-frame
+/// light's reduction factor (`docs/specs/performance.md`, "The per-frame light's reduction
+/// factor"). A capture is armed for one render context
+/// ([`arm`](crate::render::spatial::cells::arm)). Every reduction
+/// [`resolve_globals`](crate::render::spatial::resolve_globals) builds for that context through
+/// [`build_reduction_cancellable`](crate::render::spatial::build_reduction_cancellable) is
+/// recorded, and its stage read again once per factor asked for through the same `fill`, until
+/// [`take`](crate::render::spatial::cells::take): on whichever thread it is built, since
+/// `resolve_globals` names the context to that thread while it builds it
+/// ([`Reducing`](crate::render::spatial::cells::Reducing)). A reduction for any other context,
+/// which is every other render's, however many run at once, and every render's outside the
+/// measurement, records nothing and reads nothing more, as does one no context names. Never built
+/// into a binary: only tests and the `qualification` feature, which only a `[dev-dependencies]`
+/// table turns on, compile it.
+#[cfg(any(test, feature = "qualification"))]
+pub(crate) mod cells {
+    use super::{Cancel, ESTIMATE_REDUCTION, Error, REDUCTION_SPAN, Reduction, Region, Stage};
+    use crate::render::RenderContext;
+    use rayon::prelude::*;
+    use std::cell::Cell;
+    use std::sync::{Mutex, MutexGuard, PoisonError};
+
+    /// A stage's exact means over `factor × factor` cells anchored at its origin, a partial cell at
+    /// the right or bottom edge averaged over its actual pixels, row-major: `width × height` of
+    /// them, the stage's dimensions over `factor`, rounded up.
+    #[derive(Clone, Debug, PartialEq)]
+    pub(crate) struct CellMeans {
+        pub(crate) stage: Stage,
+        pub(crate) factor: u32,
+        pub(crate) width: u32,
+        pub(crate) height: u32,
+        pub(crate) values: Vec<[f32; 3]>,
+    }
+
+    /// What one armed reduction recorded: the reduction itself, and its stage's cell means at each
+    /// factor in the order they were asked for.
+    #[derive(Clone, Debug)]
+    pub(crate) struct Captured {
+        pub(crate) reduction: Reduction,
+        pub(crate) cells: Vec<CellMeans>,
+    }
+
+    /// One armed capture: the render context it is for, by address, the factors it reads the
+    /// stage at, and what it recorded, oldest reduction first.
+    struct Armed {
+        context: usize,
+        factors: Vec<u32>,
+        captured: Vec<Captured>,
+    }
+
+    /// Every armed capture. No two live render contexts share an address, and a capture is taken
+    /// before the context it was armed for is dropped.
+    static ARMED: Mutex<Vec<Armed>> = Mutex::new(Vec::new());
+
+    thread_local! {
+        /// The render context whose global estimates this thread is reducing a stage for, while
+        /// it does.
+        static REDUCING: Cell<Option<usize>> = const { Cell::new(None) };
+    }
+
+    fn address(context: &RenderContext) -> usize {
+        std::ptr::from_ref(context).addr()
+    }
+
+    fn armed() -> MutexGuard<'static, Vec<Armed>> {
+        ARMED.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Arm a capture for `context`, a render context, at `factors`, each a divisor of
+    /// [`ESTIMATE_REDUCTION`], forgetting what an earlier capture for it recorded.
+    pub(crate) fn arm(context: &RenderContext, factors: &[u32]) -> Result<(), Error> {
+        if let Some(factor) = factors
+            .iter()
+            .find(|&&factor| factor == 0 || !ESTIMATE_REDUCTION.is_multiple_of(factor))
+        {
+            return Err(Error::validation(format!(
+                "a cell side of {factor} does not divide the {ESTIMATE_REDUCTION} px block"
+            )));
+        }
+        let context = address(context);
+        let mut armed = armed();
+        armed.retain(|capture| capture.context != context);
+        armed.push(Armed {
+            context,
+            factors: factors.to_vec(),
+            captured: Vec::new(),
+        });
+        Ok(())
+    }
+
+    /// Disarm the capture for `context` and answer what it recorded, oldest reduction first;
+    /// nothing when none is armed for it.
+    pub(crate) fn take(context: &RenderContext) -> Vec<Captured> {
+        let context = address(context);
+        let mut armed = armed();
+        match armed.iter().position(|capture| capture.context == context) {
+            Some(at) => armed.swap_remove(at).captured,
+            None => Vec::new(),
+        }
+    }
+
+    /// While it lives, the reduction this thread builds is for `context`'s global estimates:
+    /// [`resolve_globals`](super::resolve_globals) holds one around its reduction, on whichever
+    /// thread resolves them, and the thread's earlier context, if any, is restored after it.
+    pub(crate) struct Reducing {
+        previous: Option<usize>,
+    }
+
+    impl Reducing {
+        pub(crate) fn context(context: &RenderContext) -> Self {
+            Self {
+                previous: REDUCING.replace(Some(address(context))),
+            }
+        }
+    }
+
+    impl Drop for Reducing {
+        fn drop(&mut self) {
+            REDUCING.set(self.previous);
+        }
+    }
+
+    /// Record `reduction`, and its `stage` at every factor its context's capture asks for, read
+    /// through `fill`, when this thread is reducing for a context a capture is armed for; nothing
+    /// otherwise. The lock is not held while the stage is read.
+    pub(super) fn capture(
+        stage: Stage,
+        cancel: &Cancel,
+        fill: &(impl Fn(Region, &mut [f32]) -> Result<(), Error> + Sync),
+        reduction: &Reduction,
+    ) -> Result<(), Error> {
+        let Some(context) = REDUCING.get() else {
+            return Ok(());
+        };
+        let Some(factors) = armed()
+            .iter()
+            .find(|capture| capture.context == context)
+            .map(|capture| capture.factors.clone())
+        else {
+            return Ok(());
+        };
+        let cells = factors
+            .iter()
+            .map(|&factor| cell_means(stage, factor, cancel, fill))
+            .collect::<Result<Vec<_>, _>>()?;
+        if let Some(capture) = armed()
+            .iter_mut()
+            .find(|capture| capture.context == context)
+        {
+            capture.captured.push(Captured {
+                reduction: reduction.clone(),
+                cells,
+            });
+        }
+        Ok(())
+    }
+
+    /// `stage`'s exact means over `factor`-sided cells, `factor` a divisor of
+    /// [`ESTIMATE_REDUCTION`], read through `fill` as [`super::block_means`] reads it: one block row
+    /// of at most [`REDUCTION_SPAN`] blocks at a time, block rows on the pool, each cell's pixels
+    /// summed in `f64` row by row and left to right. At [`ESTIMATE_REDUCTION`] they are the
+    /// reduction's own block means, bit for bit.
+    pub(crate) fn cell_means(
+        stage: Stage,
+        factor: u32,
+        cancel: &Cancel,
+        fill: &(impl Fn(Region, &mut [f32]) -> Result<(), Error> + Sync),
+    ) -> Result<CellMeans, Error> {
+        let (width, height) = Reduction::dimensions(stage, factor);
+        // A block row holds this many rows of cells, the last block row perhaps fewer.
+        let rows = ESTIMATE_REDUCTION / factor;
+        let mut values = vec![[0.0_f32; 3]; width as usize * height as usize];
+        values
+            .par_chunks_mut((width * rows) as usize)
+            .enumerate()
+            .try_for_each_init(Vec::new, |planes, (j, band)| {
+                cancel.check()?;
+                band_means(stage, factor, j as u32, width, band, planes, fill)
+            })?;
+        Ok(CellMeans {
+            stage,
+            factor,
+            width,
+            height,
+            values,
+        })
+    }
+
+    /// The cells of block row `j` of `stage` into `band`, its rows of `width` cells, from fills of
+    /// at most [`REDUCTION_SPAN`] blocks into `planes`, which grows to the largest fill.
+    fn band_means(
+        stage: Stage,
+        factor: u32,
+        j: u32,
+        width: u32,
+        band: &mut [[f32; 3]],
+        planes: &mut Vec<f32>,
+        fill: &impl Fn(Region, &mut [f32]) -> Result<(), Error>,
+    ) -> Result<(), Error> {
+        let top = j * ESTIMATE_REDUCTION;
+        let bottom = (top + ESTIMATE_REDUCTION).min(stage.height);
+        let span = REDUCTION_SPAN * ESTIMATE_REDUCTION;
+        for left in (0..stage.width).step_by(span as usize) {
+            let region = Region {
+                x0: left,
+                y0: top,
+                width: (left + span).min(stage.width) - left,
+                height: bottom - top,
+            };
+            let len = region.pixels() as usize;
+            if planes.len() < 3 * len {
+                planes.resize(3 * len, 0.0);
+            }
+            let planes = &mut planes[..3 * len];
+            fill(region, planes)?;
+            let stride = region.width as usize;
+            for y0 in (0..region.height).step_by(factor as usize) {
+                let y1 = (y0 + factor).min(region.height);
+                for x0 in (0..region.width).step_by(factor as usize) {
+                    let x1 = (x0 + factor).min(region.width);
+                    let count = f64::from(y1 - y0) * f64::from(x1 - x0);
+                    let rows = y0 as usize * stride..y1 as usize * stride;
+                    let mean = std::array::from_fn(|channel| {
+                        let plane = &planes[channel * len..(channel + 1) * len];
+                        let mut sum = 0.0_f64;
+                        for row in plane[rows.clone()].chunks_exact(stride) {
+                            for value in &row[x0 as usize..x1 as usize] {
+                                sum += f64::from(*value);
+                            }
+                        }
+                        (sum / count) as f32
+                    });
+                    let (column, row) = ((left + x0) / factor, y0 / factor);
+                    band[(row * width + column) as usize] = mean;
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// The SHA-256 of the canonical JSON of a layer prefix and the masks it reads. A mask ID in a
@@ -2071,6 +1789,7 @@ pub(crate) fn fill_planes(
 }
 
 /// One pixel of a finished tile's planes, in the rectangle the last unit filled.
+#[cfg(test)]
 pub(crate) fn plane_pixel(region: Region, values: &[f32], x: u32, y: u32) -> [f32; 3] {
     let len = region.pixels() as usize;
     let index =
@@ -2084,7 +1803,6 @@ mod tests {
     use crate::{
         EFFECT_FORMAT, Layer, LayerId, LinearImage, LinearSettings, ModuleRegistry, Raster, Recipe,
         RenderContext, RenderOptions, SnapshotId, SourceImage, Transform,
-        modules::ESTIMATE_STORE_ENTRIES,
         modules::{
             ActionInput, ActionPlan, Availability, EffectDescriptor, EffectStage, ModuleDescriptor,
             Processing, SpatialUnit, StageContext, ToolModule,
@@ -2535,7 +2253,6 @@ mod tests {
                 title: "Test spatial".into(),
                 hint: None,
                 effects: vec![EffectDescriptor {
-                    fit_settle: Default::default(),
                     id: TEST_SPATIAL_EFFECT.into(),
                     format: EFFECT_FORMAT,
                     stage: EffectStage::Spatial,
@@ -2674,8 +2391,8 @@ mod tests {
         }
     }
 
-    /// `stack` over `source` rendered through `context`, for a test that reads its estimate store
-    /// or its budget, or renders again in it.
+    /// `stack` over `source` rendered through `context`, for a test that reads its counters or its
+    /// budget, or renders again in it.
     fn byte_in(
         context: &RenderContext,
         registry: &ModuleRegistry,
@@ -3143,100 +2860,6 @@ mod tests {
         }
     }
 
-    /// A drafted white balance approximated on the developed planes names the same recipe prefix a
-    /// committed render of that white balance does, so the estimate store must key it apart: in
-    /// either order, the exact evaluation takes nothing estimated from approximate pixels, and the
-    /// approximate one takes nothing estimated from exact ones.
-    #[test]
-    fn an_approximate_white_balance_never_shares_a_global_estimate_with_the_exact_evaluation() {
-        let registry = spatial_registry();
-        let stack = recipe(vec![spatial_layer(&["shift"])]);
-        let source = linear_source(40, 30);
-        let approximate = LinearSettings {
-            white_balance: Some(
-                crate::WhiteBalanceApproximation::from_matrix([
-                    [1.4, 0.0, 0.0],
-                    [0.0, 1.0, 0.0],
-                    [0.0, 0.0, 0.6],
-                ])
-                .unwrap(),
-            ),
-        };
-        let render = |context: &RenderContext, settings: LinearSettings| {
-            linear_in(context, &registry, &source, &stack, settings).rgba
-        };
-        let exact_alone = render(&RenderContext::new(), LinearSettings::default());
-        let approximate_alone = render(&RenderContext::new(), approximate);
-        assert_ne!(
-            exact_alone, approximate_alone,
-            "the mean shift moves with the approximated scene"
-        );
-
-        let context = RenderContext::new();
-        let _ = render(&context, approximate);
-        assert_eq!(
-            render(&context, LinearSettings::default()),
-            exact_alone,
-            "an exact render after an approximate one estimated from exact pixels"
-        );
-        let context = RenderContext::new();
-        let _ = render(&context, LinearSettings::default());
-        assert_eq!(
-            render(&context, approximate),
-            approximate_alone,
-            "an approximate render after an exact one estimated from its own pixels"
-        );
-    }
-
-    #[test]
-    fn strength_independent_dehaze_estimates_keep_white_balance_inputs_distinct() {
-        let registry = ModuleRegistry::builtin();
-        let source = linear_source(40, 30);
-        let seed = recipe(vec![Layer {
-            id: LayerId::new(),
-            effect_id: crate::PRESENCE_EFFECT.into(),
-            effect_format: EFFECT_FORMAT,
-            payload: json!({"dehaze": 60.0}),
-            mask: None,
-            artifacts: Vec::new(),
-        }]);
-        let mut changed = seed.clone();
-        changed.layers[0].payload = json!({"dehaze": 61.0});
-        let exact = LinearSettings::default();
-        let approximate = |red, blue| LinearSettings {
-            white_balance: Some(
-                crate::WhiteBalanceApproximation::from_matrix([
-                    [red, 0.0, 0.0],
-                    [0.0, 1.0, 0.0],
-                    [0.0, 0.0, blue],
-                ])
-                .unwrap(),
-            ),
-        };
-        let settings = [exact, approximate(1.4, 0.6), approximate(0.7, 1.3)];
-        let render = |context: &RenderContext, recipe: &Recipe, settings| {
-            linear_in(context, &registry, &source, recipe, settings).rgba
-        };
-        let expected = settings.map(|settings| render(&RenderContext::new(), &changed, settings));
-        let context = RenderContext::new();
-        for settings in settings {
-            render(&context, &seed, settings);
-        }
-        assert_eq!(
-            context.estimates().len(),
-            3,
-            "each white balance owns its estimate"
-        );
-        for (settings, expected) in settings.into_iter().zip(expected) {
-            assert_eq!(render(&context, &changed, settings), expected);
-            assert_eq!(
-                context.estimates().len(),
-                3,
-                "only amount changed: reuse the matching input"
-            );
-        }
-    }
-
     fn masked_colour_before_dehaze() -> Recipe {
         let mut mask = crate::Mask::new("Upstream mask");
         mask.components.push(crate::Component::new(
@@ -3267,92 +2890,14 @@ mod tests {
         stack
     }
 
-    #[test]
-    fn estimate_identity_tracks_upstream_mask_values_on_both_paths() {
-        let registry = ModuleRegistry::builtin();
-        let byte = gradient(40, 30);
-        let linear = linear_source(40, 30);
-        let seed = masked_colour_before_dehaze();
-        let mut variants = vec![seed.clone(); 3];
-        variants[0].masks[0].amount = 25.0;
-        variants[1].masks[0].invert = true;
-        variants[2].masks[0].components[0].payload["radius_x"] = json!(0.12);
-        for linear_path in [false, true] {
-            let source = || {
-                if linear_path {
-                    crate::render::testing::linear(&linear, LinearSettings::default())
-                } else {
-                    crate::RenderSource::Byte(&byte)
-                }
-            };
-            let render = |context: &RenderContext, stack: &Recipe| {
-                frame_in(
-                    context,
-                    &registry,
-                    source(),
-                    SnapshotId::new(),
-                    stack,
-                    RenderOptions::default(),
-                )
-                .unwrap()
-            };
-            for changed in &variants {
-                let context = RenderContext::new();
-                let seed_frame = render(&context, &seed);
-                let cached = render(&context, changed);
-                assert_eq!(
-                    context.estimates().len(),
-                    2,
-                    "same mask ID with different pixels must miss"
-                );
-                let context = RenderContext::new();
-                let fresh = render(&context, changed);
-                assert_eq!(
-                    cached.rgba, fresh.rgba,
-                    "no old atmosphere after a mask edit"
-                );
-                assert_ne!(
-                    seed_frame.rgba, fresh.rgba,
-                    "the fixture makes this mask edit visible"
-                );
-                let sample = sample_in(
-                    &context,
-                    &registry,
-                    source(),
-                    changed,
-                    RenderOptions::default(),
-                    17,
-                    13,
-                )
-                .unwrap();
-                assert_eq!(sample.rgba, cached.pixel(17, 13));
-            }
-        }
-        let prefix = &seed.layers[..1];
-        let original = prefix_hash(prefix, &seed.masks, MaskSampling::Point).unwrap();
-        let mut unrelated = seed.masks.clone();
-        unrelated.push(crate::Mask::new("Unrelated mask"));
-        assert_eq!(
-            prefix_hash(prefix, &unrelated, MaskSampling::Point).unwrap(),
-            original
-        );
-        // The operation's own mask also cannot affect the pixels its estimate reads.
-        let mut own_mask = seed.clone();
-        own_mask.layers[1].mask = Some(unrelated[1].id.clone());
-        assert_eq!(
-            prefix_hash(&own_mask.layers[..1], &unrelated, MaskSampling::Point).unwrap(),
-            original
-        );
-    }
-
     /// A spatial entry reads its stage by rows on both paths — a tile's input and its estimate's
     /// reduction alike — here behind a quarter turn and a masked and an unmasked colour layer, whose
-    /// rows the byte path runs through the byte domain's own row arithmetic. The estimate a point
-    /// query reduces from a cold store is, value for value, the one the frame's reduction stored,
-    /// and every sample read beside it, along every fifth row and in several tiles, is the
-    /// rendered byte.
+    /// rows the byte path runs through the byte domain's own row arithmetic. The estimate a cold
+    /// store reduces for a read is, value for value, the one the frame's reduction stored, and
+    /// every pixel read through the frames it materializes, along every fifth row and in several
+    /// tiles, is the rendered byte.
     #[test]
-    fn slow_a_point_query_and_its_reduction_read_the_stage_by_rows_on_both_paths() {
+    fn slow_a_read_and_its_reduction_read_the_stage_by_rows_on_both_paths() {
         let registry = ModuleRegistry::builtin();
         let byte = gradient(96, 72);
         let linear = linear_source(96, 72);
@@ -3383,201 +2928,42 @@ mod tests {
             };
             let context = RenderContext::new();
             let frame = enter(&context).frame(SnapshotId::new()).unwrap();
-            let stored = enter(&context).spatial_globals(1).unwrap();
-            assert!(stored.iter().any(Option::is_some), "dehaze has an estimate");
+            let estimated = enter(&context).spatial_globals(1).unwrap();
+            assert!(
+                estimated.iter().any(Option::is_some),
+                "dehaze has an estimate"
+            );
             let cold = RenderContext::new();
             assert_eq!(
                 enter(&cold).spatial_globals(1).unwrap(),
-                stored,
-                "linear path {linear_path}: a point reduction is the frame's"
+                estimated,
+                "linear path {linear_path}: a read's reduction is the same in any context"
             );
+            let fresh = RenderContext::new();
+            let read = enter(&cold).frame_pixels().unwrap();
             for y in (0..frame.height).step_by(5) {
                 for x in 0..frame.width {
-                    let sampled = enter(&cold).sample(x, y).unwrap();
                     assert_eq!(
-                        sampled.rgba,
+                        read.rgba(x, y).unwrap(),
                         frame.pixel(x, y),
-                        "linear path {linear_path}: sample at ({x}, {y})"
+                        "linear path {linear_path}: read at ({x}, {y})"
                     );
                 }
             }
-        }
-    }
-
-    #[test]
-    fn estimate_identity_separates_point_and_thin_feature_mask_sampling() {
-        let registry = ModuleRegistry::builtin();
-        let byte = gradient(40, 30);
-        let linear = linear_source(40, 30);
-        let stack = masked_colour_before_dehaze();
-        assert!(
-            registry
-                .compile_sampled(40, 30, 40, 30, &stack, MaskSampling::ThinFeature)
-                .unwrap()
-                .supersampled_masks()
-        );
-        for linear_path in [false, true] {
-            let render = |context: &RenderContext, proxy| {
-                let cancel = Cancel::new();
-                let options = if proxy {
-                    RenderOptions::proxy(&cancel)
-                } else {
-                    RenderOptions::exact(&cancel)
-                };
-                let source = if linear_path {
-                    crate::render::testing::linear(&linear, LinearSettings::default())
-                } else {
-                    crate::RenderSource::Byte(&byte)
-                };
-                frame_in(
-                    context,
-                    &registry,
-                    source,
-                    SnapshotId::new(),
-                    &stack,
-                    options,
-                )
-                .unwrap()
-                .rgba
-            };
-            let expected = [false, true].map(|proxy| render(&RenderContext::new(), proxy));
-            assert_ne!(
-                expected[0], expected[1],
-                "thin-feature sampling changes this fixture"
-            );
-            for order in [[false, true], [true, false]] {
-                let context = RenderContext::new();
-                for proxy in order {
-                    assert_eq!(render(&context, proxy), expected[usize::from(proxy)]);
-                }
-                assert_eq!(
-                    context.estimates().len(),
-                    2,
-                    "sampling modes own distinct atmospheres"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn linear_estimate_identity_tracks_development_view_and_direct_exposure() {
-        let registry = spatial_registry();
-        let stack = recipe(vec![spatial_layer(&["shift"])]);
-        let planes: Vec<f32> = (0..3)
-            .flat_map(|channel| {
-                (0..32).flat_map(move |y| {
-                    (0..48).map(move |x| ((x * x + y * 17 + channel * 31) % 251) as f32 / 300.0)
-                })
-            })
-            .collect();
-        // Public new() legitimately supplies no fingerprint; development identity must suffice.
-        let first = LinearImage::new(48, 32, planes.clone()).unwrap();
-        let second = LinearImage::new(
-            48,
-            32,
-            planes.iter().map(|value| value * 0.6).collect::<Vec<_>>(),
-        )
-        .unwrap();
-        let default = LinearSettings::default();
-        let cases = [
-            (first.clone(), default),
-            (second, default),
-            (first.with_view([0, 0, 24, 24], 1).unwrap(), default),
-            (first.with_view([16, 0, 24, 24], 1).unwrap(), default),
-            (first.with_view([0, 0, 24, 24], 2).unwrap(), default),
-        ];
-        let expected: Vec<_> = cases
-            .iter()
-            .map(|(source, settings)| {
-                linear_in(&RenderContext::new(), &registry, source, &stack, *settings).rgba
-            })
-            .collect();
-        // The same stack through a registry whose units count their own preparations, in one
-        // context.
-        let (registry, prepared, _) = counting_registry();
-        let context = RenderContext::new();
-        for (index, ((source, settings), expected)) in cases.iter().zip(expected).enumerate() {
-            let cached = linear_in(&context, &registry, source, &stack, *settings);
             assert_eq!(
-                cached.rgba, expected,
-                "input case {index} must not reuse another input"
-            );
-            assert_eq!(prepared.get(), index + 1);
-            assert_eq!(context.estimates().len(), index + 1);
-            assert_eq!(
-                linear_in(&context, &registry, &source.clone(), &stack, *settings).rgba,
-                expected
-            );
-            let sampled = sample_in(
-                &context,
-                &registry,
-                crate::render::testing::linear(source, *settings),
-                &stack,
-                RenderOptions::default(),
-                7,
-                11,
-            )
-            .unwrap();
-            assert_eq!(sampled.rgba, cached.pixel(7, 11));
-            assert_eq!(
-                prepared.get(),
-                index + 1,
-                "clones and samples reuse the matching estimate"
+                enter(&fresh).sample(13, 41).unwrap().rgba,
+                frame.pixel(13, 41),
+                "linear path {linear_path}: a sample"
             );
         }
     }
 
+    /// A linear read through the frames it materializes equals the rendered byte everywhere:
+    /// across tile boundaries, in partial edge tiles, through a rotated crop whose four bilinear
+    /// neighbours straddle tiles, and after an earlier spatial layer whose output the last one reads
+    /// whole neighbourhoods of and whose mean the second shift reduces; and so does a sample.
     #[test]
-    fn a_sample_uses_the_same_tile_grid_the_render_used() {
-        let registry = spatial_registry();
-        let source = gradient(50, 40);
-        let stack = recipe(vec![spatial_layer(&["blur:2", "shift"])]);
-        let linear = linear_source(50, 40);
-        // Tiles smaller than the frame, so the sampled pixel's tile is one of several and its
-        // halo is clamped differently from the whole frame's; 7 and 16 divide neither side, so
-        // the rendered rows the samples are compared with were written from partial tiles too.
-        for tile in [7_u32, 16, 512] {
-            let context = RenderContext::new();
-            let raster = tiled_in(&context, &registry, &source, &stack, tile).unwrap();
-            let evaluation = evaluation(&context, &registry, &source, &stack)
-                .unwrap()
-                .with_tile(tile);
-            let floats = crate::render::testing::linear(&linear, LinearSettings::default());
-            let rendered = tiled_in(&context, &registry, floats, &stack, tile).unwrap();
-            let linear_evaluation = linear_evaluation(
-                &context,
-                &registry,
-                &linear,
-                &stack,
-                LinearSettings::default(),
-                Tiling::Fixed(tile),
-                crate::render::SpatialMode::Point,
-            )
-            .unwrap();
-            for y in 0..raster.height {
-                for x in 0..raster.width {
-                    assert_eq!(
-                        evaluation.terminal(x, y).unwrap(),
-                        raster.pixel(x, y),
-                        "byte tile {tile}: sample at ({x}, {y})"
-                    );
-                    assert_eq!(
-                        linear_evaluation.terminal(x, y).unwrap(),
-                        rendered.pixel(x, y),
-                        "linear tile {tile}: sample at ({x}, {y})"
-                    );
-                }
-            }
-        }
-    }
-
-    /// A linear point sample evaluates only the tile its pixel falls in and still equals the
-    /// rendered byte everywhere: across tile boundaries, in partial edge tiles, through a rotated
-    /// crop whose four bilinear neighbours straddle tiles, and after an earlier spatial layer
-    /// whose output the last one reads whole neighbourhoods of and whose mean the second shift
-    /// reduces.
-    #[test]
-    fn slow_a_linear_sample_evaluates_its_tile_and_equals_the_tiled_render() {
+    fn slow_a_linear_read_equals_the_tiled_render() {
         let registry = spatial_registry();
         let source = linear_source(70, 52);
         let crop = fitted_crop(70, 52, 6.0, [0.15, 0.2, 0.6, 0.55]);
@@ -3596,106 +2982,42 @@ mod tests {
                 ]),
             ),
         ] {
-            // The samples read the estimates the render stored.
+            // The reads use the estimates the render stored.
             let context = RenderContext::new();
             let input = || crate::render::testing::linear(&source, LinearSettings::default());
             let rendered = tiled_in(&context, &registry, input(), &stack, 16).unwrap();
+            let read = linear_evaluation(
+                &context,
+                &registry,
+                &source,
+                &stack,
+                LinearSettings::default(),
+                Tiling::Fixed(16),
+                crate::render::SpatialMode::Frames,
+            )
+            .unwrap();
             for y in 0..rendered.height {
                 for x in 0..rendered.width {
-                    let sampled = sample_in(
-                        &context,
-                        &registry,
-                        input(),
-                        &stack,
-                        RenderOptions::default().with_tile(16),
-                        x,
-                        y,
-                    )
-                    .unwrap();
                     assert_eq!(
-                        sampled.rgba,
+                        read.terminal(x, y).unwrap(),
                         rendered.pixel(x, y),
-                        "{case}, tile 16: sample at ({x}, {y})"
+                        "{case}, tile 16: read at ({x}, {y})"
                     );
                 }
             }
+            let (x, y) = (rendered.width / 3, rendered.height - 1);
+            let sampled = sample_in(
+                &context,
+                &registry,
+                input(),
+                &stack,
+                RenderOptions::default().with_tile(16),
+                x,
+                y,
+            )
+            .unwrap();
+            assert_eq!(sampled.rgba, rendered.pixel(x, y), "{case}: a sample");
         }
-    }
-
-    #[test]
-    fn a_linear_sample_through_a_spatial_layer_reserves_one_working_set() {
-        let registry = spatial_registry();
-        // 64 px tiles, so the stage holds many and one working set is not the whole frame's.
-        let tile = 64;
-        let source = linear_source(200, 150);
-        let stack = recipe(vec![spatial_layer(&["blur:4"])]);
-        let operation = SpatialOperation::new(vec![Arc::new(BoxBlur { radius: 4 })]).unwrap();
-        let plan = SpatialPlan::new(
-            &operation,
-            Stage {
-                width: 200,
-                height: 150,
-            },
-            Tiling::Fixed(tile),
-        )
-        .unwrap();
-        let context = RenderContext::new();
-        let budget = context.spatial();
-        let sampled = sample_in(
-            &context,
-            &registry,
-            crate::render::testing::linear(&source, LinearSettings::default()),
-            &stack,
-            RenderOptions::default().with_tile(tile),
-            100,
-            75,
-        )
-        .unwrap();
-        assert!(sampled.rgba.is_some());
-        assert_eq!(
-            budget.peak(),
-            plan.working_set(),
-            "a linear sample reserves exactly one tile working set"
-        );
-        assert_eq!(budget.in_use(), 0, "and releases it");
-    }
-
-    #[test]
-    fn a_sample_through_a_spatial_layer_reserves_one_working_set() {
-        let registry = spatial_registry();
-        // 64 px tiles, so the stage holds many and one working set is not the whole frame's.
-        let tile = 64;
-        let source = gradient(200, 150);
-        let stack = recipe(vec![spatial_layer(&["blur:4"])]);
-        let operation = SpatialOperation::new(vec![Arc::new(BoxBlur { radius: 4 })]).unwrap();
-        let plan = SpatialPlan::new(
-            &operation,
-            Stage {
-                width: 200,
-                height: 150,
-            },
-            Tiling::Fixed(tile),
-        )
-        .unwrap();
-        let context = RenderContext::new();
-        let budget = context.spatial();
-        let sampled = sample_in(
-            &context,
-            &registry,
-            &source,
-            &stack,
-            RenderOptions::default().with_tile(tile),
-            100,
-            75,
-        )
-        .unwrap();
-        assert!(sampled.rgba.is_some());
-        assert_eq!(
-            budget.peak(),
-            plan.working_set(),
-            "a sample allocates exactly one tile working set"
-        );
-        assert_eq!(budget.in_use(), 0, "and releases it");
     }
 
     #[test]
@@ -3811,10 +3133,10 @@ mod tests {
     }
 
     /// Past the bound a render runs in wide tiles. On both paths its frame is the frame of the
-    /// small tiles and of the wide ones fixed, and every sample, on either side of a wide tile's
-    /// seam and a small one's, is the rendered byte, evaluated in the wide tile that holds it.
+    /// small tiles and of the wide ones fixed, and every read, on either side of a wide tile's
+    /// seam and a small one's, is the rendered byte.
     #[test]
-    fn a_wide_halo_renders_and_samples_in_wide_tiles_on_both_paths() {
+    fn a_wide_halo_renders_in_wide_tiles_and_reads_equal_it_on_both_paths() {
         use luxforge_raw::{SPATIAL_WIDE_HALO, SPATIAL_WIDE_TILE};
         let registry = spatial_registry();
         // Wider and taller than one wide tile, above the parallel threshold.
@@ -3842,7 +3164,7 @@ mod tests {
             &stack,
             settings,
             Tiling::Halo,
-            crate::render::SpatialMode::Point,
+            crate::render::SpatialMode::Frames,
         )
         .unwrap();
         for (x, y) in [
@@ -3858,36 +3180,12 @@ mod tests {
             assert_eq!(
                 bytes.terminal(x, y).unwrap(),
                 byte.pixel(x, y),
-                "byte sample at ({x}, {y})"
+                "byte read at ({x}, {y})"
             );
             assert_eq!(
                 planes.terminal(x, y).unwrap(),
                 linear.pixel(x, y),
-                "linear sample at ({x}, {y})"
-            );
-        }
-        let evaluated: Vec<Region> = [bytes.point_tiles(), planes.point_tiles()]
-            .into_iter()
-            .flat_map(|tiles| tiles.evaluated().into_iter().map(|(_, tile)| tile))
-            .collect();
-        assert_eq!(
-            evaluated.len(),
-            2 * 4,
-            "each path evaluates the four wide tiles once"
-        );
-        for tile in evaluated {
-            assert_eq!(
-                (tile.x0 % SPATIAL_WIDE_TILE, tile.y0 % SPATIAL_WIDE_TILE),
-                (0, 0),
-                "{tile:?} is on the wide grid"
-            );
-            assert_eq!(
-                (tile.width, tile.height),
-                (
-                    SPATIAL_WIDE_TILE.min(width - tile.x0),
-                    SPATIAL_WIDE_TILE.min(height - tile.y0)
-                ),
-                "{tile:?} is a whole wide tile"
+                "linear read at ({x}, {y})"
             );
         }
     }
@@ -3975,7 +3273,9 @@ mod tests {
                     let operation = compiled
                         .segments
                         .iter()
-                        .find_map(|segment| segment.entry.as_ref().and_then(Entry::point_tiles))
+                        .find_map(|segment| {
+                            segment.entry.as_ref().and_then(Entry::spatial_operation)
+                        })
                         .expect("a spatial segment")
                         .clone();
                     assert_eq!(operation.mask().is_some(), masked);
@@ -4197,88 +3497,13 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------------------------
-    // The estimate store.
+    // Global estimates.
     // -----------------------------------------------------------------------------------------
 
-    #[test]
-    fn a_prepared_estimate_is_reused_and_the_store_evicts_the_oldest() {
-        let (registry, prepared, _) = counting_registry();
-        let context = RenderContext::new();
-        let source = gradient(64, 48);
-        let stack = recipe(vec![spatial_layer(&["shift"])]);
-        let first = byte_in(&context, &registry, &source, &stack);
-        assert_eq!(prepared.get(), 1, "one preparation");
-        let second = byte_in(&context, &registry, &source, &stack);
-        assert_eq!(prepared.get(), 1, "the second render hits the store");
-        assert_eq!(first.rgba, second.rgba, "and produces the same frame");
-        // A different prefix is a different key, so it misses.
-        let prefixed = recipe(vec![
-            Layer::pixel(1, 1, [3, 4, 5]),
-            spatial_layer(&["shift"]),
-        ]);
-        byte_in(&context, &registry, &source, &prefixed);
-        assert_eq!(prepared.get(), 2, "a different prefix misses");
-        assert_eq!(context.estimates().len(), 2);
-        // Nine distinct keys evict the oldest one, which then has to be prepared again.
-        for index in 0..ESTIMATE_STORE_ENTRIES {
-            let stack = recipe(vec![
-                Layer::pixel(2, 2, [index as u8, 0, 0]),
-                spatial_layer(&["shift"]),
-            ]);
-            byte_in(&context, &registry, &source, &stack);
-        }
-        assert_eq!(context.estimates().len(), ESTIMATE_STORE_ENTRIES);
-        let before = prepared.get();
-        byte_in(&context, &registry, &source, &stack);
-        assert_eq!(
-            prepared.get(),
-            before + 1,
-            "the oldest entry was evicted and is prepared again"
-        );
-    }
-
-    /// A stored estimate belongs to the key of the unit that prepared it, not to a position. A module
-    /// compiles whichever units its payload needs — the Presence module leaves out a unit whose
-    /// amount is zero, which moves the others up — so the same position of the same source, prefix
-    /// and stage can hold a different unit from one render to the next, and what one unit at that
-    /// position was given must not be handed to another that wants an estimate.
-    #[test]
-    fn an_estimate_belongs_to_its_key_and_not_to_its_position() {
-        let registry = spatial_registry();
-        let source = gradient(64, 48);
-        let context = RenderContext::new();
-        // A unit that declares no estimate at position 0, given none.
-        byte_in(
-            &context,
-            &registry,
-            &source,
-            &recipe(vec![spatial_layer(&["blur:2"])]),
-        );
-        // The same source, the same (empty) prefix and the same stage in the same context, with a
-        // unit that does want one at that position.
-        let shifted = byte_in(
-            &context,
-            &registry,
-            &source,
-            &recipe(vec![spatial_layer(&["shift"])]),
-        );
-        let expected = reference_chain(
-            64,
-            48,
-            decode_frame(source.rgba.as_ref()),
-            &[RefUnit::Shift],
-        );
-        assert_frame(&shifted, &expected, "a shift after a blur at position 0");
-    }
-
-    /// An operation whose units declare no estimate key never reduces its stage and never touches
-    /// the store, on its first evaluation or any other, and hands every unit no global.
+    /// An operation whose units declare no estimate key never reduces its stage, on its first
+    /// evaluation or any other, and hands every unit no global.
     #[test]
     fn an_operation_whose_units_declare_no_key_never_reduces() {
-        let stage = Stage {
-            width: 64,
-            height: 48,
-        };
         let operation = SpatialOperation::new(vec![
             Arc::new(BoxBlur { radius: 2 }),
             Arc::new(Counted::default()),
@@ -4287,23 +3512,12 @@ mod tests {
         .unwrap();
         let context = RenderContext::new();
         for _ in 0..2 {
-            let globals = resolve_globals(
-                context.estimates(),
-                &operation,
-                stage,
-                "sha256:no-estimate-key",
-                "prefix",
-                || -> Result<Reduction, Error> {
-                    panic!("an operation that needs no estimate reduced its stage")
-                },
-            )
+            let globals = resolve_globals(&context, &operation, || -> Result<Reduction, Error> {
+                panic!("an operation that needs no estimate reduced its stage")
+            })
             .unwrap();
             assert_eq!(globals, vec![None, None, None]);
         }
-        assert!(
-            context.estimates().keys().is_empty(),
-            "and it stored nothing"
-        );
 
         // Through a render as well: a blur-only layer prepares nothing and renders exactly.
         let (registry, prepared, _) = counting_registry();
@@ -4322,7 +3536,7 @@ mod tests {
         );
         assert_frame(&raster, &expected, "a blur that needs no estimate");
         assert_eq!(prepared.get(), 0);
-        assert!(context.estimates().keys().is_empty());
+        assert_eq!(context.reductions(), 0);
     }
 
     /// Two units of one operation that declare the same key over the same stage share one
@@ -4350,20 +3564,12 @@ mod tests {
         };
         let operation =
             SpatialOperation::new(vec![shift(), Arc::new(BoxBlur { radius: 1 }), shift()]).unwrap();
-        // The context is this test's own, so the first resolve is a miss.
         let context = RenderContext::new();
         let mut reductions = 0;
-        let globals = resolve_globals(
-            context.estimates(),
-            &operation,
-            stage,
-            "sha256:one-key",
-            "prefix",
-            || {
-                reductions += 1;
-                build_reduction(stage, read)
-            },
-        )
+        let globals = resolve_globals(&context, &operation, || {
+            reductions += 1;
+            build_reduction(stage, read)
+        })
         .unwrap();
         assert_eq!(reductions, 1);
         assert_eq!(prepared.get(), 1, "one preparation");
@@ -4374,10 +3580,10 @@ mod tests {
 
     /// A Presence amount is a coefficient of its unit, not of its estimate: Dehaze's atmospheric
     /// light reads the reduction and nothing else, so every other Dehaze amount, alone or beside
-    /// Texture and Clarity, prepares from the stored estimate without reducing the stage again, and
-    /// Texture and Clarity, which declare no estimate, never reduce at all.
+    /// Texture and Clarity, prepares the same light from its own reduction, and Texture and
+    /// Clarity, which declare no estimate, never reduce at all.
     #[test]
-    fn changing_only_a_presence_amount_prepares_nothing_new() {
+    fn changing_only_a_presence_amount_prepares_the_same_light() {
         let (width, height) = (96_u32, 64_u32);
         let stage = Stage { width, height };
         let source = gradient(width, height);
@@ -4404,21 +3610,13 @@ mod tests {
                 other => panic!("a spatial operation, not {other:?}"),
             }
         };
-        // The context is this test's own, so the first Dehaze resolve is a miss.
         let context = RenderContext::new();
         let reductions = AtomicUsize::new(0);
         let resolve = |payload: &Value| {
-            resolve_globals(
-                context.estimates(),
-                &compile(payload),
-                stage,
-                "sha256:presence-amounts",
-                "prefix",
-                || {
-                    reductions.fetch_add(1, AtomicOrdering::SeqCst);
-                    build_reduction(stage, read)
-                },
-            )
+            resolve_globals(&context, &compile(payload), || {
+                reductions.fetch_add(1, AtomicOrdering::SeqCst);
+                build_reduction(stage, read)
+            })
             .unwrap()
         };
 
@@ -4450,42 +3648,16 @@ mod tests {
         }
         assert_eq!(
             reductions.load(AtomicOrdering::SeqCst),
-            1,
-            "a new amount prepares from the stored estimate"
+            5,
+            "every resolve reduces its own stage"
         );
     }
 
-    /// The stored atmospheric light is the one a fresh preparation gives, so a frame rendered from
-    /// it after another amount's render is byte for byte the frame rendered from a cold store.
-    #[test]
-    fn a_stored_atmospheric_light_renders_every_dehaze_amount_as_a_cold_store_does() {
-        let registry = ModuleRegistry::builtin();
-        let source = gradient(96, 64);
-        let render = |context: &RenderContext, dehaze: f64| {
-            let stack = recipe(vec![Layer {
-                id: LayerId::new(),
-                effect_id: crate::PRESENCE_EFFECT.into(),
-                effect_format: EFFECT_FORMAT,
-                payload: json!({"dehaze": dehaze, "clarity": 25.0}),
-                mask: None,
-                artifacts: Vec::new(),
-            }]);
-            byte_in(context, &registry, &source, &stack).rgba
-        };
-        let cold = render(&RenderContext::new(), 35.0);
-        let context = RenderContext::new();
-        let other = render(&context, -60.0);
-        let warm = render(&context, 35.0);
-        assert_ne!(cold, other, "the amount changes the frame");
-        assert_eq!(cold, warm, "the stored estimate renders the cold frame");
-    }
-
     // -----------------------------------------------------------------------------------------
-    // Point queries through several spatial segments.
+    // Reads through several spatial segments.
     // -----------------------------------------------------------------------------------------
 
-    /// A stage of 6 × 5 tiles of [`POINT_TILE`] pixels. Presence's summed halo at this stage is
-    /// inside one tile, so one tile's input region covers at most 3 × 3 tiles of the stage below.
+    /// A stage of 6 × 5 tiles of [`POINT_TILE`] pixels.
     const POINT_STAGE: (u32, u32) = (384, 320);
     const POINT_TILE: u32 = 64;
 
@@ -4559,86 +3731,6 @@ mod tests {
         ]
     }
 
-    /// The most tiles one point may evaluate of each spatial segment, by segment index: `(2d + 1)²`
-    /// for the segment `d` spatial segments below the last, `(2d + 2)²` when a resample after the
-    /// last blends four neighbours, and never more than its stage holds. It also checks the
-    /// premise: every summed halo is inside one tile.
-    fn point_bounds(compiled: &crate::render::Compiled) -> Vec<(usize, usize)> {
-        use crate::render::Entry;
-        let spatial: Vec<usize> = compiled
-            .segments
-            .iter()
-            .enumerate()
-            .filter(|(_, segment)| {
-                segment
-                    .entry
-                    .as_ref()
-                    .is_some_and(|entry| entry.point_tiles().is_some())
-            })
-            .map(|(index, _)| index)
-            .collect();
-        let last = *spatial.last().expect("a spatial segment");
-        let resampled = compiled.segments[last + 1..]
-            .iter()
-            .any(|segment| segment.entry.as_ref().is_some_and(Entry::blends));
-        spatial
-            .iter()
-            .rev()
-            .enumerate()
-            .map(|(depth, &index)| {
-                let previous = &compiled.segments[index - 1];
-                let stage = Stage {
-                    width: previous.width,
-                    height: previous.height,
-                };
-                let operation = compiled.segments[index]
-                    .entry
-                    .as_ref()
-                    .and_then(Entry::point_tiles)
-                    .expect("a spatial segment");
-                assert!(operation.summed_halo(stage) <= POINT_TILE, "the premise");
-                let side = 2 * depth + if resampled { 2 } else { 1 };
-                let tiles = stage.width.div_ceil(POINT_TILE) * stage.height.div_ceil(POINT_TILE);
-                (index, (side * side).min(tiles as usize))
-            })
-            .collect()
-    }
-
-    /// How many tiles of each spatial segment one query evaluated, asserting that none was
-    /// evaluated twice.
-    fn evaluations_per_segment(evaluated: &[(usize, Region)], case: &str) -> Vec<(usize, usize)> {
-        let mut seen = std::collections::HashSet::new();
-        for (segment, tile) in evaluated {
-            assert!(
-                seen.insert((*segment, tile.x0, tile.y0)),
-                "{case}: tile {tile:?} of segment {segment} evaluated twice"
-            );
-        }
-        let mut counts: Vec<(usize, usize)> = Vec::new();
-        for (segment, _) in evaluated {
-            match counts.iter_mut().find(|(index, _)| index == segment) {
-                Some((_, count)) => *count += 1,
-                None => counts.push((*segment, 1)),
-            }
-        }
-        counts.sort_unstable();
-        counts
-    }
-
-    fn assert_within(counts: &[(usize, usize)], bounds: &[(usize, usize)], case: &str) {
-        for (segment, count) in counts {
-            let bound = bounds
-                .iter()
-                .find(|(index, _)| index == segment)
-                .map(|(_, bound)| *bound)
-                .unwrap_or_else(|| panic!("{case}: segment {segment} is not spatial"));
-            assert!(
-                count <= &bound,
-                "{case}: {count} tiles of segment {segment}, more than {bound}"
-            );
-        }
-    }
-
     /// Tile corners, tile edges, the stage's own corners and its interior.
     fn point_query_points(width: u32, height: u32) -> Vec<(u32, u32)> {
         let t = POINT_TILE;
@@ -4659,186 +3751,71 @@ mod tests {
         .collect()
     }
 
-    /// Within one point query each spatial segment's tile is evaluated at most once, and no more of
-    /// them than the halo can reach; the sampled byte is the rendered byte. On both paths, through
-    /// two and three spatial segments and through Presence before a straightened crop, whose four
-    /// bilinear neighbours can straddle tiles. The estimate store is warm from the render, as a
-    /// preview leaves it, so each query counts the tiles its point needs; the store-miss case is
-    /// `slow_a_reduction_behind_a_spatial_segment_evaluates_each_tile_once`.
+    /// A read through two and three spatial segments, and through Presence before a straightened
+    /// crop whose four bilinear neighbours straddle tiles, materializes the frames of the spatial
+    /// segments once and answers every point with the rendered byte, on both paths: with the
+    /// estimates the render stored, and from a cold store of its own, whose reductions behind a
+    /// spatial segment read that segment's frame.
     #[test]
-    fn slow_a_point_query_evaluates_each_spatial_tile_at_most_once_on_both_paths() {
-        use crate::render::{SpatialMode, linear::terminal_pixel};
+    fn slow_a_read_through_several_spatial_segments_is_the_rendered_byte_on_both_paths() {
+        use crate::render::SpatialMode;
         let registry = ModuleRegistry::builtin();
         let (width, height) = POINT_STAGE;
         let source = gradient(width, height);
         let linear = linear_source(width, height);
-        let mut expected_bounds = [
-            vec![(2, 1), (1, 9)],
-            vec![(3, 1), (2, 9), (1, 25)],
-            // The crop is a resample, so its four neighbours can straddle 2 × 2 tiles.
-            vec![(1, 4)],
-        ]
-        .into_iter();
+        let settings = LinearSettings::default();
         for (case, stack) in point_stacks() {
-            let bounds = point_bounds(&registry.compile(width, height, &stack).unwrap());
-            assert_eq!(Some(&bounds), expected_bounds.next().as_ref(), "{case}");
-            // Each query reads the estimates the render stored in the same context, so its tiles
-            // are the ones its halos reach and not a reduction of the whole stage.
-            let context = RenderContext::new();
-            let rendered = tiled_in(&context, &registry, &source, &stack, POINT_TILE).unwrap();
-            for (x, y) in point_query_points(rendered.width, rendered.height) {
-                let case = format!("{case}, byte path at ({x}, {y})");
-                let evaluation = evaluation(&context, &registry, &source, &stack)
-                    .unwrap()
-                    .with_tile(POINT_TILE);
-                assert_eq!(
-                    evaluation.terminal(x, y).unwrap(),
-                    rendered.pixel(x, y),
-                    "{case}"
-                );
-                let counts = evaluations_per_segment(&evaluation.point_tiles().evaluated(), &case);
-                assert_within(&counts, &bounds, &case);
-            }
-            let context = RenderContext::new();
-            let rendered = tiled_in(
-                &context,
-                &registry,
-                crate::render::testing::linear(&linear, LinearSettings::default()),
-                &stack,
-                POINT_TILE,
-            )
-            .unwrap();
-            for (x, y) in point_query_points(rendered.width, rendered.height) {
-                let case = format!("{case}, linear path at ({x}, {y})");
-                let evaluation = linear_evaluation(
-                    &context,
+            for warm in [true, false] {
+                let byte_context = RenderContext::new();
+                let rendered =
+                    tiled_in(&byte_context, &registry, &source, &stack, POINT_TILE).unwrap();
+                let linear_context = RenderContext::new();
+                let floats = crate::render::testing::linear(&linear, settings);
+                let linear_rendered =
+                    tiled_in(&linear_context, &registry, floats, &stack, POINT_TILE).unwrap();
+                let (byte_context, linear_context) = if warm {
+                    (byte_context, linear_context)
+                } else {
+                    (RenderContext::new(), RenderContext::new())
+                };
+                let options = || RenderOptions::default().with_tile(POINT_TILE);
+                let bytes =
+                    crate::render::render(&registry, &source, &stack, options(), &byte_context)
+                        .unwrap()
+                        .frame_pixels()
+                        .unwrap();
+                let planes = linear_evaluation(
+                    &linear_context,
                     &registry,
                     &linear,
                     &stack,
-                    LinearSettings::default(),
+                    settings,
                     Tiling::Fixed(POINT_TILE),
-                    SpatialMode::Point,
+                    SpatialMode::Frames,
                 )
                 .unwrap();
-                let sampled = evaluation.pixel(x, y).unwrap().map(terminal_pixel);
-                assert_eq!(sampled.transpose().unwrap(), rendered.pixel(x, y), "{case}");
-                let counts = evaluations_per_segment(&evaluation.point_tiles().evaluated(), &case);
-                assert_within(&counts, &bounds, &case);
+                for (x, y) in point_query_points(rendered.width, rendered.height) {
+                    let at = format!("{case}, warm {warm}, ({x}, {y})");
+                    assert_eq!(
+                        bytes.rgba(x, y).unwrap(),
+                        rendered.pixel(x, y),
+                        "{at}: byte path"
+                    );
+                    assert_eq!(
+                        planes.terminal(x, y).unwrap(),
+                        linear_rendered.pixel(x, y),
+                        "{at}: linear path"
+                    );
+                }
             }
         }
     }
 
-    /// The bound is reached, not just respected: an interior point through two spatial segments
-    /// reads 3 × 3 tiles of the first, and a point through three reads what the halos reach and no
-    /// more — through the second mask's copy path, one tile of the segment below.
-    #[test]
-    fn slow_a_point_query_evaluates_exactly_the_tiles_its_halos_reach() {
-        let registry = ModuleRegistry::builtin();
-        let (width, height) = POINT_STAGE;
-        let source = gradient(width, height);
-        let [(_, two), (_, three), _] = point_stacks();
-        for (stack, (x, y), expected) in [
-            // Tile (3, 2): its region covers tile columns 2..=4 and rows 1..=3 of the first.
-            (&two, (192, 160), vec![(1, 9), (2, 1)]),
-            // Tile (1, 1), inside the second mask: 3 × 3 tiles of the middle segment, whose
-            // regions cover columns 0..=3 and rows 0..=3 of the first.
-            (&three, (64, 64), vec![(1, 16), (2, 9), (3, 1)]),
-            // Tile (5, 1), which the second mask cannot reach, is a copy of the one middle tile
-            // under it; that tile's region covers columns 4..=5 and rows 0..=2 of the first.
-            (&three, (352, 64), vec![(1, 6), (2, 1), (3, 1)]),
-        ] {
-            // The query reads the estimates the render stored in the same context.
-            let context = RenderContext::new();
-            tiled_in(&context, &registry, &source, stack, POINT_TILE).unwrap();
-            let evaluation = evaluation(&context, &registry, &source, stack)
-                .unwrap()
-                .with_tile(POINT_TILE);
-            evaluation.pixel(x, y).unwrap();
-            let case = format!("({x}, {y})");
-            assert_eq!(
-                evaluations_per_segment(&evaluation.point_tiles().evaluated(), &case),
-                expected,
-                "{case}"
-            );
-        }
-    }
-
-    /// On a store miss, the reduction of a stage behind a spatial segment reads that segment's
-    /// tiles from the query's cache one at a time: each of its tiles is evaluated exactly once,
-    /// including the ones the point's own tile then reads, and the sample is still the rendered
-    /// byte, whose render prepared its estimates from a cold store of its own.
-    #[test]
-    fn slow_a_reduction_behind_a_spatial_segment_evaluates_each_tile_once() {
-        use crate::render::{SpatialMode, linear::terminal_pixel};
-        let registry = ModuleRegistry::builtin();
-        let (width, height) = POINT_STAGE;
-        let [(_, stack), ..] = point_stacks();
-        let every_tile = (width.div_ceil(POINT_TILE) * height.div_ceil(POINT_TILE)) as usize;
-        let (x, y) = (192, 160);
-
-        // Each evaluation and each render has a context of its own, so every one of them misses.
-        let source = gradient(width, height);
-        let context = RenderContext::new();
-        let evaluation = evaluation(&context, &registry, &source, &stack)
-            .unwrap()
-            .with_tile(POINT_TILE);
-        let sampled = evaluation.terminal(x, y).unwrap();
-        assert_eq!(
-            evaluations_per_segment(&evaluation.point_tiles().evaluated(), "byte path"),
-            [(1, every_tile), (2, 1)]
-        );
-        let rendered = render_tiled(
-            &registry,
-            &source,
-            SnapshotId::new(),
-            &stack,
-            &Cancel::new(),
-            POINT_TILE,
-        )
-        .unwrap();
-        assert_eq!(sampled, rendered.pixel(x, y), "byte path");
-
-        let linear = linear_source(width, height);
-        let context = RenderContext::new();
-        let evaluation = linear_evaluation(
-            &context,
-            &registry,
-            &linear,
-            &stack,
-            LinearSettings::default(),
-            Tiling::Fixed(POINT_TILE),
-            SpatialMode::Point,
-        )
-        .unwrap();
-        let sampled = evaluation.pixel(x, y).unwrap().map(terminal_pixel);
-        assert_eq!(
-            evaluations_per_segment(&evaluation.point_tiles().evaluated(), "linear path"),
-            [(1, every_tile), (2, 1)]
-        );
-        let rendered = render_linear_tiled(
-            &registry,
-            &linear,
-            SnapshotId::new(),
-            &stack,
-            LinearSettings::default(),
-            &Cancel::new(),
-            POINT_TILE,
-        )
-        .unwrap();
-        assert_eq!(
-            sampled.transpose().unwrap(),
-            rendered.pixel(x, y),
-            "linear path"
-        );
-    }
-
     /// A reduction read by rows is, bit for bit, the mean of every block's pixels read one at a
-    /// time and summed in `f64` row by row, and a point query's tile-by-tile reduction is the
-    /// render's block-row reduction, whatever the tile size — a multiple of the block, smaller than
-    /// it or neither — with partial blocks and partial tiles at both edges, and on a stage wider
-    /// than one fill's span.
+    /// time and summed in `f64` row by row, with partial blocks at both edges, and on a stage
+    /// wider than one fill's span.
     #[test]
-    fn a_reduction_read_tile_by_tile_is_the_block_row_reduction() {
+    fn a_reduction_read_by_rows_is_the_mean_of_every_block() {
         for (width, height) in [(1, 1), (37, 23), (200, 131), (384, 320), (2100, 40)] {
             let stage = Stage { width, height };
             let fetch = |x: u32, y: u32| -> Result<[f32; 3], Error> {
@@ -4847,9 +3824,6 @@ mod tests {
                     ((x ^ y) % 13) as f32 / 5.0,
                     ((x * y) % 29) as f32 - 3.5,
                 ])
-            };
-            let fill = |region: Region, planes: &mut [f32]| {
-                fill_planes(region, planes, Parallelism::Serial, fetch)
             };
             let rows = build_reduction(stage, fetch).unwrap();
             // The reference: each block's pixels fetched one at a time, in the one summing order.
@@ -4878,57 +3852,118 @@ mod tests {
                 reduction_from(stage, &means).unwrap(),
                 "{width}x{height}, by rows"
             );
-            for tile in [1, 16, 40, 64, 512] {
-                assert_eq!(
-                    build_reduction_by_tiles(stage, tile, &Cancel::new(), fill).unwrap(),
-                    rows,
-                    "{width}x{height}, tile {tile}"
-                );
-            }
         }
     }
 
-    /// Past its capacity a query releases the least recently read tile rather than growing: it
-    /// never holds more than its capacity, each held tile is charged to the spatial budget until
-    /// the query ends, and a tile read again after its release is evaluated again, so the sample is
-    /// still the rendered byte. A target too small for any tile still leaves the floor.
+    /// Qualification's capture: a reduction built for an armed store records itself and its
+    /// stage's exact means at each factor asked for — each cell's pixels summed in `f64` row by row
+    /// and averaged over the pixels inside the stage, so at 16 the reduction's own block means bit
+    /// for bit — with partial cells at both edges and on a stage wider than one fill's span, on
+    /// whichever thread it is built. A reduction for another render context, or for none, records
+    /// nothing, and a factor that does not divide the block arms nothing.
     #[test]
-    fn a_point_query_holds_no_more_tiles_than_its_capacity() {
-        let registry = ModuleRegistry::builtin();
-        let (width, height) = POINT_STAGE;
-        let source = gradient(width, height);
-        let [_, (_, stack), _] = point_stacks();
-        // A target too small for any tile; the render runs one tile at a time in it and leaves the
-        // estimates the query then reads.
-        let context = RenderContext::with_spatial_target(0);
-        let rendered = tiled_in(&context, &registry, &source, &stack, POINT_TILE).unwrap();
-        let budget = context.spatial();
-        assert_eq!(budget.in_use(), 0);
-        let evaluation = evaluation(&context, &registry, &source, &stack)
-            .unwrap()
-            .with_tile(POINT_TILE);
-        let (x, y) = (64, 64);
-        assert_eq!(evaluation.terminal(x, y).unwrap(), rendered.pixel(x, y));
-        let evaluated = evaluation.point_tiles().evaluated().len();
-        assert!(
-            evaluated > POINT_TILES_FLOOR,
-            "the point reads {evaluated} tiles, more than the floor holds"
-        );
-        assert_eq!(evaluation.point_tiles().held(), POINT_TILES_FLOOR);
-        let tile_bytes = Region {
-            x0: 0,
-            y0: 0,
-            width: POINT_TILE,
-            height: POINT_TILE,
+    fn qualification_cells_are_the_stages_exact_means_at_each_factor() {
+        /// A reduction of `stage` built for `context`'s global estimates, as `resolve_globals`
+        /// builds one, or for none.
+        fn reduced_for(
+            context: Option<&RenderContext>,
+            stage: Stage,
+            fetch: impl Fn(u32, u32) -> Result<[f32; 3], Error> + Sync,
+        ) -> Reduction {
+            let _reducing = context.map(cells::Reducing::context);
+            build_reduction(stage, fetch).unwrap()
         }
-        .plane_bytes();
+        let factors = [16, 8, 4, 2, 1];
+        let (context, other) = (RenderContext::new(), RenderContext::new());
+        for (width, height) in [(1, 1), (37, 23), (200, 131), (2100, 40)] {
+            let stage = Stage { width, height };
+            let fetch = |x: u32, y: u32| -> Result<[f32; 3], Error> {
+                Ok([
+                    (x * 7 + y * 3) as f32 / 97.0,
+                    ((x ^ y) % 13) as f32 / 5.0,
+                    ((x * y) % 29) as f32 - 3.5,
+                ])
+            };
+            cells::arm(&context, &factors).unwrap();
+            let reduction = reduced_for(Some(&context), stage, fetch);
+            reduced_for(Some(&other), stage, fetch);
+            reduced_for(None, stage, fetch);
+            let captured = cells::take(&context);
+            assert_eq!(
+                captured.len(),
+                1,
+                "{width}x{height}: one reduction for the context"
+            );
+            assert_eq!(captured[0].reduction, reduction);
+            assert_eq!(captured[0].cells.len(), factors.len());
+            for (cells, factor) in captured[0].cells.iter().zip(factors) {
+                let case = format!("{width}x{height} at {factor}");
+                assert_eq!((cells.stage, cells.factor), (stage, factor), "{case}");
+                assert_eq!(
+                    (cells.width, cells.height),
+                    Reduction::dimensions(stage, factor),
+                    "{case}"
+                );
+                for j in 0..cells.height {
+                    for i in 0..cells.width {
+                        let (left, top) = (i * factor, j * factor);
+                        let (right, bottom) =
+                            ((left + factor).min(width), (top + factor).min(height));
+                        let mut sum = [0.0_f64; 3];
+                        for y in top..bottom {
+                            for x in left..right {
+                                let pixel = fetch(x, y).unwrap();
+                                for channel in 0..3 {
+                                    sum[channel] += f64::from(pixel[channel]);
+                                }
+                            }
+                        }
+                        let count = f64::from(bottom - top) * f64::from(right - left);
+                        let at = (j * cells.width + i) as usize;
+                        assert_eq!(
+                            cells.values[at],
+                            sum.map(|sum| (sum / count) as f32),
+                            "{case}: cell ({i}, {j})"
+                        );
+                        if factor == ESTIMATE_REDUCTION {
+                            assert_eq!(Some(cells.values[at]), reduction.pixel(i, j), "{case}");
+                        }
+                    }
+                }
+            }
+            assert!(cells::take(&context).is_empty(), "{width}x{height}: taken");
+        }
+        // Whichever thread builds the armed context's reduction records it, for that context alone.
+        cells::arm(&context, &[2]).unwrap();
+        cells::arm(&other, &[2]).unwrap();
+        let stage = Stage {
+            width: 40,
+            height: 40,
+        };
+        std::thread::scope(|scope| {
+            scope.spawn(|| reduced_for(Some(&context), stage, |_, _| Ok([0.5; 3])));
+        });
+        let captured = cells::take(&context);
         assert_eq!(
-            budget.in_use(),
-            POINT_TILES_FLOOR as u64 * tile_bytes,
-            "every held tile is charged while the query lasts"
+            captured.len(),
+            1,
+            "built on another thread for the armed context"
         );
-        drop(evaluation);
-        assert_eq!(budget.in_use(), 0, "and released with it");
+        assert_eq!(captured[0].cells[0].values, vec![[0.5; 3]; 400]);
+        assert!(
+            cells::take(&other).is_empty(),
+            "another context's capture saw none of it"
+        );
+        for factor in [0, 3, 32] {
+            assert!(
+                cells::arm(&context, &[factor]).is_err(),
+                "{factor} does not divide 16"
+            );
+        }
+        assert!(
+            cells::take(&context).is_empty(),
+            "a refused factor arms nothing"
+        );
     }
 
     // -----------------------------------------------------------------------------------------
@@ -5219,10 +4254,10 @@ mod tests {
 
     /// The same claim through the one render entry point, on the byte path and the RAW linear
     /// path: a masked spatial layer renders the same bytes with the zero-coverage copy on and off,
-    /// while running fewer tiles, and a point sample equals the rendered byte on a grid that
-    /// crosses copied tiles, run tiles and the edges between them.
+    /// while running fewer tiles, and a read equals the rendered byte on a grid that crosses
+    /// copied tiles, run tiles and the edges between them.
     #[test]
-    fn a_render_that_copies_uncovered_tiles_is_byte_identical_and_samples_equal_it() {
+    fn a_render_that_copies_uncovered_tiles_is_byte_identical_and_reads_equal_it() {
         let (registry, _, tally) = counting_registry();
         let (width, height, tile) = (240, 160, 32);
         let source = gradient(width, height);
@@ -5283,29 +4318,28 @@ mod tests {
                     ran < ran_all || (linear_path && name.contains("band")),
                     "{name}, {path} path: {ran} of {ran_all} tiles ran, so nothing was copied"
                 );
-                let sampled = |x: u32, y: u32| {
-                    let input = if linear_path {
-                        crate::render::testing::linear(&linear, settings)
-                    } else {
-                        crate::RenderSource::Byte(&source)
-                    };
-                    sample_in(
-                        &RenderContext::new(),
-                        &registry,
-                        input,
-                        &stack,
-                        RenderOptions::default().with_tile(tile),
-                        x,
-                        y,
-                    )
-                    .unwrap()
+                let input = if linear_path {
+                    crate::render::testing::linear(&linear, settings)
+                } else {
+                    crate::RenderSource::Byte(&source)
                 };
+                let context = RenderContext::new();
+                let read = crate::render::render(
+                    &registry,
+                    input,
+                    &stack,
+                    RenderOptions::default().with_tile(tile),
+                    &context,
+                )
+                .unwrap()
+                .frame_pixels()
+                .unwrap();
                 for y in (0..height).step_by(13).chain([31, 32, height - 1]) {
                     for x in (0..width).step_by(11).chain([31, 32, width - 1]) {
                         assert_eq!(
-                            sampled(x, y).rgba,
+                            read.rgba(x, y).unwrap(),
                             copied.pixel(x, y),
-                            "{name}, {path} path: sample at ({x}, {y})"
+                            "{name}, {path} path: read at ({x}, {y})"
                         );
                     }
                 }
@@ -6003,7 +5037,7 @@ mod tests {
             let stack = recipe(vec![spatial_layer(&[&format!("blur:{radius}")])]);
             let operation = SpatialOperation::new(vec![Arc::new(BoxBlur { radius })]).unwrap();
             let plan = SpatialPlan::new(&operation, Stage { width, height }, Tiling::Halo).unwrap();
-            // Warm the source and the estimate store, then measure.
+            // Warm the source, then measure.
             let context = RenderContext::new();
             byte_in(&context, &registry, &source, &stack);
             context.spatial().reset_peak();
@@ -6103,7 +5137,7 @@ mod tests {
                             // the one-layer row.
                             continue;
                         }
-                        // Warm the source and the estimate store, then measure.
+                        // Warm the source, then measure.
                         let context = RenderContext::new();
                         byte_in(&context, &registry, &source, &stack);
                         context.spatial().reset_peak();
@@ -6215,7 +5249,7 @@ mod tests {
                 masks: vec![mask],
                 ..Recipe::default()
             };
-            // Warm the source and the estimate store, then measure.
+            // Warm the source, then measure.
             let context = RenderContext::new();
             byte_in(&context, &registry, &source, &stack);
             let rules = [
@@ -6321,7 +5355,7 @@ mod tests {
                     masks: vec![mask],
                     ..Recipe::default()
                 };
-                // Warm the source and the estimate store, then measure.
+                // Warm the source, then measure.
                 let context = RenderContext::new();
                 byte_in(&context, &registry, &source, &stack);
                 context.spatial().reset_peak();

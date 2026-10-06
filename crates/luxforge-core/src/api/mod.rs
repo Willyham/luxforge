@@ -9,8 +9,10 @@ mod owner;
 mod transport;
 
 pub use methods::schemas;
-pub(crate) use owner::SourceFlightKey;
-pub use owner::{ClientId, EventWake, JobMonitorStats, OwnerHandle, PreviewRequest};
+pub use owner::{
+    ClientId, EventWake, JobMonitorStats, OwnerHandle, PIXEL_READ_REQUIRED, PreviewRequest,
+};
+pub(crate) use owner::{OWNER_THREAD, SourceFlightKey};
 
 pub use transport::{LocalServer, serve_json_lines_with};
 
@@ -253,12 +255,11 @@ impl MaskOverlayColour {
 }
 
 /// Per-client workspace state: which panels are open, which canvas mode is active, whether the
-/// thirds and information overlays are on, which clipping overlays are shown, what the canvas draws
-/// of the selected mask and whether gestures preview on the GPU. It is a client preference the owner holds, never
-/// authoritative edit state: an overlay never alters the raster, saved recipe, histogram population
-/// or a future export, and the GPU preview changes only what is drawn while a gesture moves. The
-/// desktop's developer components gallery is not here: which page it shows is that desktop's own
-/// view state.
+/// thirds and information overlays are on, which clipping overlays are shown and what the canvas
+/// draws of the selected mask. It is a client preference the owner holds, never authoritative edit
+/// state: an overlay never alters the raster, saved recipe, histogram population or a future
+/// export. The desktop's developer components gallery is not here: which page it shows is that
+/// desktop's own view state.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WorkspaceState {
@@ -281,11 +282,6 @@ pub struct WorkspaceState {
     /// The tint [`MaskOverlayMode::Tint`] is drawn in.
     #[serde(default)]
     pub mask_overlay_colour: MaskOverlayColour,
-    /// Draw this client's gestures through the GPU preview stage where it can, on by default.
-    /// Off, every gesture previews on the CPU. Either way the settled frame, the histogram,
-    /// samples, analysis, export and every API answer are the CPU's.
-    #[serde(default = "WorkspaceState::gpu_preview_default")]
-    pub gpu_preview: bool,
 }
 
 /// The pointer mode: the canvas shows the photograph and nothing else.
@@ -311,15 +307,214 @@ impl Default for WorkspaceState {
             clip_highlights: false,
             mask_overlay: MaskOverlayMode::Off,
             mask_overlay_colour: MaskOverlayColour::Green,
-            gpu_preview: Self::gpu_preview_default(),
         }
     }
 }
 
-impl WorkspaceState {
-    /// The GPU preview's recorded default: on.
-    const fn gpu_preview_default() -> bool {
-        true
+/// Which renderer draws the desktop's picture: the GPU, or the CPU reference renderer.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RendererRecord {
+    Gpu,
+    #[default]
+    Reference,
+}
+
+/// Why the reference renderer rendered rather than the GPU, as its stable kebab-case code.
+///
+/// The session's three reasons say why the reference draws the desktop's picture, as its photo
+/// surface names them ([`Self::ALL`]). An export's result names the renderer that rendered its file
+/// in the same shape, with those reasons and the export's own ([`Self::EXPORT`], and the GPU plan's
+/// code): the tile service's reason the GPU could not render it (`docs/design/export.md`).
+///
+/// It is read back only as a session carries it, with the session's reasons: an export's reason is
+/// written in its result, which no client reads back into a session, and a session read with one
+/// is refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RendererReason {
+    /// The photo surface has not checked its GPU stage yet: no photograph has been drawn. For an
+    /// export, the desktop has not yet named the adapter its window draws with to its tile worker,
+    /// which it does once the surface has checked its stage.
+    SurfacePending,
+    /// The GPU stage cannot run on this graphics device, or the launch refused it
+    /// (`--no-gpu-render`), which the stage's capability check answers the same way. For an
+    /// export, the tile worker found no adapter or device it can render on.
+    NoAdapter,
+    /// The graphics device was lost; nothing waits for a recovery.
+    DeviceLost,
+    /// An export asked for the reference renderer (`reference: true`).
+    Requested,
+    /// The launch refused the GPU (`--no-gpu-render`), so the tile worker renders nothing.
+    Refused,
+    /// The tile worker's adapter is not the one the window draws with, so it renders nothing.
+    AdapterMismatch,
+    /// The export's tiles would hold more than the tile worker's budget (`tiles-budget`).
+    Budget,
+    /// The GPU cannot draw the stack's plan, for the code named: the plan's own fallback, such as
+    /// `pixel-stage` for a layer no GPU program replaces, or the GPU stage's, such as
+    /// `pipeline-failed`.
+    Plan(&'static str),
+}
+
+impl RendererReason {
+    /// Every reason a session carries, in the order the session's description lists them.
+    pub const ALL: [Self; 3] = [Self::SurfacePending, Self::NoAdapter, Self::DeviceLost];
+
+    /// The reasons only an export's result names, besides the session's and the GPU plan's codes.
+    pub const EXPORT: [Self; 4] = [
+        Self::Requested,
+        Self::Refused,
+        Self::AdapterMismatch,
+        Self::Budget,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::SurfacePending => "surface-pending",
+            Self::NoAdapter => "no-adapter",
+            Self::DeviceLost => "device-lost",
+            Self::Requested => "requested",
+            Self::Refused => "refused",
+            Self::AdapterMismatch => "adapter-mismatch",
+            Self::Budget => "tiles-budget",
+            Self::Plan(code) => code,
+        }
+    }
+}
+
+impl Serialize for RendererReason {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for RendererReason {
+    /// A session's reason, the only reasons a renderer is read back with.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        const SESSION: [&str; 3] = [
+            RendererReason::ALL[0].as_str(),
+            RendererReason::ALL[1].as_str(),
+            RendererReason::ALL[2].as_str(),
+        ];
+        let code = std::borrow::Cow::<str>::deserialize(deserializer)?;
+        Self::ALL
+            .into_iter()
+            .find(|reason| reason.as_str() == code)
+            .ok_or_else(|| serde::de::Error::unknown_variant(&code, &SESSION))
+    }
+}
+
+/// Which renderer draws the desktop's picture on this machine, and why the reference does, as
+/// `{record, reason}` (`docs/design/gpu-first.md`): `{record: "gpu", reason: null}` while the
+/// desktop's photo surface can draw on its GPU, with `software: true` when that GPU is the
+/// platform's software adapter, and `{record: "reference", reason}` while it cannot. An owner that draws nothing, `luxforge-json`'s, always reports the reference with no
+/// reason: it has no GPU stage to fall back from.
+///
+/// The process hosting the owner reports it ([`OwnerHandle::report_renderer`], a desktop-internal
+/// path), every client's session carries the owner's one value, and no method sets it, so no
+/// client can claim a renderer the desktop does not have. A GPU record never has a reason; a
+/// session read with one is refused.
+///
+/// An export's result names the renderer that rendered its file in the same shape: the GPU, or
+/// the reference with the reason the GPU did not render it, `requested` when the export asked for
+/// the reference, and no reason on an owner with no GPU provider ([`RendererReason`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RendererFields")]
+pub struct Renderer {
+    record: RendererRecord,
+    reason: Option<RendererReason>,
+    /// The GPU record's adapter is a software one, a rasterizer on the CPU such as lavapipe or
+    /// WARP: written only when true, and only with the GPU record.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    software: bool,
+}
+
+/// [`Renderer`]'s fields as they are read, before the GPU record's missing reason is checked.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RendererFields {
+    record: RendererRecord,
+    reason: Option<RendererReason>,
+    #[serde(default)]
+    software: bool,
+}
+
+impl TryFrom<RendererFields> for Renderer {
+    type Error = &'static str;
+
+    fn try_from(fields: RendererFields) -> Result<Self, Self::Error> {
+        match fields {
+            RendererFields {
+                record: RendererRecord::Gpu,
+                reason: Some(_),
+                ..
+            } => Err("a GPU renderer has no reason"),
+            RendererFields {
+                record: RendererRecord::Reference,
+                software: true,
+                ..
+            } => Err("only a GPU renderer draws on a software adapter"),
+            RendererFields {
+                record,
+                reason,
+                software,
+            } => Ok(Self {
+                record,
+                reason,
+                software,
+            }),
+        }
+    }
+}
+
+impl Renderer {
+    /// The desktop's photo surface draws on its GPU.
+    pub const fn gpu() -> Self {
+        Self {
+            record: RendererRecord::Gpu,
+            reason: None,
+            software: false,
+        }
+    }
+
+    /// The desktop's photo surface draws on its GPU stage through the platform's software adapter.
+    pub const fn gpu_software() -> Self {
+        Self {
+            record: RendererRecord::Gpu,
+            reason: None,
+            software: true,
+        }
+    }
+
+    /// The reference renderer draws the desktop's picture, for `reason`.
+    pub const fn reference(reason: RendererReason) -> Self {
+        Self {
+            record: RendererRecord::Reference,
+            reason: Some(reason),
+            software: false,
+        }
+    }
+
+    /// An owner that draws nothing: the reference renderer is its only renderer.
+    pub const fn headless() -> Self {
+        Self {
+            record: RendererRecord::Reference,
+            reason: None,
+            software: false,
+        }
+    }
+
+    /// Whether the GPU draws through a software adapter.
+    pub fn software(self) -> bool {
+        self.software
+    }
+
+    pub fn record(self) -> RendererRecord {
+        self.record
+    }
+
+    pub fn reason(self) -> Option<RendererReason> {
+        self.reason
     }
 }
 
@@ -356,6 +551,10 @@ pub struct ClientSession {
     /// and no method changes it.
     #[serde(default)]
     pub authority: ClientAuthority,
+    /// Which renderer draws the desktop's picture on this machine: the owner's one value, the same
+    /// in every client's session, which the owner sets before each call and no method changes.
+    #[serde(default)]
+    pub renderer: Renderer,
     /// This client's one browse view as its session carries it: the query, revision, size,
     /// staleness and selection. The view's item list stays with the owner, outside the session, so
     /// a session answer never carries it (`docs/design/catalog.md`, "Views on the owner"). Boxed, so

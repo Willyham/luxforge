@@ -3,8 +3,9 @@
 #[cfg(doc)]
 use super::{PreviewQueue, PreviewSource};
 use crate::{
-    EntryId, Error, ErrorKind, ProxyApproximation, Raster, RegionFrame,
+    EntryId, Error, ErrorKind, Raster,
     analysis::{AnalysisIdentity, Report},
+    cpu_proxy::ProxyOutcome,
 };
 
 /// Which phase of a job produced a result.
@@ -15,17 +16,12 @@ use crate::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PreviewPhase {
     Proxy,
-    Region,
     Exact,
-    /// A GPU preview's boundary, which a job that asked for one renders after its Fit frame.
-    Boundary,
 }
 
 /// One phase of one preview job.
 #[derive(Debug)]
 pub struct PreviewResult {
-    /// Whether this proxy built or reused its bounded restoration prefix.
-    pub restoration_prefix: Option<crate::PrefixUse>,
     pub generation: u64,
     pub entry_id: EntryId,
     /// The identity of the job that produced this frame, so the desktop can submit the report under
@@ -35,11 +31,8 @@ pub struct PreviewResult {
     /// displayed frame correlates with the gesture settings that produced it.
     pub draft_revision: Option<u64>,
     /// The admission policy this result was produced under. An interactive result has no
-    /// following whole-frame report; settlement is requested by the desktop's quiet gate.
+    /// following whole-frame report.
     pub intent: super::PreviewIntent,
-    /// A viewport request that could not take the region path names its fallback class. The
-    /// worker then takes the eligible bounded whole-output proxy or the existing exact path.
-    pub viewport_declined: Option<String>,
     /// What this phase produced, and what only that phase can say.
     pub outcome: PhaseOutcome,
     /// Whether this frame approximates a RAW white balance the developed planes do not hold — a
@@ -78,53 +71,17 @@ pub struct PreviewResult {
 #[derive(Debug)]
 pub enum PhaseOutcome {
     Proxy(ProxyOutcome),
-    Region(RegionOutcome),
     Exact(Box<ExactOutcome>),
-    Boundary(BoundaryOutcome),
-}
-
-/// A GPU preview's boundary (`docs/design/gpu-preview.md`, "The held input boundary"): the input
-/// of the earliest layer a draft changes at the stage the job's Fit frame is drawn at, rendered
-/// after that frame for a job that asked ([`super::PreviewJob::boundary`]). Never a frame to
-/// present, analyse or sample: only the photo surface's GPU stage reads it.
-#[derive(Debug)]
-pub struct BoundaryOutcome {
-    /// What the texels depend on, as the job's request named it.
-    pub key: crate::BoundaryKey,
-    /// The texels, or why there are none: a failure, or `cancelled` when the job was abandoned.
-    pub result: Result<crate::BoundaryFrame, Error>,
-    /// A lens or perspective warp's coordinate grid over the whole output stage, computed with the
-    /// boundary for the plan's geometry tail, or why it could not be: `None` for an affine tail.
-    pub grid: Option<Result<std::sync::Arc<crate::CoordinateGrid>, Error>>,
-}
-
-/// A visible region, either half-scale interactive detail or full-detail refinement. Its raster
-/// is never a source of whole-image histogram or clipping counts.
-#[derive(Debug)]
-pub struct RegionOutcome {
-    pub frame: RegionFrame,
-}
-
-/// The display-size frame a job presents first.
-#[derive(Debug)]
-pub struct ProxyOutcome {
-    pub raster: Raster,
-    /// The proxy source dimensions this frame was rendered against.
-    pub dimensions: (u32, u32),
-    /// Whether this frame's proxy source was built for this job rather than taken from the worker's
-    /// cache.
-    pub built: bool,
-    /// Whether this frame is an approximation of the exact render at display size, and why: a
-    /// spatial-stage layer whose neighbourhoods scale with the stage, a mask drawing a feature
-    /// narrower than two proxy pixels, or both.
-    pub approximation: ProxyApproximation,
 }
 
 /// The full-resolution phase, the one every number comes from: every job that starts ends with
 /// exactly one.
 #[derive(Debug)]
 pub struct ExactOutcome {
-    /// Display-bounded reduction of the exact final output for opt-in settled Fit.
+    /// The frame in `result` reduced to the job's view bounds ([`crate::PreviewJob::proxy`]), the
+    /// reference frame of a stack, a layer prefix's among them, the view draws smaller than it is;
+    /// `None` for an interactive job, an approximate white balance, a failure, or a
+    /// stage that already fits the bounds.
     pub display: Option<Raster>,
     /// The frame, the failure, or [`ErrorKind::Cancelled`] when a newer request or
     /// [`PreviewQueue::cancel`] stopped it.
@@ -145,25 +102,15 @@ impl PreviewResult {
     pub fn phase(&self) -> PreviewPhase {
         match self.outcome {
             PhaseOutcome::Proxy(_) => PreviewPhase::Proxy,
-            PhaseOutcome::Region(_) => PreviewPhase::Region,
             PhaseOutcome::Exact(_) => PreviewPhase::Exact,
-            PhaseOutcome::Boundary(_) => PreviewPhase::Boundary,
         }
     }
 
-    /// This phase's frame, or the exact phase's failure. A boundary is no frame: it answers its
-    /// own failure, or an internal error.
+    /// This phase's frame, or the exact phase's failure.
     pub fn raster(&self) -> Result<&Raster, &Error> {
-        static NOT_A_FRAME: std::sync::LazyLock<Error> = std::sync::LazyLock::new(|| {
-            Error::internal("a GPU preview boundary is not a frame to present")
-        });
         match &self.outcome {
             PhaseOutcome::Proxy(proxy) => Ok(&proxy.raster),
-            PhaseOutcome::Region(region) => Ok(&region.frame.raster),
             PhaseOutcome::Exact(exact) => exact.result.as_ref(),
-            PhaseOutcome::Boundary(boundary) => {
-                Err(boundary.result.as_ref().err().unwrap_or(&NOT_A_FRAME))
-            }
         }
     }
 
@@ -172,17 +119,7 @@ impl PreviewResult {
     pub(crate) fn into_raster(self) -> Result<Raster, Error> {
         match self.outcome {
             PhaseOutcome::Proxy(proxy) => Ok(proxy.raster),
-            PhaseOutcome::Region(region) => Ok(region.frame.raster),
             PhaseOutcome::Exact(exact) => exact.result,
-            PhaseOutcome::Boundary(_) => Err(Error::internal("a boundary is not a frame")),
-        }
-    }
-
-    /// The boundary phase's own outcome, or `None` on every other phase.
-    pub fn boundary(&self) -> Option<&BoundaryOutcome> {
-        match &self.outcome {
-            PhaseOutcome::Boundary(boundary) => Some(boundary),
-            _ => None,
         }
     }
 
@@ -190,14 +127,6 @@ impl PreviewResult {
     pub fn proxy(&self) -> Option<&ProxyOutcome> {
         match &self.outcome {
             PhaseOutcome::Proxy(proxy) => Some(proxy),
-            _ => None,
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn region(&self) -> Option<&RegionOutcome> {
-        match &self.outcome {
-            PhaseOutcome::Region(region) => Some(region),
             _ => None,
         }
     }
@@ -217,9 +146,6 @@ impl PreviewResult {
     pub(crate) fn proxy_approximate(&self) -> bool {
         self.proxy()
             .is_some_and(|proxy| proxy.approximation.is_approximate())
-            || self
-                .region()
-                .is_some_and(|region| region.frame.approximation.is_approximate())
     }
 
     /// Whether this is an exact phase that a newer request or [`PreviewQueue::cancel`] stopped: it

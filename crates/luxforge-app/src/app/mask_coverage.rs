@@ -113,7 +113,6 @@ impl Stamp {
 struct Adopted {
     stamp: Stamp,
     generation: u64,
-    quality: Option<luxforge_ui::RegionQuality>,
     mask: luxforge_core::MaskId,
     component: Option<luxforge_core::ComponentId>,
 }
@@ -399,10 +398,6 @@ impl Editor {
             })
             .map(|shown| {
                 json!({"request":shown.stamp.summary(),"generation":shown.generation,
-                    "quality":shown.quality.map(|q| match q {
-                        luxforge_ui::RegionQuality::Interactive => "interactive",
-                        luxforge_ui::RegionQuality::Exact => "exact",
-                    }),
                     "mask":shown.mask,"component":shown.component})
             });
         json!({"epoch":worker.epoch,"requested":worker.requested.as_ref().map(Stamp::summary),
@@ -444,10 +439,10 @@ impl Editor {
             return None;
         }
         let target = self.mask_coverage_target()?;
+        // At 100% and above over the GPU's region, a grid of that region; over the reference's
+        // whole frame, or below 100%, a grid of the whole stage.
         let region = self
-            .presentation
-            .region_raster
-            .as_ref()
+            .gpu_view_region()
             .filter(|region| region.content == self.presentation.presented_content);
         let cells = if region.is_some() {
             self.overlay_cells()?
@@ -482,32 +477,29 @@ impl Editor {
         true
     }
 
-    /// Photo refinement can move generation/quality without changing exact mask inputs. Carry
-    /// the already adopted field with that identical content and rectangle; its texture version
-    /// stays fixed. Generation changes must not abandon every in-flight bound-mask snapshot.
+    /// A new frame of the same content can move the generation without changing exact mask inputs.
+    /// Carry the already adopted field with that identical content and rectangle; its texture
+    /// version stays fixed. Generation changes must not abandon every in-flight bound-mask
+    /// snapshot.
     fn restamp_mask_coverage(&mut self) -> bool {
+        let region = self.gpu_view_region();
+        let generation = self.presentation.presented_generation;
         let worker = &mut self.coverage_worker;
         let Some(shown) = worker.adopted.as_mut() else {
             return false;
         };
         if worker.spec.as_ref() != Some(&shown.stamp.spec)
             || shown.stamp.content != self.presentation.presented_content
+            || shown.generation == generation
         {
-            return false;
-        }
-        let region = self.presentation.region_raster.as_ref();
-        let generation = self.presentation.presented_generation;
-        let quality = region.map(|region| region.quality);
-        if shown.generation == generation && shown.quality == quality {
             return false;
         }
         if self
             .presentation
             .presenter
-            .restamp_coverage(generation, region)
+            .restamp_coverage(generation, region.as_ref())
         {
             shown.generation = generation;
-            shown.quality = quality;
             return false;
         }
         worker.adopted = None;
@@ -692,11 +684,6 @@ impl Editor {
                 self.coverage_worker.adopted = Some(Adopted {
                     stamp: done.stamp,
                     generation,
-                    quality: self
-                        .presentation
-                        .region_raster
-                        .as_ref()
-                        .map(|region| region.quality),
                     mask,
                     component,
                 });
@@ -968,7 +955,6 @@ mod tests {
             worker.adopted = Some(Adopted {
                 stamp: done.stamp.clone(),
                 generation: 1,
-                quality: None,
                 mask: mask.id.clone(),
                 component: None,
             });
@@ -1170,10 +1156,11 @@ mod tests {
         });
     }
 
+    /// A new generation of the same pixels changes no exact coverage dependency: the adopted grid
+    /// is carried to it with no new coverage job, texture upload or photo work.
     #[test]
-    fn same_content_region_refinement_and_photo_restamp_refresh_coverage() {
+    fn a_new_generation_of_the_same_pixels_restamps_coverage() {
         use crate::app::testing::{boot, finish};
-        use luxforge_ui::RegionQuality;
         let (mut editor, catalog) = boot();
         let (evaluation, mask) = fixture();
         editor.request_preview(PreviewJob::new(evaluation.clone()).unwrap());
@@ -1183,120 +1170,15 @@ mod tests {
         editor.mask_panel.selected_mask = Some(mask.id.clone());
         let content = editor.presentation.presented_content;
         let photo_version = editor.presentation.presenter.photo_version();
-        let full_stage = luxforge_core::StageSize {
-            width: 60,
-            height: 40,
-        };
-        let full_rect = Region {
-            x0: 6,
-            y0: 4,
-            width: 48,
-            height: 32,
-        };
-        let initial_generation = editor.presentation.presented_generation;
-        let mut coverage_version = None;
-        for (offset, quality) in [(1, RegionQuality::Interactive), (2, RegionQuality::Exact)] {
-            let (stage, rect) = if quality == RegionQuality::Interactive {
-                (
-                    luxforge_core::StageSize {
-                        width: 30,
-                        height: 20,
-                    },
-                    Region {
-                        x0: 3,
-                        y0: 2,
-                        width: 24,
-                        height: 16,
-                    },
-                )
-            } else {
-                (full_stage, full_rect)
-            };
-            let raster = luxforge_core::Raster {
-                width: rect.width,
-                height: rect.height,
-                rgba: vec![128; (rect.width * rect.height * 4) as usize].into(),
-                source_fingerprint: evaluation.identity().unwrap().source_fingerprint,
-                snapshot_id: evaluation.entry().snapshot.id.clone(),
-            };
-            let frame = luxforge_core::RegionFrame {
-                raster,
-                rect,
-                stage,
-                full_rect,
-                full_stage,
-                approximation: Default::default(),
-            };
-            let delivery = super::super::preview::Delivery {
-                generation: initial_generation + offset,
-                stage: (60, 40),
-                draft: None,
-                entry_id: evaluation.entry().id.clone(),
-                draft_revision: None,
-                intent: luxforge_core::PreviewIntent::Interactive,
-                viewport_declined: None,
-                approximate_white_balance: false,
-                render_ms: 1.0,
-            };
-            assert!(
-                editor
-                    .presentation
-                    .show_region(&delivery, &frame, quality, content)
-            );
-            if offset == 1 {
-                assert!(editor.reconcile_coverage_spec());
-                editor
-                    .request_mask_coverage(&PreviewJob::new(evaluation.clone()).unwrap(), content);
-                let done = luxforge_testbase::wait_for("coverage for the region", || {
-                    editor.coverage_worker.queue.poll()
-                });
-                editor.mask_coverage_ready(done);
-            } else {
-                assert!(
-                    !editor.reconcile_coverage_spec(),
-                    "photo refinement changes no exact coverage dependency"
-                );
-                assert!(
-                    editor.presentation.coverage().is_none(),
-                    "old photo metadata cannot draw before rebind"
-                );
-                assert!(!editor.restamp_mask_coverage());
-                assert!(
-                    !editor.mask_coverage_pending(),
-                    "same-field refinement starts no coverage or photo job"
-                );
-            }
-            let overlay = editor.presentation.presenter.region_coverage().unwrap();
-            assert_eq!(overlay.generation, delivery.generation);
-            assert_eq!(overlay.quality, quality);
-            assert!(editor.presentation.coverage().is_some());
-            assert_eq!(
-                editor.mask_coverage_summary()["adopted"]["generation"],
-                json!(delivery.generation)
-            );
-            assert!(
-                !editor.presentation.queue.is_busy(),
-                "coverage refinement cannot request photo work"
-            );
-            if let Some(version) = coverage_version {
-                assert_eq!(
-                    overlay.frame.version(),
-                    version,
-                    "the exact field is kept without another texture upload"
-                );
-            }
-            coverage_version = Some(overlay.frame.version());
-        }
-        editor.presentation.region_raster = None;
-        editor.presentation.presenter.clear_region();
+        assert!(editor.reconcile_coverage_spec());
         editor.request_mask_coverage(&PreviewJob::new(evaluation.clone()).unwrap(), content);
         let whole = luxforge_testbase::wait_for("whole mask coverage", || {
             editor.coverage_worker.queue.poll()
         });
-        editor.mask_coverage_ready(whole.clone());
+        editor.mask_coverage_ready(whole);
         assert!(editor.presentation.coverage().is_some());
         let next = editor.presentation.presented_generation + 1;
-        editor.presentation.restamp(next);
+        editor.presentation.presented_generation = next;
         let version = editor
             .presentation
             .presenter
@@ -1328,9 +1210,10 @@ mod tests {
         finish(editor, catalog);
     }
 
+    /// At 100% a mask-only commit whose exact pixels and report are on screen reuses them; a
+    /// commit whose report is missing renders the reference frame for it.
     #[test]
-    fn the_preview_scheduler_refines_half_detail_and_missing_reports_but_reuses_settled_mask_only_pixels()
-     {
+    fn the_preview_scheduler_reuses_settled_mask_only_pixels_and_renders_missing_reports() {
         use crate::app::testing::{boot, finish};
         let (mut editor, catalog) = boot();
         let (initial, mask) = fixture();
@@ -1358,45 +1241,9 @@ mod tests {
         job.analyse = true;
         editor.request_preview(job);
         drain_photo(&mut editor);
-        let old_content = editor.presentation.presented_content;
-        recipe.masks[0].amount = 50.0;
-        let changed = build(recipe.clone());
-        let mut moving = PreviewJob::new(changed.clone()).unwrap();
-        moving.intent = luxforge_core::PreviewIntent::Interactive;
-        moving.analyse = true;
-        editor.request_preview(moving);
-        drain_photo(&mut editor);
-        assert_ne!(editor.presentation.presented_content, old_content);
-        assert_eq!(
-            editor.presentation.region_raster.as_ref().unwrap().quality,
-            luxforge_ui::RegionQuality::Interactive
-        );
-        assert_ne!(
-            editor.presentation.analysis_content,
-            Some(editor.presentation.presented_content)
-        );
-        let moving_generation = editor.presentation.presented_generation;
-        let mut settle = PreviewJob::new(changed).unwrap();
-        settle.intent = luxforge_core::PreviewIntent::Settle;
-        settle.analyse = true;
-        let refinement_generation = editor.request_preview(settle);
-        assert!(
-            editor.presentation.reused.is_none(),
-            "half detail must not satisfy settlement"
-        );
-        assert!(editor.presentation.queue.is_busy());
-        assert!(refinement_generation > moving_generation);
-        drain_photo(&mut editor);
         let content = editor.presentation.presented_content;
         assert_eq!(editor.presentation.exact_content(), Some(content));
         assert_eq!(editor.presentation.analysis_content, Some(content));
-        assert!(
-            editor
-                .presentation
-                .region_raster
-                .as_ref()
-                .is_none_or(|region| region.quality == luxforge_ui::RegionQuality::Exact)
-        );
         let version = editor.presentation.presenter.photo_version();
         let mut unbound = Mask::new("Unbound");
         unbound.components.push(Component::new(
@@ -1754,6 +1601,76 @@ mod tests {
         finish(editor, catalog);
     }
 
+    /// Turning the overlay off, or any spec change, cancels the coverage worker's job, but a job
+    /// already running keeps the worker busy until it returns while nothing it produces is ever
+    /// delivered: that busy worker is no coverage pending, so a step waiting on coverage does not
+    /// wait for a frame nothing renders. The worker is held at a gate so the cancel always lands
+    /// while the job is still on it.
+    #[test]
+    fn a_cancelled_coverage_grid_is_nothing_pending() {
+        use crate::app::testing::{finish, opened};
+        use luxforge_testbase::Gate;
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 1);
+        let gate = Arc::new(Gate::new());
+        gate.shut();
+        editor.coverage_worker.queue = CoverageQueue::held(gate.clone());
+        let (parts, mask) = fixture();
+        let entry = editor
+            .document
+            .state
+            .as_ref()
+            .unwrap()
+            .current_entry
+            .clone();
+        let evaluation = Evaluation::new(
+            parts.registry().clone(),
+            parts.context().clone(),
+            parts.source().clone(),
+            entry,
+            parts.recipe().clone(),
+            None,
+        );
+        editor.request_preview(PreviewJob::new(evaluation.clone()).unwrap());
+        drain_photo(&mut editor);
+        editor.session.workspace.mode = luxforge_core::MASK_MODE.into();
+        editor.session.workspace.mask_overlay = MaskOverlayMode::Tint;
+        editor.mask_panel.selected_mask = Some(mask.id.clone());
+        editor.reconcile_coverage_spec();
+        let epoch = editor.coverage_worker.epoch;
+        editor.coverage_worker.latest = Some(evaluation.identity().unwrap());
+        editor.coverage_worker.planning = Some(epoch);
+        editor.mask_coverage_source_planned(
+            epoch,
+            Ok(Box::new(PreviewJob::new(evaluation).unwrap())),
+        );
+        assert!(editor.coverage_worker.requested.is_some());
+        gate.wait_reached(1, "the coverage grid");
+        assert!(
+            editor.mask_coverage_pending(),
+            "a requested grid is pending"
+        );
+
+        editor.invalidate_mask_coverage();
+        editor.coverage_worker.queue.cancel();
+        assert!(
+            editor.coverage_worker.queue.is_busy(),
+            "the cancelled grid is still on the worker"
+        );
+        assert!(
+            !editor.mask_coverage_pending(),
+            "a cancelled grid is no coverage anything waits for"
+        );
+        gate.open();
+        luxforge_testbase::wait_until("the cancelled grid returns", || {
+            !editor.coverage_worker.queue.is_busy()
+        });
+        assert!(
+            editor.coverage_worker.queue.poll().is_none(),
+            "the cancelled grid delivered nothing"
+        );
+        finish(editor, catalog);
+    }
+
     #[test]
     fn an_unpolled_photo_completion_prevents_logical_reuse() {
         use crate::app::testing::{boot, finish};
@@ -1808,7 +1725,6 @@ mod tests {
         assert!(editor.coverage_worker.waiting.is_some());
         editor.preview_failed(
             editor.presentation.preview_generation + 1,
-            false,
             &EntryId::new(),
             None,
             &luxforge_core::Error::resource_limit("the photograph cannot be allocated"),

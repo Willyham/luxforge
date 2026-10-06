@@ -129,6 +129,7 @@ impl Editor {
                     return Task::none();
                 }
                 self.document.compare_return = None;
+                self.gpu_compare_end();
                 return self.comparison_preview();
             }
             HistoryMessage::VersionName(value) => self.version_form.name = value,
@@ -158,7 +159,7 @@ impl Editor {
                 let asset = state.asset.id.clone();
                 self.busy = true;
                 self.status.text = "Selecting history state…".into();
-                let proxy = self.proxy_bounds();
+                let proxy = self.drawn();
                 return preview_task(
                     self.owner.clone(),
                     self.client,
@@ -185,7 +186,7 @@ impl Editor {
                 });
                 self.busy = true;
                 self.status.text = "Returning to current state…".into();
-                let proxy = self.proxy_bounds();
+                let proxy = self.drawn();
                 return preview_task(
                     self.owner.clone(),
                     self.client,
@@ -295,6 +296,7 @@ impl Editor {
             return Task::none();
         }
         self.document.compare_return = Some(previous);
+        self.gpu_compare_begin();
         self.status.text = "Comparing with the original…".into();
         self.comparison_preview()
     }
@@ -333,7 +335,7 @@ impl Editor {
         true
     }
 
-    fn compare_toggle(&mut self) -> Task<Message> {
+    pub(super) fn compare_toggle(&mut self) -> Task<Message> {
         if self.presentation.compare_after.is_some() {
             return self.compare_exit();
         }
@@ -348,13 +350,24 @@ impl Editor {
             self.status.text = "Wait for the photograph before comparing".into();
             return Task::none();
         }
+        // Compare's After side is a frame of the content on screen, which the GPU presented
+        // without one: the photograph under its picture is an earlier content's, drawn wherever
+        // the GPU's picture is not the After side (at 100% and above, under clipping marks). The
+        // reference renders the content first, and Compare begins when it lands
+        // (`Editor::frame_ready`).
+        if self.presentation.gpu_presented == Some(self.presentation.presented_content) {
+            self.gpu.refused_content = Some(self.presentation.presented_content);
+            self.gpu.compare_waits = true;
+            self.status.text = "Rendering the photograph to compare…".into();
+            return self.request_current_preview();
+        }
         // Prefer an already-rendered whole-detail frame. Retaining it clones only its Arc;
         // the existing 512 MiB raster and aggregate photo-texture limits still bound both sides.
         let after = self
             .presentation
             .exact()
             .map(|exact| &exact.raster)
-            .or_else(|| self.presentation.proxy().map(|proxy| &proxy.raster))
+            .or_else(|| self.presentation.reduced().map(|reduced| &reduced.raster))
             .and_then(|raster| {
                 luxforge_ui::Frame::new(
                     raster.rgba.clone(),
@@ -388,6 +401,7 @@ impl Editor {
         self.document.compare_return = Some(previous);
         self.presentation.compare_after = Some(after);
         self.document.compare_hold = false;
+        self.gpu_compare_begin();
         self.status.text = "Drag to compare Before and After · tap \\ or Escape to exit".into();
         self.comparison_preview()
     }
@@ -399,6 +413,7 @@ impl Editor {
         self.document.compare_return = None;
         self.presentation.compare_after = None;
         self.document.compare_hold = false;
+        self.gpu_compare_end();
         self.comparison_preview()
     }
 
@@ -411,7 +426,7 @@ impl Editor {
             self.client,
             state.asset.id.clone(),
             self.session.clone(),
-            self.proxy_bounds(),
+            self.drawn(),
         )
     }
 }

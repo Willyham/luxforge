@@ -234,7 +234,7 @@ fn blocks(length: usize) -> Vec<(usize, usize)> {
 
 /// The nearest-rank 99th percentile of `values`, which it reorders: the value at 0-based index
 /// `n - 1 - floor(n / 100)` of the ascending list.
-fn nearest_rank_99(values: &mut [f64]) -> f64 {
+pub(crate) fn nearest_rank_99(values: &mut [f64]) -> f64 {
     let index = values.len() - 1 - values.len() / 100;
     *values.select_nth_unstable_by(index, f64::total_cmp).1
 }
@@ -305,6 +305,55 @@ pub fn compare(
     reference: Rgb8<'_>,
     photo: [u32; 4],
 ) -> Result<Statistics, String> {
+    let [left, top, right, bottom] = checked(candidate, reference, photo)?;
+    let (delta_e, delta_l) = differences(candidate, reference, photo, 0..bottom - top)?;
+    statistics_of(
+        (right - left) as usize,
+        (bottom - top) as usize,
+        &delta_e,
+        &delta_l,
+    )
+}
+
+/// The per-pixel ΔE00 and signed ΔL\* of `candidate` against `reference` over the rows `rows` of
+/// `photo`, counted from the photograph's top, row by row: the values [`compare`] reduces, for a
+/// caller that takes a large photograph's differences in bands of rows and hands them, joined in
+/// order, to [`statistics_of`]. The same checks as [`compare`], and `rows` within the photograph.
+pub fn differences(
+    candidate: Rgb8<'_>,
+    reference: Rgb8<'_>,
+    photo: [u32; 4],
+    rows: std::ops::Range<u32>,
+) -> Result<(Vec<f64>, Vec<f64>), String> {
+    let [left, top, right, bottom] = checked(candidate, reference, photo)?;
+    if rows.start > rows.end || rows.end > bottom - top {
+        return Err(format!(
+            "rows {rows:?} are outside the photograph's {} rows",
+            bottom - top
+        ));
+    }
+    let (left, right) = (left as usize, right as usize);
+    let count = (right - left) * rows.len();
+    let mut delta_e = Vec::with_capacity(count);
+    let mut delta_l = Vec::with_capacity(count);
+    for y in (top + rows.start) as usize..(top + rows.end) as usize {
+        for x in left..right {
+            let (c, r) = (candidate.pixel(x, y), reference.pixel(x, y));
+            if c == r {
+                delta_e.push(0.0);
+                delta_l.push(0.0);
+            } else {
+                let (lab_c, lab_r) = (lab_from_srgb8(c), lab_from_srgb8(r));
+                delta_e.push(ciede2000(lab_r, lab_c));
+                delta_l.push(lab_c[0] - lab_r[0]);
+            }
+        }
+    }
+    Ok((delta_e, delta_l))
+}
+
+/// `photo` of two frames of one size, non-empty and inside them.
+fn checked(candidate: Rgb8<'_>, reference: Rgb8<'_>, photo: [u32; 4]) -> Result<[u32; 4], String> {
     if (candidate.width, candidate.height) != (reference.width, reference.height) {
         return Err(format!(
             "the frames differ in size: {} x {} against {} x {}",
@@ -318,24 +367,7 @@ pub fn compare(
             candidate.width, candidate.height
         ));
     }
-    let (left, top, right, bottom) = (left as usize, top as usize, right as usize, bottom as usize);
-    let (width, height) = (right - left, bottom - top);
-    let mut delta_e = Vec::with_capacity(width * height);
-    let mut delta_l = Vec::with_capacity(width * height);
-    for y in top..bottom {
-        for x in left..right {
-            let (c, r) = (candidate.pixel(x, y), reference.pixel(x, y));
-            if c == r {
-                delta_e.push(0.0);
-                delta_l.push(0.0);
-            } else {
-                let (lab_c, lab_r) = (lab_from_srgb8(c), lab_from_srgb8(r));
-                delta_e.push(ciede2000(lab_r, lab_c));
-                delta_l.push(lab_c[0] - lab_r[0]);
-            }
-        }
-    }
-    statistics_of(width, height, &delta_e, &delta_l)
+    Ok(photo)
 }
 
 /// Which limits a program is held to: the design's two classes.
@@ -663,6 +695,35 @@ mod tests {
         )
         .unwrap();
         assert_close(stats.mean, d() * 96.0 / 1536.0, 1e-12, "mean");
+    }
+
+    #[test]
+    fn ciede2000_differences_in_bands_of_rows_reduce_to_what_compare_answers() {
+        // A frame whose pixels all differ in a varied way, compared over a photograph inside it,
+        // in three uneven bands of rows joined in order.
+        let (width, height) = (40u32, 30u32);
+        let reference: Vec<u8> = (0..width * height * 3)
+            .map(|i| (i * 7 % 251) as u8)
+            .collect();
+        let candidate: Vec<u8> = (0..width * height * 3)
+            .map(|i| (i * 7 % 251 + i % 5) as u8)
+            .collect();
+        let (c, r) = (
+            Rgb8::new(width, height, &candidate).unwrap(),
+            Rgb8::new(width, height, &reference).unwrap(),
+        );
+        let photo = [3, 2, 37, 29];
+        let whole = compare(c, r, photo).unwrap();
+        let (mut delta_e, mut delta_l) = (Vec::new(), Vec::new());
+        for rows in [0..5, 5..6, 6..27] {
+            let (e, l) = differences(c, r, photo, rows).unwrap();
+            delta_e.extend(e);
+            delta_l.extend(l);
+        }
+        assert_eq!(statistics_of(34, 27, &delta_e, &delta_l).unwrap(), whole);
+        assert!(whole.mean > 0.0);
+        // Rows past the photograph are refused.
+        assert!(differences(c, r, photo, 20..28).is_err());
     }
 
     #[test]

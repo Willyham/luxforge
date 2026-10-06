@@ -8,11 +8,12 @@ use crate::ErrorKind;
 use crate::{
     AssetId, Cancel, ContentPoint, Draft, EffectStage, EntryId, Error, HistoryEntry,
     MappingDescriptor, ModuleRegistry, PreviewJob, PreviewSource, ProxyBounds, Raster, Recipe,
-    Render, RenderContext, RenderOptions,
+    Region, Render, RenderContext, RenderOptions,
     analysis::AnalysisIdentity,
     export::CaptureMetadata,
     render::{Compiled, locate, transform_of},
     source::PreparedSource,
+    tiles::{ReadStage, ReadValues, ReferenceReads, TileReads},
 };
 use std::{borrow::Cow, sync::Arc};
 
@@ -77,7 +78,7 @@ impl<S> Evaluation<S> {
         &self.bound.registry
     }
 
-    /// The budgets and the estimate store every evaluation of the planning service shares.
+    /// The budgets every evaluation of the planning service shares.
     pub fn context(&self) -> &RenderContext {
         &self.bound.context
     }
@@ -120,14 +121,6 @@ impl<S> Evaluation<S> {
     /// The stack's compilation, or the reason the host cannot evaluate it.
     pub(crate) fn compiled(&self) -> Result<&Compiled, Error> {
         self.bound.compiled.as_ref().map_err(Clone::clone)
-    }
-
-    /// Whether Fit needs an exact processed settlement, read from compilation metadata only.
-    pub fn settles_from_exact(&self) -> bool {
-        self.bound
-            .compiled
-            .as_ref()
-            .is_ok_and(Compiled::settles_from_exact)
     }
 
     /// This evaluation reading `source`.
@@ -723,54 +716,51 @@ pub(super) fn source_of(
     }
 }
 
-/// One output pixel planned on the catalog owner and evaluated wherever its caller chooses: the
-/// evaluation it reads, whose entry, snapshot and draft revision the answer names whatever is
-/// committed before it is evaluated. It shares the evaluation and owns nothing that scales with the
+/// One output pixel planned on the catalog owner and read by its tile service ([`crate::tiles`]):
+/// the evaluation it reads, whose entry, snapshot and draft revision the answer names whatever is
+/// committed before it is read. It shares the evaluation and owns nothing that scales with the
 /// image.
 pub(crate) struct PointPlan {
     evaluation: Evaluation,
-    /// Whether the point evaluates a spatial tile: the only point that costs more than
-    /// `O(layers)`, and the one the catalog owner hands to its point worker.
-    spatial: bool,
     x: u32,
     y: u32,
 }
 
 impl PointPlan {
     /// The point `(x, y)` of `evaluation`, refused now when no evaluation of it could answer: a
-    /// stack the host cannot compile, or a source the stack cannot be rendered against.
+    /// stack the host cannot compile, or a source the stack cannot be rendered against. Compiles
+    /// the stack, `O(layers)`, and reads no pixel.
     fn new(evaluation: Evaluation, x: u32, y: u32) -> Result<Self, Error> {
-        let spatial = evaluation.exact(&Cancel::never())?.evaluates_spatial();
-        Ok(Self {
-            evaluation,
-            spatial,
-            x,
-            y,
-        })
+        evaluation.exact(&Cancel::never())?;
+        Ok(Self { evaluation, x, y })
     }
 
-    /// Whether evaluating this point evaluates a spatial tile, the declared exception to point
-    /// queries costing `O(layers)`.
-    pub(crate) fn evaluates_spatial(&self) -> bool {
-        self.spatial
-    }
-
-    /// Evaluate the point from the plan's own compilation: `O(layers)`, and through a spatial
-    /// layer the one tile that contains it, whose byte is the byte a render writes there. A point
-    /// outside the rendered image is a validation error naming the stage it missed.
+    /// Evaluate the point here, through the reference renderer's reads ([`ReferenceReads`]): the
+    /// service's own answer, for a caller that holds no tile service.
     pub(crate) fn evaluate(self) -> Result<PixelSample, Error> {
-        self.evaluate_cancelled(&Cancel::never())
+        self.read(&ReferenceReads, &Cancel::never())
     }
 
-    pub(crate) fn evaluate_cancelled(self, cancel: &Cancel) -> Result<PixelSample, Error> {
-        let Self {
-            evaluation, x, y, ..
-        } = self;
-        let sampled = evaluation.exact(cancel)?.sample(x, y)?;
-        let rgba = sampled.rgba.ok_or_else(|| {
+    /// Read the point with `reads`, a tile service's renderer: the output stage's code there, as
+    /// that renderer draws it, with the identities of the entry, snapshot, source and draft the
+    /// plan was made against and the renderer that drew it. A point outside the rendered image
+    /// is a validation error naming the stage it missed.
+    pub(crate) fn read(self, reads: &dyn TileReads, cancel: &Cancel) -> Result<PixelSample, Error> {
+        let Self { evaluation, x, y } = self;
+        let answer = reads.session(&evaluation, cancel).read(
+            ReadStage::Output,
+            Region {
+                x0: x,
+                y0: y,
+                width: 1,
+                height: 1,
+            },
+            ReadValues::Codes,
+        )?;
+        let (width, height) = (answer.stage.width, answer.stage.height);
+        let rgba = answer.code(x, y).ok_or_else(|| {
             Error::validation(format!(
-                "sample ({x}, {y}) is outside the {}x{} rendered image",
-                sampled.width, sampled.height
+                "sample ({x}, {y}) is outside the {width}x{height} rendered image"
             ))
         })?;
         let entry = evaluation.entry();
@@ -778,12 +768,13 @@ impl PointPlan {
             entry_id: entry.id.clone(),
             snapshot_id: entry.snapshot.id.clone(),
             source_fingerprint: evaluation.source().fingerprint().to_owned(),
-            width: sampled.width,
-            height: sampled.height,
+            width,
+            height,
             x,
             y,
             rgba,
             draft: evaluation.draft().cloned(),
+            renderer: (&answer.answered).into(),
         })
     }
 }
@@ -1113,8 +1104,12 @@ mod tests {
                 .mapping,
             crate::MappingShape::Warp { .. }
         ));
+        // Asked for interactively, as a drag in a session the GPU does not draw asks, it renders
+        // the prefix's proxy; at rest, the prefix exactly.
         let mut queue = PreviewQueue::default();
-        queue.request(job);
+        let mut moving = job.clone();
+        moving.intent = crate::PreviewIntent::Interactive;
+        queue.request(moving);
         let proxy = luxforge_testbase::wait_for("warp prefix proxy", || queue.poll());
         assert_eq!(proxy.phase(), crate::PreviewPhase::Proxy);
         assert_eq!(
@@ -1124,6 +1119,7 @@ mod tests {
             ),
             (120, 80)
         );
+        queue.request(job);
         let exact = luxforge_testbase::wait_for("warp prefix exact", || queue.poll())
             .into_raster()
             .unwrap();
@@ -1231,8 +1227,9 @@ mod tests {
     }
 
     /// A truncated preview job keeps the display bounds it was offered, so the crop's input stage
-    /// at Fit has a proxy phase: the layer prefix at display size, then the prefix exactly. The
-    /// whole stack's output (100 × 100 after the shrink) never sizes it.
+    /// at Fit, asked for interactively as the desktop asks for it, has a proxy phase: the layer
+    /// prefix at display size; at rest the prefix renders exactly. The whole stack's output
+    /// (100 × 100 after the shrink) never sizes it.
     #[test]
     fn a_truncated_preview_job_with_bounds_gets_a_proxy_phase_of_its_prefix() {
         let catalog = temp("truncated-proxy.sqlite");
@@ -1255,7 +1252,9 @@ mod tests {
             .unwrap();
         assert_eq!(job.proxy, Some(display), "the bounds reach the worker");
         let mut queue = PreviewQueue::default();
-        queue.request(job);
+        let mut moving = job.clone();
+        moving.intent = crate::PreviewIntent::Interactive;
+        queue.request(moving);
         let proxy = luxforge_testbase::wait_for("the proxy phase", || queue.poll());
         assert_eq!(proxy.phase(), crate::PreviewPhase::Proxy);
         let frame = proxy.into_raster().unwrap();
@@ -1264,6 +1263,7 @@ mod tests {
             (120, 80),
             "the 480 × 320 input stage fitted to the bounds"
         );
+        queue.request(job);
         let exact = luxforge_testbase::wait_for("the exact phase", || queue.poll());
         assert_eq!(exact.phase(), crate::PreviewPhase::Exact);
         let frame = exact.into_raster().unwrap();
@@ -1416,30 +1416,17 @@ mod tests {
         .unwrap()
         .frame(evaluation.entry().snapshot.id.clone())
         .unwrap();
-        // A region wholly outside the stage clips to nothing, which declines to the whole frame.
-        let outside = crate::Region {
-            x0: 10_000,
-            y0: 10_000,
-            width: 4,
-            height: 4,
-        };
         let mut queue = PreviewQueue::default();
-        for viewport in [None, Some(outside)] {
-            let mut job = job.clone();
-            job.viewport = viewport;
-            job.intent = crate::PreviewIntent::Settle;
-            queue.request(job);
-            let result = luxforge_testbase::wait_for("the preview worker's exact answer", || {
-                queue.poll().filter(|result| result.exact().is_some())
-            });
-            assert_eq!(result.viewport_declined.is_some(), viewport.is_some());
-            let frame = result.into_raster().unwrap();
-            assert_eq!(frame.rgba.as_ref(), reference.rgba.as_ref(), "{viewport:?}");
-        }
+        queue.request(job.clone());
+        let result = luxforge_testbase::wait_for("the preview worker's exact answer", || {
+            queue.poll().filter(|result| result.exact().is_some())
+        });
+        let frame = result.into_raster().unwrap();
+        assert_eq!(frame.rgba.as_ref(), reference.rgba.as_ref());
         assert_eq!(
             context.compiles() - before,
             1,
-            "the worker rendered the owner's compilation, the region's fallback included"
+            "the worker rendered the owner's compilation"
         );
         drop(service);
         std::fs::remove_file(catalog).unwrap();

@@ -70,6 +70,7 @@ impl GpuIdentity {
                 IDENTITY,
             ))],
             region: None,
+            lights: Vec::new(),
         });
     }
 

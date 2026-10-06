@@ -9,7 +9,7 @@ use super::*;
 use iced::widget::shader::{Pipeline as _, Primitive as _, Viewport};
 use iced::{Rectangle, Size, Vector};
 use luxforge_reference::srgb;
-use luxforge_testbase::{wait_for, wait_until};
+use luxforge_testbase::wait_until;
 use std::time::Duration;
 
 /// The identity program: a pointwise colour program that returns its input.
@@ -66,6 +66,7 @@ pub(super) fn plan(boundary: &GpuBoundary, programs: Vec<GpuProgram>) -> GpuPlan
         texels: TexelMap::IDENTITY,
         steps: programs.into_iter().map(GpuStep::colour).collect(),
         region: None,
+        lights: Vec::new(),
     }
 }
 
@@ -316,6 +317,7 @@ fn the_words_are_the_map_then_each_steps_bases_and_position_then_their_words() {
     region.region = Some(GpuRegion {
         rect: [10, 20, 30, 40],
         stage: (64, 64),
+        full_stage: (64, 64),
     });
     pack(&region, &mut words, &mut blocks);
     assert_eq!(words[4..MAP_WORDS], [7, 16]);
@@ -455,40 +457,17 @@ fn a_device_without_fragment_storage_or_an_srgb_target_has_no_stage() {
 
 // ---- On a headless device ---------------------------------------------------------------------
 
-fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    let mut future = std::pin::pin!(future);
-    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    wait_for("the GPU request", || {
-        match future.as_mut().poll(&mut context) {
-            std::task::Poll::Ready(value) => Some(value),
-            std::task::Poll::Pending => None,
-        }
-    })
-}
-
 /// A device of this host's default adapter, or `None` after printing the skip.
 pub(super) fn headless(test: &str) -> Option<(wgpu::Device, wgpu::Queue)> {
     headless_with(test, wgpu::Limits::default())
 }
 
+/// [`headless`] at `limits`, through the one headless device the qualification code makes
+/// ([`super::headless::device`]).
 fn headless_with(test: &str, limits: wgpu::Limits) -> Option<(wgpu::Device, wgpu::Queue)> {
-    let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-    let Some(adapter) =
-        block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()
-    else {
-        eprintln!("skipped: no GPU adapter; {test} ran nothing and is not GPU evidence");
-        return None;
-    };
-    eprintln!("{test}: adapter {:?}", adapter.get_info());
-    let descriptor = wgpu::DeviceDescriptor {
-        required_limits: limits,
-        ..wgpu::DeviceDescriptor::default()
-    };
-    let device = block_on(adapter.request_device(&descriptor));
-    if device.is_err() {
-        eprintln!("skipped: no device for the adapter; {test} ran nothing and is not GPU evidence");
-    }
-    device.ok()
+    let (device, queue, adapter) = super::headless::device(test, limits)?;
+    eprintln!("{test}: adapter {adapter:?}");
+    Some((device, queue))
 }
 
 /// A pipeline counting into figures of its own, drawing to an sRGB target as the desktop's does.
@@ -529,9 +508,10 @@ pub(super) fn primitive(surface: SurfaceId, plan: Option<GpuPlan>) -> PhotoPrimi
         gpu: plan,
         gpu_options: Default::default(),
         dissolve: None,
+        source: None,
+        rest: None,
         offset: Vector::new(0.0, 0.0),
         size: Size::new(SIDE as f32, SIDE as f32),
-        clip_size: Size::new(SIDE as f32, SIDE as f32),
         bright: None,
         angle: 0.0,
         snap: true,
@@ -816,7 +796,6 @@ fn a_magnified_gpu_frame_draws_exactly_as_the_cpu_frame_of_its_codes() {
         primitive.layers = vec![(Layer::Photo, frame.clone())];
         primitive.offset = Vector::new(9.0, 14.0);
         primitive.size = drawn;
-        primitive.clip_size = Size::new(target.0 as f32, target.1 as f32);
         primitive
     };
     let cpu = placed(SurfaceId::new(1), None);
@@ -836,6 +815,132 @@ fn a_magnified_gpu_frame_draws_exactly_as_the_cpu_frame_of_its_codes() {
         differing, 0,
         "pixels the GPU frame draws unlike the CPU frame"
     );
+}
+
+/// Below 100% the view draws its display proxy as a whole-frame photograph filling the view's box,
+/// which may be far larger than the window, and a whole frame's plan stands in for that frame
+/// through the widget's own placement: over the visible part of a box panned across the window, and
+/// magnified where the proxy is smaller than the box, as one held to its pixel bound is, the GPU
+/// frame draws what the CPU proxy frame of the same codes draws, pixel for pixel. A region's plan
+/// is no frame of a whole-frame photograph, and a percentage view of retained full and region
+/// frames runs no whole frame's plan: each draws the CPU's.
+#[test]
+fn below_100_percent_a_whole_frames_plan_draws_where_the_cpu_proxy_frame_draws() {
+    let test = "below_100_percent_a_whole_frames_plan_draws_where_the_cpu_proxy_frame_draws";
+    // The proxy, drawn in the box of its stage's displayed size, of which a 128 × 128 window
+    // panned to (60, 30) is on screen.
+    let (width, height) = (200u32, 134u32);
+    let (box_width, box_height) = (275.0, 184.0);
+    let target = (2 * SIDE, 2 * SIDE);
+    let bounds = Rectangle::new(iced::Point::ORIGIN, Size::new(box_width, box_height));
+    let viewport = Rectangle::new(
+        iced::Point::new(60.0, 30.0),
+        Size::new(target.0 as f32, target.1 as f32),
+    );
+    let code = |index: u32, a: u32, b: u32| ((index * a + b) % 256) as u8;
+    let values: Vec<[f32; 3]> = (0..width * height)
+        .map(|index| [code(index, 7, 0), code(index, 13, 5), code(index, 29, 11)].map(held))
+        .collect();
+    let boundary = GpuBoundary::from_linear(
+        crate::photo_surface::BoundaryFormat::Half,
+        width,
+        height,
+        1,
+        values.iter().map(|[r, g, b]| [*r, *g, *b, 1.0]),
+    )
+    .expect("a boundary");
+    let codes: Vec<u8> = values
+        .iter()
+        .flat_map(|rgb| {
+            let [r, g, b] = rgb.map(|value| srgb::code(f64::from(value)));
+            [r, g, b, 255]
+        })
+        .collect();
+    let frame = Frame::new(Arc::new(codes), width, height, 1).expect("the codes as a frame");
+    // The primitive the widget hands the renderer for the visible part of the view's box.
+    let drawn = |surface, plan: Option<&GpuPlan>| {
+        let widget = super::super::photo_surface(
+            surface,
+            &frame,
+            super::super::Placement::Fill,
+            iced::Length::Fixed(box_width),
+            iced::Length::Fixed(box_height),
+        )
+        .gpu_preview(plan);
+        let visible = widget.visible(bounds, viewport).expect("a visible part");
+        assert_eq!(
+            visible.clip.size(),
+            viewport.size(),
+            "the window shows the box"
+        );
+        assert_eq!(visible.offset, Vector::new(-60.0, -30.0), "panned");
+        widget.primitive(visible)
+    };
+    let whole = plan(&boundary, vec![identity()]);
+    let mut region = whole.clone();
+    region.region = Some(GpuRegion {
+        rect: [0, 0, width, height],
+        stage: (width, height),
+        full_stage: (width, height),
+    });
+    assert!(
+        drawn(ID, Some(&whole)).gpu.is_some(),
+        "a whole frame's plan runs"
+    );
+    assert!(
+        drawn(ID, Some(&region)).gpu.is_none(),
+        "a region's does not"
+    );
+    let retained = super::super::viewport_surface(
+        ID,
+        Some((&frame, 1)),
+        1,
+        (width, height),
+        super::super::Placement::Fill,
+        iced::Length::Fixed(box_width),
+        iced::Length::Fixed(box_height),
+    )
+    .gpu_preview(Some(&whole));
+    let visible = retained.visible(bounds, viewport).expect("a visible part");
+    assert!(
+        retained.primitive(visible).gpu.is_none(),
+        "a view of retained frames runs no whole frame's plan"
+    );
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let mut pipeline = own_pipeline(&device, &queue);
+    let cpu = paint_into(
+        &device,
+        &queue,
+        &mut pipeline,
+        &drawn(SurfaceId::new(1), None),
+        target,
+    );
+    let gpu = paint_into(
+        &device,
+        &queue,
+        &mut pipeline,
+        &drawn(SurfaceId::new(2), Some(&whole)),
+        target,
+    );
+    let seen = diagnostics(&pipeline, SurfaceId::new(2));
+    assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
+    assert_eq!(seen.drawn_gpu_boundary, Some(1));
+    assert_eq!(seen.drawn_full_version, None, "the CPU frame was not drawn");
+    let seen = diagnostics(&pipeline, SurfaceId::new(1));
+    assert_eq!(seen.drawn_path, Some(DrawingPath::Cpu));
+    assert_eq!(seen.drawn_full_version, Some(1), "the CPU proxy frame");
+    let differing = cpu
+        .chunks_exact(4)
+        .zip(gpu.chunks_exact(4))
+        .filter(|(cpu, gpu)| cpu != gpu)
+        .count();
+    assert_eq!(
+        differing, 0,
+        "pixels the GPU frame draws unlike the CPU proxy frame"
+    );
+    settle(&pipeline);
 }
 
 /// The calling convention end to end: two layers of one unit sharing its function with their own
@@ -1112,6 +1217,49 @@ fn without_an_adapter_for_the_stage_the_frame_is_the_cpus_and_says_so() {
     assert_eq!(pipeline.figures.preview.compiles.load(Ordering::Relaxed), 0);
 }
 
+/// A launch that refused the stage (`--no-gpu-render`): the capability check answers unavailable
+/// on a device that can run the stage, the figures say so and that the launch refused it, nothing
+/// of the stage is created, and every frame handed a plan is the CPU's naming `no-adapter`,
+/// exactly as on a device that cannot run it. A pipeline on the same device that the launch did not
+/// refuse is available and draws the plan; once its device is lost, it says that instead.
+#[test]
+fn a_refused_stage_answers_unavailable_and_every_frame_is_the_cpus() {
+    let test = "a_refused_stage_answers_unavailable_and_every_frame_is_the_cpus";
+    let Some((device, queue)) = headless(test) else {
+        return;
+    };
+    let target = wgpu::TextureFormat::Bgra8UnormSrgb;
+    let mut refused = PhotoPipeline::with_stage(&device, &queue, target, Arc::default(), true);
+    assert!(refused.gpu.support.is_none(), "nothing of the stage exists");
+    let (boundary, codes) = boundary_with_codes(1);
+    let gesture = primitive(ID, Some(plan(&boundary, vec![identity()])));
+    for _ in 0..2 {
+        assert_cpu_frame(&paint(&device, &queue, &mut refused, &gesture));
+        let seen = diagnostics(&refused, ID);
+        assert_eq!(seen.gpu_stage, GpuStageState::NoAdapter { refused: true });
+        assert_eq!(seen.drawn_path, Some(DrawingPath::Cpu));
+        assert_eq!(seen.gpu_fallback, Some(GpuFallback::NoAdapter));
+        assert_eq!(seen.drawn_full_version, Some(1));
+        assert_eq!(seen.gpu_preview_in_use_bytes, 0);
+    }
+    assert_eq!(refused.figures.preview.compiles.load(Ordering::Relaxed), 0);
+    let mut allowed = own_pipeline(&device, &queue);
+    assert_eq!(
+        allowed.figures.preview.stage_state(),
+        GpuStageState::Available
+    );
+    assert_codes(&paint(&device, &queue, &mut allowed, &gesture), &codes);
+    assert_eq!(
+        diagnostics(&allowed, ID).gpu_stage,
+        GpuStageState::Available
+    );
+    allowed.simulate_device_loss();
+    assert_eq!(
+        diagnostics(&allowed, ID).gpu_stage,
+        GpuStageState::DeviceLost
+    );
+}
+
 /// A device lost during a gesture: the next frame is the CPU's and names the loss, the slot goes,
 /// and nothing waits for the device to come back.
 #[test]
@@ -1377,11 +1525,16 @@ fn a_boundary_past_the_texture_limit_makes_the_frame_the_cpus() {
 
 mod blocks;
 mod masked;
+mod rest;
+mod source;
 mod spatial;
 
-/// At a percentage zoom a region plan's frame is the photograph: drawn alone at its rectangle of
-/// the whole stage, one texel to one pixel, with no CPU frame of other content composited with
-/// it. A whole frame's plan is no frame of a percentage view, so that view draws the CPU's.
+/// At a percentage zoom of 100% or more a region plan's frame is the photograph: drawn alone at its
+/// rectangle of the whole stage, one texel to one pixel, with no CPU frame of other content
+/// composited with it. A whole frame's plan is no frame of a percentage view of 100% or more, so
+/// that view draws the CPU's; below 100% the view draws its frame as a whole-frame photograph,
+/// which runs it
+/// (`below_100_percent_a_whole_frames_plan_draws_where_the_cpu_proxy_frame_draws`).
 #[test]
 fn a_percentage_view_draws_a_region_plans_frame_at_its_rectangle() {
     let test = "a_percentage_view_draws_a_region_plans_frame_at_its_rectangle";
@@ -1397,7 +1550,6 @@ fn a_percentage_view_draws_a_region_plans_frame_at_its_rectangle() {
         let mut primitive = primitive(surface, plan);
         primitive.viewport = Some(super::super::ViewportFrames {
             full: None,
-            region: None,
             current_content: 1,
             full_stage: stage,
         });
@@ -1411,6 +1563,7 @@ fn a_percentage_view_draws_a_region_plans_frame_at_its_rectangle() {
     region.region = Some(GpuRegion {
         rect: [half, half, half + SIDE, half + SIDE],
         stage,
+        full_stage: stage,
     });
     let drawn = paint(&device, &queue, &mut pipeline, &viewed(ID, Some(region)));
     assert_codes(&drawn, &codes);
@@ -1418,11 +1571,13 @@ fn a_percentage_view_draws_a_region_plans_frame_at_its_rectangle() {
     assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
     assert_eq!(seen.drawn_gpu_boundary, Some(9));
     assert_eq!(seen.drawn_full_version, None, "no CPU frame was drawn");
-    // A whole frame's plan at a percentage view, and a region plan of another stage, run nothing.
+    // A whole frame's plan at a percentage view of retained frames, and a region plan of another
+    // stage, run nothing.
     let mut elsewhere = plan(&boundary, vec![identity()]);
     elsewhere.region = Some(GpuRegion {
         rect: [0, 0, SIDE, SIDE],
         stage: (SIDE, SIDE),
+        full_stage: (SIDE, SIDE),
     });
     for (index, plan) in [plan(&boundary, vec![identity()]), elsewhere]
         .into_iter()
@@ -1434,23 +1589,40 @@ fn a_percentage_view_draws_a_region_plans_frame_at_its_rectangle() {
         assert_ne!(seen.drawn_path, Some(DrawingPath::Gpu), "plan {index}");
         assert_eq!(seen.drawn_gpu_boundary, None, "plan {index}");
     }
+    // A reduced whole frame placed over the full stage, the softer drag frame, is the photograph
+    // too: its own stage's every pixel, magnified to fill the full stage's placement.
+    let mut softer = plan(&boundary, vec![identity()]);
+    softer.region = Some(GpuRegion {
+        rect: [0, 0, SIDE, SIDE],
+        stage: (SIDE, SIDE),
+        full_stage: stage,
+    });
+    let surface = SurfaceId::new(12);
+    paint(
+        &device,
+        &queue,
+        &mut pipeline,
+        &viewed(surface, Some(softer)),
+    );
+    let seen = diagnostics(&pipeline, surface);
+    assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu), "the softer frame");
+    assert_eq!(seen.drawn_gpu_boundary, Some(9));
+    assert_eq!(seen.drawn_full_version, None, "no CPU frame was drawn");
     settle(&pipeline);
 }
 
-/// A region plan's output takes the bucket the CPU's region picture of its rectangle reserves —
-/// its footprint and a small margin, where the photograph's square bucket would hold its longer
-/// side on both axes — and is charged that. Magnified across its far corner, its frame draws what
-/// that picture of the same codes draws, pixel for pixel: the same placement and filter weights,
-/// and its edge texels repeated past it. A dissolve from it draws it at its rectangle the same way.
+/// A region plan's output takes a bucket of its rectangle — its footprint and a small margin,
+/// where the photograph's square bucket would hold its longer side on both axes — and is charged
+/// that, as the desktop holds the slot to. Magnified across its far corner, its frame draws its
+/// texels up to the region's edge and the clear colour past it.
 #[test]
-fn a_region_plans_output_takes_the_cpu_regions_bucket_and_draws_as_it_does() {
-    let test = "a_region_plans_output_takes_the_cpu_regions_bucket_and_draws_as_it_does";
+fn a_region_plans_output_takes_a_bucket_of_its_rectangle() {
+    let test = "a_region_plans_output_takes_a_bucket_of_its_rectangle";
     let Some((device, queue)) = headless(test) else {
         return;
     };
     let mut pipeline = own_pipeline(&device, &queue);
-    // A 150 × 90 region of a 400 × 300 stage, whose boundary is the region alone, so the frame's
-    // pass repeats its edge texels past it as a picture's upload does.
+    // A 150 × 90 region of a 400 × 300 stage, whose boundary is the region alone.
     let (width, height, stage) = (150, 90, (400, 300));
     let rect = [100, 80, 100 + width, 80 + height];
     let code = |index: u32, a: u32, b: u32| ((index * a + b) % 256) as u8;
@@ -1465,77 +1637,36 @@ fn a_region_plans_output_takes_the_cpu_regions_bucket_and_draws_as_it_does() {
         values.iter().map(|[r, g, b]| [*r, *g, *b, 1.0]),
     )
     .expect("a boundary");
-    // The CPU's region picture of the codes the GPU frame's pass computes.
-    let pixels: Vec<u8> = values
-        .iter()
-        .flat_map(|rgb| {
-            let [r, g, b] = rgb.map(|value| srgb::code(f64::from(value)));
-            [r, g, b, 255]
-        })
-        .collect();
-    let picture = crate::photo_surface::RegionFrame {
-        frame: Frame::new(Arc::new(pixels), width, height, 7).expect("a region frame"),
+    let mut region = plan(&boundary, vec![identity()]);
+    region.texels.origin = [rect[0] as f32, rect[1] as f32];
+    region.region = Some(GpuRegion {
         rect,
         stage,
         full_stage: stage,
-        scale: 1.0,
-        quality: crate::RegionQuality::Exact,
-        content_id: 1,
-        generation: 1,
-    };
-    let mut region = plan(&boundary, vec![identity()]);
-    region.texels.origin = [rect[0] as f32, rect[1] as f32];
-    region.region = Some(GpuRegion { rect, stage });
-    // At 250%, the region's far corner 100 pixels into a 128 × 128 target: the last texels'
-    // outer halves are drawn, blending in the column and row past them.
+    });
+    // At 250%, the region's far corner 100 pixels into a 128 × 128 target.
     let target = (2 * SIDE, 2 * SIDE);
     let zoom = 2.5;
-    let viewed = |surface, plan: Option<GpuPlan>, dissolve: Option<f32>| {
-        let mut primitive = primitive(surface, plan);
-        primitive.layers = Vec::new();
-        primitive.viewport = Some(super::super::ViewportFrames {
-            full: None,
-            region: Some(picture.clone()),
-            current_content: 1,
-            full_stage: stage,
-        });
-        primitive.size = Size::new(stage.0 as f32 * zoom, stage.1 as f32 * zoom);
-        primitive.offset =
-            Vector::new(100.0 - rect[2] as f32 * zoom, 100.0 - rect[3] as f32 * zoom);
-        primitive.clip_size = Size::new(target.0 as f32, target.1 as f32);
-        primitive.dissolve = dissolve.map(|share| DissolveFrame {
-            dissolve: Dissolve::start(42, 7),
-            share,
-        });
-        primitive
-    };
-    let cpu = paint_into(
-        &device,
-        &queue,
-        &mut pipeline,
-        &viewed(SurfaceId::new(20), None, None),
-        target,
-    );
-    let gpu = paint_into(
-        &device,
-        &queue,
-        &mut pipeline,
-        &viewed(ID, Some(region.clone()), None),
-        target,
-    );
+    let mut viewed = primitive(ID, Some(region));
+    viewed.layers = Vec::new();
+    viewed.viewport = Some(super::super::ViewportFrames {
+        full: None,
+        current_content: 1,
+        full_stage: stage,
+    });
+    viewed.size = Size::new(stage.0 as f32 * zoom, stage.1 as f32 * zoom);
+    viewed.offset = Vector::new(100.0 - rect[2] as f32 * zoom, 100.0 - rect[3] as f32 * zoom);
+    let gpu = paint_into(&device, &queue, &mut pipeline, &viewed, target);
     let seen = diagnostics(&pipeline, ID);
     assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
-    // The two textures: the picture's bucket, the region and two more each way in steps of 64.
-    let surfaces = &pipeline.surfaces;
-    let output = surfaces[&ID]
+    // The region and two more each way in steps of 64.
+    let output = pipeline.surfaces[&ID]
         .gpu
         .as_ref()
         .expect("the slot")
         .output()
         .capacity;
-    let held_picture = surfaces[&SurfaceId::new(20)].regions.iter().flatten();
-    let capacities: Vec<(u32, u32)> = held_picture.map(|picture| picture.capacity).collect();
-    assert_eq!((output, capacities), ((192, 128), vec![(192, 128)]));
+    assert_eq!(output, (192, 128));
     assert_eq!(
         seen.gpu_preview_in_use_bytes,
         u64::from(width * height) * 8 + 192 * 128 * 4 + UNIFORM_SIZE as u64 + 2 * MIN_BUFFER,
@@ -1560,119 +1691,6 @@ fn a_region_plans_output_takes_the_cpu_regions_bucket_and_draws_as_it_does() {
         gpu[(110 * target.0 as usize + 110) * 4..][..4],
         [255, 0, 0, 255]
     );
-    let differing = gpu
-        .chunks_exact(4)
-        .zip(cpu.chunks_exact(4))
-        .filter(|(gpu, cpu)| gpu != cpu)
-        .count();
-    assert_eq!(differing, 0, "pixels the GPU frame draws otherwise");
-    // A dissolve from the frame into the picture of the same codes, each drawn at the rectangle.
-    let dissolved = paint_into(
-        &device,
-        &queue,
-        &mut pipeline,
-        &viewed(ID, None, Some(0.5)),
-        target,
-    );
-    assert!(diagnostics(&pipeline, ID).drawn_dissolve.is_some());
-    let differing = dissolved
-        .chunks_exact(4)
-        .zip(cpu.chunks_exact(4))
-        .filter(|(dissolved, cpu)| dissolved != cpu)
-        .count();
-    assert_eq!(differing, 0, "pixels the dissolve draws otherwise");
-    settle(&pipeline);
-}
-
-/// A boundary whose texels its caller let go once the slot held them draws from that slot, a tick
-/// changing only its words, and a plan of another output or tail over it refits the slot around
-/// the boundary it holds; a slot that no longer holds it — released by a frame with no plan —
-/// falls back naming it, drawing the CPU frame, and the texels uploaded again draw once more. A
-/// sequence still compiling leaves the slot, and the boundary it holds, as they were.
-#[test]
-fn a_resident_boundary_draws_from_the_slot_that_holds_it() {
-    let test = "a_resident_boundary_draws_from_the_slot_that_holds_it";
-    let Some((device, queue)) = headless(test) else {
-        return;
-    };
-    let mut pipeline = own_pipeline(&device, &queue);
-    let (boundary, codes) = boundary_with_codes(3);
-    let resident = boundary.resident();
-    assert!(boundary.holds_texels() && !resident.holds_texels());
-    assert_eq!(
-        (resident.size(), resident.version(), resident.bytes()),
-        (boundary.size(), boundary.version(), boundary.bytes())
-    );
-    let identity_of =
-        |boundary: &GpuBoundary| primitive(ID, Some(plan(boundary, vec![identity()])));
-    let drawn = paint(&device, &queue, &mut pipeline, &identity_of(&boundary));
-    assert_codes(&drawn, &codes);
-    let slot_bytes = diagnostics(&pipeline, ID).gpu_preview_in_use_bytes;
-    // The next tick names the resident boundary: drawn from the slot.
-    let drawn = paint(&device, &queue, &mut pipeline, &identity_of(&resident));
-    assert_codes(&drawn, &codes);
-    let seen = diagnostics(&pipeline, ID);
-    assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
-    assert_eq!(seen.gpu_ready_boundary, Some(3));
-    // A sequence the frame finds still compiling keeps the slot and the boundary in it.
-    let scaled = plan(&resident, vec![scale(0.5)]);
-    paint_prepared(
-        &device,
-        &queue,
-        &mut pipeline,
-        &primitive(ID, Some(scaled.clone())),
-    );
-    let seen = diagnostics(&pipeline, ID);
-    assert_eq!(seen.gpu_fallback, Some(GpuFallback::Compiling));
-    assert_eq!(
-        seen.gpu_preview_in_use_bytes, slot_bytes,
-        "the slot is kept"
-    );
-    pipeline.compile_now(&device, &scaled);
-    paint(&device, &queue, &mut pipeline, &primitive(ID, Some(scaled)));
-    let seen = diagnostics(&pipeline, ID);
-    assert_eq!(
-        seen.drawn_path,
-        Some(DrawingPath::Gpu),
-        "drawn from the slot it kept"
-    );
-    assert_eq!(seen.gpu_fallback, None);
-    // A plan of another shape over the same boundary — here the identity tail a colour step after
-    // a stack's last spatial one brings — refits the slot and keeps the boundary it holds.
-    let (width, height) = resident.size();
-    let mut tailed = plan(&resident, vec![identity()]);
-    tailed.steps.push(GpuStep::Geometry(GpuTail::affine(
-        (width, height),
-        [0, 0, width, height],
-        false,
-        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-    )));
-    tailed.steps.push(GpuStep::colour(identity()));
-    pipeline.compile_now(&device, &tailed);
-    let drawn = paint(&device, &queue, &mut pipeline, &primitive(ID, Some(tailed)));
-    assert_codes(&drawn, &codes);
-    let seen = diagnostics(&pipeline, ID);
-    assert_eq!(
-        seen.drawn_path,
-        Some(DrawingPath::Gpu),
-        "drawn from the kept boundary"
-    );
-    assert_eq!(seen.gpu_fallback, None);
-    assert_eq!(seen.gpu_ready_boundary, Some(3));
-    // A frame with no plan lets the slot go; the resident boundary cannot be drawn then.
-    assert_cpu_frame(&paint(&device, &queue, &mut pipeline, &primitive(ID, None)));
-    let drawn = paint(&device, &queue, &mut pipeline, &identity_of(&resident));
-    assert_cpu_frame(&drawn);
-    let seen = diagnostics(&pipeline, ID);
-    assert_eq!(seen.gpu_fallback, Some(GpuFallback::BoundaryReleased));
-    assert_eq!(
-        seen.gpu_fallback.map(GpuFallback::as_str),
-        Some("boundary-released")
-    );
-    assert_eq!(seen.gpu_ready_boundary, None);
-    // Its texels, brought again, draw.
-    let drawn = paint(&device, &queue, &mut pipeline, &identity_of(&boundary));
-    assert_codes(&drawn, &codes);
     settle(&pipeline);
 }
 
@@ -1802,8 +1820,8 @@ fn a_boundary_arrives_a_frames_chunks_at_a_time() {
 
 /// A functional measurement of one boundary's arrival, not a timing: the largest `f32` boundary a
 /// RAW region with Clarity's margin reads in the largest window, 4705 × 2817 texels (212 MB), held
-/// as the desktop holds it, handed to the surface frame by frame until the surface has it, then let
-/// go as the desktop lets it go. Each frame records what the surface has staged, what the
+/// as a caller holds a boundary handed as texels, handed to the surface frame by frame until the
+/// surface has it, then let go. Each frame records what the surface has staged, what the
 /// GPU-preview slot holds and the process's footprint; the process's own peak footprint catches
 /// what falls between frames. `LUXFORGE_ARRIVAL=whole` uploads the boundary in its first frame, as
 /// before the upload was spread; anything else spreads it at [`UPLOAD_PER_FRAME`]. Run each in its
@@ -1878,24 +1896,17 @@ fn a_boundary_arrival_measured() {
         }
         assert!(frames < 64, "the boundary never arrived");
     }
-    // The desktop lets its copy go once the surface holds the boundary.
-    let resident = boundary.resident();
+    // The caller lets its copy go once the surface holds the boundary, which its slot keeps.
     assert_eq!(
         boundary.texels.as_ref().map(Arc::strong_count),
         Some(1),
-        "nothing but the desktop's copy holds the texels"
+        "nothing but the caller's copy holds the texels"
     );
     drop(boundary);
     let (dropped, _) = footprint();
     eprintln!(
         "{test}: the copy let go: footprint {:+.1} MB",
         mb(dropped - baseline)
-    );
-    paint(
-        &device,
-        &queue,
-        &mut pipeline,
-        &primitive(ID, Some(plan(&resident, vec![identity()]))),
     );
     settle(&pipeline);
     let (after, peak) = footprint();

@@ -3,12 +3,12 @@
 //!
 //! Every zoom draws the photograph through the photo surface, which hands the renderer only the part
 //! of the zoomed box that is on screen. This scenario is the rendered proof of that. At 50% (the
-//! display proxy stretched over the exact stage's box), 100%, 120%, 800% and 1600% — where the box
+//! view's reduction stretched over the exact stage's box), 100%, 120%, 800% and 1600% — where the box
 //! is far larger than any GPU viewport — and panned to the centre and the far corner at 1600%, each
 //! captured frame is checked sample by sample against the source pixel the zoom and the pan put
 //! under it, and where a quadrant boundary is in view its position is measured against the one the
-//! geometry predicts. The texture on screen is checked to be the proxy below 100% and the exact
-//! render from 100% up, in the state and in the `preview_displayed` event that put it there; at
+//! geometry predicts. The texture on screen is checked to be the reduction below 100% and the exact
+//! frame from 100% up, in the state and in the `preview_displayed` event that put it there; at
 //! 100% and above the 60 MP render is wider than the device's texture limit and is drawn from
 //! tiles. Three `wait` steps, at Fit, at 100% and at 1600%, prove that idling rebuilds the view
 //! without writing the texture, asking for a frame or changing a pixel; the Fit one follows a
@@ -35,7 +35,7 @@ const TOLERANCE: u8 = 10;
 /// How far, in source pixels, a sample must stay from anything the fixture draws besides its flat
 /// quadrants — the quadrant boundaries, the white centre line and arrow, the black dashes, the
 /// image's own edge — to be expected to show a flat quadrant colour. It clears JPEG ringing and
-/// chroma subsampling, and the proxy's averaging below 100%.
+/// chroma subsampling, and the reduction's averaging below 100%.
 const FEATURE_MARGIN: f64 = 12.0;
 /// The sample grid's spacing, in physical pixels.
 const SAMPLE_STEP: usize = 12;
@@ -495,30 +495,50 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             )?;
         }
 
-        // The texture on screen: the proxy wherever the stage is drawn smaller than itself, the
-        // exact render from 100% up.
-        let proxy = match zoom {
+        // The texture on screen: the reference's exact frame reduced to the view wherever the
+        // stage is drawn smaller than itself, the exact frame itself from 100% up.
+        let reduced = match zoom {
             Zoom::Fit => true,
             Zoom::Percent(value) => *value < 100.0,
         };
         let raster: [u32; 2] = serde_json::from_value(surface["raster"].clone())
             .map_err(|_| format!("{what}: no raster on the surface"))?;
+        // Where the GPU presents the stack at rest (`docs/design/gpu-first.md`, stage 2), a zoom
+        // renders nothing on the CPU: the GPU's picture of the view is the photograph, drawn over
+        // the frame the surface already holds, and the CPU texture checks below do not apply.
+        let gpu_picture = matches!(
+            state["surface"]["gpu"]["picture"].as_str(),
+            Some("rest" | "view")
+        );
+        if gpu_picture && *kind != Kind::Open {
+            ensure(
+                state["surface"]["gpu"]["drawing_path"] == "gpu",
+                format!(
+                    "{what}: the GPU's picture at rest is handed but the surface drew {}",
+                    state["surface"]["gpu"]["drawing_path"]
+                ),
+            )?;
+        }
         ensure(
-            state["proxy"]["presented"] == json!(proxy),
-            format!("{what}: proxy presented is {}", state["proxy"]["presented"]),
+            (gpu_picture && *kind != Kind::Open) || state["reference"]["reduced"] == json!(reduced),
+            format!(
+                "{what}: reduction presented is {}",
+                state["reference"]["reduced"]
+            ),
         )?;
-        // A proxy is the stage scaled into the bounds the view asks for now — never one left over
-        // from a previous zoom — and the exact render is the stage itself. The opened frame is the
-        // exception: the open request is sent before the display scale is known, so its proxy is
-        // made for the bounds at scale 1 and the refit that follows is what the settling wait
-        // lets land.
-        let expected_raster = if proxy && *kind == Kind::Open {
+        // A reduction is the stage scaled into the bounds the view asks for now — never one left
+        // over from a previous zoom — and the exact frame is the stage itself. The opened frame is
+        // the exception: the open request is sent before the display scale is known, so its
+        // reduction is made for the bounds at scale 1 and the refit that follows is what the
+        // settling wait lets land.
+        let cpu_picture = !(gpu_picture && *kind != Kind::Open);
+        let expected_raster = if !cpu_picture || (reduced && *kind == Kind::Open) {
             raster
-        } else if proxy {
-            let bounds = &state["proxy"]["bounds"];
+        } else if reduced {
+            let bounds = &state["reference"]["bounds"];
             let (width, height) = (
-                bounds["width"].as_f64().ok_or("No proxy bounds")?,
-                bounds["height"].as_f64().ok_or("No proxy bounds")?,
+                bounds["width"].as_f64().ok_or("No view bounds")?,
+                bounds["height"].as_f64().ok_or("No view bounds")?,
             );
             let scale = (width / f64::from(stage.0))
                 .min(height / f64::from(stage.1))
@@ -531,17 +551,22 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             [stage.0, stage.1]
         };
         ensure(
-            raster == expected_raster && (!proxy || (raster[0] < stage.0 && raster[1] < stage.1)),
+            !cpu_picture
+                || (raster == expected_raster
+                    && (!reduced || (raster[0] < stage.0 && raster[1] < stage.1))),
             format!(
                 "{what}: the surface holds a {raster:?} raster of a {stage:?} stage, expected {expected_raster:?}"
             ),
         )?;
         // Every raster handed to the surface is one `preview_displayed` and one new version, so
-        // the event that put this frame's raster on screen is the version-th of them.
+        // the event that put this frame's raster on screen is the version-th of them; a picture the
+        // GPU presents hands no raster.
         let version = number(&surface["version"], "surface version")?;
         let displayed = events
             .iter()
-            .filter(|event| event["event"] == "preview_displayed")
+            .filter(|event| {
+                event["event"] == "preview_displayed" && event["detail"]["path"] != "gpu"
+            })
             .nth(
                 usize::try_from(version)?
                     .checked_sub(1)
@@ -550,10 +575,10 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             .ok_or_else(|| format!("{what}: no preview_displayed for version {version}"))?;
         let detail = &displayed["detail"];
         ensure(
-            detail["proxy"] == json!(proxy)
-                && detail["path"] == "surface"
-                && detail["dimensions"] == json!([stage.0, stage.1])
-                && detail["proxy_dimensions"] == if proxy { json!(raster) } else { Value::Null },
+            !cpu_picture
+                || (detail["reduced"] == json!(reduced)
+                    && detail["path"] == "surface"
+                    && detail["dimensions"] == json!([stage.0, stage.1])),
             format!("{what}: the raster on screen was displayed as {detail}"),
         )?;
 
@@ -640,7 +665,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             json!({
             "step": name,
             "kind": format!("{kind:?}"),
-            "proxy": proxy,
+            "reduced": reduced,
             "raster": raster,
             "displayed_generation": displayed["detail"]["generation"],
             "version": version,

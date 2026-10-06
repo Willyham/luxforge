@@ -1,42 +1,57 @@
 //! A draft's GPU preview, planned with its preview job on the catalog owner
 //! (`docs/design/gpu-preview.md`, "A tick"): the plan the photo surface draws a tick from, and
-//! the boundary it starts from, which the preview worker renders once per draft.
+//! the boundary it starts from, which the photo surface derives from the source it holds.
 //!
 //! Planning reads the job's own evaluation — the draft's effective recipe beside the entry it was
-//! planned over, and the stack's one compilation — and compiles at the stage the Fit frame is
-//! drawn at: `O(layers)`, no pixel read, nothing that scales with the image.
+//! planned over, and the stack's one compilation — and compiles at the stage the view draws at:
+//! `O(layers)`, no pixel read, nothing that scales with the image.
 //!
-//! - **The boundary layer** is the earliest layer the draft changes: the first that differs from
-//!   the entry's own stack or reads a mask the draft changes, the layer a module action drafts
-//!   (where it is, or where its first commit would put it), and for a `mask.*` gesture the first
-//!   layer the drafted mask modulates.
+//! - **From the source.** Every plan starts from the source itself, the first segment's input
+//!   before its first operation, so a drag and the stack's picture at rest ([`plan_rest`]) share
+//!   one boundary over one source and view, every stack has a plan, the empty one and one of
+//!   geometry alone included, and the geometry is the plan's tail. A draft of a RAW's white
+//!   balance, its source layer, is drawn over the source the surface holds, developed at the
+//!   entry's white balance, with the change as a leading pointwise step
+//!   ([`WhiteBalanceApproximation`], the matrix the drafted preview's evaluation carries); at rest
+//!   after its release the picture is the redevelopment's.
 //! - **A stable shape.** A field-patch module compiles only its non-neutral units, so the drafted
 //!   layer is planned in its GPU shape, every unit present and a neutral one as its identity
 //!   ([`super::GpuPlanRequest::drafted`]); a drafted layer the stack does not hold yet, because
 //!   its value is still neutral, is planned as the neutral layer its first commit would insert.
 //!   A drag that leaves or returns to neutral therefore keeps one program sequence. The CPU
 //!   compile is untouched: only this plan asks for the shape.
-//! - **Stored estimates.** A spatial operation's global estimate, Dehaze's atmospheric light, is
-//!   read from the estimate store the job's CPU frames fill, under the key a Fit frame of the same
-//!   content asks with: the proxy is named by its source and plan, never built. A plan whose key
-//!   the store does not hold yet takes the estimate on the GPU and says it is approximate.
+//! - **Lights.** A spatial operation's global estimate, Dehaze's atmospheric light, is read from the
+//!   light plane its plan's light link writes from the whole stage at full resolution, per frame
+//!   ([`super::GpuLight`]), at every view: the one the picture at rest draws with, with every
+//!   spatial layer before it included, whose input only a sweep of the whole stage through those
+//!   layers gives, which no slot runs yet, so a slot computes such a light by its stand-in over the
+//!   source with them left out ([`super::GpuLight::stand_in`]). A drag that leaves a light's input
+//!   unchanged reads that light, which the slot keeps; one that changes it only through
+//!   restoration or spatial layers reads the light of the stack it started from, the slot's still;
+//!   and one that changes it through a colour layer computes it every tick from the source with
+//!   every spatial layer before it left out ([`super::GpuLightRestoration::LeftOut`]), as the
+//!   recorded default sets (`docs/design/gpu-first.md`, "Proposals with recorded defaults").
 //! - **The boundary key** names everything the boundary's texels depend on: the source's identity
 //!   (fingerprint, development and view), the layers before the boundary and the masks they read,
-//!   the boundary's index, and the proxy plan with its window, or at the exact stage at Fit the
-//!   window the output reads, or at a percentage zoom the region of the output stage the boundary
-//!   is held for. Equal keys hold equal texels.
-//! - **Where it is drawn** ([`GpuView`]): at Fit, the stage the job's Fit frame is drawn at; at a
-//!   percentage zoom of 100% or more, the exact stage, over the visible region at full scale, whose
-//!   boundary is the window of the boundary layer's received stage that region reads.
-//! - **What it holds.** Only the part of the boundary layer's received stage the drawn output
-//!   reads: a windowed proxy's window at a Fit proxy; at the exact stage at Fit, which a
-//!   photograph that fits the display bounds is drawn at, the window the whole output stage reads
-//!   through the windowed planner ([`crate::render::window::WindowPlan::of_rect`]) — what a crop,
-//!   a straightening and a warp read, with their resample's taps and margin, clamped to the stage;
-//!   at a percentage zoom, the window the visible region reads.
+//!   the boundary's index, and the reduced-stage plan with its bounds and window, or at the exact stage at
+//!   Fit the window the output reads, or at a percentage zoom of 100% or more the region of the
+//!   output stage the boundary is held for. Equal keys hold equal texels.
+//! - **Where it is drawn** ([`GpuView`]): at Fit, and at a percentage zoom below 100%, the reduced
+//!   stage at the job's display bounds ([`super::fit`]): Fit's, or below 100% the displayed size
+//!   of the whole stage; at a percentage zoom of 100% or more, the exact stage, over the visible
+//!   region at full scale, whose boundary is the window of the source that region reads. A region
+//!   whose plan's own figures are large carries the draft planned at the reduced stage of the
+//!   view's area too ([`GpuPreview::reduced`]), which the desktop draws scaled to the view when the
+//!   region's slot would pass the budget.
+//! - **What it holds.** Only the part of the source the drawn output reads, through the GPU's own
+//!   window walk ([`crate::render::window::WindowPlan::of_gpu_rect`] from the source): at the
+//!   reduced stage, the window of it a crop reads; at the exact stage at Fit, which a photograph
+//!   that fits the display bounds is drawn at, the window the whole output stage reads — what a
+//!   crop, a straightening and a warp read, with their resample's taps and margin, clamped to the
+//!   stage; at a percentage zoom of 100% or more, the window the visible region reads.
 use super::{
-    EstimateSource, GpuAnswer, GpuEstimates, GpuFallback, GpuPlan, GpuPlanRequest, gpu_plan_with,
-    plan::{HeldPrefix, gpu_plan_holding},
+    GpuAnswer, GpuFallback, GpuLight, GpuLightRestoration, GpuPlan, GpuPlanRequest, gpu_lights,
+    gpu_plan,
 };
 use crate::{
     Draft, EFFECT_FORMAT, EffectStage, Error, Evaluation, Layer, LayerId, MaskId, ModuleRegistry,
@@ -57,10 +72,12 @@ pub struct BoundaryKey {
     prefix: String,
     /// The boundary layer's index in the drafted stack.
     layer: usize,
-    /// The proxy the boundary is rendered at, with the window it holds; `None` at the exact stage,
-    /// where a photograph that fits the display is drawn, and at a percentage zoom.
+    /// The proxy the boundary is rendered at, with the bounds it was fitted to and the window it
+    /// holds; `None` at the exact stage, where a photograph that fits the display is drawn, and at
+    /// a percentage zoom of 100% or more.
     plan: Option<ProxyPlan>,
-    /// At a percentage zoom, the rectangle of the output stage the boundary is held for.
+    /// At a percentage zoom of 100% or more, the rectangle of the output stage the boundary is
+    /// held for.
     region: Option<Region>,
     /// The rectangle of the boundary stage whose texels it holds, including spatial support
     /// margins. The output region alone does not identify a spatial input window.
@@ -68,6 +85,12 @@ pub struct BoundaryKey {
 }
 
 impl BoundaryKey {
+    /// The source the boundary is derived from: its fingerprint, and for a RAW the development and
+    /// the view over its planes.
+    pub fn source(&self) -> &ProxyIdentity {
+        &self.source
+    }
+
     /// The proxy the boundary is rendered at, with its window; `None` at the exact stage.
     pub fn plan(&self) -> Option<ProxyPlan> {
         self.plan
@@ -78,8 +101,8 @@ impl BoundaryKey {
         self.layer
     }
 
-    /// At a percentage zoom, the rectangle of the output stage the boundary is held for, which the
-    /// plan's frame covers; `None` at Fit.
+    /// At a percentage zoom of 100% or more, the rectangle of the output stage the boundary is held
+    /// for, which the plan's frame covers; `None` for a whole frame, at Fit and below 100%.
     pub fn region(&self) -> Option<Region> {
         self.region
     }
@@ -88,37 +111,83 @@ impl BoundaryKey {
 /// Where a draft's GPU preview is drawn.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GpuView {
-    /// At Fit, in these display bounds: the stage the job's Fit frame is drawn at.
+    /// A whole frame in these display bounds, at the reduced stage fitted to them
+    /// ([`super::fit`]). At Fit the bounds are the photo area's; at a percentage zoom below 100%
+    /// they are the displayed size of the whole stage, so the plan differs from Fit's only in its
+    /// size.
     Fit(ProxyBounds),
     /// At a percentage zoom of 100% or more: `rect` of the output stage at full scale, the visible
     /// region, drawn at `magnification` physical pixels an output pixel.
     Region { rect: Region, magnification: f64 },
 }
 
-/// The boundary a draft's GPU preview starts from: its key, and where its layer begins in the
-/// compilation the preview worker renders the job's Fit frame from.
+/// The boundary a GPU plan starts from: the source itself at the plan's stage, which the photo
+/// surface derives from the prepared source it holds (`docs/design/gpu-preview.md`, "The GPU
+/// source") — reduced to the proxy plan the key names at Fit and below 100%, and a window of it cut
+/// at full scale at the exact stage, at Fit or over a region at 100% or more. Nothing renders it
+/// on the CPU.
 #[derive(Clone, Debug, PartialEq)]
-pub struct BoundaryRequest {
+pub struct SourceBoundary {
     pub key: BoundaryKey,
-    /// The segment and operation index the boundary layer begins at in the drafted stack's
-    /// compilation at the boundary's stage.
-    pub(crate) position: (usize, usize),
-    /// A lens warp's geometry tail, whose coordinate grid the worker computes with the boundary,
-    /// once per draft and off the interface thread; `None` for an affine or projective tail, which
-    /// the surface evaluates exactly.
+    /// A lens warp's geometry tail, whose coordinate grid is computed off the interface thread
+    /// once per key ([`Self::grid`]); `None` for an affine or projective tail, which the surface
+    /// evaluates exactly.
     pub(crate) warp: Option<super::GpuGeometry>,
     /// How the boundary's texels are held: `f32` for a plan of the linear path, half floats
     /// otherwise.
     pub format: crate::BoundaryFormat,
     /// Physical pixels an output pixel is drawn at, which a warp's coordinate grid is made dense
-    /// enough for: one at Fit, the zoom at a percentage.
+    /// enough for: one for a whole frame, whose proxy is drawn at about its own size, the zoom
+    /// over a region at 100% or more.
     pub(crate) magnification: f64,
-    /// The window of the boundary layer's received stage the boundary holds, so what the boundary
-    /// and a slot drawing over it take is known before it is rendered: at a percentage zoom, the
-    /// one the region reads, the region and every margin after it; at the exact stage at Fit, the
-    /// one the whole output stage reads, when that is less than all of it. `None` at a Fit proxy,
-    /// whose plan names its window, and for a boundary of the whole exact stage.
+    /// The window of the content stage the boundary holds, so what the boundary and a slot drawing
+    /// over it take is known before it is derived: at a percentage zoom of 100% or more, the one
+    /// the region reads, the region and every margin after it; at the exact stage at Fit, the one
+    /// the whole output stage reads, when that is less than all of it. `None` at a proxy, at Fit or
+    /// below 100%, whose plan names its window ([`ProxyPlan::held`]), and for a boundary of the
+    /// whole exact stage.
     pub window: Option<Region>,
+}
+
+impl SourceBoundary {
+    /// Whether the plan's tail is a lens warp, whose coordinate grid the surface reads
+    /// ([`Self::grid`]).
+    pub fn needs_grid(&self) -> bool {
+        self.warp.is_some()
+    }
+
+    /// A lens warp's geometry tail and the magnification its coordinate grid is made dense enough
+    /// for: what the whole output stage's grid, which every window of it takes its part of, is
+    /// computed from ([`super::GpuGeometry::stage_grid`]). `None` for an affine or projective tail.
+    pub fn warp(&self) -> Option<(&super::GpuGeometry, f64)> {
+        self.warp.as_ref().map(|warp| (warp, self.magnification))
+    }
+
+    /// What of the output stage a lens warp's grid covers: the region at 100% or more, the whole
+    /// stage at Fit and below 100%. `None` for a plan with no lens warp.
+    pub fn grid_region(&self) -> Option<Region> {
+        let output = self.warp.as_ref()?.output();
+        Some(self.key.region().unwrap_or(Region {
+            x0: 0,
+            y0: 0,
+            width: output.width,
+            height: output.height,
+        }))
+    }
+
+    /// A lens warp's coordinate grid over what the plan draws ([`Self::grid_region`]) at the plan's
+    /// magnification, the part of the whole stage's grid there ([`super::GpuGeometry::grid`]), or
+    /// why it cannot be built; `None` for an affine or projective tail. Frame work of up to
+    /// [`super::GRID_MAX_NODES`] nodes: a caller runs it off the interface thread and the catalog
+    /// owner.
+    pub fn grid(&self) -> Option<Result<std::sync::Arc<super::CoordinateGrid>, Error>> {
+        let warp = self.warp.as_ref()?;
+        let region = self.grid_region()?;
+        Some(warp.grid(region, self.magnification).and_then(|grid| {
+            grid.map(std::sync::Arc::new)
+                .ok_or_else(|| Error::internal("a warp tail with no grid"))
+        }))
+    }
 }
 
 /// A draft's GPU preview: the plan a tick is drawn from, or why the gesture takes the CPU path,
@@ -127,18 +196,31 @@ pub struct BoundaryRequest {
 pub struct GpuPreview {
     pub answer: GpuAnswer,
     /// The boundary of [`Self::answer`]'s plan; `None` when there is no plan.
-    pub boundary: Option<BoundaryRequest>,
-    /// At a percentage zoom, when [`Self::answer`]'s plan holds a drafted restoration or spatial
-    /// layer in its GPU shape: the plan of that layer in the CPU's shape, the units its values
-    /// need, from the same boundary. Over the region's window the GPU shape charges the planes of
-    /// its units at zero too, so the desktop draws this one when only it fits the budget.
+    pub boundary: Option<SourceBoundary>,
+    /// Over a region at 100% or more, when [`Self::answer`]'s plan holds a drafted restoration or
+    /// spatial layer in its GPU shape: the plan of that layer in the CPU's shape, the units its
+    /// values need, from the same boundary. Over the region's window the GPU shape charges the
+    /// planes of its units at zero too, so the desktop draws this one when only it fits the budget.
     pub cpu_shape: Option<Box<GpuPlan>>,
     /// The label the recipe list gives the layer [`Self::answer`]'s fallback names, when it names
     /// one ([`ModuleRegistry::layer_label`]). The reason's index is into the stack the plan was
     /// made from, which holds the neutral layer a drafted layer's first commit would add, so the
     /// label travels with the answer rather than being read back from the committed stack's rows.
     pub layer: Option<String>,
+    /// Over a region at 100% or more whose plan's own figures pass the figure the caller names,
+    /// [`REDUCED_AFTER_BYTES`] by default ([`plan_preview_reducing`]): the
+    /// same draft planned at the reduced stage of the view's area, the frame Fit draws at the
+    /// view's size ([`GpuView::Fit`] at the region's displayed size). The desktop draws it scaled
+    /// to the view, the softer drag frame, when the region's slot would pass the GPU-preview budget;
+    /// the picture at rest after the release is the region's, sharp. `None` elsewhere.
+    pub reduced: Option<Box<GpuPreview>>,
 }
+
+/// What a region plan's own figures pass before its draft is planned at the reduced stage too
+/// ([`GpuPreview::reduced`]): a quarter of the photo surface's 2 GiB GPU-preview budget, below
+/// which no region's slot, beside the largest source the budget holds, passes it. A constant and
+/// the plan: never the bytes in use.
+pub const REDUCED_AFTER_BYTES: u64 = 512 << 20;
 
 /// Whether a layer at `stage` has a GPU shape (`CompileStage::gpu_shape`): a colour or finish
 /// layer's every unit, or a restoration or spatial layer's.
@@ -157,21 +239,66 @@ struct Drafted {
     mask: Option<MaskId>,
 }
 
-/// The first layer of `recipe` a GPU plan can start from: past its source layers, whose
-/// development the boundary already holds, and past any geometry layer before the first layer of
-/// another stage, which only a stack holding nothing but geometry has; the stack's length when
-/// there is none. Every gesture over the layers from it on is planned from it ([`plan_preview`]).
-fn first_content_layer(registry: &ModuleRegistry, recipe: &Recipe) -> usize {
-    recipe
+/// The white-balance change a drafted RAW preview approximates on the planes its entry developed,
+/// and the source layer it is drafted on: `None` for a JPEG and for a RAW whose planes hold the
+/// recipe's white balance.
+fn drafted_white_balance(
+    evaluation: &Evaluation,
+) -> Option<(crate::WhiteBalanceApproximation, usize)> {
+    let crate::PreviewSource::Raw { settings, .. } = evaluation.source() else {
+        return None;
+    };
+    let balance = settings.white_balance?;
+    let registry = evaluation.registry();
+    let layer = evaluation
+        .recipe()
         .layers
         .iter()
-        .position(|layer| {
-            !matches!(
-                registry.effect_stage(&layer.effect_id),
-                Some(EffectStage::Source | EffectStage::Geometry)
-            )
-        })
-        .unwrap_or(recipe.layers.len())
+        .position(|layer| registry.effect_stage(&layer.effect_id) == Some(EffectStage::Source))
+        .unwrap_or(0);
+    Some((balance, layer))
+}
+
+/// The leading pointwise step of a RAW white-balance draft: `balance`'s matrix, narrowed to `f32`,
+/// over each source texel, reported under the source layer `layer`. It runs Basic's white-balance
+/// program, the one linear-sRGB 3 × 3 multiply, unclamped.
+fn white_balance_operation(
+    balance: &crate::WhiteBalanceApproximation,
+    layer: usize,
+) -> super::GpuOperation {
+    let words = balance
+        .matrix()
+        .iter()
+        .flatten()
+        .map(|value| (*value as f32).to_bits())
+        .collect();
+    super::GpuOperation {
+        layer,
+        units: vec![super::GpuDescription::new(
+            &crate::modules::basic::WHITE_BALANCE_PROGRAM,
+            words,
+        )],
+        position: super::GpuPosition::IDENTITY,
+        mask: None,
+    }
+}
+
+/// `plan` with `balance` applied to each source texel first ([`white_balance_operation`]): before
+/// its content operations, and before every light link's, its stand-in's included, whose input is
+/// the same source. `O(lights)`.
+fn with_white_balance(
+    plan: &mut GpuPlan,
+    balance: &crate::WhiteBalanceApproximation,
+    layer: usize,
+) {
+    let operation = white_balance_operation(balance, layer);
+    plan.content.insert(0, operation.clone());
+    for light in &mut plan.lights {
+        light.content.insert(0, operation.clone());
+        if let Some(stand_in) = &mut light.stand_in {
+            stand_in.content.insert(0, operation.clone());
+        }
+    }
 }
 
 /// The layer `draft`'s action drafts in `recipe`: the one layer of its field-patch module's colour,
@@ -232,6 +359,7 @@ fn first_change(entry: &Recipe, drafted: &Recipe) -> Option<usize> {
 
 /// Where layer `layer` of a stack compiled as `compiled` begins: its own position, or the end of
 /// the last segment for a layer one past the stack.
+#[cfg(feature = "qualification")]
 pub(crate) fn position(compiled: &Compiled, layer: usize) -> Option<(usize, usize)> {
     match compiled.layers.get(layer) {
         Some(position) => Some(*position),
@@ -243,11 +371,12 @@ pub(crate) fn position(compiled: &Compiled, layer: usize) -> Option<(usize, usiz
     }
 }
 
-/// The stage a job's Fit frame is drawn at, planned exactly as the preview worker plans the job's
-/// proxy phase: from the output stage of the stack's one compilation, with the window of the proxy
-/// stage a crop reads. A stack that fits the bounds, or has no proxy, is drawn at its exact stage.
+/// The stage a job's whole frame is drawn at, at Fit or at a percentage zoom below 100%: the GPU's
+/// reduced stage at the job's bounds ([`super::fit::reduced_stage`]), fitted from the output stage
+/// of the stack's one compilation, with the window of the reduced stage a crop reads. A stack that
+/// fits the bounds, or holds a layer that does not scale, is drawn at its exact stage.
 struct FitStage {
-    /// The proxy plan, with its window; `None` at the exact stage.
+    /// The reduced-stage plan, with its window; `None` at the exact stage.
     plan: Option<ProxyPlan>,
     /// The stack compiled at that stage, uncut.
     compiled: Compiled,
@@ -256,13 +385,14 @@ struct FitStage {
     full: Stage,
     /// The source is a developed RAW, whose frames take the linear path.
     linear: bool,
-    /// At a percentage zoom, the region of the output stage drawn, at this magnification.
+    /// At a percentage zoom of 100% or more, the region of the output stage drawn, at this
+    /// magnification.
     region: Option<(Region, f64)>,
 }
 
 impl FitStage {
-    /// The stage `view` is drawn at: the Fit frame's for [`GpuView::Fit`], the exact stage over
-    /// the visible region for [`GpuView::Region`].
+    /// The stage `view` is drawn at: the reduced stage at the view's bounds for [`GpuView::Fit`],
+    /// the exact stage over the visible region for [`GpuView::Region`].
     fn of_view(evaluation: &Evaluation, view: GpuView) -> Result<Self, Error> {
         match view {
             GpuView::Fit(bounds) => Self::of(evaluation, bounds),
@@ -288,40 +418,37 @@ impl FitStage {
     }
 
     fn of(evaluation: &Evaluation, bounds: ProxyBounds) -> Result<Self, Error> {
-        let registry = evaluation.registry();
-        let recipe = evaluation.recipe();
-        let exact = evaluation.exact(&crate::Cancel::never())?;
+        let compiled = evaluation.compiled()?;
         let full = evaluation.source().dimensions();
+        let reduced = super::fit::reduced_stage(
+            evaluation.registry(),
+            evaluation.recipe(),
+            full,
+            compiled.stage(),
+            bounds,
+        )?;
         let full = Stage {
             width: full.0,
             height: full.1,
         };
-        let proxy = registry
-            .proxy_eligible(recipe)
-            .ok()
-            .and_then(|()| exact.proxy_plan(bounds))
-            .map(|plan| exact.proxy_window(registry, recipe, plan));
         // A developed RAW's frames are the linear path's, unclamped and unquantized between
         // segments, where a JPEG's are clamped and quantized at every stage boundary.
         let linear = matches!(evaluation.source(), crate::PreviewSource::Raw { .. });
-        Ok(match proxy {
-            Some(stage) => {
-                let plan = stage.plan();
-                Self {
-                    plan: Some(plan),
-                    compiled: stage.compiled()?.clone(),
-                    stage: Stage {
-                        width: plan.width,
-                        height: plan.height,
-                    },
-                    full,
-                    linear,
-                    region: None,
-                }
-            }
+        Ok(match reduced {
+            Some(reduced) => Self {
+                plan: Some(reduced.plan),
+                stage: Stage {
+                    width: reduced.plan.width,
+                    height: reduced.plan.height,
+                },
+                compiled: reduced.compiled,
+                full,
+                linear,
+                region: None,
+            },
             None => Self {
                 plan: None,
-                compiled: evaluation.compiled()?.clone(),
+                compiled: compiled.clone(),
                 stage: full,
                 full,
                 linear,
@@ -330,41 +457,18 @@ impl FitStage {
         })
     }
 
-    /// A plan request from `boundary` at this stage, on the source's path.
-    fn request(&self, boundary: usize) -> GpuPlanRequest {
+    /// A plan request from the source itself at this stage, on the source's path
+    /// ([`GpuPlanRequest::from_source`]).
+    fn request(&self) -> GpuPlanRequest {
         let request = match self.plan {
-            Some(_) => GpuPlanRequest::fit(boundary, self.stage, self.full),
-            None => GpuPlanRequest::exact(boundary, self.full),
-        };
+            Some(_) => GpuPlanRequest::fit(0, self.stage, self.full),
+            None => GpuPlanRequest::exact(0, self.full),
+        }
+        .from_source();
         if self.linear {
             request.linear()
         } else {
             request
-        }
-    }
-
-    /// Where `evaluation`'s CPU frames at this stage keep their global estimates: its context's
-    /// store, under its proxy at this plan, or under its source at the exact stage.
-    ///
-    /// A windowed proxy reduces no stage of its own: its spatial operations are handed the exact
-    /// stage's estimates (`Render::render_proxy`), so its store is read under the exact stage's
-    /// key, the source's own stage being where a spatial layer, which comes before any geometry,
-    /// reads. A layer whose prefix holds a mask hashes it under the proxy's sampling, so such a
-    /// lookup misses and the GPU takes the estimate from the window, approximate.
-    fn estimates<'a>(&self, evaluation: &'a Evaluation) -> GpuEstimates<'a> {
-        GpuEstimates {
-            context: evaluation.context(),
-            source: match self.plan {
-                Some(plan) if plan.window.is_some() => EstimateSource::Whole {
-                    source: evaluation.source().into(),
-                    stage: self.full,
-                },
-                Some(plan) => EstimateSource::Proxy {
-                    source: evaluation.source(),
-                    plan,
-                },
-                None => EstimateSource::Render(evaluation.source().into()),
-            },
         }
     }
 
@@ -396,21 +500,40 @@ fn with_neutral(recipe: &Recipe, index: usize, effect: &str, mask: Option<MaskId
     planned
 }
 
-/// For each spatial layer of `planned`, the drafted stack, whose input differs from the one it had
-/// in `entry`'s stack only through restoration layers: the prefix its global estimates were stored
-/// under in `entry` ([`HeldPrefix`]). A drag of Detail changes Dehaze's input only by its filters,
-/// which barely move the block means the atmospheric light is chosen from, so it reads the light
-/// `entry`'s settled frame stored, held for the drag (`docs/specs/performance.md`, "Dehaze behind
-/// Detail at 100%"). A colour layer before a spatial one moves those means by its tone, as three
-/// stops of exposure does far past the spatial limits, so a drag that changes one holds none.
-/// `O(layers)`, hashing each such layer's prefix once in each stack.
-fn held_prefixes(
+/// How a drag changes the input of an estimating layer's light from the stack it started from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LightInput {
+    /// Every layer before it is the one the stack it started from holds: the light the picture at
+    /// rest drew with, which the slot keeps.
+    Unchanged,
+    /// Only restoration or spatial layers before it change, or are drafted: the light of the stack
+    /// the drag started from, the slot's still. Detail's filters barely move the block means the
+    /// light is chosen from, and a spatial layer's exact output exists only at rest.
+    Spatial,
+    /// A colour layer before it, or a mask such a layer reads, changes or is drafted: the light is
+    /// computed every tick over the source with every spatial layer before it left out.
+    Colour,
+}
+
+/// How the drag of `planned`, the drafted stack, changes the input of the light of its layer
+/// `layer` from `committed`, the stack the draft was opened over: the layers before it that the
+/// draft adds, removes or changes, their masks included, and the drafted layer `drafted` when it
+/// lies before it. `O(layers)`.
+fn light_input(
     registry: &ModuleRegistry,
-    entry: &crate::HistoryEntry,
+    committed: &Recipe,
     planned: &Recipe,
-    sampling: MaskSampling,
-) -> Result<Vec<HeldPrefix>, Error> {
-    let committed = &entry.snapshot.recipe;
+    layer: usize,
+    drafted: Option<usize>,
+) -> LightInput {
+    let Some(id) = planned.layers.get(layer).map(|layer| &layer.id) else {
+        return LightInput::Colour;
+    };
+    // A layer the stack it started from does not hold has no light at rest to read: its own
+    // light, planned over the drafted stack, is the one a tick computes.
+    let Some(at) = committed.layers.iter().position(|stored| &stored.id == id) else {
+        return LightInput::Unchanged;
+    };
     let stage_of = |layer: &Layer| registry.effect_stage(&layer.effect_id);
     let mask_of = |recipe: &Recipe, layer: &Layer| {
         layer
@@ -418,75 +541,159 @@ fn held_prefixes(
             .as_ref()
             .and_then(|id| recipe.masks.iter().find(|mask| &mask.id == id).cloned())
     };
-    let mut held = Vec::new();
-    for (layer, drafted) in planned.layers.iter().enumerate() {
-        if stage_of(drafted) != Some(EffectStage::Spatial) {
-            continue;
-        }
-        let Some(at) = committed
-            .layers
+    let (before, was) = (&planned.layers[..layer], &committed.layers[..at]);
+    let changed = |layer: &Layer, ours: &Recipe, other: (&[Layer], &Recipe)| {
+        other
+            .0
             .iter()
-            .position(|stored| stored.id == drafted.id)
-        else {
-            continue;
-        };
-        let (before, was) = (&planned.layers[..layer], &committed.layers[..at]);
-        // Every layer before it the draft adds, removes or changes, its mask included, is a
-        // restoration layer.
-        let changed = |layer: &Layer, ours: &Recipe, other: (&[Layer], &Recipe)| {
-            other
-                .0
-                .iter()
-                .find(|stored| stored.id == layer.id)
-                .is_none_or(|stored| {
-                    stored != layer || mask_of(other.1, stored) != mask_of(ours, layer)
-                })
-        };
-        let restoration_only = before
-            .iter()
-            .filter(|layer| changed(layer, planned, (was, committed)))
-            .chain(
-                was.iter()
-                    .filter(|layer| changed(layer, committed, (before, planned))),
-            )
-            .all(|layer| stage_of(layer) == Some(EffectStage::Restoration));
-        if !restoration_only {
-            continue;
-        }
-        let prefix = prefix_hash(was, &committed.masks, sampling)?;
-        if prefix != prefix_hash(before, &planned.masks, sampling)? {
-            held.push(HeldPrefix {
-                layer,
-                prefix_hash: prefix,
-            });
+            .find(|stored| stored.id == layer.id)
+            .is_none_or(|stored| {
+                stored != layer || mask_of(other.1, stored) != mask_of(ours, layer)
+            })
+    };
+    let mut changes = before
+        .iter()
+        .filter(|layer| changed(layer, planned, (was, committed)))
+        .chain(
+            was.iter()
+                .filter(|layer| changed(layer, committed, (before, planned))),
+        )
+        .chain(
+            drafted
+                .filter(|index| *index < layer)
+                .map(|index| &planned.layers[index]),
+        )
+        .peekable();
+    if changes.peek().is_none() {
+        return LightInput::Unchanged;
+    }
+    if changes.all(|layer| {
+        matches!(
+            stage_of(layer),
+            Some(EffectStage::Restoration | EffectStage::Spatial)
+        )
+    }) {
+        LightInput::Spatial
+    } else {
+        LightInput::Colour
+    }
+}
+
+/// `planned` with every layer before layer `layer` as `committed` holds it, its mask's definition
+/// too, and one `committed` does not hold left neutral: the stack whose light the slot kept from
+/// before the drag, in the drafted stack's own order, so its light is planned at that layer's
+/// place.
+fn held_before(committed: &Recipe, planned: &Recipe, layer: usize) -> Recipe {
+    let mut held = planned.clone();
+    for stored in held.layers.iter_mut().take(layer) {
+        match committed.layers.iter().find(|was| was.id == stored.id) {
+            Some(was) => {
+                if let Some(id) = &was.mask
+                    && let Some(mask) = committed.masks.iter().find(|mask| &mask.id == id)
+                {
+                    match held.masks.iter_mut().find(|held| &held.id == id) {
+                        Some(held) => *held = mask.clone(),
+                        None => held.masks.push(mask.clone()),
+                    }
+                }
+                *stored = was.clone();
+            }
+            None => stored.payload = json!({}),
         }
     }
-    Ok(held)
+    held
+}
+
+/// The lights a drag of `planned`, the drafted stack, draws with, from `lights`, the ones its plan
+/// for `request` reads: each kept where the drag leaves its input as `committed` held it, the light
+/// of the stack the drag started from where it changes that input only through restoration or
+/// spatial layers ([`held_before`]), and the light over the source with every spatial layer before
+/// it left out where it changes it through a colour layer ([`LightInput`]), computed every tick.
+/// `O(layers)` compiles for each changed light, no pixel read.
+fn drag_lights(
+    registry: &ModuleRegistry,
+    committed: &Recipe,
+    planned: &Recipe,
+    request: GpuPlanRequest,
+    lights: &mut [GpuLight],
+) -> Result<(), Error> {
+    let full = super::spatial::light_request(request);
+    let mut left_out: Option<Vec<GpuLight>> = None;
+    for light in lights.iter_mut() {
+        match light_input(registry, committed, planned, light.layer, request.drafted) {
+            LightInput::Unchanged => {}
+            LightInput::Spatial => {
+                let held = held_before(committed, planned, light.layer);
+                let unshaped = GpuPlanRequest {
+                    drafted: None,
+                    ..full
+                };
+                if let Some(found) = super::spatial::lights_of(registry, &held, unshaped)?
+                    .into_iter()
+                    .find(|held| held.layer == light.layer)
+                {
+                    *light = found;
+                }
+            }
+            LightInput::Colour => {
+                let left_out = match &mut left_out {
+                    Some(left_out) => left_out,
+                    None => left_out.insert(gpu_lights(
+                        registry,
+                        planned,
+                        full,
+                        GpuLightRestoration::LeftOut,
+                    )?),
+                };
+                if let Some(found) = left_out.iter().find(|found| found.layer == light.layer) {
+                    *light = found.clone();
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// The window of the stage segment `segment` of `compiled`, a stack over a `full` source, receives
-/// that the whole output stage reads, planned as the boundary's render plans it
+/// that the whole output stage reads, planned by the GPU window walk
 /// (`Render::output_boundary`, [`WindowPlan::of_gpu_rect`]): `None` when the segment reads all of
-/// it or the planner cannot cut the stack. A spatial operation before the segment whose estimate
-/// lies behind an earlier one reads it from the store alone, which the caller checks
-/// ([`Compiled::unheld_estimate`]). `O(segments)`, no pixel read.
+/// it or the planner cannot cut the stack. `O(segments)`, no pixel read.
 pub(crate) fn output_window(compiled: &Compiled, full: Stage, segment: usize) -> Option<Region> {
     let full = (full.width, full.height);
     let output = Region::whole(compiled.stage());
-    WindowPlan::of_gpu_rect(compiled, full, output, segment)
+    WindowPlan::of_gpu_rect(compiled, full, output)
         .ok()
         .and_then(|windows| windows.received_cut(compiled, full, segment))
 }
 
 /// The GPU preview of `evaluation`, an open draft's preview job's evaluation, drawn as `view`
-/// says: the plan from the earliest layer the draft changes, at the stage the job's Fit frame is
-/// drawn at or the exact stage at a percentage zoom, and the boundary it starts from. `O(layers)`
-/// on the catalog owner: one compile at the proxy stage for the window, one for the plan, a lookup
-/// in the estimate store for each global estimate, and no pixel read.
+/// says: the plan from the source, at the reduced stage of the view's bounds — at Fit, and at a
+/// percentage zoom below 100% — or the exact stage over the visible region at 100% or more, and
+/// the boundary it starts from, with the lights the drag draws with ([`drag_lights`]); a RAW
+/// white-balance draft's change as its leading step ([`with_white_balance`]); and over a region
+/// whose plan's own figures pass [`REDUCED_AFTER_BYTES`], the same draft at the reduced stage of
+/// the view's area ([`GpuPreview::reduced`]). `O(layers)` on the catalog owner: one compile at the
+/// reduced stage for the window, one for the plan, one at the whole stage for its lights and one
+/// more for each light the drag changes, those again for a region's reduced plan, and no pixel
+/// read.
+#[cfg(test)]
 pub(crate) fn plan_preview(
     evaluation: &Evaluation,
     draft: &Draft,
     view: GpuView,
+) -> Result<GpuPreview, Error> {
+    plan_preview_reducing(evaluation, draft, view, REDUCED_AFTER_BYTES)
+}
+
+/// [`plan_preview`], a region whose plan's own figures pass `reduce_after` bytes carrying its
+/// draft at the reduced stage of the view's area: what the owner plans with the figure the job's
+/// request names, [`REDUCED_AFTER_BYTES`] unless a test names a smaller one
+/// ([`crate::PreviewRequest::reduce_regions_after`]).
+pub(crate) fn plan_preview_reducing(
+    evaluation: &Evaluation,
+    draft: &Draft,
+    view: GpuView,
+    reduce_after: u64,
 ) -> Result<GpuPreview, Error> {
     let registry = evaluation.registry();
     let recipe = evaluation.recipe();
@@ -502,36 +709,27 @@ pub(crate) fn plan_preview(
                 .position(|layer| layer.mask.as_ref() == Some(&mask))
         });
     let changed = first_change(&evaluation.entry().snapshot.recipe, recipe);
-    let Some(earliest) = [
-        changed,
-        drafted_layer.as_ref().map(|drafted| drafted.index),
-        modulated,
-    ]
-    .into_iter()
-    .flatten()
-    .min() else {
+    // A draft that changes no layer, drafts none and modulates none draws the entry's frame.
+    if changed.is_none() && drafted_layer.is_none() && modulated.is_none() {
         return Ok(GpuPreview {
             answer: GpuAnswer::Fallback(GpuFallback::Unchanged),
             boundary: None,
             cpu_shape: None,
             layer: None,
+            reduced: None,
         });
-    };
-    // Every gesture is planned from the stack's first layer past its source layers, whatever it
-    // changes: the boundary is then the (proxy) source itself, one key for every gesture over the
-    // same source and view, which the desktop holds across drafts, and the surface keeps each
-    // spatial operation's output by content, so what a gesture leaves unchanged runs once. A
-    // gesture that changes a source layer keeps its own boundary, which names `boundary-stage`.
-    let editable = first_content_layer(registry, recipe);
-    let boundary = if earliest < editable {
-        earliest
-    } else {
-        editable
-    };
+    }
+    // Every gesture is planned from the source itself, whatever it changes, as the stack's picture
+    // at rest is ([`plan_rest`]): the boundary is the (reduced) source, one key for every gesture
+    // over the same source and view, which the photo surface derives from the source it holds,
+    // and the surface keeps each spatial operation's output by content, so what a gesture leaves
+    // unchanged runs once. A geometry drag on a stack of geometry alone is the plan's tail; a RAW
+    // white-balance drag is a leading step over the source the surface holds, developed at the
+    // entry's white balance ([`with_white_balance`]).
     let fit = FitStage::of_view(evaluation, view)?;
     // The drafted layer in its GPU shape, inserted as the neutral layer its first commit would
     // add when the stack does not hold it yet.
-    let request = fit.request(boundary);
+    let request = fit.request();
     let (planned, request) = match &drafted_layer {
         Some(drafted) if !drafted.held => (
             with_neutral(recipe, drafted.index, &drafted.effect, drafted.mask.clone()),
@@ -547,121 +745,397 @@ pub(crate) fn plan_preview(
         )
         .then_some(drafted.index)
     });
-    planned_preview(
+    let mut preview = planned_preview(
         evaluation,
         &fit,
         &planned,
-        boundary,
         request,
         spatial_drafted,
+        Some(&evaluation.entry().snapshot.recipe),
+    )?;
+    if let Some((balance, layer)) = drafted_white_balance(evaluation) {
+        if let GpuAnswer::Plan(plan) = &mut preview.answer {
+            with_white_balance(plan, &balance, layer);
+        }
+        if let Some(plan) = &mut preview.cpu_shape {
+            with_white_balance(plan, &balance, layer);
+        }
+    }
+    // A region whose slot may pass the budget carries the draft planned at the reduced stage of
+    // the view's area, which the desktop draws in its place, scaled to the view.
+    if let (
+        GpuView::Region {
+            rect,
+            magnification,
+        },
+        Some(bytes),
+    ) = (view, region_bytes(&preview))
+        && bytes > reduce_after
+    {
+        let side = |pixels: u32| (f64::from(pixels) * magnification).round().max(1.0) as u32;
+        let bounds = ProxyBounds {
+            width: side(rect.width),
+            height: side(rect.height),
+        };
+        preview.reduced = Some(Box::new(plan_preview_reducing(
+            evaluation,
+            draft,
+            GpuView::Fit(bounds),
+            reduce_after,
+        )?));
+    }
+    Ok(preview)
+}
+
+/// What a region plan of `preview` takes by its own figures, the smaller of its two shapes: the
+/// boundary over its window and an intermediate for every link and a tail, the spatial planes over
+/// it, and the region's output codes. `None` for a preview with no region plan. `O(passes)`.
+fn region_bytes(preview: &GpuPreview) -> Option<u64> {
+    let (GpuAnswer::Plan(plan), Some(boundary)) = (&preview.answer, &preview.boundary) else {
+        return None;
+    };
+    let (rect, window) = (boundary.key.region()?, boundary.window?);
+    let bytes = |plan: &GpuPlan| {
+        let texels = u64::from(window.width) * u64::from(window.height);
+        let links = plan.spatial.len() as u64 + 1;
+        let planes: u64 = plan
+            .spatial
+            .iter()
+            .map(|spatial| {
+                spatial.plane_bytes((window.x0, window.y0), (window.width, window.height))
+            })
+            .sum();
+        texels * boundary.format.texel_bytes() as u64 * (links + 1)
+            + planes
+            + u64::from(rect.width) * u64::from(rect.height) * 4
+    };
+    Some(
+        preview
+            .cpu_shape
+            .as_deref()
+            .map_or(bytes(plan), |smaller| bytes(plan).min(bytes(smaller))),
     )
 }
 
-/// The GPU preview of a committed stack, `evaluation` a job of no draft, drawn as `view` says: the
-/// plan of the stack itself from its first content layer, every layer in the CPU's shape, and the
-/// boundary it starts from — the one every gesture over the same source and view starts from. The
-/// desktop holds that boundary before any gesture begins, so a gesture's first tick is drawn on
-/// the GPU, and holds this plan behind the CPU frame, so the surface keeps the stack's spatial
-/// outputs by content. `None` for a stack with no content layer.
-pub(crate) fn plan_resident(
-    evaluation: &Evaluation,
-    view: GpuView,
-) -> Result<Option<GpuPreview>, Error> {
-    let registry = evaluation.registry();
-    let recipe = evaluation.recipe();
-    let boundary = first_content_layer(registry, recipe);
-    if boundary >= recipe.layers.len() {
-        return Ok(None);
-    }
-    let fit = FitStage::of_view(evaluation, view)?;
-    let request = fit.request(boundary);
-    planned_preview(evaluation, &fit, recipe, boundary, request, None).map(Some)
+/// A displayed stack's picture at rest on the GPU, planned with its preview job on the catalog
+/// owner (`docs/design/gpu-first.md`, stage 2).
+#[derive(Clone, Debug)]
+pub struct GpuRest {
+    /// The plan of the stack itself at the view, from the source, every layer in the CPU's shape,
+    /// and the boundary it starts from — the one every gesture over the same source and view
+    /// starts from, which the photo surface derives from the source it holds. At a percentage zoom
+    /// of 100% or more it is the picture at rest, the visible region at full scale over the window
+    /// cut from the source; at Fit and below 100% it is drawn over the source reduced to the
+    /// view's size, as a drag's frame is, until the picture at rest lands, and kept behind it for
+    /// the next gesture.
+    pub view: GpuPreview,
+    /// The stack at full resolution in tiles ([`RestTiles`]), which the histogram and clipping
+    /// counts are reduced from at every view, and which at Fit and below 100%, where the view
+    /// draws the output stage smaller than it is, are reduced to the view's size as the picture at
+    /// rest process-first ([`RestTiles::reduction`]); or why the GPU cannot draw them. Where the
+    /// view draws the output stage at its own size or larger, the picture at rest is
+    /// [`Self::view`]'s plan and the tiles are the counts' alone. `None` only from a caller that
+    /// plans no tiles.
+    pub tiles: Option<Result<Box<RestTiles>, GpuFallback>>,
 }
 
-/// The plan of `planned` from layer `boundary` at `fit`'s stage, with `request`, and the boundary
-/// it starts from; at a percentage zoom also the window the boundary will hold and, for a drafted
-/// restoration or spatial layer at `spatial_drafted`, the plan of its CPU shape.
+/// The sides a picture at rest's tiles of the output stage take, longest first: the first whose
+/// tile's slot the plan's own figures hold within [`REST_TILE_BYTES`].
+pub const REST_TILE_SIDES: [u32; 4] = [2048, 1024, 512, 256];
+
+/// What one tile's evaluation may take on the GPU by the plan's own figures — the boundary over the
+/// tile's window, an intermediate for each link and a tail, the spatial planes and the tile's
+/// output — a quarter of the photo surface's 2 GiB GPU-preview budget, so a tile's slot sits beside
+/// a gesture's, the source and the picture at rest's own accumulator. A constant and the plan: never
+/// the bytes in use.
+pub const REST_TILE_BYTES: u64 = 512 << 20;
+
+/// The stack at full resolution in tiles of the output stage, each the whole stack's plan over its
+/// tile at full scale from its own window of the source (`docs/design/gpu-preview.md`, "The
+/// picture at rest"; `docs/design/gpu-first.md`, stage 2): what the histogram and clipping counts
+/// are reduced from at every view, and at Fit and below 100% the picture at rest process-first,
+/// the tiles reduced to the view's size by an area-weighted average of their linear light — the
+/// frame the reference is held to at those views.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RestTiles {
+    /// The plan of the whole stack at the exact stage, from the source, reading its lights: every
+    /// tile's plan, which a tile's region and window place.
+    pub plan: Box<GpuPlan>,
+    /// The tiles, row by row: each its rectangle of the output stage and the window of the source
+    /// it reads, anchored ([`GpuPlan::anchor`]). They cover every pixel of the output stage once.
+    pub tiles: Vec<RestTile>,
+    /// The output stage the tiles cover.
+    pub output: Stage,
+    /// Where the view draws the output stage smaller than it is, the reduction of the tiles to the
+    /// view's size, the picture at rest; `None` where it draws the stage at its own size or larger,
+    /// at 100% and above among them, whose tiles are the counts' alone.
+    pub reduction: Option<RestReduction>,
+    /// The source every tile's boundary is cut from, and how its texels are held.
+    pub source: ProxyIdentity,
+    pub format: crate::BoundaryFormat,
+}
+
+/// The picture at rest's reduction of the output stage to the view's size.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RestReduction {
+    /// The view's size the output stage is reduced to: the frame a drag draws at the view's bounds,
+    /// at its reduced stage, or, for a stack drawn at its exact stage, the output stage fitted to
+    /// them.
+    pub view: (u32, u32),
+    /// The reduction's coverage of the output stage across and down.
+    pub across: crate::ProxyCoverage,
+    pub down: crate::ProxyCoverage,
+}
+
+/// One tile of a picture at rest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RestTile {
+    /// Its rectangle of the output stage.
+    pub rect: Region,
+    /// The window of the source it reads, the rectangle and every margin after it, its origin a
+    /// multiple of the plan's anchor.
+    pub window: Region,
+}
+
+impl RestTiles {
+    /// A lens warp's geometry tail, whose whole output stage's grid at one display pixel an output
+    /// pixel every tile takes its part of; `None` for an affine or projective tail.
+    pub fn warp(&self) -> Option<&super::GpuGeometry> {
+        self.plan
+            .geometry
+            .needs_grid()
+            .then_some(&self.plan.geometry)
+    }
+}
+
+/// `output` fitted to `bounds` when the bounds draw it smaller: its size at the scale the view
+/// draws it at.
+fn fitted(output: Stage, bounds: ProxyBounds) -> Option<(u32, u32)> {
+    let bounds = bounds.clamped();
+    let scale = (f64::from(bounds.width) / f64::from(output.width))
+        .min(f64::from(bounds.height) / f64::from(output.height));
+    (scale.is_finite() && scale < 1.0).then(|| {
+        (
+            ((f64::from(output.width) * scale).round() as u32).clamp(1, output.width),
+            ((f64::from(output.height) * scale).round() as u32).clamp(1, output.height),
+        )
+    })
+}
+
+/// What a tile's evaluation over `window` of a `format` boundary takes by `plan`'s own figures: the
+/// boundary, an intermediate for every link and a tail's, the spatial planes and a `side` square
+/// output's codes.
+fn tile_bytes(plan: &GpuPlan, window: Region, format: crate::BoundaryFormat, side: u32) -> u64 {
+    let texels = u64::from(window.width) * u64::from(window.height);
+    let links = plan.spatial.len() as u64 + 1;
+    let planes: u64 = plan
+        .spatial
+        .iter()
+        .map(|spatial| spatial.plane_bytes((window.x0, window.y0), (window.width, window.height)))
+        .sum();
+    texels * format.texel_bytes() as u64 * (links + 1) + planes + u64::from(side).pow(2) * 4
+}
+
+/// The picture at rest of `evaluation` at Fit bounds `bounds`, process-first ([`RestTiles`]):
+/// `None` when the bounds draw the output stage at its own size; the reason when the GPU cannot
+/// draw the stack so, a stack the window planner cannot cut among them. `O(tiles × segments)` on
+/// the catalog owner: one plan, a window per tile, no pixel read.
+pub(crate) fn plan_rest_tiles(
+    evaluation: &Evaluation,
+    bounds: ProxyBounds,
+    side: Option<u32>,
+) -> Result<Option<Result<Box<RestTiles>, GpuFallback>>, Error> {
+    let output = evaluation.compiled()?.stage();
+    // The view's size: the CPU proxy frame's, which a gesture's frame draws at too, or the output
+    // stage fitted to the bounds for a stack drawn at its exact stage.
+    let fit = FitStage::of_view(evaluation, GpuView::Fit(bounds))?;
+    let view = match fit.plan {
+        Some(_) => {
+            let stage = fit.compiled.stage();
+            (stage.width, stage.height)
+        }
+        None => match fitted(output, bounds) {
+            Some(view) => view,
+            None => return Ok(None),
+        },
+    };
+    plan_tiles(evaluation, Some(view), side).map(Some)
+}
+
+/// The stack of `evaluation` at full resolution in tiles with no reduction to a view
+/// ([`RestTiles`]): the tiles the histogram and clipping counts are reduced from where the view
+/// draws the output stage at its own size or larger. The reason when the stack cannot be drawn so
+/// now, as [`plan_rest_tiles`] names it. `O(tiles × segments)`, no pixel read.
+pub(crate) fn plan_count_tiles(
+    evaluation: &Evaluation,
+    side: Option<u32>,
+) -> Result<Result<Box<RestTiles>, GpuFallback>, Error> {
+    plan_tiles(evaluation, None, side)
+}
+
+/// The stack of `evaluation` at full resolution in tiles, reduced to `view` where it names one.
+fn plan_tiles(
+    evaluation: &Evaluation,
+    view: Option<(u32, u32)>,
+    side: Option<u32>,
+) -> Result<Result<Box<RestTiles>, GpuFallback>, Error> {
+    let registry = evaluation.registry();
+    let recipe = evaluation.recipe();
+    let compiled = evaluation.compiled()?;
+    let output = compiled.stage();
+    let full = evaluation.source().dimensions();
+    let full = Stage {
+        width: full.0,
+        height: full.1,
+    };
+    let linear = matches!(evaluation.source(), crate::PreviewSource::Raw { .. });
+    let request = GpuPlanRequest::exact(0, full).from_source();
+    let request = if linear { request.linear() } else { request };
+    let plan = match gpu_plan(registry, recipe, request)? {
+        GpuAnswer::Plan(plan) => plan,
+        GpuAnswer::Fallback(reason) => return Ok(Err(reason)),
+    };
+    let anchor = plan.anchor();
+    let format = crate::BoundaryFormat::of(linear);
+    let source = (full.width, full.height);
+    let window_of = |rect: Region| {
+        WindowPlan::of_gpu_rect(compiled, source, rect)
+            .map(|windows| super::plan::anchored(windows.reads(0), anchor))
+    };
+    // The longest side whose tile in the middle of the stage, its window grown on every side, the
+    // plan's own figures hold; a test may name its own.
+    let side = side.unwrap_or_else(|| {
+        REST_TILE_SIDES
+            .into_iter()
+            .find(|side| {
+                let (width, height) = ((*side).min(output.width), (*side).min(output.height));
+                let middle = Region {
+                    x0: (output.width - width) / 2,
+                    y0: (output.height - height) / 2,
+                    width,
+                    height,
+                };
+                window_of(middle)
+                    .is_ok_and(|window| tile_bytes(&plan, window, format, *side) <= REST_TILE_BYTES)
+            })
+            .unwrap_or(REST_TILE_SIDES[REST_TILE_SIDES.len() - 1])
+    });
+    let mut tiles = Vec::new();
+    for y0 in (0..output.height).step_by(side as usize) {
+        for x0 in (0..output.width).step_by(side as usize) {
+            let rect = Region {
+                x0,
+                y0,
+                width: side.min(output.width - x0),
+                height: side.min(output.height - y0),
+            };
+            match window_of(rect) {
+                Ok(window) => tiles.push(RestTile { rect, window }),
+                Err(reason) => {
+                    return Ok(Err(GpuFallback::Unplannable(format!(
+                        "the picture at rest's tile at ({x0}, {y0}): {}",
+                        reason.reason()
+                    ))));
+                }
+            }
+        }
+    }
+    Ok(Ok(Box::new(RestTiles {
+        plan,
+        tiles,
+        output,
+        reduction: view.map(|view| RestReduction {
+            view,
+            across: crate::area_coverage(output.width, view.0),
+            down: crate::area_coverage(output.height, view.1),
+        }),
+        source: evaluation.source().identity(),
+        format,
+    })))
+}
+
+/// The GPU picture at rest of a committed stack, `evaluation` a job of no draft, drawn as `view`
+/// says ([`GpuRest`]): every stack has one, the empty stack and a stack of geometry alone included,
+/// since it is planned from the source; and its tiles at full resolution, which the histogram and
+/// clipping counts are reduced from at every view and which at Fit and below 100% are the picture
+/// at rest. `O(layers)` on the catalog owner and `O(tiles × segments)` for its tiles, no pixel
+/// read.
+pub(crate) fn plan_rest(evaluation: &Evaluation, view: GpuView) -> Result<GpuRest, Error> {
+    let recipe = evaluation.recipe();
+    let fit = FitStage::of_view(evaluation, view)?;
+    let request = fit.request();
+    let planned = planned_preview(evaluation, &fit, recipe, request, None, None)?;
+    // Reduced to the view where it draws the stage smaller than it is; the counts' alone elsewhere.
+    let reduced = match view {
+        GpuView::Fit(bounds) => plan_rest_tiles(evaluation, bounds, None)?,
+        GpuView::Region { .. } => None,
+    };
+    let tiles = Some(match reduced {
+        Some(tiles) => tiles,
+        None => plan_count_tiles(evaluation, None)?,
+    });
+    Ok(GpuRest {
+        view: planned,
+        tiles,
+    })
+}
+
+/// The plan of `planned` from the source at `fit`'s stage, with `request`, and the boundary it
+/// starts from; over a region at 100% or more also the window the boundary will hold and, for a
+/// drafted restoration or spatial layer at `spatial_drafted`, the plan of its CPU shape. For a drag
+/// of the stack `committed`, the lights the drag draws with ([`drag_lights`]); otherwise the ones
+/// the picture at rest draws with.
 fn planned_preview(
     evaluation: &Evaluation,
     fit: &FitStage,
     planned: &Recipe,
-    boundary: usize,
     request: GpuPlanRequest,
     spatial_drafted: Option<usize>,
+    committed: Option<&Recipe>,
 ) -> Result<GpuPreview, Error> {
     let registry = evaluation.registry();
     let recipe = evaluation.recipe();
-    // At a percentage zoom, a spatial layer's estimates the store holds for the stack the draft was
-    // opened over, held for the drag where it holds none for the drafted stack. A windowed Fit
-    // proxy never holds a restoration layer before an estimate: the CPU's planner keeps such a
-    // proxy whole, since no window can prepare the estimate behind it.
-    let held = match fit.region {
-        Some(_) => held_prefixes(registry, evaluation.entry(), planned, fit.sampling())?,
-        None => Vec::new(),
+    let relit = |answer: GpuAnswer, request: GpuPlanRequest| -> Result<GpuAnswer, Error> {
+        match (answer, committed) {
+            (GpuAnswer::Plan(mut plan), Some(committed)) => {
+                drag_lights(registry, committed, planned, request, &mut plan.lights)?;
+                Ok(GpuAnswer::Plan(plan))
+            }
+            (answer, _) => Ok(answer),
+        }
     };
-    let estimates = fit.estimates(evaluation);
-    let mut answer = gpu_plan_holding(registry, planned, request, Some(estimates), &held)?;
-    let position = position(&fit.compiled, boundary).ok_or_else(|| {
-        Error::internal(format!(
-            "the GPU preview's boundary layer {boundary} is past the stack"
-        ))
-    })?;
-    // At a percentage zoom, the window of the received stage the boundary will hold, planned now
-    // so what it takes is known before it is rendered. Every global estimate is held rather than
-    // reduced over that window: the plan's own, read from the store, and one the boundary's render
-    // reads behind an earlier spatial layer, which the store must hold. One the GPU would take
-    // from the region alone, where the exact frame reads the whole stage's, or one the store does
-    // not hold behind an earlier spatial layer, keeps the drag on the CPU.
+    let mut answer = relit(gpu_plan(registry, planned, request)?, request)?;
+    // From the source, the first segment's input before its first operation: no layer before the
+    // boundary, whose texels are the source's.
+    let position = (0, 0);
+    let before = 0;
+    // Over a region at 100% or more, the window of the received stage the boundary will hold,
+    // planned now so what it takes is known before it is rendered. A light is the whole stage's,
+    // whatever window the plan draws over, so it bears on no window.
     let mut window = None;
     // At the exact stage at Fit, the window the whole output stage reads, so a crop's boundary
-    // holds what the crop reads rather than its whole source. A global estimate the GPU takes from
-    // the stage it holds would see the window alone, so such a plan keeps the whole stage; so does
-    // a stack the planner cannot cut.
-    // The window is planned as the boundary's render plans it (`Render::output_boundary`), whose
-    // estimate behind an earlier spatial layer the store must hold.
-    if let (GpuAnswer::Plan(plan), None, None) = (&answer, fit.plan, fit.region)
-        && !plan.spatial.iter().any(|spatial| spatial.estimated)
-        && fit
-            .compiled
-            .unheld_estimate(position.0, &estimates)?
-            .is_none()
-    {
+    // holds what the crop reads rather than its whole source; a stack the planner cannot cut keeps
+    // the whole stage. The window is planned as the boundary's render plans it
+    // (`Render::output_boundary`).
+    if let (GpuAnswer::Plan(_), None, None) = (&answer, fit.plan, fit.region) {
         window = output_window(&fit.compiled, fit.full, position.0);
     }
-    // Behind a windowed proxy the CPU's light is the exact stage's, which the plan reads from the
-    // store or holds for a Detail drag; one it would take on the GPU, over the proxy, would be the
-    // proxy's, which misses the spatial limits on the corpus.
-    if let (GpuAnswer::Plan(plan), Some(_)) =
-        (&answer, fit.plan.filter(|plan| plan.window.is_some()))
-        && let Some(spatial) = plan.spatial.iter().find(|spatial| spatial.estimated)
-    {
-        answer = GpuAnswer::Fallback(GpuFallback::WindowEstimate {
-            layer: spatial.layer,
-        });
-    }
-    if let (GpuAnswer::Plan(plan), Some((rect, _))) = (&answer, fit.region) {
+    if let (GpuAnswer::Plan(_), Some((rect, _))) = (&answer, fit.region) {
         let full = (fit.full.width, fit.full.height);
-        let unheld = match plan.spatial.iter().find(|spatial| spatial.estimated) {
-            Some(spatial) => Some(spatial.layer),
-            None => fit.compiled.unheld_estimate(position.0, &estimates)?,
-        };
-        answer = match unheld {
-            Some(layer) => GpuAnswer::Fallback(GpuFallback::RegionEstimate { layer }),
-            None => match WindowPlan::of_gpu_rect(&fit.compiled, full, rect, position.0) {
-                Ok(windows) => {
-                    window = Some(windows.reads(position.0));
-                    answer
-                }
-                Err(reason) => GpuAnswer::Fallback(GpuFallback::Unplannable(format!(
-                    "the region's boundary: {}",
-                    reason.reason()
-                ))),
-            },
+        answer = match WindowPlan::of_gpu_rect(&fit.compiled, full, rect) {
+            Ok(windows) => {
+                window = Some(windows.reads(position.0));
+                answer
+            }
+            Err(reason) => GpuAnswer::Fallback(GpuFallback::Unplannable(format!(
+                "the region's boundary: {}",
+                reason.reason()
+            ))),
         };
     }
-    // At a percentage zoom a drafted restoration or spatial layer's GPU shape charges the planes
-    // of its units at zero over the window too: the plan of its CPU shape rides beside it, from
-    // the same boundary, when it holds less.
+    // Over a region at 100% or more a drafted restoration or spatial layer's GPU shape charges the
+    // planes of its units at zero over the window too: the plan of its CPU shape rides beside it,
+    // from the same boundary, when it holds less.
     let mut cpu_shape = None;
     if let (GpuAnswer::Plan(plan), Some(_), Some(_)) = (&answer, fit.region, spatial_drafted)
         && request.drafted.is_some()
@@ -676,26 +1150,35 @@ fn planned_preview(
                 .map(|spatial| (spatial.passes.len(), spatial.applies.len()))
                 .collect()
         };
-        if let GpuAnswer::Plan(smaller) =
-            gpu_plan_holding(registry, planned, unshaped, Some(estimates), &held)?
+        if let GpuAnswer::Plan(mut smaller) = gpu_plan(registry, planned, unshaped)?
             && extent(&smaller) != extent(plan)
-            && !smaller.spatial.iter().any(|spatial| spatial.estimated)
         {
+            // The drag's lights, whichever shape draws it.
+            smaller.lights = plan.lights.clone();
             cpu_shape = Some(smaller);
         }
     }
+    // Every window is anchored, its origin a multiple of the plan's anchor, so each texel it holds
+    // is the whole stage's, bit for bit, whichever window holds it ([`GpuPlan::anchor`]).
+    let mut reduced = fit.plan;
+    if let GpuAnswer::Plan(plan) = &answer {
+        let anchor =
+            super::plan::common_anchor(std::iter::once(&**plan).chain(cpu_shape.as_deref()));
+        window = window.map(|window| super::plan::anchored(window, anchor));
+        reduced = reduced.map(|reduced| super::fit::anchored_plan(reduced, anchor));
+    }
+    // Every plan starts from the source.
     let boundary_request = match &answer {
         GpuAnswer::Fallback(_) => None,
-        GpuAnswer::Plan(plan) => Some(BoundaryRequest {
+        GpuAnswer::Plan(plan) => Some(SourceBoundary {
             key: BoundaryKey {
                 source: evaluation.source().identity(),
-                prefix: prefix_hash(&recipe.layers[..boundary], &recipe.masks, fit.sampling())?,
-                layer: boundary,
-                plan: fit.plan,
+                prefix: prefix_hash(&recipe.layers[..before], &recipe.masks, fit.sampling())?,
+                layer: before,
+                plan: reduced,
                 region: fit.region.map(|(rect, _)| rect),
                 window,
             },
-            position,
             format: crate::BoundaryFormat::of(fit.linear),
             magnification: fit.region.map_or(1.0, |(_, magnification)| magnification),
             window,
@@ -712,22 +1195,26 @@ fn planned_preview(
         boundary: boundary_request,
         cpu_shape,
         layer,
+        reduced: None,
     })
 }
 
-/// The most links one plan's chain holds: the colour operations before its first spatial
-/// operation, then one link for each spatial operation — a global Detail layer, a global Presence
-/// layer and each masked spatial layer ([`MAX_MASKED_SPATIAL_LAYERS`]).
-pub const GPU_PLAN_LINKS: usize = 3 + MAX_MASKED_SPATIAL_LAYERS;
+/// The most links one plan's chain holds, and the light link it computes its light with: the colour
+/// operations before its first spatial operation, then one link for each spatial operation — a
+/// global Detail layer, a global Presence layer and each masked spatial layer
+/// ([`MAX_MASKED_SPATIAL_LAYERS`]) — and the sequence of a light link over the source
+/// ([`warm_links`]).
+pub const GPU_PLAN_LINKS: usize = 4 + MAX_MASKED_SPATIAL_LAYERS;
 
-/// The most link sequences a warm list holds ([`plan_warm`]): the surface's 64-sequence pipeline
+/// The most link sequences a warm list holds ([`plan_warm_list`]): the surface's 64-sequence pipeline
 /// cache (`PIPELINE_CACHE`, `crates/luxforge-ui/src/photo_surface/gpu_preview/compile.rs`) less
 /// the largest plan's [`GPU_PLAN_LINKS`], so a whole warm list and every link of the plan a drag
 /// draws are held together, and warming never evicts what a tick asks for or what it has just
 /// warmed. The stack's own plan and a drag of every restoration and spatial layer take at most
 /// `2 × GPU_PLAN_LINKS − 1` of them (each such drag adds its drafted link at most), so they always
-/// fit; the colour candidates fill the rest.
-pub const GPU_WARM_LINKS: usize = 45;
+/// fit; their light links, the colour drags and the first drags of the modules the stack does not
+/// hold fill the rest.
+pub const GPU_WARM_LINKS: usize = 44;
 
 /// What a warmed plan's program sequence is told apart by, as the surface keys a sequence or
 /// finer: each link's key in chain order ([`warm_links`]). Two plans of one key compile to the same
@@ -744,7 +1231,8 @@ pub(crate) fn warm_sequence(plan: &GpuPlan) -> Vec<String> {
 /// output operations. A plan without a spatial operation is one link. A colour operation is told
 /// apart by its programs and its mask's components; a spatial operation by its program, clamp,
 /// mask, planes, passes but for their words, and applies; the tail by its kind. Two links of one
-/// key compile to one sequence, wherever they sit in a chain and whichever plan holds them.
+/// key compile to one sequence, wherever they sit in a chain and whichever plan holds them. Each
+/// light link the slot computes itself is a sequence after them ([`light_links`]).
 pub(crate) fn warm_links(plan: &GpuPlan) -> Vec<Vec<String>> {
     let mask = |mask: &Option<super::GpuMask>| {
         mask.as_ref().map(|mask| {
@@ -805,123 +1293,279 @@ pub(crate) fn warm_links(plan: &GpuPlan) -> Vec<Vec<String>> {
         plan.geometry.clamps
     ));
     last.extend(colour(&plan.output));
+    for (_, link) in light_links(plan) {
+        if !links.contains(&link) {
+            links.push(link);
+        }
+    }
     links
 }
 
+/// Each light link of `plan` the slot computes itself — one over the source, or the stand-in of
+/// one that is not — with the light plane `k` it writes and what its sequence is told apart by, as
+/// [`warm_links`] tells a link apart: its colour operations and its light step, once however many
+/// of the plan's lights compile alike.
+fn light_links(plan: &GpuPlan) -> Vec<((usize, &GpuLight), Vec<String>)> {
+    let mut links: Vec<((usize, &GpuLight), Vec<String>)> = Vec::new();
+    for (k, light) in plan.lights.iter().enumerate() {
+        let Some(light) = (match light.over_source() {
+            true => Some(light),
+            false => light.stand_in.as_deref(),
+        }) else {
+            continue;
+        };
+        let link = light_link(light);
+        if !links.iter().any(|(_, held)| *held == link) {
+            links.push(((k, light), link));
+        }
+    }
+    links
+}
+
+/// What the sequence of light link `light` is told apart by ([`light_links`]): not the light plane
+/// it writes, which the surface binds when it runs it.
+pub(crate) fn light_link(light: &GpuLight) -> Vec<String> {
+    let mut link = vec![format!("light link, clamps {}", light.light.clamps)];
+    link.extend(light.content.iter().flat_map(|operation| {
+        operation
+            .units
+            .iter()
+            .map(|unit| unit.program.entry.to_owned())
+            .chain(operation.mask.as_ref().map(|mask| {
+                let components: Vec<&str> = mask
+                    .components
+                    .iter()
+                    .map(|component| component.program.program.entry)
+                    .collect();
+                format!("masked by {components:?}")
+            }))
+    }));
+    link.extend(light.light.passes.iter().map(|pass| {
+        format!(
+            "{} {:?} -> {}, {:?}",
+            pass.kernel, pass.inputs, pass.output, pass.shape
+        )
+    }));
+    link
+}
+
+/// The plans a gesture on a stack is likely to draw and the light links its ticks compute, for the
+/// desktop to warm before a drag begins ([`plan_warm_list`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GpuWarmList {
+    /// The plans whose chains' links the list warms, in the order they are to compile.
+    pub plans: Vec<GpuPlan>,
+    /// The light links the list warms, each with the slot's light plane `k` it writes: those of
+    /// the open stack's plans that fit within [`GPU_WARM_LINKS`] beside every link of their
+    /// chains.
+    pub lights: Vec<(usize, GpuLight)>,
+    /// How many of [`Self::plans`], from the first, are drags of the open stack itself; the rest
+    /// are the first drags of the modules it does not hold, which the surface compiles after them
+    /// and after the light links.
+    pub open: usize,
+}
+
 /// The plans a gesture on `evaluation`'s stack is likely to draw at `view`, for the desktop to
-/// warm their program sequences before a drag begins, in the order they are to compile: when a
-/// layer is masked, the stack's own plan, which a stroke or a shape moved draws; a drag of each
-/// colour or finish layer the stack holds, and the first drag of each field-patch colour or finish
-/// module it does not hold yet; then a drag of each restoration or spatial layer the stack holds,
-/// reading the estimates the store holds, which a drag of a colour layer before them never does.
-/// Each drag is planned with its layer in its GPU shape, as a draft of it is planned
-/// ([`plan_preview`]).
+/// warm their program sequences before a drag begins, in the order they are to compile, the light
+/// links their ticks compute, and how many of the plans, from the first, are the open stack's
+/// ([`GpuWarmList`]). The open stack's first: when a layer is masked, the stack's own plan, which a
+/// stroke or a shape moved draws; a drag of each colour or finish layer the stack holds; then a
+/// drag of each restoration or spatial layer it holds. Then the rest of the program set: the first
+/// drag of each field-patch module the stack does not hold yet, colour and finish modules first,
+/// then restoration and spatial ones, Detail and Presence, whose sequences take the longest to
+/// compile on a cold shader cache. Each drag is planned with its layer in its GPU shape and with
+/// the lights a draft of it draws with ([`plan_preview`], [`drag_lights`]): a colour drag computes
+/// the light of every estimating layer after it over the source.
 ///
-/// The surface compiles one sequence per link of a plan's chain, so a plan joins only when it holds
-/// a link no plan before it holds ([`warm_links`]). A restoration or spatial layer's drag draws the
-/// stack's own links but its drafted one, so the list holds one drag for each distinct drafted
-/// shape, and the drag of every such layer finds each link it draws warmed. The list holds at most
-/// [`GPU_WARM_LINKS`] links: the stack's own plan and those drags always fit, and a colour
-/// candidate joins only while it leaves room for them. `O(layers × modules)` compiles on the
-/// catalog owner, with no pixel read.
-pub(crate) fn plan_warm(evaluation: &Evaluation, view: GpuView) -> Result<Vec<GpuPlan>, Error> {
+/// The surface compiles one sequence per link of a plan's chain, so a plan joins only when its
+/// chain holds a link no plan before it holds ([`warm_links`]). A restoration or spatial layer's
+/// drag draws the stack's own links but its drafted one, so the list holds one drag for each
+/// distinct drafted shape, and the drag of every such layer finds each link it draws warmed.
+/// Beside the chains, the light links the open stack's ticks compute ([`GpuWarmList::lights`]),
+/// each while it fits. The list holds at most [`GPU_WARM_LINKS`] links: the stack's own plan and
+/// those drags' chains always fit, then their light links, the colour drags of the stack's layers
+/// join with theirs while they leave room for them, and the first drags of the modules it does not
+/// hold fill what is left. `O(layers × modules)` compiles on the catalog owner, with no pixel
+/// read.
+pub(crate) fn plan_warm_list(evaluation: &Evaluation, view: GpuView) -> Result<GpuWarmList, Error> {
     let registry = evaluation.registry();
     let recipe = evaluation.recipe();
     let fit = FitStage::of_view(evaluation, view)?;
-    let colour = |effect: &str| {
-        matches!(
-            registry.effect_stage(effect),
-            Some(EffectStage::Color | EffectStage::Finish)
-        )
+    let stage_is = |effect: &str, stages: &[EffectStage]| {
+        registry
+            .effect_stage(effect)
+            .is_some_and(|stage| stages.contains(&stage))
     };
-    // Each colour candidate: the stack it is planned over and its boundary.
-    let mut colours: Vec<(Recipe, usize)> = recipe
-        .layers
-        .iter()
-        .enumerate()
-        .filter(|(_, layer)| colour(&layer.effect_id))
-        .map(|(index, _)| (recipe.clone(), index))
-        .collect();
-    for provider in registry.providers() {
-        let descriptor = provider.descriptor();
-        let [effect] = descriptor.effects.as_slice() else {
-            continue;
-        };
-        if descriptor.developer
-            || !colour(&effect.id)
-            || !descriptor.actions.iter().any(|action| action.patch)
-            || recipe
-                .layers
-                .iter()
-                .any(|layer| layer.effect_id == effect.id && layer.mask.is_none())
-        {
-            continue;
+    const COLOUR: &[EffectStage] = &[EffectStage::Color, EffectStage::Finish];
+    const SPATIAL: &[EffectStage] = &[EffectStage::Restoration, EffectStage::Spatial];
+    // The first drag of each field-patch module of `stages` the stack does not hold unmasked: the
+    // stack it is planned over, with the neutral layer its first commit would insert, and where.
+    let firsts = |stages: &[EffectStage]| -> Vec<(Recipe, usize)> {
+        let mut firsts = Vec::new();
+        for provider in registry.providers() {
+            let descriptor = provider.descriptor();
+            let [effect] = descriptor.effects.as_slice() else {
+                continue;
+            };
+            if descriptor.developer
+                || !stage_is(&effect.id, stages)
+                || !descriptor.actions.iter().any(|action| action.patch)
+                || recipe
+                    .layers
+                    .iter()
+                    .any(|layer| layer.effect_id == effect.id && layer.mask.is_none())
+            {
+                continue;
+            }
+            let index = registry.insertion_index_for_target(
+                &recipe.layers,
+                &effect.id,
+                None,
+                &recipe.masks,
+            );
+            firsts.push((with_neutral(recipe, index, &effect.id, None), index));
         }
-        let index =
-            registry.insertion_index_for_target(&recipe.layers, &effect.id, None, &recipe.masks);
-        colours.push((with_neutral(recipe, index, &effect.id, None), index));
-    }
-    let spatial = recipe.layers.iter().enumerate().filter(|(_, layer)| {
-        matches!(
-            registry.effect_stage(&layer.effect_id),
-            Some(EffectStage::Restoration | EffectStage::Spatial)
-        )
-    });
+        firsts
+    };
     // Every link a plan the list holds compiles, and the links of `plan` it would add.
     let mut links: Vec<Vec<String>> = Vec::new();
     let fresh = |plan: &GpuPlan, held: &[Vec<String>]| {
+        let chain = warm_links(plan).len() - light_links(plan).len();
         let mut fresh: Vec<Vec<String>> = Vec::new();
-        for link in warm_links(plan) {
+        for link in warm_links(plan).into_iter().take(chain) {
             if !held.contains(&link) && !fresh.contains(&link) {
                 fresh.push(link);
             }
         }
         fresh
     };
+    // `plan` joins `into` when it adds a link and the list has room for what it adds.
+    let join = |plan: GpuPlan, into: &mut Vec<GpuPlan>, links: &mut Vec<Vec<String>>| {
+        let added = fresh(&plan, links);
+        if !added.is_empty() && links.len() + added.len() <= GPU_WARM_LINKS {
+            links.extend(added);
+            into.push(plan);
+        }
+    };
     let mut plans: Vec<GpuPlan> = Vec::new();
-    // Every drag is planned from the stack's first layer past its source layers
-    // ([`plan_preview`]), and so is a gesture of a mask the stack's layers already read: a stroke,
-    // or a shape moved, draws the committed stack itself, every layer in the CPU's shape.
-    let editable = |recipe: &Recipe| first_content_layer(registry, recipe);
+    // Every drag is planned from the source ([`plan_preview`]), and so is a gesture of a mask the
+    // stack's layers already read: a stroke, or a shape moved, draws the committed stack itself,
+    // every layer in the CPU's shape.
     if recipe.layers.iter().any(|layer| layer.mask.is_some())
-        && let GpuAnswer::Plan(plan) = gpu_plan_with(
-            registry,
-            recipe,
-            fit.request(editable(recipe)),
-            Some(fit.estimates(evaluation)),
-        )?
+        && let GpuAnswer::Plan(plan) = gpu_plan(registry, recipe, fit.request())?
     {
         links = fresh(&plan, &links);
         plans.push(*plan);
     }
-    // The restoration and spatial layers' drags are chosen first, so the colour candidates leave
-    // room for them, and join the list after the colour candidates. A spatial layer's own drag
-    // leaves the layers before it alone, so its ticks read the store, as the warmed plan does.
-    let mut drags: Vec<GpuPlan> = Vec::new();
-    for (index, _) in spatial {
-        let request = fit.request(editable(recipe).min(index)).drafted(index);
-        if let GpuAnswer::Plan(plan) =
-            gpu_plan_with(registry, recipe, request, Some(fit.estimates(evaluation)))?
-        {
-            let added = fresh(&plan, &links);
-            if !added.is_empty() && links.len() + added.len() <= GPU_WARM_LINKS {
-                links.extend(added);
-                drags.push(*plan);
+    // A drag's plan with the lights it draws with.
+    let dragged = |planned: &Recipe, request: GpuPlanRequest| -> Result<GpuAnswer, Error> {
+        match gpu_plan(registry, planned, request)? {
+            GpuAnswer::Plan(mut plan) => {
+                drag_lights(registry, recipe, planned, request, &mut plan.lights)?;
+                Ok(GpuAnswer::Plan(plan))
             }
+            fallback => Ok(fallback),
+        }
+    };
+    // The restoration and spatial layers' drags are chosen first, by their chains' links, so the
+    // colour drags leave room for them, and join the list after the colour drags.
+    let mut drags: Vec<GpuPlan> = Vec::new();
+    for (index, _) in recipe
+        .layers
+        .iter()
+        .enumerate()
+        .filter(|(_, layer)| stage_is(&layer.effect_id, SPATIAL))
+    {
+        let request = fit.request().drafted(index);
+        if let GpuAnswer::Plan(plan) = dragged(recipe, request)? {
+            join(*plan, &mut drags, &mut links);
         }
     }
-    // A drag of a colour layer changes the input of every spatial layer after it, so its ticks
-    // take their estimates on the GPU.
-    for (planned, index) in colours {
-        let request = fit.request(editable(&planned).min(index)).drafted(index);
-        if let GpuAnswer::Plan(plan) = gpu_plan_with(registry, &planned, request, None)? {
-            let added = fresh(&plan, &links);
-            if !added.is_empty() && links.len() + added.len() <= GPU_WARM_LINKS {
-                links.extend(added);
-                plans.push(*plan);
+    // The light links of the stack's own plan and of those drags, each while the list has room: a
+    // drag whose light link does not fit compiles it on its first tick.
+    let mut lights: Vec<(usize, GpuLight)> = Vec::new();
+    let mut admit = |plan: &GpuPlan, links: &mut Vec<Vec<String>>| {
+        for ((k, light), link) in light_links(plan) {
+            if !links.contains(&link) && links.len() < GPU_WARM_LINKS {
+                links.push(link);
+                lights.push((k, light.clone()));
+            }
+        }
+    };
+    for plan in plans.iter().chain(&drags) {
+        admit(plan, &mut links);
+    }
+    // On a RAW, a white-balance drag: the stack's own plan with the change as a leading step over
+    // the source, the identity standing for every value since a sequence is told apart by its
+    // programs, and every light computed per tick over the source it changes.
+    if let crate::PreviewSource::Raw { .. } = evaluation.source()
+        && let Some(raw) = recipe
+            .layers
+            .iter()
+            .position(|layer| registry.effect_stage(&layer.effect_id) == Some(EffectStage::Source))
+        && let GpuAnswer::Plan(mut plan) = gpu_plan(registry, recipe, fit.request())?
+    {
+        if plan.reads_lights() {
+            let left_out = gpu_lights(
+                registry,
+                recipe,
+                super::spatial::light_request(fit.request()),
+                GpuLightRestoration::LeftOut,
+            )?;
+            for light in &mut plan.lights {
+                if let Some(found) = left_out.iter().find(|found| found.layer == light.layer) {
+                    *light = found.clone();
+                }
+            }
+        }
+        let identity = crate::WhiteBalanceApproximation::from_matrix([
+            [1.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+        ])?;
+        with_white_balance(&mut plan, &identity, raw);
+        let held = plans.len();
+        join(*plan, &mut plans, &mut links);
+        if plans.len() > held {
+            admit(&plans[held], &mut links);
+        }
+    }
+    // A drag of a colour layer changes the input of every estimating layer after it, so its ticks
+    // compute those lights over the source: each joins with its light links while they fit.
+    for (index, _) in recipe
+        .layers
+        .iter()
+        .enumerate()
+        .filter(|(_, layer)| stage_is(&layer.effect_id, COLOUR))
+    {
+        let request = fit.request().drafted(index);
+        if let GpuAnswer::Plan(plan) = dragged(recipe, request)? {
+            let held = plans.len();
+            join(*plan, &mut plans, &mut links);
+            if plans.len() > held {
+                admit(&plans[held], &mut links);
             }
         }
     }
     plans.extend(drags);
-    Ok(plans)
+    let open = plans.len();
+    // The rest of the program set, each module's first drag planned as its draft is. Their light
+    // links are left to their first ticks: the open stack's come first.
+    for (planned, index) in firsts(COLOUR).into_iter().chain(firsts(SPATIAL)) {
+        let request = fit.request().drafted(index);
+        if let GpuAnswer::Plan(plan) = dragged(&planned, request)? {
+            join(*plan, &mut plans, &mut links);
+        }
+    }
+    Ok(GpuWarmList {
+        plans,
+        lights,
+        open,
+    })
+}
+
+/// [`plan_warm_list`]'s plans alone.
+#[cfg(test)]
+pub(crate) fn plan_warm(evaluation: &Evaluation, view: GpuView) -> Result<Vec<GpuPlan>, Error> {
+    plan_warm_list(evaluation, view).map(|warm| warm.plans)
 }

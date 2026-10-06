@@ -245,6 +245,27 @@ fn drain_all(queue: &mut PreviewQueue) -> Vec<PreviewResult> {
     results
 }
 
+/// `job` as a moving frame's: [`PreviewIntent::Interactive`], the one intent with a proxy phase.
+fn moving(mut job: PreviewJob) -> PreviewJob {
+    job.intent = PreviewIntent::Interactive;
+    job
+}
+
+/// `job`'s proxy frame, as a draft's tick renders it, then its exact frame at rest: two jobs on
+/// `queue`, each with its one phase.
+fn proxy_then_exact(queue: &mut PreviewQueue, job: PreviewJob) -> [PreviewResult; 2] {
+    queue.request(moving(job.clone()));
+    let mut proxy = drain_all(queue);
+    queue.request(job);
+    let mut exact = drain_all(queue);
+    assert_eq!(
+        (proxy.len(), exact.len()),
+        (1, 1),
+        "a proxy is a moving job's one phase, and a job at rest renders none"
+    );
+    [proxy.remove(0), exact.remove(0)]
+}
+
 /// Poll until this generation's phase is delivered, collecting what came before it: each
 /// delivery's generation, phase and whether it was cancelled.
 fn drain_until(
@@ -260,79 +281,6 @@ fn drain_until(
         })
     });
     delivered
-}
-
-fn viewport_job(intent: PreviewIntent) -> PreviewJob {
-    let mut job = stacked(128, 96, Vec::new(), None);
-    job.viewport = Some(crate::Region {
-        x0: 17,
-        y0: 13,
-        width: 31,
-        height: 23,
-    });
-    job.intent = intent;
-    job.analyse = true;
-    job
-}
-
-#[test]
-fn interactive_viewport_delivers_one_bounded_region_without_a_report() {
-    let mut queue = PreviewQueue::default();
-    let generation = queue.request(viewport_job(PreviewIntent::Interactive));
-    let results = drain_all(&mut queue);
-    assert_eq!(
-        results.len(),
-        1,
-        "moving input ends after its first visible phase"
-    );
-    let result = &results[0];
-    assert_eq!(
-        (result.generation, result.phase()),
-        (generation, PreviewPhase::Region)
-    );
-    let region = result.region().expect("visible region");
-    assert_eq!(
-        (
-            region.frame.full_stage.width,
-            region.frame.full_stage.height
-        ),
-        (128, 96)
-    );
-    assert!(region.frame.full_rect.x0 <= 17 && region.frame.full_rect.x1() >= 48);
-    assert_eq!(
-        (region.frame.stage.width, region.frame.stage.height),
-        (64, 48)
-    );
-    assert!(region.frame.raster.width <= 64 && region.frame.raster.height <= 48);
-    assert!(region.frame.approximation.reduced_detail);
-    assert!(result.viewport_declined.is_none());
-    assert!(
-        result.exact().is_none(),
-        "no whole-image histogram during motion"
-    );
-}
-
-#[test]
-fn settled_viewport_delivers_exact_region_then_whole_report() {
-    let mut queue = PreviewQueue::default();
-    let generation = queue.request(viewport_job(PreviewIntent::Settle));
-    let results = drain_all(&mut queue);
-    assert_eq!(results.len(), 2);
-    assert_eq!(results[0].phase(), PreviewPhase::Region);
-    assert_eq!(results[1].phase(), PreviewPhase::Exact);
-    assert_eq!(results[0].generation, generation);
-    assert_eq!(results[1].generation, generation);
-    let region = results[0].region().unwrap();
-    assert_eq!(
-        region.frame.stage, region.frame.full_stage,
-        "settled region is exact detail"
-    );
-    let exact = results[1].exact().unwrap();
-    assert!(exact.result.is_ok());
-    assert!(
-        exact.report.is_some(),
-        "only the whole image may supply the histogram"
-    );
 }
 
 /// The live overlay's coverage over a visible rectangle is the core's region reduction of that
@@ -417,12 +365,12 @@ fn mask_overlay_coverage_fills_a_visible_region_or_the_whole_stage() {
     );
 }
 
-/// A job with display bounds smaller than its stage produces two frames under one generation:
-/// the proxy first, then the exact one. Each is byte for byte the render this test computes
+/// A job with display bounds smaller than its stage: a moving one produces the proxy frame alone,
+/// and one at rest the exact frame alone. Each is byte for byte the render this test computes
 /// independently — the proxy against the exact downscale of the source, the exact one against
 /// the prepared source itself.
 #[test]
-fn a_job_with_bounds_yields_the_proxy_phase_then_the_exact_phase() {
+fn a_moving_job_yields_the_proxy_phase_and_a_job_at_rest_the_exact_phase() {
     let display = bounds(40, 40);
     let job = stacked(64, 48, eligible_layers(64, 48), Some(display));
     let registry = job.evaluation.registry().clone();
@@ -435,35 +383,34 @@ fn a_job_with_bounds_yields_the_proxy_phase_then_the_exact_phase() {
         .expect("a proxy is worthwhile");
 
     let mut queue = PreviewQueue::default();
-    let requested = Instant::now();
-    let generation = queue.request(job);
-    let results = drain_all(&mut queue);
-    let lifetime_ms = requested.elapsed().as_secs_f64() * 1000.0;
-    assert_eq!(results.len(), 2, "one proxy frame and one exact frame");
-    let [proxy, exact] = <[PreviewResult; 2]>::try_from(results).ok().unwrap();
+    let mut lived = |job: PreviewJob| {
+        let requested = Instant::now();
+        let generation = queue.request(job);
+        let mut results = drain_all(&mut queue);
+        let lifetime_ms = requested.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(results.len(), 1, "each job renders one phase");
+        (generation, results.remove(0), lifetime_ms)
+    };
+    let (moved, proxy, proxy_lifetime_ms) = lived(moving(job.clone()));
+    let (rested, exact, exact_lifetime_ms) = lived(job);
 
-    // Each phase reports its own worker time: finite, and inside the job's own lifetime. The
-    // two clocks run one after the other on the worker, so together they fit inside it too —
-    // neither phase counts the other, and neither counts anything before the request.
-    for (phase, ms) in [("proxy", proxy.render_ms), ("exact", exact.render_ms)] {
+    // Each phase reports its own worker time: finite, and inside its job's own lifetime, so it
+    // counts nothing before the request.
+    for (phase, ms, lifetime_ms) in [
+        ("proxy", proxy.render_ms, proxy_lifetime_ms),
+        ("exact", exact.render_ms, exact_lifetime_ms),
+    ] {
         assert!(
             ms.is_finite() && ms >= 0.0 && ms <= lifetime_ms,
             "the {phase} phase reports {ms} ms of a {lifetime_ms} ms job"
         );
     }
-    assert!(
-        proxy.render_ms + exact.render_ms <= lifetime_ms,
-        "the phases overlap: {} + {} ms of a {lifetime_ms} ms job",
-        proxy.render_ms,
-        exact.render_ms
-    );
 
-    assert_eq!(proxy.generation, generation);
-    assert_eq!(exact.generation, generation);
+    assert_eq!(proxy.generation, moved);
+    assert_eq!(exact.generation, rested);
     assert_eq!(proxy.phase(), PreviewPhase::Proxy);
     assert_eq!(exact.phase(), PreviewPhase::Exact);
-    // The fitted crop reads all but the proxy stage's corners, so the source holds the window of
-    // the proxy stage those taps reach: never more than the whole proxy stage.
+    // A proxy source holds its whole proxy stage.
     let (width, height) = proxy.proxy().expect("a proxy phase").dimensions;
     assert!(
         width <= plan.width && height <= plan.height,
@@ -475,7 +422,7 @@ fn a_job_with_bounds_yields_the_proxy_phase_then_the_exact_phase() {
     assert_eq!(
         exact.exact().and_then(|exact| exact.proxy_declined.clone()),
         None,
-        "the proxy phase ran"
+        "a job at rest asks for no proxy, so it declines none"
     );
     assert!(
         proxy.proxy().is_some_and(|proxy| proxy.built),
@@ -526,12 +473,12 @@ fn a_job_with_bounds_yields_the_proxy_phase_then_the_exact_phase() {
     );
 }
 
-/// A job's stack is compiled once at each stage it renders at: once at the exact stage, by its
-/// evaluation when the job is built, whose compilation plans the proxy and renders the exact frame,
-/// and once at the proxy stage, by the plan that walks the
-/// window its output reads, whose compilation renders the proxy frame and says whether it is
-/// approximate. The count sees every compile the entry point makes, the proxy plan's included, over
-/// a whole-stage proxy and a tight crop's windowed one. A job without a proxy phase is compiled
+/// A stack is compiled once at each stage it renders at: once at the exact stage, by its
+/// evaluation when the job is built, whose compilation plans a moving job's proxy and renders the
+/// exact frame of a job at rest over the same evaluation, and once at the proxy stage, by the plan,
+/// whose compilation renders the proxy frame and says whether it is approximate. The count sees
+/// every compile the entry point makes, the proxy plan's included, over a whole stack's proxy and a
+/// tight crop's, which holds its whole proxy stage too. A stack drawn only at rest is compiled
 /// once.
 #[test]
 fn a_preview_job_compiles_its_stack_once_per_stage_it_renders_at() {
@@ -555,7 +502,7 @@ fn a_preview_job_compiles_its_stack_once_per_stage_it_renders_at() {
             2,
         ),
         (
-            "windowed proxy",
+            "cropped proxy",
             400,
             300,
             cropped,
@@ -575,8 +522,13 @@ fn a_preview_job_compiles_its_stack_once_per_stage_it_renders_at() {
         let source = job.evaluation.source().clone();
         let recipe = job.evaluation.recipe().clone();
         let registry = job.evaluation.registry().clone();
-        queue.request(job);
-        let results = drain_all(&mut queue);
+        let results = match proxy {
+            Some(_) => Vec::from(proxy_then_exact(&mut queue, job)),
+            None => {
+                queue.request(job);
+                drain_all(&mut queue)
+            }
+        };
         assert_eq!(results.len(), phases, "{name}");
         let exact = results.last().expect("an exact phase");
         assert!(exact.raster().is_ok(), "{name}");
@@ -586,9 +538,11 @@ fn a_preview_job_compiles_its_stack_once_per_stage_it_renders_at() {
                 .proxy_plan(&registry, &recipe, display)
                 .unwrap()
                 .expect("a proxy is worthwhile");
-            let windowed =
-                first.proxy().expect("a proxy phase").dimensions != (plan.width, plan.height);
-            assert_eq!(windowed, name == "windowed proxy", "{name}");
+            assert_eq!(
+                first.proxy().expect("a proxy phase").dimensions,
+                (plan.width, plan.height),
+                "{name}: the whole proxy stage"
+            );
         }
         assert_eq!(context.compiles(), compiles, "{name}");
     }
@@ -698,12 +652,13 @@ fn without_masks(recipe: &Recipe) -> Recipe {
     }
 }
 
-/// The delivered proxy contract over a **masked** stack: the recipe is proxy eligible, the job
-/// yields both phases, and the proxy frame is byte for byte the exact recipe rendered against
+/// The delivered proxy contract over a **masked** stack: the recipe is proxy eligible, a moving
+/// job yields its proxy, and the proxy frame is byte for byte the exact recipe rendered against
 /// the exact downscale of the source.
 ///
 /// This is the assertion
-/// [`a_job_with_bounds_yields_the_proxy_phase_then_the_exact_phase`] makes, over a stack whose
+/// [`a_moving_job_yields_the_proxy_phase_and_a_job_at_rest_the_exact_phase`] makes, over a stack
+/// whose
 /// colour layer is modulated by a mask. It holds because a mask's geometry is stored
 /// normalized: the mask compiled against the proxy stage is the same field at a smaller scale,
 /// so nothing about the equation changed, and the only sampling question — whether the proxy's
@@ -737,22 +692,10 @@ fn a_masked_recipe_is_proxy_eligible_and_its_proxy_frame_is_the_exact_recipe_at_
     );
 
     let mut queue = PreviewQueue::default();
-    let generation = queue.request(job);
-    let results = drain_all(&mut queue);
-    assert_eq!(results.len(), 2, "one proxy frame and one exact frame");
-    let [proxy, exact] = <[PreviewResult; 2]>::try_from(results).ok().unwrap();
+    let [proxy, exact] = proxy_then_exact(&mut queue, job);
     assert_eq!(
-        (proxy.generation, proxy.phase()),
-        (generation, PreviewPhase::Proxy)
-    );
-    assert_eq!(
-        (exact.generation, exact.phase()),
-        (generation, PreviewPhase::Exact)
-    );
-    assert_eq!(
-        exact.exact().and_then(|exact| exact.proxy_declined.clone()),
-        None,
-        "the proxy phase ran"
+        (proxy.phase(), exact.phase()),
+        (PreviewPhase::Proxy, PreviewPhase::Exact)
     );
     assert_eq!(
         proxy.proxy().map(|proxy| proxy.dimensions),
@@ -868,9 +811,9 @@ fn a_mask_thinner_than_two_proxy_pixels_is_supersampled_and_reported_approximate
             Some(display),
         );
         let mut queue = PreviewQueue::default();
-        queue.request(job);
+        queue.request(moving(job));
         let mut results = drain_all(&mut queue);
-        assert_eq!(results.len(), 2);
+        assert_eq!(results.len(), 1);
         results.remove(0)
     };
 
@@ -958,9 +901,9 @@ fn a_mask_with_no_components_reports_no_approximation() {
     let registry = job.evaluation.registry().clone();
     let recipe = job.evaluation.recipe().clone();
     let mut queue = PreviewQueue::default();
-    queue.request(job);
+    queue.request(moving(job));
     let results = drain_all(&mut queue);
-    assert_eq!(results.len(), 2);
+    assert_eq!(results.len(), 1);
     let proxy = &results[0];
     assert_eq!(proxy.phase(), PreviewPhase::Proxy);
     assert!(!proxy.proxy_approximate());
@@ -1015,8 +958,9 @@ fn a_spatial_layer_and_a_thin_mask_are_reported_separately() {
     );
 }
 
-/// The three ways a job that offered bounds has no proxy phase, and the one way a job never
-/// offered them. Each yields exactly one exact frame, and each says why.
+/// The three ways a moving job that offered bounds has no proxy phase, and the two ways a job asks
+/// for none: no bounds, or a job at rest. Each yields exactly one exact frame, and each that asked
+/// says why it has none.
 #[test]
 fn a_job_without_a_proxy_phase_yields_one_exact_result_and_says_why() {
     let mut queue = PreviewQueue::default();
@@ -1031,18 +975,26 @@ fn a_job_without_a_proxy_phase_yields_one_exact_result_and_says_why() {
         result
     };
 
-    // No bounds at all: the exact path, and nothing to decline.
-    let result = only(&mut queue, stacked(64, 48, eligible_layers(64, 48), None));
-    assert_eq!(
-        result
-            .exact()
-            .and_then(|exact| exact.proxy_declined.clone()),
-        None
-    );
+    // No bounds at all, or a job at rest: the exact path, and nothing to decline.
+    for job in [
+        moving(stacked(64, 48, eligible_layers(64, 48), None)),
+        stacked(64, 48, eligible_layers(64, 48), Some(bounds(8, 8))),
+    ] {
+        let result = only(&mut queue, job);
+        assert_eq!(
+            result
+                .exact()
+                .and_then(|exact| exact.proxy_declined.clone()),
+            None
+        );
+    }
 
     // An ineligible stack: the layer that made it so is named.
     let pixel = vec![Layer::pixel(0, 0, [9, 9, 9])];
-    let result = only(&mut queue, stacked(64, 48, pixel, Some(bounds(8, 8))));
+    let result = only(
+        &mut queue,
+        moving(stacked(64, 48, pixel, Some(bounds(8, 8)))),
+    );
     let reason = result
         .exact()
         .and_then(|exact| exact.proxy_declined.clone())
@@ -1052,7 +1004,7 @@ fn a_job_without_a_proxy_phase_yields_one_exact_result_and_says_why() {
 
     // Bounds the stage already fits: there is no proxy smaller than the source to build.
     let large = stacked(64, 48, eligible_layers(64, 48), Some(bounds(4000, 4000)));
-    let result = only(&mut queue, large);
+    let result = only(&mut queue, moving(large));
     let reason = result
         .exact()
         .and_then(|exact| exact.proxy_declined.clone())
@@ -1065,7 +1017,7 @@ fn a_job_without_a_proxy_phase_yields_one_exact_result_and_says_why() {
     pixel.extend(eligible_layers(64, 48));
     let mut truncated = stacked(64, 48, pixel, Some(bounds(8, 8)));
     truncated.layer_count = Some(1);
-    let result = only(&mut queue, truncated);
+    let result = only(&mut queue, moving(truncated));
     let reason = result
         .exact()
         .and_then(|exact| exact.proxy_declined.clone())
@@ -1076,10 +1028,10 @@ fn a_job_without_a_proxy_phase_yields_one_exact_result_and_says_why() {
 /// A truncated job that offers bounds — a crop draft's input stage at Fit — has a proxy phase of
 /// its own layer prefix: planned from the prefix's output stage and judged on the prefix's layers,
 /// so a layer after the prefix that would decline the whole stack's proxy declines nothing here.
-/// Its proxy frame is the prefix rendered over the exact downscale of the source, byte for byte,
-/// and its exact frame the prefix at full resolution. Asked for interactively, it renders the
-/// proxy alone, which is how the desktop asks for the stage at Fit. It is never analysed: the
-/// owner refuses a job that is both truncated and analysing.
+/// Asked for interactively, which is how the desktop asks for the stage at Fit, it renders the
+/// proxy alone: the prefix over the exact downscale of the source, byte for byte; at rest, the
+/// prefix at full resolution alone. It is never analysed: the owner refuses a job that is both
+/// truncated and analysing.
 #[test]
 fn a_truncated_job_with_bounds_has_its_prefixs_own_proxy_phase() {
     let display = bounds(40, 40);
@@ -1108,16 +1060,9 @@ fn a_truncated_job_with_bounds_has_its_prefixs_own_proxy_phase() {
         .expect("a proxy is worthwhile");
 
     let mut queue = PreviewQueue::default();
-    queue.request(job.clone());
-    let results = drain_all(&mut queue);
-    assert_eq!(results.len(), 2, "one proxy frame and one exact frame");
-    let [proxy, exact] = <[PreviewResult; 2]>::try_from(results).ok().unwrap();
+    let [proxy, exact] = proxy_then_exact(&mut queue, job.clone());
     assert_eq!(proxy.phase(), PreviewPhase::Proxy);
-    assert_eq!(
-        exact.exact().and_then(|exact| exact.proxy_declined.clone()),
-        None,
-        "the proxy phase ran"
-    );
+    assert!(proxy.proxy().is_some_and(|proxy| proxy.built));
     assert!(
         exact
             .exact()
@@ -1153,10 +1098,8 @@ fn a_truncated_job_with_bounds_has_its_prefixs_own_proxy_phase() {
     assert_eq!((full.width, full.height), (48, 64), "the turned stage");
     assert_eq!(full.rgba.as_ref(), reference.rgba.as_ref());
 
-    // Interactively, the proxy is the job's one frame, and the next job at the same bounds reads
-    // the proxy source already in hand.
-    job.intent = PreviewIntent::Interactive;
-    queue.request(job);
+    // The next moving job at the same bounds reads the proxy source already in hand.
+    queue.request(moving(job));
     let results = drain_all(&mut queue);
     assert_eq!(results.len(), 1, "the proxy frame alone");
     assert_eq!(results[0].phase(), PreviewPhase::Proxy);
@@ -1174,14 +1117,24 @@ fn two_jobs_at_the_same_bounds_build_the_proxy_once() {
     let display = bounds(32, 32);
     let mut queue = PreviewQueue::default();
 
-    queue.request(stacked(64, 48, eligible_layers(64, 48), Some(display)));
+    queue.request(moving(stacked(
+        64,
+        48,
+        eligible_layers(64, 48),
+        Some(display),
+    )));
     let first = drain_all(&mut queue);
     assert!(
         first[0].proxy().is_some_and(|proxy| proxy.built),
         "the first job builds the proxy"
     );
 
-    queue.request(stacked(64, 48, eligible_layers(64, 48), Some(display)));
+    queue.request(moving(stacked(
+        64,
+        48,
+        eligible_layers(64, 48),
+        Some(display),
+    )));
     let second = drain_all(&mut queue);
     assert_eq!(second[0].phase(), PreviewPhase::Proxy);
     assert!(
@@ -1198,12 +1151,12 @@ fn two_jobs_at_the_same_bounds_build_the_proxy_once() {
     assert_eq!(cached.rgba.as_ref(), built.rgba.as_ref());
 
     // Different bounds are a different plan and a miss, which is what a window resize is.
-    queue.request(stacked(
+    queue.request(moving(stacked(
         64,
         48,
         eligible_layers(64, 48),
         Some(bounds(24, 24)),
-    ));
+    )));
     let resized = drain_all(&mut queue);
     assert!(
         resized[0].proxy().is_some_and(|proxy| proxy.built),
@@ -1211,12 +1164,12 @@ fn two_jobs_at_the_same_bounds_build_the_proxy_once() {
     );
 }
 
-/// A tight crop's proxy holds the window of the proxy stage the crop reads, and is keyed by it: a
-/// job that changes another layer under the same crop renders against the source already in hand,
-/// and a crop that moves builds the window it now reads. Every frame is the exact recipe over the
-/// exact downscale of the whole source, byte for byte.
+/// A tight crop's proxy holds its whole proxy stage and is keyed by its plan: a job that changes
+/// another layer under the same crop, or moves the crop, renders against the source already in
+/// hand. Every frame is the exact recipe over the exact downscale of the whole source, byte for
+/// byte.
 #[test]
-fn a_tight_crops_windowed_proxy_is_cached_by_its_window() {
+fn a_tight_crops_proxy_holds_its_whole_stage_and_is_cached_by_its_plan() {
     let display = bounds(40, 30);
     let layers = |exposure: f64, x: f64| {
         vec![
@@ -1242,7 +1195,7 @@ fn a_tight_crops_windowed_proxy_is_cached_by_its_window() {
         let registry = job.evaluation.registry().clone();
         let source = job.evaluation.source().clone();
         let recipe = job.evaluation.recipe().clone();
-        queue.request(job);
+        queue.request(moving(job));
         let results = drain_all(&mut queue);
         let proxy = results[0].proxy().expect("a proxy phase");
         let (built, dimensions) = (proxy.built, proxy.dimensions);
@@ -1259,28 +1212,26 @@ fn a_tight_crops_windowed_proxy_is_cached_by_its_window() {
         assert_eq!(
             raster.rgba.as_ref(),
             reference.rgba.as_ref(),
-            "the windowed proxy frame is the exact recipe over the exact downscale"
+            "the proxy frame is the exact recipe over the exact downscale"
         );
-        assert!(
-            u64::from(dimensions.0) * u64::from(dimensions.1)
-                < u64::from(plan.width) * u64::from(plan.height) / 4,
-            "a {dimensions:?} proxy source of a {}x{} proxy stage",
-            plan.width,
-            plan.height
+        assert_eq!(
+            dimensions,
+            (plan.width, plan.height),
+            "the whole proxy stage"
         );
         (built, dimensions)
     };
 
     let (built, first) = frame(stacked(400, 300, layers(0.3, 0.55), Some(display)));
-    assert!(built, "the first job builds the window");
+    assert!(built, "the first job builds the proxy");
     let (built, second) = frame(stacked(400, 300, layers(-0.6, 0.55), Some(display)));
     assert!(
         !built,
-        "an exposure change under the same crop hits the window"
+        "an exposure change under the same crop hits the proxy"
     );
     assert_eq!(first, second);
     let (built, _) = frame(stacked(400, 300, layers(-0.6, 0.25), Some(display)));
-    assert!(built, "a moved crop reads another window");
+    assert!(!built, "a moved crop of the same size hits the proxy");
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1329,11 +1280,11 @@ fn board_until(
     })
 }
 
-/// A job with a proxy phase is listed in `proxy` while that phase runs and ends in `exact`, and
-/// its entry has already ended when the queue releases the job. The board keeps every finished
+/// A moving job is listed in `proxy` while its one phase runs and a job at rest in `exact`, and
+/// each entry has already ended when the queue releases its job. The board keeps every finished
 /// entry here, because its recent threshold is zero.
 #[test]
-fn a_jobs_activity_moves_from_proxy_to_exact_and_ends_when_the_queue_releases_it() {
+fn a_jobs_activity_names_its_phase_and_ends_when_the_queue_releases_it() {
     let board = ActivityBoard::with_recent_threshold(Duration::ZERO);
     let gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
     let mut queue = PreviewQueue::default();
@@ -1341,50 +1292,50 @@ fn a_jobs_activity_moves_from_proxy_to_exact_and_ends_when_the_queue_releases_it
     let job = held(&gate, Some(bounds(16, 16)));
     let asset = job.evaluation.entry().asset_id.clone();
 
-    gate.shut();
-    queue.request(job);
-    let running = board_until(
-        &board,
-        |snapshot| {
-            snapshot
-                .active
-                .first()
-                .is_some_and(|active| active.entry.phase.as_deref() == Some("proxy"))
-        },
-        "the proxy phase never reached its gate",
-    );
-    assert_eq!(running.active.len(), 1);
-    let entry = &running.active[0].entry;
-    assert_eq!(
-        (&*entry.kind, &*entry.label),
-        ("preview.render", "Rendering preview")
-    );
-    assert_eq!(entry.asset_id.as_ref(), Some(&asset));
-    assert_eq!((&entry.detail, &entry.job_id), (&None, &None));
-    assert!(running.recent.is_empty());
+    for (job, phase, delivered) in [
+        (moving(job.clone()), "proxy", PreviewPhase::Proxy),
+        (job, "exact", PreviewPhase::Exact),
+    ] {
+        gate.shut();
+        queue.request(job);
+        let running = board_until(
+            &board,
+            |snapshot| {
+                snapshot
+                    .active
+                    .first()
+                    .is_some_and(|active| active.entry.phase.as_deref() == Some(phase))
+            },
+            "the phase never reached its gate",
+        );
+        assert_eq!(running.active.len(), 1);
+        let entry = &running.active[0].entry;
+        assert_eq!(
+            (&*entry.kind, &*entry.label),
+            ("preview.render", "Rendering preview")
+        );
+        assert_eq!(entry.asset_id.as_ref(), Some(&asset));
+        assert_eq!((&entry.detail, &entry.job_id), (&None, &None));
 
-    gate.open();
-    let results = drain_all(&mut queue);
-    assert_eq!(
-        results
-            .iter()
-            .map(|result| result.phase())
-            .collect::<Vec<_>>(),
-        [PreviewPhase::Proxy, PreviewPhase::Exact]
-    );
-    // The queue released the job the moment its exact result arrived, and the entry had
-    // already ended by then: nothing here waits for the worker again.
-    let ended = board.snapshot();
-    assert!(ended.active.is_empty(), "{ended:?}");
-    assert_eq!(ended.recent.len(), 1);
-    let recent = &ended.recent[0];
-    assert_eq!(recent.entry.kind, "preview.render");
-    assert_eq!(
-        recent.entry.phase.as_deref(),
-        Some("exact"),
-        "the job moved on to its exact phase"
-    );
-    assert_eq!(recent.outcome, crate::activity::Outcome::Completed);
+        gate.open();
+        let results = drain_all(&mut queue);
+        assert_eq!(
+            results
+                .iter()
+                .map(|result| result.phase())
+                .collect::<Vec<_>>(),
+            [delivered]
+        );
+        // The queue released the job the moment its result arrived, and the entry had already
+        // ended by then: nothing here waits for the worker again.
+        let ended = board.snapshot();
+        assert!(ended.active.is_empty(), "{ended:?}");
+        let recent = &ended.recent[0];
+        assert_eq!(recent.entry.kind, "preview.render");
+        assert_eq!(recent.entry.phase.as_deref(), Some(phase));
+        assert_eq!(recent.outcome, crate::activity::Outcome::Completed);
+    }
+    assert_eq!(board.snapshot().recent.len(), 2);
 }
 
 /// A job's exact phase publishes how far its spatial tiles have got on the queue while it runs,
@@ -1539,30 +1490,26 @@ fn a_superseded_jobs_activity_ends_cancelled() {
     );
 }
 
-/// The two-phase rule under the persistent worker: a newer request arrives while the older
-/// job's proxy render is held at its gate. The proxy phase is not interrupted — its frame is
-/// still newer than anything on screen — and is delivered as a frame; the exact phase behind it
-/// was superseded before it began, so it answers cancelled; and the newer job then runs both of
-/// its phases.
+/// A moving job under the persistent worker: a newer request arrives while the older job's proxy
+/// render is held at its gate. The proxy phase is not interrupted — its frame is still newer than
+/// anything on screen — and is delivered as a frame; the newer job then renders its own.
 #[test]
-fn a_superseded_jobs_exact_phase_is_cancelled_but_its_proxy_is_not() {
+fn a_superseded_moving_jobs_proxy_is_still_delivered() {
     let gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
     let mut queue = PreviewQueue::default();
     gate.shut();
-    let older = queue.request(held(&gate, Some(bounds(16, 16))));
+    let older = queue.request(moving(held(&gate, Some(bounds(16, 16)))));
     gate.wait_reached(1, "the proxy render");
-    let newer = queue.request(held(&gate, Some(bounds(16, 16))));
+    let newer = queue.request(moving(held(&gate, Some(bounds(16, 16)))));
     gate.open();
-    let delivered = drain_until(&mut queue, newer, PreviewPhase::Exact);
+    let delivered = drain_until(&mut queue, newer, PreviewPhase::Proxy);
     assert_eq!(
         delivered,
         vec![
             (older, PreviewPhase::Proxy, false),
-            (older, PreviewPhase::Exact, true),
             (newer, PreviewPhase::Proxy, false),
-            (newer, PreviewPhase::Exact, false),
         ],
-        "the superseded job's proxy frame, its cancelled exact phase, then the newer job"
+        "the superseded job's proxy frame, then the newer job's"
     );
 }
 
@@ -1736,10 +1683,11 @@ fn approximation() -> crate::WhiteBalanceApproximation {
     .unwrap()
 }
 
-/// A job whose source approximates its white balance says so on both of its phases and is
-/// never reduced into a report, although it asked for one. Otherwise it is an ordinary job:
-/// the proxy phase is the approximate recipe rendered against the exact downscale of the
-/// developed planes, byte for byte, and the exact phase the approximate recipe at full size.
+/// A job whose source approximates its white balance says so on its proxy, as a draft's tick
+/// renders it, and on its exact frame, and is never reduced into a report, although it asked for
+/// one. Otherwise it is an ordinary job: the proxy phase is the approximate recipe rendered
+/// against the exact downscale of the developed planes, byte for byte, and the exact phase the
+/// approximate recipe at full size.
 #[test]
 fn an_approximate_white_balance_is_labelled_on_both_phases_and_never_analysed() {
     let job = raw_job(Some(approximation()));
@@ -1757,14 +1705,7 @@ fn an_approximate_white_balance_is_labelled_on_both_phases_and_never_analysed() 
         .expect("a proxy is worthwhile");
 
     let mut queue = PreviewQueue::default();
-    let generation = queue.request(job);
-    let results = drain_all(&mut queue);
-    assert_eq!(results.len(), 2, "one proxy frame and one exact frame");
-    let [proxy, exact] = <[PreviewResult; 2]>::try_from(results).ok().unwrap();
-    assert_eq!(
-        (proxy.generation, exact.generation),
-        (generation, generation)
-    );
+    let [proxy, exact] = proxy_then_exact(&mut queue, job);
     assert_eq!(
         (proxy.phase(), exact.phase()),
         (PreviewPhase::Proxy, PreviewPhase::Exact)
@@ -1804,10 +1745,10 @@ fn an_approximate_white_balance_is_labelled_on_both_phases_and_never_analysed() 
 }
 
 /// The proxy cache keys on the developed planes and takes the settings from the job, so a
-/// drafted white balance renders against the proxy the committed frame built — a cache hit —
-/// through its own matrix, and says so.
+/// drafted white balance renders against the proxy a moving frame of the committed settings built
+/// over the same planes — a cache hit — through its own matrix, and says so.
 #[test]
-fn a_drafted_white_balance_hits_the_proxy_the_exact_job_built() {
+fn a_drafted_white_balance_hits_the_proxy_built_over_the_same_planes() {
     let exact = raw_job(None);
     let drafted = raw_job(Some(approximation()));
     // The same developed planes: a drafted job reads the planes the committed one did.
@@ -1823,12 +1764,12 @@ fn a_drafted_white_balance_hits_the_proxy_the_exact_job_built() {
     };
     let drafted = rebuilt(drafted, |parts| parts.source = source);
     let mut queue = PreviewQueue::default();
-    queue.request(exact);
+    queue.request(moving(exact));
     let first = drain_all(&mut queue);
     assert!(
         first[0].proxy().is_some_and(|proxy| proxy.built) && !first[0].approximate_white_balance
     );
-    queue.request(drafted);
+    queue.request(moving(drafted));
     let second = drain_all(&mut queue);
     assert_eq!(second[0].phase(), PreviewPhase::Proxy);
     assert!(
@@ -1849,9 +1790,7 @@ fn an_exact_raw_job_is_unlabelled_and_analysed() {
     let job = raw_job(None);
     assert!(!job.evaluation.source().approximate_white_balance());
     let mut queue = PreviewQueue::default();
-    queue.request(job);
-    let results = drain_all(&mut queue);
-    assert_eq!(results.len(), 2);
+    let results = proxy_then_exact(&mut queue, job);
     assert!(
         results
             .iter()
@@ -1906,7 +1845,7 @@ fn a_cached_raw_proxy_renders_at_the_exposure_of_the_job_that_hits_it() {
             };
         });
         job.proxy = Some(bounds);
-        job
+        moving(job)
     };
     let mut queue = PreviewQueue::default();
     // The proxy frame of `generation`, and whether that job built the proxy.
@@ -1971,10 +1910,9 @@ fn mixed_mask() -> Mask {
 /// A value-based mask whose first bound layer sits behind a **spatial** layer has no grid, and the
 /// refusal names the cost rather than paying it.
 ///
-/// A point sample through a spatial segment is the declared exception to [performance rule
-/// 4](../../../../docs/engineering/performance-rules.md#rules): it evaluates the stage-aligned tiles its
-/// pixel needs plus the operation's halo, so asking it once per display cell over the whole stage
-/// would evaluate every tile of the picture on every overlay. That is not an overlay to ship
+/// A pixel read through a spatial segment is answered from that segment's whole frame ([performance
+/// rule 4](../../../../docs/engineering/performance-rules.md#rules)), so asking it once per display
+/// cell over the whole stage would render the picture's spatial layers on every overlay. That is not an overlay to ship
 /// slowly, so the grid is refused here on exactly the rule the unbound mask is refused on, and the
 /// 100% view still reads such a selection. The **geometric** half of the same stack is unaffected,
 /// because a position-only mask needs no pixel at all.
@@ -2147,8 +2085,9 @@ fn the_cost_of_a_coverage_grid() {
 /// evaluation holds the whole spatial target: a `render.sample` through the same layer on the
 /// owner thread, which is how a committed RAW crop was once refused with "spatial
 /// processing needs … bytes, and … of the … byte spatial budget is in use" and left unshown.
-/// Both phases deliver the cropped frame, each byte for byte the frame the same stack renders
-/// with the target free, and every batch releases what it reserved.
+/// A moving job's proxy and the exact frame at rest each deliver the cropped frame, byte for byte
+/// the frame the same stack renders with the target free, and every batch releases what it
+/// reserved.
 #[test]
 fn a_cropped_raw_preview_with_presence_renders_while_the_spatial_target_is_held() {
     use crate::{LinearImage, LinearSettings, PRESENCE_EFFECT};
@@ -2225,24 +2164,12 @@ fn a_cropped_raw_preview_with_presence_renders_while_the_spatial_target_is_held(
     let budget = context.spatial();
     let held = budget.reserve(budget.target(), 1);
     let mut queue = PreviewQueue::default();
-    let generation = queue.request(job);
-    let results = drain_all(&mut queue);
+    let [proxy, exact] = proxy_then_exact(&mut queue, job);
     drop(held);
     assert_eq!(budget.in_use(), 0, "every batch released its reservation");
-    assert_eq!(results.len(), 2, "one proxy frame and one exact frame");
-    let [proxy, exact] = <[PreviewResult; 2]>::try_from(results).ok().unwrap();
     assert_eq!(
-        (proxy.generation, proxy.phase()),
-        (generation, PreviewPhase::Proxy)
-    );
-    assert_eq!(
-        (exact.generation, exact.phase()),
-        (generation, PreviewPhase::Exact)
-    );
-    assert_eq!(
-        exact.exact().and_then(|exact| exact.proxy_declined.clone()),
-        None,
-        "the proxy phase ran"
+        (proxy.phase(), exact.phase()),
+        (PreviewPhase::Proxy, PreviewPhase::Exact)
     );
     let proxy = proxy
         .into_raster()
@@ -2451,7 +2378,7 @@ fn a_cancelled_mask_coverage_is_an_error() {
 }
 
 #[test]
-fn restoration_settlement_reduces_final_pixels_and_reduce_only_shares_full_raster() {
+fn the_view_frame_reduces_final_pixels_and_reduce_only_shares_full_raster() {
     let layer = Layer::new(
         crate::DETAIL_EFFECT,
         json!({"sharpening":50,"luminance":40,"colour":40}),
@@ -2466,16 +2393,16 @@ fn restoration_settlement_reduces_final_pixels_and_reduce_only_shares_full_raste
         }),
     );
     wanted.analyse = true;
-    wanted.intent = PreviewIntent::Settle;
+    wanted.intent = PreviewIntent::Immediate;
     let mut queue = PreviewQueue::default();
     queue.request(wanted.clone());
     let settled = drain_all(&mut queue);
-    assert_eq!(settled.len(), 1, "settlement runs no moving proxy");
+    assert_eq!(settled.len(), 1, "the committed stack runs no proxy phase");
     let exact = settled[0].exact().unwrap();
     let full = exact.result.as_ref().unwrap();
     let displayed = exact.display.as_ref().unwrap();
     let plan = crate::ProxyPlan::fit((129, 97), (129, 97), wanted.proxy.unwrap()).unwrap();
-    let reference = crate::proxy::downscale_raster(full, plan, &Cancel::never()).unwrap();
+    let reference = crate::proxy::reduce_raster(full, plan, &Cancel::never()).unwrap();
     assert_eq!(displayed.rgba, reference.rgba);
     assert_eq!(
         exact.report.as_ref().unwrap(),
@@ -2500,7 +2427,7 @@ fn restoration_settlement_reduces_final_pixels_and_reduce_only_shares_full_raste
     let plan = crate::ProxyPlan::fit((129, 97), (129, 97), wanted.proxy.unwrap()).unwrap();
     assert_eq!(
         resized.display.as_ref().unwrap().rgba,
-        crate::proxy::downscale_raster(&full, plan, &Cancel::never())
+        crate::proxy::reduce_raster(&full, plan, &Cancel::never())
             .unwrap()
             .rgba
     );
@@ -2516,10 +2443,10 @@ fn restoration_settlement_reduces_final_pixels_and_reduce_only_shares_full_raste
 }
 
 #[test]
-fn restoration_settlement_excludes_partial_moving_and_approximate_frames() {
+fn the_view_frame_is_every_stacks_and_excludes_moving_and_approximate_frames() {
     let detail = Layer::new(crate::DETAIL_EFFECT, json!({"luminance":30}));
     let mut whole = stacked(64, 48, vec![detail.clone()], Some(bounds(16, 12)));
-    whole.intent = PreviewIntent::Settle;
+    whole.intent = PreviewIntent::Immediate;
     let raster = whole
         .evaluation
         .exact(&Cancel::never())
@@ -2527,22 +2454,40 @@ fn restoration_settlement_excludes_partial_moving_and_approximate_frames() {
         .frame(whole.evaluation.entry().snapshot.id.clone())
         .unwrap();
     let result = Ok(raster);
-    assert!(whole.evaluation.settles_from_exact());
     assert!(
-        super::worker::settled_display(&whole, &result, true, &Cancel::never())
+        super::worker::view_frame(&whole, &result, &Cancel::never())
             .unwrap()
             .is_some()
     );
+    // A stack with no restoration is reduced as well: the reference frame of every whole stack the
+    // view draws smaller than it is comes from its exact frame.
+    let basic = stacked(
+        64,
+        48,
+        vec![Layer::new(BASIC_EFFECT, json!({"exposure":0.5}))],
+        Some(bounds(16, 12)),
+    );
+    let basic_result = basic
+        .evaluation
+        .exact(&Cancel::never())
+        .unwrap()
+        .frame(basic.evaluation.entry().snapshot.id.clone());
+    assert!(
+        super::worker::view_frame(&basic, &basic_result, &Cancel::never())
+            .unwrap()
+            .is_some(),
+        "a stack without Detail has its view frame too"
+    );
 
+    // A layer prefix, a crop draft's input stage, is reduced to its bounds as well.
     let mut partial = whole.clone();
     partial.layer_count = Some(1);
-    let mut viewport = whole.clone();
-    viewport.viewport = Some(crate::Region {
-        x0: 0,
-        y0: 0,
-        width: 16,
-        height: 12,
-    });
+    assert!(
+        super::worker::view_frame(&partial, &result, &Cancel::never())
+            .unwrap()
+            .is_some(),
+        "a truncated job's view frame"
+    );
     let mut moving = whole.clone();
     moving.intent = PreviewIntent::Interactive;
     let mut fits = whole.clone();
@@ -2552,38 +2497,30 @@ fn restoration_settlement_excludes_partial_moving_and_approximate_frames() {
     let mut approximate = rebuilt(raw_job(Some(approximation())), |parts| {
         parts.recipe.layers.push(detail)
     });
-    approximate.intent = PreviewIntent::Settle;
+    approximate.intent = PreviewIntent::Immediate;
     for (name, job) in [
-        ("truncated", partial),
-        ("viewport", viewport),
         ("interactive", moving),
         ("scale one", fits),
         ("unbounded", unbounded),
         ("approximate white balance", approximate.clone()),
     ] {
         assert!(
-            super::worker::settled_display(&job, &result, true, &Cancel::never())
+            super::worker::view_frame(&job, &result, &Cancel::never())
                 .unwrap()
                 .is_none(),
             "{name}"
         );
     }
-    assert!(
-        super::worker::settled_display(&whole, &result, false, &Cancel::never())
-            .unwrap()
-            .is_none(),
-        "a stack without settlement metadata has no display reduction"
-    );
     let cancelled = Cancel::new();
     cancelled.cancel();
     assert_eq!(
-        super::worker::settled_display(&whole, &result, true, &cancelled)
+        super::worker::view_frame(&whole, &result, &cancelled)
             .unwrap_err()
             .kind,
         crate::ErrorKind::Cancelled
     );
 
-    // Even a correctly tagged retained RAW raster cannot become an exact-derived display when
+    // Even a correctly tagged retained RAW raster cannot become a view frame when
     // its source settings approximate a drafted white balance.
     let raw = approximate
         .evaluation
@@ -2605,7 +2542,7 @@ fn restoration_settlement_excludes_partial_moving_and_approximate_frames() {
 }
 
 #[test]
-fn restoration_settlement_supersession_returns_no_display_or_report() {
+fn a_superseded_reference_frame_returns_no_view_frame_or_report() {
     let gate = Arc::new(luxforge_testbase::Gate::new());
     let mut older = rebuilt(held(&gate, Some(bounds(16, 12))), |parts| {
         parts
@@ -2613,7 +2550,7 @@ fn restoration_settlement_supersession_returns_no_display_or_report() {
             .layers
             .insert(0, Layer::new(crate::DETAIL_EFFECT, json!({"luminance":30})));
     });
-    older.intent = PreviewIntent::Settle;
+    older.intent = PreviewIntent::Immediate;
     older.analyse = true;
     let mut queue = PreviewQueue::default();
     gate.shut();
@@ -2635,262 +2572,4 @@ fn restoration_settlement_supersession_returns_no_display_or_report() {
     assert!(cancelled.display.is_none() && cancelled.report.is_none());
     let current = answers[1].exact().unwrap();
     assert!(current.result.is_ok() && current.display.is_some() && current.report.is_some());
-}
-
-/// Cancellation after rendering can happen while the output queue is full. It must release the
-/// processed prefix without losing the reusable source proxy or handing over the abandoned frame.
-#[test]
-fn restoration_prefix_is_released_when_rendered_delivery_is_abandoned() {
-    use crate::{PrefixUse, ProxyCache, ProxyKey, latest::Latest};
-    use std::sync::mpsc::channel;
-
-    let mut wanted = stacked(
-        64,
-        48,
-        vec![
-            Layer::new(
-                crate::DETAIL_EFFECT,
-                json!({"sharpening":40,"luminance":25}),
-            ),
-            Layer::new(BASIC_EFFECT, json!({"exposure":0.5})),
-        ],
-        Some(bounds(16, 12)),
-    );
-    wanted.intent = PreviewIntent::Interactive;
-    let (rendered_tx, rendered) = channel();
-    let (delivered_tx, delivered) = channel();
-    let mut source_cache = ProxyCache::default();
-    let mut restoration = crate::render::RestorationPrefixCache::default();
-    let mut queue = Latest::new(
-        "luxforge-preview-delivery-cancel-test",
-        move |task: super::queue::PreviewTask, running: &crate::latest::Running<'_, _, _>| {
-            let job = task.job;
-            let evaluation = &job.evaluation;
-            let plan = evaluation
-                .source()
-                .proxy_plan(
-                    evaluation.registry(),
-                    evaluation.recipe(),
-                    job.proxy.unwrap(),
-                )
-                .unwrap()
-                .unwrap();
-            let key = ProxyKey {
-                identity: evaluation.source().identity(),
-                plan,
-            };
-            let (source, built) = source_cache
-                .source_for(&key, evaluation.source(), || {
-                    restoration.clear();
-                    evaluation.source().proxy(plan)
-                })
-                .unwrap();
-            let proxy = render(
-                evaluation.registry(),
-                source.input(),
-                evaluation.recipe(),
-                RenderOptions::proxy(running.abandoned()),
-                evaluation.context(),
-            )
-            .unwrap();
-            let (raster, prefix) = proxy
-                .frame_with_restoration_cache(
-                    evaluation.entry().snapshot.id.clone(),
-                    evaluation.registry(),
-                    evaluation.recipe(),
-                    &key,
-                    &mut restoration,
-                )
-                .unwrap();
-            let result = || PreviewResult {
-                restoration_prefix: prefix,
-                generation: running.generation(),
-                entry_id: evaluation.entry().id.clone(),
-                identity: job.identity.clone(),
-                draft_revision: None,
-                intent: job.intent,
-                viewport_declined: None,
-                outcome: PhaseOutcome::Proxy(ProxyOutcome {
-                    raster: raster.clone(),
-                    dimensions: source.dimensions(),
-                    built,
-                    approximation: proxy.approximation(),
-                }),
-                approximate_white_balance: false,
-                render_ms: 0.0,
-                queue_wait_ms: None,
-            };
-            // Fill the production delivery buffer before attempting the rendered phase. With no
-            // polling, its final send cannot succeed until the test explicitly cancels it.
-            if running.generation() == 1 {
-                for _ in 0..crate::latest::WAITING_RESULTS {
-                    assert!(running.send(result()));
-                }
-            }
-            rendered_tx
-                .send((running.generation(), prefix, restoration.bytes(), built))
-                .unwrap();
-            let accepted = super::worker::send_phase(&mut restoration, running, result());
-            delivered_tx
-                .send((running.generation(), accepted, restoration.bytes()))
-                .unwrap();
-            None
-        },
-    );
-    let task = |job| super::queue::PreviewTask {
-        job,
-        board: None,
-        requested_at: None,
-    };
-    let first = queue.request(task(wanted.clone())).generation;
-    let (generation, prefix, bytes, source_built) =
-        rendered.recv_timeout(luxforge_testbase::HANG).unwrap();
-    assert_eq!(
-        (generation, prefix, source_built),
-        (first, Some(PrefixUse::Built), true)
-    );
-    assert!(
-        bytes > 0,
-        "cancellation must follow a completed, retained prefix"
-    );
-    assert!(
-        delivered.try_recv().is_err(),
-        "the full output queue must hold delivery"
-    );
-    queue.cancel();
-    assert_eq!(
-        delivered.recv_timeout(luxforge_testbase::HANG).unwrap(),
-        (first, false, 0)
-    );
-    wait_until("the abandoned preview delivery ending", || !queue.is_busy());
-    assert!(
-        queue.poll().is_none(),
-        "no buffered or completed stale frame survives cancel"
-    );
-
-    let next = queue.request(task(wanted.clone())).generation;
-    let (generation, prefix, bytes, source_built) =
-        rendered.recv_timeout(luxforge_testbase::HANG).unwrap();
-    assert_eq!(
-        (generation, prefix, source_built),
-        (next, Some(PrefixUse::Built), false),
-        "the processed prefix rebuilds from the still-shared source proxy"
-    );
-    assert!(bytes > 0);
-    assert_eq!(
-        delivered.recv_timeout(luxforge_testbase::HANG).unwrap(),
-        (next, true, bytes)
-    );
-    assert_eq!(wait_for("the rebuilt preview", || queue.poll()).0, next);
-
-    let mut downstream = rebuilt(wanted, |parts| {
-        parts.recipe.layers[1].payload = json!({"exposure":0.75})
-    });
-    downstream.intent = PreviewIntent::Interactive;
-    let next = queue.request(task(downstream)).generation;
-    let (generation, prefix, held, source_built) =
-        rendered.recv_timeout(luxforge_testbase::HANG).unwrap();
-    assert_eq!(
-        (generation, prefix, held, source_built),
-        (next, Some(PrefixUse::Reused), bytes, false),
-        "ordinary delivery must preserve the prefix for downstream edits"
-    );
-    assert_eq!(
-        delivered.recv_timeout(luxforge_testbase::HANG).unwrap(),
-        (next, true, bytes)
-    );
-    assert_eq!(wait_for("the reused preview", || queue.poll()).0, next);
-}
-
-/// A different source can fit the display or ask only for settlement, so it never misses the
-/// source-proxy cache. Its job must still release the previous processed prefix before rendering.
-#[test]
-fn restoration_prefix_is_released_on_exact_only_source_switch() {
-    use crate::{PrefixUse, ProxyCache, latest::Latest};
-    use std::sync::mpsc::channel;
-
-    for intent in [PreviewIntent::Immediate, PreviewIntent::Settle] {
-        let mut wanted = stacked(
-            64,
-            48,
-            vec![
-                Layer::new(
-                    crate::DETAIL_EFFECT,
-                    json!({"sharpening":40,"luminance":25}),
-                ),
-                Layer::new(BASIC_EFFECT, json!({"exposure":0.5})),
-            ],
-            Some(bounds(16, 12)),
-        );
-        wanted.intent = PreviewIntent::Interactive;
-        let (held_tx, held) = channel();
-        let mut source_cache = ProxyCache::default();
-        let mut restoration = crate::render::RestorationPrefixCache::default();
-        let progress = super::queue::ExactProgress::default();
-        let mut queue = Latest::new(
-            "luxforge-preview-source-switch-test",
-            move |task: super::queue::PreviewTask, running| {
-                let generation = running.generation();
-                let result = super::worker::run(
-                    &mut source_cache,
-                    &mut restoration,
-                    &progress,
-                    task,
-                    running,
-                );
-                held_tx.send((generation, restoration.bytes())).unwrap();
-                result
-            },
-        );
-        let mut run = |job| {
-            let generation = queue
-                .request(super::queue::PreviewTask {
-                    job,
-                    board: None,
-                    requested_at: None,
-                })
-                .generation;
-            let (observed, bytes) = held.recv_timeout(luxforge_testbase::HANG).unwrap();
-            assert_eq!(observed, generation);
-            let (observed, result) = wait_for("the source-switch preview", || queue.poll());
-            assert_eq!(observed, generation);
-            wait_until("source-switch rendering ending", || !queue.is_busy());
-            (result, bytes)
-        };
-        let (first, bytes) = run(wanted.clone());
-        assert_eq!(first.restoration_prefix, Some(PrefixUse::Built));
-        assert!(bytes > 0 && first.proxy().unwrap().built);
-
-        let mut same_source = wanted.clone();
-        same_source.intent = PreviewIntent::Settle;
-        let (settled, held) = run(same_source);
-        assert!(settled.exact().unwrap().result.is_ok());
-        assert_eq!(
-            held, bytes,
-            "same-source exact settlement preserves downstream reuse"
-        );
-
-        let mut small = stacked(
-            8,
-            6,
-            wanted.evaluation.recipe().layers.clone(),
-            Some(bounds(16, 12)),
-        );
-        small.intent = intent;
-        let (small, held) = run(small);
-        assert_eq!(small.phase(), PreviewPhase::Exact);
-        assert!(small.exact().unwrap().result.is_ok());
-        assert_eq!(
-            held, 0,
-            "a different exact-only source must release processed pixels"
-        );
-
-        let (returned, held) = run(wanted);
-        assert_eq!(returned.restoration_prefix, Some(PrefixUse::Built));
-        assert_eq!(held, bytes);
-        assert!(
-            !returned.proxy().unwrap().built,
-            "the independent source-proxy cache keeps its valid prepared pixels"
-        );
-    }
 }

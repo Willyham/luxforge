@@ -137,6 +137,7 @@ fn export(model: &TitleBarModel) -> Element<'_, Message> {
                         (*label).to_owned(),
                         Message::Export(ExportMessage::Start {
                             keep_metadata: *keep_metadata,
+                            reference: false,
                         }),
                     )
                 })

@@ -140,6 +140,7 @@ fn spatial_plan(boundary: &GpuBoundary) -> GpuPlan {
             GpuStep::Spatial(Box::new(test_spatial())),
         ],
         region: None,
+        lights: Vec::new(),
     }
 }
 
@@ -366,6 +367,7 @@ fn an_identity_applys_planes_are_written_only_once_it_is_not() {
             texels: TexelMap::IDENTITY,
             steps: vec![GpuStep::Spatial(Box::new(spatial))],
             region: None,
+            lights: Vec::new(),
         }
     };
     let key = PlanesKey::of(&ticks(RADIUS, true).steps, (SIDE, SIDE), (0, 0)).expect("planes");
@@ -781,6 +783,7 @@ fn pass_pipelines_depend_on_their_kernel_and_shape_alone() {
             texels: TexelMap::IDENTITY,
             steps,
             region: None,
+            lights: Vec::new(),
         }
     };
     let created = |pipeline: &PhotoPipeline| {
@@ -855,6 +858,7 @@ fn a_change_to_an_apply_alone_runs_no_pass() {
                 GpuStep::Spatial(Box::new(spatial)),
             ],
             region: None,
+            lights: Vec::new(),
         }
     };
     let dispatched = |pipeline: &PhotoPipeline| {
@@ -1042,6 +1046,7 @@ fn chained_plan(boundary: &GpuBoundary, chained: Chained) -> GpuPlan {
             GpuStep::Spatial(Box::new(worded(last.0, last.1))),
         ],
         region: None,
+        lights: Vec::new(),
     }
 }
 
@@ -1239,6 +1244,9 @@ fn chained_links_take_their_scratch_from_one_pool_and_draw_what_a_fresh_slot_dra
                     .find(|(at, _)| *at == (class, number))
                     .map(|(_, texture)| *texture)
                     .expect("the pool holds the link's scratch"),
+                Some(super::super::spatial::PlaneTexture::Light(k)) => {
+                    panic!("plane {plane} is light {k}, which these links read none of")
+                }
                 None => panic!("plane {plane} is the link's"),
             };
             applied.push(
@@ -1321,6 +1329,7 @@ fn the_pools_generation_rebinds_a_link_once_a_texture_goes() {
                 GpuStep::Spatial(Box::new(last)),
             ],
             region: None,
+            lights: Vec::new(),
         }
     };
     let first_link = |pipeline: &PhotoPipeline| {
@@ -1444,6 +1453,7 @@ fn long_chain(boundary: &GpuBoundary, ends: &[GpuProgram], radius: u32) -> GpuPl
             })
             .collect(),
         region: None,
+        lights: Vec::new(),
     }
 }
 
@@ -1638,6 +1648,9 @@ fn assert_served(steps: &[GpuStep]) -> super::super::spatial::PoolKey {
                         assert_eq!(at, kept, "plane {number}: kept textures in plane order");
                         kept += 1;
                     }
+                    PlaneTexture::Light(k) => {
+                        panic!("plane {number} is light {k}, which these steps read none of")
+                    }
                     PlaneTexture::Pool(held, at) => {
                         assert!(!read, "plane {number}: no plane an apply reads is pooled");
                         assert_eq!(held, Class::of(*declared), "plane {number}: its own class");
@@ -1742,6 +1755,7 @@ fn a_single_link_lays_out_the_textures_it_held_and_charges_them() {
                     (held.format.texture(), held.extent(LAID_AT, LAID))
                 }
                 PlaneTexture::Pool(class, _) => (class.format.texture(), pool.extent(class)),
+                PlaneTexture::Light(_) => (PlaneFormat::Quad.texture(), (1, 1)),
             };
             assert_eq!(
                 (format, extent),

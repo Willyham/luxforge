@@ -38,7 +38,7 @@ use crate::{
 use luxforge_core::{CanvasInteraction, ModuleRegistry, ParameterKind, SourceTag};
 use luxforge_evidence::{
     self as script, BrushStep, CurveStep, CurveStepEvent, DraftStep, MaskStep, PaintStep,
-    PaletteStep, Reference, SliderEnd, SliderStep, ViewStep, WorkspaceStep,
+    Reference, SliderEnd, SliderStep, ViewStep, WorkspaceStep,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -414,7 +414,6 @@ fn resource_rows(usage: &Value, last: &Value) -> Vec<Value> {
     ];
     for field in [
         "full_resident_bytes",
-        "region_resident_bytes",
         "retiring_bytes",
         "stage_resident_bytes",
     ] {
@@ -484,7 +483,7 @@ const TOOL: &str = "editor-latency";
 
 /// Editor-latency's argument order: the evidence directory, the catalog and the data root first,
 /// then the script, the photograph and the developer flag.
-const ORDER: [Flag; 10] = [
+const ORDER: [Flag; 11] = [
     Flag::Evidence,
     Flag::Catalog,
     Flag::DataRoot,
@@ -495,6 +494,7 @@ const ORDER: [Flag; 10] = [
     Flag::Endpoint,
     Flag::Window,
     Flag::GpuIdentity,
+    Flag::NoGpuRender,
 ];
 
 /// Sample the editor's CPU time and RSS about every 50 ms until it exits, within the launch's
@@ -544,7 +544,7 @@ fn sampled(root: &Path, name: &str) -> Watcher {
     })
 }
 
-/// A scripted gesture launch, the viewport journey's included: its evidence in `<out>/app`, its
+/// A scripted gesture launch: its evidence in `<out>/app`, its
 /// console in `<name>.log` and its script kept as `file`, in a window of `window` logical points
 /// when one is given. The proof curve's adds the developer flag.
 fn gesture_launch(
@@ -569,6 +569,16 @@ fn gesture_launch(
     };
     if developer {
         launch.developer()
+    } else {
+        launch
+    }
+}
+
+/// `launch` refusing the GPU stage, the editor's own launch switch, when `options` asks for the
+/// reference renderer's baseline (`--reference-renderer`).
+fn rendered_by(launch: Launch, options: &Options) -> Launch {
+    if options.no_gpu_render {
+        launch.no_gpu_render()
     } else {
         launch
     }
@@ -775,8 +785,8 @@ fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec
                 event["detail"]["draft_revision"].as_u64() == input.draft_revision,
                 "A displayed frame names another draft revision than the job it answers",
             )?;
-            // One generation can now display an interactive region, exact refinement and a full
-            // frame. Input-to-first-visible-response stops at its first adoption.
+            // A generation can be adopted more than once. Input-to-first-visible-response stops
+            // at its first adoption.
             if !input.displayed_ms.is_finite() {
                 input.displayed_ms = displayed_ms;
             }
@@ -1020,8 +1030,6 @@ pub enum Mode {
     /// Native brush hover after a committed masked adjustment, without pressing the pointer.
     /// Fractions are routed through the real window widgets and captured with cursor geometry.
     Hover,
-    /// An open drafted adjustment, pans, quiet refinement and release at percentage zoom.
-    Viewport,
     /// A crop draft's open: `--samples` Starts at Fit, each held open and then cancelled, over
     /// the recipe the flags commit. From events the editor already logs it reads the Start step to
     /// `crop_draft_started`, and to the frame captured once the crop layer's input stage is on
@@ -1038,7 +1046,6 @@ impl Mode {
             Self::Burst => "burst",
             Self::Paint => "paint",
             Self::Hover => "hover",
-            Self::Viewport => "viewport",
             Self::CropStart => "crop-start",
         }
     }
@@ -1216,17 +1223,19 @@ pub struct Options<'a> {
     /// job fills the overlay's coverage grid beside its frame.
     pub mask_overlay: bool,
     /// Drag mode only: queue this many JPEG exports of the committed stack (`export.jpeg`, the
-    /// export lane's one running and four waiting jobs at most) just before the drag, so an exact
-    /// render holds the shared pool while it runs, and read the lane's windows back with
-    /// `activity.list` after the release.
+    /// export lane's one running and four waiting jobs at most) just before the drag, so the GPU
+    /// tile worker streams them on the window's adapter while the drag draws, as a person's
+    /// exports run beside their next edit, and read the lane's windows back with `activity.list`
+    /// after the release.
     pub contend: Option<usize>,
     /// Drag mode only: leave the editor alone this many milliseconds after the preconditions and
     /// before the gesture, so the GPU programs the committed stack's warm list names finish
     /// compiling off the interface thread, as they would before a person's next drag.
     pub warm_ms: Option<u64>,
-    /// Drag and commit modes only: turn the GPU preview off from the palette before anything else,
-    /// as a person does, so every tick takes the CPU path: the same build's baseline for a GPU run.
-    pub gpu_preview_off: bool,
+    /// Drag, commit and paint modes only: launch the editor with `--no-gpu-render`, which refuses
+    /// the photo surface's GPU stage, so the reference renderer draws every frame: the same
+    /// build's baseline for a GPU run.
+    pub no_gpu_render: bool,
     /// Paint mode only: how many masks the recipe holds when the stroke is painted. The first is
     /// the brushed mask the stroke paints into; each further one is a radial mask holding the same
     /// masked adjustments, so a stroke on the first changes the input of every later masked layer.
@@ -1285,9 +1294,7 @@ fn basic_precondition(options: &Options) -> script::Step {
 /// measures the desktop's coalescing instead of the gesture.
 const PAINT_INTERVAL_MS: u64 = 24;
 /// The brush, in mask-space units and `0..100`: a size in the middle of the declared range and the
-/// panel's own default feather, the brush a person paints with. A feathered edge is the ramp the
-/// proxy phase point samples; a hard edge (feather 0) is narrower than two proxy pixels, so it would
-/// force the 2 × 2 supersample of the mask field on every frame and measure that instead.
+/// panel's own default feather, the brush a person paints with.
 const PAINT_SIZE: f64 = 0.06;
 const PAINT_FEATHER: f64 = 50.0;
 /// The exposure the one masked colour layer holds, in EV. Non-neutral, so the layer exists and its
@@ -1501,12 +1508,7 @@ fn report_geometry(result: &mut Value, options: &Options) {
 
 /// The paint run's script: its preconditions, then the one paced stroke along `path`.
 fn paint_script(options: &Options, path: Vec<[f64; 2]>) -> Vec<script::Step> {
-    let mut steps: Vec<script::Step> = options
-        .gpu_preview_off
-        .then(|| script::Step::Palette(PaletteStep::Run("gpu preview".into())))
-        .into_iter()
-        .collect();
-    steps.extend(geometry_preconditions(options));
+    let mut steps: Vec<script::Step> = geometry_preconditions(options).into_iter().collect();
     if options.basic {
         steps.push(basic_precondition(options));
     }
@@ -1529,12 +1531,7 @@ fn paint_script(options: &Options, path: Vec<[f64; 2]>) -> Vec<script::Step> {
 /// layers asked for, then for a curve its seed (a module's curve only) and its view steps. The
 /// frame captured after the last of them is the one the curve's readiness is checked on.
 fn setup_steps(options: &Options, field: &FieldTarget, source: SourceTag) -> Vec<script::Step> {
-    let mut steps: Vec<script::Step> = options
-        .gpu_preview_off
-        .then(|| script::Step::Palette(PaletteStep::Run("gpu preview".into())))
-        .into_iter()
-        .collect();
-    steps.extend(geometry_preconditions(options));
+    let mut steps: Vec<script::Step> = geometry_preconditions(options).into_iter().collect();
     if options.curve_layer {
         steps.push(crate::scenario::recipe::moderate_curve());
     }
@@ -1561,8 +1558,8 @@ fn setup_steps(options: &Options, field: &FieldTarget, source: SourceTag) -> Vec
 const CONTEND_MAX: usize = 5;
 
 /// The idle check a drag run with `--idle` makes after its release has dissolved from the drag's
-/// last GPU frame: a settle long enough for the dissolve and the committed frame's exact phase and
-/// histogram, then the longest window an evidence step takes.
+/// last GPU frame: a settle long enough for the dissolve and the committed stack's picture at rest,
+/// its tiles and their counts, then the longest window an evidence step takes.
 const IDLE_AFTER_DISSOLVE: script::IdleStep = script::IdleStep {
     settle_ms: 4000,
     ms: script::MAX_WAIT_MS,
@@ -1736,55 +1733,6 @@ fn check_detail_precondition(frame: &Value, expected: bool) -> Result {
     Ok(())
 }
 
-/// One open draft crosses two pans and a quiet interval. A second value resumes motion before
-/// release; after the exact report settles, a final pan tests the retained full texture slot.
-fn viewport_script(options: &Options, field: &FieldTarget) -> (Vec<script::Step>, [usize; 7]) {
-    let mut steps = geometry_preconditions(options);
-    if options.curve_layer {
-        steps.push(crate::scenario::recipe::moderate_curve());
-    }
-    if options.detail {
-        steps.push(crate::scenario::recipe::moderate_detail());
-    }
-    if options.mask {
-        steps.extend(mask_precondition());
-    }
-    if options.basic {
-        steps.push(basic_precondition(options));
-    }
-    steps.extend(zoom_step(options));
-    let values = field.gesture_values(2);
-    let mut indices = [0; 7];
-    steps.push(script::Step::Slider(SliderStep::new(
-        &field.action,
-        &field.parameter,
-        [values[0]],
-    )));
-    indices[0] = steps.len();
-    steps.push(script::Step::pan(0.15, 0.15));
-    indices[1] = steps.len();
-    steps.push(script::Step::wait(1500));
-    indices[2] = steps.len();
-    steps.push(script::Step::Slider(SliderStep::new(
-        &field.action,
-        &field.parameter,
-        [values[1]],
-    )));
-    indices[3] = steps.len();
-    steps.push(script::Step::pan(0.75, 0.75));
-    steps.push(script::Step::wait(1500));
-    indices[4] = steps.len();
-    steps.push(script::Step::Slider(
-        SliderStep::new(&field.action, &field.parameter, [values[1]]).release(),
-    ));
-    steps.push(script::Step::wait(2500));
-    indices[5] = steps.len();
-    steps.push(script::Step::pan(0.3, 0.3));
-    steps.push(script::Step::wait(500));
-    indices[6] = steps.len();
-    (steps, indices)
-}
-
 fn frame_at<'a>(frames: &'a [Value], index: usize, label: &str) -> Result<&'a Value> {
     frames
         .get(index)
@@ -1797,457 +1745,12 @@ fn gpu_count(frame: &Value, name: &str) -> Result<u64> {
         .ok_or_else(|| format!("Captured frame has no surface.gpu.{name}").into())
 }
 
-/// Pair each pan with the interactive and quiet-settlement generations requested in its own
-/// script window. A neighbouring input's frame can never stand in for the pan being measured.
-fn pan_region_samples(events: &[Value], windows: &[(usize, usize)]) -> Result<Vec<Value>> {
-    let step_index = |step| {
-        events
-            .iter()
-            .position(|event| {
-                event["event"] == "script_step" && event["detail"]["step"] == json!(step)
-            })
-            .ok_or_else(|| format!("Viewport step {step} was never sent"))
-    };
-    windows.iter().map(|&(pan, end)| {
-        let start = step_index(pan)?;
-        let stop = step_index(end)?;
-        ensure(start < stop, "Viewport pan window is reversed")?;
-        let window = &events[start..stop];
-        let requested = |intent:&str| -> Result<&Value> {
-            window.iter().find(|event|event["event"] == "preview_view_requested" && event["detail"]["intent"] == intent)
-                .ok_or_else(|| format!("Pan step {pan} requested no {intent} region").into())
-        };
-        let interactive = requested("interactive")?;
-        let refined = requested("settle")?;
-        let shown = |request:&Value, quality:&str| -> Result<&Value> {
-            let generation = request["detail"]["generation"].as_u64().ok_or("Viewport request has no generation")?;
-            window.iter().find(|event|event["event"] == "preview_displayed"
-                && event["detail"]["generation"] == generation && event["detail"]["path"] == "region"
-                && event["detail"]["quality"] == quality)
-                .ok_or_else(|| format!("Pan step {pan} has no {quality} adoption for generation {generation}").into())
-        };
-        let interactive_shown = shown(interactive,"interactive")?;
-        let exact_shown = shown(refined,"exact")?;
-        ensure(interactive_shown["detail"]["draft_revision"].is_u64()
-            && interactive_shown["detail"]["draft_revision"] == exact_shown["detail"]["draft_revision"]
-            && interactive_shown["detail"]["entry_id"] == exact_shown["detail"]["entry_id"]
-            && interactive_shown["detail"]["source_fingerprint"] == exact_shown["detail"]["source_fingerprint"],
-            "Pan refinement changed the draft, entry or source identity")?;
-        let pan_ms = elapsed(&events[start])?;
-        let interactive_ms = elapsed(interactive_shown)?;
-        let exact_ms = elapsed(exact_shown)?;
-        let refine_ms = elapsed(refined)?;
-        ensure(pan_ms <= elapsed(interactive)? && interactive_ms <= refine_ms && refine_ms <= exact_ms,
-            "Viewport pan/refinement timestamps are out of order")?;
-        Ok(json!({"step":pan,"interactive_generation":interactive["detail"]["generation"],
-            "exact_generation":refined["detail"]["generation"],"draft_revision":interactive_shown["detail"]["draft_revision"],
-            "source_fingerprint":interactive_shown["detail"]["source_fingerprint"],
-            "pan_to_interactive_ms":interactive_ms-pan_ms,"pan_to_exact_ms":exact_ms-pan_ms,
-            "refinement_request_to_exact_ms":exact_ms-refine_ms}))
-    }).collect()
-}
-
-/// Merge the actual observations, rather than averaging the journeys' percentiles.
-fn combined_rows(reports: &[Value]) -> Vec<Value> {
-    let mut observations: BTreeMap<(String, String), Vec<f64>> = BTreeMap::new();
-    for report in reports {
-        for row in stats::rows(report) {
-            let metric = row["metric"].as_str().unwrap_or_default().to_owned();
-            let unit = row["unit"].as_str().unwrap_or_default().to_owned();
-            let values = observations.entry((metric, unit)).or_default();
-            if let Some(samples) = row["distribution"]["samples"].as_array() {
-                values.extend(samples.iter().filter_map(Value::as_f64));
-            }
-        }
-    }
-    observations
-        .into_iter()
-        .map(|((metric, unit), values)| stats::row(&metric, &unit, values))
-        .collect()
-}
-
-/// A focused native viewport journey. Event timestamps measure desktop adoption; capture-side
-/// `surface.gpu` counters report actual draw encoding and writes, never display scanout.
-fn run_viewport(root: &Path, out: &Path, bin: &Path, options: &Options) -> Result {
-    ensure(
-        (1..=60).contains(&options.samples),
-        "Viewport samples must be 1..60 sequential journeys",
-    )?;
-    ensure(
-        matches!(options.zoom, Some(100.0 | 200.0)),
-        "--mode viewport requires --zoom 100 or --zoom 200",
-    )?;
-    ensure(
-        options.control == Control::Slider,
-        "Viewport mode measures a slider",
-    )?;
-    ensure(!options.idle, "Viewport mode has its own held-draft pause")?;
-    let field = resolve_field(options.control, options.action, options.parameter)?;
-    let source = options.source.canonicalize()?;
-    let source_hash = hash(&source)?;
-    let (steps, positions) = viewport_script(options, &field);
-    ensure(
-        steps.len() <= script::MAX_SCRIPT_STEPS,
-        "Viewport script exceeds the evidence step bound",
-    )?;
-    let run = Run::tool(root, out, TOOL, bin, Duration::from_secs(90))?;
-    run.check(|run| {
-        let mut reports = Vec::with_capacity(options.samples);
-        for journey in 0..options.samples {
-            let report = viewport(run,options,&field,&source,&source_hash,(&steps,positions),journey)?;
-            ensure(report["status"] == "passed", format!("Viewport journey {journey} is unavailable"))?;
-            reports.push(report);
-        }
-        let mut result = reports[0].clone();
-        result.as_object_mut().expect("viewport report").remove("frames");
-        result.as_object_mut().expect("viewport report").remove("regions");
-        result["rows"] = json!(combined_rows(&reports));
-        result["samples"] = json!(options.samples);
-        result["pan_samples"] = json!(options.samples*2);
-        result["journeys"] = json!((0..options.samples).map(|index|format!("viewport-{index:03}.json")).collect::<Vec<_>>());
-        let maximum_load = reports.iter().flat_map(|report|[report["load"]["load_average_1m"].as_f64(),report["load_average_1m_end"].as_f64()]).flatten().reduce(f64::max);
-        result["load_before"] = reports[0]["load"].clone();
-        result["load"] = launch::load(maximum_load);
-        result["load_average_1m_end"] = reports.last().expect("viewport report")["load_average_1m_end"].clone();
-        result["load_scope"] = json!("Maximum observed load before/after all sequential journeys; each journey retains its own endpoints");
-        result["method"] = json!("Each sample is one sequential background viewport journey with two pans over an open draft, quiet exact refinement, release and retained full-texture pan. The pan/refinement rows pool the actual generation-correlated observations from every journey; filesystem cache is warm, each journey imports/prepares its own source before the measured gesture. Readbacks and per-step settling occur between measured pans. No concurrent editor launches.");
-        write_json(&out.join("latency.json"), &result)?;
-        println!("PASS editor latency ({} viewport journeys): {}",options.samples,out.display());
-        Ok(())
-    })
-}
-
-/// The viewport journey's launch and its checks, in `run`.
-fn viewport(
-    run: &mut Run,
-    options: &Options,
-    field: &FieldTarget,
-    source: &Path,
-    source_hash: &str,
-    sequence: (&[script::Step], [usize; 7]),
-    journey: usize,
-) -> Result<Value> {
-    let (steps, positions) = sequence;
-    let out = &run.out().to_path_buf();
-    let name = format!("viewport-{journey:03}");
-    let load_start = launch::load_average(run.root());
-    let viewport = gesture_launch(
-        out,
-        &name,
-        "viewport-script.json",
-        steps,
-        source,
-        false,
-        options.window,
-    )
-    .evidence_dir(&out.join(&name))
-    .watch(sampled(run.root(), "viewport"));
-    let Launched {
-        dir: evidence,
-        watched: usage,
-    } = run.launch(viewport)?;
-    let app = read_json(&evidence.join("result.json"))?;
-    ensure(
-        app["status"] == "captured" && app["had_input_errors"] == false,
-        format!(
-            "Viewport evidence did not complete cleanly: {}",
-            app["script"]
-        ),
-    )?;
-    let frames = app["frames"]
-        .as_array()
-        .ok_or("Viewport evidence has no frames")?;
-    check_curve_layer_seed(frames, steps, options.curve_layer)?;
-    ensure(
-        frames.len() == steps.len() + 1,
-        "Viewport evidence missed a captured frame",
-    )?;
-    // Cumulative draw diagnostics expose blank frames between captures as well as at captures.
-    // Missing fields mean an older binary cannot qualify the viewport journey.
-    let mut stale_draws = 0;
-    for (index, frame) in frames.iter().enumerate() {
-        let blanks = gpu_count(frame, "blank_photo_draws")?;
-        stale_draws = gpu_count(frame, "stale_photo_draws")?;
-        ensure(
-            blanks == 0,
-            format!("Viewport frame {index} followed {blanks} blank photo draws"),
-        )?;
-    }
-    let events = scenario::events(&evidence.join("events.jsonl"))?;
-    let header = run.provenance(&events)?;
-    let [
-        draft,
-        first_pan,
-        first_pause,
-        resumed,
-        second_pause,
-        settled,
-        final_pan,
-    ] = positions;
-    let [
-        draft,
-        first_pan,
-        first_pause,
-        resumed,
-        second_pause,
-        settled,
-        final_pan,
-    ] = [
-        frame_at(frames, draft, "draft")?,
-        frame_at(frames, first_pan, "first pan")?,
-        frame_at(frames, first_pause, "first pause")?,
-        frame_at(frames, resumed, "resumed")?,
-        frame_at(frames, second_pause, "second pause")?,
-        frame_at(frames, settled, "settled")?,
-        frame_at(frames, final_pan, "final pan")?,
-    ];
-    let regions: Vec<&Value> = events
-        .iter()
-        .filter(|event| {
-            event["event"] == "preview_displayed" && event["detail"]["path"] == "region"
-        })
-        .collect();
-    if regions.is_empty() {
-        let mut result = json!({
-            "status":"unavailable",
-            "mode":"viewport",
-            "reason":"The binary emitted no region preview_displayed events; viewport evidence is unsupported, not a pass",
-            "source":source,
-            "source_sha256":source_hash,
-            "zoom_percent":options.zoom,
-        });
-        report_geometry(&mut result, options);
-        stamp(&mut result, &header);
-        write_json(&out.join(format!("{name}.json")), &result)?;
-        run.record("latency", json!("unavailable"));
-        ensure(hash(source)? == source_hash, "The source changed")?;
-        println!("UNAVAILABLE editor latency (viewport): {}", out.display());
-        return Ok(result);
-    }
-    let region_summary: Vec<Value> = regions
-        .iter()
-        .map(|event| {
-            json!({
-                "elapsed_ms":event["elapsed_ms"],
-                "generation":event["detail"]["generation"],
-                "draft_revision":event["detail"]["draft_revision"],
-                "entry_id":event["detail"]["entry_id"],
-                "snapshot_id":event["detail"]["snapshot_id"],
-                "source_fingerprint":event["detail"]["source_fingerprint"],
-                "region":event["detail"]["region"],
-                "region_stage":event["detail"]["region_stage"],
-                "quality":event["detail"]["quality"],
-                "viewport_declined":event["detail"]["viewport_declined"],
-            })
-        })
-        .collect();
-    for event in &regions {
-        let detail = &event["detail"];
-        let rect: [u32; 4] = serde_json::from_value(detail["region"].clone())
-            .map_err(|_| "A region event has no full-stage rectangle")?;
-        let stage: [u32; 2] = serde_json::from_value(detail["dimensions"].clone())
-            .map_err(|_| "A region event has no full-stage dimensions")?;
-        ensure(
-            rect[0] < rect[2]
-                && rect[1] < rect[3]
-                && rect[2] <= stage[0]
-                && rect[3] <= stage[1]
-                && detail["generation"].as_u64().is_some()
-                && detail["entry_id"].as_str().is_some()
-                && detail["source_fingerprint"].as_str().is_some(),
-            format!("A region event lacks valid content, generation or stage geometry: {detail}"),
-        )?;
-    }
-    let first_draft_revision = draft["state"]["displayed_draft_revision"]
-        .as_u64()
-        .ok_or("The first drafted viewport did not display its draft revision")?;
-    let resumed_revision = resumed["state"]["displayed_draft_revision"]
-        .as_u64()
-        .ok_or("Resumed motion did not display its draft revision")?;
-    ensure(
-        resumed_revision > first_draft_revision,
-        "Resumed motion did not advance the displayed draft revision",
-    )?;
-    ensure(
-        regions
-            .iter()
-            .any(|event| event["detail"]["draft_revision"].as_u64() == Some(first_draft_revision)),
-        "No region was displayed for the initial draft",
-    )?;
-    ensure(
-        regions
-            .iter()
-            .any(|event| event["detail"]["draft_revision"].as_u64() == Some(resumed_revision)),
-        "No region was displayed for resumed motion",
-    )?;
-    ensure(
-        draft["state"]["histogram"]["stale"] == true,
-        "The first viewport-only draft incorrectly made the full-image histogram current",
-    )?;
-    for (revision, label) in [
-        (first_draft_revision, "first draft"),
-        (resumed_revision, "resumed draft"),
-    ] {
-        ensure(
-            regions.iter().any(|event| {
-                event["detail"]["draft_revision"].as_u64() == Some(revision)
-                    && event["detail"]["quality"] == "interactive"
-            }),
-            format!("{label} produced no interactive viewport frame"),
-        )?;
-        ensure(
-            regions.iter().any(|event| {
-                event["detail"]["draft_revision"].as_u64() == Some(revision)
-                    && event["detail"]["quality"] == "exact"
-            }),
-            format!("{label} never refined to an exact viewport frame while held"),
-        )?;
-    }
-    ensure(
-        settled["state"]["histogram"]["stale"] == false
-            && settled["state"]["histogram"]["identity"]["draft_revision"].is_null(),
-        "Release did not settle an exact full-image histogram",
-    )?;
-    let histogram = &settled["state"]["histogram"];
-    let dimensions = &settled["state"]["preview_dimensions"];
-    ensure(
-        histogram["identity"]["width"] == dimensions[0]
-            && histogram["identity"]["height"] == dimensions[1],
-        "The settled histogram does not describe the full rendered stage",
-    )?;
-    if !histogram["overlay"].is_null() {
-        ensure(
-            histogram["overlay"]["approximate"] == false,
-            "The settled clipping overlay remained approximate",
-        )?;
-    }
-    let before_pan_writes = gpu_count(settled, "photo_writes")?;
-    let after_pan_writes = gpu_count(final_pan, "photo_writes")?;
-    ensure(
-        after_pan_writes == before_pan_writes,
-        "A settled pan uploaded photograph pixels instead of reusing the full slot",
-    )?;
-    ensure(
-        gpu_count(settled, "full_resident_bytes")? > 0,
-        "The settled full texture is not resident",
-    )?;
-    ensure(
-        final_pan["state"]["surface"]["gpu"]["drawn_full_version"]
-            == settled["state"]["surface"]["gpu"]["drawn_full_version"],
-        "The settled pan did not draw the same full texture version",
-    )?;
-    ensure(
-        final_pan["state"]["surface"]["gpu"]["drawn_content"]
-            == settled["state"]["surface"]["gpu"]["drawn_content"],
-        "The settled pan drew a different content identity",
-    )?;
-    let first_input_ms = events
-        .iter()
-        .find(|e| e["event"] == "slider_draft_set")
-        .map(elapsed)
-        .transpose()?
-        .ok_or("The viewport run sent no draft input")?;
-    let first_region_ms = regions
-        .iter()
-        .find(|e| e["detail"]["draft_revision"].as_u64() == Some(first_draft_revision))
-        .map(|e| elapsed(e))
-        .transpose()?
-        .ok_or("The first draft has no region event")?;
-    // The one scalar and the GPU counters, each a one-sample row. The counters are the photo
-    // surface's actual texture writes, counted during draw encoding.
-    let pan_samples = pan_region_samples(
-        &events,
-        &[
-            (positions[1], positions[3]),
-            (positions[4] - 1, positions[5] - 1),
-        ],
-    )?;
-    let mut rows = vec![
-        stats::scalar(
-            "input_to_first_region_adoption_ms",
-            "ms",
-            Some(first_region_ms - first_input_ms),
-        ),
-        counter(
-            "blank_photo_draws",
-            "count",
-            Some(gpu_count(final_pan, "blank_photo_draws")?),
-        ),
-        counter("stale_photo_draws", "count", Some(stale_draws)),
-        counter(
-            "photo_writes_before_settled_pan",
-            "count",
-            Some(before_pan_writes),
-        ),
-        counter(
-            "photo_writes_after_settled_pan",
-            "count",
-            Some(after_pan_writes),
-        ),
-        counter(
-            "upload_bytes_before_settled_pan",
-            "bytes",
-            Some(gpu_count(settled, "upload_bytes")?),
-        ),
-        counter(
-            "upload_bytes_after_settled_pan",
-            "bytes",
-            Some(gpu_count(final_pan, "upload_bytes")?),
-        ),
-    ];
-    for (metric, field) in [
-        (
-            "pan_to_interactive_region_adoption",
-            "pan_to_interactive_ms",
-        ),
-        ("pan_to_exact_region_adoption", "pan_to_exact_ms"),
-        (
-            "quiet_refinement_request_to_exact_adoption",
-            "refinement_request_to_exact_ms",
-        ),
-    ] {
-        rows.push(stats::row(
-            metric,
-            "ms",
-            pan_samples
-                .iter()
-                .filter_map(|sample| sample[field].as_f64()),
-        ));
-    }
-    rows.extend(resource_rows(&usage, final_pan));
-    let mut result = json!({
-        "status":"passed", "mode":"viewport", "zoom_percent":options.zoom,
-        "source":source, "source_sha256":source_hash,
-        "backend":settled["state"]["backend"],
-        "control_action":field.action, "control_parameter":field.parameter,
-        "crop_angle_deg":options.crop, "full_basic_layer":options.basic, "mask":options.mask,
-        "rows":rows,
-        "pan_samples":pan_samples,"load":launch::load(load_start),"load_average_1m_end":launch::load_average(run.root()),
-        "regions":region_summary,
-        "frames":{
-            "draft":draft["state"], "first_pan":first_pan["state"],
-            "first_pause":first_pause["state"], "resumed":resumed["state"],
-            "second_pause":second_pause["state"], "settled":settled["state"],
-            "settled_pan":final_pan["state"],
-        },
-        "gpu_note":"The photo_writes and upload_bytes rows are the photo surface's actual texture writes, counted during draw encoding. They do not measure display scanout or backend-owned staging.",
-        "scope":"A held drafted slider at percentage zoom, two pans, quiet refinement, resumed motion, release, exact full-image report and a settled pan. preview_displayed is frame adoption, not confirmed GPU upload or display scanout. Captured surface.gpu counters describe actual draw encoding and texture writes.",
-    });
-    report_geometry(&mut result, options);
-    stamp(&mut result, &header);
-    write_json(&out.join(format!("{name}.json")), &result)?;
-    ensure(hash(source)? == source_hash, "The source changed")?;
-    Ok(result)
-}
-
 #[derive(Clone, Debug)]
 struct PaintPhaseSample {
     generation: u64,
     /// How many positions the stroke had captured when the `draft.set` behind this frame went,
     /// which is how far along the stroke the frame is.
     positions: Option<usize>,
-    phase: &'static str,
-    proxy: bool,
     /// When the frame was presented, on the run's own clock.
     displayed_ms: f64,
     input_to_presented_ms: f64,
@@ -2342,21 +1845,19 @@ fn paced_stroke_phase_samples(
         if !seen.insert(generation) {
             continue;
         }
-        let proxy = displayed["detail"]["proxy"].as_bool().unwrap_or(false);
-        let phase = if displayed["detail"]["path"] == json!("region") {
-            "region"
-        } else if proxy {
-            "proxy"
-        } else {
-            "exact"
-        };
-        let received = events
-            .iter()
-            .find(|event| {
-                event["event"] == json!("preview_result_received")
-                    && event["detail"]["generation"].as_u64() == Some(generation)
-                    && event["detail"]["phase"] == json!(phase)
-            })
+        let displayed_ms = elapsed(displayed)?;
+        // The generation's newest worker result received before it was presented: the one the
+        // surface adopted.
+        let mut received = None;
+        for event in events.iter().filter(|event| {
+            event["event"] == json!("preview_result_received")
+                && event["detail"]["generation"].as_u64() == Some(generation)
+        }) {
+            if elapsed(event)? <= displayed_ms {
+                received = Some(event);
+            }
+        }
+        let received = received
             .ok_or_else(|| format!("Generation {generation} has no received worker result"))?;
         let queue_wait_ms = received["detail"]["queue_wait_ms"]
             .as_f64()
@@ -2364,20 +1865,13 @@ fn paced_stroke_phase_samples(
         let worker_render_ms = received["detail"]["render_ms"]
             .as_f64()
             .ok_or("A measured worker result has no render timing")?;
-        let displayed_ms = elapsed(displayed)?;
         let received_ms = elapsed(received)?;
-        ensure(
-            received_ms <= displayed_ms,
-            format!("Generation {generation} was displayed before its worker result was received"),
-        )?;
         let input_to_presented_ms = displayed_ms - sent;
         let before_worker_result_ms =
             received_ms - sent - owner_round_trip_ms - queue_wait_ms - worker_render_ms;
         samples.push(PaintPhaseSample {
             generation,
             positions,
-            phase,
-            proxy,
             displayed_ms,
             input_to_presented_ms,
             owner_round_trip_ms,
@@ -2899,6 +2393,7 @@ fn paint(run: &mut Run, options: &Options) -> Result {
         options.window,
     )
     .watch(sampled(root, "gesture"));
+    let gesture = rendered_by(gesture, options);
     let Launched {
         dir: evidence,
         watched: usage,
@@ -3128,8 +2623,7 @@ fn paint(run: &mut Run, options: &Options) -> Result {
             "note":"One unlimited brush mask of one component and one masked Basic exposure layer, with requested global Basic/Detail and crop preconditions recorded. The brush reads no input pixels, so this measures overlay coverage and restoration-prefix reuse rather than the value-mask input-grid cache.",
         },
         "brush":{"size":PAINT_SIZE,"feather":PAINT_FEATHER,"flow":100.0,"erase":false,
-            "exposure_ev":PAINT_EV,
-            "note":"Feathered, so the proxy phase point samples the mask field; a hard edge would force its 2 × 2 supersample."},
+            "exposure_ev":PAINT_EV},
         "tick_paths":{"gpu":gpu_tick_count,"cpu_reasons":cpu_reasons},
         "stroke":{
             "interval_ms":PAINT_INTERVAL_MS,
@@ -3153,8 +2647,6 @@ fn paint(run: &mut Run, options: &Options) -> Result {
         "load_average_1m_end":load_end,
         "phase_samples":phase_samples.iter().map(|sample| json!({
             "generation":sample.generation,
-            "phase":sample.phase,
-            "proxy":sample.proxy,
             "input_to_presented_frame_ms":sample.input_to_presented_ms,
             "owner_round_trip_to_preview_queue_ms":sample.owner_round_trip_ms,
             "executor_wait_ms":sample.executor_wait_ms,
@@ -3430,8 +2922,8 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         ),
     )?;
     ensure(
-        !options.gpu_preview_off || matches!(options.mode, Mode::Drag | Mode::Commit | Mode::Paint),
-        "--no-gpu-preview measures a drag, a commit or a stroke; pass --mode drag, commit or paint",
+        !options.no_gpu_render || matches!(options.mode, Mode::Drag | Mode::Commit | Mode::Paint),
+        "--reference-renderer measures a drag, a commit or a stroke; pass --mode drag, commit or paint",
     )?;
     if let Some(ms) = options.warm_ms {
         ensure(
@@ -3451,9 +2943,6 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
             !options.idle,
             "--contend and --idle measure different things; run them separately",
         )?;
-    }
-    if options.mode == Mode::Viewport {
-        return run_viewport(root, out, bin, &options);
     }
     if options.mode == Mode::Burst {
         return run_burst(root, out, bin, &options);
@@ -3531,6 +3020,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         options.window,
     )
     .watch(sampled(root, "gesture"));
+    let gesture = rendered_by(gesture, options);
     let Launched {
         dir: evidence,
         watched: usage,
@@ -3672,19 +3162,19 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         }
         captured.push(json!({"frame": frame["file"], "path": gpu["drawing_path"],
             "drawn_gpu_revision": gpu["drawn_gpu_revision"], "gpu_ms": frame["state"]["status_bar"]["gpu_ms"],
-            "approximate": gpu["gpu_preview"]["drag"]["approximate"]}));
+            "lights": gpu["gpu_preview"]["drag"]["lights"]}));
     }
-    if options.gpu_preview_off {
+    if options.no_gpu_render {
         ensure(
-            last["state"]["workspace"]["gpu_preview"] == false
+            last["state"]["renderer"]["record"] == "reference"
                 && drained.iter().all(|input| {
                     input.path == FramePath::Cpu
                         && input
                             .reason
                             .as_deref()
-                            .is_none_or(|reason| reason == "preference-off")
+                            .is_none_or(|reason| reason == "no-adapter")
                 }),
-            "--no-gpu-preview left the GPU preview on, or a drained input drew another way",
+            "--reference-renderer left the GPU stage drawing, or a drained input drew another way",
         )?;
     }
     let unpreviewed = measured.iter().filter(|input| input.unpreviewed).count();
@@ -3927,7 +3417,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
                 _ => "Developer proof curve: identity colour operation. Draft/preview scheduling and GPU upload are timed while the curve canvas is visible; the curve does not alter photo pixels.".to_owned(),
             },
             (Control::Slider, SET_BASIC, EXPOSURE) => "Basic exposure: the photograph's colour pass is measured with the generated slider.".to_owned(),
-            (Control::Slider, "set-raw", parameter) => format!("{} {parameter}: the slider is measured through draft.begin/set/commit exactly as Basic exposure is. Each drafted value is previewed approximately on the planes developed at the committed white balance (approximate_white_balance frames, never analysed); each release commits and redevelops the mosaic before its exact frame and histogram.", field.action),
+            (Control::Slider, "set-raw", parameter) => format!("{} {parameter}: the slider is measured through draft.begin/set/commit exactly as Basic exposure is. Each drafted value is drawn on the GPU from the planes developed at the committed white balance, the drafted one approximated over them by one matrix (approximate_white_balance frames, whose counts are never adopted); each release commits and redevelops the mosaic before its picture at rest and histogram.", field.action),
             (Control::Slider, action, parameter) => format!("{action} {parameter}: the slider is measured through draft.begin/set/commit exactly as Basic exposure is."),
         },
         "view_setup":match &field.curve {
@@ -4002,7 +3492,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
             })
             .collect::<Vec<_>>()
     );
-    result["gpu_preview"] = json!(!options.gpu_preview_off);
+    result["gpu_render"] = json!(!options.no_gpu_render);
     result["paths"] = paths(drained, &events);
     result["compile_queue_before_gesture"] = compile_queue;
     result["contention"] = contended.map_or(Value::Null, |(_, report)| report);
@@ -4045,7 +3535,7 @@ fn paths(drained: &[Input], events: &[Value]) -> Value {
         "cpu_reasons": reasons,
         "run_gpu_ticks": ticks("gpu"),
         "run_cpu_ticks": ticks("cpu"),
-        "note": "gpu_frames and cpu_frames count the drained inputs by the path that drew each one's frame; cpu_reasons is what each CPU tick's gpu_preview_tick named (boundary-pending for the gesture's first tick, which asks for the boundary). run_gpu_ticks and run_cpu_ticks count every tick of the run, its release and burst step's included.",
+        "note": "gpu_frames and cpu_frames count the drained inputs by the path that drew each one's frame; cpu_reasons is what each CPU tick's gpu_preview_tick named (surface-pending for a tick whose plan the surface has not evaluated yet). run_gpu_ticks and run_cpu_ticks count every tick of the run, its release and burst step's included.",
     })
 }
 
@@ -4138,7 +3628,7 @@ fn contention_windows(
         "finished_export_windows_ms": finished.iter().map(|(start, end)| json!([start, end])).collect::<Vec<_>>(),
         "activity_answered_ms": answered,
         "activity": answer,
-        "note": "Each export renders the committed stack exactly on the shared pool, then encodes and writes it, on the export lane: one job runs and the rest wait, so the lane is busy without a gap from the first export's acceptance to the last one's end. An input is contended when it was sent inside that window, which spans the jobs' encodes and writes as well as their renders. The end comes from activity.list after the release; the exported files are removed after the run.",
+        "note": "Each export streams the committed stack in tiles through the GPU tile worker on the window's adapter, then encodes and writes it, on the export lane: one job runs and the rest wait, so the lane is busy without a gap from the first export's acceptance to the last one's end. An input is contended when it was sent inside that window, which spans the jobs' encodes and writes as well as their renders. The end comes from activity.list after the release; the exported files are removed after the run.",
     });
     Ok((vec![(first, end)], report))
 }
@@ -4214,25 +3704,19 @@ struct BurstAnalysis {
     cancelled_exact: usize,
     /// Generations whose preview job never reached a `preview_displayed`.
     superseded: Vec<u64>,
-    /// The last presented frame's own `proxy`/`proxy_dimensions`, or null with a note when the
-    /// binary's `preview_displayed` carries neither, which is true of the current binary.
-    proxy: Value,
 }
 
-/// How many presented frames approximated a drafted RAW white balance, and at which phase: the
-/// `preview_displayed` events whose `approximate_white_balance` is true, split by `proxy`.
+/// How many presented frames approximated a drafted RAW white balance: the `preview_displayed`
+/// events whose `approximate_white_balance` is true.
 fn approximate_frames(events: &[Value]) -> Value {
-    let displayed = || {
-        events.iter().filter(|event| {
+    let presented = events
+        .iter()
+        .filter(|event| {
             event["event"] == "preview_displayed"
                 && event["detail"]["approximate_white_balance"] == json!(true)
         })
-    };
-    json!({
-        "presented":displayed().count(),
-        "proxy":displayed().filter(|event| event["detail"]["proxy"] == json!(true)).count(),
-        "full_size":displayed().filter(|event| event["detail"]["proxy"] != json!(true)).count(),
-    })
+        .count();
+    json!({ "presented": presented })
 }
 
 /// Read [`BurstAnalysis`] out of one run's events, in the order described on the struct's fields.
@@ -4310,25 +3794,6 @@ fn analyze_burst(events: &[Value], field: &FieldTarget) -> Result<BurstAnalysis>
         .filter_map(|input| input.generation)
         .collect();
 
-    // The proxy fields arrive with the desktop change this harness anticipates; against the current
-    // binary, which carries neither, this reports them as null rather than failing the run.
-    let proxy_detail = events
-        .iter()
-        .rev()
-        .find(|event| event["event"] == "preview_displayed")
-        .map(|event| &event["detail"]);
-    let proxy = match proxy_detail {
-        Some(detail) if !detail["proxy"].is_null() => json!({
-            "proxy":detail["proxy"],
-            "proxy_dimensions":detail["proxy_dimensions"],
-        }),
-        _ => json!({
-            "proxy":Value::Null,
-            "proxy_dimensions":Value::Null,
-            "note":"the current binary's preview_displayed carries no proxy fields; a later phase adds them",
-        }),
-    };
-
     let drawn_on = |path| drafted.iter().filter(|input| input.path == path).count();
     Ok(BurstAnalysis {
         sent_values: value_events.len(),
@@ -4346,7 +3811,6 @@ fn analyze_burst(events: &[Value], field: &FieldTarget) -> Result<BurstAnalysis>
         adopted: counted("analysis_adopted"),
         cancelled_exact: counted("preview_exact_cancelled"),
         superseded,
-        proxy,
     })
 }
 
@@ -4447,25 +3911,6 @@ fn burst(run: &mut Run, options: &Options) -> Result {
         )?;
     }
     let approximate = approximate_frames(&events);
-    let region_events: Vec<Value> = events
-        .iter()
-        .filter(|event| {
-            event["event"] == "preview_displayed" && event["detail"]["path"] == "region"
-        })
-        .map(|event| {
-            json!({
-                "elapsed_ms":event["elapsed_ms"],
-                "generation":event["detail"]["generation"],
-                "draft_revision":event["detail"]["draft_revision"],
-                "entry_id":event["detail"]["entry_id"],
-                "source_fingerprint":event["detail"]["source_fingerprint"],
-                "region":event["detail"]["region"],
-                "quality":event["detail"]["quality"],
-                "viewport_declined":event["detail"]["viewport_declined"],
-            })
-        })
-        .collect();
-
     let mut result = json!({
         "status":"passed",
         "source":source,
@@ -4508,7 +3953,6 @@ fn burst(run: &mut Run, options: &Options) -> Result {
             "cpu_frames":analysis.cpu_frames,
             "cancelled_exact":analysis.cancelled_exact,
             "cancelled_exact_note":(analysis.cancelled_exact == 0).then_some("No exact phase was cancelled in this run; cancellation depends on timing and workload"),
-            "proxy":analysis.proxy,
         },
         "resources":{
             "scratch":last["state"]["scratch"],
@@ -4547,7 +3991,6 @@ fn burst(run: &mut Run, options: &Options) -> Result {
     }
     rows.extend(resource_rows(&usage, last));
     result["rows"] = json!(rows);
-    result["burst"]["regions"] = json!(region_events);
     result["burst"]["surface_gpu"] = last["state"]["surface"]["gpu"].clone();
     result["burst"]["adoption_note"] = json!(
         "presented_frames/presented_fps count preview_displayed adoption events and the first draws of GPU ticks' plans. The surface can adopt several phases before one draw; draw_encoded_frames counts actual photo-surface draw encoding between captured frames, not display scanout."
@@ -4696,41 +4139,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pan_refinement_samples_require_their_own_generation_and_identity() {
-        let mut events = vec![
-            json!({"event":"script_step","elapsed_ms":10,"detail":{"step":1}}),
-            json!({"event":"preview_view_requested","elapsed_ms":12,"detail":{"intent":"interactive","generation":7}}),
-            json!({"event":"preview_displayed","elapsed_ms":15,"detail":{"generation":99,"path":"region","quality":"interactive","draft_revision":3,"entry_id":"entry","source_fingerprint":"hash"}}),
-            json!({"event":"preview_displayed","elapsed_ms":20,"detail":{"generation":7,"path":"region","quality":"interactive","draft_revision":3,"entry_id":"entry","source_fingerprint":"hash"}}),
-            json!({"event":"preview_view_requested","elapsed_ms":150,"detail":{"intent":"settle","generation":8}}),
-            json!({"event":"preview_displayed","elapsed_ms":180,"detail":{"generation":8,"path":"region","quality":"exact","draft_revision":3,"entry_id":"entry","source_fingerprint":"hash"}}),
-            json!({"event":"script_step","elapsed_ms":200,"detail":{"step":4}}),
-        ];
-        let samples = pan_region_samples(&events, &[(1, 4)]).unwrap();
-        assert_eq!(samples[0]["pan_to_interactive_ms"], 10.0);
-        assert_eq!(samples[0]["pan_to_exact_ms"], 170.0);
-        assert_eq!(samples[0]["refinement_request_to_exact_ms"], 30.0);
-        events[5]["detail"]["draft_revision"] = json!(4);
-        assert!(pan_region_samples(&events, &[(1, 4)]).is_err());
-        events[5]["detail"]["draft_revision"] = json!(3);
-        events[5]["detail"]["generation"] = json!(99);
-        assert!(pan_region_samples(&events, &[(1, 4)]).is_err());
-    }
-
-    #[test]
-    fn viewport_combines_raw_observations_instead_of_percentiles() {
-        let reports = [
-            json!({"rows":[stats::row("pan","ms",[1.0,2.0])]}),
-            json!({"rows":[stats::row("pan","ms",[10.0,20.0])]} ),
-        ];
-        let rows = combined_rows(&reports);
-        assert_eq!(rows[0]["distribution"]["count"], 4);
-        assert_eq!(rows[0]["distribution"]["p50"], 2.0);
-        assert_eq!(rows[0]["distribution"]["p95"], 20.0);
-    }
-
-    #[test]
-    fn lens_geometry_is_kept_for_crop_opening_paint_and_viewport() {
+    fn lens_geometry_is_kept_for_crop_opening_and_paint() {
         let source = PathBuf::from("lens-24mp.jpg");
         let options = Options {
             source: &source,
@@ -4753,7 +4162,7 @@ mod tests {
             mask_overlay: false,
             contend: None,
             warm_ms: None,
-            gpu_preview_off: false,
+            no_gpu_render: false,
             masks: 1,
             mask_presence: false,
             window: None,
@@ -4777,9 +4186,7 @@ mod tests {
             script::Step::call("edit.crop-fit", json!({"aspect":"16:9","angle":2.5}))
         );
         let (crop, starts) = crop_start_script(&options);
-        let field = FieldTarget::lookup("set-perspective", "horizontal").unwrap();
-        let (viewport, _) = viewport_script(&options, &field);
-        for steps in [crop, paint_script(&options, paint_path(30)), viewport] {
+        for steps in [crop, paint_script(&options, paint_path(30))] {
             assert_eq!(&steps[..geometry.len()], geometry.as_slice());
             assert!(steps.len() <= script::MAX_SCRIPT_STEPS);
             assert_eq!(
@@ -4837,7 +4244,7 @@ mod tests {
 
     #[test]
     fn native_resource_rows_keep_gpu_residency_and_missing_counters_explicit() {
-        let last = json!({"state":{"scratch":{"peak_bytes":123},"surface":{"gpu":{"full_resident_bytes":456,"region_resident_bytes":78,"retiring_bytes":90,"stage_resident_bytes":12}}}});
+        let last = json!({"state":{"scratch":{"peak_bytes":123},"surface":{"gpu":{"full_resident_bytes":456,"retiring_bytes":90,"stage_resident_bytes":12}}}});
         let report = json!({"rows":resource_rows(&Value::Null,&last)});
         assert_eq!(
             stats::distribution(&report, "last_surface_full_resident_bytes").unwrap()["p50"],
@@ -4895,7 +4302,7 @@ mod tests {
                             mask_overlay: false,
                             contend: None,
                             warm_ms: None,
-                            gpu_preview_off: false,
+                            no_gpu_render: false,
                             masks: 1,
                             mask_presence: false,
                             window: None,
@@ -4958,45 +4365,6 @@ mod tests {
                             )),
                         );
                     }
-                    // The viewport journey runs only at 100 or 200 percent.
-                    for zoom in [100.0, 200.0] {
-                        let options = Options {
-                            source: &source,
-                            samples: 5,
-                            mode: Mode::Viewport,
-                            control: Control::Slider,
-                            action: None,
-                            parameter: None,
-                            crop,
-                            idle: false,
-                            basic,
-                            presence: false,
-                            curve_layer: false,
-                            detail: false,
-                            lens: false,
-                            perspective: false,
-                            mask,
-                            zoom: Some(zoom),
-                            moving_pan: false,
-                            mask_overlay: false,
-                            contend: None,
-                            warm_ms: None,
-                            gpu_preview_off: false,
-                            masks: 1,
-                            mask_presence: false,
-                            window: None,
-                        };
-                        let tag =
-                            format!("crop{}-mask{mask}-basic{basic}-zoom{zoom}", crop.is_some());
-                        for (name, field) in [
-                            ("slider", FieldTarget::basic_exposure()),
-                            ("mixer", mixer()),
-                        ] {
-                            let (steps, positions) = viewport_script(&options, &field);
-                            put(format!("{name}-viewport-{tag}"), script::write(&steps));
-                            put(format!("{name}-viewport-{tag}-positions"), json!(positions));
-                        }
-                    }
                 }
             }
         }
@@ -5005,7 +4373,6 @@ mod tests {
         for (name, log, file, developer) in [
             ("gesture", "gesture", "gesture-script.json", false),
             ("curve", "gesture", "gesture-script.json", true),
-            ("viewport", "viewport", "viewport-script.json", false),
         ] {
             let launch = gesture_launch(out, log, file, &[], &source, developer, None);
             put(format!("{name}-arguments"), json!(launch.command(out)));
@@ -5044,7 +4411,7 @@ mod tests {
             mask_overlay: true,
             contend: None,
             warm_ms: None,
-            gpu_preview_off: false,
+            no_gpu_render: false,
             masks: 1,
             mask_presence: false,
             window: None,
@@ -5097,7 +4464,7 @@ mod tests {
             mask_overlay: true,
             contend: None,
             warm_ms: None,
-            gpu_preview_off: true,
+            no_gpu_render: true,
             masks: MAX_MASKS,
             mask_presence: true,
             window: None,
@@ -5161,7 +4528,7 @@ mod tests {
             mask_overlay: false,
             contend: None,
             warm_ms: None,
-            gpu_preview_off: false,
+            no_gpu_render: false,
             masks: 1,
             mask_presence: false,
             window: None,
@@ -5210,51 +4577,6 @@ mod tests {
     }
 
     #[test]
-    fn combined_viewport_keeps_global_detail_before_the_masked_basic_target() {
-        let source = PathBuf::from("lens-24mp.jpg");
-        let options = Options {
-            source: &source,
-            samples: 5,
-            mode: Mode::Viewport,
-            control: Control::Slider,
-            action: None,
-            parameter: None,
-            crop: Some(2.5),
-            idle: false,
-            basic: true,
-            presence: false,
-            curve_layer: false,
-            detail: true,
-            lens: true,
-            perspective: true,
-            mask: true,
-            zoom: Some(100.0),
-            moving_pan: false,
-            mask_overlay: false,
-            contend: None,
-            warm_ms: None,
-            gpu_preview_off: false,
-            masks: 1,
-            mask_presence: false,
-            window: None,
-        };
-        let field = FieldTarget::basic_exposure();
-        let (steps, positions) = viewport_script(&options, &field);
-        let geometry = geometry_preconditions(&options);
-        let detail = crate::scenario::recipe::moderate_detail();
-        assert_eq!(&steps[..geometry.len()], geometry.as_slice());
-        assert_eq!(steps[geometry.len()], detail);
-        assert_eq!(steps[geometry.len() + 1], mask_precondition()[0]);
-        assert!(steps.contains(&basic_precondition(&options)));
-        assert_eq!(steps.iter().filter(|step| **step == detail).count(), 1);
-        assert!(positions.into_iter().all(|index| index <= steps.len()));
-        assert_eq!(
-            script::parse(&script::write(&steps).to_string()).unwrap(),
-            steps
-        );
-    }
-
-    #[test]
     fn detail_measurement_refuses_missing_masked_or_reordered_restoration() {
         let detail = json!({"effect":luxforge_core::DETAIL_EFFECT,"mask":null,
             "payload":{"sharpening":60.0,"luminance":40.0,"colour":40.0}});
@@ -5293,7 +4615,7 @@ mod tests {
             mask_overlay: false,
             contend: None,
             warm_ms: None,
-            gpu_preview_off: false,
+            no_gpu_render: false,
             masks: 1,
             mask_presence: false,
             window: None,
@@ -5366,7 +4688,7 @@ mod tests {
             mask_overlay: false,
             contend: None,
             warm_ms: None,
-            gpu_preview_off: false,
+            no_gpu_render: false,
             masks: 1,
             mask_presence: false,
             window: None,
@@ -5399,7 +4721,6 @@ mod tests {
         let numeric = [
             setup_steps(&options, &field, SourceTag::Jpeg),
             burst_script(&options, &field, &field.burst_values(), burst_interval_ms()),
-            viewport_script(&options, &field).0,
         ];
         for steps in numeric {
             assert_eq!(&steps[..geometry.len()], geometry.as_slice());
@@ -5741,7 +5062,7 @@ mod tests {
             mask_overlay: false,
             contend: None,
             warm_ms: None,
-            gpu_preview_off: false,
+            no_gpu_render: false,
             masks: 1,
             mask_presence: false,
             window: None,
@@ -5763,17 +5084,17 @@ mod tests {
     }
 
     #[test]
-    fn input_latency_uses_first_region_of_a_refined_generation() {
+    fn input_latency_stops_at_a_generations_first_adoption() {
         let events = vec![
             json!({"event":"slider_draft_set","elapsed_ms":10.0,"detail":{"fields":{"exposure":0.5}}}),
             json!({"event":"slider_draft_preview","elapsed_ms":13.0,"detail":{
                 "value":0.5,"generation":7,"draft_revision":2
             }}),
             json!({"event":"preview_displayed","elapsed_ms":28.0,"detail":{
-                "generation":7,"draft_revision":2,"path":"region","quality":"interactive"
+                "generation":7,"draft_revision":2
             }}),
             json!({"event":"preview_displayed","elapsed_ms":60.0,"detail":{
-                "generation":7,"draft_revision":2,"path":"region","quality":"exact"
+                "generation":7,"draft_revision":2
             }}),
         ];
         let paired = inputs(&events, Control::Slider, &unused_field()).unwrap();
@@ -5795,10 +5116,12 @@ mod tests {
                 "round_trip_ms":{"executor_wait":1.0,"draft_set":2.0,"preview_job":0.5,"return_to_queue":0.5}
             }}),
             json!({"event":"preview_result_received","elapsed_ms":23.0,"detail":{
-                "generation":7,"phase":"proxy","queue_wait_ms":3.0,"render_ms":5.0
+                "generation":7,"queue_wait_ms":3.0,"render_ms":5.0
             }}),
-            json!({"event":"preview_displayed","elapsed_ms":25.0,"detail":{
-                "generation":7,"proxy":true
+            json!({"event":"preview_displayed","elapsed_ms":25.0,"detail":{"generation":7}}),
+            // A later result of the same generation is not the one the frame above adopted.
+            json!({"event":"preview_result_received","elapsed_ms":40.0,"detail":{
+                "generation":7,"queue_wait_ms":9.0,"render_ms":9.0
             }}),
         ];
 
@@ -5808,8 +5131,6 @@ mod tests {
         assert_eq!(samples.len(), 1);
         let sample = &samples[0];
         assert_eq!(sample.generation, 7);
-        assert_eq!(sample.phase, "proxy");
-        assert!(sample.proxy);
         assert_eq!(sample.owner_round_trip_ms, 4.0);
         assert_eq!(sample.executor_wait_ms, 1.0);
         assert_eq!(sample.draft_set_ms, 2.0);
@@ -5820,35 +5141,6 @@ mod tests {
         assert_eq!(sample.before_worker_result_ms, 1.0);
         assert_eq!(sample.result_to_surface_ms, 2.0);
         assert_eq!(sample.input_to_presented_ms, 15.0);
-    }
-
-    #[test]
-    fn paint_phase_samples_pair_region_adoption_with_its_region_worker_result() {
-        let events = vec![
-            json!({"event":"script_step","elapsed_ms":9.0,"detail":{"request":{"mask":{"stroke":{
-                "interval_ms":24,"points":[[0.2,0.5]]
-            }}}}}),
-            json!({"event":"mask_draft_set","elapsed_ms":10.0}),
-            json!({"event":"mask_draft_preview","elapsed_ms":11.0,"detail":{
-                "generation":7,
-                "round_trip_ms":{"executor_wait":0.0,"draft_set":0.5,"preview_job":0.25,"return_to_queue":0.25}
-            }}),
-            json!({"event":"preview_result_received","elapsed_ms":20.0,"detail":{
-                "generation":7,"phase":"region","queue_wait_ms":2.0,"render_ms":5.0
-            }}),
-            json!({"event":"preview_displayed","elapsed_ms":21.0,"detail":{
-                "generation":7,"path":"region","quality":"interactive","proxy_approximate":true
-            }}),
-        ];
-        let (queued, samples) = paced_stroke_phase_samples(&events, 1).unwrap();
-        assert_eq!(queued, 1);
-        assert_eq!(samples.len(), 1);
-        let sample = &samples[0];
-        assert_eq!(sample.phase, "region");
-        assert_eq!(sample.worker_render_ms, 5.0);
-        assert_eq!(sample.queue_wait_ms, 2.0);
-        assert_eq!(sample.result_to_surface_ms, 1.0);
-        assert_eq!(sample.input_to_presented_ms, 11.0);
     }
 
     /// A position is answered by the first presented frame whose `draft.set` already carried it,
@@ -5871,8 +5163,6 @@ mod tests {
         let sample = |generation, positions, displayed_ms| PaintPhaseSample {
             generation,
             positions: Some(positions),
-            phase: "proxy",
-            proxy: true,
             displayed_ms,
             input_to_presented_ms: 0.0,
             owner_round_trip_ms: 0.0,
@@ -5914,8 +5204,6 @@ mod tests {
         let sample = |displayed_ms| PaintPhaseSample {
             generation: 1,
             positions: Some(1),
-            phase: "proxy",
-            proxy: true,
             displayed_ms,
             input_to_presented_ms: 0.0,
             owner_round_trip_ms: 0.0,
@@ -6018,27 +5306,6 @@ mod tests {
             vec![103],
             "the release value's own drafted preview, superseded by the commit"
         );
-        // The synthetic events carry no proxy fields, as the current binary's own events do not;
-        // the analysis reports that as null rather than failing.
-        assert_eq!(analysis.proxy["proxy"], Value::Null);
-        assert_eq!(analysis.proxy["proxy_dimensions"], Value::Null);
-        assert!(analysis.proxy["note"].is_string());
-    }
-
-    #[test]
-    fn burst_analysis_reads_the_proxy_fields_when_the_binary_carries_them() {
-        let mut events = synthetic_events();
-        let last = events
-            .iter_mut()
-            .rev()
-            .find(|event| event["event"] == "preview_displayed")
-            .expect("the committed frame's own preview_displayed");
-        last["detail"]["proxy"] = json!(true);
-        last["detail"]["proxy_dimensions"] = json!([960, 640]);
-        let analysis = analyze_burst(&events, &unused_field()).expect("a well-formed burst run");
-        assert_eq!(analysis.proxy["proxy"], json!(true));
-        assert_eq!(analysis.proxy["proxy_dimensions"], json!([960, 640]));
-        assert!(analysis.proxy.get("note").is_none());
     }
 
     #[test]
@@ -6198,19 +5465,16 @@ mod tests {
         }
     }
 
-    /// The report counts the presented frames that approximated a drafted white balance, by phase.
+    /// The report counts the presented frames that approximated a drafted white balance.
     #[test]
-    fn approximate_frames_are_counted_by_phase() {
+    fn approximate_frames_are_counted() {
         let events = vec![
-            json!({"event":"preview_displayed","detail":{"proxy":true,"approximate_white_balance":true}}),
-            json!({"event":"preview_displayed","detail":{"proxy":false,"approximate_white_balance":true}}),
-            json!({"event":"preview_displayed","detail":{"proxy":true,"approximate_white_balance":false}}),
+            json!({"event":"preview_displayed","detail":{"approximate_white_balance":true}}),
+            json!({"event":"preview_displayed","detail":{"approximate_white_balance":true}}),
+            json!({"event":"preview_displayed","detail":{"approximate_white_balance":false}}),
             json!({"event":"analysis_adopted","detail":{"approximate_white_balance":true}}),
         ];
-        assert_eq!(
-            approximate_frames(&events),
-            json!({"presented":2,"proxy":1,"full_size":1})
-        );
+        assert_eq!(approximate_frames(&events), json!({"presented":2}));
     }
 
     #[test]
@@ -6321,7 +5585,7 @@ mod tests {
             mask_overlay: false,
             contend: None,
             warm_ms: None,
-            gpu_preview_off: false,
+            no_gpu_render: false,
             masks: 1,
             mask_presence: false,
             window: None,
@@ -6366,20 +5630,31 @@ mod tests {
             commit,
             gesture_script(&idle, &field, SourceTag::Jpeg, &values, false)
         );
-        // `--no-gpu-preview` turns the preference off from the palette before anything else.
+        // `--reference-renderer` adds no step: the launch refuses the GPU stage.
         let off = Options {
-            gpu_preview_off: true,
+            no_gpu_render: true,
             masks: 1,
             mask_presence: false,
             window: None,
             ..options
         };
         let steps = measured_script(&off, &field, SourceTag::Jpeg, &values, true, &dir);
-        assert_eq!(
-            steps[0],
-            script::Step::Palette(PaletteStep::Run("gpu preview".into()))
+        assert_eq!(steps[..], plain[..]);
+        let launch = gesture_launch(
+            &dir,
+            "gesture",
+            "gesture-script.json",
+            &steps,
+            Path::new("/photo.jpg"),
+            false,
+            None,
         );
-        assert_eq!(steps[1..], plain[..]);
+        let arguments = rendered_by(launch, &off).command(Path::new("/out"));
+        assert!(
+            arguments
+                .iter()
+                .any(|argument| argument == "--no-gpu-render")
+        );
     }
 
     /// The lane is busy from the first export's acceptance to the end the activity board reads

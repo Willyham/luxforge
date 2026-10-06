@@ -201,7 +201,7 @@ impl Resample {
     /// The rectangle of its input frame, a `input` stage whose top-left pixel is `origin` in the
     /// stage the resample was compiled against, that the resample reads over `window`, a
     /// rectangle of its full output stage: the one read-rectangle rule, for the colour band before
-    /// a resample, a windowed proxy's cut and the linear driver's tap blocks alike.
+    /// a resample, the GPU window walk and the linear driver's tap blocks alike.
     ///
     /// The mapping supplies conservative continuous bounds, including radial extrema for a warp
     /// chain. A bilinear tap reads the pixel at `floor(u - ½)` and the one after it, clamped to the

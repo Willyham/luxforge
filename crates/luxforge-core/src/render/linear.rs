@@ -20,7 +20,6 @@ use crate::{
     source::{ViewReader, Walk, layout},
 };
 use rayon::prelude::*;
-use std::borrow::Cow;
 
 const MAX_RESAMPLES: usize = 1;
 
@@ -125,8 +124,8 @@ impl WhiteBalanceApproximation {
         }
     }
 
-    /// The matrix applied to each linear-sRGB pixel, row by row.
-    #[cfg(test)]
+    /// The matrix applied to each linear-sRGB pixel, row by row: what a GPU plan of a drafted RAW
+    /// preview applies to each source texel, narrowed to `f32`.
     pub(crate) fn matrix(&self) -> [[f64; 3]; 3] {
         self.matrix
     }
@@ -147,16 +146,6 @@ impl WhiteBalanceApproximation {
         } else {
             Err(Error::render("linear source produced a non-finite value"))
         }
-    }
-
-    /// A key that tells this approximation's evaluation apart from an exact one of the same
-    /// recipe, for a cache keyed by recipe: the matrix's own bits.
-    fn key(&self) -> String {
-        self.matrix
-            .iter()
-            .flatten()
-            .map(|value| format!("{:016x}", value.to_bits()))
-            .collect()
     }
 }
 
@@ -209,25 +198,6 @@ pub(super) fn check_resamples(compiled: &Compiled) -> Result<(), Error> {
     Ok(())
 }
 
-/// The estimate prefix of a development `development` seen through `view` under an approximate
-/// `white_balance`: what the linear domain's estimates are keyed by, and a proxy not yet built is
-/// named by (`render::gpu::EstimateSource::Proxy`).
-pub(crate) fn estimate_prefix(
-    prefix_hash: &str,
-    development: u64,
-    view: ([u32; 4], u8),
-    white_balance: Option<WhiteBalanceApproximation>,
-) -> String {
-    let input_prefix = format!("{prefix_hash}+linear:{development}:{view:?}");
-    match white_balance {
-        Some(balance) => format!(
-            "{input_prefix}+white-balance-approximation:{}",
-            balance.key()
-        ),
-        None => input_prefix,
-    }
-}
-
 /// The linear domain: a developed RAW's planes in signed unbounded linear sRGB, with any approximate
 /// white balance applied to each source pixel in `f64`. A segment with colour is `f32` from its
 /// entry to its end; one without hands its entry to the terminal as it is, `f32` read from the
@@ -270,8 +240,8 @@ impl<'a> Linear<'a> {
     /// The planes segment `index` of `evaluation` reads its entry from by rows: the source's, for
     /// the first segment, under the evaluation's white balance, or the spatial frame the evaluation
     /// holds for the segment's spatial entry. `None` for a resample, whose taps blend the segment
-    /// before it, and for a spatial entry a point query answers from its tiles: those are pulled
-    /// one pixel at a time ([`Evaluation::entry_pixel`]).
+    /// before it, and for a spatial entry whose frame the evaluation does not hold: those are
+    /// pulled one pixel at a time ([`Evaluation::entry_pixel`]).
     pub(super) fn entry_planes<'e>(
         evaluation: &'e Evaluation<'_, Self>,
         index: usize,
@@ -407,25 +377,6 @@ impl PixelDomain for Linear<'_> {
     type SpatialFrame = Vec<f32>;
     /// The tile's own three planes.
     type TileOutput = Vec<f32>;
-
-    fn fingerprint(&self) -> &str {
-        self.source.fingerprint()
-    }
-
-    /// Fingerprint alone does not identify developed pixels: public callers may omit it, two
-    /// developments of a file differ, and crop/orientation views share their source's identity.
-    /// The estimate store is keyed by the recipe prefix, which an approximate white balance does not
-    /// change: the drafted recipe names the target gains whichever planes it is evaluated over. So
-    /// an approximate evaluation keys its estimates apart, and a committed render of the same
-    /// recipe never takes one estimated from approximate pixels.
-    fn estimate_prefix<'p>(&self, prefix_hash: &'p str) -> Cow<'p, str> {
-        Cow::Owned(estimate_prefix(
-            prefix_hash,
-            self.source.development(),
-            self.source.view(),
-            self.white_balance,
-        ))
-    }
 
     fn check_output(&self, width: u32, height: u32) -> Result<(), Error> {
         output_len(width, height).map(drop)
@@ -806,6 +757,7 @@ pub(super) struct LinearRows<'e, 'x, 's> {
 #[derive(Clone, Copy)]
 pub(super) enum LinearOutput {
     Terminal(&'static srgb::Quantizer),
+    #[cfg(any(test, feature = "qualification"))]
     Boundary,
 }
 
@@ -814,6 +766,7 @@ impl LinearOutput {
     fn bytes(self) -> usize {
         match self {
             Self::Terminal(_) => 4,
+            #[cfg(any(test, feature = "qualification"))]
             Self::Boundary => super::boundary::BoundaryFormat::Float.texel_bytes(),
         }
     }
@@ -825,6 +778,7 @@ impl LinearOutput {
             Self::Terminal(quantizer) => {
                 bytes[..4].copy_from_slice(&terminal_pixel_in(quantizer, pixel)?);
             }
+            #[cfg(any(test, feature = "qualification"))]
             Self::Boundary => {
                 super::boundary::write_texel(
                     super::boundary::BoundaryFormat::Float,
@@ -952,6 +906,7 @@ impl LinearRows<'_, '_, '_> {
                     Ok(())
                 })
             }
+            #[cfg(any(test, feature = "qualification"))]
             (false, None, LinearOutput::Boundary) => reader.visit(walk, |offset, rgb| {
                 super::boundary::write_texel(
                     super::boundary::BoundaryFormat::Float,
@@ -995,20 +950,14 @@ impl LinearRows<'_, '_, '_> {
         for x0 in (0..width).step_by(TAP_BLOCK_COLUMNS as usize) {
             self.evaluation.checkpoint()?;
             let columns = (width - x0).min(TAP_BLOCK_COLUMNS);
-            // The block's rectangle of the resample's full output: the segment's exact geometry
-            // maps the block onto one, placed at the entry window's origin.
-            let local = self.segment.geometry.unmap_region(Region {
+            // The block's rectangle of the resample's output: the segment's exact geometry maps the
+            // block onto one.
+            let window = self.segment.geometry.unmap_region(Region {
                 x0,
                 y0,
                 width: columns,
                 height: rows,
             });
-            let (full_x, full_y) = entry.output_at(local.x0, local.y0);
-            let window = Region {
-                x0: full_x,
-                y0: full_y,
-                ..local
-            };
             let held = entry
                 .reads(window, stage)
                 .filter(|region| region.pixels() <= TAP_BLOCK_PIXELS);
@@ -1125,6 +1074,7 @@ impl SegmentRows for LinearRows<'_, '_, '_> {
                         rgba.copy_from_slice(&terminal_f32(quantizer, *pixel)?);
                     }
                 }
+                #[cfg(any(test, feature = "qualification"))]
                 LinearOutput::Boundary => {
                     let format = super::boundary::BoundaryFormat::Float;
                     for (texel, pixel) in chunk
@@ -1144,6 +1094,7 @@ impl SegmentRows for LinearRows<'_, '_, '_> {
 /// stands in for segment `index` of `evaluation`'s compilation and reads what that segment's entry
 /// reads, written as `f32` texels without quantizing, so a boundary inside a colour run holds the
 /// value the run hands the next layer, exactly.
+#[cfg(any(test, feature = "qualification"))]
 pub(super) fn boundary_pass(
     evaluation: &Evaluation<'_, Linear<'_>>,
     index: usize,
@@ -2466,8 +2417,11 @@ mod tests {
         }
     }
 
+    /// A point evaluation materializes nothing, so a pixel through a spatial segment is refused
+    /// there rather than evaluated in a tile of its own; the frame evaluation materializes the
+    /// segment's output once and answers it.
     #[test]
-    fn a_point_evaluation_builds_no_frame_for_its_spatial_segment() {
+    fn a_point_evaluation_refuses_a_pixel_through_a_spatial_segment() {
         let context = RenderContext::new();
         let source = cancellation_image(96, 64);
         let registry = ModuleRegistry::builtin();
@@ -2485,26 +2439,22 @@ mod tests {
             .unwrap()
         };
         let frames = evaluate(SpatialMode::Frames);
-        assert!(frames.tiles.is_none());
         assert_eq!(
             frames.built.len(),
             1,
             "a render materializes the spatial output"
         );
         assert!(frames.frame.is_some());
+        for (x, y) in [(5, 7), (90, 60)] {
+            assert!(frames.pixel(x, y).unwrap().is_some());
+        }
         let point = evaluate(SpatialMode::Point);
         assert!(
             point.built.is_empty() && point.frame.is_none(),
             "a point evaluation materializes nothing"
         );
-        for (x, y) in [(5, 7), (90, 60), (5, 7)] {
-            assert_eq!(point.pixel(x, y).unwrap(), frames.pixel(x, y).unwrap());
-        }
-        assert_eq!(
-            point.tiles.as_ref().unwrap().evaluated().len(),
-            1,
-            "one tile answers every pixel inside it"
-        );
+        let refused = point.pixel(5, 7).unwrap_err();
+        assert_eq!(refused.kind, crate::ErrorKind::Internal, "{refused}");
     }
 
     /// A global Presence layer, a colour layer and three masked Presence layers: four spatial
@@ -2562,7 +2512,7 @@ mod tests {
     }
 
     /// Each spatial frame is built from the one before it and replaces it, so building one holds
-    /// two and the evaluation keeps one, the latest; a point evaluation builds none. The counts are
+    /// two and the evaluation keeps one, the latest. The counts are
     /// the frames' own reference counts, not bookkeeping: an earlier frame anything still held would
     /// be counted alive.
     #[test]
@@ -2604,7 +2554,7 @@ mod tests {
                 segment
                     .entry
                     .as_ref()
-                    .is_some_and(|entry| entry.point_tiles().is_some())
+                    .is_some_and(|entry| entry.spatial_operation().is_some())
             })
             .map(|(index, _)| index)
             .collect();
@@ -2620,18 +2570,12 @@ mod tests {
             Some(spatial[3])
         );
 
-        // Point mode materializes no spatial segment: every one is answered from the query's tiles.
-        let point = evaluate(SpatialMode::Point);
-        assert!(point.built.is_empty() && point.frame.is_none());
-        for (x, y) in [(0, 0), (5, 7), (48, 32), (90, 60), (95, 63)] {
-            assert_eq!(point.pixel(x, y).unwrap(), frames.pixel(x, y).unwrap());
-        }
-
-        let built: Vec<_> = [&frames, &point]
+        let built: Vec<_> = frames
+            .built
             .iter()
-            .flat_map(|evaluation| evaluation.built.iter().map(|(frame, _)| frame.clone()))
+            .map(|(frame, _)| frame.clone())
             .collect();
-        drop((frames, point));
+        drop(frames);
         assert!(
             built.iter().all(|frame| frame.strong_count() == 0),
             "nothing outlives its evaluation"
@@ -2640,11 +2584,11 @@ mod tests {
 
     /// A sample from one `Compiled` shared by several points equals a sample that compiles for
     /// itself, at every point of a small stack with a colour layer: the split
-    /// A capability sample grid over a RAW stage with spatial layers answers its points through one
-    /// tile cache, as the byte path's does: it materializes no spatial frame where the render of
-    /// the same stack builds one per spatial layer, and every point is the rendered byte there.
+    /// A capability sample grid over a RAW stage with spatial layers is the reference's read: it
+    /// materializes each spatial layer's frame once, as the render of the same stack does, and
+    /// every point is the rendered byte there.
     #[test]
-    fn a_linear_grid_reads_tiles_and_materializes_no_spatial_frame() {
+    fn a_linear_grid_reads_the_reference_frames() {
         let registry = ModuleRegistry::builtin();
         let source = cancellation_image(300, 200);
         let stack = four_spatial_segments();
@@ -2661,9 +2605,9 @@ mod tests {
         )
         .unwrap();
         let grid = render.grid(8, &|| Ok(())).unwrap();
-        assert_eq!(context.spatial_frames(), 0, "a grid materializes no frame");
+        assert_eq!(context.spatial_frames(), 4, "a grid builds one per layer");
         let frame = render.frame(SnapshotId::new()).unwrap();
-        assert_eq!(context.spatial_frames(), 4, "a render builds one per layer");
+        assert_eq!(context.spatial_frames(), 8, "and so does a render");
         for ((x, y), sampled) in
             super::super::entry::grid_centres(8, frame.width, frame.height).zip(grid)
         {

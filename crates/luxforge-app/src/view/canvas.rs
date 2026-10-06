@@ -117,9 +117,11 @@ pub(crate) fn surface<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Ele
 /// scrollable owns the space instead, so the padding would fight the pan.
 fn photo_area<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Element<'a, Message> {
     let content = match (&model.photo, surfaces.draft, surfaces.stage) {
-        (PhotoView::Draft, Some(draft), Some(stage)) => crop_surface(model, draft, stage),
+        (PhotoView::Draft, Some(draft), Some(stage)) => {
+            crop_surface(model, draft, stage, &surfaces)
+        }
         (PhotoView::Plain, _, _) => match model.dimensions {
-            Some(dimensions) if surfaces.photo.is_some() || surfaces.region.is_some() => {
+            Some(dimensions) if surfaces.photo.is_some() => {
                 plain(model, surfaces.photo, &surfaces, dimensions)
             }
             _ => empty("Open a photograph"),
@@ -127,7 +129,7 @@ fn photo_area<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Element<'a,
         (PhotoView::Empty(message), _, _) => empty(message),
         // A draft without its own pixels is not drawn as a draft.
         (PhotoView::Draft, _, _) => match model.dimensions {
-            Some(dimensions) if surfaces.photo.is_some() || surfaces.region.is_some() => {
+            Some(dimensions) if surfaces.photo.is_some() => {
                 plain(model, surfaces.photo, &surfaces, dimensions)
             }
             _ => empty("Open a photograph"),
@@ -588,7 +590,11 @@ fn plain<'a>(
     let mask_map = surfaces.mask_map;
     let gpu = surfaces.gpu;
     let (gpu_hold, gpu_tag, gpu_warm) = (surfaces.gpu_hold, surfaces.gpu_tag, surfaces.gpu_warm);
-    let gpu_change = surfaces.gpu_change;
+    let (gpu_change, gpu_source) = (surfaces.gpu_change, surfaces.gpu_source);
+    // The picture at rest, or the same tiles for their counts alone where the picture is not
+    // drawn: a whole frame draws either, a percentage view's region only the counts'.
+    let gpu_rest = surfaces.gpu_rest.or(surfaces.gpu_counts);
+    let gpu_counts = surfaces.gpu_counts;
     let dissolve = surfaces.dissolve;
     match model.zoom {
         ZoomView::Fit => {
@@ -614,6 +620,8 @@ fn plain<'a>(
                 .gpu_tag(gpu_tag)
                 .gpu_change(gpu_change)
                 .gpu_warm(gpu_warm)
+                .gpu_source(gpu_source)
+                .gpu_rest(gpu_rest)
                 .dissolve(dissolve)
                 .into();
                 // The open gesture's handles sit above the photograph and its overlays, mapped
@@ -680,52 +688,60 @@ fn plain<'a>(
                 let (box_width, box_height) =
                     (Length::Fixed(size.width), Length::Fixed(size.height));
                 // `Fill` rather than a fit: the box is the exact stage's displayed size and the
-                // texture may be the display proxy, which is smaller. Filling stretches it to
-                // exactly that box, and the overlays with it, whichever texture is on screen. The
-                // box may be far larger than the window; the surface hands the renderer only its
-                // visible part.
-                let photo: Element<'a, Message> =
-                    if surfaces.region.is_none() && surfaces.photo_content.is_none() {
-                        // A whole-output proxy is still a valid percentage frame, including at 50%
-                        // and when a region request named a fallback. It is not an exact full
-                        // texture slot.
-                        match raster {
-                            Some(raster) => luxforge_ui::photo_surface(
-                                DEVELOP_SURFACE,
-                                raster,
-                                luxforge_ui::Placement::Fill,
-                                box_width,
-                                box_height,
-                            )
-                            .overlays(clipping, coverage)
-                            .into(),
-                            None => empty("Rendering photograph…"),
-                        }
-                    } else {
-                        let whole = surfaces.region.is_none();
-                        luxforge_ui::viewport_surface(
+                // texture may be the reference's reduction to the view, which is smaller. Filling
+                // stretches it to exactly that box, and the overlays with it, whichever texture is
+                // on screen. The box may be far larger than the window; the surface hands the
+                // renderer only its visible part.
+                let photo: Element<'a, Message> = if value < 100.0 || surfaces.whole_frame() {
+                    // Below 100% the photograph is a whole frame, as at Fit: the reduction to the
+                    // view, or an exact frame drawn smaller than it is. A gesture's whole-frame
+                    // plan stands in for it through the same placement, and settles into the next
+                    // CPU frame through the dissolve, as at Fit.
+                    match raster {
+                        Some(raster) => luxforge_ui::photo_surface(
                             DEVELOP_SURFACE,
-                            raster.zip(surfaces.photo_content),
-                            surfaces.region,
-                            surfaces.current_content,
-                            (width, height),
+                            raster,
                             luxforge_ui::Placement::Fill,
                             box_width,
                             box_height,
                         )
-                        .overlays(clipping.filter(|_| whole), coverage.filter(|_| whole))
-                        .region_overlays(surfaces.region_clipping, surfaces.region_coverage)
-                        // At 100% and above a gesture's plan draws the visible region at full
-                        // scale, placed at its rectangle of the stage, and settles into the
-                        // view's own frame through the dissolve.
+                        .overlays(clipping, coverage)
                         .gpu_preview(gpu)
                         .gpu_hold(gpu_hold)
                         .gpu_tag(gpu_tag)
                         .gpu_change(gpu_change)
                         .gpu_warm(gpu_warm)
+                        .gpu_source(gpu_source)
+                        .gpu_rest(gpu_rest)
                         .dissolve(dissolve)
-                        .into()
-                    };
+                        .into(),
+                        None => empty("Rendering photograph…"),
+                    }
+                } else {
+                    luxforge_ui::viewport_surface(
+                        DEVELOP_SURFACE,
+                        raster.zip(surfaces.photo_content),
+                        surfaces.current_content,
+                        (width, height),
+                        luxforge_ui::Placement::Fill,
+                        box_width,
+                        box_height,
+                    )
+                    .overlays(clipping, coverage)
+                    .region_overlays(None, surfaces.region_coverage)
+                    // At 100% and above a gesture's plan draws the visible region at full
+                    // scale, placed at its rectangle of the stage, and settles into the
+                    // view's own frame through the dissolve.
+                    .gpu_preview(gpu)
+                    .gpu_hold(gpu_hold)
+                    .gpu_tag(gpu_tag)
+                    .gpu_change(gpu_change)
+                    .gpu_warm(gpu_warm)
+                    .gpu_source(gpu_source)
+                    .gpu_rest(gpu_counts)
+                    .dissolve(dissolve)
+                    .into()
+                };
                 let handles = mask_draft
                     .zip(mask_map)
                     .zip(CanvasView::percent(value, model.scale_factor));
@@ -782,17 +798,25 @@ fn comparison<'a>(
 ) -> Element<'a, Message> {
     let surfaces = *surfaces;
     let layers = move |size: Size, placement, rect: Rectangle, percent: bool| {
+        // The Before side is the displayed stack, drawn at rest on the GPU as any displayed entry
+        // is: its view plan, its region's at a percentage zoom of 100% or more, and its picture at
+        // rest in tiles where a whole frame is drawn.
         let before: Element<'a, Message> = if percent {
             luxforge_ui::viewport_surface(
                 DEVELOP_SURFACE,
                 before.zip(surfaces.photo_content),
-                surfaces.region,
                 surfaces.current_content,
                 dimensions,
                 placement,
                 Length::Fixed(size.width),
                 Length::Fixed(size.height),
             )
+            .gpu_preview(surfaces.gpu)
+            .gpu_hold(surfaces.gpu_hold)
+            .gpu_tag(surfaces.gpu_tag)
+            .gpu_change(surfaces.gpu_change)
+            .gpu_source(surfaces.gpu_source)
+            .gpu_rest(surfaces.gpu_counts)
             .into()
         } else {
             match before {
@@ -804,10 +828,19 @@ fn comparison<'a>(
                     Length::Fixed(size.height),
                 )
                 .exact_stage(dimensions)
+                .gpu_preview(surfaces.gpu)
+                .gpu_hold(surfaces.gpu_hold)
+                .gpu_tag(surfaces.gpu_tag)
+                .gpu_change(surfaces.gpu_change)
+                .gpu_source(surfaces.gpu_source)
+                .gpu_rest(surfaces.gpu_rest.or(surfaces.gpu_counts))
                 .into(),
                 None => empty("Rendering Before…"),
             }
         };
+        // Both sides hand the source, so the pipeline keeps it on the GPU while Compare is shown.
+        // The After side draws the GPU picture of the stack Compare began over, retained, in
+        // place of its retained frame where the view draws a whole frame.
         let after: Element<'a, Message> = luxforge_ui::photo_surface(
             COMPARE_SURFACE,
             after,
@@ -817,6 +850,10 @@ fn comparison<'a>(
         )
         .exact_stage(dimensions)
         .reveal_from(if position == 1.0 { 0.0 } else { position })
+        .gpu_preview(surfaces.compare_gpu)
+        .gpu_change(surfaces.compare_change)
+        .gpu_source(surfaces.gpu_source)
+        .gpu_rest(surfaces.compare_rest)
         .into();
         let divider = canvas(super::compare_canvas::CompareCanvas {
             photo: rect,
@@ -865,7 +902,11 @@ fn crop_surface<'a>(
     model: &'a CanvasModel,
     draft: &'a crate::crop_draft::CropDraft,
     stage: &'a luxforge_ui::Frame,
+    surfaces: &Surfaces<'a>,
 ) -> Element<'a, Message> {
+    // The GPU's picture of the layer prefix, drawn in place of the stand-in frame, from the
+    // source the surfaces hold.
+    let (source, rest) = (surfaces.gpu_source, surfaces.stage_rest);
     let box_size = draft.box_size();
     let mode = match model.surface_mode {
         SurfaceMode::Pan => Mode::Pan,
@@ -882,6 +923,8 @@ fn crop_surface<'a>(
                 width,
                 height,
             )
+            .gpu_source(source)
+            .gpu_rest(rest)
             .into(),
             canvas(CropCanvas::new(draft, view, mode, option))
                 .width(width)
@@ -991,7 +1034,7 @@ pub(crate) fn drawn_photo(
             ))
         }
         ZoomView::Percent(value) => {
-            (surfaces.photo.is_some() || surfaces.region.is_some()).then_some(())?;
+            surfaces.photo.is_some().then_some(())?;
             let size = percent_size(dimensions, value, model.scale_factor);
             if !(size.width > 0.0 && size.height > 0.0) {
                 return None;
@@ -1360,10 +1403,9 @@ mod tests {
             photo: Some(&frame),
             photo_content: None,
             current_content: 0,
-            region: None,
-            region_clipping: None,
             region_coverage: None,
             stage: None,
+            stage_rest: None,
             clipping: None,
             coverage: None,
             mask_draft: None,
@@ -1375,6 +1417,12 @@ mod tests {
             gpu_change: None,
             dissolve: None,
             gpu_warm: None,
+            gpu_source: None,
+            gpu_rest: None,
+            gpu_counts: None,
+            compare_gpu: None,
+            compare_change: None,
+            compare_rest: None,
         };
         let model = CanvasModel {
             photo: PhotoView::Plain,

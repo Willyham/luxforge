@@ -227,6 +227,43 @@ fn proxied(request: PreviewRequest, proxy: Option<ProxyBounds>) -> PreviewReques
     }
 }
 
+/// Where a displayed entry's frame is drawn, decided in `update` when its job is asked for and
+/// carried by the task that plans it, as the bounds always were: the display bounds, and the view
+/// its GPU picture at rest is planned at (`docs/design/gpu-first.md`, stage 2) — the whole frame at
+/// those bounds at Fit and below 100%, the visible region at 100% and above.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct Drawn {
+    pub(crate) proxy: Option<ProxyBounds>,
+    pub(crate) gpu: super::gpu_preview::GpuAsk,
+}
+
+impl From<Option<ProxyBounds>> for Drawn {
+    /// A frame at these display bounds, its GPU picture planned at them, or at none.
+    fn from(proxy: Option<ProxyBounds>) -> Self {
+        Self {
+            proxy,
+            gpu: match proxy {
+                Some(_) => super::gpu_preview::GpuAsk::Fit,
+                None => super::gpu_preview::GpuAsk::Off,
+            },
+        }
+    }
+}
+
+impl Drawn {
+    /// `request` offered these bounds and planned with its GPU picture at this view.
+    fn request(self, request: PreviewRequest) -> PreviewRequest {
+        let request = proxied(request, self.proxy);
+        match self.gpu {
+            super::gpu_preview::GpuAsk::Off => request,
+            super::gpu_preview::GpuAsk::Fit => request.gpu(),
+            super::gpu_preview::GpuAsk::Region(rect, magnification, reduce_after) => request
+                .gpu_region(rect, magnification)
+                .reduce_regions_after(reduce_after),
+        }
+    }
+}
+
 /// A fresh request identity, so a retry of the same press is recognised and a new press is not.
 fn request_id() -> String {
     format!(
@@ -390,6 +427,29 @@ fn send(
     method: &str,
     params: Value,
 ) -> Result<(Value, u64), CallError> {
+    sent(owner, client, id, method, params, true)
+}
+
+/// [`send`] for the interface thread's synchronous gesture calls, which must not wait on a pixel
+/// read: one whose plan reads a pixel is answered at once with `not-ready`
+/// ([`OwnerHandle::call_unparked`]).
+fn send_unparked(
+    owner: &OwnerHandle,
+    client: ClientId,
+    method: &str,
+    params: Value,
+) -> Result<(Value, u64), CallError> {
+    sent(owner, client, api_request_id(), method, params, false)
+}
+
+fn sent(
+    owner: &OwnerHandle,
+    client: ClientId,
+    id: String,
+    method: &str,
+    params: Value,
+    parks: bool,
+) -> Result<(Value, u64), CallError> {
     #[cfg(test)]
     owner_calls::record(method);
     let request = ApiRequest {
@@ -398,7 +458,11 @@ fn send(
         params,
         token: None,
     };
-    let response = owner.call(client, request)?;
+    let response = if parks {
+        owner.call(client, request)?
+    } else {
+        owner.call_unparked(client, request)?
+    };
     match response.error {
         Some(error) => Err(CallError {
             code: error.code,
@@ -607,8 +671,9 @@ pub(crate) fn refresh(
     client: ClientId,
     asset_id: AssetId,
     scope: Scope,
-    proxy: Option<ProxyBounds>,
+    drawn: impl Into<Drawn>,
 ) -> Result<Refresh, String> {
+    let drawn = drawn.into();
     let fetch = |method: &str, params: Value| -> Result<Value, String> {
         call(owner, client, method, params).map(|(value, _)| value)
     };
@@ -687,16 +752,15 @@ pub(crate) fn refresh(
     // the histogram needs no second render and an `analysis.request` for this identity is a
     // cache hit. A truncated crop-draft job is the one exception; the core refuses to analyse
     // it, because its identity describes the whole stack rather than the prefix it renders.
-    // The committed stack's job carries the plans its gestures are likely to draw, which the
-    // surface compiles before a drag begins ([`super::gpu_preview`]).
+    // The committed stack's job carries its picture at rest on the GPU and the plans its gestures
+    // are likely to draw, which the surface compiles before a drag begins
+    // ([`super::gpu_preview`]).
     let job = ready_preview_job(
         owner,
-        proxied(
+        drawn.request(
             PreviewRequest::new(client, asset_id.clone())
                 .entry(Some(displayed))
-                .analyse()
-                .gpu(),
-            proxy,
+                .analyse(),
         ),
     )?;
     let capture = if matches!(scope, Scope::Open) {
@@ -746,7 +810,7 @@ pub(crate) fn import_task(
     path: PathBuf,
     generation: u64,
     open_guard: Arc<OpenGuard>,
-    proxy: Option<ProxyBounds>,
+    proxy: Drawn,
     queued: Option<Result<QueuedImport, String>>,
 ) -> Task<Message> {
     owner_task(
@@ -776,7 +840,7 @@ fn import_now(
     path: &Path,
     generation: u64,
     open_guard: &OpenGuard,
-    proxy: Option<ProxyBounds>,
+    proxy: impl Into<Drawn>,
     queued: Option<Result<QueuedImport, String>>,
 ) -> Result<Refresh, String> {
     let QueuedImport { job_id, request } = match queued {
@@ -802,7 +866,7 @@ pub(crate) fn open_photograph(
     asset: &AssetId,
     generation: u64,
     open_guard: &OpenGuard,
-    proxy: Option<ProxyBounds>,
+    proxy: impl Into<Drawn>,
 ) -> Result<Refresh, String> {
     if open_guard.superseded(generation) {
         return Err("superseded open".into());
@@ -836,7 +900,7 @@ pub(crate) fn photograph_task(
     asset: AssetId,
     generation: u64,
     open_guard: Arc<OpenGuard>,
-    proxy: Option<ProxyBounds>,
+    proxy: Drawn,
 ) -> Task<Message> {
     owner_task(
         move || open_photograph(&owner, client, &asset, generation, &open_guard, proxy),
@@ -949,7 +1013,7 @@ pub(crate) fn command_now(
     asset_id: AssetId,
     method: &str,
     params: Value,
-    proxy: Option<ProxyBounds>,
+    proxy: impl Into<Drawn>,
 ) -> Result<Refresh, String> {
     let (answer, request) = call_own(owner, client, method, params)?;
     let scope = Scope::after(method, &answer);
@@ -969,7 +1033,7 @@ pub(crate) fn state_task(
     asset_id: AssetId,
     method: String,
     params: Value,
-    proxy: Option<ProxyBounds>,
+    proxy: Drawn,
 ) -> Task<Message> {
     owner_task(
         move || command_now(&owner, client, asset_id, &method, params, proxy),
@@ -986,20 +1050,21 @@ pub(crate) fn preview_task(
     entry_id: Option<EntryId>,
     method: &'static str,
     params: Value,
-    proxy: Option<ProxyBounds>,
+    proxy: Drawn,
     answered: fn(Result<Box<PreviewPayload>, String>) -> Message,
 ) -> Task<Message> {
     owner_task(
         move || {
             let (mut result, _) = call(&owner, client, method, params)?;
             let session: ClientSession = parse(result["session"].take())?;
+            // A history selection or a return draws its picture at rest on the GPU, as a commit
+            // does.
             let job = ready_preview_job(
                 &owner,
-                proxied(
+                proxy.request(
                     PreviewRequest::new(client, asset_id)
                         .entry(entry_id)
                         .analyse(),
-                    proxy,
                 ),
             )?;
             Ok(PreviewPayload { job, session })
@@ -1016,15 +1081,16 @@ fn comparison_preview_now(
     client: ClientId,
     asset_id: AssetId,
     session: ClientSession,
-    proxy: Option<ProxyBounds>,
+    proxy: impl Into<Drawn>,
 ) -> Result<PreviewPayload, String> {
     let entry = session.preview.selected_entry(&asset_id).cloned();
+    // Compare's Before, and the selection an exit restores, draw their pictures at rest on the
+    // GPU as any displayed entry does.
     let job = ready_preview_job(
         owner,
-        proxied(
-            PreviewRequest::new(client, asset_id).entry(entry).analyse(),
-            proxy,
-        ),
+        proxy
+            .into()
+            .request(PreviewRequest::new(client, asset_id).entry(entry).analyse()),
     )?;
     Ok(PreviewPayload { job, session })
 }
@@ -1034,7 +1100,7 @@ pub(crate) fn comparison_preview_task(
     client: ClientId,
     asset_id: AssetId,
     session: ClientSession,
-    proxy: Option<ProxyBounds>,
+    proxy: Drawn,
 ) -> Task<Message> {
     owner_task(
         move || comparison_preview_now(&owner, client, asset_id, session, proxy),
@@ -1105,13 +1171,14 @@ pub(crate) fn crop_preview_task(
     asset_id: AssetId,
     layer_count: usize,
     plan: StagePlan,
+    view: StageAsk,
 ) -> Task<Message> {
     let entry = match &plan {
         StagePlan::Open => None,
         StagePlan::Zoom(entry) => Some(entry.clone()),
     };
     owner_task(
-        move || crop_preview(&owner, client, asset_id, entry, layer_count),
+        move || crop_preview(&owner, client, asset_id, entry, layer_count, view),
         |result| {
             Message::Crop(crate::app::message::crop::CropMessage::PreviewReady(
                 plan,
@@ -1121,21 +1188,37 @@ pub(crate) fn crop_preview_task(
     )
 }
 
+/// How a crop draft's input stage is asked for: at the stage's display bounds, with the GPU's
+/// picture at rest of the layer prefix planned at them when the GPU is to draw it, or exactly, as
+/// a percentage zoom that draws the stage at its own size asks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct StageAsk {
+    pub(crate) bounds: Option<ProxyBounds>,
+    pub(crate) gpu: bool,
+}
+
 /// The plain calls [`crop_preview_task`] runs: `entry`'s stack, or the current one's, truncated to
-/// its first `layer_count` layers.
+/// its first `layer_count` layers, at `view`'s bounds and with the GPU's plan where it asks.
 pub(crate) fn crop_preview(
     owner: &OwnerHandle,
     client: ClientId,
     asset_id: AssetId,
     entry: Option<EntryId>,
     layer_count: usize,
+    view: StageAsk,
 ) -> Result<PreviewJob, String> {
-    ready_preview_job(
-        owner,
+    let request = proxied(
         PreviewRequest::new(client, asset_id)
             .entry(entry)
             .layers(layer_count),
-    )
+        view.bounds,
+    );
+    let request = if view.gpu && view.bounds.is_some() {
+        request.gpu()
+    } else {
+        request
+    };
+    ready_preview_job(owner, request)
 }
 
 /// Open this client's one draft for a gesture, on the calling thread, as [`draft_set_now`] runs:
@@ -1155,12 +1238,15 @@ pub(crate) fn draft_begin_now(
     action: &str,
     target: &DraftTarget,
 ) -> Result<Draft, String> {
-    let (draft, _) = call(
+    // A begin plans nothing, so it reads no pixel; sent unparked all the same, so if one ever did
+    // the gesture would be refused rather than the interface thread wait for it.
+    let (draft, _) = send_unparked(
         owner,
         client,
         "draft.begin",
         draft_begin_params(asset_id, action, target),
-    )?;
+    )
+    .map_err(|error| error.to_string())?;
     parse::<Draft>(draft)
 }
 
@@ -1199,8 +1285,9 @@ pub(crate) fn draft_begin_params(asset_id: AssetId, action: &str, target: &Draft
 ///
 /// As `gpu` asks, the owner plans the draft's GPU preview with the job (`PreviewJob::gpu`): the
 /// plan a tick is drawn from, or its reason, and the boundary it starts from, in the same answer,
-/// so a tick drawn on the GPU adds no hop ([`super::gpu_preview`]). At Fit it is planned at the
-/// job's display bounds, and at a percentage zoom of 100% or more over the region it names.
+/// so a tick drawn on the GPU adds no hop ([`super::gpu_preview`]). At Fit and below 100% it is
+/// planned at the job's display bounds, which below 100% are the stage's displayed size, and at a
+/// percentage zoom of 100% or more over the region it names.
 pub(crate) fn draft_set_now(
     owner: &OwnerHandle,
     client: ClientId,
@@ -1208,44 +1295,174 @@ pub(crate) fn draft_set_now(
     fields: Value,
     preview: Option<(AssetId, Option<ProxyBounds>)>,
     gpu: super::gpu_preview::GpuAsk,
-) -> Result<(Draft, Option<PreviewJob>, RoundTrip), String> {
-    let queued = Instant::now();
-    let started = queued;
-    let (draft, _) = call(
+) -> SetNow {
+    draft_set_at(
         owner,
         client,
-        "draft.set",
-        json!({"draft_id":draft_id,"fields":fields}),
-    )?;
-    let answered = Instant::now();
-    let draft = parse::<Draft>(draft)?;
-    let job = preview
-        .map(|(asset_id, proxy)| {
-            let request = PreviewRequest::new(client, asset_id)
-                .draft(draft_id)
-                .analyse();
-            let request = match gpu {
-                super::gpu_preview::GpuAsk::Off => request,
-                super::gpu_preview::GpuAsk::Fit => request.gpu(),
-                super::gpu_preview::GpuAsk::Region(rect, magnification) => {
-                    request.gpu_region(rect, magnification)
-                }
-            };
-            plan_preview(owner, proxied(request, proxy))
-        })
-        .transpose()
-        .map_err(|error| error.to_string())?;
-    let planned = Instant::now();
-    Ok((
-        draft,
-        job,
-        RoundTrip {
+        draft_id,
+        fields,
+        preview,
+        gpu,
+        Instant::now(),
+        false,
+    )
+}
+
+/// What one `draft.set` answered, with the preview job of the fields it accepted when one was
+/// asked for, and where its time went.
+pub(crate) type SetAnswer = (Draft, Option<PreviewJob>, RoundTrip);
+
+/// What one of the interface thread's synchronous gesture calls came to: [`draft_set_now`] or
+/// [`draft_reapply_now`].
+#[derive(Debug)]
+pub(crate) enum Now<T> {
+    /// The owner answered, without waiting on any pixel read.
+    Answered(Result<T, String>),
+    /// The draft's plan reads a pixel the session does not hold — a colour-limited stroke's seed,
+    /// on the stroke's first tick or once a Reapply has rebased it — which the owner's tile service
+    /// reads off its thread, on the GPU's device, a cold compile included. The interface thread
+    /// waits on no such read: the owner answered at once, having changed nothing, and the same call
+    /// goes through [`draft_set_task`] or [`draft_reapply_task`], whose answer arrives as a message.
+    ReadsPixel,
+}
+
+/// What [`draft_set_now`] came to.
+pub(crate) type SetNow = Now<SetAnswer>;
+
+#[cfg(test)]
+impl<T> Now<T> {
+    /// The answer of a call that reads no pixel.
+    pub(crate) fn answered(self) -> Result<T, String> {
+        match self {
+            Self::Answered(result) => result,
+            Self::ReadsPixel => panic!("the call reads a pixel"),
+        }
+    }
+}
+
+/// The owner's answer that an unparked call reads a pixel ([`OwnerHandle::call_unparked`]).
+fn reads_pixel(error: &CallError) -> bool {
+    error.code == luxforge_core::ErrorKind::NotReady.code()
+        && error.data.as_ref().and_then(|data| data["reason"].as_str())
+            == Some(luxforge_core::PIXEL_READ_REQUIRED)
+}
+
+/// A `draft.set` that reads a pixel, to be sent where it may wait for the read: everything the
+/// gesture's synchronous set carried, and when it was asked for.
+#[derive(Clone)]
+pub(crate) struct SetRead {
+    pub(crate) owner: OwnerHandle,
+    pub(crate) client: ClientId,
+    pub(crate) gesture: GestureId,
+    pub(crate) draft_id: DraftId,
+    pub(crate) fields: Value,
+    pub(crate) preview: Option<(AssetId, Option<ProxyBounds>)>,
+    pub(crate) gpu: super::gpu_preview::GpuAsk,
+    pub(crate) queued: Instant,
+}
+
+impl SetRead {
+    /// Send the set, waiting for its pixel read, and answer it as [`DraftMessage::Set`] for the
+    /// gesture and draft that sent it. Blocks its caller: [`draft_set_task`] runs it on the
+    /// runtime's blocking pool.
+    pub(crate) fn run(self) -> Message {
+        let Self {
+            owner,
+            client,
+            gesture,
+            draft_id,
+            fields,
+            preview,
+            gpu,
             queued,
-            started,
-            answered,
-            planned,
-        },
-    ))
+        } = self;
+        let draft = draft_id.clone();
+        let result =
+            match draft_set_at(&owner, client, draft_id, fields, preview, gpu, queued, true) {
+                SetNow::Answered(result) => result,
+                // A call that may park is never refused for its read.
+                SetNow::ReadsPixel => Err("the owner refused to read the draft's pixel".to_owned()),
+            };
+        Message::Draft(DraftMessage::Set {
+            gesture,
+            draft,
+            result: result.map(Box::new),
+        })
+    }
+}
+
+/// The gesture calls that read a pixel and were sent to the blocking pool, as a test finds them.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct ReadsWaiting {
+    pub(crate) sets: Vec<SetRead>,
+    pub(crate) reapplies: Vec<ReapplyRead>,
+}
+
+/// [`draft_set_now`] where it may wait for a pixel read: on the runtime's blocking pool, its answer
+/// arriving as [`DraftMessage::Set`].
+pub(crate) fn draft_set_task(set: SetRead) -> Task<Message> {
+    owner_task(move || set.run(), std::convert::identity)
+}
+
+/// One `draft.set` and its preview job, the set parked for a pixel read only where `parks` says it
+/// may wait for one.
+#[allow(clippy::too_many_arguments)]
+fn draft_set_at(
+    owner: &OwnerHandle,
+    client: ClientId,
+    draft_id: DraftId,
+    fields: Value,
+    preview: Option<(AssetId, Option<ProxyBounds>)>,
+    gpu: super::gpu_preview::GpuAsk,
+    queued: Instant,
+    parks: bool,
+) -> SetNow {
+    let started = Instant::now();
+    let params = json!({"draft_id":draft_id,"fields":fields});
+    let answer = if parks {
+        send(owner, client, api_request_id(), "draft.set", params)
+    } else {
+        send_unparked(owner, client, "draft.set", params)
+    };
+    let draft = match answer {
+        Ok((draft, _)) => draft,
+        Err(error) if reads_pixel(&error) => return SetNow::ReadsPixel,
+        Err(error) => return SetNow::Answered(Err(error.to_string())),
+    };
+    let answered = Instant::now();
+    let result = parse::<Draft>(draft).and_then(|draft| {
+        let job = preview
+            .map(|(asset_id, proxy)| {
+                let request = PreviewRequest::new(client, asset_id)
+                    .draft(draft_id)
+                    .analyse();
+                let request = match gpu {
+                    super::gpu_preview::GpuAsk::Off => request,
+                    super::gpu_preview::GpuAsk::Fit => request.gpu(),
+                    super::gpu_preview::GpuAsk::Region(rect, magnification, reduce_after) => {
+                        request
+                            .gpu_region(rect, magnification)
+                            .reduce_regions_after(reduce_after)
+                    }
+                };
+                plan_preview(owner, proxied(request, proxy))
+            })
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        let planned = Instant::now();
+        Ok((
+            draft,
+            job,
+            RoundTrip {
+                queued,
+                started,
+                answered,
+                planned,
+            },
+        ))
+    });
+    SetNow::Answered(result)
 }
 
 /// Where the time of one `draft.set` round trip went, so an evidence run can tell the executor's
@@ -1290,7 +1507,7 @@ pub(crate) fn draft_commit_now(
     draft_id: &DraftId,
     asset_id: AssetId,
     mutation: Mutation,
-    proxy: Option<ProxyBounds>,
+    proxy: impl Into<Drawn>,
 ) -> Result<Option<Refresh>, String> {
     let (committed, request) = call_own(
         owner,
@@ -1321,7 +1538,7 @@ pub(crate) fn draft_commit_task(
     draft_id: DraftId,
     asset_id: AssetId,
     mutation: Mutation,
-    proxy: Option<ProxyBounds>,
+    proxy: Drawn,
 ) -> Task<Message> {
     let draft = draft_id.clone();
     owner_task(
@@ -1336,8 +1553,8 @@ pub(crate) fn draft_commit_task(
     )
 }
 
-/// What a cancel reads back after it: the displayed entry's own preview, at these bounds.
-pub(crate) type Reseed = (AssetId, Option<EntryId>, Option<ProxyBounds>);
+/// What a cancel reads back after it: the displayed entry's own preview, drawn there.
+pub(crate) type Reseed = (AssetId, Option<EntryId>, Drawn);
 
 /// What a cancel answers: whether the owner ended the draft, and the frame read back after it.
 pub(crate) type Cancelled = (
@@ -1355,7 +1572,11 @@ pub(crate) fn draft_cancel_now(
     draft_id: &DraftId,
     reseed: Option<Reseed>,
 ) -> Cancelled {
-    let cancelled = call(owner, client, "draft.cancel", json!({"draft_id":draft_id})).map(|_| ());
+    // A cancel plans nothing and the reseed's preview is planned without parking a read: neither
+    // waits on a pixel read. The cancel goes unparked all the same, as `draft.begin` does.
+    let cancelled = send_unparked(owner, client, "draft.cancel", json!({"draft_id":draft_id}))
+        .map(|_| ())
+        .map_err(|error| error.to_string());
     let reseed = reseed.map(|(asset_id, entry_id, proxy)| {
         current_preview(owner, client, asset_id, entry_id, proxy).map(Box::new)
     });
@@ -1363,26 +1584,86 @@ pub(crate) fn draft_cancel_now(
 }
 
 /// Rebase the draft on the current revision, on the calling thread, as [`draft_set_now`] runs:
-/// `draft.reapply` is session-only, and the fields it re-sends follow it in the same update.
+/// `draft.reapply` is session-only, and the fields it re-sends follow it in the same update. The
+/// rebase replans the draft over the new stack, so a colour-limited stroke's seed is read again:
+/// that reapply is answered [`Now::ReadsPixel`] at once and goes through [`draft_reapply_task`].
 pub(crate) fn draft_reapply_now(
     owner: &OwnerHandle,
     client: ClientId,
     draft_id: &DraftId,
-) -> Result<Draft, String> {
-    let (draft, _) = call(owner, client, "draft.reapply", json!({"draft_id":draft_id}))?;
-    parse::<Draft>(draft)
+) -> Now<Draft> {
+    let params = json!({"draft_id":draft_id});
+    match send_unparked(owner, client, "draft.reapply", params) {
+        Ok((draft, _)) => Now::Answered(parse::<Draft>(draft)),
+        Err(error) if reads_pixel(&error) => Now::ReadsPixel,
+        Err(error) => Now::Answered(Err(error.to_string())),
+    }
+}
+
+/// A `draft.reapply` that reads a pixel, to be sent where it may wait for the read.
+#[derive(Clone)]
+pub(crate) struct ReapplyRead {
+    pub(crate) owner: OwnerHandle,
+    pub(crate) client: ClientId,
+    pub(crate) gesture: GestureId,
+    pub(crate) draft_id: DraftId,
+}
+
+impl ReapplyRead {
+    /// Send the reapply, waiting for its pixel read, and answer it as [`DraftMessage::Reapplied`]
+    /// for the gesture and draft that sent it. Blocks its caller: [`draft_reapply_task`] runs it on
+    /// the runtime's blocking pool.
+    pub(crate) fn run(self) -> Message {
+        let Self {
+            owner,
+            client,
+            gesture,
+            draft_id,
+        } = self;
+        let result = call(
+            &owner,
+            client,
+            "draft.reapply",
+            json!({"draft_id":draft_id}),
+        )
+        .and_then(|(draft, _)| parse::<Draft>(draft));
+        Message::Draft(DraftMessage::Reapplied {
+            gesture,
+            draft: draft_id,
+            result: result.map(Box::new),
+        })
+    }
+}
+
+/// [`draft_reapply_now`] where it may wait for a pixel read: on the runtime's blocking pool, its
+/// answer arriving as [`DraftMessage::Reapplied`].
+pub(crate) fn draft_reapply_task(reapply: ReapplyRead) -> Task<Message> {
+    owner_task(move || reapply.run(), std::convert::identity)
 }
 
 /// The displayed entry's own preview again, without a draft: what the canvas must show once a
 /// gesture ended without committing. One preview job and one session read, no state or history
 /// request and no history refresh. It is a displayed target, so its own worker reduces it and the
 /// inspector follows the committed pixels back rather than emptying itself.
+/// [`current_preview_task`]'s work on the calling thread, for a test that runs what the runtime's
+/// executor would.
+#[cfg(test)]
+pub(crate) fn current_preview_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    asset_id: AssetId,
+    entry_id: Option<EntryId>,
+    proxy: Drawn,
+) -> Result<PreviewPayload, String> {
+    current_preview(owner, client, asset_id, entry_id, proxy)
+}
+
 pub(crate) fn current_preview_task(
     owner: OwnerHandle,
     client: ClientId,
     asset_id: AssetId,
     entry_id: Option<EntryId>,
-    proxy: Option<ProxyBounds>,
+    proxy: Drawn,
 ) -> Task<Message> {
     owner_task(
         move || current_preview(&owner, client, asset_id, entry_id, proxy),
@@ -1445,11 +1726,11 @@ pub(crate) fn thumbnail_source(
 }
 
 /// Plan one view-only frame without reading or changing the session. The app re-reads its local
-/// pan before admission, so a coalesced scroll remains the newest rectangle. A committed stack's
-/// frame at a percentage zoom of 100% or more also carries the plans a gesture there draws and
-/// the boundary it starts from, over the region `gpu` names ([`super::gpu_preview`]), so the
-/// first stroke after a zoom or a pan draws on the GPU from its first tick.
-#[allow(clippy::too_many_arguments)]
+/// pan before admission, so a coalesced scroll remains the newest rectangle. At a percentage zoom
+/// of 100% or more the frame carries its GPU picture over the region `gpu` names
+/// ([`super::gpu_preview`]): a committed stack's view plan at rest, with the plans a gesture there
+/// draws and the boundary it starts from, so the first stroke after a zoom or a pan draws on the
+/// GPU from its first tick; a paused draft's next tick, over the view a pan moved to.
 pub(crate) fn view_preview_task(
     owner: OwnerHandle,
     client: ClientId,
@@ -1457,7 +1738,6 @@ pub(crate) fn view_preview_task(
     entry_id: Option<EntryId>,
     draft: Option<DraftId>,
     epoch: u64,
-    intent: luxforge_core::PreviewIntent,
     gpu: super::gpu_preview::GpuAsk,
 ) -> Task<Message> {
     owner_task(
@@ -1465,19 +1745,19 @@ pub(crate) fn view_preview_task(
             let mut request = PreviewRequest::new(client, asset_id)
                 .entry(entry_id)
                 .analyse();
-            match (draft, gpu) {
-                (Some(draft), _) => request = request.draft(draft),
-                (None, super::gpu_preview::GpuAsk::Region(rect, magnification)) => {
-                    request = request.gpu_region(rect, magnification);
-                }
-                (None, _) => {}
+            if let Some(draft) = draft {
+                request = request.draft(draft);
+            }
+            if let super::gpu_preview::GpuAsk::Region(rect, magnification, reduce_after) = gpu {
+                request = request
+                    .gpu_region(rect, magnification)
+                    .reduce_regions_after(reduce_after);
             }
             ready_preview_job(&owner, request)
         },
         move |result| {
             Message::Preview(PreviewMessage::ViewLoaded {
                 epoch,
-                intent,
                 result: result.map(Box::new),
             })
         },
@@ -1490,15 +1770,15 @@ fn current_preview(
     client: ClientId,
     asset_id: AssetId,
     entry_id: Option<EntryId>,
-    proxy: Option<ProxyBounds>,
+    proxy: Drawn,
 ) -> Result<PreviewPayload, String> {
+    // The displayed entry's picture at rest on the GPU, as every displayed entry's job carries it.
     let job = plan_preview(
         owner,
-        proxied(
+        proxy.request(
             PreviewRequest::new(client, asset_id)
                 .entry(entry_id)
                 .analyse(),
-            proxy,
         ),
     )
     .map_err(|error| error.to_string())?;
@@ -1679,7 +1959,7 @@ pub(crate) fn sync_task(
     held: Option<(AssetId, u64)>,
     after: u64,
     own: Vec<String>,
-    proxy: Option<ProxyBounds>,
+    proxy: Drawn,
 ) -> Task<Message> {
     owner_task(
         move || sync_now(&owner, client, held, after, &own, proxy),
@@ -1749,8 +2029,9 @@ pub(crate) fn sync_now(
     held: Option<(AssetId, u64)>,
     after: u64,
     own: &[String],
-    proxy: Option<ProxyBounds>,
+    proxy: impl Into<Drawn>,
 ) -> Result<SyncResult, String> {
+    let proxy = proxy.into();
     let (events, _) = call(owner, client, "events.since", json!({"after":after}))?;
     let mut events: EventsResult = parse(events)?;
     let sequence = events.current_sequence;

@@ -3348,7 +3348,8 @@ fn an_answer_that_arrives_after_discard_presents_no_frame_and_leaves_no_draft() 
         fields,
         Some((masking.asset.clone(), None)),
         crate::app::gpu_preview::GpuAsk::Off,
-    );
+    )
+    .answered();
     assert!(late_set.is_ok(), "the owner accepts the geometry");
 
     // Discard, as Escape and the Changed elsewhere notice both send it. The gesture leaves the
@@ -3665,6 +3666,8 @@ fn race_e_a_slider_discard_presents_no_queued_drafted_frame() {
     use crate::app::testing::{attach_log, logged};
     let mut masking = Masking::opened();
     drain_queue(&mut masking);
+    // The reference renderer draws the drafted frame, which the discard holds back.
+    masking.editor.renderer.stage = Some(luxforge_ui::photo_surface::GpuStageState::DeviceLost);
     let presented = masking.editor.presentation.presented_generation;
     let _ = testing::slide(&mut masking.editor, "set-basic", "exposure", 0.3);
     assert!(
@@ -3706,6 +3709,8 @@ fn cancelled_masked_adjustments_restore_committed_pixels_history_and_coverage() 
         ("set-presence", "edit.set-presence", "dehaze", 20.0, 55.0),
     ] {
         let mut masking = Masking::opened();
+        // The reference renderer draws every frame, a drafted one included.
+        masking.editor.renderer.stage = Some(luxforge_ui::photo_surface::GpuStageState::DeviceLost);
         masking.enter_mask_mode();
         masking.draw_mask();
         let mask = masking.listing().masks[0].id.clone();
@@ -3818,7 +3823,8 @@ fn cancelled_masked_adjustments_restore_committed_pixels_history_and_coverage() 
             Value::Object(held.fields),
             Some((masking.asset.clone(), None)),
             crate::app::gpu_preview::GpuAsk::Off,
-        );
+        )
+        .answered();
         assert!(
             late_set.is_ok(),
             "the owner accepted a response that can arrive late"
@@ -3928,7 +3934,7 @@ fn race_g_a_proxy_refit_waits_for_a_mask_gesture() {
     masking.editor.view_state.scale_factor = 1.0;
     masking.editor.presentation.presented_generation =
         masking.editor.presentation.preview_generation;
-    masking.editor.presentation.presented_proxy = true;
+    masking.editor.presentation.presented_reduced = true;
     masking.editor.presentation.presented_bounds = masking.editor.proxy_bounds();
     masking.editor.presentation.refit_pending = false;
     let _ = masking
@@ -4020,25 +4026,13 @@ fn history_navigation_is_refused_while_a_mask_gesture_is_open() {
 
 /// A scripted release that ends a sweep commits the gradient the sweep placed, re-sending no
 /// geometry the core draft already holds, and the step waits for the commit rather than capturing
-/// the next redraw.
-///
-/// The overlay is turned Off while the sweep's coverage grid is still computing, which cancels it.
-/// A cancelled job keeps the worker busy until it returns but delivers nothing, so the step waits
-/// for the commit and not for it. The worker is held at a gate so the release always runs while
-/// that job is still on it, whatever the host's load.
+/// the next redraw. A coverage grid cancelled meanwhile is no frame it waits for
+/// (`mask_coverage::tests::a_cancelled_coverage_grid_is_nothing_pending`).
 #[test]
 fn a_scripted_release_commits_the_swept_gradient_without_resending_geometry() {
-    use crate::app::{
-        mask_coverage::CoverageQueue,
-        testing::{attach_log, attach_script, evidence, logged},
-    };
-    use luxforge_testbase::Gate;
-    use std::sync::Arc;
+    use crate::app::testing::{attach_log, attach_script, evidence, logged};
 
     let mut masking = Masking::opened();
-    let gate = Arc::new(Gate::new());
-    gate.shut();
-    masking.editor.coverage_worker.queue = CoverageQueue::held(gate.clone());
     masking.enter_mask_mode();
     masking.message(MaskMessage::New(LINEAR.to_owned()));
     masking.open_gesture();
@@ -4047,16 +4041,7 @@ fn a_scripted_release_commits_the_swept_gradient_without_resending_geometry() {
         to: (0.5, 0.7),
     }));
     masking.assert_geometry_sent();
-    gate.wait_reached(1, "the sweep's coverage grid");
     masking.message(MaskMessage::Overlay(0));
-    assert!(
-        masking.editor.coverage_worker.queue.is_busy(),
-        "the cancelled grid is still on the worker"
-    );
-    assert!(
-        !masking.editor.mask_coverage_pending(),
-        "a cancelled grid is no coverage anything waits for"
-    );
     // The sweep's own preview can still be in flight here; let it land so the release is judged
     // alone.
     drain_queue(&mut masking);
@@ -4077,14 +4062,6 @@ fn a_scripted_release_commits_the_swept_gradient_without_resending_geometry() {
             .and_then(|open| open.draft.in_flight()),
         Some(Round::Commit),
         "the release sent the commit"
-    );
-    gate.open();
-    luxforge_testbase::wait_until("the cancelled grid returns", || {
-        !masking.editor.coverage_worker.queue.is_busy()
-    });
-    assert!(
-        masking.editor.coverage_worker.queue.poll().is_none(),
-        "the cancelled grid delivered nothing"
     );
     let records = logged(&mut masking.editor, &log);
     assert!(
@@ -6263,4 +6240,264 @@ fn a_percentage_mask_gesture_with_its_overlay_shown_is_kept_off_the_gpu_only_by_
     assert_eq!(masking.editor.gpu.ticks().2, 0, "no boundary is asked for");
     assert!(masking.editor.surfaces().gpu.is_none());
     masking.draft(DraftMessage::Cancel);
+}
+
+/// The owner's tile service, holding every call it is given until the test releases them, so a
+/// caller that waited on a pixel read would wait as long as the test likes.
+struct HeldTiles {
+    reference: luxforge_core::tiles::ReferenceTiles,
+    held: std::sync::Mutex<Option<Vec<luxforge_core::tiles::TileCall>>>,
+    submitted: AtomicU64,
+}
+
+impl HeldTiles {
+    fn new() -> Self {
+        Self {
+            reference: luxforge_core::tiles::ReferenceTiles::new(),
+            held: std::sync::Mutex::new(Some(Vec::new())),
+            submitted: AtomicU64::new(0),
+        }
+    }
+
+    /// Hold every later call until the next release.
+    fn hold(&self) {
+        self.held.lock().unwrap().get_or_insert_with(Vec::new);
+    }
+
+    /// Hand every held call to the reference, and every later one at once.
+    fn release(&self) {
+        let held = self.held.lock().unwrap().take().unwrap_or_default();
+        for call in held {
+            luxforge_core::tiles::TileService::submit(&self.reference, call);
+        }
+    }
+
+    fn submitted(&self) -> u64 {
+        self.submitted.load(Ordering::Relaxed)
+    }
+}
+
+impl luxforge_core::tiles::TileService for HeldTiles {
+    fn status(&self) -> luxforge_core::tiles::TileStatus {
+        luxforge_core::tiles::TileStatus::Reference(None)
+    }
+
+    fn submit(&self, call: luxforge_core::tiles::TileCall) {
+        self.submitted.fetch_add(1, Ordering::Relaxed);
+        let mut held = self.held.lock().unwrap();
+        match held.as_mut() {
+            Some(held) => held.push(call),
+            None => {
+                drop(held);
+                self.reference.submit(call);
+            }
+        }
+    }
+
+    fn disconnect(&self, client: ClientId) {
+        if let Some(held) = self.held.lock().unwrap().as_mut() {
+            held.retain(|call| call.client() != client);
+        }
+        self.reference.disconnect(client);
+    }
+
+    fn stream(
+        &self,
+        evaluation: &luxforge_core::Evaluation,
+        cancel: &luxforge_core::Cancel,
+    ) -> Result<luxforge_core::tiles::BandStream, luxforge_core::tiles::TileFallback> {
+        self.reference.stream(evaluation, cancel)
+    }
+
+    fn stop(&self) {
+        self.held.lock().unwrap().take();
+        self.reference.stop();
+    }
+}
+
+/// The interface thread never waits on a pixel read. A colour-limited stroke's press sends its
+/// first `draft.set` on the interface thread, unparked, while the owner's tile service holds every
+/// read: the owner says at once that it reads a pixel, having read and changed nothing, and the
+/// update returns with the set in flight, handed to the blocking pool. A move meanwhile is
+/// coalesced behind it. The pool's set waits on the held read, and once the read is let go its
+/// answer arrives as a message the gesture takes up; the stroke's later ticks find the seed in the
+/// session's memo and are answered on the interface thread with no further read, and the commit
+/// stores the seed.
+#[test]
+fn a_colour_limited_strokes_first_set_waits_on_no_read_on_the_interface_thread() {
+    let tiles = std::sync::Arc::new(HeldTiles::new());
+    let mut masking = limited_brush_in_hand(&tiles);
+
+    // The press: its update returns with nothing read, the set in flight and handed to the pool.
+    masking.message(MaskMessage::Handle(MaskPointer::PaintBegin {
+        x: 0.3,
+        y: 0.3,
+    }));
+    assert_eq!(
+        tiles.submitted(),
+        0,
+        "the interface thread's set read nothing"
+    );
+    assert_eq!(
+        masking.editor.reads_waiting.sets.len(),
+        1,
+        "the set went to the pool"
+    );
+    let gesture = masking.editor.core_gesture().expect("the stroke is open");
+    assert_eq!(gesture.draft.in_flight(), Some(Round::Set));
+    // A move while the read is out is coalesced behind it, and sends nothing.
+    masking.message(MaskMessage::Handle(MaskPointer::PaintTo {
+        x: 0.35,
+        y: 0.32,
+    }));
+    assert_eq!(masking.editor.reads_waiting.sets.len(), 1);
+
+    // The pool's set waits on the held read, and is answered once the read is let go.
+    let set = masking.editor.reads_waiting.sets.remove(0);
+    let pool = std::thread::spawn(move || set.run());
+    luxforge_testbase::wait_until("the pool's set to reach the tile service", || {
+        tiles.submitted() == 1
+    });
+    assert!(!pool.is_finished(), "the pool's set waits on the held read");
+    tiles.release();
+    let answer = pool.join().unwrap();
+    let _ = masking.editor.update(answer);
+    // The coalesced move went out on the answer, unparked, and its seed was in the memo.
+    masking.assert_geometry_sent();
+    assert_eq!(
+        masking.editor.reads_waiting.sets.len(),
+        0,
+        "no later tick reads"
+    );
+    masking.message(MaskMessage::Handle(MaskPointer::PaintTo {
+        x: 0.4,
+        y: 0.34,
+    }));
+    masking.assert_geometry_sent();
+    assert_eq!(tiles.submitted(), 1, "one read for the stroke");
+    masking.message(MaskMessage::Handle(MaskPointer::PaintEnd));
+    masking.commit_open_draft();
+    let listed = masking.listing();
+    let strokes = listed.masks[0].components[1].payload["strokes"]
+        .as_array()
+        .expect("a stroke list")
+        .clone();
+    assert_eq!(strokes.len(), 1);
+    assert_eq!(tiles.submitted(), 1, "the commit reused the seed");
+}
+
+/// A Reapply rebases a colour-limited stroke over a stack another client changed, so its seed is
+/// read again; the interface thread waits on that read no more than on the first. The owner says
+/// at once that the reapply reads a pixel, the update returns with the draft still conflicted and
+/// the reapply in flight, and its answer, read on the pool, rebases the stroke and re-sends its
+/// fields with the new seed in the memo.
+#[test]
+fn a_colour_limited_strokes_reapply_waits_on_no_read_on_the_interface_thread() {
+    let tiles = std::sync::Arc::new(HeldTiles::new());
+    let mut masking = limited_brush_in_hand(&tiles);
+    tiles.release();
+    masking.message(MaskMessage::Handle(MaskPointer::PaintBegin {
+        x: 0.3,
+        y: 0.3,
+    }));
+    let set = masking.editor.reads_waiting.sets.remove(0);
+    let _ = masking.editor.update(set.run());
+    masking.message(MaskMessage::Handle(MaskPointer::PaintTo {
+        x: 0.4,
+        y: 0.34,
+    }));
+    masking.assert_geometry_sent();
+    let read = tiles.submitted();
+    assert_eq!(read, 1, "the stroke's seed");
+
+    tiles.hold();
+    agent_commits(&mut masking);
+    assert!(masking.editor.gesture_conflicted());
+    masking.draft(DraftMessage::Reapply);
+    assert_eq!(
+        tiles.submitted(),
+        read,
+        "the interface thread's reapply read nothing"
+    );
+    assert_eq!(masking.editor.reads_waiting.reapplies.len(), 1);
+    assert_eq!(
+        masking.editor.core_gesture().unwrap().draft.in_flight(),
+        Some(Round::Reapply)
+    );
+    assert!(
+        masking.editor.gesture_conflicted(),
+        "not rebased until it answers"
+    );
+    masking.draft(DraftMessage::Reapply);
+    assert_eq!(
+        masking.editor.reads_waiting.reapplies.len(),
+        1,
+        "a second Reapply waits for the first"
+    );
+
+    let reapply = masking.editor.reads_waiting.reapplies.remove(0);
+    let pool = std::thread::spawn(move || reapply.run());
+    luxforge_testbase::wait_until("the pool's reapply to reach the tile service", || {
+        tiles.submitted() == read + 1
+    });
+    assert!(
+        !pool.is_finished(),
+        "the pool's reapply waits on the held read"
+    );
+    tiles.release();
+    let answer = pool.join().unwrap();
+    let _ = masking.editor.update(answer);
+    assert!(!masking.editor.gesture_conflicted(), "rebased");
+    assert!(
+        masking.editor.reads_waiting.sets.is_empty(),
+        "the re-sent fields found the new seed in the memo"
+    );
+    assert_eq!(tiles.submitted(), read + 1);
+    masking.draft(DraftMessage::Cancel);
+}
+
+/// A photograph open with a mask whose layer has an input to read, and a new colour-limited brush
+/// in hand on it, over the owner's tile service `tiles`, which holds every read until released.
+fn limited_brush_in_hand(tiles: &std::sync::Arc<HeldTiles>) -> Masking {
+    let catalog = scratch("held-tiles.sqlite");
+    let (owner, join) = OwnerHandle::start_with_host(
+        &catalog,
+        std::sync::Arc::new(luxforge_core::ModuleRegistry::builtin()),
+        luxforge_core::HostConfig {
+            tiles: Some(tiles.clone()),
+            ..luxforge_core::HostConfig::unconfigured()
+        },
+    )
+    .unwrap();
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/s0/orientation-1.jpg");
+    let (editor, asset, agent) = testing::real_photo_on(owner, join, &fixture, Default::default());
+    let mut masking = Masking {
+        editor,
+        catalog,
+        asset,
+        agent,
+    };
+    masking.enter_mask_mode();
+    masking.draw_mask();
+    // The limit reads the input of the layer the mask modulates, so the mask carries one.
+    let mask = masking.listing().masks[0].id.clone();
+    let revision = masking.editor.document.state.as_ref().unwrap().revision;
+    call(
+        &masking.owner(),
+        masking.editor.client,
+        "edit.set-basic",
+        json!({"asset_id": masking.asset, "mutation": tasks::mutation(revision), "mask": mask,
+               "exposure": 0.4}),
+    )
+    .unwrap();
+    masking.refresh();
+    masking.message(MaskMessage::Brush(
+        super::message::mask::BrushEdit::LimitToColour(true),
+    ));
+    masking.message(MaskMessage::Paint(PaintTarget::NewBrush));
+    masking.open_gesture();
+    assert!(masking.editor.painting_brush().limit_to_colour);
+
+    masking
 }

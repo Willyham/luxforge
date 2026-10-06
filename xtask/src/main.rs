@@ -28,6 +28,7 @@ mod gazetteer;
 mod generate_catalog;
 mod gpu_preview_smoke;
 mod gpu_preview_zoom_smoke;
+mod gpu_qualification;
 mod histogram_smoke;
 mod information_smoke;
 mod inspect_dng;
@@ -46,6 +47,7 @@ mod mask_range_smoke;
 mod mask_smoke;
 mod minify_smoke;
 mod mixer_smoke;
+mod no_gpu_render_smoke;
 mod package;
 mod performance_smoke;
 mod policy;
@@ -372,8 +374,31 @@ fn main_result() -> Result {
                     "No graphical session for smoke (headless check/build still available)",
                 )?;
             }
+            // The adapters the built editor sees, as an evidence run identifies the one that drew
+            // it: a GPU, a software rasterizer (device type Cpu, lavapipe on Linux CI) or none.
+            let backends = std::env::var("WGPU_BACKEND")
+                .map(|value| format!("WGPU_BACKEND={value}"))
+                .unwrap_or_else(|_| "every backend".into());
+            match launch::gpu_adapters(&root)? {
+                None => println!(
+                    "Graphics adapters: not listed until the release editor is built (cargo xtask build --release)"
+                ),
+                Some(adapters) if adapters.is_empty() => println!(
+                    "Graphics adapters ({backends}): none; the editor cannot open its window with them"
+                ),
+                Some(adapters) => {
+                    for adapter in adapters {
+                        println!(
+                            "Graphics adapter ({backends}): {} on {}, device type {}: {adapter}",
+                            adapter["adapter"].as_str().unwrap_or_default(),
+                            adapter["backend"].as_str().unwrap_or_default(),
+                            adapter["device_type"].as_str().unwrap_or_default(),
+                        );
+                    }
+                }
+            }
             println!(
-                "Native graphics driver, SDK/runtime libraries and an unlocked graphical session are required for UI checks; not proven by Doctor."
+                "Native graphics driver, SDK/runtime libraries and an unlocked graphical session are required for UI checks; not proven by Doctor. A Cpu adapter is a software rasterizer: functional evidence, never GPU evidence."
             );
         }
         "fixtures" => {
@@ -539,7 +564,7 @@ fn main_result() -> Result {
                 .value("--warm")?
                 .map(|value| value.to_string_lossy().parse::<u64>())
                 .transpose()?;
-            let gpu_preview_off = a.flag("--no-gpu-preview");
+            let no_gpu_render = a.flag("--reference-renderer");
             let masks = a
                 .value("--masks")?
                 .map(|value| value.to_string_lossy().parse::<usize>())
@@ -569,11 +594,10 @@ fn main_result() -> Result {
                 Some("burst") => editor_latency::Mode::Burst,
                 Some("paint") => editor_latency::Mode::Paint,
                 Some("hover") => editor_latency::Mode::Hover,
-                Some("viewport") => editor_latency::Mode::Viewport,
                 Some("crop-start") => editor_latency::Mode::CropStart,
                 Some(other) => {
                     return Err(format!(
-                        "--mode is drag, commit, burst, paint, hover, viewport or crop-start, not {other}"
+                        "--mode is drag, commit, burst, paint, hover or crop-start, not {other}"
                     )
                     .into());
                 }
@@ -628,7 +652,7 @@ fn main_result() -> Result {
                     mask_overlay,
                     contend,
                     warm_ms,
-                    gpu_preview_off,
+                    no_gpu_render,
                     masks,
                     mask_presence,
                     window,
@@ -673,6 +697,9 @@ fn main_result() -> Result {
             let manifest = a
                 .value("--manifest")?
                 .map(|path| absolute(&root, Path::new(&path)));
+            if a.flag("--editor-software-adapter") {
+                launch::draw_on_a_software_adapter();
+            }
             a.done()?;
             let timeout = std::time::Duration::from_secs(35);
             // The row is found before anything is built, so an unknown name or a `--source` the
@@ -797,9 +824,14 @@ fn main_result() -> Result {
         }
         "preview-error" => preview_error::run(a)?,
         "preview-corpus" => preview_error::corpus::run(&root, a)?,
+        "gpu-qualification" => {
+            let options = gpu_qualification::Options::parse(&root, &mut a)?;
+            a.done()?;
+            gpu_qualification::run(&root, &options)?;
+        }
         "__hang" => std::thread::sleep(std::time::Duration::from_secs(60)),
         "help" => println!(
-            "cargo xtask doctor|check [--quick]|check-repository|fmt|lint|test [--quick]|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|generate-catalog --output NEW [--files N] [--assets M] [--images N] [--seed N]|gazetteer --source cities15000.txt --output NEW|audit|raw-camera-metadata --index FILE --ids ID[,ID...] --output NEW [--max-source-mib N]|inspect-dng --source DNG [--json NEW]|raw-authentic --manifest FILE --output NEW|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N] [--lens-only (JPEG or RAW)]|detail-performance --source JPEG --output NEW [--samples N] [--case all|render|export|points|cancel|sharing]|detail-grid-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG_OR_RAW --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint|hover|viewport|crop-start] [--mask-overlay] [--zoom PERCENT] [--moving-pan] [--control slider|curve] [--action ID --parameter NAME (a field-patch slider, or with --control curve a module curve such as set-curve luminance)] [--crop DEGREES] [--basic] [--presence] [--curve-layer] [--detail] [--lens] [--perspective] [--mask] [--idle] [--warm MS] [--contend N] [--no-gpu-preview]|lens-qualification --manifest FILE --edges FILE --output NEW|lensfun-import --source DIR --output DIR|inventory --output NEW|package --output NEW|smoke --list|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (the scenarios --list shows taking one)] [--manifest FILE (the scenarios --list shows needing one)]|smoke --verify-only RUN_DIR --output NEW [--scenario NAME] [--source RAW]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|preview-error (--candidate PNG --reference PNG --photo-rect LEFT,TOP,RIGHT,BOTTOM | --evidence DIR --candidate-frame N --reference-frame N) [--class pointwise|spatial] [--output NEW_FILE]|preview-corpus [--manifest FILE] [--output NEW_FILE]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]|catalog-measure --output NEW [--samples N] [--scale tiny|full] [--binary PATH] [--raw-corpus DIR] [--card DIR]"
+            "cargo xtask doctor|check [--quick]|check-repository|fmt|lint|test [--quick]|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|generate-catalog --output NEW [--files N] [--assets M] [--images N] [--seed N]|gazetteer --source cities15000.txt --output NEW|audit|raw-camera-metadata --index FILE --ids ID[,ID...] --output NEW [--max-source-mib N]|inspect-dng --source DNG [--json NEW]|raw-authentic --manifest FILE --output NEW|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N] [--lens-only (JPEG or RAW)]|detail-performance --source JPEG --output NEW [--samples N] [--case all|render|export|points|sharing]|detail-grid-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG_OR_RAW --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint|hover|crop-start] [--mask-overlay] [--zoom PERCENT] [--moving-pan] [--control slider|curve] [--action ID --parameter NAME (a field-patch slider, or with --control curve a module curve such as set-curve luminance)] [--crop DEGREES] [--basic] [--presence] [--curve-layer] [--detail] [--lens] [--perspective] [--mask] [--idle] [--warm MS] [--contend N] [--reference-renderer]|lens-qualification --manifest FILE --edges FILE --output NEW|lensfun-import --source DIR --output DIR|inventory --output NEW|package --output NEW|smoke --list|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (the scenarios --list shows taking one)] [--manifest FILE (the scenarios --list shows needing one)] [--editor-software-adapter]|smoke --verify-only RUN_DIR --output NEW [--scenario NAME] [--source RAW]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|preview-error (--candidate PNG --reference PNG --photo-rect LEFT,TOP,RIGHT,BOTTOM | --evidence DIR --candidate-frame N --reference-frame N) [--class pointwise|spatial] [--output NEW_FILE]|preview-corpus [--manifest FILE] [--output NEW_FILE]|gpu-qualification --output NEW [--manifest FILE] [--fixtures DIR] [--zoom fit|33|50|100|all] [--kind picture-at-rest|picture-in-motion|histogram|sample|export|all] [--families F,...] [--recipes ID,...] [--sources ID,...] [--frames missed|all] [--gate-motion against-rest|against-reference]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]|catalog-measure --output NEW [--samples N] [--scale tiny|full] [--binary PATH] [--raw-corpus DIR] [--card DIR]"
         ),
         _ => return Err("Unknown command; use cargo xtask help".into()),
     }

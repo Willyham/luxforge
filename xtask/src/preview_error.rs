@@ -246,10 +246,8 @@ fn frame_account(frame: &Frame) -> Value {
         "displayed_draft_revision": state["displayed_draft_revision"],
         "status_render": state["status_bar"]["render"],
         "render_approximate": state["status_bar"]["render_approximate"],
-        "render_proxy": state["status_bar"]["render_proxy"],
-        "proxy_presented": state["proxy"]["presented"],
-        "settled_from_exact": state["proxy"]["settled_from_exact"],
-        "drawn_region_quality": state["surface"]["gpu"]["drawn_region_quality"],
+        "renderer": state["renderer"],
+        "fallback": state["status_bar"]["fallback"],
         "view": state["surface"]["view"],
     })
 }
@@ -531,9 +529,9 @@ mod tests {
                         "run_id": "run-1",
                         "backend": {"backend": "Metal", "adapter": "test"},
                         "stack": {"revision": 3},
-                        "status_bar": {"render": "Approximate render · 9 ms", "render_approximate": true, "render_proxy": true},
-                        "proxy": {"presented": true, "settled_from_exact": false},
-                        "surface": {"gpu": {"drawn_region_quality": null}, "view": {"zoom": {"mode": "fit"}}},
+                        "renderer": "gpu",
+                        "status_bar": {"render": "Approximate render · 9 ms", "render_approximate": true, "fallback": null},
+                        "surface": {"view": {"zoom": {"mode": "fit"}}},
                     },
                 });
                 write_json(&dir.join(format!("state-{number}.json")), &record).unwrap();
@@ -573,7 +571,8 @@ mod tests {
         assert_eq!(report["photograph_rect"], json!(rect));
         // Each frame's own account of how it was produced travels with the figures.
         assert_eq!(report["candidate"]["file"], "frame-1.png");
-        assert_eq!(report["candidate"]["render_proxy"], true);
+        assert_eq!(report["candidate"]["render_approximate"], true);
+        assert_eq!(report["candidate"]["renderer"], "gpu");
         assert_eq!(
             report["reference"]["status_render"],
             "Approximate render · 9 ms"

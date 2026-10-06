@@ -4,7 +4,7 @@
 //! The message is a plain sentence. It names an entry by the sequence number its history row
 //! carries and never by its identity, its snapshot or its source hash: those stay with the API.
 use crate::state::{ACTOR, Inputs, title};
-use luxforge_core::{EditorState, Zoom};
+use luxforge_core::{EditorState, Renderer, RendererRecord, Zoom};
 use std::time::Duration;
 
 /// How long the frame on the photo surface took to render, as the preview worker measured it for
@@ -14,20 +14,18 @@ use std::time::Duration;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct RenderTime {
     pub(crate) ms: f64,
-    /// The displayed frame was evaluated approximately at proxy scale; an exact-derived
-    /// display reduction is false even though its texture uses the proxy slot.
-    pub(crate) proxy: bool,
     /// The frame approximates a drafted RAW white balance on planes developed at another one
-    /// ([`luxforge_core::PreviewResult::approximate_white_balance`]).
+    /// ([`luxforge_core::PreviewResult::approximate_white_balance`]), or is a drag's display-size
+    /// proxy in a session the GPU does not draw at all.
     pub(crate) approximate: bool,
 }
 
 impl RenderTime {
-    /// "Exact render · 85 ms" for the exact full-resolution render, and "Approximate render · 12
-    /// ms" for anything else on screen: the display-size proxy, or a drafted RAW white balance
-    /// approximated on the developed planes.
+    /// "Exact render · 85 ms" for the reference renderer's exact frame, or its reduction to the
+    /// view, and "Approximate render · 12 ms" for a drag's display-size proxy or a drafted RAW
+    /// white balance approximated on the developed planes.
     pub(crate) fn text(self) -> String {
-        let kind = if self.proxy || self.approximate {
+        let kind = if self.approximate {
             "Approximate"
         } else {
             "Exact"
@@ -36,11 +34,14 @@ impl RenderTime {
     }
 }
 
-/// "GPU preview · 2 ms" while the photograph on screen is the GPU stage's output, beside the CPU
-/// frames' "Approximate render" and "Exact render", with the interface thread's time to prepare
-/// that frame (the desktop's `gpu_settle` says why it is that time).
-pub(crate) fn gpu_text(ms: f64) -> String {
-    format!("GPU preview \u{b7} {}", figure(ms))
+/// "GPU render · 2 ms" while the photograph on screen is the GPU's render of the committed stack at
+/// rest, and "GPU preview · 2 ms" while it is a gesture's GPU frame (each after "Software" while
+/// the GPU is the platform's software adapter, [`derive`]), beside the CPU frames'
+/// "Approximate render" and "Exact render", with the interface thread's time to prepare that frame,
+/// or the picture at rest's tiles (the desktop's `gpu_settle` says why it is that time).
+pub(crate) fn gpu_text(ms: f64, at_rest: bool) -> String {
+    let kind = if at_rest { "GPU render" } else { "GPU preview" };
+    format!("{kind} \u{b7} {}", figure(ms))
 }
 
 /// How long a gesture's ticks must have named `compiling` before the status bar says the GPU
@@ -48,8 +49,9 @@ pub(crate) fn gpu_text(ms: f64) -> String {
 /// one needs told about.
 pub(crate) const COMPILING_AFTER: Duration = Duration::from_millis(500);
 
-/// What the status bar says of a gesture's CPU path when the reason lasts: a short muted phrase
-/// after the render slot, and the sentence its tooltip gives.
+/// What the status bar says of a gesture's CPU path when the reason lasts, or of the reference
+/// renderer drawing every frame: a short muted phrase after the render slot, and the sentence its
+/// tooltip gives.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Fallback {
     pub(crate) phrase: String,
@@ -59,6 +61,10 @@ pub(crate) struct Fallback {
 /// When a class of reason is said.
 #[derive(Clone, Copy)]
 enum Say {
+    /// From the session's renderer ([`renderer_notice`]), at rest and during a gesture alike, for
+    /// as long as the reference renderer draws the desktop's picture for one of the class's
+    /// reasons; never from a gesture's CPU reason, which names the same codes while it lasts.
+    Renderer,
     /// For as long as the latest tick took the CPU path for it.
     Lasting,
     /// With `: <layer>` after the phrase, the layer being the one the reason names; a reason that
@@ -66,9 +72,13 @@ enum Say {
     Layer { unnamed: &'static str },
     /// Once the ticks that named it have done so for [`COMPILING_AFTER`].
     Delayed,
+    /// At rest, at once, for as long as the photograph is the reference renderer's frame because
+    /// the GPU's picture at rest is compiling its programs ([`rest_compiling_notice`]); never from
+    /// a gesture's tick.
+    Rest,
 }
 
-/// One class of reason a gesture is drawn on the CPU path while the GPU preview is on: the codes
+/// One class of reason a gesture, or every frame, is drawn on the CPU path: the codes
 /// `state.surface.gpu.plan_fallback` records for it, and its phrase and tooltip.
 struct Class {
     codes: &'static [&'static str],
@@ -78,11 +88,21 @@ struct Class {
 }
 
 /// Every class the notice names, in the design's order (`docs/design/gpu-preview.md`, "Labels and
-/// overlays during motion"): the one place its wording lives. A code in none of them says nothing:
-/// the reasons that pass within a tick or two (`boundary-pending`, `boundary-uploading`,
-/// `boundary-released` and `surface-pending`), the preference turned off (`preference-off`), and
-/// the two the table does not name (`unchanged` and `unplannable`).
-const CLASSES: [Class; 6] = [
+/// overlays during motion"): the one place its wording lives. The first is the reference
+/// renderer's, said from the session's renderer; the rest are a gesture's, said from its latest
+/// tick. A code in none of them says nothing: the reasons that pass within a tick or two or a job
+/// (`boundary-pending`, `source-uploading`, `source-missing` and `surface-pending`, which is also
+/// the session's renderer before the photo surface has checked its GPU stage), and the two the
+/// table does not name (`unchanged` and `unplannable`). The last is the picture at rest's while its programs compile, said at rest
+/// alone.
+const CLASSES: [Class; 7] = [
+    Class {
+        codes: &["no-adapter", "device-lost"],
+        phrase: "Reference renderer",
+        tooltip: "This graphics device cannot run the GPU renderer, or this launch turned it off, \
+                  so every frame is drawn by the reference renderer on the CPU, which is slower.",
+        say: Say::Renderer,
+    },
     Class {
         codes: &["budget-exceeded", "texture-limit", "buffer-limit"],
         phrase: "GPU memory full",
@@ -92,17 +112,18 @@ const CLASSES: [Class; 6] = [
         say: Say::Lasting,
     },
     Class {
-        codes: &["no-adapter", "device-lost", "pipeline-failed"],
-        phrase: "GPU preview unavailable",
-        tooltip: "The GPU preview cannot run on this graphics device, so previews are drawn on \
-                  the CPU.",
+        codes: &["budget-reduced"],
+        phrase: "Softer while dragging",
+        tooltip: "This many layers at this zoom need more than the GPU preview holds, so the drag \
+                  is drawn on the GPU at the detail Fit shows, scaled to the view, and is sharp \
+                  again when you let go.",
         say: Say::Lasting,
     },
     Class {
-        codes: &["not-fit"],
-        phrase: "GPU preview at Fit and 100%+",
-        tooltip: "The GPU preview draws at Fit and at 100% or more; at this zoom the preview is \
-                  drawn on the CPU.",
+        codes: &["pipeline-failed"],
+        phrase: "GPU preview unavailable",
+        tooltip: "The GPU preview cannot run on this graphics device, so previews are drawn on \
+                  the CPU.",
         say: Say::Lasting,
     },
     Class {
@@ -118,7 +139,7 @@ const CLASSES: [Class; 6] = [
             "boundary-size",
             "position-range",
             "region-outside",
-            "boundary-failed",
+            "light-link",
         ],
         phrase: "Not on the GPU",
         tooltip: "The GPU preview cannot draw this layer yet, so this drag is drawn on the CPU.",
@@ -128,18 +149,18 @@ const CLASSES: [Class; 6] = [
         },
     },
     Class {
-        codes: &["region-estimate", "window-estimate"],
-        phrase: "Dehaze on the CPU",
-        tooltip: "Dehaze needs the haze estimate a settled frame stores for this view; until \
-                  then this drag is drawn on the CPU.",
-        say: Say::Lasting,
-    },
-    Class {
         codes: &["compiling"],
         phrase: "Preparing GPU preview",
         tooltip: "The GPU preview is compiling its programs for this stack; drags are drawn on \
                   the CPU until it is ready.",
         say: Say::Delayed,
+    },
+    Class {
+        codes: &["compiling"],
+        phrase: "Preparing GPU render",
+        tooltip: "The GPU renderer is compiling its programs for this photo, so the reference \
+                  renderer draws it on the CPU until they are ready.",
+        say: Say::Rest,
     },
 ];
 
@@ -169,12 +190,14 @@ impl Fallback {
 
 impl CpuReason<'_> {
     /// What the notice says of this reason, or `None` when it says nothing: a reason that passes,
-    /// one the table does not name, or `compiling` before [`COMPILING_AFTER`].
+    /// one the table does not name, `compiling` before [`COMPILING_AFTER`], or one the reference
+    /// renderer's notice says from the session instead ([`renderer_notice`]).
     pub(crate) fn notice(&self) -> Option<Fallback> {
         let class = CLASSES
             .iter()
             .find(|class| class.codes.contains(&self.code))?;
         let (phrase, tooltip) = match (class.say, self.layer) {
+            (Say::Renderer | Say::Rest, _) => return None,
             (Say::Lasting, _) => (class.phrase.to_owned(), class.tooltip),
             (Say::Layer { .. }, Some(layer)) => {
                 (format!("{}: {layer}", class.phrase), class.tooltip)
@@ -191,6 +214,40 @@ impl CpuReason<'_> {
             phrase,
             tooltip: tooltip.to_owned(),
         })
+    }
+}
+
+/// What the notice says of the renderer the session reports, at rest and during a gesture alike:
+/// the reference renderer's class while it draws the desktop's picture because the photo surface's
+/// GPU stage cannot run on this graphics device, was refused by the launch (both `no-adapter`) or
+/// lost its device (`device-lost`). `None` for the GPU, for `surface-pending` (the surface has not
+/// checked its stage yet), and for an owner that draws nothing (the reference with no reason). It
+/// is the value every API client reads in `session.state`, so the bar and the API cannot disagree.
+pub(crate) fn renderer_notice(renderer: Renderer) -> Option<Fallback> {
+    if renderer.record() != RendererRecord::Reference {
+        return None;
+    }
+    let code = renderer.reason()?.as_str();
+    let class = CLASSES
+        .iter()
+        .find(|class| matches!(class.say, Say::Renderer) && class.codes.contains(&code))?;
+    Some(Fallback {
+        phrase: class.phrase.to_owned(),
+        tooltip: class.tooltip.to_owned(),
+    })
+}
+
+/// What the notice says while the photograph at rest is the reference renderer's frame because the
+/// GPU's picture at rest, its view plan or its tiles, is still compiling its programs: said at
+/// once, since nothing at rest decides it later, and gone with the GPU frame that replaces it.
+pub(crate) fn rest_compiling_notice() -> Fallback {
+    let class = CLASSES
+        .iter()
+        .find(|class| matches!(class.say, Say::Rest))
+        .expect("the picture at rest's class");
+    Fallback {
+        phrase: class.phrase.to_owned(),
+        tooltip: class.tooltip.to_owned(),
     }
 }
 
@@ -374,9 +431,11 @@ pub(crate) struct StatusBarModel {
     pub(crate) render: String,
     /// The GPU frame's figure `render` gives, in microseconds, while it names one.
     pub(crate) gpu_us: Option<u64>,
-    /// Why the open gesture is drawn on the slower CPU path while the GPU preview is on, when the
-    /// reason lasts ([`CpuReason::notice`]): the muted phrase after `render`, with its tooltip.
-    /// `None` once a GPU frame is on screen, and when the gesture's settle ends.
+    /// Why the picture is drawn on the slower CPU path: while the session's renderer is the
+    /// reference for a reason of the reference renderer's class, that class, at rest and during a
+    /// gesture ([`renderer_notice`]); otherwise why the open gesture is, while the GPU preview is on
+    /// and the reason lasts ([`CpuReason::notice`]). The muted phrase after `render`, with its
+    /// tooltip. `None` while a GPU frame is on screen, and when the gesture's settle ends.
     pub(crate) fallback: Option<Fallback>,
     /// The zoom mode, its effective percentage and the display scale: `Fit · 18% · 2×`.
     pub(crate) view: String,
@@ -432,7 +491,13 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatusBarModel {
         render: if let Some(preview) = &inputs.develop.preview {
             preview.render_text()
         } else if let Some(us) = inputs.gpu_frame_us {
-            gpu_text(us as f64 / 1000.0)
+            let text = gpu_text(us as f64 / 1000.0, inputs.gpu_at_rest);
+            // The session names a GPU on the platform's software adapter, a rasterizer on the CPU.
+            if inputs.session.renderer.software() {
+                format!("Software {text}")
+            } else {
+                text
+            }
         } else if let Some(bar) = inputs.render_bar {
             format!("Rendering… {:.0}%", (bar.fraction * 100.0).floor())
         } else if inputs.rendering {
@@ -444,11 +509,15 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> StatusBarModel {
             }
         },
         gpu_us: inputs.gpu_frame_us,
-        // The notice and a GPU frame never share the bar: the next GPU frame clears it.
+        // The notice and a GPU frame never share the bar: the next GPU frame clears it. The
+        // reference renderer's notice is the session's, so it is said at rest too, and before any
+        // reason a gesture's tick gives.
         fallback: if inputs.gpu_frame_us.is_some() {
             None
         } else {
-            inputs.cpu_reason.as_ref().and_then(CpuReason::notice)
+            renderer_notice(inputs.session.renderer)
+                .or_else(|| inputs.cpu_reason.as_ref().and_then(CpuReason::notice))
+                .or_else(|| inputs.rest_compiling.then(rest_compiling_notice))
         },
         // The display's own scale: the interface size is a choice of its own, not the display's.
         view: view_text(
@@ -502,19 +571,15 @@ mod tests {
 
     #[test]
     fn the_render_time_names_the_kind_of_frame_it_describes() {
-        let time = |ms: f64, proxy: bool, approximate: bool| RenderTime {
-            ms,
-            proxy,
-            approximate,
-        };
+        let time = |ms: f64, _: bool, approximate: bool| RenderTime { ms, approximate };
         assert_eq!(
-            time(12.4, true, false).text(),
+            time(12.4, true, true).text(),
             "Approximate render \u{b7} 12 ms"
         );
         assert_eq!(time(85.5, false, false).text(), "Exact render \u{b7} 86 ms");
         // A tiny frame is not "0 ms".
         assert_eq!(
-            time(0.2, true, false).text(),
+            time(0.2, true, true).text(),
             "Approximate render \u{b7} <1 ms"
         );
         assert_eq!(time(0.5, false, false).text(), "Exact render \u{b7} 1 ms");
@@ -539,12 +604,14 @@ mod tests {
         );
     }
 
-    /// A GPU frame on screen names itself in the same wording, beside the CPU frames' kinds.
+    /// A GPU frame on screen names itself in the same wording, beside the CPU frames' kinds: a
+    /// gesture's as the GPU preview, the committed stack's at rest as the GPU's render.
     #[test]
     fn the_gpu_frame_names_itself_with_its_time() {
-        assert_eq!(gpu_text(2.4), "GPU preview \u{b7} 2 ms");
-        assert_eq!(gpu_text(0.3), "GPU preview \u{b7} <1 ms");
-        assert_eq!(gpu_text(1500.0), "GPU preview \u{b7} 1.5 s");
+        assert_eq!(gpu_text(2.4, false), "GPU preview \u{b7} 2 ms");
+        assert_eq!(gpu_text(0.3, false), "GPU preview \u{b7} <1 ms");
+        assert_eq!(gpu_text(1500.0, false), "GPU preview \u{b7} 1.5 s");
+        assert_eq!(gpu_text(12.4, true), "GPU render \u{b7} 12 ms");
     }
 
     /// The reason with `code`, naming `layer`, whose `compiling` ticks have run for `compiling`.
@@ -571,7 +638,7 @@ mod tests {
     /// of its codes the drag recorded.
     #[test]
     fn each_class_of_reason_says_its_phrase_and_tooltip() {
-        let classes: [(&[&str], &str, &str); 4] = [
+        let classes: [(&[&str], &str, &str); 3] = [
             (
                 &["budget-exceeded", "texture-limit", "buffer-limit"],
                 "GPU memory full",
@@ -580,27 +647,22 @@ mod tests {
                  layers, or Fit, draw on the GPU.",
             ),
             (
-                &["no-adapter", "device-lost", "pipeline-failed"],
+                &["budget-reduced"],
+                "Softer while dragging",
+                "This many layers at this zoom need more than the GPU preview holds, so the drag \
+                 is drawn on the GPU at the detail Fit shows, scaled to the view, and is sharp \
+                 again when you let go.",
+            ),
+            (
+                &["pipeline-failed"],
                 "GPU preview unavailable",
                 "The GPU preview cannot run on this graphics device, so previews are drawn on \
                  the CPU.",
             ),
-            (
-                &["not-fit"],
-                "GPU preview at Fit and 100%+",
-                "The GPU preview draws at Fit and at 100% or more; at this zoom the preview is \
-                 drawn on the CPU.",
-            ),
-            (
-                &["region-estimate", "window-estimate"],
-                "Dehaze on the CPU",
-                "Dehaze needs the haze estimate a settled frame stores for this view; until \
-                 then this drag is drawn on the CPU.",
-            ),
         ];
         for (codes, phrase, tooltip) in classes {
             for code in codes {
-                // None of these names a layer, though a Dehaze reason carries one.
+                // None of these names a layer, whichever the drag names.
                 for layer in [None, Some("Presence")] {
                     assert_eq!(
                         said(code, layer),
@@ -622,6 +684,43 @@ mod tests {
         );
     }
 
+    /// The reference renderer's class is the session's: said for the reference renderer drawing
+    /// for `no-adapter` (a device that cannot run the GPU stage, or a launch that refused it) and
+    /// for `device-lost`, and for nothing else the session can report. A gesture's tick that names
+    /// either code says nothing of its own, so the notice has one source.
+    #[test]
+    fn the_reference_renderers_notice_is_the_sessions_alone() {
+        use luxforge_core::RendererReason;
+        let reference = Some((
+            "Reference renderer".to_owned(),
+            "This graphics device cannot run the GPU renderer, or this launch turned it off, so \
+             every frame is drawn by the reference renderer on the CPU, which is slower."
+                .to_owned(),
+        ));
+        let noticed =
+            |renderer| renderer_notice(renderer).map(|notice| (notice.phrase, notice.tooltip));
+        for reason in [RendererReason::NoAdapter, RendererReason::DeviceLost] {
+            assert_eq!(
+                noticed(Renderer::reference(reason)),
+                reference,
+                "{reason:?}"
+            );
+            assert_eq!(
+                said(reason.as_str(), None),
+                None,
+                "{reason:?}: a tick says nothing of its own"
+            );
+        }
+        for renderer in [
+            Renderer::gpu(),
+            Renderer::gpu_software(),
+            Renderer::headless(),
+            Renderer::reference(RendererReason::SurfacePending),
+        ] {
+            assert_eq!(noticed(renderer), None, "{renderer:?}");
+        }
+    }
+
     /// The stack's class names the layer the reason names, by the label the recipe list gives it;
     /// a reason that names none says so in its tooltip.
     #[test]
@@ -638,7 +737,6 @@ mod tests {
             "boundary-size",
             "position-range",
             "region-outside",
-            "boundary-failed",
         ];
         for code in codes {
             assert_eq!(
@@ -662,16 +760,15 @@ mod tests {
         }
     }
 
-    /// A reason that passes within a tick or two, the preference turned off and a code the table
-    /// does not name say nothing.
+    /// A reason that passes within a tick or two or a job, and a code the table does not name, say
+    /// nothing.
     #[test]
-    fn passing_reasons_the_preference_off_and_unnamed_codes_say_nothing() {
+    fn passing_reasons_and_unnamed_codes_say_nothing() {
         for code in [
             "boundary-pending",
-            "boundary-uploading",
-            "boundary-released",
+            "source-uploading",
+            "source-missing",
             "surface-pending",
-            "preference-off",
             "unchanged",
             "unplannable",
             "a-code-of-another-day",
@@ -701,7 +798,11 @@ mod tests {
             );
         }
         // The delay is `compiling`'s alone: another reason says itself at once.
-        assert!(reason("not-fit", None, Some(ms(0))).notice().is_some());
+        assert!(
+            reason("budget-exceeded", None, Some(ms(0)))
+                .notice()
+                .is_some()
+        );
     }
 
     #[test]

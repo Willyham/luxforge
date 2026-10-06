@@ -20,14 +20,11 @@ use super::filters::{
     guided_self, reduced_frame, reduced_rect, upsample,
 };
 use crate::{
-    Cancel, Error,
+    Error,
     colour::{luma, srgb},
-    modules::{
-        Global, Parallelism, Planes, PlanesMut, Reduced, ReducedGrid, Region, SpatialUnit, Stage,
-    },
+    modules::{Global, Parallelism, Planes, PlanesMut, SpatialUnit, Stage},
     render::gpu::GpuSpatialUnit,
 };
-use std::borrow::Cow;
 
 /// The integer reduction factor per axis the base is computed on.
 pub(super) const REDUCTION: i64 = 4;
@@ -118,15 +115,13 @@ impl Clarity {
         }
     }
 
-    /// [`SpatialUnit::apply`], with the reduced source computed and, for [`Reduced::Hand`], the
-    /// tile's cells of it handed back, or read from [`Reduced::Held`] planes instead.
+    /// [`SpatialUnit::apply`], with the reduced source computed.
     fn run(
         &self,
         input: &Planes<'_>,
         output: &mut PlanesMut<'_>,
         scratch: &mut [f32],
         parallelism: Parallelism,
-        reduced: Option<Reduced<'_>>,
     ) -> Result<(), Error> {
         let rects = self.rects(input.stage(), output.region());
         let Rects {
@@ -144,36 +139,6 @@ impl Clarity {
         let reduced_geometry = Geometry::new(reduced_frame.x1, reduced_frame.y1, reduced_frame);
 
         let mut scratch = Scratch::new(scratch);
-        if let Some(Reduced::Held(planes)) = reduced {
-            // The reduced source is held, so only the output's own encoded values are computed:
-            // the residual reads them at the output's pixels and nowhere else.
-            let encoded_buffer = scratch.take(out.pixels())?;
-            let base_buffer = scratch.take(out.pixels())?;
-            let base_reduced_buffer = scratch.take(base_rect.pixels())?;
-            let mut encoded = PlaneMut::over(encoded_buffer, geometry, out)?;
-            encode(input, &mut encoded, parallelism);
-            let encoded_reduced =
-                filters::held_plane(&planes, 0, reduced_geometry, reduced_source)?;
-            let mut base_reduced =
-                PlaneMut::over(base_reduced_buffer, reduced_geometry, base_rect)?;
-            guided_self(
-                &encoded_reduced,
-                self.r_red,
-                EPS_CLARITY,
-                &mut base_reduced,
-                &mut scratch,
-                parallelism,
-            )?;
-            return self.finish(
-                input,
-                output,
-                &encoded.as_plane(),
-                &base_reduced.as_plane(),
-                PlaneMut::over(base_buffer, geometry, out)?,
-                parallelism,
-            );
-        }
-
         let encoded_buffer = scratch.take(encoded_rect.pixels())?;
         let base_buffer = scratch.take(out.pixels())?;
         let reduced_buffer = scratch.take(reduced_source.pixels())?;
@@ -185,9 +150,6 @@ impl Clarity {
 
         let mut encoded_reduced = PlaneMut::over(reduced_buffer, reduced_geometry, reduced_source)?;
         downsample(&encoded, REDUCTION, &mut encoded_reduced, parallelism);
-        if let Some(Reduced::Hand(cells)) = reduced {
-            filters::hand_back(cells, 0, &encoded_reduced.as_plane());
-        }
         let mut base_reduced = PlaneMut::over(base_reduced_buffer, reduced_geometry, base_rect)?;
         guided_self(
             &encoded_reduced.as_plane(),
@@ -298,44 +260,10 @@ impl SpatialUnit for Clarity {
         scratch: &mut [f32],
         parallelism: Parallelism,
     ) -> Result<(), Error> {
-        self.run(input, output, scratch, parallelism, None)
+        self.run(input, output, scratch, parallelism)
     }
 
-    /// The encoded luminance's 4x block means, the reduced source the base is computed from:
-    /// anchored at the stage origin and read before any coefficient, so a new amount reads the
-    /// same plane.
-    fn reduced_grid(&self) -> Option<ReducedGrid> {
-        Some(ReducedGrid {
-            key: Cow::Borrowed("presence clarity encoded luminance 4x block means"),
-            factor: REDUCTION as u32,
-            planes: 1,
-        })
-    }
-
-    fn reduced_reach(&self, output: Region, stage: Stage) -> Region {
-        let rects = self.rects(stage, output);
-        if rects.out.is_empty() {
-            return Region::EMPTY;
-        }
-        filters::grid_region(rects.reduced_source)
-    }
-
-    fn apply_reduced(
-        &self,
-        input: &Planes<'_>,
-        output: &mut PlanesMut<'_>,
-        _: Option<&Global>,
-        scratch: &mut [f32],
-        parallelism: Parallelism,
-        cancel: &Cancel,
-        reduced: Reduced<'_>,
-    ) -> Result<(), Error> {
-        cancel.check()?;
-        self.run(input, output, scratch, parallelism, Some(reduced))?;
-        cancel.check()
-    }
-
-    fn gpu(&self, _: Option<&Global>) -> Option<GpuSpatialUnit> {
+    fn gpu(&self) -> Option<GpuSpatialUnit> {
         Some(super::gpu::clarity(self))
     }
 

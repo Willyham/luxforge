@@ -81,7 +81,7 @@ An open Settings sheet reads them again. The desktop applies the theme, the canv
   - **The command line.** `luxforge-json` keeps requiring `--catalog`.
 - **Remembered workspace.** As the editor is built, before its first frame, the desktop starts its session from the stored `workspace` and `mask_overlay_colour` through one `workspace.set`, sent only when they differ from the defaults, so a launch with nothing stored sends nothing.
   - **Storing.** After the desktop adopts a `workspace.set` answer that changed any of the five remembered fields, it stores them. This covers the panel toggles, `O`, `J`, the histogram's triangles, the palette and an evidence run's own workspace steps, which store into the evidence directory.
-  - **Not remembered.** The canvas mode, the mask overlay mode, zoom and the GPU preview.
+  - **Not remembered.** The canvas mode, the mask overlay mode and zoom.
   - **Unreadable preferences.** When the preferences could not be read at launch, nothing remembered is stored that session, so the status bar is not filled with refusals.
 - **Remembered brush.** The Masks panel's brush starts from the stored `brush`, or the neutral brush. A change of size, feather or flow by key, nudge, slider, typed value or reset is stored; a reset stores the neutral numbers. Erase, Limit to colour and the colour refine belong to the stroke and are not remembered.
 - **Remembered window.**
@@ -148,7 +148,7 @@ Decided by the owner on 2026-10-04:
 - Remember panel visibility, the thirds and clipping overlays, the brush, the window's frame and the last export folder across launches, with no Settings rows of their own.
 - Add the mask overlay colour, the canvas background and a switch for automatic lens correction to General.
 - Add an interface size and a catalog location to General.
-- The GPU preview stays a per-session switch, not a preference.
+- The GPU preview stays a per-session switch, not a preference. Superseded on 2026-10-05 ([decisions](../decisions.md#gpu-first-rendering)): the switch is retired, the GPU is the renderer of record, and only `--no-gpu-render` refuses it, for a launch.
 - Export defaults (JPEG quality, Keep metadata) wait for the export work.
 
 Recorded defaults, proposals the owner can revise:

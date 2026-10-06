@@ -345,6 +345,9 @@ pub struct PixelSample {
     /// a client can tell which settings produced this value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub draft: Option<DraftStamp>,
+    /// The renderer that drew the pixel: the GPU, or the reference renderer and why the GPU did
+    /// not draw it, as a session names its renderer ([`crate::Renderer`]).
+    pub renderer: crate::Renderer,
 }
 
 /// One **input** pixel of a masked operation, which is what a mask's value-based parts are evaluated
@@ -366,6 +369,8 @@ pub struct PixelInput {
     /// The stage the masked layer receives, which is the stage `x` and `y` address.
     pub width: u32,
     pub height: u32,
+    /// The renderer that drew the pixel, as [`PixelSample::renderer`] names it.
+    pub renderer: crate::Renderer,
 }
 
 /// Which evaluated stack an analysis job should describe: the asset's current entry, one frozen
@@ -621,7 +626,7 @@ pub struct EditorService {
     read_original: RefCell<Option<source::ReadOriginal>>,
     pub(crate) pixel_reads: RefCell<pixels::PixelReads>,
     registry: Arc<ModuleRegistry>,
-    /// The budgets and the estimate store every evaluation this service plans shares: its own
+    /// The budgets every evaluation this service plans shares: its own
     /// samples and exports, and the preview and analysis jobs it hands to workers.
     render: RenderContext,
     /// This catalog's own identity, which its artifact root's manifest must name.

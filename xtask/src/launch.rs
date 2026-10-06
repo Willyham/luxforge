@@ -244,11 +244,94 @@ pub const MODE: &str = if cfg!(target_os = "macos") {
 /// run cannot flash over whatever the owner is doing. Renderer readbacks are unaffected.
 const HIDDEN_WINDOW: &str = "--hidden-window";
 
+/// The editor's diagnostic that prints the graphics adapters wgpu offers its renderer and exits,
+/// before any window.
+const GPU_ADAPTERS: &str = "--gpu-adapters";
+
+/// The editor's switch that draws through the GPU stage on a host whose only graphics adapter is a
+/// software one (lavapipe), before the software adapter is adopted.
+const SOFTWARE_ADAPTER: &str = "--software-adapter";
+
+/// Every later launch of this run passes [`SOFTWARE_ADAPTER`] ([`draw_on_a_software_adapter`]).
+static SOFTWARE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Have every later editor launch of this run pass `--software-adapter`, as `smoke
+/// --editor-software-adapter` asks: the CI's software-adapter lane runs its journeys through the GPU
+/// stage on lavapipe so. The editor ignores it on a host with a hardware adapter.
+pub fn draw_on_a_software_adapter() {
+    SOFTWARE.store(true, std::sync::atomic::Ordering::Release);
+}
+
+/// The background bundle's identifier, which names the per-application caches macOS keeps for
+/// it, Metal's compiled shaders among them. Evidence of a cold shader cache sets a fresh suffix
+/// through [`BUNDLE_SUFFIX_ENV`], whose caches start empty, without touching any other cache.
+#[cfg(target_os = "macos")]
+const BUNDLE_IDENTIFIER: &str = "org.luxforge.background-test";
+/// The variable that appends `.<suffix>` to [`BUNDLE_IDENTIFIER`]: letters, digits and hyphens.
+#[cfg(target_os = "macos")]
+const BUNDLE_SUFFIX_ENV: &str = "LUXFORGE_BACKGROUND_BUNDLE_SUFFIX";
+
+/// The background bundle's identifier for this run: [`BUNDLE_IDENTIFIER`], with the suffix
+/// [`BUNDLE_SUFFIX_ENV`] names when it is set.
+#[cfg(target_os = "macos")]
+fn bundle_identifier() -> Result<String> {
+    match std::env::var(BUNDLE_SUFFIX_ENV) {
+        Err(_) => Ok(BUNDLE_IDENTIFIER.to_owned()),
+        Ok(suffix) => {
+            ensure(
+                !suffix.is_empty()
+                    && suffix
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-'),
+                format!("{BUNDLE_SUFFIX_ENV} must be letters, digits and hyphens: {suffix:?}"),
+            )?;
+            Ok(format!("{BUNDLE_IDENTIFIER}.{suffix}"))
+        }
+    }
+}
+
+/// The graphics adapters the built release editor sees, one record each as `--gpu-adapters` prints
+/// them: the adapters wgpu offers the backends its renderer chooses among (`WGPU_BACKEND` when
+/// set), with each one's backend, device type, vendor, device and driver. `None` while no release
+/// editor is built. The editor opens no window for it, and runs from a background bundle as every
+/// other automated launch does.
+pub fn gpu_adapters(root: &Path) -> Result<Option<Vec<Value>>> {
+    let bin = crate::binary(root)?;
+    if !bin.is_file() {
+        return Ok(None);
+    }
+    let launch = Background::new(&bin)?;
+    let out = Command::new(&launch.executable)
+        .arg(GPU_ADAPTERS)
+        .current_dir(root)
+        .stdin(std::process::Stdio::null())
+        .output()?;
+    ensure(
+        out.status.success(),
+        format!(
+            "{} {GPU_ADAPTERS} exited {}: {}",
+            bin.display(),
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    )?;
+    String::from_utf8(out.stdout)?
+        .lines()
+        .map(|line| Ok(serde_json::from_str(line)?))
+        .collect::<Result<Vec<Value>>>()
+        .map(Some)
+}
+
 /// The arguments an automated editor launch runs with: the runner's own, behind the hidden-window
-/// flag. Every harness launch of the editor goes through this, so the flag has one home and the
-/// recorded command array shows exactly what ran.
+/// flag and, in a run that asked for it, the software-adapter switch
+/// ([`draw_on_a_software_adapter`]). Every harness launch of the editor goes through this, so the
+/// flags have one home and the recorded command array shows exactly what ran.
 pub fn editor_args(args: &[OsString]) -> Vec<OsString> {
+    let software = SOFTWARE
+        .load(std::sync::atomic::Ordering::Acquire)
+        .then(|| OsString::from(SOFTWARE_ADAPTER));
     std::iter::once(HIDDEN_WINDOW.into())
+        .chain(software)
         .chain(args.iter().cloned())
         .collect()
 }
@@ -303,18 +386,21 @@ impl Background {
             fs::create_dir_all(contents.join("MacOS"))?;
             let executable = contents.join("MacOS/luxforge-test");
             fs::copy(binary, &executable)?;
+            let identifier = bundle_identifier()?;
             fs::write(
                 contents.join("Info.plist"),
-                r#"<?xml version="1.0" encoding="UTF-8"?>
+                format!(
+                    r#"<?xml version="1.0" encoding="UTF-8"?>
 <plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>org.luxforge.background-test</string>
+<key>CFBundleIdentifier</key><string>{identifier}</string>
 <key>CFBundleName</key><string>Luxforge Test</string>
 <key>CFBundleExecutable</key><string>luxforge-test</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>LSBackgroundOnly</key><true/>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>
-"#,
+"#
+                ),
             )?;
             Ok(Self {
                 executable,

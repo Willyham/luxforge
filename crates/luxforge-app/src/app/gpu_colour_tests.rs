@@ -16,7 +16,7 @@
 //! A test with no adapter prints that it was skipped and asserts nothing: the skip is the report,
 //! and `cargo test` counting it as passed does not make it GPU evidence.
 use super::gpu_plan::{program, surface_plan};
-use super::gpu_qualification::{Stream, codes, corpus_at_fit, figures, grid, worst};
+use super::gpu_qualification::{Stream, codes, figures, grid, worst};
 use luxforge_core::{
     BASIC_EFFECT, CURVE_EFFECT, CompileStage, EFFECT_FORMAT, GPU_PROGRAMS, GpuAnswer,
     GpuPlanRequest, GpuProgramKind, Layer, MIXER_EFFECT, ModuleRegistry, PointwiseColor,
@@ -973,6 +973,7 @@ fn gpu_colour_transcendental_precision_is_measured() {
                 ..GpuProgram::new("probe", PROBE)
             })],
             region: None,
+            lights: Vec::new(),
         };
         let output = qualifier.evaluate(&plan).expect("a probe readback");
         let mut channels = [Precision::default(), Precision::default()];
@@ -1006,37 +1007,4 @@ fn gpu_colour_transcendental_precision_is_measured() {
         failures.is_empty(),
         "non-finite where the reference is finite: {failures:?}"
     );
-}
-
-// ---- The corpus at Fit ------------------------------------------------------------------------
-
-/// The corpus's colour families, which the colour programs are qualified on, and its geometry
-/// families, a straightened crop and a lens or perspective warp under a Basic edit, which qualify
-/// the geometry tail.
-const COLOUR_FAMILIES: [&str; 7] = [
-    "basic",
-    "tone-curve",
-    "mixer",
-    "vignette",
-    "colour-stack",
-    "crop",
-    "lens-perspective",
-];
-
-/// The qualification corpus's colour recipes at Fit through the shared harness
-/// ([`corpus_at_fit`]): the CPU frame the preview worker renders against the GPU frame of the same
-/// plan, written as PNG pairs with the `cargo xtask preview-error` command that judges each.
-///
-/// ```sh
-/// LUXFORGE_GPU_CORPUS_OUTPUT=/tmp/new-dir \
-/// LUXFORGE_GENERATED_FIXTURES=fixtures/generated \
-/// LUXFORGE_RAW_MANIFEST=/path/to/raw-manifest.json \
-/// cargo test -p luxforge-app gpu_colour_corpus -- --ignored --nocapture
-/// ```
-#[test]
-#[ignore = "the GPU preview corpus at Fit: set LUXFORGE_GPU_CORPUS_OUTPUT to a new directory, \
-            LUXFORGE_GENERATED_FIXTURES to the generated JPEGs and, for the RAWs, \
-            LUXFORGE_RAW_MANIFEST"]
-fn gpu_colour_corpus_at_fit() {
-    corpus_at_fit("gpu_colour_corpus_at_fit", &COLOUR_FAMILIES);
 }

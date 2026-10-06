@@ -771,7 +771,9 @@ impl Editor {
             // standing for the one being opened.
             self.presentation.withdraw();
         }
-        let proxy = self.proxy_bounds();
+        // Its frame is drawn as any open's is: at the display bounds, its GPU picture at rest
+        // planned at the view.
+        let proxy = self.drawn();
         tasks::photograph_task(
             self.owner.clone(),
             self.client,
@@ -1014,8 +1016,8 @@ impl Editor {
     }
 
     /// Nothing developing picks or the set asked for is in flight: no plan, Develop, set read or
-    /// move, and, with a photograph open in Develop, its newest frame on screen with its exact
-    /// phase. What an evidence step settles on.
+    /// move, and, with a photograph open in Develop, its newest requested frame on screen. What an
+    /// evidence step settles on; a capture then waits for the photograph's actual GPU draw.
     pub(crate) fn develop_quiet(&self) -> bool {
         let state = &self.develop.state;
         !state.planning
@@ -1027,7 +1029,6 @@ impl Editor {
             && (self.select_shown()
                 || self.document.state.is_none()
                 || (!self.presentation.queue.is_busy()
-                    && self.presentation.held_by_proxy.is_none()
                     && self.presentation.presented_generation
                         == self.presentation.preview_generation))
     }

@@ -7,13 +7,14 @@
   "tasks": [
     {
       "id": "TASK-001",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "description": "Build the reference comparison harness, measure the tolerance per output kind on the corpus, and rewrite the rules and testing guidance for reference-buffer correctness.",
       "extra_context": [
         "The owner decided on 2026-10-04 that correctness is a declared tolerance against the CPU reference render for every output kind (docs/decisions.md, GPU-first rendering). Before any stage lands, one harness must render a stack on the reference and on the GPU and report, per output kind, the error against the proposed limits in the design: the preview error limit for the picture, 0.1% of the output pixel count for histogram bins and clipping counts, the display limit per pixel for export, equality by construction for samples.",
         "Start from the existing qualification machinery (crates/luxforge-core/src/render/gpu qualification, the corpus and the error limit in docs/design/gpu-preview.md, xtask gpu_qualification) and extend it to the histogram reduction, export and the at-rest picture. The harness runs natively; on CI it runs the reference renderer's own tests and, on Linux, the software Vulkan adapter when TASK-008 lands.",
-        "Docs to rewrite with the measured limits: performance rule 4's exception and rule 11, rule 14's cache list, the review checklist's exactness items, docs/engineering/development.md's evidence rules (exact-buffer tests become reference-buffer tests with a declared tolerance), docs/design/architecture.md's renderer section. AGENTS.md's pillars already state the decision; keep them in step."
+        "Docs to rewrite with the measured limits: performance rule 4's exception and rule 11, rule 14's cache list, the review checklist's exactness items, docs/engineering/development.md's evidence rules (exact-buffer tests become reference-buffer tests with a declared tolerance), docs/design/architecture.md's renderer section. AGENTS.md's pillars already state the decision; keep them in step.",
+        "Delivered 2026-10-05: `cargo xtask gpu-qualification` is the release gate in the `rendered` tier (docs/engineering/development.md); its first run measured the picture on the whole corpus at Fit, 33%, 50% and 100% (docs/specs/performance.md, GPU qualification against the reference), and it passes under the recorded default (the picture in motion held to the frame it settles to on all 1,000 cells; the picture at rest, histogram, sample and export reported as not rendered by the GPU yet) and fails with `--hold-motion-to-reference` on 481 of 750 cells below 100%: artifacts/gpu-first/task-001/gq-default and gq-hold on the integration worktree, both at build 0961d235."
       ],
       "context_links": [
         {
@@ -78,13 +79,14 @@
     },
     {
       "id": "TASK-002",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "description": "Draw a drag on the GPU at percentage zooms below 100%, planned at the displayed-size proxy exactly as Fit is (stage 1).",
       "extra_context": [
         "docs/design/gpu-preview.md: below 100% a percentage view plans no GPU preview and the status bar names `not-fit` (crates/luxforge-app/src/app/preview.rs, the percentage branch of the plan request). The CPU path then renders the displayed-size proxy of the whole stage, up to 8 MP, on every tick: roughly 80 to 300 ms at 33% of 60 MP with Detail, Presence and masks, estimated from the Fit figures with the preview off.",
         "The Fit path already plans the preview at the display-bounded proxy and holds its boundary from the proxy phase; a percentage below 100% differs only in the proxy's size and the view's placement. Budgets, limits, the error limit and the other fallback reasons stay; `not-fit` goes.",
-        "Qualify at the percentage view's proxy size with the existing corpus (docs/design/gpu-preview.md, Qualifying a program)."
+        "Qualify at the percentage view's proxy size with the existing corpus (docs/design/gpu-preview.md, Qualifying a program).",
+        "Delivered 2026-10-04: drags at 50% and 33% draw on the GPU from the displayed-size proxy (the gpu-preview-zoom scenario, artifacts/gpu-first/task-002/task002-zoom-2 on the integration worktree), and the release gate's first run holds the drag's frame at 33% and 50% within its class's limit against the frame it stands in for on every measured cell (artifacts/gpu-first/task-001/gq-full-2/report.json); the zoom fallback reason is gone."
       ],
       "context_links": [
         {
@@ -148,7 +150,7 @@
     },
     {
       "id": "TASK-003",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002"
@@ -158,7 +160,9 @@
         "Today a commit requests a preview job whose proxy phase renders the Fit proxy on the CPU and whose exact phase renders the whole frame; the GPU draws only drags, over a boundary held from the CPU proxy (docs/design/gpu-preview.md, The held input boundary; docs/design/instant-preview.md, Fit proxy and exact phases). With the GPU as the renderer of record the picture at rest is the GPU's own frame of the committed stack, and the CPU proxy phase, the restoration-prefix cache (crates/luxforge-core/src/preview/restoration.rs) and Detail's settled-from-exact display (FitSettle::Exact, downscale_raster) are not needed on this path.",
         "The at-rest picture must meet the display limit against the reference reduced to the view's size, on the corpus, at Fit, below 100% and at 100%; the label vocabulary changes: nothing at rest is called approximate, and the status bar's render figure is the GPU frame's.",
         "Compare and history return draw the retained content on the GPU in one frame, so no retained-frame re-adoption is needed. The settle dissolve keeps its form, between two GPU frames.",
-        "Detail's exact-settle progress bar (the Detail plan's in-progress task) loses its subject on this path; keep its machinery for export and any job longer than a second, or retire it with the exact phase in stage 5, and say which in the Detail design."
+        "Detail's exact-settle progress bar (the Detail plan's in-progress task) loses its subject on this path; keep its machinery for export and any job longer than a second, or retire it with the exact phase in stage 5, and say which in the Detail design.",
+        "Recorded default since the gate's first run (2026-10-04, docs/design/gpu-first.md, Proposals with recorded defaults): a frame processed over a source reduced to the view's size misses the limit against the reference on 475 of 744 cells below 100%, so the picture at rest at Fit and below 100% is process-first, the stack at full resolution in tiles reduced to the view's size, which met every limit; the source's reduction (a box pass over the GPU-resident source, or its mip chain) serves the drag's boundary, whose frame is held to the at-rest frame it settles to.",
+        "Delivered 2026-10-05: with no gesture open the GPU draws the committed stack after a commit, a history selection, a preset, Compare and an open, its view plan at once and at Fit and below 100% its tiles at full resolution reduced to the view, dissolving in; every boundary is derived on the GPU from the source it holds; the proxy phase, the restoration-prefix cache and Detail's settled-from-exact display are gone. The release gate draws the editor's own frames and gates the picture at rest within its limit on all 1,000 cells; the picture in motion is reported, past a limit on 481 of 750 cells below 100% against either the picture at rest or the reference (artifacts/gpu-first/task-003/gate in the lane's worktree), the owner's open question in tasks/project/product-decisions.json TASK-008."
       ],
       "context_links": [
         {
@@ -173,7 +177,7 @@
           "label": "GPU previews design",
           "target": "docs/design/gpu-preview.md",
           "relevance": "The stage, programs, error limit and budgets the renderer of record grows from.",
-          "locator": "The held input boundary"
+          "locator": "The GPU source"
         },
         {
           "kind": "file",
@@ -191,8 +195,9 @@
         {
           "kind": "file",
           "label": "Restoration prefix cache",
-          "target": "crates/luxforge-core/src/render/restoration.rs",
-          "relevance": "The cache this stage removes from the preview path."
+          "target": "docs/design/detail.md",
+          "relevance": "The settled Fit and restoration-prefix cache contracts this stage retires, recorded there.",
+          "locator": "Previews at Fit and percentage zoom"
         },
         {
           "kind": "file",
@@ -232,7 +237,7 @@
     },
     {
       "id": "TASK-004",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-003"
@@ -241,7 +246,9 @@
       "extra_context": [
         "Today every non-interactive job runs the exact phase for the histogram (crates/luxforge-core/src/preview/worker.rs; crates/luxforge-core/src/analysis.rs reduces the exact frame), and a 120 ms pause in a drag starts one too (crates/luxforge-app/src/app/preview.rs `quiet_refine`). Estimated at about 1 s at 24 MP and 3 s at 60 MP with Detail, Presence and three masked layers, per commit and per pause.",
         "On the GPU the counts are a reduction over full-resolution tiles of the stack rendered with halos, inside the GPU budget, run after each commit and release; during motion the counts come from the displayed frame and the inspector says updating, as the accepted baseline already allows (docs/decisions.md, Interactive previews at 100%). The report keeps its shape, identity and the owner's cache so an API client's `analysis.request` is a hit.",
-        "Tolerance: the summed absolute bin difference and each clipping count within 0.1% of the output pixel count against the reference, measured by the harness on the corpus; the quiet timer stays for 100% region refinement only if stage 5 still needs it."
+        "Tolerance: the summed absolute bin difference and each clipping count within 0.1% of the output pixel count against the reference, measured by the harness on the corpus; the quiet timer stays for 100% region refinement only if stage 5 still needs it.",
+        "The full-stage tiles stage 2's at-rest picture renders (TASK-003, process-first) are the reduction's renderer: the counts are one more reduction over the same tiles, run after each commit and release.",
+        "Delivered 2026-10-05: a committed stack the GPU presents is counted from its own tiles at full resolution (at 100% and above the same tiles drawn for their counts alone) with no CPU frame rendered or reduced, the counts reaching the owner's analysis cache in the report's shape; during motion the counts come from the tick's output, labelled updating; the quiet-settle whole-frame render is gone, a pause refining only a CPU-drawn draft's 100% region. The owner set the tolerance on 2026-10-05: the earth mover's distance at most 0.25 code per channel and luminance and each clipping count within 0.1%, within it on all 250 corpus stacks (largest 0.13 code; artifacts/gpu-first/task-004/gate-4 in the lane's worktree). The reference renderer still renders the whole frame for an open, while the stack's programs compile, for Compare's After side and for a stack the GPU refuses, each named."
       ],
       "context_links": [
         {
@@ -306,7 +313,7 @@
     },
     {
       "id": "TASK-005",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
@@ -314,7 +321,8 @@
       "extra_context": [
         "Dehaze's atmospheric light is prepared from a 1/16-per-side block reduction of its input stage (crates/luxforge-core/src/modules/presence/dehaze.rs `prepare`); Clarity's reduced grid is a 4x block grid of encoded luminance. Both are anchored at the stage origin and independent of the unit's amount. The CPU keeps them in the estimate store (8 entries) and the reduced-grid store (64 MiB) and falls back when they are missing: `EstimateAfterSpatial` (crates/luxforge-core/src/render/compiled.rs), `region-estimate` and `window-estimate` (crates/luxforge-core/src/render/gpu/preview.rs).",
         "On the GPU the drafted prefix's reduced stage is a mip-level render of the colour run over the reduced source planes, a fraction of a megapixel at 60 MP, computed per frame; the light and the grid follow from it on the GPU. For a Detail prefix the reduced stage is Detail's output reduced, which the design of Detail measured to barely move the light; the harness measures it against the reference's exact light on the corpus, and the display limit decides.",
-        "With estimates per frame the stores, their keys, their eviction tests and the three fallbacks go; the window planner no longer refuses the cut behind an estimating unit."
+        "With estimates per frame the stores, their keys, their eviction tests and the three fallbacks go; the window planner no longer refuses the cut behind an estimating unit.",
+        "Delivered 2026-10-05: every view's plan and the desktop's tile worker compute Dehaze's light on the GPU per frame from the full-resolution source through light links run before the chain; the GPU estimate plumbing, the region-estimate and window-estimate fallbacks, EstimateAfterSpatial and the Dehaze notice class are gone. The release gate holds the picture at rest within its limit on all 1,000 cells and every export to the reference export on all 250 stacks, all drawn on the GPU (artifacts/gpu-first/task-005 in the lane's worktree). Not delivered: the exact-prefix sweep the recorded default asks for at rest, so a light behind Detail or an earlier Presence layer is the stand-in light with those layers left out, at rest, in motion and in export (within limits on the corpus; about 1,000 to 1,500 lines to build, an owner choice), and the CPU estimate and reduced-grid stores, which the reference renderer's exact and CPU-tile paths still read until TASK-004 and TASK-010 retire them."
       ],
       "context_links": [
         {
@@ -389,7 +397,7 @@
     },
     {
       "id": "TASK-006",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003",
         "TASK-005"
@@ -398,7 +406,8 @@
       "extra_context": [
         "Today a sample through a spatial layer is planned on the owner and evaluated by the point worker through PointTiles (crates/luxforge-core/src/render/spatial.rs), serially, with deferred pixel-read rounds for mutations (crates/luxforge-core/src/editor/pixels.rs, crates/luxforge-core/src/api/owner/point.rs). On the GPU a sample is one tile of the stack rendered at full resolution with its halos and one pixel read back; a pick's 25 points share one tile set. The owner still plans in O(layers) and hands the read to a GPU worker that owns a device queue; the answer carries the same identity fields.",
         "The sample equals the byte on screen at that pixel by construction when the view shows that tile at 100%, and otherwise the rendered tile's byte; against the reference it is within the display limit. The raw-panel and histogram scenarios already tie their pixels through `render.sample` as api steps.",
-        "Retire PointTiles, the point worker, the parked pixel-read rounds and the point-sample rows of the known costs; rule 4's exception becomes a sentence."
+        "Retire PointTiles, the point worker, the parked pixel-read rounds and the point-sample rows of the known costs; rule 4's exception becomes a sentence.",
+        "Delivered 2026-10-05: render.sample, the neutral pick, mask.sample-input, a colour-limited stroke's seed and edit.set-pixel are planned on the owner and read by its tile service, the desktop's GPU tile worker or the reference for a host without one, each answer naming its renderer; the point worker, PointTiles and the per-read round loop are deleted. Every corpus sample is within its limit and equal to the byte on screen, 6,250 of 6,250 on 250 stacks (artifacts/gpu-first/task-006/gate-merged in the lane's worktree). A mutation parks once per pixel its plans read, at most four, a proposal in docs/design/gpu-first.md beside the renderer field, cross-machine seeds and the RAW neutral patch on the owner. The sample timing is TASK-011's."
       ],
       "context_links": [
         {
@@ -410,16 +419,17 @@
         },
         {
           "kind": "file",
-          "label": "Point tiles",
+          "label": "Spatial tiles",
           "target": "crates/luxforge-core/src/render/spatial.rs",
-          "relevance": "To retire.",
-          "locator": "PointTiles"
+          "relevance": "Where the point-tile cache was retired; a read through a spatial layer is the reference's whole frame of it.",
+          "locator": "run_tile"
         },
         {
           "kind": "file",
-          "label": "Point worker",
-          "target": "crates/luxforge-core/src/api/owner/point.rs",
-          "relevance": "To retire."
+          "label": "Tile service",
+          "target": "crates/luxforge-core/src/tiles.rs",
+          "relevance": "Replaces the point worker, which is retired: every pixel read is a call to it.",
+          "locator": "TileCall"
         },
         {
           "kind": "file",
@@ -465,7 +475,7 @@
     },
     {
       "id": "TASK-007",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003",
         "TASK-005"
@@ -473,7 +483,8 @@
       "description": "Export through GPU tiles: export.jpeg renders full-resolution tiles on the GPU and encodes them, with the reference renderer as the export for machines without a GPU and as an explicit reference option (stage 4).",
       "extra_context": [
         "docs/design/export.md: the exporter renders the exact frame on the CPU and encodes it. On the GPU the stack renders in full-resolution tiles with halos inside the GPU budget and the tiles feed the encoder in order; the job, its progress, cancellation and the sidecar identity keep their shapes. On one machine and driver the export is identical run to run; across machines a last-digit difference is accepted (owner, 2026-10-04).",
-        "The reference export stays: the default on a machine without a usable GPU, and an explicit option (`reference: true`) a test or a person can ask for. The harness compares a GPU export with a reference export per corpus stack within the display limit."
+        "The reference export stays: the default on a machine without a usable GPU, and an explicit option (`reference: true`) a test or a person can ask for. The harness compares a GPU export with a reference export per corpus stack within the display limit.",
+        "Delivered 2026-10-05: export.jpeg streams the GPU's bands into the encoder through the owner's tile service, the reference renders when asked, without a GPU provider or when the provider stops part-way (the export starts again from nothing), and the result names the renderer and its reason; the release gate's export kind is within its limit on all 250 corpus stacks and byte-identical on a second device, and the export and no-gpu-render scenarios pass (artifacts/gpu-first/task-007 in the lane's worktree). The export timing at 24 and 60 MP is TASK-011's."
       ],
       "context_links": [
         {
@@ -531,14 +542,17 @@
     },
     {
       "id": "TASK-008",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001"
       ],
       "description": "Make the renderer of record portable and testable without a native GPU: a software Vulkan adapter for Linux CI journeys, the reference renderer as the no-GPU fallback with a notice, and the native checks Windows and Linux need.",
       "extra_context": [
         "The pillars require Windows and Linux portability and distinguish VM functional checks from native GPU evidence. wgpu selects a software adapter (lavapipe) on Linux when no device is present; macOS has no software Metal, so a macOS VM proves the reference renderer and the owner thread, not the GPU.",
-        "A machine whose adapter is missing, refused or fails compilation gets the reference renderer: whole frames, slower, named in the status bar and the API's session; nothing silently approximates. CI runs the reference tests and, on Linux, the rendered journeys through the software adapter; the development guide's CI section records exactly what each lane proves."
+        "A machine whose adapter is missing, refused or fails compilation gets the reference renderer: whole frames, slower, named in the status bar and the API's session; nothing silently approximates. CI runs the reference tests and, on Linux, the rendered journeys through the software adapter; the development guide's CI section records exactly what each lane proves.",
+        "On the M4 (2026-10-05): the forced `--no-gpu-render` launch shows the reference renderer's notice in the status bar and `session.state`'s `renderer` field, every frame is the CPU path's with the reason recorded, and the no-gpu-render scenario and tests prove it (artifacts/gpu-first/task-008 on the integration worktree); the development guide states what each lane and machine proves. The Linux no-adapter and lavapipe lanes are configured in .github/workflows/check.yml but unproven until the owner pushes: a configured step is not a passing result, so the first acceptance criterion waits on a hosted run.",
+        "Owner, 2026-10-05: before the reference renderer, a session with no usable hardware adapter tries the platform's software adapter (lavapipe on Linux, WARP on Windows), adopted only once measured on real machines as fast enough that dragging is not badly laggy (docs/decisions.md, GPU-first rendering). Measure Fit and 100% drags of a pointwise and a Detail and Presence stack at 24 MP against the whole reference frame per tick and the 33 ms frame a laggy drag passes, on a Linux machine or VM without a GPU and, if one is available, a Windows one.",
+        "Measured and decided 2026-10-06: lavapipe misses the drag thresholds (docs/specs/performance.md, Software adapters), so the fallback is built behind --software-adapter and off by default, and a session without a GPU keeps the CPU display-sized proxy for drags (docs/decisions.md, GPU-first rendering)."
       ],
       "context_links": [
         {
@@ -589,14 +603,15 @@
     },
     {
       "id": "TASK-009",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
       "description": "Warm the GPU program set in the background at launch and open, so the first picture never waits on a cold shader cache, with the reference renderer labelled until then.",
       "extra_context": [
         "After an update a Presence drag's sequences took seconds to compile on a cold Metal cache and drags took the CPU path naming `compiling` (docs/specs/performance.md, Presence and Detail sequences in the editor). With the GPU as the renderer of record the picture at rest would wait on the same compilation.",
-        "Warm the programs the open stack needs first, then the rest, on the GPU compile thread, with the reference frame on screen and labelled until the GPU frame replaces it; record the warm-up's duration in the Performance section and the events."
+        "Warm the programs the open stack needs first, then the rest, on the GPU compile thread, with the reference frame on screen and labelled until the GPU frame replaces it; record the warm-up's duration in the Performance section and the events.",
+        "Delivered 2026-10-05: each committed job compiles the picture on screen first, then the open stack's drags, then every module's first drag, Detail and Presence included; while the picture at rest compiles the reference frame is on screen and the status bar says Preparing GPU render; the warm-up is listed on the activity board as gpu.warm and recorded as the gpu_warm_up event. On a fresh bundle's Metal cache the first warm-up took 1.53 s and the picture at rest's own programs 41 ms (docs/specs/performance.md, Warming at launch and open; the system compiler cache was not cleared). A release that changes which units a layer uses still compiles one link of its picture at rest, recorded in docs/design/gpu-first.md as a proposal with a default."
       ],
       "context_links": [
         {
@@ -660,7 +675,10 @@
       "extra_context": [
         "What remains of crates/luxforge-core/src/render after stages 2 to 4 is the whole-frame reference renderer (compile, one pass per segment, spatial tiles for memory alone) and the geometry mapping the owner uses for picks and crops. The proxy and exact phases, the windowed proxy and region paths, the restoration-prefix cache, PointTiles and the settle machinery in the preview worker are deleted with their tests; the reference keeps its exactness tests against frozen fixtures.",
         "Docs to rewrite: architecture (layout and limits), performance rules (rules 4, 11, 14 and the known costs and anti-patterns), instant previews (now the GPU's contract), Detail, Presence and the user guide's rendering text. The Detail plan's open measurement of the settled Fit and the prefix cache was cancelled in favour of this plan's measurement.",
-        "Keep the diagnostics the stages added: the fallback notice, the warm-up record, the reference option."
+        "Keep the diagnostics the stages added: the fallback notice, the warm-up record, the reference option.",
+        "Carried from TASK-005 (2026-10-05): delete the CPU estimate store and the reduced-grid store with their keys, eviction tests, budgets.reduced_planes and the one-spatial-entry rule once the exact phase and the CPU tiles leave production; the test helper stack(.., stored) in gpu_tiles_worker_tests fills the estimate store and goes with it.",
+        "Owner, 2026-10-06: keep the CPU proxy phase, ProxyCache and the source proxy builders as the drag path of a session without a GPU only (no adapter, device lost, --no-gpu-render); the region, settle, refine and store machinery still goes.",
+        "Delivered 2026-10-06, the rendered tier passing at 55c42f38 (52 checks, the release gate on the whole 261-stack corpus): the GPU paths for RAW white balance, geometry-only stacks, colour in Detail's stage before a resample (every one of the 3,072 stacks the panels build plans on the GPU) and the softer 100% frame past the budget; the crop stage on the GPU; the desktop asking the reference for whole frames only, a refused tick held or drawn by the reference one frame at a time; the region, settle, refine and quiet machinery, the CPU window planner, the estimate and reduced-grid stores and the gpu_preview preference deleted; the input grid from the restoration prefix's whole frame; the no-GPU session's CPU proxy isolated in crate::cpu_proxy and app/cpu_proxy.rs behind the cpu-proxy rule; render outside render/gpu 29,850 to 23,972 lines. The release gate passes on the whole 261-stack corpus. The status waits on TASK-008, whose hosted lanes are unproven until the owner pushes."
       ],
       "context_links": [
         {
@@ -724,7 +742,8 @@
       "description": "Qualify and measure the GPU-first editor on a quiet host: the corpus comparison per output kind as the release gate, and the latencies against the 2026-10-04 baseline.",
       "extra_context": [
         "Rule 13: release build, quiet host, 30 samples where a distribution is claimed, load recorded around every run. Measure: a tick and a commit on the 16 MP Air 2S stack of the design at Fit, 33% and 100%; the histogram after a commit; a three-segment sample warm and cold; an export at 24 and 60 MP; a cold-cache first picture; Compare toggle; a RAW white-balance release. Compare each with the baseline table in the design.",
-        "Run the harness on the M4 and on any Windows or Linux machine with a GPU the owner supplies; record what each machine proved. Update docs/specs/performance.md, the known costs, the roadmap and feature status; delete this plan when the outcome is recorded."
+        "Run the harness on the M4 and on any Windows or Linux machine with a GPU the owner supplies; record what each machine proved. Update docs/specs/performance.md, the known costs, the roadmap and feature status; delete this plan when the outcome is recorded.",
+        "Delivered 2026-10-06 on the M4 (source 54d910a4, release, quiet host, one-minute load 2.3 to 4.6 at the starts of the runs quoted; docs/specs/performance.md 'GPU-first against the 2026-10-04 baseline', the baseline table's Measured column in docs/design/gpu-first.md). The release gate was not run again: it passed on all 261 stacks at 55c42f38 inside verify --tier rendered. Met: every drag tick on the GPU within a display frame on the Air 2S under Detail, Presence and a full Basic layer at Fit, 33% and 100% (9.0 / 9.2 to 9.6 ms p50 / p95, 30 each), under Dehaze at 24 and 60 MP at Fit and 100% (8.7 to 9.0 / 9.1 to 9.4 ms), a RAW white-balance drag (8.5 / 9.0 ms) and its release (redeveloped picture 133.8 / 141.8 ms); a commit's frame at once (9.8 ms) and its picture at rest and counts as soon as the reference renderer's on the Air 2S and at 24 MP (0.82 and 0.65 s against its 0.79 and 0.67 s); a history return 9 ms and Compare's exit 19 to 21 ms to the frame; a sample through three spatial segments 85.4 / 91.7 ms warm (target 100 ms), 157 to 164 ms first on an empty Metal cache. Missed: the picture at rest and counts at 60 MP (5.6 to 5.7 s against the reference's 1.7 s) and over a masked Presence layer (15 to 17 s against 1.3 s), tiles of 512 and 256 px; a heavy GPU export (10.2 to 10.5 s against 2.1 to 2.2 s at 60 MP, 0.94 to 0.97 s against 0.76 to 0.81 s at 24 MP); a stroke over three masked Presence layers at 100% on the Air 2S (p95 23.7 ms). Idle memory does not grow without captures; the 20 MB a capture is the window readback. editor-latency refuses runs with a held tick (masked drag creating its layer, the tick after a RAW white-balance release), so those were paired from events. verify --tier timing passed but every timing component started above the 8.0 load threshold (its own check), so they were run again alone: slider, settled histogram, burst and memory targets pass; idle CPU (1.43%), launch (1.89 s p95) and uncached 24 MP open (1.11 s p95) miss. Windows and Linux not measured. Evidence under target/task011 in the TASK-011 worktree."
       ],
       "context_links": [
         {

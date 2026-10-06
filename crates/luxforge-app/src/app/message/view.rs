@@ -43,8 +43,6 @@ pub(crate) enum ViewMessage {
     ToggleThirds,
     /// Show or hide the image-information overlay through the owner's workspace preference.
     ToggleInformation,
-    /// Turn the GPU preview off or on; the owner holds the preference.
-    ToggleGpuPreview,
     /// Enter the pointer mode or a module's canvas mode.
     SetMode(String),
     /// A workspace change returned the owner's session.

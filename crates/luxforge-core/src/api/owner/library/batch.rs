@@ -9,8 +9,9 @@
 //!   announces it.
 //! - **Export**: each photograph's current entry planned on the owner as `export.jpeg` plans it,
 //!   then rendered, encoded and published on the worker through the export's own steps
-//!   ([`export::write`]), one photograph's frame at a time, into the chosen folder under the export's
-//!   naming rule; each written file is announced as a single export's is.
+//!   ([`export::write`]), streamed through the owner's tile service with the same reference
+//!   fallback, one photograph at a time, into the chosen folder under the export's naming rule;
+//!   each written file is announced as a single export's is.
 //!
 //! A photograph whose stack needs a prepared source is prepared through the owner's one preparation
 //! path first, as a client's request would be, and the worker waits for that off the owner. The
@@ -164,7 +165,13 @@ pub(in crate::api) fn batch_export(
     let assets = targets::assets(&owner.service, &params.targets, || {
         selected(owner, call.client)
     })?;
-    let keep_metadata = params.keep_metadata.unwrap_or(false);
+    let options = export::Options {
+        keep_metadata: params.keep_metadata.unwrap_or(false),
+        pixels_per_inch: None,
+        reference: false,
+    };
+    // Each photograph streams through the owner's tile service as `export.jpeg`'s job does.
+    let tiles = Arc::clone(&owner.tiles);
     let (client, origin) = (call.client, call.origin.clone());
     #[cfg(test)]
     let hold = owner.export_hold.clone();
@@ -216,8 +223,8 @@ pub(in crate::api) fn batch_export(
                     export::write(
                         *plan,
                         &destination,
-                        keep_metadata,
-                        None,
+                        options,
+                        tiles.as_ref(),
                         job.control,
                         &phase,
                         &mut |fraction| progress.within(fraction),

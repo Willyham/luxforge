@@ -1,4 +1,5 @@
-//! Detail's real editor journeys: generated controls, exact-derived Fit and percentage refinement.
+//! Detail's real editor journeys: generated controls, the picture at rest at Fit and percentage
+//! views.
 use crate::{
     scenario::{Checked, Checks, Frame, Plan, Run, Step, Tolerance, plan::only},
     *,
@@ -433,20 +434,27 @@ fn current_photo(frame: &Frame) -> Result {
         format!("Detail's GPU draw was blank or stale: {gpu}"),
     )
 }
-fn settled_fit(frame: &Frame) -> Result {
+/// The picture at rest at Fit is the GPU's render of the current stack — the stack at full
+/// resolution in tiles reduced to the view, or its view plan where the view draws it at its own
+/// size — the status bar naming it, over the current stack's adopted analysis.
+fn rest_fit(frame: &Frame) -> Result {
     current_photo(frame)?;
     let state = frame.state();
-    let proxy = &state["proxy"];
+    let gpu = &state["surface"]["gpu"];
+    let render = &state["status_bar"]["render"];
     ensure(
-        proxy["presented"] == true
-            && proxy["settled_from_exact"] == true
-            && proxy["approximate"] == false
-            && proxy["approximate_reason"].is_null()
+        gpu["drawing_path"] == "gpu"
+            && (gpu["picture"] == "rest" || gpu["picture"] == "view")
+            && render.as_str().is_some_and(crate::smoke::names_gpu_render)
             && state["approximate_white_balance"] == false
             && state["surface"]["detail_updating"] == false
             && state["histogram"]["stale"] == false
             && state["stack"]["displayed"]["entry"] == state["stack"]["entry"],
-        format!("Fit has not adopted exact Detail pixels and analysis: {proxy}"),
+        format!(
+            "Fit's picture at rest is not the GPU's render of the current stack: path {}, picture \
+             {}, {render}",
+            gpu["drawing_path"], gpu["picture"]
+        ),
     )
 }
 fn displayed_dimensions(frame: &Frame) -> Result<[u64; 2]> {
@@ -505,20 +513,19 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     if back.state()["stack"]["displayed"]["entry"] != json!(back.entry()?) {
         ensure(
             back.state()["stack"]["displayed"]["entry"] == json!(opened.entry()?)
-                && back.state()["proxy"]["settled_from_exact"] == false
+                && back.state()["reference"]["reduced"] == false
                 && back.state()["histogram"]["stale"] == true
-                && back.status()?.contains("Rendering selected history state")
-                && !back.status()?.contains("Settled from exact"),
+                && back.status()?.contains("Rendering selected history state"),
             "Compare's retained Original was not clearly marked updating",
         )?;
         checks.note(
             back,
             "Compare has exited while the coherent Original awaits restored current pixels",
-            back.state()["proxy"].clone(),
+            back.state()["reference"].clone(),
         );
     }
     let restored = launch.at("compare-restored")?;
-    settled_fit(restored)?;
+    rest_fit(restored)?;
     ensure(
         restored.state()["compare"] == false
             && restored.state()["comparison"].is_null()
@@ -584,6 +591,10 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     let listed = &launch.at("brush-list")?["step"]["result"]["masks"][0]["components"][1]["strokes"]
         [1]["settings"]["colour"];
     let input = &launch.at("brush-input")?["step"]["result"];
+    ensure(
+        input["renderer"] == json!({"record": "gpu", "reason": null}),
+        format!("mask.sample-input through Detail is not the GPU's: {input}"),
+    )?;
     let mut expected = [0_u8; 3];
     for (code, channel) in expected.iter_mut().zip(["r", "g", "b"]) {
         *code = luxforge_reference::srgb::code(
@@ -624,33 +635,25 @@ pub fn verify_fit(_: &mut Run, launches: &[Checked]) -> Result {
         0.0,
         Tolerance::Beyond(0.001),
     )?;
-    let moving_proxy = &moving.state()["proxy"];
     let drawn_on_gpu = moving.drawn_on_gpu();
-    let captured_moving_proxy = !drawn_on_gpu
-        && moving_proxy["presented"] == true
-        && moving_proxy["settled_from_exact"] != true;
     if drawn_on_gpu {
         checks.note(
             moving,
-            "the GPU preview drew the downstream draft over Detail from the held boundary; the CPU's moving approximation and reuse remain unproven at capture",
+            "the GPU preview drew the downstream draft over Detail from the held boundary",
             moving.state()["surface"]["gpu"]["gpu_preview"].clone(),
         );
-    } else if captured_moving_proxy {
-        ensure(
-            moving_proxy["approximate"] == true
-                && moving_proxy["approximate_reason"]
-                    == "a restoration layer's full-resolution filters run on averaged proxy pixels"
-                && moving_proxy["restoration_prefix"] == "reused"
-                && moving.status()?.contains("Moving preview")
-                && moving.status()?.contains("Detail approximate"),
-            format!("the moving Detail suffix lost its approximation/reuse report: {moving_proxy}"),
-        )?;
     } else {
-        settled_fit(moving)?;
+        // A tick the GPU did not draw: the reference renderer's whole frame of the draft, never
+        // a moving approximation.
+        current_photo(moving)?;
+        ensure(
+            !moving.status()?.contains("approximate"),
+            "the downstream draft was labelled approximate",
+        )?;
         checks.note(
             moving,
-            "the draft was already settled at capture; moving approximation/reuse remains unproven",
-            moving_proxy.clone(),
+            "the reference renderer drew the downstream draft's whole frame",
+            moving.state()["reference"].clone(),
         );
     }
     launch.at("quiet")?.displays_draft()?;
@@ -663,22 +666,24 @@ pub fn verify_fit(_: &mut Run, launches: &[Checked]) -> Result {
         "current",
     ] {
         let frame = launch.at(name)?;
-        settled_fit(frame)?;
-        let proxy = &frame.state()["proxy"];
+        if name == "quiet" {
+            continue;
+        }
+        rest_fit(frame)?;
         checks.note(
             frame,
-            "settled Fit is reduced from exact processing",
-            proxy.clone(),
+            "the picture at rest at Fit is the GPU's, the stack at full resolution reduced to the view",
+            frame.state()["surface"]["gpu"]["rest"].clone(),
         );
     }
     checks.compare(
-        launch.at("release")?,
-        "release preserves the exact settled draft pixels",
-        difference(launch.at("quiet")?, launch.at("release")?)?,
+        launch.at("current")?,
+        "returning to the current version draws the release's picture at rest again, byte for byte",
+        difference(launch.at("release")?, launch.at("current")?)?,
         0.0,
         Tolerance::Within(0.0),
     )?;
-    checks.write(&launch.evidence,"detail-fit",json!({"moving_proxy_captured":captured_moving_proxy,"moving_drawn_on_gpu":drawn_on_gpu,"scope":"Downstream draft pixels, approximation and prefix reuse when captured in motion, whole-stack settlement and view-bound changes; reducer and stale adoption are exact unit proofs."}))
+    checks.write(&launch.evidence,"detail-fit",json!({"moving_drawn_on_gpu":drawn_on_gpu,"scope":"Downstream draft pixels in motion, on the GPU or the reference's whole frame, the picture at rest on the GPU and view-bound changes; reducer and stale adoption are exact unit proofs."}))
 }
 pub fn verify_zoom(_: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
@@ -698,24 +703,22 @@ pub fn verify_zoom(_: &mut Run, launches: &[Checked]) -> Result {
         let surface = &state["surface"];
         ensure(
             surface["detail_updating"] == false
-                && (surface["gpu"]["drawn_region_quality"] == "exact"
-                    || state["proxy"]["presented"] == false),
-            format!("{name} did not present exact Detail refinement: {surface}"),
+                && (surface["gpu"]["drawing_path"] == "gpu"
+                    || state["reference"]["reduced"] == false),
+            format!("{name} did not present full Detail at 100%: {surface}"),
         )?;
         ensure(
             state["approximate_white_balance"] == false,
-            "An approximate frame was accepted as exact Detail refinement",
+            "An approximate frame was accepted as full Detail at 100%",
         )?;
     }
     ensure(
         launch.at("release")?.state()["histogram"]["stale"] == false,
         "Release did not adopt its exact full-stage histogram",
     )?;
-    ensure(
-        launch.at("fit")?.state()["proxy"]["settled_from_exact"] == true,
-        "Zoom back to Fit did not reduce the retained exact Detail frame",
-    )?;
-    checks.write(&launch.evidence,"detail-zoom",json!({"scope":"Native percentage refinement and pan with correlated state; mathematical region equality is tested in core."}))
+    // Back at Fit the picture at rest is the GPU's again, planned for the view it returns to.
+    rest_fit(launch.at("fit")?)?;
+    checks.write(&launch.evidence,"detail-zoom",json!({"scope":"Native percentage views and pan with correlated state, the GPU's region or the reference's whole frame; the GPU's agreement with the reference is the release gate's."}))
 }
 pub fn verify_raw(_: &mut Run, launches: &[Checked]) -> Result {
     let launch = only(launches)?;
@@ -748,39 +751,27 @@ pub fn verify_raw(_: &mut Run, launches: &[Checked]) -> Result {
         "crop",
         "rotate",
     ] {
-        settled_fit(launch.at(name)?)?;
+        rest_fit(launch.at(name)?)?;
     }
     let moderate = launch.at("moderate")?;
     let moderate_state = moderate.state();
-    if moderate_state["proxy"]["settled_from_exact"] == true {
-        settled_fit(moderate)?;
+    if moderate_state["histogram"]["stale"] == false {
+        rest_fit(moderate)?;
     } else {
         let status = moderate.status()?;
         ensure(
-            moderate_state["histogram"]["stale"] == true
-                && moderate_state["approximate_white_balance"] == false
-                && !status.contains("Settled from exact"),
-            "the in-flight moderate RAW frame incorrectly claimed exact settlement",
+            moderate_state["approximate_white_balance"] == false,
+            "the in-flight moderate RAW frame approximated its white balance",
         )?;
-        if moderate_state["proxy"]["approximate"] == true {
-            ensure(
-                moderate_state["proxy"]["approximate_reason"]
-                    == "a restoration layer's full-resolution filters run on averaged proxy pixels"
-                    && status.contains("Moving preview")
-                    && status.contains("Detail approximate"),
-                "the moderate RAW approximation did not identify its restoration scope",
-            )?;
-        } else {
-            ensure(
-                moderate_state["stack"]["displayed"]["entry"] != moderate_state["stack"]["entry"]
-                    && status.contains("Rendering selected history state"),
-                "a retained RAW photograph was not marked updating",
-            )?;
-        }
+        ensure(
+            moderate_state["stack"]["displayed"]["entry"] != moderate_state["stack"]["entry"]
+                && status.contains("Rendering selected history state"),
+            "a retained RAW photograph was not marked updating",
+        )?;
         checks.note(
             moderate,
             "moderate RAW capture is still updating; exact acceptance is checked at Amount and Fit",
-            moderate_state["proxy"].clone(),
+            moderate_state["reference"].clone(),
         );
     }
     let expected_detail = json!({"sharpening":60.0,"luminance":40.0,"colour":40.0});
@@ -804,8 +795,8 @@ pub fn verify_raw(_: &mut Run, launches: &[Checked]) -> Result {
     ensure(
         percentage["surface"]["detail_updating"] == false
             && percentage["approximate_white_balance"] == false
-            && (percentage["surface"]["gpu"]["drawn_region_quality"] == "exact"
-                || percentage["proxy"]["presented"] == false),
+            && (percentage["surface"]["gpu"]["drawing_path"] == "gpu"
+                || percentage["reference"]["reduced"] == false),
         "RAW 100% did not adopt exact Detail content",
     )?;
     let opened = launch.at("opened")?;

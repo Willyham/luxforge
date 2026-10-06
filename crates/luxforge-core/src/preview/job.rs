@@ -1,7 +1,7 @@
 //! What one preview job renders — the evaluation it was planned with — and how it presents it.
 
 use crate::{
-    Error, Evaluation, LinearImage, LinearSettings, ProxyBounds, Region, RenderSource, SourceImage,
+    Error, Evaluation, LinearImage, LinearSettings, ProxyBounds, RenderSource, SourceImage,
     analysis::AnalysisIdentity,
 };
 #[cfg(doc)]
@@ -66,17 +66,17 @@ impl<'a> From<&'a PreviewSource> for RenderSource<'a> {
     }
 }
 
-/// How much work the one preview lane may do for this request. An interactive request produces
-/// visible pixels only; the desktop asks for settlement once its shared quiet gate opens or the
-/// gesture commits. A normal request preserves the existing two-phase path for callers that need
-/// its full result immediately. A crop draft's input stage is asked for interactively whenever it
-/// has bounds, since nothing is reduced from it, and without bounds as a normal exact-only job.
+/// How much work the one preview lane may do for this request. An interactive request — a drag
+/// tick in a session the GPU does not draw at all, the one request that asks for one
+/// ([`crate::cpu_proxy`]) — produces visible pixels only, from a display-sized proxy when its
+/// bounds plan one, and ends there. Every other request renders no proxy: its exact whole frame,
+/// reduced to the view's bounds when it names them, is the reference frame of a stack at rest, a
+/// crop draft's input stage the reference draws among them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PreviewIntent {
     #[default]
     Immediate,
     Interactive,
-    Settle,
     /// Reduce a retained exact frame to new Fit bounds without rendering its recipe again.
     Reduce,
 }
@@ -108,44 +108,36 @@ pub struct PreviewJob {
     /// report, whatever the job asked, so every histogram and clipping count comes from an exact
     /// render.
     pub analyse: bool,
-    /// The physical pixels the display can show this frame in. `Some` asks for a proxy phase before
-    /// the exact one; `None` is the exact path alone, as a percentage zoom at or above 100% takes.
-    /// A proxy is only ever an offer: an ineligible stack, a scale of one or any failure building
-    /// or rendering the proxy declines it in [`ExactOutcome::proxy_declined`] and the exact phase
-    /// runs unchanged.
+    /// The physical pixels the display can show this frame in. An interactive job renders a proxy
+    /// phase at them; any other job reduces its exact frame to them ([`ExactOutcome::display`]).
+    /// `None` is the exact path alone, as a percentage zoom at or above 100% takes. A proxy is
+    /// only ever an offer: an ineligible stack, a scale of one or any failure building or
+    /// rendering the proxy declines it in [`ExactOutcome::proxy_declined`] and the exact phase runs
+    /// unchanged.
     pub proxy: Option<ProxyBounds>,
-    /// The visible output-stage rectangle at a percentage zoom, in full-stage pixels. `None` is
-    /// the Fit path. The worker clips it against its uncut compilation and explicitly reports a
-    /// region decline rather than interpreting it as a recipe crop.
-    pub viewport: Option<Region>,
-    /// Whether to produce only the interactive frame, or refine it and finish whole-frame
-    /// analysis. The desktop sets this after the owner has planned the immutable stack.
+    /// Whether to produce only the interactive frame, or the exact whole frame and its analysis.
+    /// The desktop sets this after the owner has planned the immutable stack.
     pub intent: PreviewIntent,
-    /// Worker-only reason a region was declined before the existing proxy/exact fallback ran.
-    /// Owner-planned jobs start with `None`; the worker fills it in its own owned job.
-    pub viewport_declined: Option<String>,
     /// An open draft's GPU preview, planned with this job when its request asked
     /// (`PreviewRequest::gpu`): the plan a tick is drawn from, or why the gesture takes the CPU
     /// path, and the boundary it starts from. Preview state, never an API result.
     pub gpu: Option<Box<crate::GpuPreview>>,
-    /// The plans a gesture on this job's stack is likely to draw, planned with a committed stack's
+    /// The plans a gesture on this job's stack is likely to draw, the light links their ticks
+    /// compute and how many of the plans are the open stack's, planned with a committed stack's
     /// job when its request asked (`PreviewRequest::gpu`), so the desktop can compile their
     /// program sequences before a drag begins. Preview state, never an API result.
-    pub gpu_warm: Option<std::sync::Arc<[crate::GpuPlan]>>,
-    /// A committed stack's GPU preview at Fit, planned with its job when its request asked
-    /// (`PreviewRequest::gpu`): the plan of the stack itself from its first content layer, and the
-    /// boundary every gesture over the same source and view starts from, which the desktop holds
-    /// before a gesture begins. Preview state, never an API result.
-    pub gpu_resident: Option<Box<crate::GpuPreview>>,
-    /// Render this GPU preview boundary after the job's Fit frame, as one more result of the job
-    /// ([`super::BoundaryOutcome`]). The desktop asks for it on a draft's job until the draft holds
-    /// one, and on a committed stack's job when it holds none of that key.
-    pub boundary: Option<crate::BoundaryRequest>,
+    pub gpu_warm: Option<std::sync::Arc<crate::GpuWarmList>>,
+    /// A displayed stack's picture at rest on the GPU at its view's bounds or region, planned with
+    /// its job when its request asked (`PreviewRequest::gpu`): the plan of the stack itself from the
+    /// source, and the boundary every gesture over the same source and view starts from
+    /// ([`crate::GpuRest`]). Every committed stack has one, the empty stack included. Preview
+    /// state, never an API result.
+    pub gpu_rest: Option<Box<crate::GpuRest>>,
 }
 
 impl PreviewJob {
     /// A job that renders `evaluation` whole, exactly and at once: no layer prefix, no report, no
-    /// proxy phase and no viewport, which the caller sets afterwards. Its identity
+    /// proxy phase, which the caller sets afterwards. Its identity
     /// is the evaluation's ([`Evaluation::identity`]), which hashes the stack: `O(recipe)`.
     pub fn new(evaluation: Evaluation) -> Result<Self, Error> {
         Ok(Self {
@@ -155,13 +147,10 @@ impl PreviewJob {
             layer_count: None,
             analyse: false,
             proxy: None,
-            viewport: None,
             intent: PreviewIntent::Immediate,
-            viewport_declined: None,
             gpu: None,
             gpu_warm: None,
-            gpu_resident: None,
-            boundary: None,
+            gpu_rest: None,
         })
     }
 }
