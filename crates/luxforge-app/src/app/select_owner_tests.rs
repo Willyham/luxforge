@@ -1257,3 +1257,82 @@ fn select_sources_list_volumes_folders_and_counts_on_a_real_owner() {
     );
     finish(editor, catalog);
 }
+
+/// A plain click made while the view is being read again waits for it and then selects the
+/// clicked cell's item over the view that landed, by its identity, making it active: the owner,
+/// already holding the next evaluation, would refuse a selection naming the view on screen, and the
+/// click would be lost. Clicked while a view without that item is read, it is dropped, the status
+/// bar saying so, and nothing is selected.
+#[test]
+fn a_click_made_while_the_view_is_read_again_selects_its_item_once_it_lands() {
+    let (mut editor, catalog) = selecting();
+    let sources: Vec<_> = editor
+        .workspace
+        .select
+        .sources
+        .months
+        .iter()
+        .flat_map(|month| month.rows.iter())
+        .filter_map(|row| match row.press.clone() {
+            Some(SourcePress::View(source)) => Some(source),
+            _ => None,
+        })
+        .collect();
+    let _ = editor.update(Message::Select(SelectMessage::Source(sources[0].clone())));
+    let _ = editor.update(Message::Select(SelectMessage::Viewport(Size::new(
+        1000.0, 700.0,
+    ))));
+    settle(&mut editor);
+    steady(&mut editor);
+    let row = |editor: &Editor, item: u32| editor.select.state.rows.row(item).unwrap().clone();
+    let clicked = row(&editor, 4);
+
+    // The same view read again, which the owner evaluates before its answer lands.
+    let query = editor.select.state.query.clone().expect("a view");
+    let _ = editor.evaluate(query.clone());
+    let serial = editor.select.serial;
+    let viewed = evaluate_now(&editor.owner, editor.client, &query);
+    click(&mut editor, 4);
+    assert!(
+        editor.select.held_click.is_some(),
+        "held while the view is read"
+    );
+    assert!(
+        !editor.status.text.starts_with("Selection failed"),
+        "{}",
+        editor.status.text
+    );
+    let _ = editor.update(Message::Select(SelectMessage::Viewed {
+        serial,
+        result: viewed,
+    }));
+    let selection = &editor.session.browse.selection;
+    assert_eq!(selection.count, 1);
+    let active = selection.active.expect("an active item");
+    read_rows(&mut editor);
+    assert_eq!(
+        row(&editor, active).item,
+        clicked.item,
+        "the item clicked, by identity"
+    );
+
+    // Clicked while a view without it is read — the same source narrowed to another file's name —
+    // it is dropped, quietly.
+    let mut narrowed = editor.select.state.query.clone().expect("a view");
+    narrowed.filter.text = Some(row(&editor, 0).file_name);
+    let _ = editor.evaluate(narrowed.clone());
+    let serial = editor.select.serial;
+    let viewed = evaluate_now(&editor.owner, editor.client, &narrowed);
+    click(&mut editor, 4);
+    assert!(editor.select.held_click.is_some());
+    let _ = editor.update(Message::Select(SelectMessage::Viewed {
+        serial,
+        result: viewed,
+    }));
+    assert!(editor.select.held_click.is_none());
+    assert_eq!(
+        editor.status.text,
+        "The item clicked is no longer in the view"
+    );
+    finish(editor, catalog);
+}
