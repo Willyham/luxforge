@@ -960,9 +960,14 @@ impl Editor {
         let Some(preview) = &self.develop.state.preview else {
             return;
         };
-        // Replaced on the surface by a render, or taken off.
+        // Replaced on the surface by a render, or taken off. A warm open's GPU picture stands over
+        // the cached preview, which stays the surface's base: once the GPU presents the open
+        // photograph's content, that picture, not the preview, is the photograph on screen.
+        let gpu_presented = self.document.state.is_some()
+            && self.presentation.gpu_presented == Some(self.presentation.presented_content);
         if self.presentation.presenter.photo_version() != preview.version
             || !self.presentation.has_picture()
+            || gpu_presented
         {
             self.develop.state.preview = None;
             return;
@@ -998,7 +1003,7 @@ impl Editor {
     /// The frames from the key until the preview was drawn, once the surface has drawn it: the
     /// surface records which of its frames first drew each photograph it was handed, so the count
     /// does not depend on when it is read, as long as the preview is still the photograph drawn.
-    fn follow_timing(&mut self) {
+    pub(crate) fn follow_timing(&mut self) {
         let timing = &mut self.develop.timing;
         let Some(version) = timing.preview_version else {
             return;
