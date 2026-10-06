@@ -11,4 +11,7 @@ pub(crate) enum RendererMessage {
     /// The adapter the window's renderer draws with, `name` on `backend` as Iced's system
     /// information names them, for the GPU tile worker.
     Adapter { backend: String, name: String },
+    /// What the launch did to name the GPU tile worker's adapter as its window opened, for the
+    /// launch's events. Boxed, as the session is.
+    LaunchNamed(Box<super::super::renderer::LaunchNaming>),
 }

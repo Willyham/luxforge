@@ -330,6 +330,12 @@ pub(crate) struct LoopTiming {
     pub(crate) last_view_ms: f64,
     pub(crate) last_view_end: Option<Instant>,
     pub(crate) last_update_end: Option<Instant>,
+    /// Every update's handling, for the evidence run's last event: how many, the longest, and how
+    /// many took longer than a 120 Hz frame and than 50 ms.
+    pub(crate) updates: u64,
+    pub(crate) longest_update_ms: f64,
+    pub(crate) updates_over_8ms: u64,
+    pub(crate) updates_over_50ms: u64,
 }
 
 /// The desktop's state: the owner connection, and one field per seam, most of them the seam's own
@@ -745,6 +751,10 @@ impl Editor {
             None => Task::none(),
         };
         let backend = system_information(editor.evidence.is_some());
+        // The GPU tile worker's adapter, named once the window has opened, where the host leaves
+        // no doubt which one it draws with, so the catalog's tiers draw on the GPU in Select.
+        let tile_adapter =
+            renderer::name_once_open(editor.renderer.launch(), editor.renderer.tiles.clone());
         // Tool controls are discovered once, through the same API every other client uses, and the
         // preset library is listed the same way; the event sync keeps it current afterwards.
         let modules = modules_task(editor.owner.clone(), editor.client);
@@ -768,7 +778,16 @@ impl Editor {
         (
             editor,
             Task::batch([
-                scale, trackpad, visibility, placed, backend, modules, presets, themes, first,
+                scale,
+                trackpad,
+                visibility,
+                placed,
+                backend,
+                tile_adapter,
+                modules,
+                presets,
+                themes,
+                first,
             ]),
         )
     }
@@ -797,6 +816,10 @@ impl Editor {
         let mut timing = self.log.loop_timing.get();
         timing.last_update_ms = started.elapsed().as_secs_f64() * 1000.0;
         timing.last_update_end = Some(Instant::now());
+        timing.updates += 1;
+        timing.longest_update_ms = timing.longest_update_ms.max(timing.last_update_ms);
+        timing.updates_over_8ms += u64::from(timing.last_update_ms > 8.0);
+        timing.updates_over_50ms += u64::from(timing.last_update_ms > 50.0);
         self.log.loop_timing.set(timing);
         if let Some(evidence) = &self.evidence {
             evidence

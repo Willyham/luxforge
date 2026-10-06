@@ -1080,3 +1080,54 @@ fn the_loupe_settles_on_a_frame_whose_row_the_owner_refused() {
     assert_eq!(model.info.source, "This frame's row could not be read");
     finish(editor, catalog);
 }
+
+/// A key pressed while the view is being read again waits for it and then moves the loupe, in
+/// order, over the view that landed: the owner, which has already evaluated the next view, would
+/// refuse a selection naming the one on screen, and the key would be lost. Keys pressed once the
+/// view has landed move it at once.
+#[test]
+fn a_key_pressed_while_the_view_is_read_again_moves_the_loupe_once_it_lands() {
+    let (mut editor, catalog) = viewing();
+    let (burst, _) = moment(&editor, MomentKind::Burst);
+    send(&mut editor, LoupeMessage::Open);
+    assert_eq!(active(&editor), Some(0));
+    // The view is read again, and the owner evaluates it before its answer reaches the desktop.
+    let query = editor.select.state.query.clone().expect("a view");
+    let _ = editor.evaluate(query.clone());
+    assert!(editor.select.state.loading);
+    let serial = editor.select.serial;
+    let viewed = crate::app::select::evaluate_now(&editor.owner, editor.client, &query);
+    send(&mut editor, LoupeMessage::Frame(Travel::Forward));
+    send(&mut editor, LoupeMessage::Moment(Travel::Forward));
+    assert_eq!(active(&editor), Some(0), "held while the view is read");
+    assert!(
+        !editor.status.text.starts_with("Selection failed"),
+        "{}",
+        editor.status.text
+    );
+    let _ = editor.update(Message::Select(SelectMessage::Viewed {
+        serial,
+        result: viewed,
+    }));
+    // From frame 1 the next moment's first frame, on the view that landed.
+    let summary = editor.select.state.summary.as_ref().expect("the view");
+    let expected = crate::state::loupe::target(
+        summary,
+        1,
+        crate::state::loupe::Goto::Moment(Travel::Forward),
+    )
+    .expect("a next moment");
+    assert!(expected > 1, "{expected} after the burst at {burst}");
+    assert_eq!(
+        active(&editor),
+        Some(expected),
+        "the frame, then the next moment, over the view that landed"
+    );
+    send(&mut editor, LoupeMessage::Frame(Travel::Back));
+    assert_eq!(
+        active(&editor),
+        Some(expected - 1),
+        "at once once it has landed"
+    );
+    finish(editor, catalog);
+}

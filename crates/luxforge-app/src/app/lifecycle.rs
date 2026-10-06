@@ -65,6 +65,7 @@ pub(super) fn host_config(config: &Config, tiles: Arc<GpuTiles>) -> HostConfig {
 }
 
 pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
+    super::renderer::launch_began();
     // The renderer, chosen before the window opens from what the host offers: off macOS, an
     // enumeration of the renderer's backends, so a host whose only adapter is a software one is
     // known before Iced draws on it ([`luxforge_ui::adapters::choose`]).
