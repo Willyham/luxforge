@@ -73,6 +73,37 @@ fn commit(editor: &mut Editor, value: f64) {
     assert!(run_commit(editor));
 }
 
+/// A zoom from Fit to 100% over a commit the GPU presented, with no CPU frame of it, keeps drawing
+/// the GPU's whole-frame plan of that stack while the view's region is planned: the frame under it
+/// is the open's, an earlier stack's, which must never stand in for the committed one.
+#[test]
+fn a_zoom_to_100_over_a_stack_the_gpu_presented_keeps_its_plan_until_the_region() {
+    let (mut editor, catalog) = opened_on_the_gpu("zoom-presented");
+    commit(&mut editor, 0.4);
+    deliver_until(&mut editor, "the committed stack presented", |editor| {
+        editor.presentation.gpu_presented == Some(editor.presentation.presented_content)
+            && editor.gpu_rest_plan().is_some()
+    });
+    let (fit, _) = editor.gpu_rest_plan().expect("the Fit view plan");
+    assert!(fit.region.is_none(), "a whole frame's plan at Fit");
+    let boundary = fit.boundary.version();
+    // The session's answer to the zoom, as the desktop takes it up.
+    editor.session.preview.view.zoom = luxforge_core::Zoom::Percent { value: 100.0 };
+    let _ = editor.zoom_changed(&luxforge_core::Zoom::Fit);
+    let surfaces = editor.surfaces();
+    let (shown, _) = editor
+        .gpu_rest_plan()
+        .expect("the committed stack's plan is still the picture");
+    assert!(
+        std::ptr::eq(surfaces.gpu.expect("a plan drawn"), shown),
+        "the GPU's plan is drawn in place of the earlier stack's frame"
+    );
+    if shown.region.is_none() {
+        assert_eq!(shown.boundary.version(), boundary, "the Fit plan, kept");
+    }
+    finish(editor, catalog);
+}
+
 /// A commit the GPU draws at rest is presented with no preview job, so no exact frame is rendered
 /// or reduced; its tiles are handed for their counts, which, read back, are its report: plotted as
 /// the GPU's, current, and in the owner's store under the committed stack's identity, so an API

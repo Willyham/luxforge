@@ -364,7 +364,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: gpu_preview_zoom::SCENARIO,
-        about: "Basic drags at 100% and 200% drawn on the GPU over the visible region at full scale with no preview job per tick, correlated with the CPU frame of their settings, a drag at 800% panned past its region, Presence drags and Basic drags under Presence at 100%, and drags at 50% and 33% drawn on the GPU from the displayed-size proxy",
+        about: "Basic drags at 100% and 200% drawn on the GPU over the visible region at full scale with no preview job per tick, correlated with the CPU frame of their settings, a drag at 800% panned past its region, Presence drags and Basic drags under Presence at 100%, and drags at 50% and 33% drawn on the GPU over the whole stage at its displayed size",
         launches: &[
             LaunchSpec {
                 plan: gpu_preview_zoom::plan,
@@ -1307,12 +1307,22 @@ fn plain_checks(scenario: &str, launch: &Checked) -> Result {
             ensure(uploaded || reused, "Missing current photograph readiness")?;
             if reused {
                 let first = launch.frames[0].state();
+                let (gpu, first_gpu) = (&state["surface"]["gpu"], &first["surface"]["gpu"]);
+                // The unchanged picture is drawn: where the GPU draws it at rest, the view plan
+                // over the boundary the first open drew, ready and with no CPU frame under it;
+                // otherwise the CPU frame of the unchanged version.
+                let drawn = if gpu["drawing_path"] == json!("gpu") {
+                    !gpu["drawn_gpu_boundary"].is_null()
+                        && gpu["drawn_gpu_boundary"] == first_gpu["drawn_gpu_boundary"]
+                        && gpu["gpu_ready_boundary"] == gpu["drawn_gpu_boundary"]
+                        && gpu["drawn_full_version"].is_null()
+                } else {
+                    gpu["drawn_full_version"] == state["surface"]["version"]
+                };
                 ensure(
                     state["surface"]["version"] == first["surface"]["version"]
-                        && state["surface"]["gpu"]["upload_bytes"]
-                            == first["surface"]["gpu"]["upload_bytes"]
-                        && state["surface"]["gpu"]["drawn_full_version"]
-                            == state["surface"]["version"]
+                        && gpu["upload_bytes"] == first_gpu["upload_bytes"]
+                        && drawn
                         && state["surface"]["gpu"]["drawn_photo_blank"] == json!(false)
                         && state["surface"]["gpu"]["drawn_stale_photo"] == json!(false),
                     "Reopening reused pixels without the unchanged current photograph drawn",

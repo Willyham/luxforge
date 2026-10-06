@@ -38,10 +38,9 @@ use crate::{
     },
 };
 
-/// The Detail program: every kernel and apply its two units describe. Enabled: every Detail
-/// recipe of the corpus met the spatial limits at Fit against the CPU's moving proxy it stands in
-/// for, as the owner decided a stack that settles from the exact render is judged
-/// (`gpu_detail_corpus_at_fit`, `docs/specs/performance.md`, "GPU Detail program").
+/// The Detail program: every kernel and apply its two units describe. Enabled, and held by the
+/// release gate (`cargo xtask gpu-qualification`) against the reference renderer's frame on the
+/// corpus's Detail family (`docs/specs/performance.md`, "GPU Detail program").
 pub static DETAIL_PROGRAM: GpuProgram = GpuProgram {
     entry: "lf_detail",
     source: include_str!("detail.wgsl"),

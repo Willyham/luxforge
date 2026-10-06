@@ -1104,8 +1104,8 @@ mod tests {
                 .mapping,
             crate::MappingShape::Warp { .. }
         ));
-        // Asked for interactively, as the desktop asks for the stage at Fit, it renders the
-        // prefix's proxy; at rest, the prefix exactly.
+        // Asked for interactively, as a drag in a session the GPU does not draw asks, it renders
+        // the prefix's proxy; at rest, the prefix exactly.
         let mut queue = PreviewQueue::default();
         let mut moving = job.clone();
         moving.intent = crate::PreviewIntent::Interactive;

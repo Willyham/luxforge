@@ -24,14 +24,19 @@ fn failed_request_records_the_api_refusal_and_captures_its_state() {
     finish(editor, catalog);
 }
 
-/// An empty catalog has no photograph to draw, so GPU photo readiness must not block its frame.
+/// An empty catalog has no photograph to draw, so GPU photo readiness must not block its frame,
+/// nor a refit at Fit where the GPU would draw a picture at rest: there is none to refit.
 #[test]
 fn empty_editor_capture_needs_no_photo_texture() {
     let (mut editor, catalog) = boot();
     editor.document.state = None;
     editor.session.workspace.clip_highlights = true;
+    editor.renderer.stage = Some(luxforge_ui::photo_surface::GpuStageState::Available);
+    editor.session.preview.view.zoom = Zoom::Fit;
+    assert!(editor.gpu_at_rest() && editor.proxy_bounds().is_some());
     assert!(editor.capture_photo_ready());
     assert!(editor.capture_clipping_ready());
+    assert!(editor.capture_refit_ready());
     finish(editor, catalog);
 }
 

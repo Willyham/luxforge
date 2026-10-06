@@ -530,13 +530,12 @@ pub(crate) trait SpatialUnit: Send + Sync {
     /// its [`Self::apply`] no global.
     ///
     /// **The key names everything [`Self::prepare`] reads besides the reduction**, and nothing else:
-    /// the unit and every coefficient its preparation depends on. The host caches a prepared
-    /// estimate keyed by the source, the layers before this operation, the stage and this key, so
-    /// two units that declare the same key over the same stage share one estimate, whatever their
-    /// position in the operation and whatever else they describe. A coefficient that only
-    /// [`Self::apply`] reads — an amount, for most units — belongs in [`Self::describe`] and not
-    /// here, which is what lets a new amount prepare from the stored estimate instead of reducing
-    /// the whole stage again.
+    /// the unit and every coefficient its preparation depends on. Within one frame the host reduces
+    /// the operation's input stage once and prepares each key once, so two units of the operation
+    /// that declare the same key share one estimate, whatever their position and whatever else they
+    /// describe; nothing is kept between frames. A coefficient that only [`Self::apply`] reads — an
+    /// amount, for most units — belongs in [`Self::describe`] and not here, so units that differ
+    /// only in it still share their estimate.
     fn estimate_key(&self) -> Option<Cow<'static, str>> {
         None
     }

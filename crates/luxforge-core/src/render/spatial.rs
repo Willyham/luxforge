@@ -374,8 +374,7 @@ fn widest_regions(length: u32, tile: u32, halos: &[u32], summed_halo: u32) -> Ve
 }
 
 /// The buffers one tile slot reuses from tile to tile, instead of allocating and zero-filling them
-/// per tile and per unit: each worker of [`run_tiles`] keeps one for the tiles it runs, and a point
-/// query's tile and a restoration region start from an empty one.
+/// per tile and per unit: each worker of [`run_tiles`] keeps one for the tiles it runs.
 ///
 /// - **Two plane buffers**, ping-ponged along the unit chain. Buffer 0 holds the tile's input and
 ///   the outputs of the odd units (1, 3, …), buffer 1 the outputs of the even units (0, 2, …): unit
@@ -396,8 +395,9 @@ fn widest_regions(length: u32, tile: u32, halos: &[u32], summed_halo: u32) -> Ve
 /// A slot built for a plan ([`Self::for_plan`]), which every render slot is, grows each buffer once,
 /// straight to the largest request any tile of that plan makes ([`SlotValues`]), so a render
 /// allocates its planes once per slot, not once per tile or unit: the corner tile a slot often
-/// starts with asks for less than an interior tile. A default slot runs one tile and grows each
-/// buffer to exactly what that tile asks, which is what a one-pixel restoration window holds. Either way a slot holds two of the chain's rectangles,
+/// starts with asks for less than an interior tile. A default slot, which the oracles and tests
+/// build, runs one tile and grows each buffer to exactly what that tile asks. Either way a slot
+/// holds two of the chain's rectangles,
 /// which the tile's reservation already charges to the spatial budget among all of them (see
 /// [`SlotValues`] for the one geometry the charge has always under-counted).
 #[derive(Debug, Default)]

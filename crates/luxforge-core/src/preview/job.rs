@@ -66,13 +66,12 @@ impl<'a> From<&'a PreviewSource> for RenderSource<'a> {
     }
 }
 
-/// How much work the one preview lane may do for this request. An interactive request — a drag in
-/// a session the GPU does not draw, or a crop draft's input stage — produces visible pixels only,
-/// from a display-sized proxy when its bounds plan one, and ends there. Every other request renders
-/// no proxy: its exact whole frame, reduced to the view's bounds when it names them, is the
-/// reference frame of a stack at rest. A crop draft's input stage is asked for interactively
-/// whenever it has bounds, since nothing is reduced from it, and without bounds as a normal
-/// exact-only job.
+/// How much work the one preview lane may do for this request. An interactive request — a drag
+/// tick in a session the GPU does not draw at all, the one request that asks for one
+/// ([`crate::cpu_proxy`]) — produces visible pixels only, from a display-sized proxy when its
+/// bounds plan one, and ends there. Every other request renders no proxy: its exact whole frame,
+/// reduced to the view's bounds when it names them, is the reference frame of a stack at rest, a
+/// crop draft's input stage the reference draws among them.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PreviewIntent {
     #[default]
