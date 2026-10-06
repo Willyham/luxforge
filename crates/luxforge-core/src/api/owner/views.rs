@@ -891,6 +891,9 @@ mod tests {
         let fx = testing::fixture("owner-same-job");
         let (owner, join) = OwnerHandle::start(&fx.catalog).unwrap();
         let client = owner.register();
+        let gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
+        gate.shut();
+        owner.hold_previews(Some(gate.clone()));
         let card = json!({"kind": "card", "volume_id": testing::volume("card")});
         let jobs = |owner: &OwnerHandle| -> Vec<Value> {
             let board = ok(owner, client, "activity.list", json!({}));
@@ -904,9 +907,16 @@ mod tests {
                 .collect()
         };
         ok(&owner, client, "browse.view", json!({ "source": card }));
+        // Keep the job active: a short completed job can disappear from the activity board
+        // between reads, independently of whether the repeated view kept it.
+        gate.wait_reached(1, "the view's preview worker");
         let first = jobs(&owner);
         ok(&owner, client, "browse.view", json!({ "source": card }));
-        assert_eq!(jobs(&owner), first, "the same items keep their job");
+        let again = jobs(&owner);
+        gate.open();
+        owner.hold_previews(None);
+        assert_eq!(first.len(), 1, "the held view has one preview job");
+        assert_eq!(again, first, "the same items keep their job");
         owner.stop();
         join.join().unwrap();
     }
