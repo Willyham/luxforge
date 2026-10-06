@@ -761,22 +761,32 @@ impl Editor {
             }
         }
         // A gesture drawn on the GPU: the frame to capture is the GPU draw of its newest tick, once
-        // its pipeline is ready. Until the surface has evaluated it, or while it is held behind
-        // the CPU frame of its revision, the CPU frame is the one drawn.
+        // its pipeline is ready. While the surface waits for something that passes — a sequence
+        // still compiling (a light link's among them), a source or boundary still uploading — the
+        // tick's own frame is still to come, so the capture waits for it rather than take the
+        // earlier frame on screen. Once the surface has fallen back for another reason, or while
+        // the tick is held behind the CPU frame of its revision, the CPU frame is the one drawn.
         if let (Some(_), Some(revision), false, Some(boundary)) = (
             surfaces.gpu,
             surfaces.gpu_tag,
             surfaces.gpu_hold,
             self.gpu.held_version(),
-        ) && luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE)
-            .gpu_ready_boundary
-            == Some(boundary)
-        {
-            return label_current
-                && photo_drawn(
-                    ExpectedPhotoDraw::GpuTick { boundary, revision },
-                    luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE),
-                );
+        ) {
+            let drawn = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
+            if drawn.gpu_ready_boundary == Some(boundary) {
+                return label_current
+                    && photo_drawn(ExpectedPhotoDraw::GpuTick { boundary, revision }, drawn);
+            }
+            if matches!(
+                drawn.gpu_fallback,
+                Some(
+                    luxforge_ui::photo_surface::GpuFallback::Compiling
+                        | luxforge_ui::photo_surface::GpuFallback::SourceUploading { .. }
+                        | luxforge_ui::photo_surface::GpuFallback::BoundaryUploading { .. }
+                )
+            ) {
+                return false;
+            }
         }
         let full = self
             .presentation
