@@ -9,6 +9,7 @@ pub(crate) enum EvidenceMessage {
     /// The evidence deadline check.
     Tick,
     /// A native evidence operation returned. A separate native callback proves its transition.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     VisibilityOperated(Result<(), String>),
     /// The one gated deadline of a `view_idle` step, before any evidence capture can redraw.
     ViewIdleDeadline,
