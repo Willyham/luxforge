@@ -4388,7 +4388,7 @@ The 24 MP drag with `--idle`: after its release had dissolved from the drag's la
 
 ### Windows and Linux
 
-Not run, so neither the fallback nor correctness within the limits is shown on another platform's adapter; a skipped check is not a pass. The repository's Linux path is CI: `.github/workflows/check.yml` runs `cargo xtask check`, `editor-acceptance` and eight renderer smoke scenarios on Ubuntu 24.04 x64 with software Vulkan under Xvfb, on a push, which this qualification does not make, and none of those eight drags on the GPU stage. No local Linux VM or container path is documented; Docker Desktop is installed on the host but was not running, and starting one would have loaded the host the timing runs needed quiet. Windows has no CI and no VM path. The owner chose on 2026-10-02 not to push the branch to run CI.
+Not run, so neither the fallback nor correctness within the limits is shown on another platform's adapter; a skipped check is not a pass. The repository's Linux path is CI: `.github/workflows/check.yml` runs `cargo xtask check`, `editor-acceptance` and eight renderer smoke scenarios on Ubuntu 24.04 x64 with software Vulkan under Xvfb, on a push, which this qualification does not make, and none of those eight drags on the GPU stage. No local Linux path ran for this qualification; a container on the M4 has since measured the software adapter ([software adapters](#software-adapters)), which is timing, not a correctness check. Windows has no CI and no VM path. The owner chose on 2026-10-02 not to push the branch to run CI.
 
 ### The performance-rules checklist
 
@@ -4784,6 +4784,77 @@ and `toml_edit`), while the application's own share, from its first sample to it
 median of about 1105 ms in both builds. No theme is stored in these runs, so the launch read does
 not open `themes.json`; with a theme chosen it is one bounded document read more, not measured
 here. Idle CPU stayed 1.3 to 1.4% of one core.
+
+## Software adapters
+
+The owner decided on 2026-10-05 that a session with no usable hardware adapter first tries the platform's software adapter (lavapipe on Linux, WARP on Windows) and draws through the GPU path on it, once it is measured fast enough that dragging is not badly laggy ([decisions](../decisions.md#gpu-first-rendering), [GPU-first](../design/gpu-first.md#proposals-with-recorded-defaults)). This is that measurement, against thresholds the GPU-first integrator set on 2026-10-06 for the owner to confirm: at 24 MP at Fit, a drag's tick at p95 within 33 ms for a pointwise stack and within 100 ms for a Detail and Presence stack. **Lavapipe misses them**, so it is not adopted (`adapters::SOFTWARE_ADAPTER_ADOPTED` stays off): a pointwise drag's Fit tick is 2.7 to 7.3 times the 33 ms and a Detail drag under Presence 3.5 to 7.2 times the 100 ms.
+
+### Scope
+
+- **Not a typical PC.** An arm64 Linux container on the owner's M4 Pro, through Docker Desktop 29.4.0, whose Linux VM (kernel 6.12.76-linuxkit) has 14 vCPUs and 7.9 GiB; no GPU is passed through. The image is `rust:1.94.0-trixie` with Debian trixie's `mesa-vulkan-drivers` 25.0.7: lavapipe, `llvmpipe (LLVM 19.1.7, 128 bits)`, Vulkan 1.4.305, a `Cpu` adapter, chosen by `WGPU_BACKEND=vulkan` and `VK_ICD_FILENAMES` naming `lvp_icd.json`. The M4's cores are faster than most PCs', so these figures flatter lavapipe; macOS schedules the VM's vCPUs on its performance and efficiency cores as it chooses. WARP and Windows are not measured.
+- **Two CPU counts.** Docker's default, every vCPU (`nproc` 14), and `--cpuset-cpus 0-3` (`nproc` 4), so lavapipe's threads and the reference renderer's pool are four, approximating an ordinary four-core machine.
+- **The baseline.** The M4's own Metal adapter, natively, through the same benchmark.
+- **Build.** Release, `--locked`, commit `885e741e` (the GPU-first integration branch at `c3f0782c` with this benchmark and the fallback); the container's benchmark built in the container. Measured 6 October 2026.
+- **Load.** Other sessions share the host. The figures below are each configuration's quieter run: one-minute load 4.5 to 4.8 for Metal, 5.4 to 9.2 for 14 vCPUs and about 5 to 8 for four. A first run of each at loads up to 33 is given beside them where it differs: the two four-vCPU runs agreed within 8%, the two 14-vCPU runs did not, so the loaded 14-vCPU figures are an upper bound.
+
+### What is timed
+
+The drag-tick benchmark (`crates/luxforge-app/src/app/gpu_drag_bench.rs`), an ignored release test, on the generated 24 MP JPEG (6000 × 4000):
+
+- **A tick.** A draft of the stack's dragged slider, one value a tick swept to and fro, planned by the catalog owner as the desktop plans a gesture's tick (outside the timing; 0.01 to 1.3 ms), then drawn through one slot of the photo surface's own drawing on a headless device with the change measured since the tick before, timed from handing the source to the queue's completion, so the GPU's work is counted, not its encoding. 40 timed ticks a view after one untimed tick that waits out the compile and the source's upload; the last tick's frame equals the same plan drawn fresh in every run. **Fit** is the evidence window's bounds, a 1716 × 1144 frame; **100%** is that window's visible region at full scale, 1798 × 1662.
+- **The picture at rest at Fit.** The stack's tiles at full resolution reduced to the view, one tile a frame as the surface draws them, after an untimed draw that compiles; a draw past 20 s is measured once, its compile included.
+- **Export.** The stack's output stage streamed through the desktop's GPU tile worker, once cold and once warm, the warm figure given (the cold one where it passed 20 s).
+- **The reference renderer's whole frame per tick.** The drafted stack's exact 24 MP frame, the frame a session without a GPU draws per tick once the CPU proxy is retired (stage 5), 8 frames a stack.
+
+The stacks are (a) a full Basic layer, dragging Exposure; (b) Basic, a Tone curve and the colour mixer, dragging Exposure; (c) Detail (luminance and colour noise 40, sharpening 50) and Presence (Texture 50, Clarity 50, Dehaze 30), dragging Clarity, and (c′) the same stack dragging Detail's luminance noise reduction, which draws Presence again over Detail's new output; and (d) three radial masks, each with a masked Presence layer (Texture 50, Clarity 50, Dehaze 30), dragging the last one's Clarity. A Clarity drag reuses every spatial output it leaves unchanged, as the editor's slot does.
+
+**Statistics.** Nearest-rank p50 / p95 in ms.
+
+### Ticks
+
+| Stack | Threshold at Fit, p95 | Metal, Fit | Metal, 100% | lavapipe 14 vCPUs, Fit | lavapipe 14 vCPUs, 100% | lavapipe 4 vCPUs, Fit | lavapipe 4 vCPUs, 100% |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| (a) Basic | 33 | 1.6 / 1.6 | 1.6 / 1.6 | 84.9 / **89.0** (loaded 149.6) | 138.0 / 144.4 | 208.7 / **214.3** | 315.7 / 319.5 |
+| (b) Basic, Tone curve, mixer | 33 | 1.6 / 1.6 | 1.6 / 3.1 | 103.1 / **119.8** (loaded 226.5) | 154.8 / 171.6 | 237.5 / **242.5** | 359.4 / 361.5 |
+| (c) Detail and Presence, a Clarity drag | 100 | 1.6 / 1.6 | 1.6 / 1.6 | 89.0 / **95.8** (loaded 260.9) | 137.4 / 143.1 | 206.4 / **210.7** | 316.4 / 321.9 |
+| (c′) Detail and Presence, a Detail drag | 100 | 7.7 / 9.2 | 26.0 / 27.5 | 329.1 / **351.2** (loaded 1063) | 958.8 / 1012.9 | 679.8 / **719.7** | 1821.0 / 1870.3 |
+| (d) Three masked Presence layers | — | 1.6 / 1.7 | 1.6 / 1.7 | 102.9 / 110.8 | 161.9 / 176.5 | 188.0 / 191.8 | 297.8 / 302.0 |
+
+Metal's 1.6 ms appears to be the floor of a submission and its wait on that device rather than the work's own time: every light tick lands on it.
+
+### At rest, export and the reference frame
+
+| Stack | Metal: at rest / export / reference frame | lavapipe 14 vCPUs: at rest / export / reference frame | lavapipe 4 vCPUs: at rest / export / reference frame |
+| --- | --- | --- | --- |
+| (a) | 20.5 ms / 0.04 s / 93.0 / 95.6 | 1.77 s / 1.36 s / 112.6 / 119.7 | 3.97 s / 3.04 s / 275.0 / 296.9 |
+| (b) | 22.7 ms / 0.05 s / 214.0 / 218.2 | 1.90 s / 1.48 s / 260.6 / 289.8 | 4.33 s / 3.37 s / 632.7 / 644.0 |
+| (c) | 469 ms / 0.30 s / 480.3 / 718.0 | 17.1 s / 6.41 s / 1524 / 1854 | 36.4 s (compile included) / 12.5 s / 795.9 / 804.4 |
+| (c′) | 468 ms / 0.30 s / 491.9 / 524.7 | 18.4 s / 6.66 s / 1454 / 1657 | 36.6 s (compile included) / 12.5 s / 752.9 / 801.6 |
+| (d) | 12.6 s / 3.44 s / 485.6 / 548.8 | past 120 s / 74.1 s cold / 1210 / 1237 | past 120 s / 147.1 s cold / 660.8 / 668.3 |
+
+The reference frame is the whole 24 MP frame, p50 / p95 ms, Metal's column the M4's own cores. The picture at rest of (d) is drawn in 384 tiles, one a frame, against 24 for (c) and 6 for (a) and (b); on lavapipe it outlasted the harness's 120 s hang bound, which ended it.
+
+### Against the thresholds and the other paths
+
+- **Pointwise stacks fail at every CPU count.** (a) and (b) are 2.7 and 3.6 times the 33 ms at 14 vCPUs on a quiet host, 4.5 and 6.9 times loaded, and 6.5 and 7.3 times at four. At 100% they are slower still.
+- **Detail and Presence passes only for a Clarity drag with every vCPU on a quiet host.** (c) is 95.8 ms at 14 vCPUs, within the 100 ms by 4%, 260.9 loaded and 210.7 at four. A Detail drag under Presence, (c′), which redraws Presence, is 351 ms at 14 vCPUs and 720 at four, 3.5 and 7.2 times the 100 ms.
+- **Against the reference renderer's whole frame per tick**, in the same container: a pointwise tick on lavapipe, which draws the 2 MP Fit view, costs about three quarters of the reference renderer's whole 24 MP frame (89 against 120 ms at 14 vCPUs, 214 against 297 at four), so for these stacks lavapipe buys little over the whole-frame fallback. For a spatial drag it is several times faster than the reference frame, because the slot keeps what the drag leaves unchanged: 96 against 1854 ms for (c) at 14 vCPUs, 211 against 804 at four, and 351 against 1657 and 720 against 802 for (c′). The 14-vCPU reference frames of the spatial stacks are slower than the four-vCPU ones in both runs, which these runs do not explain.
+- **Against today's CPU proxy.** The drag a GPU-less host draws today is the CPU proxy at the view's size, measured on the M4 natively with the GPU preview off ([latency](#latency-with-the-gpu-preview-on-and-off), 2 October 2026): 24 MP at Fit, a full Basic layer, presented at a p95 of 18.0 to 25.8 ms, at 100% 11.9 ms, and the X100VI's Texture drag over Presence 47.2 ms. Lavapipe's pointwise Fit ticks, 89 to 243 ms at p95 before any frame is presented, are 3.4 to 13.5 times the proxy's Basic drag, and its Clarity drag, 96 to 211 ms, 2 to 4.5 times the X100VI's Texture drag; the proxy is retired with stage 5 ([GPU-first](../design/gpu-first.md#stages-and-what-each-deletes)), after which the whole reference frame above is what such a host draws per tick.
+
+Whether a GPU-less host should keep a reduced-size CPU frame per tick rather than the whole reference frame once stage 5 lands is the owner's question; these figures do not answer it.
+
+### Reproducing it
+
+Natively, after `cargo xtask generate-fixtures`:
+
+```sh
+LUXFORGE_DRAG_BENCH_OUTPUT=/absolute/NEW_DIR cargo test --release --locked -p luxforge-app \
+  --bin luxforge app::gpu_drag_bench::drag_tick_benchmark -- --ignored --exact --nocapture
+```
+
+It writes `drag-ticks.json` (every tick, the adapter, the host and the environment) and `drag-ticks.md`; `LUXFORGE_DRAG_BENCH_TICKS`, `LUXFORGE_DRAG_BENCH_REFERENCE_TICKS` and `LUXFORGE_DRAG_BENCH_STACKS` (`basic`, `basic-curve-mixer`, `detail-presence`, `detail-presence-detail-drag`, `masked-presence-3`) measure less, and `LUXFORGE_GPU_ADAPTER=software` asks wgpu for the software adapter alone on a host that has a hardware one too.
+
+In the container: an image `FROM rust:1.94.0-trixie` adding `build-essential pkg-config cmake nasm clang libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev libvulkan1 mesa-vulkan-drivers vulkan-tools jq`, with `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json`, `WGPU_BACKEND=vulkan`, `CARGO_TARGET_DIR=/target` and `CARGO_HOME=/cargo`; the worktree mounted read-only at `/src`, named volumes at `/target` and `/cargo` so the host's `target/` is untouched, and a writable directory for the output. Build with `cargo test --release --locked -p luxforge-app --bin luxforge --no-run`, copy the test executable out, and run it with `app::gpu_drag_bench::drag_tick_benchmark --ignored --exact --nocapture` and `LUXFORGE_DRAG_BENCH_OUTPUT`, once as it is and once with `docker run --cpuset-cpus 0-3`.
 
 ## Method
 
