@@ -3740,6 +3740,11 @@ mod tests {
             ),
             ("set-controls", json!({}), "Set Controls"),
             ("reset-controls", json!({}), "Reset Controls"),
+            ("set-look", json!({"look":"standard"}), "Look Standard"),
+            ("set-look", json!({"look":"neutral"}), "Look Neutral"),
+            ("set-look", json!({"amount":80}), "Look amount 80"),
+            ("set-look", json!({}), "Set look"),
+            ("reset-look", json!({}), "Reset Look"),
         ];
         for (action, parameters, label) in &table {
             let prepared = Prepared::new(&registry, action, parameters.clone())

@@ -1033,6 +1033,15 @@ fn invalid_new_bindings_and_hints_name_the_control_or_parameter() {
             "choice control for enabled",
         ),
         (
+            "choice labels",
+            Box::new(|d: &mut ModuleDescriptor| {
+                if let Control::Choice(ChoiceControl { labels, .. }) = &mut d.controls[1] {
+                    *labels = vec!["Only one".into()];
+                }
+            }),
+            "choice control for mode of action set-controls labels 1 of its",
+        ),
+        (
             "rail",
             Box::new(|d: &mut ModuleDescriptor| {
                 if let Control::Number(NumberControl { parameter, .. }) = &mut d.controls[2] {

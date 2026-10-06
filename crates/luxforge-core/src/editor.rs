@@ -13,6 +13,7 @@ use crate::{
     ModuleRegistry, Orientation, RenderContext, SnapshotId, StageSize,
     analysis::AnalysisIdentity,
     artifacts::{ArtifactId, LiveArtifacts, PREPARED_ARTIFACT_BYTES, PreparedArtifacts},
+    preferences::RawLook,
     source::PreparedSource,
 };
 use rusqlite::{Connection, OptionalExtension};
@@ -42,7 +43,11 @@ mod source;
 #[cfg(test)]
 mod test_support;
 #[cfg(test)]
-pub(crate) use test_support::{distinct_jpeg, mutation, mutation_json, recast_as_raw};
+pub(crate) use source::original_work;
+#[cfg(test)]
+pub(crate) use test_support::{
+    distinct_jpeg, mutation, mutation_json, recast_as_raw, synthetic_raw_metadata,
+};
 
 pub(crate) use catalog::{
     CATALOG_FORMAT, decode, default_artifact_root, encode, insert_entry, now_ms, write,
@@ -66,7 +71,8 @@ pub(crate) use plan::prefix;
 pub use source::RawInterpretation;
 pub(crate) use source::{
     FilePreparation, NewPhotograph, Prepared, Preparing, ReadContent, ReadOriginal, SourceWork,
-    insert_photograph, original_signature, source_signature, source_signature_for_handle,
+    insert_photograph, original_recipe, original_signature, source_signature,
+    source_signature_for_handle,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -651,6 +657,10 @@ pub struct EditorService {
     /// Whether a new asset's first open asks the lens module for its action
     /// ([`Self::set_auto_lens_profile`]). On until the host sets it from the person's preference.
     auto_lens_profile: bool,
+    /// The look a new RAW photograph's Original starts from, which modules read when the host
+    /// builds it ([`Self::set_raw_look`]). Standard until the host sets it from the person's
+    /// preference.
+    raw_look: RawLook,
 }
 
 impl EditorService {
@@ -720,6 +730,7 @@ impl EditorService {
             index: RefCell::new(None),
             auto_collapse: false,
             auto_lens_profile: true,
+            raw_look: RawLook::default(),
         })
     }
 
@@ -747,6 +758,20 @@ impl EditorService {
     /// Whether a new asset's first open asks the lens module now ([`Self::set_auto_lens_profile`]).
     pub fn auto_lens_profile(&self) -> bool {
         self.auto_lens_profile
+    }
+
+    /// Start new RAW photographs from this look: the person's "Starting look for new RAW photos"
+    /// preference, which the catalog owner sets when it starts and whenever the preference
+    /// changes. Modules read it through [`crate::OriginalContext`] when the host builds a new
+    /// photograph's Original ([`crate::ToolModule::original`]), so it applies to photographs
+    /// created from then on. A photo already in the catalog keeps its history either way.
+    pub fn set_raw_look(&mut self, look: RawLook) {
+        self.raw_look = look;
+    }
+
+    /// The look new RAW photographs start from now ([`Self::set_raw_look`]).
+    pub fn raw_look(&self) -> RawLook {
+        self.raw_look
     }
 
     /// The providers this service validates, plans and renders with.

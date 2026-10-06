@@ -8,7 +8,7 @@ capabilities; capture-specific metadata remains authoritative in each original.
 
 ## Outcome and delivery boundaries
 
-Open the owner's original Nikon Z6 NEF and Fujifilm X100VI RAF files directly, develop their sensor data into a useful neutral rendition, edit through the same history and command service as JPEG, and preserve every original byte. A camera's embedded JPEG is not the developed result. Support is qualified by actual recording mode and evidence, not by extension or a decoder's camera list.
+Open the owner's original Nikon Z6 NEF and Fujifilm X100VI RAF files directly, develop their sensor data into a useful neutral rendition (on which a new photo's [look](raw-looks.md) builds its starting point), edit through the same history and command service as JPEG, and preserve every original byte. A camera's embedded JPEG is not the developed result. Support is qualified by actual recording mode and evidence, not by extension or a decoder's camera list.
 
 The owner clarified the intended workflow: continually edit RAW in the editor, as in Lightroom. Every adjustment remains editable recipe data evaluated from the RAW original. There is no WB/exposure conversion step that creates a JPEG for subsequent editing. High-precision caches and display previews are disposable evaluations, never replacement sources. Changing an earlier setting recomputes the applicable downstream recipe, including later tools and geometry, without cumulative quantization or resampling.
 

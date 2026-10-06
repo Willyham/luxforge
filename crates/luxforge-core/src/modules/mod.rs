@@ -11,6 +11,7 @@ mod descriptor;
 mod detail;
 mod field_patch;
 pub(crate) mod lens;
+mod look;
 mod mixer;
 mod perspective;
 mod pixel;
@@ -34,6 +35,7 @@ pub static GPU_PROGRAMS: &[&crate::GpuProgram] = &[
     &basic::EXPOSURE_PROGRAM,
     &basic::TONE_PROGRAM,
     &basic::COLOUR_ADJUST_PROGRAM,
+    &look::LOOK_PROGRAM,
     &curve::TONE_CURVE_PROGRAM,
     &mixer::MIXER_PROGRAM,
     &vignette::VIGNETTE_PROGRAM,
@@ -90,6 +92,8 @@ pub use detail::qualification as detail_qualification;
 pub use field_patch::{FieldPatch, FieldPatchModule, Spec, Values};
 pub use lens::LENS_EFFECT;
 pub(crate) use lens::{LENS_MODULE, LensModule};
+pub use look::LOOK_EFFECT;
+pub(crate) use look::LookModule;
 pub use mixer::MIXER_EFFECT;
 pub(crate) use mixer::MixerModule;
 pub use perspective::PERSPECTIVE_EFFECT;
@@ -459,6 +463,38 @@ impl LayerReport {
     }
 }
 
+/// What a module may decide a new photograph's Original from ([`ToolModule::original`]): its
+/// source kind, what the Develop read of its file without decoding pixels, and the person's
+/// preferences for new photographs. Metadata only: it names no file and answers no pixel.
+#[derive(Clone, Copy, Debug)]
+pub struct OriginalContext<'a> {
+    pub source: SourceTag,
+    /// A RAW's interpretation (camera, mode, as-shot white balance and calibration), read from its
+    /// header and mosaic layout; `None` for a JPEG.
+    pub raw: Option<&'a crate::RawInterpretation>,
+    /// The file's header metadata: capture time, camera, lens and exposure, as the catalog's
+    /// capture row records them.
+    pub header: &'a crate::catalog_types::HeaderMetadata,
+    pub preferences: OriginalPreferences,
+}
+
+/// The person's preferences a module may consult when it starts a new photograph's Original: a
+/// copy of the values, never the preference store.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OriginalPreferences {
+    /// The look a new RAW photograph starts from.
+    pub raw_look: crate::preferences::RawLook,
+}
+
+/// A layer a module contributes to a new photograph's Original: one of its own effects and the
+/// payload it holds. Everything else is the host's, as for a [`NewLayer`]: the identity, the
+/// effect's declared format, no mask, and the position the effect's stage and order give it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalLayer {
+    pub effect_id: String,
+    pub payload: Value,
+}
+
 pub trait ToolModule: Send + Sync {
     fn descriptor(&self) -> &ModuleDescriptor;
     /// Normalize an already schema-checked request into its durable action identity and stored
@@ -523,6 +559,16 @@ pub trait ToolModule: Send + Sync {
             self.descriptor().id
         )))
     }
+    /// The payload of the neutral layer a GPU preview plans in place of a layer of `effect_id`
+    /// the stack does not hold yet: a drafted layer before its first commit, and the first drag
+    /// the warm list plans for a module the stack does not hold. In the GPU shape
+    /// (`CompileStage::gpu_shape`) it compiles to every unit the effect can hold, each the
+    /// identity. The default, `{}`, is every field patch's neutral payload; a module whose stored
+    /// form spells its neutral state otherwise, as the look's `{"look": "neutral"}`, names it.
+    fn neutral_payload(&self, effect_id: &str) -> Value {
+        let _ = effect_id;
+        Value::Object(Map::new())
+    }
     /// Turn a persisted payload into a host processing primitive at its input stage.
     fn compile(
         &self,
@@ -576,4 +622,20 @@ pub trait ToolModule: Send + Sync {
     /// source worker before such a preparation completes, never on the catalog owner or a UI
     /// thread, so `first_open` itself never waits. The default has nothing to wait for.
     fn await_first_open(&self) {}
+    /// A layer of one of this module's own effects for a new photograph's Original, or `None`, the
+    /// default. The host asks every available module that applies to the photograph's source kind,
+    /// in registry order, when it builds the Original of a photograph it is bringing into the
+    /// catalog ([`crate::EditorService`]'s `new_photograph`, and a seeded catalog by the same
+    /// rule). It checks the layer with [`ToolModule::validate_payload`] and inserts it where its
+    /// effect's declared stage and order place it, after the layers modules before it gave (a
+    /// source layer stays at index 0), so the layer is part of the Original: no history entry
+    /// records it, and Before shows it. It decides from metadata and preferences alone
+    /// ([`OriginalContext`]): it never reads a file or a pixel and never renders, so a batch
+    /// Develop costs nothing more. An error, or a layer that is not one of this module's effects or
+    /// that its own check refuses, refuses the new photograph by name; the layer is never silently
+    /// dropped. It is never asked about a photograph already in the catalog.
+    fn original(&self, context: &OriginalContext<'_>) -> Result<Option<OriginalLayer>, Error> {
+        let _ = context;
+        Ok(None)
+    }
 }

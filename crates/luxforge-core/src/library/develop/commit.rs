@@ -171,7 +171,7 @@ pub(crate) fn decide(
                         height: file.height,
                         source: file.source.clone(),
                     };
-                    match service.new_photograph(record, now_ms) {
+                    match service.new_photograph(record, &file.header, now_ms) {
                         Ok(photograph) => {
                             made.insert(file.fingerprint.clone(), photograph.asset.id.clone());
                             Becomes::Created(Box::new(photograph))
