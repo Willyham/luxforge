@@ -769,7 +769,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "workspace.set",
         WorkspaceSet,
         workspace_set,
-        "per-client screen preference: panels, canvas mode, overlays and the GPU preview; needs no asset and changes no history or frame; returns the session"
+        "per-client screen preference: panels, canvas mode, the thirds guide and overlays; needs no asset and changes no history or frame; returns the session"
     ),
     service!(
         "session.state",
