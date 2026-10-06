@@ -1223,9 +1223,10 @@ pub struct Options<'a> {
     /// job fills the overlay's coverage grid beside its frame.
     pub mask_overlay: bool,
     /// Drag mode only: queue this many JPEG exports of the committed stack (`export.jpeg`, the
-    /// export lane's one running and four waiting jobs at most) just before the drag, so an exact
-    /// render holds the shared pool while it runs, and read the lane's windows back with
-    /// `activity.list` after the release.
+    /// export lane's one running and four waiting jobs at most) just before the drag, so the GPU
+    /// tile worker streams them on the window's adapter while the drag draws, as a person's
+    /// exports run beside their next edit, and read the lane's windows back with `activity.list`
+    /// after the release.
     pub contend: Option<usize>,
     /// Drag mode only: leave the editor alone this many milliseconds after the preconditions and
     /// before the gesture, so the GPU programs the committed stack's warm list names finish
@@ -3627,7 +3628,7 @@ fn contention_windows(
         "finished_export_windows_ms": finished.iter().map(|(start, end)| json!([start, end])).collect::<Vec<_>>(),
         "activity_answered_ms": answered,
         "activity": answer,
-        "note": "Each export renders the committed stack exactly on the shared pool, then encodes and writes it, on the export lane: one job runs and the rest wait, so the lane is busy without a gap from the first export's acceptance to the last one's end. An input is contended when it was sent inside that window, which spans the jobs' encodes and writes as well as their renders. The end comes from activity.list after the release; the exported files are removed after the run.",
+        "note": "Each export streams the committed stack in tiles through the GPU tile worker on the window's adapter, then encodes and writes it, on the export lane: one job runs and the rest wait, so the lane is busy without a gap from the first export's acceptance to the last one's end. An input is contended when it was sent inside that window, which spans the jobs' encodes and writes as well as their renders. The end comes from activity.list after the release; the exported files are removed after the run.",
     });
     Ok((vec![(first, end)], report))
 }
