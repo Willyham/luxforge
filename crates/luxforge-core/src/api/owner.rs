@@ -20,7 +20,7 @@ use crate::{
     capabilities::host::CapabilityHost,
     editor::{Prepared, Preparing, SourceSignature, SourceWork},
     jobs::{CANCELLED, Family, JobControl, JobKind, Jobs, JoinKey, Opened, Output, Release},
-    preferences::CanvasBackground,
+    preferences::{CanvasBackground, RawLook},
     source::PlaneGate,
 };
 use requests::{RequestKey, RequestTable};
@@ -58,6 +58,8 @@ pub(super) mod files;
 #[cfg(test)]
 mod first_open_tests;
 pub(super) mod library;
+#[cfg(test)]
+mod original_tests;
 #[cfg(test)]
 mod preferences_tests;
 pub(super) mod previews;
@@ -1351,13 +1353,14 @@ fn owner_loop(
     queue.set_started(Arc::new(move |job| {
         let _ = analysis_started.send(OwnerMessage::SourceStarted(job));
     }));
-    // History collapses and new RAW photos get their lens profile as the person chose, or by
-    // default when the preferences cannot be read: the desktop reports that failure when it reads
-    // them itself.
+    // History collapses, and new RAW photos get their lens profile and start from their look, as
+    // the person chose, or by default when the preferences cannot be read: the desktop reports
+    // that failure when it reads them itself.
     let mut service = service;
     let preferences = host.preferences.read().unwrap_or_default();
     service.set_auto_collapse(preferences.auto_collapse_history());
     service.set_auto_lens_profile(preferences.auto_lens_profile());
+    service.set_raw_look(preferences.raw_look());
     let renderer = host.launch_renderer();
     // The host's GPU provider of the tile contract, or the reference renderer's service, which
     // starts nothing until it is asked: every pixel read and every export goes through it.
@@ -2847,6 +2850,7 @@ host_params! {
         performance_expanded: Option<Option<bool>> = boolean().notes("null resets it to expanded"),
         auto_collapse_history: Option<Option<bool>> = boolean().notes("null resets it to on"),
         auto_lens_profile: Option<Option<bool>> = boolean().notes("null resets it to on"),
+        raw_look: Option<Option<RawLook>> = enumeration(RawLook::ALL.map(RawLook::as_str)).notes("the look a new RAW photograph's Original starts from, for photographs created from now on; null resets it to standard"),
         mask_overlay_colour: Option<Option<MaskOverlayColour>> = enumeration(MaskOverlayColour::ALL.map(MaskOverlayColour::as_str)).notes("null resets it to green"),
         canvas_background: Option<Option<CanvasBackground>> = enumeration(CanvasBackground::ALL.map(CanvasBackground::as_str)).notes("theme draws the active theme's surround; null resets it to theme"),
         interface_size: Option<Option<u16>> = integer(100, 150).notes("percent: one of 100, 110, 125 or 150; null resets it to 100"),
@@ -2860,8 +2864,8 @@ host_params! {
 }
 
 /// `preferences.set`: one checked write of the preferences named, where `null` removes a stored
-/// value. The lens and auto-collapse switches reach the catalog writer at once, for the next
-/// import and edit. A theme must be one the library holds, read before the write. A change to
+/// value. The lens and auto-collapse switches and the RAW look reach the catalog writer at once,
+/// for the next import and edit. A theme must be one the library holds, read before the write. A change to
 /// anything the Settings sheet's General rows show, or to the theme, is announced, so a client
 /// showing them reads them again; the desktop's remembered state announces nothing.
 pub(super) fn preferences_set(
@@ -2885,6 +2889,7 @@ pub(super) fn preferences_set(
         performance_expanded: params.performance_expanded,
         auto_collapse_history: params.auto_collapse_history,
         auto_lens_profile: params.auto_lens_profile,
+        raw_look: params.raw_look,
         mask_overlay_colour: params.mask_overlay_colour,
         canvas_background: params.canvas_background,
         interface_size: params.interface_size,
@@ -2910,6 +2915,7 @@ pub(super) fn preferences_set(
     owner
         .service
         .set_auto_lens_profile(stored.auto_lens_profile());
+    owner.service.set_raw_look(stored.raw_look());
     if before.general() != stored.general() || before.theme() != stored.theme() {
         announce_once(&mut owner.announced, &call.origin);
     }
