@@ -97,7 +97,7 @@ use std::time::Instant;
 /// own charge over the core's plan, an estimate and not a measurement, a tile in the interior of a
 /// 60-megapixel RAW (9504 × 6336) through Detail and all three Presence fields reads the tile grown
 /// by its summed halo of 465 pixels on every side, anchored: at 2048 pixels a 3281-pixel square
-/// window, charged 1,331.5 MB; at 1024 a 2257-pixel one, charged 622.6 MB.
+/// window, charged 1,330.8 MB; at 1024 a 2257-pixel one, charged 622.3 MB.
 pub const GPU_TILE_BUDGET: u64 = 2 << 30;
 
 /// How many tiles a runner keeps submitted and not yet read back: the GPU draws one while its
@@ -828,10 +828,8 @@ impl TileRunner {
         light: &light::GpuLight,
     ) -> Result<u64, TileFailure> {
         match light.input {
-            light::LightInput::Stage { .. } => {
-                light::read_staged_light_charge(&self.device, source.kind().boundary(), light)
-            }
-            _ => light::read_light_charge(&self.device, source, light),
+            light::LightInput::Source => light::read_light_charge(&self.device, source, light),
+            _ => light::read_staged_light_charge(&self.device, source.kind().boundary(), light),
         }
         .map_err(TileFailure::Plan)
     }
