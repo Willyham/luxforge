@@ -1001,6 +1001,10 @@ impl Editor {
                     self.note_step(json!({"cursor_probe":trace}));
                     self.event("cursor_probe", || trace);
                 }
+                // A move's timing as the frame this capture reads back has it: the surface may have
+                // drawn the move's preview since the last message's hooks read its diagnostics, as
+                // it does when the GPU presents the opening photograph in the update after.
+                self.follow_timing();
                 let recorded = (self.snapshot(), self.activity.requested, self.drawn_photo());
                 let clipping_version = self.overlay_surface().map(luxforge_ui::Frame::version);
                 if let Some(evidence) = &mut self.evidence {

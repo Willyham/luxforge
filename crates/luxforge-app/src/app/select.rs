@@ -66,8 +66,8 @@ use luxforge_core::{
     ClientId, ClientSession, OwnerHandle,
     catalog_types::{
         Cards, CatalogCounts, CatalogInfo, DiskFolders, EventList, Facets, IndexFolderAnswer,
-        IndexFolders, LibraryAnswer, LibraryChange, LibraryJournal, RowItem, Targets, ViewQuery,
-        ViewRows, ViewSource, ViewSummary, Volumes,
+        IndexFolders, ItemRef, LibraryAnswer, LibraryChange, LibraryJournal, RowItem, Targets,
+        ViewQuery, ViewRows, ViewSource, ViewSummary, Volumes,
     },
 };
 use luxforge_ui::{
@@ -96,6 +96,11 @@ pub(crate) struct Select {
     pub(crate) serial: u64,
     /// When the newest evaluation was asked for, for its answer's event.
     pub(crate) asked_at: Option<std::time::Instant>,
+    /// A plain click on a cell made while the view was being read again: the items the cell
+    /// showed, by identity, which are selected over the view that lands ([`Editor::replay_click`]).
+    /// The owner, already holding the next evaluation, would refuse a selection naming the view on
+    /// screen, and the click would be lost; its position may name another item in the new view.
+    pub(crate) held_click: Option<Vec<ItemRef>>,
     /// `event.list`: one in flight, the newest search text waiting.
     pub(crate) events: Coalesce<String>,
     /// The events have been asked for since Select was first shown.
@@ -204,6 +209,7 @@ impl Default for Select {
             evidence_after: None,
             evidence_indexed: false,
             asked_at: None,
+            held_click: None,
             reread: Reread::Asked,
             reading: None,
             stale_while_reading: false,
@@ -1177,9 +1183,11 @@ impl Editor {
                     self.select.anchor = None;
                 }
                 self.loupe_replay_held(true);
+                self.replay_click();
             }
             Err(error) => {
                 self.loupe_replay_held(false);
+                self.select.held_click = None;
                 let state = &mut self.select.state;
                 state.summary = None;
                 state.rows.reset(0, 0);
@@ -1337,10 +1345,88 @@ impl Editor {
     fn press(&mut self, press: GridPress) {
         self.select.state.menu = None;
         let gesture = self.press_gesture(&press);
+        // A plain click while the view is read again waits for it, by the items its cell shows.
+        if let SelectGesture::Only { item, span } = gesture
+            && self.select.state.loading
+            && let Some(items) = self.cell_items(item, span)
+        {
+            let count = items.len();
+            self.select.held_click = Some(items);
+            self.event(
+                "select_click_held",
+                || json!({"position": item, "items": count}),
+            );
+            return;
+        }
         if !matches!(gesture, SelectGesture::Extend { .. }) {
             self.select.anchor = Some(press.item);
         }
         self.select_now(gesture);
+    }
+
+    /// The items the cell of `span` items from `item` shows, by identity, when every row of it is
+    /// held.
+    fn cell_items(&self, item: u32, span: u32) -> Option<Vec<ItemRef>> {
+        (item..item + span.max(1))
+            .map(|position| {
+                self.select
+                    .state
+                    .rows
+                    .row(position)
+                    .map(|row| match &row.item {
+                        RowItem::File { file_id } => ItemRef::File { file_id: *file_id },
+                        RowItem::Photo { asset_id } => ItemRef::Photo {
+                            asset_id: asset_id.clone(),
+                        },
+                    })
+            })
+            .collect()
+    }
+
+    /// The view has been read again: a click held meanwhile selects its cell's items over the view
+    /// that landed, by identity, and makes the first of them active. One no longer in the view is
+    /// dropped, the status bar saying so.
+    pub(crate) fn replay_click(&mut self) {
+        let Some(items) = self.select.held_click.take() else {
+            return;
+        };
+        let Some(revision) = self.select.state.revision() else {
+            return;
+        };
+        let selected = select_call(
+            &self.owner,
+            self.client,
+            json!({"mode": "replace", "items": items, "revision": revision}),
+        );
+        let session = match selected {
+            Ok(session) => session,
+            Err(error) => {
+                self.event("select_click_dropped", || json!({"reason": error}));
+                self.status.text = "The item clicked is no longer in the view".into();
+                return;
+            }
+        };
+        let first = session
+            .browse
+            .selection
+            .ranges
+            .first()
+            .map(|range| range.start);
+        self.adopt(session);
+        let Some(first) = first else {
+            return;
+        };
+        match select_call(
+            &self.owner,
+            self.client,
+            json!({"mode": "add", "active": first, "revision": revision}),
+        ) {
+            Ok(session) => {
+                self.adopt(session);
+                self.select.anchor = Some(first);
+            }
+            Err(error) => self.status.text = format!("Selection failed: {error}"),
+        }
     }
 
     /// An arrow key moves the active item and scrolls it into view.
