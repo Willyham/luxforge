@@ -1,6 +1,6 @@
 # GPU-first rendering
 
-Status: **decided by the owner on 2026-10-04; implementation planned** in [the plan](../../tasks/gpu-first.json). The GPU becomes the renderer of record for the picture on screen, the histogram and clipping counts, point samples and export. Correctness is a declared tolerance against a CPU reference render, not bit identity. The CPU kernels stay as that reference and as the renderer for a machine without a usable GPU. The work converges in stages, each of which deletes a cache, a phase or a fallback, so the editor gets simpler as it gets faster.
+Status: **decided by the owner on 2026-10-04; implementation planned** in [the plan](../../tasks/rendering/gpu-first.json). The GPU becomes the renderer of record for the picture on screen, the histogram and clipping counts, point samples and export. Correctness is a declared tolerance against a CPU reference render, not bit identity. The CPU kernels stay as that reference and as the renderer for a machine without a usable GPU. The work converges in stages, each of which deletes a cache, a phase or a fallback, so the editor gets simpler as it gets faster.
 
 ## Why
 
