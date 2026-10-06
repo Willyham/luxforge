@@ -1,7 +1,7 @@
 //! The reduced stage a GPU frame is drawn at, at Fit and at a percentage zoom below 100%
 //! (`docs/design/gpu-preview.md`, "The GPU source"): the source reduced to the view's size, the
 //! stack compiled against it, and the window of it the output reads, planned by the GPU's own
-//! window walk ([`WindowPlan::of_gpu_rect`] from the source, boundary 0). Nothing here reads a pixel
+//! window walk ([`WindowPlan::of_gpu_rect`] from the source). Nothing here reads a pixel
 //! or plans a CPU render: the photo surface derives the reduced source from the source it holds,
 //! by the area average this plan's coverage names ([`ProxyPlan::coverage`]).
 use super::preview::output_window;

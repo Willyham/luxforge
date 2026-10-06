@@ -655,13 +655,13 @@ fn drag_lights(
 }
 
 /// The window of the stage segment `segment` of `compiled`, a stack over a `full` source, receives
-/// that the whole output stage reads, planned as the boundary's render plans it
+/// that the whole output stage reads, planned by the GPU window walk
 /// (`Render::output_boundary`, [`WindowPlan::of_gpu_rect`]): `None` when the segment reads all of
 /// it or the planner cannot cut the stack. `O(segments)`, no pixel read.
 pub(crate) fn output_window(compiled: &Compiled, full: Stage, segment: usize) -> Option<Region> {
     let full = (full.width, full.height);
     let output = Region::whole(compiled.stage());
-    WindowPlan::of_gpu_rect(compiled, full, output, segment)
+    WindowPlan::of_gpu_rect(compiled, full, output)
         .ok()
         .and_then(|windows| windows.received_cut(compiled, full, segment))
 }
@@ -999,7 +999,7 @@ fn plan_tiles(
     let format = crate::BoundaryFormat::of(linear);
     let source = (full.width, full.height);
     let window_of = |rect: Region| {
-        WindowPlan::of_gpu_rect(compiled, source, rect, 0)
+        WindowPlan::of_gpu_rect(compiled, source, rect)
             .map(|windows| super::plan::anchored(windows.reads(0), anchor))
     };
     // The longest side whose tile in the middle of the stage, its window grown on every side, the
@@ -1122,7 +1122,7 @@ fn planned_preview(
     }
     if let (GpuAnswer::Plan(_), Some((rect, _))) = (&answer, fit.region) {
         let full = (fit.full.width, fit.full.height);
-        answer = match WindowPlan::of_gpu_rect(&fit.compiled, full, rect, position.0) {
+        answer = match WindowPlan::of_gpu_rect(&fit.compiled, full, rect) {
             Ok(windows) => {
                 window = Some(windows.reads(position.0));
                 answer

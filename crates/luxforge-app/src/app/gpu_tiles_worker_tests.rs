@@ -38,8 +38,7 @@ use super::{
 use luxforge_core::{
     AssetId, BASIC_EFFECT, BoundaryFormat, Cancel, ClientId, DETAIL_EFFECT, EffectStage, Error,
     Evaluation, GpuFallback, HostConfig, Layer, ModuleRegistry, OwnerHandle, PRESENCE_EFFECT,
-    PreviewSource, Recipe, Region, RenderContext, RenderOptions, SnapshotId, TilePlan, plan_read,
-    render,
+    PreviewSource, Recipe, Region, RenderContext, TilePlan, plan_read,
     tiles::{
         Answered, BandStream, EXPORT_BANDS_IN_FLIGHT, MaskInputMode, ReadAnswer, ReadPixels,
         ReadStage, ReadValues, ReferenceTiles, TileCall, TileFallback, TileService, TileStatus,
@@ -103,24 +102,10 @@ fn clients(count: usize) -> Vec<ClientId> {
     clients
 }
 
-/// `recipe` over `source`, bound as the catalog owner binds a saved entry's stack; with `stored`,
-/// on a context whose estimate store the stack's exact frame filled, as a displayed stack's
-/// settled frame fills it.
-fn stack(source: &PreviewSource, recipe: &Recipe, stored: bool) -> Evaluation {
+/// `recipe` over `source`, bound as the catalog owner binds a saved entry's stack.
+fn stack(source: &PreviewSource, recipe: &Recipe) -> Evaluation {
     let registry = Arc::new(ModuleRegistry::builtin());
     let context = RenderContext::new();
-    if stored {
-        render(
-            &registry,
-            source,
-            recipe,
-            RenderOptions::exact(&Cancel::never()),
-            &context,
-        )
-        .expect("the exact render")
-        .frame(SnapshotId::new())
-        .expect("the exact frame");
-    }
     Evaluation::new(
         registry,
         context,
@@ -344,7 +329,7 @@ fn a_read_through_the_worker_equals_the_headless_surfaces_tile_bit_for_bit() {
         let gpu = gpu_source(versions, &source);
         for (family, recipe) in families() {
             let what = format!("{family} on {path}");
-            let stack = stack(&source, &recipe, true);
+            let stack = stack(&source, &recipe);
             let stages = (0..=recipe.layers.len())
                 .map(|layer| ReadStage::Before {
                     layer,
@@ -459,7 +444,7 @@ fn a_read_is_within_the_display_limit_of_the_reference_service() {
                 Class::Pointwise
             };
             let limits = class.limits();
-            let stack = stack(&source, &recipe, true);
+            let stack = stack(&source, &recipe);
             let last = recipe.layers.len() - 1;
             for stage in [
                 ReadStage::Output,
@@ -565,7 +550,7 @@ fn a_picks_25_points_render_one_window() {
         (BoundaryFormat::Half, "the byte path"),
         (BoundaryFormat::Float, "the linear path"),
     ] {
-        let stack = stack(&source(format), &recipe, true);
+        let stack = stack(&source(format), &recipe);
         settle(&service, client);
         let before = service.figures();
         let (answers, _) = call(&service, client, &stack, &points);
@@ -602,7 +587,7 @@ fn a_picks_25_points_render_one_window() {
 
     // A stack over pixels nothing else holds: once its call is answered, the worker has let go of
     // its evaluation, its source and the window of it the runner kept.
-    let (fresh, held) = fresh_stack(&stack(&source(BoundaryFormat::Half), &recipe, true));
+    let (fresh, held) = fresh_stack(&stack(&source(BoundaryFormat::Half), &recipe));
     call(&service, client, &fresh, &points);
     drop(fresh);
     settle(&service, client);
@@ -635,7 +620,7 @@ fn a_seed_is_the_code_of_the_sample_input() {
     for format in [BoundaryFormat::Half, BoundaryFormat::Float] {
         let source = source(format);
         for (family, recipe) in families() {
-            let stack = stack(&source, &recipe, true);
+            let stack = stack(&source, &recipe);
             for (layer, _) in recipe
                 .layers
                 .iter()
@@ -733,7 +718,7 @@ fn a_plan_the_gpu_cannot_run_is_answered_by_the_reference_naming_why() {
     }
     assert_eq!(service.status(), TileStatus::Gpu, "the runner itself draws");
     // Without it the GPU draws the stack, Presence's Dehaze light computed by the runner.
-    let held = stack(&source, &recipe, false);
+    let held = stack(&source, &recipe);
     assert!(
         recipe.layers[0].payload["dehaze"]
             .as_f64()
@@ -817,7 +802,7 @@ fn an_interactive_read_waits_behind_at_most_one_export_tile() {
         .into_iter()
         .find(|(family, _)| *family == "Presence")
         .expect("the Presence family");
-    let stack = stack(&source(BoundaryFormat::Half), &recipe, true);
+    let stack = stack(&source(BoundaryFormat::Half), &recipe);
     // A read whose call notes how many tiles the worker had drawn when it began answering it.
     let observed = |service: &Arc<GpuTiles>| {
         let (seen, noted) = mpsc::sync_channel(1);
@@ -924,7 +909,7 @@ fn a_stream_is_the_whole_stage_render_bit_for_bit() {
         let gpu = gpu_source(versions, &source);
         for (family, recipe) in families() {
             let what = format!("{family} on {path}");
-            let stack = stack(&source, &recipe, true);
+            let stack = stack(&source, &recipe);
             versions += 1;
             let (plan, codes) =
                 drawn_whole(&mut surface, &gpu, &stack, ReadStage::Output, versions);
@@ -983,7 +968,7 @@ fn two_streams_are_byte_identical() {
                 .contains(family)
             }) {
                 let what = format!("{family} on {path} in {tiles}");
-                let stack = stack(&source, &recipe, true);
+                let stack = stack(&source, &recipe);
                 let stream = |service: &GpuTiles| {
                     stitched(
                         service.stream(&stack, &Cancel::new()).expect("a stream"),
@@ -1020,7 +1005,7 @@ fn a_cancelled_stream_stops_between_tiles_and_frees_its_slots() {
         .into_iter()
         .find(|(family, _)| *family == "Presence after Detail")
         .expect("the family");
-    let (stack, held) = fresh_stack(&stack(&source(BoundaryFormat::Half), &recipe, true));
+    let (stack, held) = fresh_stack(&stack(&source(BoundaryFormat::Half), &recipe));
     let cancel = Cancel::new();
     let begin = shut();
     service.hold_steps(Some(Arc::clone(&begin)));
@@ -1070,7 +1055,7 @@ fn a_lost_device_ends_the_stream_with_device_lost() {
         .into_iter()
         .find(|(family, _)| *family == "a colour stack")
         .expect("the family");
-    let stack = stack(&source(BoundaryFormat::Half), &recipe, true);
+    let stack = stack(&source(BoundaryFormat::Half), &recipe);
     let begin = shut();
     service.hold_steps(Some(Arc::clone(&begin)));
     let mut bands = service.stream(&stack, &Cancel::new()).expect("a stream");

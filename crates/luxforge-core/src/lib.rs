@@ -9,6 +9,7 @@ pub mod capabilities;
 /// One home for the sRGB transfer function, Rec. 709 luminance, the Oklab conversion, small 3×3
 /// linear algebra and the Planckian locus, shared by every renderer and colour module.
 pub mod colour;
+mod cpu_proxy;
 mod draft;
 mod editor;
 mod error;
@@ -56,6 +57,7 @@ pub use cancel::{Cancel, ProgressCounts};
 pub use capabilities::context::ModuleContext;
 pub use capabilities::host::HostConfig;
 pub use capabilities::redact::redact_params;
+pub use cpu_proxy::{ProxyApproximation, ProxyOutcome};
 pub use draft::{Draft, DraftTarget, declared_target};
 pub use editor::{
     ActionResult, AssetPage, AssetRecord, AssetSummary, DraftStamp, EditorService, EditorState,
@@ -100,11 +102,9 @@ pub use preview::{
     AssetSelection, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,
     MaskCoverageTarget, MaskOverlayOutcome, PREVIEW_PROGRESS_QUIET, PhaseOutcome, PreviewIntent,
     PreviewJob, PreviewPhase, PreviewProgress, PreviewQueue, PreviewResult, PreviewSession,
-    PreviewSource, ProxyOutcome, Queued, RegionOutcome, ViewState, Zoom,
+    PreviewSource, Queued, ViewState, Zoom,
 };
-pub use proxy::{
-    ProxyApproximation, ProxyBounds, ProxyCoverage, ProxyIdentity, ProxyPlan, area_coverage,
-};
+pub use proxy::{ProxyBounds, ProxyCoverage, ProxyIdentity, ProxyPlan, area_coverage};
 pub use render::gpu::{
     BoundaryKey, CoordinateGrid, GPU_PASS_INPUTS, GPU_PLAN_LINKS, GPU_SHARED_VALUES,
     GPU_WARM_LINKS, GPU_WORKGROUP_LANES, GRID_MAX_NODES, GRID_SAMPLE_TOLERANCE_PX,
@@ -120,9 +120,8 @@ pub use render::gpu::{
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{
     ContentPoint, GeometryMap, INPUT_GRID_MAX_CELLS, InputGridCache, LinearSettings, MapError,
-    MappingDescriptor, MappingShape, Raster, RegionFrame, Render, RenderContext, RenderOptions,
-    RenderSource, Sample, ScratchBudget, StageSize, WhiteBalanceApproximation, render,
-    stage_transform,
+    MappingDescriptor, MappingShape, Raster, Render, RenderContext, RenderOptions, RenderSource,
+    Sample, ScratchBudget, StageSize, WhiteBalanceApproximation, render, stage_transform,
 };
 pub use source::{LinearImage, OpticalIdentity, SourceImage, SourceOptics, open_source};
 
@@ -132,25 +131,6 @@ pub use source::{LinearImage, OpticalIdentity, SourceImage, SourceOptics, open_s
 pub mod qualification {
     pub use crate::modules::detail_qualification as detail;
     pub use crate::modules::presence_qualification as presence;
-
-    /// The proxy plan a Fit job's worker builds for `recipe` over `render`'s source within
-    /// `bounds`, as the GPU preview's plan reads it, and the window of the whole proxy stage the
-    /// proxy source holds (`[x, y, width, height]`) when the stack reads less than all of it.
-    /// `None` when the stack takes no proxy, or none smaller than the source fits.
-    pub fn fit_proxy(
-        render: &crate::Render,
-        registry: &crate::ModuleRegistry,
-        recipe: &crate::Recipe,
-        bounds: crate::ProxyBounds,
-    ) -> Option<(crate::ProxyPlan, Option<[u32; 4]>)> {
-        registry.proxy_eligible(recipe).ok()?;
-        let plan = render.proxy_plan(bounds)?;
-        let plan = render.proxy_window(registry, recipe, plan).plan();
-        let window = plan
-            .window
-            .map(|window| [window.x, window.y, window.width, window.height]);
-        Some((plan, window))
-    }
 
     /// The picture at rest of `evaluation` on the GPU at `view`, as a displayed stack's job plans
     /// it ([`crate::GpuRest`]): the plan of the whole stack from the source, and the boundary it
@@ -329,7 +309,7 @@ pub mod qualification {
             for group in groups {
                 let asked: Vec<u32> = group.iter().map(|&index| factors[index]).collect();
                 let context = crate::RenderContext::new();
-                let render = crate::render(
+                let mut render = crate::render(
                     registry,
                     source,
                     &prefix,
@@ -342,7 +322,7 @@ pub mod qualification {
                     })?;
                     // Every unit of the operation that declares the light's key is handed it;
                     // the others read nothing.
-                    hold_estimates(&render, place, &vec![Some(light); HELD_UNITS])?;
+                    hold_estimates(&mut render, place, &vec![Some(light); HELD_UNITS])?;
                 }
                 cells::arm(&context, &asked)?;
                 let framed = render.frame(crate::SnapshotId::new());
@@ -378,11 +358,11 @@ pub mod qualification {
         Ok(lights)
     }
 
-    /// Hold `estimates`, each unit's values or `None`, in `render`'s estimate store for the
-    /// spatial operation of layer `layer`, under the keys a frame of `render` asks with, as a
-    /// frame that prepared them would: what [`twin_lights`] hands an earlier layer's light by.
+    /// Hand `render`'s spatial operation of layer `layer` `estimates`, each unit's values or
+    /// `None`, in place of the ones its frame would reduce, a unit that declares no estimate key
+    /// keeping none: what [`twin_lights`] hands an earlier layer's light by.
     fn hold_estimates(
-        render: &crate::Render,
+        render: &mut crate::Render,
         layer: usize,
         estimates: &[Option<Vec<f64>>],
     ) -> Result<(), crate::Error> {
@@ -498,22 +478,21 @@ pub mod qualification {
             .map(|light| light.values().to_vec()))
     }
 
-    /// The global estimates the spatial operation of layer `layer` reads in a frame of `render`,
-    /// from its context's estimate store alone: each unit's values, `None` for a unit that
-    /// prepares none. `None` when the store does not hold them, as before any frame of `render`.
-    pub fn held_estimates(
+    /// The global estimates the spatial operation of layer `layer` reads in a frame of `render`:
+    /// each unit's values, `None` for a unit that prepares none, from one reduction of the layer's
+    /// whole input stage, as the frame reduces it.
+    pub fn frame_estimates(
         render: &crate::Render,
         layer: usize,
-    ) -> Result<Option<Vec<Option<Vec<f64>>>>, crate::Error> {
+    ) -> Result<Vec<Option<Vec<f64>>>, crate::Error> {
         let index = render
             .spatial_segment_of(layer)
             .ok_or_else(|| crate::Error::validation(format!("layer {layer} is not spatial")))?;
-        Ok(render.held_spatial_globals(index)?.map(|globals| {
-            globals
-                .into_iter()
-                .map(|global| global.map(|global| global.values().to_vec()))
-                .collect()
-        }))
+        Ok(render
+            .spatial_globals(index)?
+            .into_iter()
+            .map(|global| global.map(|global| global.values().to_vec()))
+            .collect())
     }
 
     #[cfg(test)]
@@ -521,7 +500,7 @@ pub mod qualification {
         use super::*;
         use crate::{
             BASIC_EFFECT, Cancel, Layer, ModuleRegistry, PRESENCE_EFFECT, Recipe, RenderContext,
-            RenderOptions, RenderSource, SnapshotId,
+            RenderOptions, RenderSource,
         };
         use serde_json::json;
 
@@ -543,9 +522,7 @@ pub mod qualification {
                 &context,
             )
             .unwrap();
-            render.frame(SnapshotId::new()).unwrap();
-            held_estimates(&render, layer)
-                .unwrap()
+            frame_estimates(&render, layer)
                 .unwrap()
                 .into_iter()
                 .flatten()
@@ -793,8 +770,7 @@ pub(crate) use modules::{
     MAX_PRESET_NAME, MAX_SETTINGS_ACTIONS, MAX_SETTINGS_FIELDS, Superseded, lightroom_to_luxforge,
     valid_name,
 };
-pub(crate) use proxy::{ProxyCache, ProxyKey, ProxyWindow};
-pub(crate) use render::RegionRenderOutcome;
+pub(crate) use proxy::ProxyWindow;
 pub(crate) use source::{open_source_bytes, read_bounded_file};
 
 // The crate root paths only the core's unit tests use.
@@ -807,5 +783,3 @@ pub(crate) use modules::{
     APPLY_PRESET, BasicModule, CapabilitiesProofModule, MAX_COLOR_UNITS, PROOF_PALETTE_GAINS,
     PresenceModule,
 };
-#[cfg(test)]
-pub(crate) use render::ProxyRegionPlan;

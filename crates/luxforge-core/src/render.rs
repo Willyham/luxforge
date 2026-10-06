@@ -10,7 +10,7 @@
 //! - [`colour_runs`]: colour runs and their masked blend.
 //! - [`pipeline`]: the one pipeline, generic over its pixel domain.
 //! - [`byte`] and [`linear`]: the two pixel domains, each with its rows and its driver.
-//! - [`spatial`] and [`window`]: the spatial primitive's execution and the windowed proxy.
+//! - [`spatial`] and [`window`]: the spatial primitive's execution and the GPU window walk.
 //! - [`raster`]: the rendered frame and its helpers.
 //! - [`mod@locate`]: the public locate and transform types.
 //! - [`context`] and [`parallel`]: the render context's budgets and the one parallel gate.
@@ -30,7 +30,6 @@ pub(crate) mod map;
 pub(crate) mod parallel;
 mod pipeline;
 mod raster;
-pub(crate) mod reduced;
 pub(crate) mod spatial;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -57,18 +56,15 @@ pub(crate) mod tests;
 mod warp_tests;
 
 pub use boundary::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
-use byte::{Byte, check_source, rasterize};
+pub(crate) use byte::check_source;
+use byte::{Byte, rasterize};
 use colour_runs::{ColorRun, MaskedInput, apply_units, color_chunk_rows, color_runs};
 use compiled::ResampleEntry;
 use compiled::mapped_replacements;
 pub(crate) use compiled::{Compiled, Entry, Segment};
 pub use context::{RenderContext, ScratchBudget};
-#[cfg(test)]
-pub(crate) use entry::ProxyRegionPlan;
-pub(crate) use entry::{
-    MaskInputMode, ProxyStage, RegionRenderOutcome, StagePixels, layer_input, prefix_pixels,
-};
-pub use entry::{RegionFrame, Render, RenderOptions, RenderSource, render};
+pub(crate) use entry::{MaskInputMode, StagePixels, layer_input, prefix_pixels};
+pub use entry::{Render, RenderOptions, RenderSource, render};
 use geometry::{bilinear, nearest_index, resample_frame};
 pub(crate) use input_grid::{GridRequest, grid_input};
 pub use input_grid::{INPUT_GRID_MAX_CELLS, InputGridCache};

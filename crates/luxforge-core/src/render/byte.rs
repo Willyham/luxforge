@@ -14,9 +14,9 @@ use crate::{
     modules::{ExactGeometry, Parallelism, Region, Stage},
 };
 use rayon::prelude::*;
-use std::{borrow::Cow, sync::Arc};
+use std::sync::Arc;
 
-pub(super) fn check_source(source: &SourceImage) -> Result<(), Error> {
+pub(crate) fn check_source(source: &SourceImage) -> Result<(), Error> {
     if source.rgba.len() != Raster::expected_len(source.width, source.height)? {
         return Err(Error::validation(
             "source pixel buffer has the wrong length",
@@ -127,12 +127,6 @@ fn encoded_in(quantizers: (&Quantizer, &Quantizer16), rgb: [f32; 3], wide: bool)
     }
 }
 
-/// The estimate prefix of a byte source of `width` × `height` stored at `orientation`: what its
-/// estimates are keyed by.
-fn estimate_prefix(prefix_hash: &str, width: u32, height: u32, orientation: u8) -> String {
-    format!("{prefix_hash}+byte:{width}x{height}:orientation:{orientation}")
-}
-
 fn decoded(rgb: [u16; 3]) -> [f32; 3] {
     decoded_in(decode16_table(), rgb)
 }
@@ -148,17 +142,6 @@ impl PixelDomain for Byte<'_> {
     type SpatialFrame = ByteFrame;
     type TileOutput = ByteFrame;
 
-    fn fingerprint(&self) -> &str {
-        &self.0.fingerprint
-    }
-    fn estimate_prefix<'p>(&self, prefix_hash: &'p str) -> Cow<'p, str> {
-        Cow::Owned(estimate_prefix(
-            prefix_hash,
-            self.0.width,
-            self.0.height,
-            self.0.orientation,
-        ))
-    }
     fn source_pixel(&self, x: u32, y: u32) -> Result<Self::Pixel, Error> {
         let p = source_pixel(self.0, x, y);
         Ok([p[0], p[1], p[2]].map(|v| u16::from(v) * 257))
@@ -868,7 +851,7 @@ mod tests {
     use serde_json::json;
     fn segment(spatial: bool, colour: bool, pixels: bool) -> Segment {
         let mut segment = Segment::new(
-            spatial.then(|| Entry::spatial(crate::SpatialOperation::neutral(), String::new())),
+            spatial.then(|| Entry::spatial(crate::SpatialOperation::neutral())),
             10,
             10,
         );
@@ -1002,40 +985,5 @@ mod tests {
         let serial = render.frame(SnapshotId::new()).unwrap();
         super::super::parallel::force(None);
         assert_eq!(pooled.rgba, serial.rgba);
-    }
-    #[test]
-    fn byte_region_and_window_equal_whole_through_a_wide_hand_off() {
-        let registry = ModuleRegistry::builtin();
-        let source = gradient(97, 73);
-        let context = RenderContext::new();
-        let recipe = wide_stack();
-        let render = super::super::render(
-            &registry,
-            &source,
-            &recipe,
-            RenderOptions::default(),
-            &context,
-        )
-        .unwrap();
-        let frame = render.frame(SnapshotId::new()).unwrap();
-        let region = Region {
-            x0: 19,
-            y0: 13,
-            width: 39,
-            height: 31,
-        };
-        let super::super::RegionRenderOutcome::Rendered(cut) =
-            render.region(SnapshotId::new(), region).unwrap()
-        else {
-            panic!("wide stage supports a region")
-        };
-        for y in 0..region.height {
-            for x in 0..region.width {
-                assert_eq!(
-                    cut.raster.pixel(x, y),
-                    frame.pixel(region.x0 + x, region.y0 + y)
-                );
-            }
-        }
     }
 }

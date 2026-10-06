@@ -504,160 +504,11 @@ fn texture_and_clarity_never_reduce_for_an_unused_estimate() {
         json!({"texture": -70.0, "clarity": 35.0}),
     ] {
         let operation = operation(&payload, stage);
-        let globals = resolve_globals(&context, &operation, stage, "source", "prefix", || {
+        let globals = resolve_globals(&context, &operation, || {
             panic!("{payload} must not read pixels for a global estimate")
         })
         .unwrap();
         assert_eq!(globals, vec![None; operation.len()]);
-        assert_eq!(
-            context.estimates().len(),
-            0,
-            "no unused entries in the bounded store"
-        );
-    }
-}
-
-#[test]
-fn dehaze_reuses_only_strength_independent_estimates() {
-    let context = RenderContext::new();
-    let stage = Stage {
-        width: 64,
-        height: 48,
-    };
-    let reductions = std::cell::Cell::new(0);
-    let resolve = |payload: Value, stage: Stage, source: &str, prefix: &str| {
-        resolve_globals(
-            &context,
-            &operation(&payload, stage),
-            stage,
-            source,
-            prefix,
-            || {
-                reductions.set(reductions.get() + 1);
-                build_reduction(stage, |x, y| {
-                    Ok([
-                        x as f32 / stage.width as f32,
-                        y as f32 / stage.height as f32,
-                        0.4,
-                    ])
-                })
-            },
-        )
-        .unwrap()
-    };
-    let first = resolve(json!({"dehaze": 60.0}), stage, "source", "prefix");
-    assert!(first[0].is_some());
-    for payload in [
-        json!({"dehaze": 61.0}),
-        json!({"dehaze": -40.0}),
-        json!({"dehaze": 35.0, "texture": 40.0, "clarity": -30.0}),
-    ] {
-        let globals = resolve(payload, stage, "source", "prefix");
-        assert_eq!(
-            globals[0], first[0],
-            "strength cannot change the atmosphere"
-        );
-        assert!(globals[1..].iter().all(Option::is_none));
-        assert_eq!(
-            reductions.get(),
-            1,
-            "amount edits and unused units need no reduction"
-        );
-        assert_eq!(context.estimates().len(), 1);
-    }
-    for (changed_stage, source, prefix) in [
-        (stage, "different source", "prefix"),
-        (stage, "source", "different prefix"),
-        (Stage { width: 65, ..stage }, "source", "prefix"),
-        (
-            Stage {
-                height: 49,
-                ..stage
-            },
-            "source",
-            "prefix",
-        ),
-    ] {
-        let before = reductions.get();
-        resolve(json!({"dehaze": 61.0}), changed_stage, source, prefix);
-        assert_eq!(
-            reductions.get(),
-            before + 1,
-            "changed input identity must reduce again"
-        );
-    }
-}
-
-#[test]
-fn a_reused_dehaze_estimate_preserves_rendered_and_sampled_bytes_on_both_paths() {
-    let registry = ModuleRegistry::builtin();
-    let source = textured_source(96, 64);
-    let pixels: Vec<_> = source
-        .rgba
-        .chunks_exact(4)
-        .map(|pixel| crate::colour::srgb::decode_pixel([pixel[0], pixel[1], pixel[2]]))
-        .collect();
-    let planes: Vec<f32> = (0..3)
-        .flat_map(|channel| pixels.iter().map(move |p| p[channel]))
-        .collect();
-    let linear =
-        crate::LinearImage::with_fingerprint(96, 64, planes, "presence-estimate-reuse").unwrap();
-    let settings = crate::LinearSettings::default();
-    let seed = presence_recipe(json!({"dehaze": 60.0}));
-    for linear_path in [false, true] {
-        let input = || {
-            if linear_path {
-                crate::render::testing::linear(&linear, settings)
-            } else {
-                crate::RenderSource::Byte(&source)
-            }
-        };
-        let render = |context: &RenderContext, recipe: &Recipe| {
-            frame_in(
-                context,
-                &registry,
-                input(),
-                SnapshotId::new(),
-                recipe,
-                RenderOptions::default(),
-            )
-            .unwrap()
-        };
-        for payload in [
-            json!({"dehaze": 61.0}),
-            json!({"dehaze": -40.0}),
-            json!({"dehaze": 35.0, "texture": 40.0, "clarity": -30.0}),
-        ] {
-            let context = RenderContext::new();
-            render(&context, &seed);
-            let mut changed = seed.clone();
-            changed.layers[0].payload = payload;
-            let reused = render(&context, &changed);
-            assert_eq!(
-                context.estimates().len(),
-                1,
-                "only the seed atmosphere is retained"
-            );
-            let fresh = render(&RenderContext::new(), &changed);
-            assert_eq!(
-                reused.rgba, fresh.rgba,
-                "reusing the estimate changes no byte"
-            );
-            // The samples read the seed's atmosphere from the store, as the reused render did.
-            for (x, y) in [(0, 0), (47, 31), (95, 63)] {
-                let sampled = sample_in(
-                    &context,
-                    &registry,
-                    input(),
-                    &changed,
-                    RenderOptions::default(),
-                    x,
-                    y,
-                )
-                .unwrap();
-                assert_eq!(sampled.rgba, reused.pixel(x, y));
-            }
-        }
     }
 }
 
@@ -815,7 +666,7 @@ fn presence_timing() {
                 panic!("a spatial operation");
             };
             let plan = SpatialPlan::new(&operation, stage, Tiling::Halo).expect("a plan");
-            // Warm the source and the estimate store, then measure.
+            // Warm the source, then measure.
             let context = RenderContext::new();
             let render = || {
                 frame_in(

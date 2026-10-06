@@ -33,8 +33,8 @@ use super::gpu_qualification::{Stream, headless as qualifier};
 use luxforge_core::{
     BASIC_EFFECT, CURVE_EFFECT, Cancel, Component, ComponentMode, DETAIL_EFFECT, GpuAnswer,
     GpuLightRestoration, GpuPlanRequest, Layer, LinearImage, LinearSettings, Mask, ModuleRegistry,
-    PRESENCE_EFFECT, Recipe, RenderContext, RenderOptions, RenderSource, SnapshotId, SourceImage,
-    Stage, gpu_lights, gpu_plan, qualification, render,
+    PRESENCE_EFFECT, Recipe, RenderContext, RenderOptions, RenderSource, SourceImage, Stage,
+    gpu_lights, gpu_plan, qualification, render,
 };
 use luxforge_reference::srgb;
 use luxforge_ui::photo_surface::{
@@ -319,13 +319,8 @@ fn reference_light(
         &context,
     )
     .expect("the reference render");
-    rendered
-        .frame(SnapshotId::new())
-        .expect("the reference frame");
-    let held = qualification::held_estimates(&rendered, layer)
-        .expect("a spatial layer")
-        .expect("the frame stored its estimates");
-    let values = held
+    let estimates = qualification::frame_estimates(&rendered, layer).expect("a spatial layer");
+    let values = estimates
         .into_iter()
         .flatten()
         .find(|values| values.len() == 3)
