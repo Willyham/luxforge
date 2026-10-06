@@ -531,6 +531,195 @@ pub(crate) fn reduce_raster(
     })
 }
 
+/// About the most a [`RowReduction`] holds of rows averaged across at once, besides its output.
+const REDUCTION_CHUNK_BYTES: usize = 4 << 20;
+
+/// The reduction [`reduce_raster`] makes of a whole frame, made of the frame's rows as they arrive,
+/// top to bottom, in bands of any height: a rendered tier reduced from the bands the owner's tile
+/// service streams, without the whole frame ever held (`previews/rendered.rs`).
+///
+/// The arithmetic is [`BoxDownscale`]'s, step for step: each source row is decoded through the
+/// render path's sRGB table and averaged across into one row of f32 by the [`Coverage`] weights,
+/// in f64, and each output row is the weighted f64 sum of its span of those rows, quantized through
+/// the render path's threshold boundary. A source row's horizontal average depends on that row
+/// alone and an output pixel's sum runs over its span in the same order, so the result is the same
+/// bytes as [`reduce_raster`] of the whole frame, however the rows are banded
+/// (`a_row_reduction_is_reduce_raster_byte_for_byte`).
+///
+/// Holds the averaged rows of one output row's span, `⌈source ÷ output⌉ + 1` rows of the output's
+/// width in f32, and of the chunk of a band being averaged, about 4 MiB, plus the output frame; the
+/// averaging across of a chunk's rows runs on the shared Rayon pool past the proxy pass's
+/// threshold.
+pub(crate) struct RowReduction {
+    horizontal: Coverage,
+    vertical: Coverage,
+    source_width: u32,
+    source_height: u32,
+    width: u32,
+    height: u32,
+    /// The averaged rows held, the first of them source row `first_held`.
+    held: std::collections::VecDeque<Vec<f32>>,
+    first_held: u32,
+    /// The rows let go, kept to be written again rather than allocated per row.
+    spare: Vec<Vec<f32>>,
+    /// The next source row expected, and the next output row to write.
+    next_source: u32,
+    next_output: u32,
+    rgba: Vec<u8>,
+}
+
+impl RowReduction {
+    /// A reduction of a `source` frame to `plan`, a whole stage with no window, that reads no
+    /// pixel yet. Refused as [`reduce_raster`] refuses a plan.
+    pub(crate) fn new(source: (u32, u32), plan: ProxyPlan) -> Result<Self, Error> {
+        check_plan(plan, source.0, source.1)?;
+        if plan.window.is_some()
+            || u64::from(plan.width) * u64::from(plan.height) > ProxyBounds::MAX_PIXELS
+        {
+            return Err(Error::resource_limit(
+                "the view's frame exceeds the 8 MP bound",
+            ));
+        }
+        let len = Raster::expected_len(plan.width, plan.height)?;
+        Ok(Self {
+            horizontal: Coverage::new(source.0, plan.width),
+            vertical: Coverage::new(source.1, plan.height),
+            source_width: source.0,
+            source_height: source.1,
+            width: plan.width,
+            height: plan.height,
+            held: std::collections::VecDeque::new(),
+            first_held: 0,
+            spare: Vec::new(),
+            next_source: 0,
+            next_output: 0,
+            rgba: vec![0; len],
+        })
+    }
+
+    /// Take the next whole rows of the source frame, opaque RGBA8, and write every output row they
+    /// complete. `cancel` is checked once per output row, and before a band's rows are averaged.
+    pub(crate) fn push(&mut self, rgba: &[u8], cancel: &Cancel) -> Result<(), Error> {
+        let stride = self.source_width as usize * 4;
+        if stride == 0 || !rgba.len().is_multiple_of(stride) {
+            return Err(Error::internal(
+                "a reduction was handed rows that are not whole",
+            ));
+        }
+        let rows = (rgba.len() / stride) as u32;
+        if u64::from(self.next_source) + u64::from(rows) > u64::from(self.source_height) {
+            return Err(Error::internal(
+                "a reduction was handed rows past its frame",
+            ));
+        }
+        // A band is averaged a chunk of rows at a time, so the rows held stay near
+        // `REDUCTION_CHUNK_BYTES` however tall the band: a whole frame pushed at once included.
+        let row_bytes = self.width as usize * 3 * std::mem::size_of::<f32>();
+        let chunk = (REDUCTION_CHUNK_BYTES / row_bytes).max(16);
+        for rows in rgba.chunks(chunk * stride) {
+            self.push_chunk(rows, stride, cancel)?;
+        }
+        Ok(())
+    }
+
+    /// [`Self::push`] for at most a chunk of rows.
+    fn push_chunk(&mut self, rgba: &[u8], stride: usize, cancel: &Cancel) -> Result<(), Error> {
+        let rows = (rgba.len() / stride) as u32;
+        cancel.check()?;
+        let mut averaged: Vec<Vec<f32>> = (0..rows)
+            .map(|_| self.spare.pop().unwrap_or_default())
+            .collect();
+        let (table, horizontal, width) = (decode_table(), &self.horizontal, self.width as usize);
+        let across = |(bytes, out): (&[u8], &mut Vec<f32>)| {
+            out.resize(width * 3, 0.0);
+            for column in 0..width {
+                let (first, weights) = horizontal.span(column);
+                let mut sum = [0f64; 3];
+                for (offset, weight) in weights.iter().enumerate() {
+                    let at = (first as usize + offset) * 4;
+                    let linear = decode_pixel_in(table, [bytes[at], bytes[at + 1], bytes[at + 2]]);
+                    for (channel, value) in sum.iter_mut().enumerate() {
+                        *value += f64::from(linear[channel]) * weight;
+                    }
+                }
+                for (channel, value) in sum.iter().enumerate() {
+                    out[column * 3 + channel] = *value as f32;
+                }
+            }
+        };
+        let read = u64::from(rows) * u64::from(self.source_width);
+        if crate::render::parallel::pooled(crate::render::parallel::RenderPass::Proxy, read) {
+            rgba.par_chunks_exact(stride)
+                .zip(averaged.par_iter_mut())
+                .for_each(across);
+        } else {
+            rgba.chunks_exact(stride)
+                .zip(averaged.iter_mut())
+                .for_each(across);
+        }
+        self.held.extend(averaged);
+        self.next_source += rows;
+        self.write_ready(cancel)
+    }
+
+    /// Write every output row whose span has arrived, then let go of the rows no later output row
+    /// reads.
+    fn write_ready(&mut self, cancel: &Cancel) -> Result<(), Error> {
+        let quantizer = quantizer();
+        let stride = self.width as usize * 4;
+        while self.next_output < self.height {
+            let (first, weights) = self.vertical.span(self.next_output as usize);
+            if first + weights.len() as u32 > self.next_source {
+                break;
+            }
+            cancel.check()?;
+            let start = (first - self.first_held) as usize;
+            let out = &mut self.rgba[self.next_output as usize * stride..][..stride];
+            for x in 0..self.width as usize {
+                let mut sum = [0f64; 3];
+                for (offset, weight) in weights.iter().enumerate() {
+                    let row = &self.held[start + offset];
+                    for (channel, value) in sum.iter_mut().enumerate() {
+                        *value += f64::from(row[x * 3 + channel]) * weight;
+                    }
+                }
+                let pixel = &mut out[x * 4..][..4];
+                for (channel, value) in sum.iter().enumerate() {
+                    pixel[channel] = quantizer.channel(*value);
+                }
+                pixel[3] = 255;
+            }
+            self.next_output += 1;
+        }
+        // The first source row any output row still to be written reads; every row above it goes.
+        let keep_from = if self.next_output < self.height {
+            self.vertical.span(self.next_output as usize).0
+        } else {
+            self.next_source
+        };
+        while self.first_held < keep_from {
+            let Some(row) = self.held.pop_front() else {
+                break;
+            };
+            self.spare.push(row);
+            self.first_held += 1;
+        }
+        Ok(())
+    }
+
+    /// The reduced frame's size and opaque RGBA8 once every source row has arrived; `internal`
+    /// before then.
+    pub(crate) fn finish(self) -> Result<(u32, u32, Vec<u8>), Error> {
+        if self.next_output != self.height || self.next_source != self.source_height {
+            return Err(Error::internal(format!(
+                "a reduction ended at source row {} of {}",
+                self.next_source, self.source_height
+            )));
+        }
+        Ok((self.width, self.height, self.rgba))
+    }
+}
+
 /// Display bytes — a decoded camera preview, an embedded JPEG — area-averaged to `plan` by the
 /// same reduction as [`reduce_raster`], with a checkpoint in every row: the catalog's preview
 /// downscales, which are not the CPU proxy's.
@@ -939,6 +1128,85 @@ mod tests {
             reduce_raster(&raster, plan(17, 13, (17, 13)), &cancel)
                 .unwrap_err()
                 .kind,
+            ErrorKind::Cancelled
+        );
+    }
+
+    /// A reduction fed a frame's rows in bands is [`reduce_raster`] of the whole frame, byte for
+    /// byte, at fractional and integer ratios, in bands of one row, of seven, of 64 and of the
+    /// whole frame, pooled and serial; it refuses rows past its frame, ends only once every row
+    /// has arrived and stops on a cancel.
+    #[test]
+    fn a_row_reduction_is_reduce_raster_byte_for_byte() {
+        let (width, height) = (301u32, 197u32);
+        let rgba: Vec<u8> = (0..width * height)
+            .flat_map(|i| {
+                [
+                    (i * 37 % 251) as u8,
+                    (i * 11 % 239) as u8,
+                    (i.wrapping_mul(2_654_435_761) >> 24) as u8,
+                    255,
+                ]
+            })
+            .collect();
+        let raster = Raster {
+            width,
+            height,
+            rgba: std::sync::Arc::new(rgba),
+            source_fingerprint: "sha256:rows".into(),
+            snapshot_id: SnapshotId::new(),
+        };
+        let stride = width as usize * 4;
+        let fit = |bounds: (u32, u32)| {
+            ProxyPlan::fit(
+                (width, height),
+                (width, height),
+                ProxyBounds {
+                    width: bounds.0,
+                    height: bounds.1,
+                },
+            )
+            .expect("a reduction")
+        };
+        for bounds in [(150, 150), (64, 64), (300, 120), (7, 7), (1, 1)] {
+            let plan = fit(bounds);
+            let expected = reduce_raster(&raster, plan, &Cancel::never()).unwrap();
+            for pooled in [false, true] {
+                let previous = crate::render::parallel::force(Some(pooled));
+                for band in [1usize, 7, 64, height as usize] {
+                    let mut reduction = RowReduction::new((width, height), plan).unwrap();
+                    for rows in raster.rgba.chunks(band * stride) {
+                        reduction.push(rows, &Cancel::never()).unwrap();
+                    }
+                    let (w, h, bytes) = reduction.finish().unwrap();
+                    assert_eq!((w, h), (expected.width, expected.height));
+                    assert!(
+                        bytes == *expected.rgba,
+                        "{bounds:?}, bands of {band}, pooled {pooled}"
+                    );
+                }
+                crate::render::parallel::force(previous);
+            }
+        }
+        let plan = fit((64, 64));
+        let mut short = RowReduction::new((width, height), plan).unwrap();
+        short
+            .push(&raster.rgba[..stride * 10], &Cancel::never())
+            .unwrap();
+        assert_eq!(short.finish().unwrap_err().kind, ErrorKind::Internal);
+        let mut past = RowReduction::new((width, height), plan).unwrap();
+        past.push(&raster.rgba, &Cancel::never()).unwrap();
+        assert_eq!(
+            past.push(&raster.rgba[..stride], &Cancel::never())
+                .unwrap_err()
+                .kind,
+            ErrorKind::Internal
+        );
+        let cancel = Cancel::never();
+        cancel.cancel();
+        let mut cancelled = RowReduction::new((width, height), plan).unwrap();
+        assert_eq!(
+            cancelled.push(&raster.rgba, &cancel).unwrap_err().kind,
             ErrorKind::Cancelled
         );
     }

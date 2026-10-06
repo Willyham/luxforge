@@ -122,16 +122,16 @@ pub use preview::{
 };
 pub use proxy::{ProxyBounds, ProxyCoverage, ProxyIdentity, ProxyPlan, area_coverage};
 pub use render::gpu::{
-    BoundaryKey, CoordinateGrid, GPU_PASS_INPUTS, GPU_PLAN_LINKS, GPU_SHARED_VALUES,
-    GPU_WARM_LINKS, GPU_WORKGROUP_LANES, GRID_MAX_NODES, GRID_SAMPLE_TOLERANCE_PX,
-    GRID_TOLERANCE_PX, GpuAnchor, GpuAnswer, GpuApply, GpuBoundary, GpuChange, GpuClipping,
-    GpuComponent, GpuDescription, GpuFallback, GpuGeometry, GpuLight, GpuLightPasses,
-    GpuLightRestoration, GpuMask, GpuOperation, GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest,
-    GpuPlane, GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuPreview, GpuProgram, GpuProgramKind,
-    GpuRest, GpuSpatial, GpuSpatialUnit, GpuView, GpuWarmList, REDUCED_AFTER_BYTES,
-    REST_TILE_BYTES, REST_TILE_SIDES, RestReduction, RestTile, RestTiles, STREAM_TILE_SIDES,
-    SourceBoundary, StreamPlan, TilePlan, anchored, gpu_fit_plan, gpu_lights, gpu_plan, plan_read,
-    plan_stream,
+    BoundaryKey, CoordinateGrid, GPU_PASS_INPUTS, GPU_PLAN_LINKS, GPU_PREVIEW_BYTES,
+    GPU_SHARED_VALUES, GPU_WARM_LINKS, GPU_WORKGROUP_LANES, GRID_MAX_NODES,
+    GRID_SAMPLE_TOLERANCE_PX, GRID_TOLERANCE_PX, GpuAnchor, GpuAnswer, GpuApply, GpuBoundary,
+    GpuChange, GpuClipping, GpuComponent, GpuDescription, GpuFallback, GpuGeometry, GpuLight,
+    GpuLightPasses, GpuLightRestoration, GpuMask, GpuOperation, GpuPass, GpuPassShape, GpuPlan,
+    GpuPlanRequest, GpuPlane, GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuPreview, GpuProgram,
+    GpuProgramKind, GpuRest, GpuSpatial, GpuSpatialUnit, GpuView, GpuWarmList, REDUCED_AFTER_BYTES,
+    REST_SHARE_MAX, REST_TILE_SIDES, REST_TILE_WORK, RestReduction, RestTile, RestTiles,
+    STREAM_TILE_SIDES, SourceBoundary, StreamPlan, TilePlan, anchored, gpu_fit_plan, gpu_lights,
+    gpu_plan, plan_read, plan_stream, rest_light_bytes, rest_slot_bytes,
 };
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{
@@ -171,12 +171,29 @@ pub mod qualification {
         bounds: crate::ProxyBounds,
         side: u32,
     ) -> Result<Box<crate::RestTiles>, String> {
-        match crate::render::gpu::plan_rest_tiles(evaluation, bounds, Some(side)) {
+        match crate::render::gpu::plan_rest_tiles(
+            evaluation,
+            bounds,
+            crate::render::gpu::RestSizing::Side(side),
+        ) {
             Ok(Some(Ok(tiles))) => Ok(tiles),
             Ok(Some(Err(reason))) => Err(reason.to_string()),
             Ok(None) => Err("the bounds draw the output stage at its own size".into()),
             Err(error) => Err(error.detail),
         }
+    }
+
+    /// A developed photograph's catalog tiers of its current entry, grid then large, as the preview
+    /// lane's render worker draws them before it encodes them: planned as the catalog owner plans a
+    /// render, the original prepared off the editor's cache, drawn through `tiles` and reduced from
+    /// its bands, or by the reference naming why; with the renderer that drew them. For the
+    /// desktop's tests that hold the GPU tile worker's tiers to the reference's.
+    pub fn photo_tiers(
+        service: &crate::EditorService,
+        asset_id: &crate::AssetId,
+        tiles: &dyn crate::tiles::TileService,
+    ) -> Result<(Vec<crate::Raster>, crate::catalog_types::RenderedBy), crate::Error> {
+        crate::previews::rendered::qualification_tiers(service, asset_id, tiles)
     }
 
     /// A Lens correction layer holding a frozen Poly3 profile of `k1`, resolved for a `stage`, as

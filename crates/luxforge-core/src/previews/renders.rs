@@ -6,8 +6,9 @@
 //! The owner plans each render in `O(layers)` ([`rendered::plan_render`]) and hands it here as a
 //! [`RenderWork`] only while the worker is idle, so a send never waits. The worker renders it
 //! ([`rendered::render`]: the original read and verified by the render itself, off the editor's
-//! source cache and source worker, every tier the job wants from one preparation), writes each
-//! tier and its row (`photos.rs`), collects the photograph's stale rows and files once the new
+//! source cache and source worker, every tier the job wants from one preparation, drawn by the
+//! owner's tile service and reduced from its bands, or by the reference naming why), writes each
+//! tier and its row with the renderer that drew it (`photos.rs`), collects the photograph's stale rows and files once the new
 //! tiers are written when it rendered the entry that was current ([`rendered::stale_rows`]), keeps
 //! the large tier within the byte budget it shares with files' loupe tiers ([`Store::evict`]), and
 //! posts the outcome back ([`RenderDone`]). One render at a time is the design's one RAW at a time
@@ -27,6 +28,7 @@ use crate::{
     EntryId, Error, ErrorKind,
     catalog_types::{PreviewInfo, PreviewOrigin, PreviewTier},
     jobs::JobControl,
+    tiles::TileService,
 };
 use std::{
     panic::{AssertUnwindSafe, catch_unwind},
@@ -55,6 +57,9 @@ pub(crate) struct RenderWork {
     pub control: Arc<JobControl>,
     /// The bytes the loupe and large tiers may take together.
     pub budget: u64,
+    /// The owner's tile service, which draws the render's tiers: the GPU tile worker on the
+    /// desktop, the reference's on a host without a GPU provider.
+    pub tiles: Arc<dyn TileService>,
     /// Where a test holds the worker before it starts the render.
     #[cfg(test)]
     pub hold: Option<Arc<luxforge_testbase::Gate>>,
@@ -138,13 +143,14 @@ fn work(mut store: Store, renders: &Receiver<RenderWork>, post: &RenderPost) {
 pub(crate) fn run(store: &mut Store, work: &RenderWork) -> Result<Vec<PreviewInfo>, Error> {
     let control = &work.control;
     control.checkpoint()?;
-    let tiers = rendered::render(&work.request, control.render_cancel()).map_err(|error| {
-        if error.kind == ErrorKind::Cancelled {
-            control.cancelled_error()
-        } else {
-            error
-        }
-    })?;
+    let tiers = rendered::render(&work.request, work.tiles.as_ref(), control.render_cancel())
+        .map_err(|error| {
+            if error.kind == ErrorKind::Cancelled {
+                control.cancelled_error()
+            } else {
+                error
+            }
+        })?;
     control.checkpoint()?;
     let now = now_ms();
     let mut written = Vec::with_capacity(tiers.len());
@@ -162,8 +168,8 @@ pub(crate) fn run(store: &mut Store, work: &RenderWork) -> Result<Vec<PreviewInf
     Ok(written)
 }
 
-/// Write one rendered tier and its row, labelled approximate when its proxy render is; none once
-/// `control` is cancelled.
+/// Write one rendered tier and its row, with the renderer that drew it; none once `control` is
+/// cancelled.
 fn write(
     store: &mut Store,
     tier: &RenderedTier,
@@ -179,8 +185,9 @@ fn write(
             tier: tier.key.tier,
             renderer: i64::from(RENDERER_GENERATION),
             origin: PreviewOrigin::Rendered,
-            // The reference's exact frame area-averaged: never approximate.
+            // The full-resolution picture area-averaged: never approximate.
             approximate: false,
+            drawn: Some(tier.renderer.clone()),
             name: &name,
             jpeg: &tier.jpeg,
             width: tier.width,

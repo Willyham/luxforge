@@ -339,7 +339,7 @@ pub(crate) enum WorkerEvent {
     Finished {
         worker: usize,
         key: TaskKey,
-        outcome: Outcome,
+        outcome: Box<Outcome>,
     },
 }
 
@@ -414,7 +414,7 @@ fn work(index: usize, mut store: Store, tasks: Receiver<Task>, post: Post) {
         post(WorkerEvent::Finished {
             worker: index,
             key,
-            outcome,
+            outcome: Box::new(outcome),
         });
     }
 }
