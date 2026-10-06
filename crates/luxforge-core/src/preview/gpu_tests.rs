@@ -94,7 +94,7 @@ fn draft_job_over(
     )
 }
 
-/// [`draft_job_over`] in `context`, whose estimate store its frames fill and its plans read.
+/// [`draft_job_over`] in `context`.
 fn draft_job_in(
     context: RenderContext,
     source: PreviewSource,
@@ -817,7 +817,7 @@ fn a_region_boundary_holds_the_window_its_region_reads_at_full_scale() {
             false,
         ),
     ] {
-        let (mut job, draft) = draft_job("set-basic", entry, drafted, 2);
+        let (job, draft) = draft_job("set-basic", entry, drafted, 2);
         let view = crate::GpuView::Region {
             rect,
             magnification: 2.0,
@@ -833,7 +833,6 @@ fn a_region_boundary_holds_the_window_its_region_reads_at_full_scale() {
         };
         let other = plan_preview(&job.evaluation, &draft, moved).unwrap();
         assert_ne!(other.boundary.unwrap().key, request.key, "{what}");
-        job.viewport = Some(rect);
         let exact = job.evaluation.exact(&crate::Cancel::never()).unwrap();
         let frame = exact
             .region_boundary(rect, (0, 0), request.format)
@@ -965,7 +964,7 @@ fn a_region_plan_reads_dehazes_light_from_the_whole_stage() {
 /// A drag reads the light the picture at rest draws with while it leaves the light's input as the
 /// committed stack holds it — a Presence drag, on a JPEG and on a RAW — and computes it every tick
 /// from the source through the drafted colour where a colour layer before it changes: a Basic drag
-/// under Presence. Planning reads no pixel and reduces nothing: the estimate store stays empty.
+/// under Presence. Planning reads no pixel and reduces nothing.
 #[test]
 fn a_drag_reads_the_light_at_rest_unless_a_colour_layer_before_it_changes() {
     let raw = PreviewSource::Raw {
@@ -1025,7 +1024,7 @@ fn a_drag_reads_the_light_at_rest_unless_a_colour_layer_before_it_changes() {
             light.layer == 1 && light.over_source() && light.content.len() == 1,
             "{name}: the drafted exposure before Presence, every tick"
         );
-        assert_eq!(context.estimates().len(), 0, "{name}: nothing reduced");
+        assert_eq!(context.reductions(), 0, "{name}: nothing reduced");
     }
 }
 
@@ -1417,7 +1416,7 @@ fn behind_detail_a_region_plan_reads_the_light_at_rest_or_its_stand_in() {
     let stand_in = light.stand_in.as_deref().expect("its stand-in");
     assert!(stand_in.over_source() && stand_in.left_out == [0]);
 
-    let (preview, mut job) = plan_of("set-presence", &presence_drag);
+    let (preview, job) = plan_of("set-presence", &presence_drag);
     let plan = planned(&preview);
     assert_eq!(plan.lights, at_rest, "the light at rest");
     assert_eq!(
@@ -1434,7 +1433,6 @@ fn behind_detail_a_region_plan_reads_the_light_at_rest_or_its_stand_in() {
     // The window planned on the owner, which the photo surface cuts from the source it holds, is
     // the one the CPU's reference render of the region's boundary at the source holds, its origin
     // moved by the plan's lead and rounded down to its multiple.
-    job.viewport = Some(rect);
     let exact = job.evaluation.exact(&crate::Cancel::never()).unwrap();
     let cut = exact
         .region_boundary(rect, (0, 0), request.format)
@@ -1568,11 +1566,11 @@ fn a_drag_after_presence_behind_detail_reads_the_light_at_rest() {
     );
     assert!(!plan.lights[0].over_source());
     assert!(preview.boundary.unwrap().window.is_some());
-    assert_eq!(context.estimates().len(), 0, "nothing reduced");
+    assert_eq!(context.reductions(), 0, "nothing reduced");
 }
 
-/// At Fit behind a straightened crop, whose proxy holds a window of its stage, a drag's light is
-/// the whole exact stage's, as the CPU's windowed proxy is handed: a Presence drag reads it, and a
+/// At Fit behind a straightened crop, whose reduced stage holds a window of its stage, a drag's
+/// light is the whole exact stage's: a Presence drag reads it, and a
 /// Basic drag under Dehaze computes it every tick from the source through the drafted exposure.
 /// Nothing is rendered or stored first, and planning reduces nothing.
 #[test]
@@ -1645,7 +1643,7 @@ fn behind_a_windowed_fit_proxy_a_plan_reads_the_whole_stages_light() {
         panic!("one light");
     };
     assert!(light.stage == whole && light.over_source() && light.content.len() == 1);
-    assert_eq!(context.estimates().len(), 0, "planning reduces nothing");
+    assert_eq!(context.reductions(), 0, "planning reduces nothing");
 }
 
 /// The committed `layers` over [`source`], evaluated in `context`, as a displayed stack's job is.

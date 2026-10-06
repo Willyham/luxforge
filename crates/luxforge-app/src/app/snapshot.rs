@@ -415,7 +415,7 @@ impl Editor {
             "bounds": bounds.map(|bounds| json!({"width":bounds.width,"height":bounds.height})),
             "reduced": self.presentation.presented_reduced,
             "proxy": proxy.is_some(),
-            "proxy_approximate_reason": proxy.and_then(luxforge_core::ProxyApproximation::reason),
+            "proxy_approximate_reason": proxy.and_then(|proxy| proxy.reason()),
         })
     }
 

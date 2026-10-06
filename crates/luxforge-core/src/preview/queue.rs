@@ -5,9 +5,9 @@ use super::{PreviewJob, PreviewResult, worker::run};
 #[cfg(doc)]
 use crate::ErrorKind;
 use crate::{
-    ProxyCache,
     activity::ActivityBoard,
     cancel::{ProgressCounts, RenderProgress},
+    cpu_proxy::CpuProxy,
     latest::Latest,
 };
 use std::{
@@ -139,14 +139,13 @@ pub struct PreviewQueue {
 
 impl Default for PreviewQueue {
     fn default() -> Self {
-        // One proxy source, keyed by source identity and plan, held by the worker alone. Bounded by
-        // construction: a new plan replaces the old entry rather than accumulating beside it.
-        let mut cache = ProxyCache::default();
+        // The no-GPU session's CPU proxy, its one cached source held by the worker alone.
+        let mut proxy = CpuProxy::default();
         let progress = Arc::new(ExactProgress::default());
         let published = progress.clone();
         Self {
             worker: Latest::new("luxforge-preview", move |task, running| {
-                run(&mut cache, &published, task, running)
+                run(&mut proxy, &published, task, running)
             }),
             activity: None,
             progress,
@@ -232,7 +231,7 @@ impl PreviewQueue {
 
     /// How far the whole-frame exact phase the worker is rendering has got, while one runs. The
     /// worker wakes the consumer as it advances ([`crate::PREVIEW_PROGRESS_QUIET`]), so a consumer
-    /// reads this when woken and never polls it. A viewport job's region phases publish nothing.
+    /// reads this when woken and never polls it.
     pub fn progress(&self) -> Option<PreviewProgress> {
         self.progress.read()
     }

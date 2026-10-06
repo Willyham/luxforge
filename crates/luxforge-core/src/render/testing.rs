@@ -1,7 +1,7 @@
 //! What the crate's unit tests render through: [`super::render`], through a context the test constructs
-//! when it reads that context's budgets or estimate store ([`frame_in`], [`sample_in`] and the
+//! when it reads that context's budgets or counters ([`frame_in`], [`sample_in`] and the
 //! evaluations), and through a new context per call otherwise. No two tests share a context, so no
-//! test's budget, high-water mark or estimate store moves with what another test renders. Every
+//! test's budget, high-water mark or counter moves with what another test renders. Every
 //! helper is one call to the entry point; none is a second way to render.
 
 use super::render as enter;

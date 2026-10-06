@@ -980,7 +980,6 @@ fn an_exact_refit_replaces_an_undersized_reduction() {
         identity: analysis.identity,
         draft_revision: None,
         intent: luxforge_core::PreviewIntent::Immediate,
-        viewport_declined: None,
         outcome: luxforge_core::PhaseOutcome::Exact(Box::new(luxforge_core::ExactOutcome {
             display: None,
             result: Ok((*raster).clone()),
@@ -1059,7 +1058,6 @@ fn a_reduced_fit_presents_the_reduction_and_keeps_exact_pixels_for_zoom() {
         identity: analysis.identity,
         draft_revision: None,
         intent: luxforge_core::PreviewIntent::Immediate,
-        viewport_declined: None,
         outcome: luxforge_core::PhaseOutcome::Exact(Box::new(luxforge_core::ExactOutcome {
             display: Some(display),
             result: Ok((*exact).clone()),
@@ -1126,7 +1124,6 @@ fn a_reduced_fit_rejects_a_reduction_for_previous_bounds() {
         identity: analysis.identity,
         draft_revision: None,
         intent: luxforge_core::PreviewIntent::Immediate,
-        viewport_declined: None,
         outcome: luxforge_core::PhaseOutcome::Exact(Box::new(luxforge_core::ExactOutcome {
             display: Some(display),
             result: Ok((*exact).clone()),

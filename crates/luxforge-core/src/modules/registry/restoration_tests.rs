@@ -187,9 +187,9 @@ fn restoration_compile_stage_reaches_modules() {
             height: 65,
         })
         .unwrap();
-    let proxy_stage = exact.proxy_window(&registry, &recipe, fit);
+    let proxy_stage = exact.proxy_stage(&registry, &recipe, fit);
     let fit = proxy_stage.plan();
-    assert!(fit.window.is_some(), "Fit recipe has a cut source window");
+    assert!(fit.window.is_none(), "a proxy holds its whole stage");
     assert_eq!(
         *probe.seen.lock().unwrap().last().unwrap(),
         CompileStage::sampled(
@@ -211,40 +211,8 @@ fn restoration_compile_stage_reaches_modules() {
         .unwrap()
         .frame(crate::SnapshotId::new())
         .unwrap();
-    let requested = crate::Region {
-        x0: 80,
-        y0: 10,
-        width: 48,
-        height: 35,
-    };
-    let plan = exact
-        .plan_proxy_region(&registry, &recipe, requested)
-        .unwrap();
-    assert!(
-        plan.proxy.window.is_some(),
-        "half-detail viewport has a cut source window"
-    );
-    let expected = CompileStage::sampled(
-        Stage {
-            width: plan.proxy.width,
-            height: plan.proxy.height,
-        },
-        full,
-    );
-    assert_eq!(*probe.seen.lock().unwrap().last().unwrap(), expected);
-    let proxy = source.proxy(plan.proxy).unwrap();
-    exact
-        .render_proxy_region(
-            &registry,
-            proxy.input(),
-            &recipe,
-            plan,
-            crate::SnapshotId::new(),
-            &context,
-        )
-        .unwrap();
-    assert_eq!(*probe.seen.lock().unwrap().last().unwrap(), expected);
 }
+
 #[test]
 fn restoration_and_spatial_reasons_are_reported_separately() {
     let (registry, _) = registry();

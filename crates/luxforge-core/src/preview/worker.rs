@@ -2,18 +2,16 @@
 //! phase, from one compilation of the job's stack at each stage it renders at.
 
 use super::{
-    ExactOutcome, PhaseOutcome, PreviewIntent, PreviewJob, PreviewResult, ProxyOutcome,
-    RegionOutcome,
+    ExactOutcome, PhaseOutcome, PreviewIntent, PreviewJob, PreviewResult,
     queue::{ExactProgress, PreviewTask},
 };
 use crate::{
-    Cancel, Error, ErrorKind, ProxyCache, ProxyKey, Recipe, RegionRenderOutcome, Render,
-    RenderOptions,
+    Cancel, Error, ErrorKind, Recipe, RenderOptions,
     activity::{Activity, ActivitySpec, Outcome},
     cancel::{ProgressCounts, RenderProgress},
+    cpu_proxy::{CpuProxy, ProxyPhase},
     latest::Running,
     render,
-    render::ProxyStage,
 };
 use std::{
     sync::{
@@ -65,69 +63,6 @@ pub(super) fn exact_meter(
     })
 }
 
-/// What the proxy phase of one job should do. Decided on the worker, which owns the proxy cache,
-/// at the start of the job.
-enum ProxyStep {
-    /// The job asked for no proxy phase.
-    Skipped,
-    /// The job asked, and this is why it has none.
-    Declined(String),
-    /// Render the stack's one compilation at the proxy stage against the proxy source this key
-    /// names, from the cache or built on a miss.
-    Planned(ProxyKey, ProxyStage),
-}
-
-/// Whether this job has a proxy phase, and against which source.
-///
-/// `recipe` is the stack the job renders and `exact` its one compilation at the exact stage: the
-/// whole stack, or for a truncated job its layer prefix, which is planned exactly as a whole stack
-/// of those layers would be. A crop draft's input stage is such a prefix, and the prefix before a
-/// crop holds no crop, so its proxy is the whole proxy stage. The cache key is the source's
-/// identity and the plan: it holds downscaled source pixels, never a rendered stack, so a prefix
-/// and a whole stack that plan the same proxy share its pixels correctly, and ones that plan
-/// different proxies have different keys.
-///
-/// Cost is `O(layers)`: `proxy_eligible` reads stages, the plan reads the output stage of the job's
-/// exact compilation, and the window compiles the stack once at the proxy stage, which the proxy
-/// frame then renders, to walk back what its output reads. None of them reads a pixel. It runs on
-/// the preview worker, as does building the proxy itself.
-fn plan_proxy(job: &PreviewJob, recipe: &Recipe, exact: &Result<Render<'_>, Error>) -> ProxyStep {
-    // A proxy is a moving frame's: a draft's tick the GPU does not draw, or a crop draft's input
-    // stage. A job at rest renders none: its picture is the GPU's, and the reference frame it hands
-    // over is its exact frame reduced to the view ([`view_frame`]).
-    if job.intent != PreviewIntent::Interactive {
-        return ProxyStep::Skipped;
-    }
-    let Some(bounds) = job.proxy else {
-        return ProxyStep::Skipped;
-    };
-    let evaluation = &job.evaluation;
-    if let Err(error) = evaluation.registry().proxy_eligible(recipe) {
-        return ProxyStep::Declined(error.detail);
-    }
-    let exact = match exact {
-        Ok(exact) => exact,
-        Err(error) => return ProxyStep::Declined(error.detail.clone()),
-    };
-    match exact.proxy_plan(bounds) {
-        Some(plan) => {
-            // A cropped stack's proxy holds only the window of the proxy stage its output reads,
-            // so its size follows the display bounds and not the crop's tightness.
-            let stage = exact.proxy_window(evaluation.registry(), recipe, plan);
-            ProxyStep::Planned(
-                ProxyKey {
-                    identity: evaluation.source().identity(),
-                    plan: stage.plan(),
-                },
-                stage,
-            )
-        }
-        None => ProxyStep::Declined(
-            "the proxy scale is 1: the stage already fits the display bounds".into(),
-        ),
-    }
-}
-
 /// One preview job, on the preview worker: an interactive job's proxy phase, handed over as soon
 /// as it is rendered and ending the job, or else the exact phase — with its frame reduced to the
 /// view's bounds when the job names them ([`view_frame`]) — returned as the job's last result. An
@@ -137,16 +72,13 @@ fn plan_proxy(job: &PreviewJob, recipe: &Recipe, exact: &Result<Render<'_>, Erro
 /// a drag keeps presenting proxy frames while the full-resolution renders behind them are
 /// abandoned.
 pub(super) fn run(
-    cache: &mut ProxyCache,
+    proxy: &mut CpuProxy,
     progress: &ExactProgress,
     task: PreviewTask,
     running: &Running<'_, PreviewTask, PreviewResult>,
 ) -> Option<PreviewResult> {
     if task.job.intent == PreviewIntent::Reduce {
         return Some(run_reduce(task, running));
-    }
-    if task.job.viewport.is_some() && task.job.layer_count.is_none() {
-        return run_viewport(cache, progress, task, running);
     }
     let PreviewTask {
         job,
@@ -218,89 +150,43 @@ pub(super) fn run(
     };
     let mut compile_ms = Some(milliseconds_since(compile_started));
 
-    // Nothing in the proxy phase is fatal. A plan, a build or a render that fails — including a
-    // cancel — records its reason on the exact result and the exact phase runs as it always does,
-    // so a job never loses its frame because the shortcut did not work out. Nothing is logged.
-    // The proxy phase's own clock: the plan, the build when this job builds, then the render.
+    // The CPU proxy, a session without a GPU's drag path, is this job's one phase when it asks for
+    // one and gets it; nothing in it is fatal, and a declined proxy leaves its reason on the exact
+    // result, so a job never loses its frame because the shortcut did not work out. Its own clock:
+    // the plan, the build when this job builds, then the render.
     let started = Instant::now();
-    let declined = match plan_proxy(&job, recipe, &exact) {
-        ProxyStep::Skipped => None,
-        ProxyStep::Declined(reason) => Some(reason),
-        ProxyStep::Planned(key, stage) => {
-            if let Some(activity) = &activity {
-                activity.phase("proxy");
+    let declined = match proxy.frame(
+        &job,
+        recipe,
+        &exact,
+        proxy_cancel,
+        snapshot_id.clone(),
+        activity.as_ref(),
+    ) {
+        ProxyPhase::NotAsked => None,
+        ProxyPhase::Declined(reason) => Some(reason),
+        ProxyPhase::Drawn(outcome) => {
+            let result = PreviewResult {
+                generation,
+                entry_id,
+                identity: job.identity.clone(),
+                draft_revision,
+                intent: job.intent,
+                // A proxy raster is never reduced: every number the histogram and the clipping
+                // counters report is the exact phase's (performance rule 11).
+                outcome: PhaseOutcome::Proxy(outcome),
+                approximate_white_balance,
+                render_ms: compile_ms.take().unwrap_or(0.0) + milliseconds_since(started),
+                queue_wait_ms,
+            };
+            // The proxy is an interactive job's one phase. One nobody will ever see — the queue
+            // was cancelled or dropped — leaves the activity cancelled.
+            if running.send(result)
+                && let Some(activity) = activity
+            {
+                activity.finish(Outcome::Completed);
             }
-            // The cache holds pixels; the settings a RAW development layer asks for come from this
-            // job's recipe, so a drafted exposure renders against the cached planes. The proxy this
-            // job builds belongs to the worker whether or not its frame is still wanted: the next
-            // job at the same bounds is a hit either way.
-            let built = cache.source_for(&key, evaluation.source(), || {
-                evaluation
-                    .source()
-                    .proxy_cancellable(key.plan, proxy_cancel)
-            });
-            match built {
-                Err(error) => Some(error.detail),
-                Ok((source, fresh)) => {
-                    // The source this frame is rendered against: the proxy stage's window when the
-                    // plan has one, and the whole proxy stage otherwise.
-                    let dimensions = source.dimensions();
-                    // The proxy stage's one compilation, the one the plan made: the frame and the
-                    // reason it is approximate both come from it, so what is reported and what is
-                    // drawn cannot disagree. A windowed one is cut from it, and asks the job's
-                    // exact compilation for any spatial estimate the window cannot reduce.
-                    let proxied = exact.as_ref().map_err(Clone::clone).and_then(|exact| {
-                        exact.render_proxy(
-                            source.input(),
-                            stage,
-                            proxy_cancel,
-                            evaluation.context(),
-                        )
-                    });
-                    let rendered = proxied.as_ref().map_err(Clone::clone).and_then(|proxy| {
-                        Ok((proxy.frame(snapshot_id.clone())?, proxy.approximation()))
-                    });
-                    match rendered {
-                        Err(error) => Some(error.detail),
-                        Ok((raster, proxy_approximation)) => {
-                            let proxy = PreviewResult {
-                                generation,
-                                entry_id: entry_id.clone(),
-                                identity: job.identity.clone(),
-                                draft_revision,
-                                intent: job.intent,
-                                viewport_declined: job.viewport_declined.clone(),
-                                // A proxy raster is never reduced: every number the histogram and
-                                // the clipping counters report is the exact phase's (performance
-                                // rule 11).
-                                outcome: PhaseOutcome::Proxy(ProxyOutcome {
-                                    raster,
-                                    dimensions,
-                                    built: fresh,
-                                    // Read from the compilation at exactly the dimensions this
-                                    // frame was rendered against, because whether a mask draws a
-                                    // feature the proxy's pixel grid can resolve is a fact about
-                                    // that grid.
-                                    approximation: proxy_approximation,
-                                }),
-                                approximate_white_balance,
-                                render_ms: compile_ms.take().unwrap_or(0.0)
-                                    + milliseconds_since(started),
-                                queue_wait_ms,
-                            };
-                            // The proxy is an interactive job's one phase. One nobody will ever
-                            // see — the queue was cancelled or dropped — leaves the activity
-                            // cancelled.
-                            if running.send(proxy)
-                                && let Some(activity) = activity
-                            {
-                                activity.finish(Outcome::Completed);
-                            }
-                            return None;
-                        }
-                    }
-                }
-            }
+            return None;
         }
     };
 
@@ -349,7 +235,6 @@ pub(super) fn run(
         identity: job.identity,
         draft_revision,
         intent: job.intent,
-        viewport_declined: job.viewport_declined,
         outcome: PhaseOutcome::Exact(Box::new(ExactOutcome {
             display,
             result,
@@ -363,250 +248,6 @@ pub(super) fn run(
     Some(exact_result)
 }
 
-/// A percentage view uses its visible rectangle as the first unit of work. Moving inputs stop
-/// after that frame, and so does a paused draft's refined view ([`PreviewIntent::Refine`]), its
-/// exact visible region: no pause in a gesture renders a whole frame. A committed settlement the reference renders produces exact
-/// visible pixels first and then the whole frame its histogram and settled pans need. The two
-/// evaluations are separate so a newer input supersedes only settlement, never the interactive
-/// frame.
-fn run_viewport(
-    cache: &mut ProxyCache,
-    progress: &ExactProgress,
-    task: PreviewTask,
-    running: &Running<'_, PreviewTask, PreviewResult>,
-) -> Option<PreviewResult> {
-    let PreviewTask {
-        mut job,
-        board,
-        requested_at,
-    } = task;
-    let requested = job.viewport.expect("viewport branch has a region");
-    let generation = running.generation();
-    let queue_wait_ms = requested_at.map(|at| at.elapsed().as_secs_f64() * 1000.0);
-    // A moving view, or a paused draft's refined one, renders its visible region alone: no pause
-    // in a gesture renders a whole frame (`docs/design/gpu-first.md`, stage 2).
-    let region_only = matches!(
-        job.intent,
-        PreviewIntent::Interactive | PreviewIntent::Refine
-    );
-    let cancel = if job.intent == PreviewIntent::Interactive {
-        running.abandoned()
-    } else {
-        running.superseded()
-    };
-    let activity = board.as_ref().map(|board| {
-        board.begin(ActivitySpec {
-            kind: "preview.render",
-            label: "Rendering preview",
-            detail: None,
-            asset_id: Some(job.evaluation.entry().asset_id.clone()),
-            job_id: None,
-        })
-    });
-    if let Some(activity) = &activity {
-        activity.phase(if job.intent == PreviewIntent::Interactive {
-            "interactive-region"
-        } else {
-            "refine-region"
-        });
-    }
-    let started = Instant::now();
-    // The job's one compilation, made by its evaluation on the catalog owner. A region that
-    // declines falls back to the whole-frame path, which renders the same compilation, so neither
-    // compiles the stack.
-    let evaluation = job.evaluation.clone();
-    let snapshot_id = evaluation.entry().snapshot.id.clone();
-    let compiled = evaluation.exact(cancel);
-    let region = match compiled.as_ref() {
-        Err(error) => Err(error.clone()),
-        Ok(exact) if job.intent == PreviewIntent::Interactive => {
-            match exact.plan_proxy_region(evaluation.registry(), evaluation.recipe(), requested) {
-                Ok(plan) => {
-                    let key = ProxyKey {
-                        identity: evaluation.source().identity(),
-                        plan: plan.proxy,
-                    };
-                    // A cold pan can replace the one cached proxy window; the cache frees its
-                    // retained pixels before building the next one, so two source windows never
-                    // accumulate.
-                    cache
-                        .source_for(&key, evaluation.source(), || {
-                            evaluation.source().proxy_cancellable(plan.proxy, cancel)
-                        })
-                        .and_then(|(source, _)| {
-                            exact.render_proxy_region(
-                                evaluation.registry(),
-                                source.input(),
-                                evaluation.recipe(),
-                                plan,
-                                snapshot_id.clone(),
-                                evaluation.context(),
-                            )
-                        })
-                }
-                Err(reason) => Ok(RegionRenderOutcome::Declined(reason)),
-            }
-        }
-        Ok(exact) => exact.region(snapshot_id.clone(), requested),
-    };
-    // A half-detail window may be ineligible. A full-detail visible window is still preferable
-    // to asking for off-screen pixels during motion. If that is ineligible too, the existing
-    // bounded whole-output proxy/exact path is the named fallback.
-    let mut viewport_declined = None;
-    let region = if job.intent == PreviewIntent::Interactive
-        && matches!(region, Ok(RegionRenderOutcome::Declined(_)))
-    {
-        if let Ok(RegionRenderOutcome::Declined(reason)) = &region {
-            viewport_declined = Some(reason.reason().to_owned());
-        }
-        compiled
-            .as_ref()
-            .map_err(Clone::clone)
-            .and_then(|exact| exact.region(snapshot_id.clone(), requested))
-    } else {
-        region
-    };
-    match region {
-        Ok(RegionRenderOutcome::Rendered(frame)) => {
-            let result = PreviewResult {
-                generation,
-                entry_id: evaluation.entry().id.clone(),
-                identity: job.identity.clone(),
-                draft_revision: evaluation.draft_revision(),
-                intent: job.intent,
-                viewport_declined,
-                outcome: PhaseOutcome::Region(RegionOutcome { frame }),
-                approximate_white_balance: evaluation.source().approximate_white_balance(),
-                render_ms: milliseconds_since(started),
-                queue_wait_ms,
-            };
-            if !running.send(result) {
-                return None;
-            }
-            if region_only {
-                if let Some(activity) = activity {
-                    activity.finish(Outcome::Completed);
-                }
-                return None;
-            }
-        }
-        Ok(RegionRenderOutcome::Declined(reason)) => {
-            job.viewport_declined = Some(reason.reason().into());
-            job.viewport = None;
-            if region_only {
-                job.intent = PreviewIntent::Interactive;
-                job.proxy = Some(crate::ProxyBounds {
-                    width: requested.width,
-                    height: requested.height,
-                });
-            }
-            let result = run(
-                cache,
-                progress,
-                PreviewTask {
-                    job,
-                    board: None,
-                    requested_at,
-                },
-                running,
-            );
-            if let Some(activity) = activity {
-                activity.finish(Outcome::Completed);
-            }
-            return result;
-        }
-        Err(error) => {
-            if error.kind == ErrorKind::Cancelled {
-                if let Some(activity) = activity {
-                    activity.finish(Outcome::Cancelled);
-                }
-                return Some(PreviewResult {
-                    generation,
-                    entry_id: evaluation.entry().id.clone(),
-                    identity: job.identity,
-                    draft_revision: evaluation.draft_revision(),
-                    intent: job.intent,
-                    viewport_declined,
-                    outcome: PhaseOutcome::Exact(Box::new(ExactOutcome {
-                        display: None,
-                        result: Err(error),
-                        report: None,
-                        proxy_declined: None,
-                    })),
-                    approximate_white_balance: evaluation.source().approximate_white_balance(),
-                    render_ms: milliseconds_since(started),
-                    queue_wait_ms,
-                });
-            }
-            // A failed shortcut must not silently strand the request. The existing whole-frame
-            // path reports its own error or presents a valid fallback frame.
-            job.viewport_declined = Some(error.detail);
-            job.viewport = None;
-            if region_only {
-                job.intent = PreviewIntent::Interactive;
-                job.proxy = Some(crate::ProxyBounds {
-                    width: requested.width,
-                    height: requested.height,
-                });
-            }
-            let result = run(
-                cache,
-                progress,
-                PreviewTask {
-                    job,
-                    board: None,
-                    requested_at,
-                },
-                running,
-            );
-            if let Some(activity) = activity {
-                activity.finish(Outcome::Completed);
-            }
-            return result;
-        }
-    }
-
-    if let Some(activity) = &activity {
-        activity.phase("exact");
-    }
-    let exact_started = Instant::now();
-    let approximate_white_balance = evaluation.source().approximate_white_balance();
-    let rendered = compiled
-        .as_ref()
-        .map_err(Clone::clone)
-        .and_then(|exact| exact.frame(snapshot_id.clone()));
-    let (result, report) = match rendered {
-        Ok(raster) if job.analyse && !approximate_white_balance => {
-            match crate::analysis::reduce(&raster.rgba, raster.width, raster.height, cancel) {
-                Ok(report) => (Ok(raster), Some(report)),
-                Err(error) if error.kind == ErrorKind::Cancelled => (Err(error), None),
-                Err(_) => (Ok(raster), None),
-            }
-        }
-        other => (other, None),
-    };
-    if let Some(activity) = activity {
-        activity.finish(Outcome::of(&result));
-    }
-    Some(PreviewResult {
-        generation,
-        entry_id: evaluation.entry().id.clone(),
-        identity: job.identity,
-        draft_revision: evaluation.draft_revision(),
-        intent: job.intent,
-        viewport_declined: None,
-        outcome: PhaseOutcome::Exact(Box::new(ExactOutcome {
-            display: None,
-            result,
-            report,
-            proxy_declined: None,
-        })),
-        approximate_white_balance,
-        render_ms: milliseconds_since(exact_started),
-        queue_wait_ms,
-    })
-}
-
 /// Wall-clock milliseconds since `started`, as [`PreviewResult::render_ms`] reports them.
 fn milliseconds_since(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0
@@ -615,15 +256,13 @@ fn milliseconds_since(started: Instant) -> f64 {
 /// The exact phase's whole frame reduced to the view's bounds ([`crate::render::reduce_to_view`]):
 /// the frame the reference renderer draws where the view draws the stage smaller than it is, for
 /// every job that names its view, a layer prefix's — a crop draft's input stage — among them; none
-/// for a region, an interactive job, an approximate white balance, or a stage that already fits
-/// the bounds.
+/// for an interactive job, an approximate white balance, or a stage that already fits the bounds.
 pub(super) fn view_frame(
     job: &PreviewJob,
     result: &Result<crate::Raster, Error>,
     cancel: &crate::Cancel,
 ) -> Result<Option<crate::Raster>, Error> {
-    if job.viewport.is_some()
-        || job.intent == PreviewIntent::Interactive
+    if job.intent == PreviewIntent::Interactive
         || job.evaluation.source().approximate_white_balance()
     {
         return Ok(None);
@@ -650,7 +289,6 @@ fn run_reduce(
         .ok_or_else(|| Error::validation("reduce-only job needs an exact raster"))
         .and_then(|raster| {
             if job.layer_count.is_some()
-                || job.viewport.is_some()
                 || job.evaluation.source().approximate_white_balance()
                 || raster.snapshot_id != job.evaluation.entry().snapshot.id
                 || raster.source_fingerprint != job.evaluation.source().fingerprint()
@@ -678,7 +316,6 @@ fn run_reduce(
         identity: job.identity,
         draft_revision: job.evaluation.draft_revision(),
         intent: job.intent,
-        viewport_declined: None,
         approximate_white_balance: job.evaluation.source().approximate_white_balance(),
         outcome: PhaseOutcome::Exact(Box::new(ExactOutcome {
             display,

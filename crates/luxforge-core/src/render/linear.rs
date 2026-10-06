@@ -20,7 +20,6 @@ use crate::{
     source::{ViewReader, Walk, layout},
 };
 use rayon::prelude::*;
-use std::borrow::Cow;
 
 const MAX_RESAMPLES: usize = 1;
 
@@ -148,16 +147,6 @@ impl WhiteBalanceApproximation {
             Err(Error::render("linear source produced a non-finite value"))
         }
     }
-
-    /// A key that tells this approximation's evaluation apart from an exact one of the same
-    /// recipe, for a cache keyed by recipe: the matrix's own bits.
-    fn key(&self) -> String {
-        self.matrix
-            .iter()
-            .flatten()
-            .map(|value| format!("{:016x}", value.to_bits()))
-            .collect()
-    }
 }
 
 #[inline]
@@ -207,24 +196,6 @@ pub(super) fn check_resamples(compiled: &Compiled) -> Result<(), Error> {
         ));
     }
     Ok(())
-}
-
-/// The estimate prefix of a development `development` seen through `view` under an approximate
-/// `white_balance`: what the linear domain's estimates are keyed by.
-fn estimate_prefix(
-    prefix_hash: &str,
-    development: u64,
-    view: ([u32; 4], u8),
-    white_balance: Option<WhiteBalanceApproximation>,
-) -> String {
-    let input_prefix = format!("{prefix_hash}+linear:{development}:{view:?}");
-    match white_balance {
-        Some(balance) => format!(
-            "{input_prefix}+white-balance-approximation:{}",
-            balance.key()
-        ),
-        None => input_prefix,
-    }
 }
 
 /// The linear domain: a developed RAW's planes in signed unbounded linear sRGB, with any approximate
@@ -406,25 +377,6 @@ impl PixelDomain for Linear<'_> {
     type SpatialFrame = Vec<f32>;
     /// The tile's own three planes.
     type TileOutput = Vec<f32>;
-
-    fn fingerprint(&self) -> &str {
-        self.source.fingerprint()
-    }
-
-    /// Fingerprint alone does not identify developed pixels: public callers may omit it, two
-    /// developments of a file differ, and crop/orientation views share their source's identity.
-    /// The estimate store is keyed by the recipe prefix, which an approximate white balance does not
-    /// change: the drafted recipe names the target gains whichever planes it is evaluated over. So
-    /// an approximate evaluation keys its estimates apart, and a committed render of the same
-    /// recipe never takes one estimated from approximate pixels.
-    fn estimate_prefix<'p>(&self, prefix_hash: &'p str) -> Cow<'p, str> {
-        Cow::Owned(estimate_prefix(
-            prefix_hash,
-            self.source.development(),
-            self.source.view(),
-            self.white_balance,
-        ))
-    }
 
     fn check_output(&self, width: u32, height: u32) -> Result<(), Error> {
         output_len(width, height).map(drop)
@@ -998,20 +950,14 @@ impl LinearRows<'_, '_, '_> {
         for x0 in (0..width).step_by(TAP_BLOCK_COLUMNS as usize) {
             self.evaluation.checkpoint()?;
             let columns = (width - x0).min(TAP_BLOCK_COLUMNS);
-            // The block's rectangle of the resample's full output: the segment's exact geometry
-            // maps the block onto one, placed at the entry window's origin.
-            let local = self.segment.geometry.unmap_region(Region {
+            // The block's rectangle of the resample's output: the segment's exact geometry maps the
+            // block onto one.
+            let window = self.segment.geometry.unmap_region(Region {
                 x0,
                 y0,
                 width: columns,
                 height: rows,
             });
-            let (full_x, full_y) = entry.output_at(local.x0, local.y0);
-            let window = Region {
-                x0: full_x,
-                y0: full_y,
-                ..local
-            };
             let held = entry
                 .reads(window, stage)
                 .filter(|region| region.pixels() <= TAP_BLOCK_PIXELS);
