@@ -6,9 +6,10 @@
 //! and below 100%.
 //!
 //! - **Tiles a frame.** A surface handed a picture at rest ([`GpuRest`]) draws its tiles in their
-//!   order, row by row, [`REST_TILES_PER_FRAME`] each frame, through a slot of its own, the chain a
-//!   gesture's frame runs, each tile a fresh evaluation of its own boundary, its pool's records
-//!   forgotten, whatever else the frame draws: the desktop hands a picture at rest only while no
+//!   order, the planner's, each slot shape's tiles together, [`REST_TILES_PER_FRAME`] each frame,
+//!   through a slot of its own, the chain a gesture's frame runs, each tile a fresh evaluation of
+//!   its own boundary, its pool's records forgotten, whatever else the frame draws: the desktop
+//!   hands a picture at rest only while no
 //!   draft is open, so the frames a tile shares are at most a released gesture's last. The widget
 //!   asks for the next frame while tiles remain, and for nothing after the last, so an idle editor
 //!   sleeps once the picture is drawn.
@@ -75,9 +76,10 @@ const PARAMS: usize = 16;
 pub struct GpuRest {
     /// Changes whenever the tiles or the reduction do: a picture at rest to draw anew.
     pub version: u64,
-    /// The tiles' plans, in the order they are drawn, row by row: each a region plan of the output
-    /// stage at full scale, its region the tile, its boundary derived from the source. They cover
-    /// the output stage once, which the counts are the whole stage's for.
+    /// The tiles' plans, in the order they are drawn, each slot shape's together, row by row
+    /// within a shape: each a region plan of the output stage at full scale, its region the tile,
+    /// its boundary derived from the source. They cover the output stage once, which the counts
+    /// are the whole stage's for.
     pub tiles: Arc<[GpuPlan]>,
     /// The reduction of the tiles to the view's size, which is the picture drawn; `None` draws
     /// the tiles for their counts alone, and nothing on screen.

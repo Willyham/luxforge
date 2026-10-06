@@ -539,10 +539,11 @@ fn holds_centre(tile: &luxforge_core::RestTile, output: Stage) -> bool {
 }
 
 /// The editor's tiles for the measured stacks, by the plan's own figures: within the rest's share
-/// beside the view plan, the source and the accumulator, at most 1 GiB, and each tile's window
+/// beside the view plan, the source and the accumulator, at most 1.25 GiB, and each tile's window
 /// carrying at most about 24 MP·links, or the smallest side. The 60 MP drag stack's picture at rest
-/// is 60 tiles of 1024 px. Prints each stack's side, count, slot shapes, share and a middle tile's
-/// charge and work, and those of the tile holding the stage's centre at every side.
+/// is 15 tiles of 2048 px, and a 60 MP RAW's tile fits beside its source. Prints each stack's
+/// side, count, slot shapes, share and a middle tile's charge and work, and those of the tile
+/// holding the stage's centre at every side.
 #[test]
 fn gpu_rest_the_measured_stacks_are_tiled_within_the_rests_share() {
     for (name, source, recipe) in measured_stacks() {
@@ -644,13 +645,46 @@ fn gpu_rest_the_measured_stacks_are_tiled_within_the_rests_share() {
         );
     }
     // The 60 MP drag stack's 2048 px tile in the middle of the stage, a 3363 px window, takes
-    // about 1.13 GB, past the share's 1 GiB: it is drawn in 1024 px tiles, 60 of them.
+    // 1.10 GB, within the share's 1.25 GiB: 15 tiles.
     let (_, source, recipe) = measured_stacks().swap_remove(0);
-    let tiles = planned_tiles(&committed(source, recipe));
+    let tiles = planned_tiles(&committed(source, recipe.clone()));
     assert_eq!(
         (tiles.tiles.len(), tiles.tiles[0].rect.width),
-        (60, 1024),
+        (15, 2048),
         "the 60 MP drag stack"
+    );
+    // On a 60 MP RAW the surface holds 723 MB of source: the share is what the budget leaves
+    // beside it, the view plan and the accumulator, and the tile's slot fits that.
+    let (width, height) = (9_504, 6_336);
+    let evaluation = committed(raw_of(width, height), recipe);
+    let tiles = planned_tiles(&evaluation);
+    let share = tiles.share.expect("a share");
+    let source = u64::from(width) * u64::from(height) * 12;
+    let output = tiles.output;
+    let centre = tiles
+        .tiles
+        .iter()
+        .find(|tile| holds_centre(tile, output))
+        .expect("a centre tile");
+    let slot = luxforge_core::rest_slot_bytes(
+        &tiles.plan,
+        centre.window,
+        tiles.format,
+        (centre.rect.width, centre.rect.height),
+        true,
+    ) + luxforge_core::rest_light_bytes(&tiles.plan, tiles.format);
+    eprintln!(
+        "the 60 MP RAW drag stack: {} tiles of {} px; source {:.1} MB, share {:.1} MB, the centre \
+         tile's slot {:.1} MB",
+        tiles.tiles.len(),
+        tiles.tiles[0].rect.width,
+        source as f64 / 1e6,
+        share as f64 / 1e6,
+        slot as f64 / 1e6
+    );
+    assert!(
+        slot <= share && source + share <= luxforge_core::GPU_PREVIEW_BYTES,
+        "the 60 MP RAW's tile fits beside its source"
     );
 }
 

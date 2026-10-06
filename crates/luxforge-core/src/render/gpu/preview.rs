@@ -850,9 +850,10 @@ pub const REST_TILE_SIDES: [u32; 4] = [2048, 1024, 512, 256];
 pub const GPU_PREVIEW_BYTES: u64 = 2 << 30;
 
 /// The most a picture at rest's tile slot may take by the plan's own figures, whatever the budget
-/// leaves beside the source, the view plan and the accumulator ([`RestTiles::share`]): half the
-/// GPU-preview budget, so a gesture's slot still fits beside it.
-pub const REST_SHARE_MAX: u64 = 1 << 30;
+/// leaves beside the source, the view plan and the accumulator ([`RestTiles::share`]): 1.25 GiB,
+/// which the 60 MP drag stack's 2048 px tile fits, so the rest stays within five eighths of the
+/// GPU-preview budget wherever that budget leaves more.
+pub const REST_SHARE_MAX: u64 = 5 << 28;
 
 /// The most work one tile of a picture at rest may carry: its window's texels times the plan's
 /// spatial links, about 24 MP·links, estimated at 50 to 70 ms of the M4's GPU at 2 to 4 ms a
