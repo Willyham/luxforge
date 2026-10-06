@@ -626,11 +626,12 @@ fn registry_resolves_applicability_from_the_declared_sources() {
     let registry = ModuleRegistry::builtin();
     for module in registry.descriptors() {
         for effect in &module.effects {
-            let expected: &[SourceTag] = if effect.id == RAW_EFFECT {
-                &[SourceTag::Raw]
-            } else {
-                &[]
-            };
+            let expected: &[SourceTag] =
+                if [RAW_EFFECT, crate::LOOK_EFFECT].contains(&effect.id.as_str()) {
+                    &[SourceTag::Raw]
+                } else {
+                    &[]
+                };
             assert_eq!(effect.sources, expected, "{}", effect.id);
         }
     }
@@ -763,6 +764,7 @@ fn the_one_assembly_serves_test_modules_only_in_developer_mode() {
             "luxforge.pixel",
             "luxforge.raw",
             "luxforge.basic",
+            "luxforge.look",
             "luxforge.curve",
             "luxforge.detail",
             "luxforge.presence",
@@ -901,7 +903,8 @@ fn a_built_in_registered_unavailable_keeps_its_declarations_and_reports_why() {
 }
 
 /// Every module that checks a stored layer's effect against its own refuses a foreign one as the
-/// one unavailable-effect refusal, whose data names the effect: the field-patch modules, pixel,
+/// one unavailable-effect refusal, whose data names the effect: the field-patch modules, the look,
+/// pixel,
 /// transform, crop and the capability proof. The RAW module refuses a foreign layer as an invalid
 /// RAW source layer and the presets module as one it has no effect for; neither is this refusal.
 #[test]
@@ -918,8 +921,9 @@ fn every_payload_check_names_a_foreign_effect_in_its_data() {
         .collect();
     assert_eq!(
         modules.len(),
-        11,
-        "basic, curve, detail, presence, mixer, lens, perspective, vignette, pixel, crop, controls"
+        12,
+        "basic, look, curve, detail, presence, mixer, lens, perspective, vignette, pixel, crop, \
+         controls"
     );
     modules.push(&proof);
     for module in modules {
