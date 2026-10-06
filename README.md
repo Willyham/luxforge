@@ -51,7 +51,7 @@ Luxforge is pre-release. Everything is v0, formats change without migrations, an
 - **Presets**, including import of Lightroom Classic XMP and `.lrtemplate` presets, with a report of anything that couldn't be carried over.
 - **JPEG export** from JPEG or RAW originals: an exact saved edit at its output size, quality 90, with an embedded sRGB profile. Metadata is stripped by default or kept for supported EXIF fields. Exports never replace an existing file or touch the original.
 - **An RGB histogram** with clipping overlays and a pixel readout, plus original comparison, a command palette and **Copy as JSON request** on controls.
-- **Instant previews**: a quick preview first, then a cancellable exact render, with visible-region refinement at 100% and above.
+- **GPU rendering**: the GPU draws every drag and the finished picture at every zoom, the histogram, samples and exports too, each held within a declared tolerance to a whole-frame CPU reference renderer, which draws whatever the GPU cannot.
 - **Live performance counters** for memory, CPU and GPU, alongside background jobs.
 - **Live agents**: if a script commits an edit while you're mid-drag, Luxforge keeps your draft and asks whether to discard it or reapply it on top.
 

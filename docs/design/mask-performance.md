@@ -56,7 +56,7 @@ its previous waiting result, then releases it; a retained waiting result owns no
 RGBA grids belong to the handoff, including the transient old/new consumer pair: eight bytes per
 cell plus the one-byte coverage cache, at most nine bytes per cell. This stays within the former
 handoff's maximum, which included UI RGBA conversion and separate cached, queued, worker and
-consumer coverage copies. The presenter's existing Fit and region frames and
+consumer coverage copies. The presenter's existing frames and
 GPU slots retain their own bounds. No image cache, source read, point raster,
 thread, timer or scratch-budget increase is introduced. Existing coverage-cell and input-grid limits
 remain in force. Total editor memory remains a separate qualification.
