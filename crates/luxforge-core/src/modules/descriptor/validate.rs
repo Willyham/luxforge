@@ -526,12 +526,25 @@ impl ModuleDescriptor {
                 }
             }
             Control::Choice(ChoiceControl {
-                action, parameter, ..
+                action,
+                parameter,
+                labels,
+                ..
             }) => {
                 let declared = self.declared_parameter(self.declared_action(action)?, parameter)?;
-                if !matches!(declared.kind, ParameterKind::Enum { .. }) {
+                let ParameterKind::Enum { options } = &declared.kind else {
                     return Err(Error::validation(format!(
                         "choice control for {parameter} of action {action} is not an enum"
+                    )));
+                };
+                if !labels.is_empty()
+                    && (labels.len() != options.len()
+                        || labels.iter().any(|label| label.trim().is_empty()))
+                {
+                    return Err(Error::validation(format!(
+                        "choice control for {parameter} of action {action} labels {} of its {} options",
+                        labels.len(),
+                        options.len()
                     )));
                 }
             }

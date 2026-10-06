@@ -433,7 +433,7 @@ fn validate_payload_refuses_every_malformed_stored_look() {
 
 /// The row reads `Look Standard` (with its amount off 100) or `Look Neutral` and reports the
 /// look, amount, chroma, knot count and fit; it is neutral exactly for the current Standard at
-/// 100 and for Neutral. A preset captures nothing of it.
+/// 100, so Neutral lights the edited mark. A preset captures nothing of it.
 #[test]
 fn describe_reports_the_look_and_neutral_for_the_starting_looks() {
     let module = module();
@@ -454,7 +454,10 @@ fn describe_reports_the_look_and_neutral_for_the_starting_looks() {
     assert!(!at_80.neutral);
     let neutral = describe(json!({"look": "neutral"}));
     assert_eq!(neutral.summary, "Look Neutral");
-    assert!(neutral.neutral);
+    assert!(
+        !neutral.neutral,
+        "Neutral is not the starting look, so it is an edit"
+    );
     assert_eq!(Value::Object(neutral.values), json!({"look": "neutral"}));
     let mut retuned = standard_payload(100.0);
     retuned["chroma"] = json!(1.25);
@@ -701,4 +704,19 @@ fn a_new_raw_photo_starts_from_the_standard_look_unless_neutral_is_preferred() {
     assert!(report.neutral, "the starting Standard look is not an edit");
     assert_eq!(original_on(SourceTag::Raw, RawLook::Neutral), None);
     assert_eq!(original_on(SourceTag::Jpeg, RawLook::Standard), None);
+}
+
+/// The Look choice shows its options as "Standard" and "Neutral" while sending their values.
+#[test]
+fn the_look_choice_labels_its_options() {
+    let descriptor = module().descriptor().clone();
+    let labels = descriptor
+        .controls
+        .iter()
+        .find_map(|control| match control {
+            Control::Choice(choice) if choice.parameter == LOOK => Some(choice.labels.clone()),
+            _ => None,
+        })
+        .expect("the look choice");
+    assert_eq!(labels, ["Standard", "Neutral"]);
 }
