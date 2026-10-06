@@ -413,3 +413,85 @@ fn a_picture_at_rests_tiles_are_planned_within_its_share_by_shape() {
     let area: u64 = tiles.tiles.iter().map(|tile| tile.rect.pixels()).sum();
     assert_eq!(area, u64::from(WIDTH * HEIGHT), "every pixel once");
 }
+
+/// A Presence layer reaching past the split, then Detail, is planned in two staged sweeps
+/// beside its chained tiles: the first over the content stage from the source, the second, its
+/// last, over the output stage from the stage texture the first wrote. A sweep's window is the walk
+/// over its own segments: the whole stack's from the source, for a sweep of every segment. One
+/// Presence layer is one sweep, drawn chained.
+#[test]
+fn a_stack_reaching_far_before_a_spatial_layer_is_planned_in_staged_sweeps() {
+    let bounds = ProxyBounds {
+        width: 160,
+        height: 120,
+    };
+    let layer = || {
+        Layer::new(
+            crate::PRESENCE_EFFECT,
+            json!({"texture": 30.0, "clarity": 25.0}),
+        )
+    };
+    let one = evaluation(vec![layer()], vec![layer()], None);
+    let tiles = super::plan_rest_tiles(&one, bounds, super::RestSizing::Side(64))
+        .unwrap()
+        .expect("tiles")
+        .unwrap();
+    assert_eq!(
+        tiles.staging,
+        super::GpuStaging::Chained(super::Chained::OneSweep)
+    );
+    let detail = || Layer::new(crate::DETAIL_EFFECT, json!({"sharpening": 50.0}));
+    let two = evaluation(vec![layer(), detail()], vec![layer(), detail()], None);
+    let tiles = super::plan_rest_tiles(&two, bounds, super::RestSizing::Side(64))
+        .unwrap()
+        .expect("tiles")
+        .unwrap();
+    let super::GpuStaging::Staged(sweeps) = &tiles.staging else {
+        panic!("{:?}", tiles.staging);
+    };
+    let [first, last] = &sweeps.sweeps[..] else {
+        panic!("{sweeps:?}");
+    };
+    assert_eq!((first.spatial.clone(), last.spatial.clone()), (0..1, 1..2));
+    assert_eq!(
+        (first.reads, first.writes, last.reads, last.writes),
+        (None, Some(0), Some(0), None)
+    );
+    assert_eq!((sweeps.textures, first.side, last.side), (1, 64, 64));
+    assert!(first.reach > super::SWEEP_SPLIT_REACH);
+    let area = |sweep: &super::GpuSweep| -> u64 {
+        sweep.tiles.iter().map(|tile| tile.rect.pixels()).sum()
+    };
+    assert_eq!(area(last), u64::from(WIDTH * HEIGHT));
+    assert_eq!(area(first), first.covers.pixels());
+    // Each window of the last sweep reads no more than the chained tile of its rectangle does.
+    for tile in &last.tiles {
+        let chained = tiles
+            .tiles
+            .iter()
+            .find(|chained| chained.rect == tile.rect)
+            .expect("the same rectangles");
+        assert!(tile.window.pixels() <= chained.window.pixels());
+    }
+    // A walk over every segment is the whole stack's window from the source.
+    let compiled = two.compiled().unwrap();
+    let rect = crate::modules::Region {
+        x0: 200,
+        y0: 100,
+        width: 64,
+        height: 64,
+    };
+    let whole = crate::render::window::WindowPlan::of_gpu_rect(compiled, (WIDTH, HEIGHT), rect)
+        .unwrap()
+        .reads(0);
+    assert_eq!(
+        crate::render::window::WindowPlan::gpu_window_between(
+            compiled,
+            (WIDTH, HEIGHT),
+            0,
+            compiled.segments.len() - 1,
+            rect
+        ),
+        Ok(whole)
+    );
+}
