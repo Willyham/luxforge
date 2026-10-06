@@ -405,13 +405,17 @@ impl Editor {
     }
 
     /// The reference renderer's frame as a captured frame reports it: the bounds the view reduces
-    /// it to, which the GPU's picture at rest is planned at too, and whether the texture on screen
-    /// is that reduction.
+    /// it to, which the GPU's picture at rest is planned at too, whether the texture on screen is
+    /// smaller than its stage, and whether it is a drag's display-size proxy, in a session the GPU
+    /// does not draw at all, with why it approximates the exact render at that size.
     pub(super) fn reference_summary(&self) -> Value {
         let bounds = self.proxy_bounds();
+        let proxy = self.presentation.presented_proxy;
         json!({
             "bounds": bounds.map(|bounds| json!({"width":bounds.width,"height":bounds.height})),
             "reduced": self.presentation.presented_reduced,
+            "proxy": proxy.is_some(),
+            "proxy_approximate_reason": proxy.and_then(luxforge_core::ProxyApproximation::reason),
         })
     }
 

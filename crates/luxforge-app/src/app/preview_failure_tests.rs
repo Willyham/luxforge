@@ -518,6 +518,7 @@ fn a_zoom_hands_over_the_retained_picture_under_its_own_entry() {
     editor.presentation.reduced_frame = Some(ReducedFrame {
         generation,
         raster: raster(1),
+        proxy: None,
         approximate_white_balance: false,
         render_ms: 5.0,
     });
