@@ -969,8 +969,14 @@ fn staged_families() -> Vec<(&'static str, Recipe)> {
     let mut warped = layers.clone();
     warped.push(luxforge_core::qualification::lens_layer(-0.06, STAGED));
     vec![
-        ("a masked Presence after Presence", recipe(layers, vec![(1, radial())])),
-        ("the same before a lens warp", recipe(warped, vec![(1, radial())])),
+        (
+            "a masked Presence after Presence",
+            recipe(layers, vec![(1, radial())]),
+        ),
+        (
+            "the same before a lens warp",
+            recipe(warped, vec![(1, radial())]),
+        ),
     ]
 }
 
@@ -1011,7 +1017,11 @@ fn a_staged_stream_is_the_whole_stage_render_bit_for_bit() {
             let Some(sweeps) = staging.sweeps() else {
                 panic!("{what}: planned chained, {staging:?}");
             };
-            let tiles: Vec<usize> = sweeps.sweeps.iter().map(|sweep| sweep.tiles.len()).collect();
+            let tiles: Vec<usize> = sweeps
+                .sweeps
+                .iter()
+                .map(|sweep| sweep.tiles.len())
+                .collect();
             versions += 1;
             let (plan, codes) =
                 drawn_whole(&mut surface, &gpu, &stack, ReadStage::Output, versions);
@@ -1032,7 +1042,11 @@ fn a_staged_stream_is_the_whole_stage_render_bit_for_bit() {
             assert!(stream(&service) == rgba, "{what}: twice on one device");
             settle(&service, client);
             let after = service.figures();
-            assert_eq!(after.staged - before.staged, 2, "{what}: both streams staged");
+            assert_eq!(
+                after.staged - before.staged,
+                2,
+                "{what}: both streams staged"
+            );
             assert_eq!(
                 (after.stage_bytes, after.in_use, after.in_flight),
                 (0, 0, 0),

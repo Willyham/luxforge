@@ -70,15 +70,14 @@
 //!   `refused`, `device-lost`, `adapter-mismatch`), the budget (`tiles-budget`), or the plan's own
 //!   reason the stage cannot run it — `pipeline-failed`, `texture-limit`, `buffer-limit` or
 //!   `source-missing` for a window whose pixels were let go — exactly as the surface names them.
+use super::staged::StageHolder;
 use super::{
     BLOCK_CHUNK, BoundaryFormat, Charged, Compiled, Derivation, GpuFallback, GpuPlan, GpuSource,
-    GpuStep,
-    MIN_BUFFER, OUTPUT_FORMAT, SAMPLED_FORMAT, Shape, SourceLayouts, SourceSlot, SpatialSlot,
-    Support, answered, blocks, buffer_capacity, chain, chain_charge, compile, encode_pass_over,
-    gpu_stage_refused, intermediate_bytes, intermediate_format, le_bytes, light, output_offset,
-    region_drawable, spatial, storage_buffer, supported,
+    GpuStep, MIN_BUFFER, OUTPUT_FORMAT, SAMPLED_FORMAT, Shape, SourceLayouts, SourceSlot,
+    SpatialSlot, Support, answered, blocks, buffer_capacity, chain, chain_charge, compile,
+    encode_pass_over, gpu_stage_refused, intermediate_bytes, intermediate_format, le_bytes, light,
+    output_offset, region_drawable, spatial, storage_buffer, supported,
 };
-use super::staged::StageHolder;
 use crate::adapters::{self, Adapter, Unopened};
 use std::sync::{
     Arc,
@@ -490,14 +489,11 @@ impl Slot {
             cut: buffer("luxforge.tiles.cut"),
             words: buffer("luxforge.tiles.words"),
             blocks: buffer("luxforge.tiles.blocks"),
-            intermediate: key
-                .shape
-                .intermediate
-                .map(|format| {
-                    // A sweep before the last copies it into a stage texture.
-                    let usage = drawn | wgpu::TextureUsages::COPY_SRC;
-                    texture("luxforge.tiles.intermediate", size, format, usage)
-                }),
+            intermediate: key.shape.intermediate.map(|format| {
+                // A sweep before the last copies it into a stage texture.
+                let usage = drawn | wgpu::TextureUsages::COPY_SRC;
+                texture("luxforge.tiles.intermediate", size, format, usage)
+            }),
             output: texture(
                 "luxforge.tiles.output",
                 key.shape.output,
@@ -734,7 +730,8 @@ impl TileRunner {
     ) -> Result<(), TileFailure> {
         self.release_stages();
         let limit = self.device.limits().max_texture_dimension_2d;
-        let each = StageHolder::charge(stage, format.texture(), limit).map_err(TileFailure::Plan)?;
+        let each =
+            StageHolder::charge(stage, format.texture(), limit).map_err(TileFailure::Plan)?;
         let requested = self.holding() + u64::from(count) * each;
         if requested > GPU_TILE_BUDGET {
             return Err(TileFailure::Budget {
@@ -872,7 +869,13 @@ impl TileRunner {
         window: [u32; 4],
         end: TileEnd,
     ) -> Result<Ticket, TileFailure> {
-        self.submit_to(plan, source, window, TileInput::Source, TileOutput::Read(end))
+        self.submit_to(
+            plan,
+            source,
+            window,
+            TileInput::Source,
+            TileOutput::Read(end),
+        )
     }
 
     /// [`TileRunner::submit`] for a tile of a staged sweep (`docs/design/gpu-first.md`, "Staged
