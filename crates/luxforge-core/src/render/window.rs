@@ -100,6 +100,54 @@ impl WindowPlan {
         Ok(Self { reads })
     }
 
+    /// What a non-empty `requested` rectangle of the stage segment `end` of `compiled` produces
+    /// reads of the stage segment `from`'s entry reads, `from` at most `end`, over a source of
+    /// `source` dimensions: the source's window for segment 0, and for a later one the rectangle of
+    /// the stage before its entry, grown by what the entry needs around what the segment reads.
+    /// The walk [`Self::of_gpu_rect`] makes, over the segments from `end` back to `from` alone: what
+    /// a staged sweep of those segments reads of the stage the sweep before it wrote.
+    /// `O(segments)`, and reads no pixel.
+    pub(crate) fn gpu_window_between(
+        compiled: &Compiled,
+        source: (u32, u32),
+        from: usize,
+        end: usize,
+        requested: Region,
+    ) -> Result<Region, RegionFallback> {
+        let segments = &compiled.segments;
+        let source = Stage {
+            width: source.0,
+            height: source.1,
+        };
+        if end >= segments.len() || from > end || requested.is_empty() {
+            return Err(RegionFallback::Empty);
+        }
+        let produced = segments[end].stage();
+        if requested.x1() > produced.width || requested.y1() > produced.height {
+            return Err(RegionFallback::UnplannableGeometry);
+        }
+        let mut needed = requested;
+        for index in (from..=end).rev() {
+            let segment = &segments[index];
+            if needed.is_empty() {
+                return Err(RegionFallback::UnplannableGeometry);
+            }
+            if needed != Region::whole(segment.stage()) && segment.has_pixels {
+                return Err(RegionFallback::PointReplacement);
+            }
+            let input = input_stage(segments, index, source);
+            let read = segment.geometry.unmap_region(needed);
+            if read.x1() > input.width || read.y1() > input.height {
+                return Err(RegionFallback::UnplannableGeometry);
+            }
+            needed = match &segment.entry {
+                Some(entry) => entry.plan_gpu_window(read, segments[index - 1].stage())?,
+                None => read,
+            };
+        }
+        Ok(needed)
+    }
+
     /// The rectangle of the whole stage segment `segment` receives that its part of the requested
     /// rectangle reads: the source's window for the first segment, and for a later one the part of
     /// its boundary's output a GPU preview's boundary in it holds.

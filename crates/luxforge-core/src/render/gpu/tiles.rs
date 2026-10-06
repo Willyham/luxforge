@@ -219,6 +219,29 @@ pub fn plan_stream(evaluation: &Evaluation, side: u32) -> Result<StreamPlan, Til
     })
 }
 
+/// `evaluation`'s output stage for an export in staged sweeps ([`super::GpuSweeps`]), each sweep at
+/// the longest of [`STREAM_TILE_SIDES`] whose middle tile's slot and light links fit `budget`
+/// beside the stage textures, its tiles row by row so the last sweep's bands are its rows; or why
+/// the export is drawn chained ([`plan_stream`]'s tiles). `budget` is what the tile worker's tiles
+/// may take on its device, its read reserve already set aside. The reason the reference renders
+/// the export instead, as [`plan_stream`] names it. `O(layers + sweeps × sides × segments + tiles ×
+/// segments)`, no pixel read.
+pub fn plan_stream_sweeps(
+    evaluation: &Evaluation,
+    budget: u64,
+) -> Result<super::GpuStaging, TileFallback> {
+    let planned = Planned::of(evaluation, ReadStage::Output)?;
+    Ok(super::sweeps::plan_sweeps(&super::sweeps::SweepRequest {
+        compiled: &planned.compiled,
+        source: (planned.full.width, planned.full.height),
+        plan: &planned.plan,
+        format: BoundaryFormat::of(planned.plan.linear),
+        sides: &STREAM_TILE_SIDES,
+        budget: Some(budget),
+        order: super::sweeps::TileOrder::Rows,
+    }))
+}
+
 /// A stage of an evaluation planned for the GPU: its compilation, the plan of it from the source,
 /// its size and the source's.
 struct Planned<'a> {
