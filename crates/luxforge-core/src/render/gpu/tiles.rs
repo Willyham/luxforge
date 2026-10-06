@@ -292,15 +292,14 @@ impl<'a> Planned<'a> {
             });
         }
         let source = (self.full.width, self.full.height);
-        let windows =
-            WindowPlan::of_gpu_rect(&self.compiled, source, rect, 0).map_err(|reason| {
-                unplannable(format!(
-                    "the tile at ({}, {}): {}",
-                    rect.x0,
-                    rect.y0,
-                    reason.reason()
-                ))
-            })?;
+        let windows = WindowPlan::of_gpu_rect(&self.compiled, source, rect).map_err(|reason| {
+            unplannable(format!(
+                "the tile at ({}, {}): {}",
+                rect.x0,
+                rect.y0,
+                reason.reason()
+            ))
+        })?;
         Ok(RestTile {
             rect,
             window: anchored(windows.reads(0), anchor),
@@ -475,10 +474,9 @@ mod tests {
                     assert_eq!(read.size, output, "{at}");
                     assert_eq!(read.tile.rect, clipped(rect, output), "{at}");
                     let anchor = plan.anchor();
-                    let window =
-                        WindowPlan::of_gpu_rect(compiled, (width, height), read.tile.rect, 0)
-                            .unwrap()
-                            .reads(0);
+                    let window = WindowPlan::of_gpu_rect(compiled, (width, height), read.tile.rect)
+                        .unwrap()
+                        .reads(0);
                     assert_eq!(read.tile.window, anchored(window, anchor), "{at}");
                     let held = read.tile.window;
                     assert_eq!(held.x0 % anchor.multiple.0, 0, "{at}: anchored across");

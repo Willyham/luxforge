@@ -187,9 +187,9 @@ fn restoration_compile_stage_reaches_modules() {
             height: 65,
         })
         .unwrap();
-    let proxy_stage = exact.proxy_window(&registry, &recipe, fit);
+    let proxy_stage = exact.proxy_stage(&registry, &recipe, fit);
     let fit = proxy_stage.plan();
-    assert!(fit.window.is_some(), "Fit recipe has a cut source window");
+    assert!(fit.window.is_none(), "a proxy holds its whole stage");
     assert_eq!(
         *probe.seen.lock().unwrap().last().unwrap(),
         CompileStage::sampled(

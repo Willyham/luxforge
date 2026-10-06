@@ -446,6 +446,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     /// ([`super::Entry::globals`]), from the store or from one reduction of its input stage,
     /// exactly as a frame of this compilation would resolve them; the store then holds them for
     /// that frame. Empty when segment `index` enters through no boundary that reads one.
+    #[cfg(test)]
     pub(crate) fn globals_of(&self, index: usize) -> Result<Vec<Option<Global>>, Error> {
         match &self.compiled.segments[index].entry {
             Some(entry) => entry.globals(self, index),
@@ -456,6 +457,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     /// [`Self::globals_of`] from the estimate store alone, under the key a frame of this
     /// compilation asks with: `None` when the store does not hold every one, which nothing here
     /// reduces. `O(units)`, and reads no pixel.
+    #[cfg(any(test, feature = "qualification"))]
     pub(crate) fn held_globals_of(&self, index: usize) -> Option<Vec<Option<Global>>> {
         match &self.compiled.segments[index].entry {
             Some(super::Entry::Spatial(entry)) => entry
@@ -920,7 +922,7 @@ fn clamp_index(value: f64, limit: u32) -> u32 {
 }
 
 /// A spatial boundary ([`super::Entry::Spatial`]): the operation, the recipe prefix its estimates
-/// are keyed by and the estimates a windowed proxy handed it, if any.
+/// are keyed by and the estimates it was handed, if any.
 #[derive(Clone)]
 pub(crate) struct SpatialEntry {
     pub(super) operation: SpatialOperation,
@@ -929,13 +931,9 @@ pub(crate) struct SpatialEntry {
     /// source and the stage identifies what a global estimate was prepared from.
     prefix_hash: String,
     /// The global estimates this operation is handed instead of reducing its own stage: set only
-    /// by a windowed proxy, whose stage is a window that cannot be reduced as a whole
-    /// ([`super::window`]). `None` everywhere else.
-    pub(super) globals: Option<super::window::Globals>,
-    /// Whether a windowed proxy cut this operation to a window, which it runs over as its own
-    /// stage. A window's edge blocks are not the whole stage's, so it neither reads nor fills the
-    /// store of reduced planes ([`super::reduced`]).
-    pub(super) windowed: bool,
+    /// by the qualification harness, which hands a frame the estimates it measures. `None`
+    /// everywhere else.
+    pub(super) globals: Option<Arc<Vec<Option<Global>>>>,
 }
 
 impl SpatialEntry {
@@ -945,13 +943,12 @@ impl SpatialEntry {
             stage: crate::EffectStage::Spatial,
             prefix_hash,
             globals: None,
-            windowed: false,
         }
     }
 
     /// The key of the store's reduced planes of this operation's first unit over `stage` in
     /// `domain`, mirroring an estimate's ([`resolve_globals`]), with the grid the unit declares;
-    /// `None` when the first unit declares none or a window cut the operation. Only the first unit
+    /// `None` when the first unit declares none. Only the first unit
     /// is asked: a later unit's input is the earlier units' output over its tile's own rectangles,
     /// which no shared plane reproduces. `O(1)`, and reads no pixel.
     pub(super) fn reduced_key<D: PixelDomain>(
@@ -959,9 +956,6 @@ impl SpatialEntry {
         domain: &D,
         stage: Stage,
     ) -> Option<(ReducedKey, ReducedGrid)> {
-        if self.windowed {
-            return None;
-        }
         let grid = self.operation.units().first()?.reduced_grid()?;
         let key = ReducedKey {
             fingerprint: domain.fingerprint().to_owned(),
@@ -979,64 +973,15 @@ impl SpatialEntry {
         &self.prefix_hash
     }
 
-    /// Whether any unit of the operation prepares a global estimate from a reduction of its stage.
-    pub(super) fn prepares_estimates(&self) -> bool {
-        self.operation
-            .units()
-            .iter()
-            .any(|unit| unit.estimate_key().is_some())
-    }
-
     /// The rectangle of its `received` stage that producing `window` of it reads: `window` grown by
-    /// the operation's summed halo and clamped to the stage, with its origin moved down to the grid
-    /// of the tiles the operation runs in ([`Tiling::Halo`]), so a stage cut to it holds exactly
-    /// the whole stage's own tiles there.
-    pub(super) fn reads(&self, window: Region, received: Stage) -> Region {
-        let operation = &self.operation;
-        let grown = self.halo_reads(window, received);
-        let tile = Tiling::Halo.tile(operation, received);
-        let x0 = grown.x0 / tile * tile;
-        let y0 = grown.y0 / tile * tile;
-        Region {
-            x0,
-            y0,
-            width: grown.x1() - x0,
-            height: grown.y1() - y0,
-        }
-    }
-
-    /// The rectangle of its `received` stage that producing `window` of it reads when no tiles cut
-    /// it: `window` grown by the operation's summed halo and clamped to the stage. A GPU preview's
-    /// spatial step evaluates every pixel of the window it holds at once, so a unit's value at a
-    /// pixel inside the window shrunk by its halo is the whole stage's whatever the window's
-    /// origin, and the tile grid [`Self::reads`] snaps to is the CPU's alone. A reduced unit's
+    /// the operation's summed halo and clamped to the stage. A GPU preview's spatial step
+    /// evaluates every pixel of the window it holds at once, so a unit's value at a pixel inside
+    /// the window shrunk by its halo is the whole stage's whatever the window's origin. A reduced
+    /// unit's
     /// halo already reaches the far end of every block its output reads (`reduced_halo`), so a
     /// window whose origin cuts a block reads only whole blocks for the pixels it is asked for.
     pub(super) fn halo_reads(&self, window: Region, received: Stage) -> Region {
         window.grown(self.operation.summed_halo(received), received)
-    }
-
-    /// Cut to `previous`, the rectangle of its `whole` stage its cut stage holds: its mask is read
-    /// at the window's offset, and an operation that prepares a global estimate is handed the
-    /// whole stage's, from `globals`.
-    pub(super) fn cut(
-        &mut self,
-        previous: Region,
-        whole: Stage,
-        globals: impl FnOnce() -> Result<Vec<Option<Global>>, Error>,
-    ) -> Result<(), Error> {
-        self.windowed = true;
-        if previous != Region::whole(whole)
-            && let Some(mask) = self.operation.mask()
-        {
-            let windowed = mask.windowed(previous);
-            self.operation = self.operation.clone().with_mask(windowed);
-        }
-        // Over its whole stage it reduces its own input, as a frame does.
-        if self.prepares_estimates() && previous != Region::whole(whole) {
-            self.globals = Some(Arc::new(globals()?));
-        }
-        Ok(())
     }
 
     /// The global estimates this entry reads over `stage` in `domain`: the ones it was handed, or

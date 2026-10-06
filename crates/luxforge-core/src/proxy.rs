@@ -139,12 +139,10 @@ pub struct ProxyPlan {
     pub width: u32,
     pub height: u32,
     pub bounds: ProxyBounds,
-    /// The rectangle of the whole proxy stage the proxy source holds, when the stack reads less
-    /// than all of it — a crop, and what each boundary before it needs around what it reads — or
-    /// `None` for the whole stage. A tight crop fits a small output into the bounds, which raises
-    /// the scale towards one, so without a window its proxy would approach the source's own size;
-    /// with one, the proxy source is the display-sized part the crop reads plus a stated margin
-    /// (instant previews, "Render what the display can show").
+    /// The rectangle of the whole reduced stage a GPU plan's reduced source holds, when the stack
+    /// reads less than all of it — a crop, and what each boundary before it needs around what it
+    /// reads — or `None` for the whole stage (the GPU window walk). A CPU proxy
+    /// always holds its whole stage (`ProxyPlan::whole_within`).
     pub(crate) window: Option<ProxyWindow>,
 }
 
@@ -171,6 +169,37 @@ impl ProxyPlan {
         Self {
             window: None,
             ..self
+        }
+    }
+
+    /// [`Self::whole`] over a `source`-sized source, its scale lowered when need be so the whole
+    /// stage holds at most [`ProxyBounds::MAX_PIXELS`]: the stage a CPU proxy renders, which is
+    /// always whole. A tight crop fits a small output into the bounds, which raises the scale
+    /// towards one; the whole stage then stays display-sized and the crop's part of it is drawn
+    /// magnified, sharp again in the reference's frame at rest. `O(1)`.
+    pub(crate) fn whole_within(self, source: (u32, u32)) -> Self {
+        let pixels = u64::from(self.width) * u64::from(self.height);
+        if pixels <= ProxyBounds::MAX_PIXELS || source.0 == 0 || source.1 == 0 {
+            return self.whole();
+        }
+        let scale =
+            (ProxyBounds::MAX_PIXELS as f64 / (f64::from(source.0) * f64::from(source.1))).sqrt();
+        let mut width = ((f64::from(source.0) * scale).floor() as u32).clamp(1, self.width);
+        let mut height = ((f64::from(source.1) * scale).floor() as u32).clamp(1, self.height);
+        // Flooring cannot raise the product above the limit in exact arithmetic; this settles the
+        // last pixel when the square root rounded upwards.
+        while u64::from(width) * u64::from(height) > ProxyBounds::MAX_PIXELS {
+            if width >= height {
+                width -= 1;
+            } else {
+                height -= 1;
+            }
+        }
+        Self {
+            width,
+            height,
+            bounds: self.bounds,
+            window: None,
         }
     }
 

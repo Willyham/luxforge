@@ -410,8 +410,7 @@ fn a_moving_job_yields_the_proxy_phase_and_a_job_at_rest_the_exact_phase() {
     assert_eq!(exact.generation, rested);
     assert_eq!(proxy.phase(), PreviewPhase::Proxy);
     assert_eq!(exact.phase(), PreviewPhase::Exact);
-    // The fitted crop reads all but the proxy stage's corners, so the source holds the window of
-    // the proxy stage those taps reach: never more than the whole proxy stage.
+    // A proxy source holds its whole proxy stage.
     let (width, height) = proxy.proxy().expect("a proxy phase").dimensions;
     assert!(
         width <= plan.width && height <= plan.height,
@@ -476,11 +475,11 @@ fn a_moving_job_yields_the_proxy_phase_and_a_job_at_rest_the_exact_phase() {
 
 /// A stack is compiled once at each stage it renders at: once at the exact stage, by its
 /// evaluation when the job is built, whose compilation plans a moving job's proxy and renders the
-/// exact frame of a job at rest over the same evaluation, and once at the proxy stage, by the plan
-/// that walks the window its output reads, whose compilation renders the proxy frame and says
-/// whether it is approximate. The count sees every compile the entry point makes, the proxy plan's
-/// included, over a whole-stage proxy and a tight crop's windowed one. A stack drawn only at rest
-/// is compiled once.
+/// exact frame of a job at rest over the same evaluation, and once at the proxy stage, by the plan,
+/// whose compilation renders the proxy frame and says whether it is approximate. The count sees
+/// every compile the entry point makes, the proxy plan's included, over a whole stack's proxy and a
+/// tight crop's, which holds its whole proxy stage too. A stack drawn only at rest is compiled
+/// once.
 #[test]
 fn a_preview_job_compiles_its_stack_once_per_stage_it_renders_at() {
     let mask = gradient_mask(0.5);
@@ -503,7 +502,7 @@ fn a_preview_job_compiles_its_stack_once_per_stage_it_renders_at() {
             2,
         ),
         (
-            "windowed proxy",
+            "cropped proxy",
             400,
             300,
             cropped,
@@ -539,9 +538,11 @@ fn a_preview_job_compiles_its_stack_once_per_stage_it_renders_at() {
                 .proxy_plan(&registry, &recipe, display)
                 .unwrap()
                 .expect("a proxy is worthwhile");
-            let windowed =
-                first.proxy().expect("a proxy phase").dimensions != (plan.width, plan.height);
-            assert_eq!(windowed, name == "windowed proxy", "{name}");
+            assert_eq!(
+                first.proxy().expect("a proxy phase").dimensions,
+                (plan.width, plan.height),
+                "{name}: the whole proxy stage"
+            );
         }
         assert_eq!(context.compiles(), compiles, "{name}");
     }
@@ -1163,12 +1164,12 @@ fn two_jobs_at_the_same_bounds_build_the_proxy_once() {
     );
 }
 
-/// A tight crop's proxy holds the window of the proxy stage the crop reads, and is keyed by it: a
-/// job that changes another layer under the same crop renders against the source already in hand,
-/// and a crop that moves builds the window it now reads. Every frame is the exact recipe over the
-/// exact downscale of the whole source, byte for byte.
+/// A tight crop's proxy holds its whole proxy stage and is keyed by its plan: a job that changes
+/// another layer under the same crop, or moves the crop, renders against the source already in
+/// hand. Every frame is the exact recipe over the exact downscale of the whole source, byte for
+/// byte.
 #[test]
-fn a_tight_crops_windowed_proxy_is_cached_by_its_window() {
+fn a_tight_crops_proxy_holds_its_whole_stage_and_is_cached_by_its_plan() {
     let display = bounds(40, 30);
     let layers = |exposure: f64, x: f64| {
         vec![
@@ -1211,28 +1212,26 @@ fn a_tight_crops_windowed_proxy_is_cached_by_its_window() {
         assert_eq!(
             raster.rgba.as_ref(),
             reference.rgba.as_ref(),
-            "the windowed proxy frame is the exact recipe over the exact downscale"
+            "the proxy frame is the exact recipe over the exact downscale"
         );
-        assert!(
-            u64::from(dimensions.0) * u64::from(dimensions.1)
-                < u64::from(plan.width) * u64::from(plan.height) / 4,
-            "a {dimensions:?} proxy source of a {}x{} proxy stage",
-            plan.width,
-            plan.height
+        assert_eq!(
+            dimensions,
+            (plan.width, plan.height),
+            "the whole proxy stage"
         );
         (built, dimensions)
     };
 
     let (built, first) = frame(stacked(400, 300, layers(0.3, 0.55), Some(display)));
-    assert!(built, "the first job builds the window");
+    assert!(built, "the first job builds the proxy");
     let (built, second) = frame(stacked(400, 300, layers(-0.6, 0.55), Some(display)));
     assert!(
         !built,
-        "an exposure change under the same crop hits the window"
+        "an exposure change under the same crop hits the proxy"
     );
     assert_eq!(first, second);
     let (built, _) = frame(stacked(400, 300, layers(-0.6, 0.25), Some(display)));
-    assert!(built, "a moved crop reads another window");
+    assert!(!built, "a moved crop of the same size hits the proxy");
 }
 
 // ---------------------------------------------------------------------------------------

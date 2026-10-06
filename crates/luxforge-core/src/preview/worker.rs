@@ -109,9 +109,7 @@ fn plan_proxy(job: &PreviewJob, recipe: &Recipe, exact: &Result<Render<'_>, Erro
     };
     match exact.proxy_plan(bounds) {
         Some(plan) => {
-            // A cropped stack's proxy holds only the window of the proxy stage its output reads,
-            // so its size follows the display bounds and not the crop's tightness.
-            let stage = exact.proxy_window(evaluation.registry(), recipe, plan);
+            let stage = exact.proxy_stage(evaluation.registry(), recipe, plan);
             ProxyStep::Planned(
                 ProxyKey {
                     identity: evaluation.source().identity(),

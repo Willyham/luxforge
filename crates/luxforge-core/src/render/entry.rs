@@ -18,14 +18,13 @@ use super::{
     rasterize,
     spatial::Tiling,
     transform_of,
-    window::WindowPlan,
 };
 use crate::{
-    Cancel, Error, LinearImage, ModuleRegistry, ProxyApproximation, ProxyBounds, ProxyPlan,
-    ProxyWindow, Recipe, SnapshotId, SourceImage,
+    Cancel, Error, LinearImage, ModuleRegistry, ProxyApproximation, ProxyBounds, ProxyPlan, Recipe,
+    SnapshotId, SourceImage,
     analysis::{MaskInputPixel, cell_pixel},
     mask_field::MaskSampling,
-    modules::{Global, Region, Stage},
+    modules::{Region, Stage},
 };
 use std::borrow::Cow;
 
@@ -141,21 +140,18 @@ pub struct Render<'a> {
     pub(super) context: &'a RenderContext,
 }
 
-/// A job's proxy stage, planned by [`Render::proxy_window`] and rendered by
-/// [`Render::render_proxy`]: the stack's one compilation at the proxy stage, and the window of it
-/// the proxy source holds, so the render reuses what the plan compiled and walked.
+/// A job's proxy stage, planned by [`Render::proxy_stage`] and rendered by
+/// [`Render::render_proxy`]: the stack's one compilation at the whole proxy stage, so the render
+/// reuses what the plan compiled.
 pub(crate) struct ProxyStage {
     plan: ProxyPlan,
     /// The compilation, or why the stack does not compile at the proxy stage, which the render
     /// reports as the proxy phase's reason.
     compiled: Result<Compiled, Error>,
-    /// The window walk over `compiled`, when the plan has a window.
-    windows: Option<WindowPlan>,
 }
 
 impl ProxyStage {
-    /// The plan the proxy source is built to and cached under: the fitted plan, with the window
-    /// the stack reads when it reads less than the whole stage.
+    /// The plan the proxy source is built to and cached under: the whole proxy stage.
     pub(crate) fn plan(&self) -> ProxyPlan {
         self.plan
     }
@@ -173,28 +169,6 @@ fn clipped(requested: Region, stage: super::StageSize) -> Option<Region> {
         width: x1 - x0,
         height: y1 - y0,
     })
-}
-
-#[cfg(any(test, feature = "qualification"))]
-enum RegionSource {
-    Byte(SourceImage),
-    Linear {
-        image: LinearImage,
-        settings: LinearSettings,
-    },
-}
-
-#[cfg(any(test, feature = "qualification"))]
-impl RegionSource {
-    fn input(&self) -> RenderSource<'_> {
-        match self {
-            Self::Byte(image) => RenderSource::Byte(image),
-            Self::Linear { image, settings } => RenderSource::Linear {
-                image,
-                settings: *settings,
-            },
-        }
-    }
 }
 
 /// Enter rendering: compile `recipe` against `source` for the phase `options` name.
@@ -306,14 +280,9 @@ impl<'a> Render<'a> {
     /// The input of the layer that begins at `position` — a segment and an operation index of this
     /// render's compilation — held over the window of its received stage that the output stage's
     /// `rect` reads at full scale: the visible region and every margin the boundaries after it
-    /// need on the GPU, through the windowed planner ([`WindowPlan::of_gpu_rect`]). The segments
-    /// up to the layer's are cut as the CPU cuts them, and those after it are left whole, since the
-    /// GPU evaluates them.
-    ///
-    /// - A spatial operation the boundary is rendered through reads the same whole-stage
-    ///   estimates the exact region uses: from the store, or one reduction of its stage.
-    /// - One behind an earlier spatial operation reduces its own whole input, the segments before
-    ///   it kept whole, as a frame does ([`WindowPlan::of_gpu_rect`]).
+    /// need on the GPU ([`super::window::WindowPlan::of_gpu_rect`]). It is the reference renderer's whole frame
+    /// of the stages up to the layer, every spatial operation among them reducing its own whole
+    /// input, kept to that window.
     ///
     /// A stack the planner cannot cut answers its reason as an error, as a region the boundary
     /// cannot hold is no frame of it. The editor renders none: every plan starts from the source,
@@ -333,48 +302,22 @@ impl<'a> Render<'a> {
             ));
         };
         let source_size = self.source.dimensions();
-        let windows = WindowPlan::of_gpu_rect(&self.compiled, source_size, rect, position.0)
+        let windows = super::window::WindowPlan::of_gpu_rect(&self.compiled, source_size, rect)
             .map_err(|reason| {
                 Error::validation(format!(
                     "the GPU preview's region boundary: {}",
                     reason.reason()
                 ))
             })?;
-        let globals = |index: usize| self.spatial_globals(index);
         self.options.cancel.check()?;
-        let source = match self.source {
-            RenderSource::Byte(image) => RegionSource::Byte(
-                if windows.source
-                    == Region::whole(Stage {
-                        width: image.width,
-                        height: image.height,
-                    })
-                {
-                    image.clone()
-                } else {
-                    image.window(windows.source, &self.options.cancel)?
-                },
-            ),
-            RenderSource::Linear { image, settings } => RegionSource::Linear {
-                image: image.window(windows.source)?,
-                settings,
-            },
+        let source = Stage {
+            width: source_size.0,
+            height: source_size.1,
         };
-        let cut = windows.apply_through(
-            Compiled::clone(&self.compiled),
-            source_size,
-            position.0,
-            globals,
-        )?;
-        // A spatial operation before the boundary is cut on its tile grid, and the boundary keeps
-        // only what the region reads of its output.
-        Render::compiled(source.input(), cut, self.options.clone(), self.context)?.boundary_kept(
+        self.boundary_kept(
             &self.compiled,
-            Stage {
-                width: source_size.0,
-                height: source_size.1,
-            },
-            windows.source,
+            source,
+            Region::whole(source),
             position,
             format,
             Some(windows.reads(position.0)),
@@ -590,14 +533,11 @@ impl<'a> Render<'a> {
     }
 
     /// The proxy stage of this render's stack for `plan`, fitted from this render's output stage
-    /// ([`Self::proxy_plan`]): the stack compiled once at the proxy stage, and the plan with the
-    /// window of that stage the stack reads, when it reads less than all of it — what a crop reads
-    /// through every boundary before it, plus the margins each boundary needs ([`super::window`]).
-    /// The plan is the whole stage — a whole-stage proxy, which is always a correct answer — when
-    /// the stack reads the whole stage, cannot be cut, or does not compile at the proxy stage into
-    /// the segments it compiles to here. [`Self::render_proxy`] renders this compilation, so a job
+    /// ([`Self::proxy_plan`]): the plan over the whole proxy stage, its scale lowered so that stage
+    /// holds no more than a display-sized proxy ([`ProxyPlan::whole_within`]), and the stack
+    /// compiled once against it. [`Self::render_proxy`] renders this compilation, so a job
     /// compiles its stack once at the proxy stage. `O(layers)`, and reads no pixel.
-    pub(crate) fn proxy_window(
+    pub(crate) fn proxy_stage(
         &self,
         registry: &ModuleRegistry,
         recipe: &Recipe,
@@ -605,6 +545,7 @@ impl<'a> Render<'a> {
     ) -> ProxyStage {
         #[cfg(test)]
         self.context.note_compile();
+        let plan = plan.whole_within(self.source.dimensions());
         let compiled = registry.compile_sampled(
             plan.width,
             plan.height,
@@ -613,37 +554,12 @@ impl<'a> Render<'a> {
             recipe,
             RenderPhase::Proxy.sampling(),
         );
-        let windows = compiled
-            .as_ref()
-            .ok()
-            .filter(|compiled| same_segments(compiled, &self.compiled))
-            .and_then(|compiled| WindowPlan::of(compiled, (plan.width, plan.height)));
-        let plan = match &windows {
-            Some(windows) => ProxyPlan {
-                window: Some(ProxyWindow {
-                    x: windows.source.x0,
-                    y: windows.source.y0,
-                    width: windows.source.width,
-                    height: windows.source.height,
-                }),
-                ..plan
-            },
-            None => plan.whole(),
-        };
-        ProxyStage {
-            plan,
-            compiled,
-            windows,
-        }
+        ProxyStage { plan, compiled }
     }
 
-    /// The proxy phase of this render's stack: `stage`'s compilation, from [`Self::proxy_window`],
-    /// against `source`, the proxy source its plan built, under `cancel`. Without a window this is
-    /// that compilation rendered at the proxy phase. With one, it is cut to the window
-    /// ([`super::window`]), and a spatial operation whose stage the window cuts is handed the
-    /// global estimates this render — the exact phase of the same job — resolves for it, which the
-    /// store then holds for the exact frame. Compiles nothing: `O(layers)` and no pixel, besides
-    /// the exact stage's one reduction per estimate the store does not hold.
+    /// The proxy phase of this render's stack: `stage`'s compilation, from [`Self::proxy_stage`],
+    /// rendered at the proxy phase against `source`, the proxy source its plan built, under
+    /// `cancel`. Compiles nothing: `O(layers)` and no pixel.
     pub(crate) fn render_proxy<'s>(
         &self,
         source: RenderSource<'s>,
@@ -651,11 +567,7 @@ impl<'a> Render<'a> {
         cancel: &Cancel,
         context: &'s RenderContext,
     ) -> Result<Render<'s>, Error> {
-        let ProxyStage {
-            plan,
-            compiled,
-            windows,
-        } = stage;
+        let ProxyStage { plan, compiled } = stage;
         let compiled = compiled?;
         if let RenderSource::Byte(image) = source {
             check_source(image)?;
@@ -669,14 +581,6 @@ impl<'a> Render<'a> {
                 source.dimensions().1
             )));
         }
-        let compiled = match windows {
-            None => compiled,
-            Some(windows) => windows.apply(compiled, (plan.width, plan.height), |index| {
-                // A cold estimate belongs to the proxy phase: superseding the exact phase must not
-                // cancel a proxy that can still be presented during an interactive sequence.
-                self.spatial_globals_with_cancel(index, cancel)
-            })?,
-        };
         Render::compiled(source, compiled, RenderOptions::proxy(cancel), context)
     }
 
@@ -685,9 +589,52 @@ impl<'a> Render<'a> {
     /// operation's whole input stage, which the store then keeps for the frame. On a miss the
     /// whole frames of the spatial segments before it are materialized to read that stage; with
     /// none before it, none is.
-    #[cfg(any(test, feature = "qualification"))]
-    pub(crate) fn spatial_globals(&self, index: usize) -> Result<Vec<Option<Global>>, Error> {
-        self.spatial_globals_with_cancel(index, &self.options.cancel)
+    #[cfg(test)]
+    pub(crate) fn spatial_globals(
+        &self,
+        index: usize,
+    ) -> Result<Vec<Option<crate::modules::Global>>, Error> {
+        fn in_domain<D: PixelDomain>(
+            render: &Render<'_>,
+            domain: D,
+            index: usize,
+        ) -> Result<Vec<Option<crate::modules::Global>>, Error> {
+            let compiled = Cow::Borrowed(&*render.compiled);
+            let (tiling, cancel) = (render.options.tiling, &render.options.cancel);
+            // The store answers without a pixel read when it holds them, so the frames before
+            // the segment are materialized only for a miss.
+            let point = Evaluation::new(
+                domain,
+                compiled,
+                tiling,
+                SpatialMode::Point,
+                cancel,
+                render.context,
+            )?;
+            if !point.compiled.spatial_before(index) {
+                return point.globals_of(index);
+            }
+            if let Some(held) = point.held_globals_of(index) {
+                return Ok(held);
+            }
+            let Evaluation { domain, .. } = point;
+            Evaluation::framed(
+                domain,
+                Cow::Borrowed(&*render.compiled),
+                tiling,
+                None,
+                index,
+                cancel,
+                render.context,
+            )?
+            .globals_of(index)
+        }
+        match self.source {
+            RenderSource::Byte(image) => in_domain(self, Byte(image), index),
+            RenderSource::Linear { image, settings } => {
+                in_domain(self, Linear::new(image, settings)?, index)
+            }
+        }
     }
 
     /// [`Self::spatial_globals`] from the estimate store alone, under the key a frame of this render
@@ -697,7 +644,7 @@ impl<'a> Render<'a> {
     pub(crate) fn held_spatial_globals(
         &self,
         index: usize,
-    ) -> Result<Option<Vec<Option<Global>>>, Error> {
+    ) -> Result<Option<Vec<Option<crate::modules::Global>>>, Error> {
         Ok(match self.source {
             RenderSource::Byte(image) => self
                 .evaluation(Byte(image), SpatialMode::Point)?
@@ -714,7 +661,7 @@ impl<'a> Render<'a> {
     pub(crate) fn hold_spatial_globals(
         &self,
         index: usize,
-        globals: &[Option<Global>],
+        globals: &[Option<crate::modules::Global>],
     ) -> Result<(), Error> {
         match self.source {
             RenderSource::Byte(image) => self
@@ -761,57 +708,6 @@ impl<'a> Render<'a> {
                 Some(super::Entry::Spatial(_))
             ))
         .then_some(next)
-    }
-
-    /// Resolve a proxy's exact-stage estimate under the proxy token, independently of the
-    /// exact frame's cancellation token, while reusing this render's one compilation.
-    fn spatial_globals_with_cancel(
-        &self,
-        index: usize,
-        cancel: &Cancel,
-    ) -> Result<Vec<Option<Global>>, Error> {
-        fn in_domain<D: PixelDomain>(
-            render: &Render<'_>,
-            domain: D,
-            index: usize,
-            cancel: &Cancel,
-        ) -> Result<Vec<Option<Global>>, Error> {
-            let compiled = Cow::Borrowed(&*render.compiled);
-            let tiling = render.options.tiling;
-            // The store answers without a pixel read when it holds them, so the frames before
-            // the segment are materialized only for a miss.
-            let point = Evaluation::new(
-                domain,
-                compiled,
-                tiling,
-                SpatialMode::Point,
-                cancel,
-                render.context,
-            )?;
-            if !point.compiled.spatial_before(index) {
-                return point.globals_of(index);
-            }
-            if let Some(held) = point.held_globals_of(index) {
-                return Ok(held);
-            }
-            let Evaluation { domain, .. } = point;
-            Evaluation::framed(
-                domain,
-                Cow::Borrowed(&*render.compiled),
-                tiling,
-                None,
-                index,
-                cancel,
-                render.context,
-            )?
-            .globals_of(index)
-        }
-        match self.source {
-            RenderSource::Byte(image) => in_domain(self, Byte(image), index, cancel),
-            RenderSource::Linear { image, settings } => {
-                in_domain(self, Linear::new(image, settings)?, index, cancel)
-            }
-        }
     }
 
     /// The source this render reads.
@@ -863,21 +759,6 @@ impl<'a> Render<'a> {
             })
             .collect()
     }
-}
-
-/// Whether two compilations of one stack at two stages have the same segments with the same kinds
-/// of entry, which is what lets a windowed proxy ask the exact compilation for the estimates of
-/// the spatial operation at the same index.
-fn same_segments(left: &Compiled, right: &Compiled) -> bool {
-    left.segments.len() == right.segments.len()
-        && left
-            .segments
-            .iter()
-            .zip(&right.segments)
-            .all(|(left, right)| {
-                left.entry.as_ref().map(std::mem::discriminant)
-                    == right.entry.as_ref().map(std::mem::discriminant)
-            })
 }
 
 /// The input of one layer of `recipe` as a point query over the stage that layer receives: the

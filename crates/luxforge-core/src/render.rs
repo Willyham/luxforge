@@ -10,7 +10,7 @@
 //! - [`colour_runs`]: colour runs and their masked blend.
 //! - [`pipeline`]: the one pipeline, generic over its pixel domain.
 //! - [`byte`] and [`linear`]: the two pixel domains, each with its rows and its driver.
-//! - [`spatial`] and [`window`]: the spatial primitive's execution and the windowed proxy.
+//! - [`spatial`] and [`window`]: the spatial primitive's execution and the GPU window walk.
 //! - [`raster`]: the rendered frame and its helpers.
 //! - [`mod@locate`]: the public locate and transform types.
 //! - [`context`] and [`parallel`]: the render context's budgets and the one parallel gate.

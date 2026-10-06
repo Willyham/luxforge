@@ -998,20 +998,14 @@ impl LinearRows<'_, '_, '_> {
         for x0 in (0..width).step_by(TAP_BLOCK_COLUMNS as usize) {
             self.evaluation.checkpoint()?;
             let columns = (width - x0).min(TAP_BLOCK_COLUMNS);
-            // The block's rectangle of the resample's full output: the segment's exact geometry
-            // maps the block onto one, placed at the entry window's origin.
-            let local = self.segment.geometry.unmap_region(Region {
+            // The block's rectangle of the resample's output: the segment's exact geometry maps the
+            // block onto one.
+            let window = self.segment.geometry.unmap_region(Region {
                 x0,
                 y0,
                 width: columns,
                 height: rows,
             });
-            let (full_x, full_y) = entry.output_at(local.x0, local.y0);
-            let window = Region {
-                x0: full_x,
-                y0: full_y,
-                ..local
-            };
             let held = entry
                 .reads(window, stage)
                 .filter(|region| region.pixels() <= TAP_BLOCK_PIXELS);
