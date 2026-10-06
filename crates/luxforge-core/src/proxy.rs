@@ -1018,6 +1018,38 @@ mod tests {
         }
     }
 
+    /// A CPU proxy holds its whole stage. Fitting a tight crop's output to the display raises the
+    /// scale towards one, so the whole stage is lowered to the display bounds' 8 MP, keeping the
+    /// source's aspect; a stage already inside them is kept as fitted, its window dropped.
+    #[test]
+    fn a_whole_stage_proxy_stays_within_the_display_bounds_pixels() {
+        let source = (8256, 5504);
+        let bounds = ProxyBounds {
+            width: 1716,
+            height: 1576,
+        };
+        // A 25% crop of a 45 MP source fitted to the bounds: a 0.42 scale, 8 MP and more.
+        let tight = ProxyPlan::fit(source, (2064, 1376), bounds).expect("a reduced stage");
+        assert!(u64::from(tight.width) * u64::from(tight.height) > ProxyBounds::MAX_PIXELS);
+        let whole = tight.whole_within(source);
+        assert!(u64::from(whole.width) * u64::from(whole.height) <= ProxyBounds::MAX_PIXELS);
+        assert!(whole.width < tight.width && whole.height < tight.height);
+        let aspect = |width: u32, height: u32| f64::from(width) / f64::from(height);
+        assert!((aspect(whole.width, whole.height) - aspect(source.0, source.1)).abs() < 1e-3);
+        assert_eq!((whole.bounds, whole.window), (bounds, None));
+        // A whole stack fitted to the same bounds is already display-sized.
+        let fitted = ProxyPlan {
+            window: Some(ProxyWindow {
+                x: 0,
+                y: 0,
+                width: 10,
+                height: 10,
+            }),
+            ..ProxyPlan::fit(source, source, bounds).expect("a reduced stage")
+        };
+        assert_eq!(fitted.whole_within(source), fitted.whole());
+    }
+
     // -----------------------------------------------------------------------------------------
     // 1. Integer scales average exactly
     // -----------------------------------------------------------------------------------------
