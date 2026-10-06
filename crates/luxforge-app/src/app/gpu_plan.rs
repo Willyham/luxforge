@@ -130,6 +130,64 @@ pub(crate) fn surface_plan_at(
     surface_plan_over(plan, boundary, origin, grid, None)
 }
 
+/// One staged sweep of `plan` ([`luxforge_core::GpuSweep`]) as the surface's plain data over
+/// `boundary`, a window of the content stage at `origin` (`docs/design/gpu-first.md`, "Staged
+/// sweeps"): its own links alone, the first sweep's from the content operations on, every other's
+/// from its first spatial operation, each spatial operation with the colour operations after it.
+/// A sweep before the last stops after its last link, whose intermediate a stage texture keeps,
+/// so it draws no region and no tail; the last runs on to the geometry tail and draws `region` of
+/// the output stage, as [`surface_plan_over`] draws it, through `grid`'s part. Every light of the
+/// plan is carried, light `k` still the `k`-th, which only the sweep's own operations read.
+pub(crate) fn sweep_plan_over(
+    plan: &luxforge_core::GpuPlan,
+    sweep: &luxforge_core::GpuSweep,
+    boundary: GpuBoundary,
+    origin: (u32, u32),
+    grid: Option<&WarpGrid>,
+    region: Option<Region>,
+) -> Result<GpuPlan, Unrunnable> {
+    if sweep.last {
+        let mut drawn = surface_plan_over(plan, boundary, origin, grid, region)?;
+        if !sweep.first {
+            // The steps from the sweep's first spatial step on.
+            let start = drawn
+                .steps
+                .iter()
+                .enumerate()
+                .filter(|(_, step)| matches!(step, GpuStep::Spatial(_)))
+                .nth(sweep.spatial.start)
+                .map(|(at, _)| at)
+                .ok_or(Unrunnable::Region)?;
+            drawn.steps.drain(..start);
+        }
+        return Ok(drawn);
+    }
+    let texels = boundary_map(plan.boundary.stage, &boundary, origin)?;
+    let mut steps = Vec::new();
+    if sweep.first {
+        for operation in &plan.content {
+            operation_steps(operation, &mut steps)?;
+        }
+    }
+    for spatial in plan
+        .spatial
+        .get(sweep.spatial.clone())
+        .ok_or(Unrunnable::Region)?
+    {
+        steps.push(spatial_step(spatial, light_of(plan, spatial))?);
+        for operation in &spatial.after {
+            operation_steps(operation, &mut steps)?;
+        }
+    }
+    Ok(GpuPlan {
+        boundary,
+        texels,
+        steps,
+        region: None,
+        lights: surface_lights(plan)?,
+    })
+}
+
 /// [`surface_plan_at`], at a percentage zoom drawing only `region` of the plan's output stage at
 /// full scale: the tail's output is the rectangle, whose first pixel the surface offsets each pixel
 /// by, and with no tail the held window must hold the rectangle, which the content pass reads at

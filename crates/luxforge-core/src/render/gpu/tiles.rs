@@ -230,13 +230,23 @@ pub fn plan_stream_sweeps(
     evaluation: &Evaluation,
     budget: u64,
 ) -> Result<super::GpuStaging, TileFallback> {
+    plan_stream_sweeps_at(evaluation, budget, &STREAM_TILE_SIDES)
+}
+
+/// [`plan_stream_sweeps`] trying `sides`, longest first, in place of [`STREAM_TILE_SIDES`]: what
+/// a test that draws a small stage in several tiles a sweep asks for.
+pub fn plan_stream_sweeps_at(
+    evaluation: &Evaluation,
+    budget: u64,
+    sides: &[u32],
+) -> Result<super::GpuStaging, TileFallback> {
     let planned = Planned::of(evaluation, ReadStage::Output)?;
     Ok(super::sweeps::plan_sweeps(&super::sweeps::SweepRequest {
         compiled: &planned.compiled,
         source: (planned.full.width, planned.full.height),
         plan: &planned.plan,
         format: BoundaryFormat::of(planned.plan.linear),
-        sides: &STREAM_TILE_SIDES,
+        sides,
         budget: Some(budget),
         order: super::sweeps::TileOrder::Rows,
     }))
