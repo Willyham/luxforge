@@ -2430,6 +2430,8 @@ impl PhotoPipeline {
         if let Some(held) = self.gpu.source.take_if(|held| !held.holds(source)) {
             let bytes = held.bytes();
             self.retire_preview(Held::Source(Box::new(held)), bytes);
+            // Every kept light was computed from it.
+            self.retire_kept_lights();
         }
         if self.gpu.source.is_none() && source.holds_pixels() {
             let Some(layouts) = self.gpu.layouts.as_ref() else {
@@ -2488,6 +2490,7 @@ impl PhotoPipeline {
         if let Some(held) = self.gpu.source.take() {
             let bytes = held.bytes();
             self.retire_preview(Held::Source(Box::new(held)), bytes);
+            self.retire_kept_lights();
             self.figures.diagnostics().gpu_source = None;
         }
     }
@@ -2633,6 +2636,7 @@ impl PhotoPipeline {
                 .filter(|version| slot.holds(shape, *version))
                 .map(|version| (slot.boundary.clone(), version));
             self.retire_slot(slot);
+            surface.evaluation.refits += 1;
             surface.gpu = Some(self.allocate(device, shape, word_bytes, block_bytes, kept)?);
         }
         if surface.gpu.is_none() {
@@ -2679,6 +2683,7 @@ impl PhotoPipeline {
             }
         }
         if rebind {
+            surface.evaluation.rebinds += 1;
             slot.bindings = self.program_bindings(
                 device,
                 slot.last_input(),
@@ -2812,16 +2817,21 @@ impl PhotoPipeline {
         let mut input = chain::boundary_key(plan.boundary.version);
         let mut encoded = false;
         let mut dirty = incremental;
+        // The links that encode passes, for the evaluation's figures.
+        let mut links_run = 0u32;
+        let mut spatial_passes = 0u64;
         for (index, steps) in chain.links.iter().enumerate() {
             let (compiled, id) = &pipelines[index];
             chain::pack_words(plan.texels, (0, 0), steps, link_words);
-            self.fit_link(
+            if self.fit_link(
                 slot,
                 device,
                 index,
                 link_words.len(),
                 blocks::block_len(steps),
-            )?;
+            )? {
+                surface.evaluation.rebinds += 1;
+            }
             let link = &mut slot.chain[index];
             let update = link.write(queue, link_words, steps);
             self.figures.preview.blocks_updated(&update);
@@ -2853,6 +2863,8 @@ impl PhotoPipeline {
                 .zip(reached)
                 .map(|(changed, reached)| changed.union(&reached));
             encoded |= ran;
+            links_run += u32::from(ran);
+            spatial_passes += dispatched;
             self.figures
                 .preview
                 .spatial_passes
@@ -2877,6 +2889,7 @@ impl PhotoPipeline {
         changed |= update.changed;
         let blocks = slot.written_blocks.words();
         if changed {
+            links_run += 1;
             // The last link's spatial step's compute passes fill its planes first, from its
             // input: only the passes this tick changes, over what its mask needs.
             let mut reached = dirty;
@@ -2895,6 +2908,7 @@ impl PhotoPipeline {
                     dirty,
                 );
                 reached = dirty.zip(over).map(|(dirty, over)| dirty.union(&over));
+                spatial_passes += dispatched;
                 self.figures
                     .preview
                     .spatial_passes
@@ -3020,6 +3034,12 @@ impl PhotoPipeline {
         // The slot now holds this plan's values, whatever ran to make them so.
         slot.evaluated_serial = change.map(|change| (change.serial, plan.boundary.version));
         if changed || encoded {
+            let figures = &mut surface.evaluation;
+            let window = u64::from(size.0) * u64::from(size.1);
+            figures.links_run += links_run;
+            figures.spatial_passes += spatial_passes;
+            figures.window_texels = window;
+            figures.link_texels += window * u64::from(links_run);
             // Submitted now, ahead of the frame's own submission, whose draw samples the output;
             // the queue's writes above are flushed with it. Nothing waits for it.
             queue.submit([encoder.finish()]);
@@ -3353,7 +3373,7 @@ impl PhotoPipeline {
     }
 
     /// Make link `index` of `slot`'s chain hold buffers large enough for `words` and `blocks` words,
-    /// rebinding it to what it reads when they grow.
+    /// rebinding it to what it reads when they grow. Answers whether it was bound again.
     fn fit_link(
         &self,
         slot: &mut GpuSlot,
@@ -3361,7 +3381,7 @@ impl PhotoPipeline {
         index: usize,
         words: usize,
         blocks: usize,
-    ) -> Result<(), GpuFallback> {
+    ) -> Result<bool, GpuFallback> {
         let (before, rest) = slot.chain.split_at_mut(index);
         let input = before.last().map_or(&slot.boundary, |link| &link.texture);
         let link = &mut rest[0];
@@ -3397,7 +3417,7 @@ impl PhotoPipeline {
                 self.program_bindings(device, input, &link.words.buffer, &link.blocks.buffer);
             link.forget(&mut slot.pool);
         }
-        Ok(())
+        Ok(rebind)
     }
 
     /// The programs' bindings: the words, the blocks and the boundary.
@@ -3705,8 +3725,8 @@ pub mod histogram;
 
 mod rest;
 pub use rest::{
-    CountsOutcome, GpuRest, REST_TILES_PER_FRAME, REST_VIEW_PIXELS, RestFigures, RestReduction,
-    TickCounts,
+    CountsOutcome, EvaluationFigures, GpuRest, REST_TILES_PER_FRAME, REST_VIEW_PIXELS, RestFigures,
+    RestReduction, TickCounts,
 };
 pub(super) use rest::{RestCounts, RestSlot, TickCounted};
 pub mod tiles;
