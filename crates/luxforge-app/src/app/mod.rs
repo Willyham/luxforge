@@ -80,6 +80,8 @@ pub(crate) mod gpu_tiles;
 #[cfg(test)]
 mod gpu_tiles_tests;
 #[cfg(test)]
+mod gpu_tiles_tier_tests;
+#[cfg(test)]
 mod gpu_tiles_worker_tests;
 pub(crate) mod gpu_warm;
 #[cfg(test)]

@@ -53,6 +53,7 @@ fn paused(budget: usize) -> SelectPreviews {
 /// A grid preview of `file` at `stage`, `width` × `height`.
 fn info(id: i64, origin: PreviewOrigin, width: u32, height: u32) -> PreviewInfo {
     PreviewInfo {
+        renderer: None,
         item: PreviewItem::File {
             file_id: FileId(id),
         },

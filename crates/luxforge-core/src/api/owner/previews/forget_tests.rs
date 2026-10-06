@@ -34,8 +34,9 @@ fn cached(
         .connection()
         .execute(
             "INSERT INTO photo_previews (asset_id, entry_id, tier, renderer, path, width, height,
-                 bytes, origin, last_used_ms, approximate)
-             VALUES (?1, ?2, ?3, ?4, ?5, 512, 341, 4, ?6, 0, 0)",
+                 bytes, origin, last_used_ms, approximate, drawn_by)
+             VALUES (?1, ?2, ?3, ?4, ?5, 512, 341, 4, ?6, 0, 0,
+                     CASE ?6 WHEN 'rendered' THEN 'gpu' END)",
             params![
                 photo.asset.as_str(),
                 entry.as_str(),
