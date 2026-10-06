@@ -860,7 +860,8 @@ fn stage_codes(
 /// The corpus's RAWs at full resolution in tiles of 512 and 1024 px: the same codes, pixel for
 /// pixel, through each recipe `LUXFORGE_REST_RECIPES` names (comma-separated corpus recipe ids,
 /// the stack as opened by default) on each RAW `LUXFORGE_GPU_CORPUS_SOURCES` names (every RAW by
-/// default). Prints where the differences fall.
+/// default); and where the editor plans the stack in staged sweeps, the picture at rest at Fit the
+/// same drawn staged and chained. Prints where the differences fall.
 /// `LUXFORGE_RAW_MANIFEST=MANIFEST cargo test --release -p luxforge-app
 /// gpu_rest_raw_tiles_are_the_same_at_every_side -- --ignored --nocapture`.
 #[test]
@@ -936,6 +937,12 @@ fn gpu_rest_raw_tiles_are_the_same_at_every_side() {
             let gpu = super::gpu_preview::gpu_source_of(index as u64 + 1, evaluation.source())
                 .expect("a GPU source");
             let bounds = super::gpu_qualification::fit_bounds();
+            // Staged where the editor plans it so, its codes and counts the chained tiles'.
+            if let Some(failure) =
+                staged_against_chained(&what, &mut surface, &gpu, &evaluation, &mut version)
+            {
+                failures.push(failure);
+            }
             let mut frames = Vec::new();
             let sides: Vec<u32> = std::env::var("LUXFORGE_REST_SIDES").map_or_else(
                 |_| vec![512, 1024],
@@ -1238,4 +1245,357 @@ fn gpu_rest_a_stream_is_planned_in_staged_sweeps_within_its_budget() {
         }
         other => panic!("{name}: {other:?}"),
     }
+}
+
+/// `tiles` reduced to the output stage's own size: every view pixel one output pixel at weight
+/// one, so the rest output is the stage's codes, which the reduction decodes and quantizes again
+/// to the same code. The full-resolution codes a picture at rest draws, through its own drawing.
+fn at_full_size(tiles: &luxforge_core::RestTiles) -> luxforge_ui::photo_surface::RestReduction {
+    let output = tiles.output;
+    luxforge_ui::photo_surface::RestReduction {
+        view: (output.width, output.height),
+        across: super::gpu_preview::axis(luxforge_core::area_coverage(output.width, output.width)),
+        down: super::gpu_preview::axis(luxforge_core::area_coverage(output.height, output.height)),
+    }
+}
+
+/// The families that are planned in staged sweeps over the synthetic stage: a spatial layer after
+/// one that reaches past the split, with content operations before them, a masked Presence layer
+/// after a global one, three sweeps through both stage textures, and a lens warp in the last
+/// sweep.
+fn staged_families() -> Vec<(&'static str, Recipe)> {
+    let presence = || {
+        Layer::new(
+            PRESENCE_EFFECT,
+            json!({"texture": 35.0, "clarity": 30.0, "dehaze": 20.0}),
+        )
+    };
+    let mask = radial_mask(1);
+    vec![
+        (
+            "Detail after Presence",
+            Recipe {
+                layers: vec![presence(), detail()],
+                ..Recipe::default()
+            },
+        ),
+        (
+            "Basic, Presence, then Detail",
+            Recipe {
+                layers: vec![
+                    Layer::new(BASIC_EFFECT, json!({"exposure": 0.4, "contrast": 20.0})),
+                    presence(),
+                    detail(),
+                ],
+                ..Recipe::default()
+            },
+        ),
+        (
+            "a masked Presence after Presence",
+            Recipe {
+                layers: vec![
+                    presence(),
+                    Layer {
+                        mask: Some(mask.id.clone()),
+                        ..Layer::new(PRESENCE_EFFECT, json!({"clarity": 50.0, "texture": 40.0}))
+                    },
+                ],
+                masks: vec![mask],
+                ..Recipe::default()
+            },
+        ),
+        ("Presence, a masked Presence, then Detail", {
+            let mask = radial_mask(2);
+            Recipe {
+                layers: vec![
+                    presence(),
+                    Layer {
+                        mask: Some(mask.id.clone()),
+                        ..Layer::new(PRESENCE_EFFECT, json!({"clarity": 50.0, "texture": 40.0}))
+                    },
+                    detail(),
+                ],
+                masks: vec![mask],
+                ..Recipe::default()
+            }
+        }),
+        (
+            "Presence, Detail and a lens",
+            Recipe {
+                layers: vec![
+                    presence(),
+                    detail(),
+                    luxforge_core::qualification::lens_layer(-0.004, (WIDTH, HEIGHT)),
+                ],
+                ..Recipe::default()
+            },
+        ),
+    ]
+}
+
+/// A picture at rest drawn in staged sweeps is the one its chained tiles draw, byte for byte and
+/// count for count: reduced to the view, and at the output stage's own size, its full-resolution
+/// codes. On both paths, over content operations in the first sweep, masked Presence, Dehaze's
+/// light and a lens warp's tail in the last, at two tile sides.
+#[test]
+fn gpu_rest_staged_sweeps_draw_the_chained_tiles_codes() {
+    let test = "gpu_rest_staged_sweeps_draw_the_chained_tiles_codes";
+    let Some((backend, name)) = super::gpu_tiles_tests::host_adapter(test) else {
+        return;
+    };
+    assert!(super::gpu_plan::install_output_encoding());
+    let window = luxforge_ui::adapters::open(&backend, &name)
+        .unwrap_or_else(|unopened| panic!("{test}: the surface's device: {unopened:?}"));
+    let mut surface = luxforge_ui::photo_surface::gpu_preview::headless::HeadlessSurface::new(
+        &window.device,
+        &window.queue,
+    );
+    let bounds = luxforge_core::ProxyBounds {
+        width: 160,
+        height: 120,
+    };
+    let mut version = 0;
+    for (index, format) in [BoundaryFormat::Half, BoundaryFormat::Float]
+        .into_iter()
+        .enumerate()
+    {
+        let photograph = source(format);
+        let gpu = super::gpu_tiles_tests::gpu_source(index as u64 + 1, &photograph);
+        for (family, recipe) in staged_families() {
+            let evaluation = committed(photograph.clone(), recipe);
+            for side in [48, 96] {
+                let what = format!("{format:?} {family} at {side} px");
+                let tiles =
+                    luxforge_core::qualification::rest_tiles(&evaluation, bounds, side).unwrap();
+                let GpuStaging::Staged(planned) = &tiles.staging else {
+                    panic!("{what}: {:?}", tiles.staging);
+                };
+                version += 1;
+                let staged = super::gpu_preview::rest_now(&gpu, &tiles, version).unwrap();
+                assert!(staged.stages.is_some(), "{what}");
+                for reduction in [staged.reduction.clone(), Some(at_full_size(&tiles))] {
+                    let mut drawn = Vec::new();
+                    for stages in [staged.stages.clone(), None] {
+                        version += 1;
+                        let rest = luxforge_ui::photo_surface::GpuRest {
+                            version,
+                            stages,
+                            reduction: reduction.clone(),
+                            ..staged.clone()
+                        };
+                        let picture = surface
+                            .rest(&gpu, &rest)
+                            .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"));
+                        drawn.push(picture);
+                    }
+                    let [staged_picture, chained] = &drawn[..] else {
+                        unreachable!()
+                    };
+                    assert_eq!(
+                        staged_picture.figures.sweeps,
+                        planned.sweeps.len() as u32,
+                        "{what}: drawn in its sweeps"
+                    );
+                    assert_eq!(chained.figures.sweeps, 0, "{what}: chained");
+                    let differing = staged_picture
+                        .codes
+                        .iter()
+                        .zip(&chained.codes)
+                        .filter(|(a, b)| a != b)
+                        .count();
+                    assert_eq!(
+                        (staged_picture.codes.len(), differing),
+                        (chained.codes.len(), 0),
+                        "{what}: the staged codes are the chained ones"
+                    );
+                    assert_eq!(staged_picture.counts, chained.counts, "{what}: the counts");
+                }
+                eprintln!(
+                    "{test}: {what}: {} sweeps, {} staged tiles against {} chained, byte for byte",
+                    planned.sweeps.len(),
+                    planned
+                        .sweeps
+                        .iter()
+                        .map(|sweep| sweep.tiles.len())
+                        .sum::<usize>(),
+                    tiles.tiles.len()
+                );
+            }
+        }
+    }
+}
+
+/// `evaluation`'s picture at rest as the editor plans it at Fit, drawn by `surface` in staged
+/// sweeps and chained: the reason they differ, `None` when they draw the same codes and counts or
+/// the stack is chained. Prints what each drawing's tiles did.
+fn staged_against_chained(
+    what: &str,
+    surface: &mut luxforge_ui::photo_surface::gpu_preview::headless::HeadlessSurface,
+    gpu: &luxforge_ui::photo_surface::GpuSource,
+    evaluation: &Evaluation,
+    version: &mut u64,
+) -> Option<String> {
+    let tiles = planned_tiles(evaluation);
+    let GpuStaging::Staged(planned) = &tiles.staging else {
+        eprintln!("{what}: chained, {:?}", tiles.staging);
+        return None;
+    };
+    print_sweeps(what, planned);
+    // What the planner says each drawing's tiles carry: their windows, and those times the links
+    // each runs, a spatial operation's link and its colour operations after it.
+    let staged_windows: u64 = planned
+        .sweeps
+        .iter()
+        .flat_map(|sweep| sweep.tiles.iter().map(|tile| tile.window.pixels()))
+        .sum();
+    let staged_links: u64 = planned
+        .sweeps
+        .iter()
+        .map(|sweep| {
+            sweep
+                .tiles
+                .iter()
+                .map(|tile| tile.window.pixels())
+                .sum::<u64>()
+                * sweep.spatial.len() as u64
+        })
+        .sum();
+    let chained_windows: u64 = tiles.tiles.iter().map(|tile| tile.window.pixels()).sum();
+    eprintln!(
+        "  {what}, planned: staged {} tiles, {:.1} MP of windows, {:.1} MP·links; chained {} \
+         tiles, {:.1} MP of windows, {:.1} MP·links",
+        planned
+            .sweeps
+            .iter()
+            .map(|sweep| sweep.tiles.len())
+            .sum::<usize>(),
+        staged_windows as f64 / 1e6,
+        staged_links as f64 / 1e6,
+        tiles.tiles.len(),
+        chained_windows as f64 / 1e6,
+        (chained_windows * tiles.plan.spatial.len() as u64) as f64 / 1e6
+    );
+    *version += 1;
+    let staged = super::gpu_preview::rest_now(gpu, &tiles, *version).unwrap();
+    let mut drawn = Vec::new();
+    for stages in [staged.stages.clone(), None] {
+        *version += 1;
+        let rest = luxforge_ui::photo_surface::GpuRest {
+            version: *version,
+            stages,
+            ..staged.clone()
+        };
+        let picture = surface
+            .rest(gpu, &rest)
+            .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"));
+        let figures = picture.figures;
+        let evaluation = figures.evaluation;
+        eprintln!(
+            "  {what}, {}: {} tiles, {} refits, {:.1} MP of windows, {} links run, {:.1} MP·links, \
+             {} spatial passes, {} lights encoded, {} restored, {} retirement waits, {} frames",
+            match figures.sweeps {
+                0 => "chained".to_owned(),
+                sweeps => format!("{sweeps} sweeps"),
+            },
+            figures.tiles,
+            evaluation.refits,
+            evaluation.window_texels as f64 / 1e6,
+            evaluation.links_run,
+            evaluation.link_texels as f64 / 1e6,
+            evaluation.spatial_passes,
+            evaluation.lights_encoded,
+            evaluation.lights_restored,
+            figures.retirement_waits,
+            picture.frames
+        );
+        drawn.push(picture);
+    }
+    let [staged, chained] = &drawn[..] else {
+        unreachable!()
+    };
+    if staged.figures.sweeps != planned.sweeps.len() as u32 {
+        return Some(format!("{what}: drawn chained, its stage textures refused"));
+    }
+    let differing = staged
+        .codes
+        .iter()
+        .zip(&chained.codes)
+        .filter(|(a, b)| a != b)
+        .count();
+    (differing > 0 || staged.counts != chained.counts).then(|| {
+        format!(
+            "{what}: {differing} of {} view pixels differ; counts equal {}",
+            chained.codes.len(),
+            staged.counts == chained.counts
+        )
+    })
+}
+
+/// The Air 2S's masked stack — Detail, a global Presence and three masked Presence layers, before
+/// its lens profile — drawn in its four staged sweeps and chained, at Fit as the editor plans it:
+/// the same codes and counts. Prints what each drawing's tiles did.
+/// `LUXFORGE_RAW_MANIFEST=MANIFEST cargo test --release -p luxforge-app
+/// gpu_rest_the_air_2s_masked_stack_staged_is_chained -- --ignored --nocapture`.
+#[test]
+#[ignore = "the corpus RAWs: set LUXFORGE_RAW_MANIFEST to the private RAW manifest"]
+fn gpu_rest_the_air_2s_masked_stack_staged_is_chained() {
+    use super::gpu_qualification::{Opened, corpus_sources};
+    let test = "gpu_rest_the_air_2s_masked_stack_staged_is_chained";
+    let Some((backend, name)) = super::gpu_tiles_tests::host_adapter(test) else {
+        return;
+    };
+    assert!(super::gpu_plan::install_output_encoding());
+    let window = luxforge_ui::adapters::open(&backend, &name).unwrap();
+    let mut surface = luxforge_ui::photo_surface::gpu_preview::headless::HeadlessSurface::new(
+        &window.device,
+        &window.queue,
+    );
+    let read = |path: std::path::PathBuf| -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    };
+    let manifest = read(
+        std::env::var("LUXFORGE_RAW_MANIFEST")
+            .expect("a manifest")
+            .into(),
+    );
+    let corpus = read(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/preview/corpus.json"),
+    );
+    let found = corpus_sources(
+        &corpus,
+        std::path::Path::new("/nonexistent"),
+        Some(&manifest),
+    );
+    let source = found
+        .iter()
+        .find(|source| source.id == "raw-air2s")
+        .expect("the Air 2S");
+    let dir = luxforge_testbase::paths::temp_dir("gpu-rest-masked");
+    let opened = Opened::new(source, &[], &dir.join("air2s.sqlite")).expect("the RAW opened");
+    let job = super::tasks::ready_preview_job(
+        &opened.owner,
+        luxforge_core::PreviewRequest::new(opened.client, opened.asset.clone()),
+    )
+    .expect("a job");
+    // The measured masked stack, before the lens profile the Air 2S opens with.
+    let (_, _, masked) = measured_stacks().swap_remove(1);
+    let mut recipe = job.evaluation.recipe().clone();
+    let geometry = recipe
+        .layers
+        .iter()
+        .position(|layer| layer.effect_id.contains("lens"))
+        .unwrap_or(recipe.layers.len());
+    recipe.layers.splice(geometry..geometry, masked.layers);
+    recipe.masks.extend(masked.masks);
+    let evaluation = committed(job.evaluation.source().clone(), recipe);
+    let gpu = super::gpu_preview::gpu_source_of(1, evaluation.source()).expect("a GPU source");
+    let mut version = 0;
+    let failure = staged_against_chained(
+        "the Air 2S masked stack",
+        &mut surface,
+        &gpu,
+        &evaluation,
+        &mut version,
+    );
+    assert!(failure.is_none(), "{failure:?}");
 }
