@@ -2,62 +2,78 @@
   "schema_version": "1.0",
   "plan_id": "corrections",
   "title": "Corrections module: Clone, Heal, the repair stage and frozen patches",
-  "objective": "Deliver an offline, non-destructive Clone/Heal baseline with the narrow repair stage, the shared brush descriptor and the repair layer's frozen-patch operation with prefix invalidation, which the AI editing plan's fills commit through, with exact UI/API parity.",
-  "context_summary": "Planning proposal, not implementation authorization. The owner accepted the AI editing scope on 2026-10-05 and decided the repair stage's place, the deletion of `PointReplace` and the stale-patch rule (a stale patch keeps rendering, marked, with an export acknowledgement); Clone/Heal can proceed independently. Since 2026-10-04 the AI editing design (docs/design/ai-editing.md) carries AI Remove's provider qualification, its local and remote adapters and its candidate workflow, and depends by name on what this plan keeps: the repair stage with its bounded regional primitive, the Corrections brush descriptor and draft target, and the repair layer's frozen-patch operation with prefix invalidation. Those tasks stay here; the provider tasks are cancelled. AI implementation builds on the implemented module capabilities framework in docs/design/module-capabilities.md: user-level settings, OS-store secrets, per-asset consent, pinned-URL resources, capability tasks on the one job table and derived artifacts collected when a catalog opens; no cross-file task IDs are used. The groundwork other groups hold for this plan is not done yet and starts with it: stage-boundary methods on the compiled render entries (rendering) with the repair stage, and generic path primitives (masking) with the brush work. Per-tile input regions and candidates as bounded job results are this plan's own work, as each task's context says.",
+  "objective": "Deliver and independently qualify offline, non-destructive Clone/Heal through the current module, catalog and shared brush contracts, with GPU rendering within the declared CPU-reference tolerance and UI/API parity; separately provide the same repair layer's frozen-patch and bounded candidate foundation for AI editing.",
+  "context_summary": "Planning review only, not implementation authorization. The owner decided on 2026-10-05: repair after source development and before colour in content coordinates, deletion of PointReplace, stale patches kept rendering with an explicit export acknowledgement, and remote consent remembered per provider profile/data class. Clone/Heal remain an independently deliverable offline slice; the relative order of repair and Detail restoration is still an explicit proposal. Reuse the delivered generic path grid, typed stroke store, StrokeCarrier and DraftTarget, centralized compiled render boundaries, module capabilities/artifacts, catalog format 13, Develop/prepare/adopt flow, Locate and single/batch JPEG exporter. What remains is Corrections' production brush descriptor and operation identities, repair-layer stroke discovery/admission/hydration and cleanup, bounded arbitrary source reads and Heal solves, the actual module/workflow, and frozen patches with an intra-layer input-prefix identity and bounded candidate jobs. Renderer integration targets the merged GPU-first interfaces and comparison harness beside AI editing; contract/numerical work can start independently. Current per-asset remote grants are changed by AI editing's remote tier, not this offline work. Model/provider tasks remain cancelled here and owned by AI editing; no cross-file task IDs are used.",
   "tasks": [
     {
       "id": "TASK-001",
-      "description": "Freeze the corrections behavior and the Clone, Heal and frozen-patch contract on the owner's decisions of 2026-10-05.",
+      "description": "Freeze the remaining Corrections contract against the current module, catalog, geometry and GPU-first interfaces, preserving settled owner decisions.",
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "Decided on 2026-10-05 (docs/decisions.md, AI editing): the repair stage after source development and before colour in content coordinates, `PointReplace` deleted rather than reused, and the stale-patch rule; what remains here is freezing the Clone/Heal contract on those decisions.",
-        "The roadmap still excludes generative editing pending the owner's review of this proposal (docs/plan.md, Not in scope); this is a proposal until the owner explicitly accepts the new scope.",
-        "Decide how RAW source-development changes invalidate a frozen AI result. The proposed policy fails render/sample/export explicitly until regeneration or removal. Exposure is Basic's on every kind and the RAW source development carries white balance only (docs/decisions.md, Source-kind controls), so the change in question is a white-balance change; Basic's colour stage would run after the repair stage and not stale a patch.",
-        "The stage model today: `EffectStage` (modules/descriptor.rs) runs source, pixel, colour, spatial, geometry and finish, and `ModuleRegistry::insertion_index` (modules/registry/placement.rs) places a new layer by its declared stage and `order` without moving stored layers. The pixel stage holds only the developer-only pixel proof's `Processing::PointReplace`, which makes a stack proxy-ineligible (`ModuleRegistry::proxy_eligible`, modules/registry/compile.rs). The owner decided that whether `PointReplace` seeds the repair primitive or is deleted is decided with the repair stage (docs/decisions.md, Post-consolidation review).",
-        "Remote-photo consent is per asset by the recorded module-capabilities default (docs/decisions.md, Module capabilities); this task confirms or changes it for Corrections."
+        "The owner has already decided the repair stage relative to source/colour, deletion of PointReplace, stale patches kept rendering and provider-profile consent. Do not reopen these or restore the old fail-on-stale, licence gate or two-provider rollout.",
+        "EffectStage currently includes restoration between pixel and color; Detail owns it. The relative order of repair and restoration is not specified by the owner decision. The design proposes repair before restoration so Detail treats repaired and original regions together; settle or explicitly retain this consequential choice as open before dependent implementation.",
+        "Freeze a single repair effect with ordered stable operation IDs, action and draft bindings, one-entry history labels, content-space geometry and source-handle behaviour. Existing module identity parameters are host-only and draft.begin accepts mask/component only; the production extension is assigned to the shared-brush task.",
+        "The frozen-patch identity includes verified source fingerprint/interpretation/development, dimensions, upstream relevant layers/masks and earlier operations inside the same repair layer. spatial::prefix_hash alone hashes only layers/masks; same-byte Locate, later operations, unrelated masks and downstream adjustments must not invalidate a patch.",
+        "Freeze the bounded candidate/read/accept seam and stale acknowledgements for export.plan, export.jpeg and batch.export. These are proposed extensions of shipped APIs, not existing commands. Keep Clone/Heal qualification independent of frozen patches and all model/provider delivery.",
+        "Contract/numerical work can start now. Renderer code integrates against the merged GPU-first renderer-of-record interfaces and comparison harness; do not make CPU proxy/caching infrastructure scheduled for retirement a new dependency.",
+        "ActionDescriptor::preset is already an eligibility gate independent of patch syntax. The design proposes preset: false for photograph-bound correction operations; freeze that policy, preserving ordinary adjustment preset application over existing repairs and leaving retouch-preset/Lightroom spot conversion outside scope."
       ],
       "context_links": [
         {
           "kind": "file",
-          "label": "Corrections proposal",
+          "label": "Corrections design",
           "target": "docs/design/corrections.md",
-          "relevance": "Full behavior, proposed stage and acceptance."
+          "relevance": "Current proposed scope, decided policy and remaining contract choices."
         },
         {
           "kind": "file",
-          "label": "Roadmap",
-          "target": "docs/plan.md",
-          "relevance": "Prior scope and placement of clone/heal."
+          "label": "Module contract",
+          "target": "docs/design/modules-and-api.md",
+          "relevance": "Descriptor, stage insertion, admission, mutation envelopes and preparation."
         },
         {
           "kind": "file",
-          "label": "History contract",
-          "target": "docs/specs/edit-history.md",
-          "relevance": "Original preservation and snapshot semantics."
+          "label": "Catalog",
+          "target": "docs/design/catalog.md",
+          "relevance": "Develop/prepare/adopt, Locate, library undo, removal and rendered previews."
+        },
+        {
+          "kind": "file",
+          "label": "GPU-first rendering",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "Merged renderer-of-record interfaces, independent CPU reference and native output tolerances."
         },
         {
           "kind": "file",
           "label": "Owner decisions",
           "target": "docs/decisions.md",
-          "locator": "Open product questions",
-          "relevance": "The open Corrections question, the per-asset consent default and the PointReplace decision."
+          "relevance": "Settled repair, stale-patch and consent decisions.",
+          "locator": "AI editing"
+        },
+        {
+          "kind": "file",
+          "label": "Stage placement",
+          "target": "crates/luxforge-core/src/modules/registry/placement.rs",
+          "relevance": "Current restoration ordering and insertion without reordering stored layers."
         }
       ],
       "acceptance_criteria": [
-        "The design records the decided repair stage (after source development, before colour, `PointReplace` deleted) and the decided stale-patch rule as current behaviour to build, with no remaining proposal language on either.",
-        "Freeze operation ordering, content coordinates, mask blending, artifact dependency hash and history labels before implementation.",
-        "Keep any unanswered consequential question explicitly open and prevent dependent AI implementation from being reported as accepted."
+        "The design clearly separates settled decisions, current implementation and remaining proposals; no fail-on-stale or undecided PointReplace/provider-consent policy remains.",
+        "Resolve repair versus restoration placement and correction preset eligibility with owner input, and freeze operation ordering, geometry, draft bindings, history labels and resource limits; unanswered consequential choices remain explicit and prevent dependent implementation.",
+        "Specify source plus intra-layer prefix invalidation, bounded candidate ownership/publication/acceptance and entry-specific single/batch stale-export acknowledgement, including cancellation and revision races.",
+        "The plan reuses the current catalog/import/preparation, module, stroke, geometry and GPU contracts, with an independently qualified offline handoff and no migrations or second stores."
       ],
       "test_strategy": {
         "approach": "inspection",
         "steps": [
-          "Review the proposed contract against current stage/recipe constraints and owner workflow.",
-          "Inspect a written decision record and update the design only for settled choices."
+          "Compare each contract with current code declarations and the recorded owner decisions.",
+          "Review the proposed repair/restoration choice and freeze only decisions the owner accepts.",
+          "Validate plan schema, local dependencies, derived waves and file links."
         ],
         "commands": [],
         "expected_results": [
-          "One current design with explicit accepted decisions and remaining gates."
+          "One current executable plan with genuine output dependencies and explicit unresolved product choices."
         ]
       }
     },
@@ -67,32 +83,46 @@
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "Clone and Heal should remain a useful offline baseline even if AI qualification fails."
+        "Clone/Heal are useful offline even if AI delivery is delayed. Study the exact CPU reference in the current byte/linear domains and a solver that the GPU implementation can reproduce within the declared tolerance.",
+        "Reuse path::capture_grid and typed StrokeKind storage; Corrections owns radius, feather/opacity, source offset and edge handling, not the mask brush's flow/colour limits. Study repair/restoration placement consequences without selecting an unanswered product choice.",
+        "Numerical study and solver-cost bounds are this task's subject and can be measured here. Whole-editor timing waits until the delivered feature is finished."
       ],
       "context_links": [
         {
           "kind": "file",
-          "label": "Corrections proposal",
+          "label": "Corrections design",
           "target": "docs/design/corrections.md",
-          "relevance": "Clone/Heal algorithm and edge cases."
-        },
-        {
-          "kind": "file",
-          "label": "Darktable research",
-          "target": "docs/research/darktable/geometry-masks-and-retouching.md",
-          "relevance": "Boundary-matching heal research."
+          "relevance": "Current proposed scope, decided policy and remaining contract choices."
         },
         {
           "kind": "file",
           "label": "Performance rules",
           "target": "docs/engineering/performance-rules.md",
-          "relevance": "Exact fixtures and resource limits."
+          "relevance": "Reserve before allocation, off-owner work, review checklist and measurement timing."
+        },
+        {
+          "kind": "file",
+          "label": "GPU-first rendering",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "Merged renderer-of-record interfaces, independent CPU reference and native output tolerances."
+        },
+        {
+          "kind": "file",
+          "label": "Darktable research",
+          "target": "docs/research/darktable/geometry-masks-and-retouching.md",
+          "relevance": "Boundary-matching Heal research."
+        },
+        {
+          "kind": "file",
+          "label": "Shared path primitives",
+          "target": "crates/luxforge-core/src/path.rs",
+          "relevance": "Capture grid, typed stroke representation and point limits."
         }
       ],
       "acceptance_criteria": [
-        "Specify brush rasterization, subpixel path interpolation, feather/opacity, source offset, edge handling, overlap order and heal solver with bounded convergence.",
-        "Independent reference fixtures cover flat, gradient, texture, high-contrast boundary, tiny/large strokes, image edge and RAW float values.",
-        "Publish visual failure cases and performance bounds without claiming Lightroom pixel equivalence."
+        "Freeze brush rasterization, subpixel interpolation, feather/opacity, source offset, edge handling, overlap order, linear/byte-domain interpretation and a Heal solver with bounded convergence/scratch.",
+        "Independent fixtures cover flat/gradient/texture inputs, high-contrast boundaries, repeated/tiny/large strokes, far-offset and out-of-frame sources, overlap and continuous RAW values; later operations never feed earlier ones.",
+        "The equations and solver are independently checkable and suitable for GPU qualification; naturalness and numerical correctness have separate evidence, with visual failures and photo-sized solve bounds recorded."
       ],
       "test_strategy": {
         "approach": "mixed",
@@ -115,121 +145,174 @@
         "TASK-002"
       ],
       "extra_context": [
-        "Preserve stored layer order; no catalog migration or generalized graph. The owner thread plans but never rasterizes.",
-        "Answer every performance-rules checklist item for changes under crates.",
-        "The compiled render `Entry` (render.rs) has two stage-boundary kinds, `Resample` and `Spatial`, matched in about 30 places across render.rs, render/pipeline.rs, render/window.rs, render/linear.rs, render/entry.rs and modules/registry/compile.rs. The rendering group's stage-boundary methods (an input-stage query, point mapping, the rectangle read, materialising and one-point evaluation, generalising `SpatialEntry` in render/pipeline.rs) wait for this task and land first, so a repair boundary is one implementation rather than a new arm at each site.",
-        "Per-tile input regions are this task's own work; no other plan carries them. A spatial tile reads its output rectangle plus the operation's summed halo, refused past `MAX_SPATIAL_HALO` (512 px, modules/spatial.rs), in the 512 or 1024 px tiles `luxforge_raw::spatial_tile` picks, and a global estimate is at most `MAX_GLOBAL_BYTES` (4 KiB). A clone reads at an arbitrary source offset beyond any halo and a heal needs a per-patch solve larger than a global estimate, so the repair primitive declares the input region each tile reads and its solve's scratch, charged to the render context's `SpatialBudget` (256 MiB target) under the same reserve-before-allocate rule.",
-        "Render limits live in luxforge-raw's limits module (the `render-limits-home` repository rule), and a new rendering pass takes its own `luxforge_raw::RenderPass` with a parallel threshold measured for it (`parallel_pixels`). Render tiles run in the render's own batches on the shared pool; `luxforge_raw::refill_each` is the RAW development executor, not a render scheduler.",
-        "Proxy eligibility is decided per stage (`ModuleRegistry::proxy_eligible`): a pixel-stage layer is ineligible because it addresses content pixels, and a spatial one is eligible but approximate. The repair stage declares which it is, and a preview against the proxy is labelled approximate where its pixels differ."
+        "Integrate against the merged GPU-first renderer-of-record interfaces and comparison harness. Current settled previews/samples/export still use CPU paths in this checkout; the accepted target is GPU output against a whole-frame CPU reference, not a new CPU production proxy/point cache.",
+        "The stage-boundary dispatch is already centralized in render/compiled.rs and the shared pipeline. Extend it; no other group must first refactor thirty render matches. Delete the developer-only pixel proof/PointReplace with the repair stage, and explicitly refuse unsupported data without rewriting it.",
+        "Current spatial work reads an output rectangle plus a bounded halo. Clone may read a distant source rectangle, and Heal needs per-patch scratch/iterations; declare and reserve all input regions and GPU resources rather than inflating MAX_SPATIAL_HALO or allocating unbounded intermediates.",
+        "Reuse rendering limits, shared pool and reserve-before-allocate rules. The present spatial scratch target is 256 MiB and GPU preview budget 2 GiB; any new budget or reduced-resolution approximation is frozen in the contract and measured, not assumed.",
+        "New CPU reference passes use their own luxforge_raw::RenderPass and measured parallel gate; RAW development scheduling is not a render executor. Answer the performance-rules checklist at the finished handoff."
       ],
       "context_links": [
         {
           "kind": "file",
-          "label": "Corrections proposal",
+          "label": "Corrections design",
           "target": "docs/design/corrections.md",
-          "relevance": "Repair stage and persistence."
+          "relevance": "Current proposed scope, decided policy and remaining contract choices."
         },
         {
           "kind": "file",
-          "label": "Module stage contract",
+          "label": "Module contract",
           "target": "docs/design/modules-and-api.md",
-          "relevance": "Current stage insertion and processing primitives."
+          "relevance": "Descriptor, stage insertion, admission, mutation envelopes and preparation."
         },
         {
           "kind": "file",
-          "label": "Architecture",
-          "target": "docs/design/architecture.md",
-          "relevance": "Frame and scratch limits."
+          "label": "GPU-first rendering",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "Merged renderer-of-record interfaces, independent CPU reference and native output tolerances."
         },
         {
           "kind": "file",
-          "label": "Spatial primitive bounds",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Reserve before allocation, off-owner work, review checklist and measurement timing."
+        },
+        {
+          "kind": "file",
+          "label": "Centralized stage boundaries",
+          "target": "crates/luxforge-core/src/render/compiled.rs",
+          "relevance": "Entry methods a new repair boundary extends."
+        },
+        {
+          "kind": "file",
+          "label": "Shared pixel pipeline",
+          "target": "crates/luxforge-core/src/render/pipeline.rs",
+          "relevance": "Byte/linear execution over stage boundaries."
+        },
+        {
+          "kind": "file",
+          "label": "GPU program and plan",
+          "target": "crates/luxforge-core/src/render/gpu/plan.rs",
+          "relevance": "The current GPU compile/plan seam to reconcile with merged GPU-first interfaces."
+        },
+        {
+          "kind": "file",
+          "label": "Spatial bounds",
           "target": "crates/luxforge-core/src/modules/spatial.rs",
-          "relevance": "The halo, tile, global-estimate and budget bounds a regional read must extend."
-        },
-        {
-          "kind": "file",
-          "label": "Stage boundaries",
-          "target": "crates/luxforge-core/src/render.rs",
-          "locator": "Entry",
-          "relevance": "`Entry` and `Segment`, the compiled stage boundaries a repair stage joins."
+          "relevance": "Existing halo and region contracts; distant sources require a separate declaration."
         }
       ],
       "acceptance_criteria": [
-        "New repair effects insert by their declared stage after source development and before colour, spatial and geometry work (`ModuleRegistry::insertion_index`) without moving older layers; unsupported stacks fail with named errors.",
-        "Regional clone/heal reads the exact prefix with bounded tiles/scratch and cancellation; JPEG and RAW paths preserve declared precision and sample/render agreement.",
-        "Each tile's declared input region, including a clone's offset source and a heal's solve, is bounded before any pixel is read; a region past its bound is a `resource-limit`, never silently reduced.",
-        "Exact-buffer fixtures cover overlapping operations, edges, orientation/crop, undo/redo/reopen, source preservation and frame-limit failure.",
-        "The repair stage's regional primitive has a GPU program whose output matches the CPU reference within the declared tolerance on the corpus, as GPU-first requires of every stage; a stack the GPU cannot evaluate falls back to the reference renderer with its reason named, never silently."
+        "Repair insertion follows the frozen source/repair/restoration/colour contract and stage/order placement without moving stored layers; the developer pixel proof/PointReplace is deleted and unsupported stacks fail explicitly.",
+        "Clone/Heal read only their exact operation prefix, with bounded destination/source regions, patch solve scratch, iterations and cancellation; far offsets, edges, multiple operations and RAW precision are independently verified.",
+        "Every allocation/read is admitted before use; over-budget inputs fail with named resource-limit and preserve the recipe/original rather than silently changing geometry or quality.",
+        "The primitive has GPU programs within the declared CPU-reference tolerance for display, full-resolution histogram, samples and export; a no-GPU fallback names its reason, with no silent omissions.",
+        "Focused reference fixtures and native GPU comparison cover overlap, boundaries, orientation/crop/warp, cancellation and limits; timing of the finished offline workflow is left to its qualification task."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Compare compiled output with independent stepwise reference on synthetic JPEG and float RAW inputs.",
-          "Measure photo-sized 24/60 MP output and point-query cost before integration."
+          "Add focused repair CPU-reference, region/budget and GPU-comparison tests; run only the affected binaries/filters during editing.",
+          "Run quick at the finished handoff and native rendered/reference comparisons at integration, with the performance checklist answered."
         ],
         "commands": [
-          "cargo test --locked --package luxforge-core"
+          "cargo test --locked --package luxforge-core --lib render::"
         ],
         "expected_results": [
-          "The host primitive is exact, bounded and stage-correct."
+          "One bounded repair primitive through the shared GPU/CPU-reference seams, with no new obsolete production render path."
         ]
       }
     },
     {
       "id": "TASK-004",
-      "description": "Add a semantic brush-mask descriptor, desktop canvas overlay and API path schema.",
+      "description": "Extend the existing brush capture with a declared Corrections interaction, validated operation identities and shared draft bindings.",
       "status": "pending",
       "dependencies": [
-        "TASK-001"
+        "TASK-001",
+        "TASK-002"
       ],
       "extra_context": [
-        "Pointer events remain desktop-only; API clients submit bounded stroke geometry, source coordinates and add/subtract operations directly.",
-        "The path primitives are still the mask brush's own. `path.rs` holds `PathCapture` (the host grid the desktop brush pushes one position at a time), `decimate`, `Stroke`, `StrokeId` and the content-addressed `StrokeTable`, whose commit write stores only the strokes it does not already know are stored (`store_strokes` in editor/catalog.rs, with `insert_stored`, `mark_stored` and `is_known_stored`). But `path.rs` imports `mask::{REFINE_MAX, REFINE_MIN}` for `ColourLimit` and takes `SIZE_MIN` from `mask::DISTANCE_MIN`, `Recipe::stroke_references` (model.rs) finds strokes in mask components only, `Draft.target` (draft.rs) is an optional `MaskTarget`, and the desktop brush (`mask_draft/brush.rs`) drives `mask.add-stroke` alone. The masking group's generic path primitives (consumer-declared stroke types in the one store, draft targets from declared identity parameters) wait for this work and land first.",
-        "The descriptor's canvas interactions are `point-pick`, `sample-apply` and `crop-frame` (`CanvasInteraction`, modules/descriptor.rs); the mask brush is the host's `mask.*` command family, not a declared interaction. Stroke geometry is the `points` parameter kind, refused past `POSTED_POINTS_PER_STROKE` before decimation and `POINTS_PER_STROKE` (1,024) after, with a radius-relative decimation tolerance. A component-kind token is named only in the host's kind table (`mask/mod.rs`), each kind's file and the desktop's drawn-kind table (the `component-kind` repository rule), so a corrections brush declares its own stroke type rather than reusing the mask brush kind."
+        "The generic path grid, StrokeKind/StrokeTable/StrokeCarrier and DraftTarget/declared_target are implemented. Reuse them; the test-only path::tests::RepairStroke proves storage generality, not production Corrections.",
+        "What is missing: a production brush-mask CanvasInteraction, an operation identity admitted on the relevant module actions, public draft.begin support for that identity, and descriptor-directed desktop brush/source-handle capture. Keep unrelated host-only json/text/identity restrictions intact.",
+        "Generalize mask_draft/brush.rs plumbing instead of creating a second brush, store or draft system. Corrections owns its radius/opacity/feather/source parameters; the mask brush keeps its flow/colour-limit behaviour.",
+        "Use the shared core geometry map and warped-path drawing for capture, source handles and overlays through Lens/Perspective/crop/straighten/orientation. Correlate mapping to the displayed entry/draft, and refuse invalid or stale mappings.",
+        "This task can prove the generic descriptor/capture with a test consumer before the module exists. The actual production section, operation selection and smoke journey are the offline workflow task; expose no placeholder feature."
       ],
       "context_links": [
         {
           "kind": "file",
-          "label": "Corrections proposal",
+          "label": "Corrections design",
           "target": "docs/design/corrections.md",
-          "relevance": "Canvas interaction and draft lifecycle."
+          "relevance": "Current proposed scope, decided policy and remaining contract choices."
         },
         {
           "kind": "file",
-          "label": "Module descriptor",
+          "label": "Descriptor types",
           "target": "crates/luxforge-core/src/modules/descriptor/types.rs",
-          "relevance": "`CanvasInteraction` and the `points` parameter kind a brush-mask interaction extends."
+          "relevance": "CanvasInteraction, points and current host-only IdentityKind declarations."
         },
         {
           "kind": "file",
-          "label": "Develop workspace",
-          "target": "docs/design/develop-workspace.md",
-          "relevance": "Canvas modes and generated controls."
+          "label": "Draft targets",
+          "target": "crates/luxforge-core/src/draft.rs",
+          "relevance": "Delivered DraftTarget and declared_target."
         },
         {
           "kind": "file",
-          "label": "Path primitives",
+          "label": "Public draft method",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "relevance": "DraftBegin still names mask/component only.",
+          "locator": "DraftBegin"
+        },
+        {
+          "kind": "file",
+          "label": "Shared path primitives",
           "target": "crates/luxforge-core/src/path.rs",
-          "relevance": "`PathCapture`, decimation, the stroke limits and the content-addressed `StrokeTable`."
+          "relevance": "Delivered typed storage and capture."
+        },
+        {
+          "kind": "file",
+          "label": "Existing brush capture",
+          "target": "crates/luxforge-app/src/mask_draft/brush.rs",
+          "relevance": "Production capture currently bound to mask.add-stroke."
+        },
+        {
+          "kind": "file",
+          "label": "Geometry mapping",
+          "target": "crates/luxforge-core/src/render/map.rs",
+          "relevance": "Shared nonlinear mapping, failure and identity contracts."
+        },
+        {
+          "kind": "file",
+          "label": "Warped overlays",
+          "target": "crates/luxforge-app/src/view/warped_path.rs",
+          "relevance": "Existing overlay drawing through core geometry."
+        },
+        {
+          "kind": "file",
+          "label": "Development verification",
+          "target": "docs/engineering/development.md",
+          "relevance": "Targeted edit-loop tests, quick handoffs, background rendered evidence and final measurement."
         }
       ],
       "acceptance_criteria": [
-        "Descriptor registration validates brush binding, size, feather, opacity, path/mask limits and selection actions; schema.list and module.list expose them.",
-        "Desktop brush capture renders an immediate overlay, one commit on release/Apply and none on Cancel; stale revisions retain a recoverable draft.",
-        "The same stroke path, source handle and mask edits can be submitted as semantic JSON calls without pointer simulation."
+        "Descriptor validation and schema/module discovery publish the brush/action bindings, operation identity, size/feather/opacity/source fields and bounded paths; malformed bindings and identities are refused.",
+        "Operation-target drafts use declared identities through draft.begin/set/commit/cancel/reapply, preserve the one-draft conflict contract and create no history during pointer motion.",
+        "One reusable desktop capture/overlay implementation serves masks and the test Corrections consumer; frozen mask coverage/storage semantics and existing mask journeys remain correct.",
+        "Direct semantic JSON and desktop capture express the same bounded geometry/source request through nonlinear warps, crop and orientation, with immediate overlays and explicit invalid/stale mapping outcomes."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Test descriptor rejection and JSON shape, then exercise drawing, cancellation and conflict in a hidden-window native scenario.",
-          "Compare desktop-generated request with direct API request."
+          "Add focused descriptor, operation-identity, draft-target and reusable capture tests, including the existing mask consumer.",
+          "Exercise the declared interaction against a test consumer with background native evidence; compare semantic requests with direct API calls."
         ],
         "commands": [
-          "cargo test --locked --package luxforge-core"
+          "cargo test --locked --package luxforge-core --lib modules::descriptor::",
+          "cargo test --locked --package luxforge-core --lib path::",
+          "cargo test --locked --package luxforge-core --lib draft::"
         ],
         "expected_results": [
-          "Brush mode is discoverable and UI/API paths describe the same edit."
+          "The existing brush and draft plumbing supports a second production consumer through declared semantics."
         ]
       }
     },
@@ -238,42 +321,90 @@
       "description": "Implement the corrections module's ordered Clone/Heal operations and edit actions.",
       "status": "pending",
       "dependencies": [
-        "TASK-003"
+        "TASK-003",
+        "TASK-004"
       ],
       "extra_context": [
-        "One layer holds stable operation IDs; actions add, update, remove and reorder operations without module-owned catalog writes.",
-        "Every mutating action carries the `{request_id, actor}` envelope and `expected_revision`, checked once in the dispatcher (`Envelope::check`, api/params.rs), and a module supplies its history label through `ToolModule::label()`. The `identity` parameter kind is host-only today (`ParameterKind::host_only`), so a module-owned operation ID either uses another kind or waits for the generic path primitives' identity parameters."
+        "One single repair effect owns ordered stable operation IDs. ToolModule owns validation/plan/compile/labels; the host persists full snapshots with existing revision envelopes and durable asset-action retries.",
+        "Declare a Corrections StrokeKind and repair-layer StrokeCarrier and list it in Recipe::stroke_references. Extend admission, catalog fresh-only storage and hydration; a missing/corrupt/wrong-type stroke names its operation and does not become an empty repair.",
+        "The catalog is format 13. Files enter through pick.develop/source.prepare/job.adopt; EditorService::import is the blocking helper for the same flow. Preparation and artifact binding remain the shared paths; module code never reads an original or writes catalog tables.",
+        "catalog.empty-removed currently gates its conservative stroke-address scan on the serialized strokes key. Preserve that declared carrier shape or extend discovery, with mixed mask/repair and cross-photograph retention tests; do not add a second store or collector.",
+        "Same-byte source.locate/folder recovery preserves edits and identities. Missing/offline/changed originals fail source verification. Library Remove/Put back and undo retain edits; Send back refuses an edited photograph.",
+        "Follow the frozen preset-eligibility policy through the existing ActionDescriptor::preset/ModuleRegistry::patch_action gate. Ordinary adjustment preset application must retain correction layers/resources and invoke the same upstream recomputation/invalidation rules; no new photo-bound retouch preset importer is added."
       ],
       "context_links": [
         {
           "kind": "file",
-          "label": "Corrections proposal",
+          "label": "Corrections design",
           "target": "docs/design/corrections.md",
-          "relevance": "Operation payload and Clone/Heal contract."
+          "relevance": "Current proposed scope, decided policy and remaining contract choices."
         },
         {
           "kind": "file",
           "label": "Module contract",
           "target": "docs/design/modules-and-api.md",
-          "relevance": "ToolModule plan/compile and generated actions."
+          "relevance": "Descriptor, stage insertion, admission, mutation envelopes and preparation."
+        },
+        {
+          "kind": "file",
+          "label": "Catalog",
+          "target": "docs/design/catalog.md",
+          "relevance": "Develop/prepare/adopt, Locate, library undo, removal and rendered previews."
+        },
+        {
+          "kind": "file",
+          "label": "Recipe stroke discovery",
+          "target": "crates/luxforge-core/src/model.rs",
+          "relevance": "Recipe::stroke_references currently lists masks only."
+        },
+        {
+          "kind": "file",
+          "label": "Catalog stroke storage",
+          "target": "crates/luxforge-core/src/editor/catalog.rs",
+          "relevance": "Fresh-only typed stroke storage and hydration."
+        },
+        {
+          "kind": "file",
+          "label": "Removal and cleanup",
+          "target": "crates/luxforge-core/src/library/remove.rs",
+          "relevance": "Remove/Put back, Empty Removed and conservative shared stroke reachability."
+        },
+        {
+          "kind": "file",
+          "label": "Source recovery",
+          "target": "docs/specs/source-recovery.md",
+          "relevance": "Verified same-byte relinking preserves original identity and edit history."
+        },
+        {
+          "kind": "file",
+          "label": "Preset eligibility",
+          "target": "crates/luxforge-core/src/modules/registry/lookups.rs",
+          "locator": "patch_action",
+          "relevance": "The delivered preset flag gate for capture, validation/import and composite application."
         }
       ],
       "acceptance_criteria": [
-        "The module owns validated stroke/source payloads and compiles ordered Clone/Heal operations through the host primitive; all actions appear in schema.list.",
-        "Each successful operation changes one ordinary history entry; no-op, wrong operation ID, bad source and stale mutation have explicit outcomes.",
-        "Changing a crop or orientation carries corrections in content space; source development recomputes Clone/Heal rather than silently freezing pixels."
+        "The module declares one ordered repair layer and discovers add/update/delete/reorder, query and reset operations with validated stroke/source payloads and history labels through the common action service.",
+        "Every mutation has correct no-op/deduplication/revision behaviour; rejected input changes no recipe or original, and successful changes create one entry.",
+        "Repair stroke references are validated, stored once and hydrated correctly across draft/commit/restore/reopen; missing/corrupt/wrong-type references fail explicitly without erasing history.",
+        "Clone/Heal recompute after source-development and earlier-operation changes, carry through nonlinear geometry and crop/orientation, and never recursively sample their own output.",
+        "Library Remove/Put back/undo, same-byte Locate and missing-source refusal preserve operations; Empty Removed collects only strokes unreferenced by every surviving entry, including other photographs and masks.",
+        "Preset capture/import/create/apply honours the frozen correction eligibility policy; applying ordinary adjustment presets preserves repairs and shared resources, with recomputation or patch invalidation for upstream changes."
       ],
       "test_strategy": {
         "approach": "integration",
         "steps": [
-          "Drive add/update/delete/reorder through the shared service and inspect recipe/history.",
-          "Compare exact output and source hashes after reopen and restore."
+          "Drive the semantic actions and drafts through the owner and blocking service paths on developed JPEG/RAW fixtures; compare reference buffers, source hashes, full history and retry answers.",
+          "Exercise restoration/reopen, preparation misses, corrupt strokes, Locate, library removal and cross-photograph cleanup with targeted tests.",
+          "Check the preset gate with correction-operation steps and an ordinary preset applied over repairs, including source-white-balance changes."
         ],
         "commands": [
-          "cargo test --locked --package luxforge-core"
+          "cargo test --locked --package luxforge-core --lib editor::catalog::",
+          "cargo test --locked --package luxforge-core --lib library::remove_tests::",
+          "cargo test --locked --package luxforge-core --test modules conformance"
         ],
         "expected_results": [
-          "Clone and Heal have reproducible durable results and complete API coverage."
+          "Durable, reproducible corrections through current module/catalog contracts, with shared-resource retention proven."
         ]
       }
     },
@@ -282,44 +413,83 @@
       "description": "Deliver and verify the offline Clone/Heal desktop workflow.",
       "status": "pending",
       "dependencies": [
-        "TASK-004",
         "TASK-005"
       ],
       "extra_context": [
-        "This is the first usable handoff and does not require settings, credentials or AI resources.",
-        "`cargo xtask editor-latency --mode paint` measures a mask brush stroke's press to its first frame; input-to-overlay for a Corrections brush needs that mode extended to it or a mode of its own."
+        "This is the first usable offline handoff; it depends on neither frozen patches nor settings/credentials/models. Use the generated section and current start/release refusal, draft and event-refresh contracts.",
+        "Add a dedicated background-only Corrections smoke scenario, independent pixel/state checks and rendered-tier registration before running the tier. Existing scenarios alone cannot prove a tool that is new.",
+        "Include Select rendered previews, filmstrip, history preview, Locate and library Remove/Put back in the production journey. Reuse entry-keyed preview planning/preparation and never touch the editor source cache from the preview lane.",
+        "Extend the current mask-only editor-latency paint mode or add a declared Corrections mode, and register its brush/commit/source-handle measurements in the timing/full verification plan. No timing tier or editor-wide distribution runs in this implementation task."
       ],
       "context_links": [
         {
           "kind": "file",
-          "label": "Corrections proposal",
+          "label": "Corrections design",
           "target": "docs/design/corrections.md",
-          "relevance": "Baseline user result and acceptance."
+          "relevance": "Current proposed scope, decided policy and remaining contract choices."
         },
         {
           "kind": "file",
           "label": "Development verification",
           "target": "docs/engineering/development.md",
-          "relevance": "Rendered evidence and tiered verification."
+          "relevance": "Targeted edit-loop tests, quick handoffs, background rendered evidence and final measurement."
+        },
+        {
+          "kind": "file",
+          "label": "Catalog",
+          "target": "docs/design/catalog.md",
+          "relevance": "Develop/prepare/adopt, Locate, library undo, removal and rendered previews."
+        },
+        {
+          "kind": "file",
+          "label": "Develop workspace",
+          "target": "docs/design/develop-workspace.md",
+          "relevance": "Generated controls, shared refusal/draft/event refresh and mode strip."
+        },
+        {
+          "kind": "file",
+          "label": "Rendered preview lane",
+          "target": "crates/luxforge-core/src/previews/rendered.rs",
+          "relevance": "Catalog previews through frozen entries and prepared resources."
+        },
+        {
+          "kind": "file",
+          "label": "Smoke registry",
+          "target": "xtask/src/smoke.rs",
+          "relevance": "Declare the new Corrections journey."
+        },
+        {
+          "kind": "file",
+          "label": "Verification tiers",
+          "target": "xtask/src/verify.rs",
+          "relevance": "Register its native checks in rendered verification."
+        },
+        {
+          "kind": "file",
+          "label": "Latency harness",
+          "target": "xtask/src/editor_latency.rs",
+          "relevance": "Current paint mode is mask-specific and needs a Corrections consumer."
         }
       ],
       "acceptance_criteria": [
-        "The generated Corrections section selects Clone or Heal, paints/edit/selects operations, moves source handles and shows immediate overlay/preview without freezing the UI.",
-        "Native M4 captures correlate selected mode, operation IDs, exact pixels, history and logs; API performs the same journey and undo/redo/restore/reopen.",
-        "Document Clone/Heal quality limits and run quick, rendered and timing tiers at this integration point."
+        "The generated Corrections section selects Clone/Heal, paints and selects/edits/removes/reorders operations and moves source handles; immediate overlays and previews retain usable input without UI-thread frame work.",
+        "Apply/release, Cancel, Discard/Reapply, switching photos/workspaces and external edits follow the one draft/refusal lifecycle and commit the same semantic actions as API clients.",
+        "Native hidden-window M4 captures correlate mode, selected operation/source, geometry, rendered pixels, history and logs; direct API reproduces the same journey, undo/redo/restore/reopen and real JPEG export.",
+        "Select rendered previews and filmstrip reflect committed correction/history states and source recovery; library removal/recovery leaves editing history intact.",
+        "Register and run the new rendered scenario and independent checks, update delivered workflow documentation and feature status, and run quick once at handoff; leave measured qualification to the offline acceptance task."
       ],
       "test_strategy": {
         "approach": "end-to-end",
         "steps": [
-          "Use a background-only editor launch with an isolated catalog and fixture; review captures as images.",
-          "Check API parity, source hashes and 24/60 MP timing."
+          "Use background-only hidden-window launches with isolated catalogs and developed JPEG/RAW fixtures; inspect captures as images with correlated state/logs and independent pixels.",
+          "Compare direct API and desktop journeys, source hashes, history/preview/cache identities and preparation/recovery failures."
         ],
         "commands": [
-          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR",
-          "cargo run --release --locked --package xtask -- verify --tier timing --output NEW_DIR"
+          "cargo run --locked --package xtask -- verify --tier quick --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR"
         ],
         "expected_results": [
-          "A free offline correction workflow is usable and proven on the M4."
+          "A useful offline Clone/Heal workflow has native UI/API evidence; no unmeasured latency claim or AI prerequisite."
         ]
       }
     },
@@ -329,106 +499,140 @@
       "status": "cancelled",
       "dependencies": [],
       "extra_context": [
-        "Cancelled on 2026-10-04: the qualification of local and remote fill candidates is the AI editing plan's work (docs/design/ai-editing.md), run on the object removal prototype's harness with the research's shortlist; nothing here is lost.",
-        "The object removal research supersedes the earlier candidate list with a measured-first shortlist: Big-LaMa and MI-GAN as the permissive, non-generative baseline, and OSOR-SDXL, RORem and FLUX.2 klein 4B as generative candidates, each with its own code and weight licence and M4 measurements still to run. It also proposes one shared local inference service with the segmenter the masking work may use. Do not claim Adobe quality from an architecture label.",
-        "Evaluate at equivalent mask/context sizes, including model-specific resizing and colour conversion."
+        "Cancelled in this plan: Model and hosted-provider qualification is owned by AI editing and its harness.",
+        "Do not implement these outcomes here or revive superseded hosted-first, two-provider, fail-on-stale or model-licence gates. The offline Corrections slice has no dependency on this cancelled task."
       ],
       "context_links": [
         {
           "kind": "file",
-          "label": "Corrections proposal",
+          "label": "AI editing",
+          "target": "docs/design/ai-editing.md",
+          "relevance": "Owns model/provider qualification, inference and Remove UI; consumes this foundation."
+        },
+        {
+          "kind": "file",
+          "label": "Corrections design",
           "target": "docs/design/corrections.md",
-          "relevance": "Local/remote candidate qualification."
-        },
-        {
-          "kind": "file",
-          "label": "Object removal research",
-          "target": "docs/research/object-removal/README.md",
-          "relevance": "Shortlist, licences, runtimes and the M4 measurements that gate a choice."
-        },
-        {
-          "kind": "file",
-          "label": "Inpainting candidates",
-          "target": "docs/research/object-removal/inpainting-and-effects-removal.md",
-          "relevance": "LaMa, MI-GAN, generative removers and the 60 MP strategy."
-        },
-        {
-          "kind": "url",
-          "label": "LaMa project",
-          "target": "https://github.com/advimman/lama",
-          "relevance": "Published model and inpainting behavior."
+          "relevance": "Current proposed scope, decided policy and remaining contract choices."
         }
       ],
       "acceptance_criteria": [
-        "Compare at least one local inpainting baseline, one local generative object-removal candidate and one hosted provider on a rights-cleared fixed image/mask corpus.",
-        "Record blind visual scores and failures, changed pixels outside mask, M4 cold/warm time, peak RSS/GPU memory, disk, backend portability, model/runtime/weight terms and provenance.",
-        "Select exact model versions and at least two distinct provider paths for implementation; if no local model clears explicit thresholds, record the reason and leave local delivery conditional."
+        "The outcome remains assigned to AI editing; this plan implements only its shared repair, brush and frozen-patch/candidate foundation."
       ],
       "test_strategy": {
-        "approach": "mixed",
+        "approach": "inspection",
         "steps": [
-          "Run candidate adapters outside the app with pinned artifacts and repeatable inputs.",
-          "Inspect side-by-side outputs and measurements; record license sources separately from unverified conclusions."
+          "Inspect the current scope boundary; run no implementation or provider checks for this cancelled task."
         ],
         "commands": [],
         "expected_results": [
-          "A reproducible selection report with a justified local yes/no decision and provider set."
+          "No duplicate provider or AI workflow implementation in Corrections."
         ]
       }
     },
     {
       "id": "TASK-008",
-      "description": "Integrate the repair layer's immutable frozen-patch operation, mask composition and prefix invalidation.",
+      "description": "Extend the delivered repair layer with frozen patches, bounded candidate jobs, input invalidation and stale-export acknowledgement.",
       "status": "pending",
       "dependencies": [
-        "TASK-001",
-        "TASK-003"
+        "TASK-005"
       ],
       "extra_context": [
-        "The operation is generic: any producer (the AI editing plan's local fills, its remote tier, or a later manual paste) publishes a patch artifact and commits it through this operation, which stores the artifact, the coverage, the transforms, the input-prefix hash and the producer's provenance. The stale-patch behaviour follows the owner's decision recorded with the AI editing design.",
-        "Builds on the implemented derived artifacts (docs/design/module-capabilities.md, Derived artifacts): a task publishes content-addressed bytes through `ModuleContext::publish_artifact` (at most 16 per task, 256 MiB each), an effect declaring `artifacts: true` lists them on its layer, the commit checks each has a row and a file, evaluation binds them into the recipe (`EditorService::bind_artifacts`) and `CapabilityModule::compile_bound` receives the bytes. A missing or corrupt artifact fails render, sample, analysis and export with `source-unavailable`.",
-        "Rendering uses a frozen host-owned patch and never invokes its generation provider.",
-        "A task's result today is its JSON plus the IDs of the artifacts it published, and every published artifact stays until a collection finds it unreferenced: opening a catalog queues one collection on the source worker, and `artifact.collect` skips artifacts a task of the current process published. Disposable multi-megabyte candidates therefore need a bounded job result that is not an artifact, read through `job.read`, with only the accepted patch published; that result shape is this task's work.",
-        "`spatial::prefix_hash` (render/spatial.rs) already hashes a layer prefix with the masks it reads, including their sampling, which is the input-prefix identity a frozen patch needs."
+        "Extend the actual Corrections layer and operation actions from the module task, rather than building a parallel patch module. Add artifacts: true and CapabilityModule::compile_bound with already prepared verified bytes; the provider owns generation, not rendering.",
+        "Derived artifacts are implemented: worker-side ModuleContext publication, host catalog rows/references, source-worker preparation, 256 MiB/4096 prepared-artifact admission and collection of unreferenced objects. Reuse their crash, catalog-ID, live-task and Empty Removed contracts.",
+        "The current task result is JSON plus artifact IDs; disposable candidate pixels need a bounded host job-result store with discoverable handles/read/accept semantics. Implement only that shared seam with a deterministic test producer, at AI editing's accepted starting bounds of four 64 MiB candidates per job and 1 GiB across jobs, including previews/ownership and explicit release reporting. Generation and candidate-review UI remain AI editing work.",
+        "Publish accepted bytes on a worker and recheck asset existence/revision and exact input-prefix identity at the ordinary commit. Cancellation, stale/late results or Empty Removed cannot partially mutate or resurrect an asset. Publication before a refused commit can leave only an unreferenced object.",
+        "spatial::prefix_hash does not include source interpretation/development identity or earlier operations inside the same repair layer. Extend identity as frozen by the contract; later operations, unrelated masks, downstream colour/geometry and same-byte Locate do not stale a patch.",
+        "Stale patches keep rendering, with row/status/recipe.describe reasons. Extend existing export.plan/export.jpeg and batch.export with entry/operation-specific acknowledgement; missing/corrupt artifacts still fail source-unavailable. Only job.read/job.cancel read and cancel export jobs; export.read/export.cancel do not exist.",
+        "This foundation needs neither a real model nor remote consent/runtime activation. Test bounded publication/acceptance, offline evaluation and catalog movement through a test producer. Full AI model/provider journeys stay in AI editing."
       ],
       "context_links": [
         {
           "kind": "file",
-          "label": "Corrections proposal",
+          "label": "Corrections design",
           "target": "docs/design/corrections.md",
-          "relevance": "Frozen patch, mask and stale-prefix contract."
+          "relevance": "Current proposed scope, decided policy and remaining contract choices."
         },
         {
           "kind": "file",
-          "label": "Generic artifacts",
+          "label": "Module capabilities",
           "target": "docs/design/module-capabilities.md",
-          "relevance": "Content-addressed storage and history reachability."
+          "relevance": "Existing worker jobs, artifact publication/binding, budgets and catalog reachability."
         },
         {
           "kind": "file",
-          "label": "History contract",
-          "target": "docs/specs/edit-history.md",
-          "relevance": "Immutable snapshots and missing-resource errors."
+          "label": "AI editing",
+          "target": "docs/design/ai-editing.md",
+          "relevance": "Owns model/provider qualification, inference and Remove UI; consumes this foundation."
+        },
+        {
+          "kind": "file",
+          "label": "Catalog",
+          "target": "docs/design/catalog.md",
+          "relevance": "Develop/prepare/adopt, Locate, library undo, removal and rendered previews."
+        },
+        {
+          "kind": "file",
+          "label": "GPU-first rendering",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "Merged renderer-of-record interfaces, independent CPU reference and native output tolerances."
+        },
+        {
+          "kind": "file",
+          "label": "Artifact module compile hook",
+          "target": "crates/luxforge-core/src/modules/capability.rs",
+          "relevance": "CapabilityModule::compile_bound and worker publication boundary."
+        },
+        {
+          "kind": "file",
+          "label": "Artifact admission",
+          "target": "crates/luxforge-core/src/editor/artifact_store.rs",
+          "relevance": "Rows, references, binding budgets and typed preparation needs."
+        },
+        {
+          "kind": "file",
+          "label": "Prefix hashing",
+          "target": "crates/luxforge-core/src/render/spatial.rs",
+          "relevance": "prefix_hash hashes layer/mask prefixes, not intra-layer repair operations.",
+          "locator": "prefix_hash"
+        },
+        {
+          "kind": "file",
+          "label": "Job table",
+          "target": "crates/luxforge-core/src/jobs.rs",
+          "relevance": "Current shared jobs and JSON result retention to extend with bounded candidates."
+        },
+        {
+          "kind": "file",
+          "label": "JPEG export",
+          "target": "docs/design/export.md",
+          "relevance": "Shipped plan/jpeg/job APIs and batch use; proposed stale acknowledgements extend them."
         }
       ],
       "acceptance_criteria": [
-        "Accepted patch bytes, mask, transform, provider/model provenance and input-prefix hash persist atomically with the recipe reference.",
-        "Pixels outside the committed mask are exact-prefix pixels; output within it is validated/linearized, and saved RAW source data remain unchanged.",
-        "Model removal/offline reopen still renders and exports accepted corrections; missing/corrupt patch and stale prefix fail explicitly, with history intact.",
-        "Artifact reachability covers every retained branch/version, restore and catalog restart.",
-        "The frozen-patch composite renders on the GPU within the declared tolerance for display, samples and export, compared natively against the CPU reference; Accept refuses by name a stack whose artifacts would not bind within the 256 MiB prepared-artifact budget."
+        "A test producer publishes candidates through bounded host storage, with declared address/read/accept schemas, accurate release reporting and safe ownership during concurrent reads/accept/cancel/disconnect; no candidate pixels enter JSON or durable artifacts before acceptance.",
+        "Validated accepted bytes/coverage/transform/provenance and the exact input-prefix identity are referenced by one ordinary atomic repair/history commit after worker publication and revision checks; crash/failure creates no partial edit.",
+        "The patch CPU reference preserves outside-coverage pixels exactly and continuous RAW precision elsewhere; its GPU program meets the declared reference tolerance for display, histogram, samples and export.",
+        "RAW source-development and earlier intra-layer/layer input changes mark patches stale while rendering them; later operations, downstream edits, unrelated masks and same-byte source relocation do not. recipe.describe, operation rows and status explain the condition.",
+        "Single and batch export disclose stale operation identities and require the frozen-entry acknowledgement; a race invalidates an old acknowledgement rather than silently exporting a different stale result.",
+        "Offline/model-absent reopen, history/versions/restore, typed preparation, missing/corrupt artifacts, prepared-byte limits, catalog-with-artifacts relocation and Remove/Put back/Empty Removed retain or collect resources correctly.",
+        "Native background rendered/API checks with a test producer prove the frozen-patch and candidate seam; real model/provider behaviour remains unclaimed and does not gate offline Clone/Heal."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Inject crash, corrupt/missing artifact and source-development change; compare exact prefix/outside-mask buffers.",
-          "Remove model and credentials and verify offline render, sample, export and history."
+          "Add focused candidate budget/ownership, intra-layer invalidation, atomic acceptance, artifact recovery and stale single/batch export tests with a deterministic producer; use only affected test binaries/filters while building.",
+          "Run native GPU-reference comparisons and background rendered journeys at integration, including crash/cancel/revision races and removal/source recovery; quick once at handoff.",
+          "Measure candidate/publication and patch-render memory/cost after this foundation is finished, independently of later model inference."
         ],
         "commands": [
-          "cargo test --locked --package luxforge-core"
+          "cargo test --locked --package luxforge-core --lib artifacts::",
+          "cargo test --locked --package luxforge-core --lib editor::artifact_tests::",
+          "cargo test --locked --package luxforge-core --lib jobs::",
+          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR"
         ],
         "expected_results": [
-          "Frozen AI edits remain non-destructive, durable and honest about missing or stale data."
+          "One durable frozen-patch and bounded candidate foundation with truthful stale/export behaviour and no model dependency."
         ]
       }
     },
@@ -440,51 +644,34 @@
         "TASK-007"
       ],
       "extra_context": [
-        "Cancelled on 2026-10-04: the local inference adapter, the inference port, the `local-runtime` capability and activation are the AI editing plan's work (docs/design/ai-editing.md), where the first consumer defines them.",
-        "If qualification rejects all local models, complete this task only by recording a no-go with evidence and keep local AI unavailable; do not substitute an unreviewed model.",
-        "Generic download, settings and permissions are implemented: a resource installs only from its pinned URL under the `download-artifact` grant, checked by length, SHA-256 and the module's `validate_resource` hook, and a task reads it through `ModuleContext::resource_path`. Capability tasks run on the one job table's `module` lane, one thread with at most four queued.",
-        "Activation (`module.activate`, `module.deactivate`, `JobKind::Activate`/`Deactivate`, capabilities/host/activation.rs) is being removed until a module needs `local-runtime` (docs/decisions.md, Post-consolidation review). This adapter is that first consumer and brings back activation and `local-runtime` together, preloading a model with a cancellable worker off the owner thread; downloaded weights are never loaded through a general object deserializer."
+        "Cancelled in this plan: Local inference, runtime activation and model resources are owned by AI editing.",
+        "Do not implement these outcomes here or revive superseded hosted-first, two-provider, fail-on-stale or model-licence gates. The offline Corrections slice has no dependency on this cancelled task."
       ],
       "context_links": [
         {
           "kind": "file",
-          "label": "Corrections proposal",
+          "label": "AI editing",
+          "target": "docs/design/ai-editing.md",
+          "relevance": "Owns model/provider qualification, inference and Remove UI; consumes this foundation."
+        },
+        {
+          "kind": "file",
+          "label": "Corrections design",
           "target": "docs/design/corrections.md",
-          "relevance": "Local qualification and runtime."
-        },
-        {
-          "kind": "file",
-          "label": "Generic resources",
-          "target": "docs/design/module-capabilities.md",
-          "relevance": "Verified download, runtime trust and activation."
-        },
-        {
-          "kind": "file",
-          "label": "Performance rules",
-          "target": "docs/engineering/performance-rules.md",
-          "relevance": "Bounded model work and honest measurements."
-        },
-        {
-          "kind": "file",
-          "label": "Inference runtimes",
-          "target": "docs/research/object-removal/inference-runtimes.md",
-          "relevance": "ort, tract, candle, burn and Core ML, their packaging and licences."
+          "relevance": "Current proposed scope, decided policy and remaining contract choices."
         }
       ],
       "acceptance_criteria": [
-        "When selected, exact model/runtime versions and hashes are downloadable on user request to app-managed storage, never bundled or silently fetched.",
-        "An installed model loads through a reviewed, bounded, cancellable worker and accepts the common image/mask job; removing it preserves accepted patches.",
-        "If no candidate passes the written license/quality/resource gate, document the rejection and expose a clear unavailable-local status without claiming implementation."
+        "The outcome remains assigned to AI editing; this plan implements only its shared repair, brush and frozen-patch/candidate foundation."
       ],
       "test_strategy": {
-        "approach": "mixed",
+        "approach": "inspection",
         "steps": [
-          "Exercise install/load/generate/cancel/uninstall on M4 with hashes and an offline fixture.",
-          "Measure cold/warm latency, memory, disk and unchanged idle state."
+          "Inspect the current scope boundary; run no implementation or provider checks for this cancelled task."
         ],
         "commands": [],
         "expected_results": [
-          "One qualified local adapter or an explicit evidence-backed no-go, with no silent fallback."
+          "No duplicate provider or AI workflow implementation in Corrections."
         ]
       }
     },
@@ -496,40 +683,34 @@
         "TASK-007"
       ],
       "extra_context": [
-        "Cancelled on 2026-10-04: typed remote adapters and provider selection are the AI editing plan's remote tier (docs/design/ai-editing.md), delivered after its local tiers with the `repair-crop` data class.",
-        "Requires generic settings, secret storage, network permission and jobs, which the module capabilities framework implements: settings use the module parameter vocabulary, secrets live only in the OS credential store (the macOS Keychain first), and a task is a capability job read and cancelled through `job.read` and `job.cancel`. First live providers are chosen in the qualification task.",
-        "Do not pass original paths, EXIF or extra image bytes by default.",
-        "The transport runs on `ureq`'s own agent (`capabilities/transport/`) behind the unchanged address policy, and the `http-framing` repository rule keeps HTTP framing inside it; the capabilities group moves the transport and the secret store into their own crate, injected through `HostConfig`. At the 1,024-record grant cap (`MAX_GRANT_RECORDS`) the oldest live remote-image grant is evicted, so per-asset consent keeps working. Remote-photo consent is per asset by the recorded default; the decision task confirms or changes that before the first adapter ships."
+        "Cancelled in this plan: The optional remote tier and provider-profile/data-class consent change are owned by AI editing.",
+        "Do not implement these outcomes here or revive superseded hosted-first, two-provider, fail-on-stale or model-licence gates. The offline Corrections slice has no dependency on this cancelled task."
       ],
       "context_links": [
         {
           "kind": "file",
-          "label": "Corrections proposal",
-          "target": "docs/design/corrections.md",
-          "relevance": "Remote provider contract and multiple paths."
+          "label": "AI editing",
+          "target": "docs/design/ai-editing.md",
+          "relevance": "Owns model/provider qualification, inference and Remove UI; consumes this foundation."
         },
         {
           "kind": "file",
-          "label": "Generic consent",
-          "target": "docs/design/module-capabilities.md",
-          "relevance": "Scoped photo transfer, credentials and endpoint validation."
+          "label": "Corrections design",
+          "target": "docs/design/corrections.md",
+          "relevance": "Current proposed scope, decided policy and remaining contract choices."
         }
       ],
       "acceptance_criteria": [
-        "At least two distinct real provider paths are available across local/remote options; if local is not qualified, use two remote adapters, with separately configurable model IDs.",
-        "Adapters declare request masks, dimensions, authentication, timeouts, cancellation, variations, cost/data disclosure and response validation.",
-        "No photograph leaves without the recorded scoped grant; denial, secret missing, endpoint edit, provider refusal, malformed output and disconnect leave the recipe unchanged.",
-        "Mock protocol tests and live small-case tests are labelled separately."
+        "The outcome remains assigned to AI editing; this plan implements only its shared repair, brush and frozen-patch/candidate foundation."
       ],
       "test_strategy": {
-        "approach": "mixed",
+        "approach": "inspection",
         "steps": [
-          "Run fake servers for every malformed/error/cancel case and exact sent-byte inspection.",
-          "Exercise selected live providers on rights-cleared images with explicit consent and cost bounds."
+          "Inspect the current scope boundary; run no implementation or provider checks for this cancelled task."
         ],
         "commands": [],
         "expected_results": [
-          "Provider choice works through one user-facing job/result contract with truthful privacy and failure behavior."
+          "No duplicate provider or AI workflow implementation in Corrections."
         ]
       }
     },
@@ -544,106 +725,111 @@
         "TASK-010"
       ],
       "extra_context": [
-        "Cancelled on 2026-10-04: the Remove workflow, candidate review and acceptance are the AI editing plan's Remove and generative tasks (docs/design/ai-editing.md), which commit through this plan's frozen-patch operation.",
-        "A local no-go in TASK-009 does not block an accepted remote AI delivery; candidate acceptance rechecks revision and prefix before commit.",
-        "The target mask is a draft on the core `draft.*` lifecycle: `draft.begin`, `draft.set`, `draft.cancel` and `draft.reapply` run synchronously on the desktop thread and `draft.commit` as an owner task, and Undo, Redo and Restore are refused while a draft is open (docs/decisions.md, Post-consolidation review). Events name the asset and revision they changed, so a late candidate is recognisable as stale."
+        "Cancelled in this plan: Remove selection, generation, variations and candidate-review UI are owned by AI editing, consuming this repair/brush/patch foundation.",
+        "Do not implement these outcomes here or revive superseded hosted-first, two-provider, fail-on-stale or model-licence gates. The offline Corrections slice has no dependency on this cancelled task."
       ],
       "context_links": [
         {
           "kind": "file",
-          "label": "Corrections proposal",
+          "label": "AI editing",
+          "target": "docs/design/ai-editing.md",
+          "relevance": "Owns model/provider qualification, inference and Remove UI; consumes this foundation."
+        },
+        {
+          "kind": "file",
+          "label": "Corrections design",
           "target": "docs/design/corrections.md",
-          "relevance": "AI interaction and acceptance race rules."
-        },
-        {
-          "kind": "file",
-          "label": "Module draft contract",
-          "target": "docs/design/modules-and-api.md",
-          "relevance": "Session-only drafts and mutation envelope."
-        },
-        {
-          "kind": "file",
-          "label": "Generic jobs",
-          "target": "docs/design/module-capabilities.md",
-          "relevance": "Capability jobs on the one job table, cancellation and progress; activation returns with `local-runtime`."
+          "relevance": "Current proposed scope, decided policy and remaining contract choices."
         }
       ],
       "acceptance_criteria": [
-        "Paint/add/subtract mask, choose provider/model, Generate, inspect variations, Regenerate, Accept and Cancel are available via the same service used by the desktop.",
-        "Generation holds a frozen revision/prefix; stale, cancelled, late and failed results cannot alter the current recipe; Accept creates one history entry and durable patch.",
-        "Installed local model may pre-load on activation without blocking Clone/Heal; remote upload starts only after explicit Generate/consent.",
-        "UI shows model readiness, transfer scope, cost if known, job progress and actionable errors without leaking secrets."
+        "The outcome remains assigned to AI editing; this plan implements only its shared repair, brush and frozen-patch/candidate foundation."
       ],
       "test_strategy": {
-        "approach": "end-to-end",
+        "approach": "inspection",
         "steps": [
-          "Drive full UI and JSON journeys against a deterministic fake model and an approved real adapter.",
-          "Race external edits, cancellation, model removal and late responses; inspect captures, state and logs."
+          "Inspect the current scope boundary; run no implementation or provider checks for this cancelled task."
         ],
-        "commands": [
-          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR"
-        ],
+        "commands": [],
         "expected_results": [
-          "AI Remove commits only an explicitly chosen, revision-correct result and stays responsive."
+          "No duplicate provider or AI workflow implementation in Corrections."
         ]
       }
     },
     {
       "id": "TASK-012",
-      "description": "Run Clone/Heal and frozen-patch quality, source-preservation, security and performance acceptance.",
+      "description": "Independently qualify the offline Clone/Heal workflow for image quality, catalog/source preservation and native performance.",
       "status": "pending",
       "dependencies": [
-        "TASK-006",
-        "TASK-008"
+        "TASK-006"
       ],
       "extra_context": [
-        "The AI journeys (model absent after accept, provider failure, consent) are the AI editing plan's acceptance; this task covers Clone, Heal and the frozen-patch operation exercised by a test producer.",
-        "Exactness and naturalness are separate evidence. A skipped native or unavailable provider test is not a pass.",
-        "JPEG export has shipped (`export.plan`, `export.jpeg`, `export.read`, `export.cancel`; docs/design/export.md) and binds a stack's artifacts before it evaluates, failing as render does; export verification uses it rather than a render-to-buffer check."
+        "This is the offline milestone and does not wait for frozen patches or AI; frozen-patch/candidate/stale-export conformance is proved by its own foundation task.",
+        "Run timing only after the offline module, brush, workflow and harness are finished, serially on a quiet host. Use 24/60 MP JPEG and the current supported RAW manifest, report scope/sample counts and keep skipped checks incomplete.",
+        "JPEG export and batch.export are shipped; acceptance exports actual files through export.plan/export.jpeg and job.read/job.cancel, compares pixels against the reference within declared GPU tolerances and proves originals are unchanged.",
+        "Naturalness, exact CPU numerics and GPU correctness are distinct evidence. Headless/VM functional evidence does not establish native GPU output or platform performance. Answer the crates performance checklist for the integrated change."
       ],
       "context_links": [
         {
           "kind": "file",
-          "label": "Corrections proposal",
+          "label": "Corrections design",
           "target": "docs/design/corrections.md",
-          "relevance": "Acceptance corpus and failure matrix."
+          "relevance": "Current proposed scope, decided policy and remaining contract choices."
         },
         {
           "kind": "file",
           "label": "Performance rules",
           "target": "docs/engineering/performance-rules.md",
-          "relevance": "Photo-sized timing and bounded resources."
+          "relevance": "Reserve before allocation, off-owner work, review checklist and measurement timing."
         },
         {
           "kind": "file",
           "label": "Development verification",
           "target": "docs/engineering/development.md",
-          "relevance": "Tiered checks and native evidence."
+          "relevance": "Targeted edit-loop tests, quick handoffs, background rendered evidence and final measurement."
+        },
+        {
+          "kind": "file",
+          "label": "Catalog",
+          "target": "docs/design/catalog.md",
+          "relevance": "Develop/prepare/adopt, Locate, library undo, removal and rendered previews."
+        },
+        {
+          "kind": "file",
+          "label": "GPU-first rendering",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "Merged renderer-of-record interfaces, independent CPU reference and native output tolerances."
         },
         {
           "kind": "file",
           "label": "JPEG export",
           "target": "docs/design/export.md",
-          "relevance": "The shipped exporter the acceptance exports through."
+          "relevance": "Actual single/batch export rather than a render-to-buffer substitute."
+        },
+        {
+          "kind": "file",
+          "label": "Latency harness",
+          "target": "xtask/src/editor_latency.rs",
+          "relevance": "Corrections brush/commit/source-handle measurements after the harness is extended."
         }
       ],
       "acceptance_criteria": [
-        "Independent pixel tests cover Clone/Heal, the frozen patch's outside-mask identity, linear/SDR conversion, geometry, overlap and sample/exact-export consistency.",
-        "History/reopen/undo/restore, source hash, offline accepted patch, corrupt artifact, stale prefix and cancellation/races pass.",
-        "Record blinded visual outcomes and failures plus M4 24/60 MP JPEG and qualified RAW timings, peak CPU/GPU memory and disk with setup and sample counts.",
-        "Run full verification before a milestone claim and state every skipped/unsupported case."
+        "Independent exact CPU fixtures and native GPU-reference comparisons cover Clone/Heal, linear/byte domains, overlap, far source reads, edges, nonlinear geometry and display/sample/histogram/export consistency.",
+        "Native API/desktop history, versions, undo/redo/restore/reopen, source hashes, preparation/refusal/recovery, Locate, Remove/Put back/Empty Removed and Select preview journeys pass on JPEG and qualified RAW.",
+        "Record blinded visual results/failures plus M4 24/60 MP JPEG and supported RAW overlay/commit/source-handle/view/render/sample/export latency, peak CPU/GPU memory, bounded work/storage and idle cost with setup and sample counts.",
+        "Run full verification with the supplied supported RAW manifest before the offline milestone claim, and state every skipped/unsupported case; no patch/model/provider prerequisite is introduced."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Execute exact fixtures, API/desktop acceptance, background rendered smoke and photo-sized timing.",
-          "Review image captures and blind quality scores independently of automated success."
+          "Execute the independent reference fixtures and registered background native smoke/API acceptance, then review the image captures and quality scores.",
+          "Run the final distributions on a quiet host through full verification, which already includes the timing tier; record the performance checklist and use a new output directory and the actual supported RAW manifest. Do not run a separate timing tier again for the same milestone."
         ],
         "commands": [
-          "cargo run --release --locked --package xtask -- verify --tier full --output NEW_DIR"
+          "cargo run --release --locked --package xtask -- verify --tier full --manifest RAW_MANIFEST --output NEW_DIR"
         ],
         "expected_results": [
-          "A bounded, reproducible M4 evidence package supports only the claims actually tested."
+          "Offline Clone/Heal can be accepted independently with scoped, reproducible native quality and resource evidence."
         ]
       }
     },
@@ -652,17 +838,43 @@
       "description": "Update shipped contracts and user documentation after qualification.",
       "status": "pending",
       "dependencies": [
+        "TASK-008",
         "TASK-012"
       ],
       "extra_context": [
-        "Only accepted and implemented behavior enters feature status; keep remaining local/provider/platform work explicit."
+        "The offline workflow task updates delivered user documentation at its handoff; this final reconciliation covers the qualified offline milestone plus the separately verified shared patch foundation.",
+        "Keep actual model/provider, local-runtime and remote-consent work under AI editing. No planning update completes an implementation task, claims a missing command exists or adds compatibility/migrations."
       ],
       "context_links": [
         {
           "kind": "file",
-          "label": "Corrections proposal",
+          "label": "Corrections design",
           "target": "docs/design/corrections.md",
-          "relevance": "Current intended contract."
+          "relevance": "Current proposed scope, decided policy and remaining contract choices."
+        },
+        {
+          "kind": "file",
+          "label": "Module contract",
+          "target": "docs/design/modules-and-api.md",
+          "relevance": "Descriptor, stage insertion, admission, mutation envelopes and preparation."
+        },
+        {
+          "kind": "file",
+          "label": "Catalog",
+          "target": "docs/design/catalog.md",
+          "relevance": "Develop/prepare/adopt, Locate, library undo, removal and rendered previews."
+        },
+        {
+          "kind": "file",
+          "label": "Module capabilities",
+          "target": "docs/design/module-capabilities.md",
+          "relevance": "Existing worker jobs, artifact publication/binding, budgets and catalog reachability."
+        },
+        {
+          "kind": "file",
+          "label": "GPU-first rendering",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "Merged renderer-of-record interfaces, independent CPU reference and native output tolerances."
         },
         {
           "kind": "file",
@@ -674,31 +886,37 @@
           "kind": "file",
           "label": "User guide",
           "target": "docs/user-guide.md",
-          "relevance": "User-facing workflow and recovery."
+          "relevance": "Delivered offline workflow, recovery and actual export behaviour."
         },
         {
           "kind": "file",
           "label": "Roadmap",
           "target": "docs/plan.md",
-          "relevance": "Earlier exclusion that owner decision may revise."
+          "relevance": "Current named outcomes, dependencies and scope; no obsolete generative exclusion."
+        },
+        {
+          "kind": "file",
+          "label": "Development verification",
+          "target": "docs/engineering/development.md",
+          "relevance": "Targeted edit-loop tests, quick handoffs, background rendered evidence and final measurement."
         }
       ],
       "acceptance_criteria": [
-        "Module/API design, roadmap, feature status and user guide describe the actual Clone/Heal paths and the frozen-patch operation, their precision and persistence limits and recovery.",
-        "Untested platforms, the deferred license review and any measured target misses remain labelled as such.",
-        "Task statuses change only when their acceptance evidence exists; no proposed command or provider is documented as shipped."
+        "Design, module/API docs, roadmap, feature status and user guide match the delivered Clone/Heal and frozen-patch foundation, including current Develop/prepare/adopt, Locate/library cleanup, nonlinear geometry and GPU-reference contracts.",
+        "Untested platforms, remaining numerical/product decisions, measured misses and deferred manual dependency reviews remain explicit; model downloads/providers are not claimed as Corrections delivery.",
+        "Schema discovery and native evidence support each implemented claim; plan statuses change only when their own acceptance evidence exists, and no proposed command is presented as shipped."
       ],
       "test_strategy": {
         "approach": "inspection",
         "steps": [
-          "Compare documentation with schema.list, module.list, evidence summaries and packaged UI.",
-          "Run repository/plan validation and quick verification for the documentation change."
+          "Compare documentation with schema/module listings and the native evidence for each independently delivered slice.",
+          "Validate JSON schema, local task dependencies/waves/file links and repository rules; run quick once at the documentation handoff."
         ],
         "commands": [
-          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR"
+          "cargo run --locked --package xtask -- verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
-          "Current documentation matches shipped behavior and open limitations."
+          "Current documentation distinguishes shipped behaviour, the verified shared foundation and open AI work."
         ]
       }
     }
@@ -724,14 +942,14 @@
     {
       "wave": 3,
       "task_ids": [
-        "TASK-005",
-        "TASK-008"
+        "TASK-005"
       ]
     },
     {
       "wave": 4,
       "task_ids": [
-        "TASK-006"
+        "TASK-006",
+        "TASK-008"
       ]
     },
     {
