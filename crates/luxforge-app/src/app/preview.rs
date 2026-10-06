@@ -2014,9 +2014,10 @@ impl Editor {
     /// layout when a refit is permitted. The frame of an open can arm a capture while its
     /// display-scale refit is on its way. Drafts deliberately defer such refits, and can supersede
     /// a queued one; their settled frame can be captured as shown even if that abandoned request
-    /// left `refit_pending` set.
+    /// left `refit_pending` set. With no photograph open there is nothing to refit.
     pub(super) fn capture_refit_ready(&self) -> bool {
-        if !(self.presentation.presented_reduced || self.gpu_at_rest())
+        if self.document.state.is_none()
+            || !(self.presentation.presented_reduced || self.gpu_at_rest())
             || self.presentation.render_error.is_some()
             || self.refit_deferred()
         {

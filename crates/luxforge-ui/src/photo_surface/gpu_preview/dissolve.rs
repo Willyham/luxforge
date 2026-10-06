@@ -1,9 +1,11 @@
-//! The settle dissolve: from the GPU stage's frame to the CPU frame that replaces it.
+//! The settle dissolve into a CPU frame: from the GPU stage's frame to the reference renderer's
+//! frame that replaces it, where the GPU cannot draw the committed stack at rest. (Where it can,
+//! its picture at rest dissolves in over the frame before it: `rest`'s.)
 //!
-//! When a gesture settles and the CPU's frame for the content the GPU frame showed arrives, the
-//! caller hands the surface that frame with a [`Dissolve`] and no plan. The dissolve names both
-//! frames — the GPU frame it starts from, as the caller identifies it (a draft revision or a
-//! boundary), and the version of the CPU frame it ends on — and when it began. For
+//! When a gesture settles onto a stack the GPU cannot plan at rest and the reference's frame of it
+//! arrives, the caller hands the surface that frame with a [`Dissolve`] and no plan. The dissolve
+//! names both frames — the GPU frame it starts from, as the caller identifies it (a draft revision
+//! or a boundary), and the version of the CPU frame it ends on — and when it began. For
 //! [`DISSOLVE_DURATION`] the surface keeps its GPU-preview slot and draws the slot's output, then
 //! the CPU frame over it with the dissolve's share as its opacity, through the photograph's own
 //! pipeline, placement and filter. The stage runs only on an sRGB-typed target, where the hardware
@@ -13,9 +15,9 @@
 //!
 //! - A whole-frame photograph dissolves from a whole frame's GPU output, and a percentage view from
 //!   its region's, each only into the frame its dissolve names — the photograph's frame, or the
-//!   view's whole frame or region of its current content — once that frame is in its texture. It runs with no plan, or behind a plan held behind the CPU frame
-//!   (`PhotoSurface::gpu_hold`), whose unchanged words leave the slot's output as the GPU frame
-//!   last shown. A plan drawn beside it cancels it: an input during a dissolve draws the next GPU
+//!   view's whole frame of its current content — once that frame is in its texture. It runs with
+//!   no plan, or behind a plan held behind the CPU frame (`PhotoSurface::gpu_hold`), whose
+//!   unchanged words leave the slot's output as the GPU frame last shown. A plan drawn beside it cancels it: an input during a dissolve draws the next GPU
 //!   frame.
 //! - With no GPU frame to dissolve from — the last frame drawn was the CPU's, or the stage fell
 //!   back — the CPU frame is drawn alone.

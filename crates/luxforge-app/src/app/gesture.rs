@@ -15,7 +15,7 @@
 use crate::{
     app::{
         Editor,
-        crop::CropGesture,
+        crop::{CropGesture, StageView},
         draft::{CoreDraft, Event, GestureId, Round, Step},
         message::{Message, draft::DraftMessage, preview::PreviewMessage},
         outcome::Outcome,
@@ -687,8 +687,13 @@ impl Editor {
         // Nothing the gesture asked for reaches the screen after this: its drafted frames are
         // stopped and held below the delivery floor, so the next frame presented is the committed
         // one read back below. The drafted pixels already on screen stay until it lands. A gesture
-        // that drafted nothing has nothing to hold back.
-        if gesture.draft.drafted() {
+        // that drafted nothing has nothing to hold back. Nor has a crop start whose input stage
+        // will not arrive: nothing of it was drawn and its stage's job has ended, so what the
+        // queue holds is the newer request that superseded the stage — the current state's
+        // frame, which must not be stopped.
+        let abandoned =
+            matches!(&gesture.kind, Kind::Crop(crop) if crop.stage == StageView::Abandoned);
+        if gesture.draft.drafted() && !abandoned {
             self.presentation.preview_generation = self.cancel_preview_queue();
         }
         match &gesture.kind {

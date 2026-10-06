@@ -686,8 +686,15 @@ impl Editor {
             if let Some((plan, _)) = self.gpu_rest_plan()
                 && (gpu_presented || drawn.gpu_ready_boundary == Some(plan.boundary.version()))
             {
+                // At 100% and above the frame to capture is the view's region: a whole frame's
+                // plan, drawn there while the region is planned, is the picture scaled to the view.
+                let region_wanted = matches!(
+                    self.session.preview.view.zoom,
+                    luxforge_core::Zoom::Percent { value } if value >= 100.0
+                );
                 return label_current
                     && compare_ready
+                    && (plan.region.is_some() || !region_wanted)
                     && photo_drawn(
                         ExpectedPhotoDraw::Gpu {
                             boundary: plan.boundary.version(),
@@ -727,7 +734,7 @@ impl Editor {
             );
             // The GPU identity hook draws the photograph at Fit through the GPU stage, so the
             // frame to capture is that draw, over the boundary held from this frame; with the
-            // GPU preview turned off it hands the surface nothing, and the frame is the CPU's.
+            // GPU stage refused it hands the surface nothing, and the frame is the CPU's.
             let forced = self
                 .evidence
                 .as_ref()

@@ -1223,9 +1223,10 @@ pub struct Options<'a> {
     /// job fills the overlay's coverage grid beside its frame.
     pub mask_overlay: bool,
     /// Drag mode only: queue this many JPEG exports of the committed stack (`export.jpeg`, the
-    /// export lane's one running and four waiting jobs at most) just before the drag, so an exact
-    /// render holds the shared pool while it runs, and read the lane's windows back with
-    /// `activity.list` after the release.
+    /// export lane's one running and four waiting jobs at most) just before the drag, so the GPU
+    /// tile worker streams them on the window's adapter while the drag draws, as a person's
+    /// exports run beside their next edit, and read the lane's windows back with `activity.list`
+    /// after the release.
     pub contend: Option<usize>,
     /// Drag mode only: leave the editor alone this many milliseconds after the preconditions and
     /// before the gesture, so the GPU programs the committed stack's warm list names finish
@@ -1557,8 +1558,8 @@ fn setup_steps(options: &Options, field: &FieldTarget, source: SourceTag) -> Vec
 const CONTEND_MAX: usize = 5;
 
 /// The idle check a drag run with `--idle` makes after its release has dissolved from the drag's
-/// last GPU frame: a settle long enough for the dissolve and the committed frame's exact phase and
-/// histogram, then the longest window an evidence step takes.
+/// last GPU frame: a settle long enough for the dissolve and the committed stack's picture at rest,
+/// its tiles and their counts, then the longest window an evidence step takes.
 const IDLE_AFTER_DISSOLVE: script::IdleStep = script::IdleStep {
     settle_ms: 4000,
     ms: script::MAX_WAIT_MS,
@@ -3416,7 +3417,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
                 _ => "Developer proof curve: identity colour operation. Draft/preview scheduling and GPU upload are timed while the curve canvas is visible; the curve does not alter photo pixels.".to_owned(),
             },
             (Control::Slider, SET_BASIC, EXPOSURE) => "Basic exposure: the photograph's colour pass is measured with the generated slider.".to_owned(),
-            (Control::Slider, "set-raw", parameter) => format!("{} {parameter}: the slider is measured through draft.begin/set/commit exactly as Basic exposure is. Each drafted value is previewed approximately on the planes developed at the committed white balance (approximate_white_balance frames, never analysed); each release commits and redevelops the mosaic before its exact frame and histogram.", field.action),
+            (Control::Slider, "set-raw", parameter) => format!("{} {parameter}: the slider is measured through draft.begin/set/commit exactly as Basic exposure is. Each drafted value is drawn on the GPU from the planes developed at the committed white balance, the drafted one approximated over them by one matrix (approximate_white_balance frames, whose counts are never adopted); each release commits and redevelops the mosaic before its picture at rest and histogram.", field.action),
             (Control::Slider, action, parameter) => format!("{action} {parameter}: the slider is measured through draft.begin/set/commit exactly as Basic exposure is."),
         },
         "view_setup":match &field.curve {
@@ -3627,7 +3628,7 @@ fn contention_windows(
         "finished_export_windows_ms": finished.iter().map(|(start, end)| json!([start, end])).collect::<Vec<_>>(),
         "activity_answered_ms": answered,
         "activity": answer,
-        "note": "Each export renders the committed stack exactly on the shared pool, then encodes and writes it, on the export lane: one job runs and the rest wait, so the lane is busy without a gap from the first export's acceptance to the last one's end. An input is contended when it was sent inside that window, which spans the jobs' encodes and writes as well as their renders. The end comes from activity.list after the release; the exported files are removed after the run.",
+        "note": "Each export streams the committed stack in tiles through the GPU tile worker on the window's adapter, then encodes and writes it, on the export lane: one job runs and the rest wait, so the lane is busy without a gap from the first export's acceptance to the last one's end. An input is contended when it was sent inside that window, which spans the jobs' encodes and writes as well as their renders. The end comes from activity.list after the release; the exported files are removed after the run.",
     });
     Ok((vec![(first, end)], report))
 }

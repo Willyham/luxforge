@@ -13,7 +13,7 @@
 //! - **Where it cannot, the reference.** The job is queued as before — the reference renderer's
 //!   exact frame, its report and its view reduction — wherever the GPU cannot present the stack
 //!   ([`Editor::gpu_presents`]): before the surface has checked its stage or with the stage refused
-//!   or lost, the preference off, an open (no frame of the photograph on screen yet), a view plan
+//!   or lost, an open (no frame of the photograph on screen yet), a view plan
 //!   or tiles the GPU cannot draw (`spatial-unit`, `budget-exceeded`, a refused conversion), a
 //!   comparison, a crop draft's input stage in flight, or a content the surface refused after it
 //!   was presented.

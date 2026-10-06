@@ -1772,9 +1772,9 @@ mod drags {
     /// A Detail Amount drag at 100% is drawn over the visible region at full scale, here the whole
     /// 480 × 320 photograph, which the window shows at that zoom: its first tick derives the
     /// boundary, the Detail layer's input over the window the region reads, cut from the source,
-    /// and takes the CPU path with its region job until the surface has evaluated the plan; from
-    /// then on every tick is Detail's spatial step in its GPU shape, drawn on the GPU with no
-    /// preview job and no region job.
+    /// and holds the frame on screen until the surface has evaluated the plan; from then on every
+    /// tick is Detail's spatial step in its GPU shape, drawn on the GPU with no preview job and no
+    /// view job.
     #[test]
     fn gpu_detail_a_drag_at_100_percent_is_drawn_on_the_gpu_with_no_job_per_tick() {
         let catalog = catalog("zoom");
@@ -1821,7 +1821,7 @@ mod drags {
                 [wanted.x0, wanted.y0, wanted.x1(), wanted.y1()]
             );
             assert_eq!(spatial_program(&editor).as_deref(), Some("lf_detail"));
-            assert!(!editor.view_plan.in_flight, "no region job for the view");
+            assert!(!editor.view_plan.in_flight, "no job for the view");
         }
         let records = logged(&mut editor, &log);
         assert_eq!(jobs(&records), 0, "no preview job per tick");
