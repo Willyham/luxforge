@@ -1341,7 +1341,8 @@ fn over_staged_prefix(
 /// sweep wrote, on both paths, and on the linear path, whose stage is the reference's own `f32`
 /// frame, to the reference render's own light and to the CPU's light at full resolution over the
 /// exact prefix. On the byte path the reference hands Dehaze a 16-bit frame where the stage
-/// texture holds half floats: its distance is reported beside it.
+/// texture holds half floats: its distance is reported beside it. The view plan at rest reads the
+/// kept light, waiting for it (`light-pending`) before the sweeps have computed it.
 #[test]
 fn gpu_light_a_light_behind_a_spatial_layer_is_the_cpus_over_its_exact_prefix() {
     let test = "gpu_light_a_light_behind_a_spatial_layer_is_the_cpus_over_its_exact_prefix";
@@ -1394,6 +1395,33 @@ fn gpu_light_a_light_behind_a_spatial_layer_is_the_cpus_over_its_exact_prefix() 
                     "{what}: a sweep reduces it from its stage texture"
                 );
                 let mut surface = qualifier.surface();
+                // The view plan at rest reads the light the sweeps keep: before they have run it
+                // waits, drawing nothing and no stand-in.
+                let view =
+                    qualification::rest_plan(&evaluation, luxforge_core::GpuView::Fit(bounds))
+                        .expect("a rest plan")
+                        .view;
+                let (GpuAnswer::Plan(view_plan), Some(request)) = (&view.answer, &view.boundary)
+                else {
+                    panic!("{what}: a view plan");
+                };
+                version += 1;
+                let (boundary, origin, grid) =
+                    super::gpu_preview::derived_now(&gpu, view_plan, request, version)
+                        .expect("the view plan's boundary");
+                let converted = super::gpu_plan::surface_plan_over(
+                    view_plan,
+                    boundary,
+                    origin,
+                    grid.as_ref(),
+                    request.key.region(),
+                )
+                .expect("a runnable view plan");
+                assert_eq!(
+                    surface.draw(&gpu, &converted),
+                    Err(luxforge_ui::photo_surface::GpuFallback::LightPending),
+                    "{what}: the view plan waits for the light"
+                );
                 version += 1;
                 let rest = super::gpu_preview::rest_now(&gpu, &tiles, version).unwrap();
                 let drawn = surface
@@ -1404,6 +1432,9 @@ fn gpu_light_a_light_behind_a_spatial_layer_is_the_cpus_over_its_exact_prefix() 
                     planned.sweeps.len() as u32,
                     "{what}: drawn in its sweeps"
                 );
+                surface
+                    .draw(&gpu, &converted)
+                    .unwrap_or_else(|fallback| panic!("{what}: the view plan: {fallback:?}"));
                 let kept = surface.kept_lights().expect("the kept lights");
                 let [light] = kept[..] else {
                     panic!("{what}: one kept light, not {kept:?}");
