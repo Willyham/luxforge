@@ -844,8 +844,9 @@ impl PhotoPipeline {
                 && slot.boundary_version == Some(plan.boundary.version())
                 && (0..count).all(|k| slot.pool.light_view(k).is_some())
         });
+        // Fitted only, its light planes made: the chain runs once, below, with its lights.
         if !fitted {
-            self.evaluate(surface, device, queue, plan, None)?;
+            self.fit(surface, device, queue, plan)?;
         }
         let slot = surface.gpu.as_mut().ok_or(GpuFallback::PipelineFailed)?;
         let held: Vec<Option<u64>> = (0..count).map(|k| slot.pool.light_key(k)).collect();

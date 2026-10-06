@@ -169,7 +169,7 @@ pub struct EvaluationFigures {
     /// link's blocks — each forgetting what the link it binds held, so the link runs whole.
     pub rebinds: u32,
     /// The chain's links that encoded passes, its last among them, over every evaluation of the
-    /// frame: a refit evaluates the plan once to fit the slot and again with its lights.
+    /// frame: a refit with lights fits the slot first and runs each link once, with them.
     pub links_run: u32,
     /// Compute passes the spatial steps dispatched.
     pub spatial_passes: u64,
