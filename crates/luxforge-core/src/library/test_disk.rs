@@ -7,7 +7,9 @@
 //! meanwhile — by other tests or other processes on the host. `-noautoopen` keeps the Finder from
 //! opening a window on it. Attaching and detaching each wait, bounded, until the kernel shows the
 //! volume mounted or gone at its mount point, and one image is attached at a time in this test
-//! binary (a [`DiskImage`] holds a process-wide lock until it is dropped).
+//! binary (a [`DiskImage`] holds a process-wide lock until it is dropped). Disk-image commands
+//! retry within the shared test hang bound: Disk Arbitration can refuse them while busy. A
+//! persistent failure reports the command's status and captured output.
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -33,14 +35,13 @@ impl DiskImage {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let image = dir.join(format!("{label}.dmg"));
-        let status = Command::new("hdiutil")
-            .args([
-                "create", "-quiet", "-size", "16m", "-fs", "HFS+", "-volname", label,
-            ])
-            .arg(&image)
-            .status()
-            .expect("hdiutil runs; this test needs it");
-        assert!(status.success(), "hdiutil create: {status}");
+        hdiutil(
+            Command::new("hdiutil")
+                .args([
+                    "create", "-ov", "-size", "16m", "-fs", "HFS+", "-volname", label,
+                ])
+                .arg(&image),
+        );
         let mount = dir.join(label);
         fs::create_dir_all(&mount).unwrap();
         let mut disk = Self {
@@ -55,13 +56,12 @@ impl DiskImage {
 
     /// Attach the image at its mount point, and wait until the volume is mounted there.
     pub(crate) fn attach(&mut self) {
-        let status = Command::new("hdiutil")
-            .args(["attach", "-quiet", "-noautoopen", "-mountpoint"])
-            .arg(&self.mount)
-            .arg(&self.image)
-            .status()
-            .unwrap();
-        assert!(status.success(), "hdiutil attach: {status}");
+        hdiutil(
+            Command::new("hdiutil")
+                .args(["attach", "-noautoopen", "-mountpoint"])
+                .arg(&self.mount)
+                .arg(&self.image),
+        );
         self.attached = true;
         let mount = self.mount.clone();
         luxforge_testbase::wait_until("the disk image to be mounted", || mounted(&mount));
@@ -69,15 +69,35 @@ impl DiskImage {
 
     /// Detach the image, and wait until its volume is gone from the mount point.
     pub(crate) fn detach(&mut self) {
-        let status = Command::new("hdiutil")
-            .args(["detach", "-quiet", "-force"])
-            .arg(&self.mount)
-            .status()
-            .unwrap();
-        assert!(status.success(), "hdiutil detach: {status}");
+        hdiutil(
+            Command::new("hdiutil")
+                .args(["detach", "-force"])
+                .arg(&self.mount),
+        );
         self.attached = false;
         let mount = self.mount.clone();
         luxforge_testbase::wait_until("the disk image to be detached", || !mounted(&mount));
+    }
+}
+
+/// Disk Arbitration may still be busy after a previous command returned. Keep the native
+/// operation as the proof, retrying only within the same bound as the mount-table waits.
+fn hdiutil(command: &mut Command) {
+    let mut last = None;
+    let result = luxforge_testbase::try_wait_for("the disk-image command to succeed", || {
+        let output = command.output().expect("hdiutil runs; this test needs it");
+        let succeeded = output.status.success();
+        last = Some(output);
+        succeeded.then_some(())
+    });
+    if let Err(hung) = result {
+        let output = last.expect("the command was attempted");
+        panic!(
+            "{hung}\n{command:?}: {}\nstdout: {}\nstderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
     }
 }
 

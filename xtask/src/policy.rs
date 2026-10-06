@@ -90,7 +90,7 @@ pub fn checked(root: &Path) -> Result<(String, String)> {
         &["metadata", "--locked", "--format-version", "1"],
     )?;
     let data: Value = serde_json::from_str(&metadata)?;
-    let tasks = read_json(&root.join("tasks/dependency-advisories.json"))?;
+    let tasks = read_json(&root.join("tasks/project/dependency-advisories.json"))?;
     let config = validate(
         &exceptions(),
         &data["packages"],
