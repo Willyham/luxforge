@@ -3254,7 +3254,11 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
             .collect::<Vec<f64>>()
     };
     let span = |path: Option<FramePath>, to: fn(&Input) -> f64, from: fn(&Input) -> f64| {
-        spans(&|input| path.is_none_or(|path| input.path == path), to, from)
+        spans(
+            &|input| path.is_none_or(|path| input.path == path),
+            to,
+            from,
+        )
     };
     let presented: fn(&Input) -> f64 = |input| input.displayed_ms;
     let drawn: fn(&Input) -> f64 = |input| input.drawn_ms;
