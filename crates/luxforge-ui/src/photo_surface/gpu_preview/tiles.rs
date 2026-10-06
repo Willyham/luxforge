@@ -15,16 +15,24 @@
 //!   (`refused`); a host with no adapter, an adapter that grants no device and a device the
 //!   stage's capability check refuses are `no-adapter`; a device lost later is `device-lost` for
 //!   good, and nothing waits for a recovery.
-//! - **A tile.** [`TileRunner::run`] draws a plan as the photo surface draws each tile of its
-//!   picture at rest: a fresh evaluation — every link, every spatial pass and the output, nothing
-//!   kept from an earlier run but the compiled sequences — over a boundary cut on the GPU from a
+//! - **A tile.** [`TileRunner::submit`] draws a plan as the photo surface draws each tile of its
+//!   picture at rest: a fresh evaluation — every link, every spatial pass and the output, no link
+//!   state, plane or schedule kept from an earlier tile — over a boundary cut on the GPU from a
 //!   window of the source ([`Derivation::Cut`], [`GpuSource::window`]), through the stage's one
 //!   compile, its chain of links and its pool of scratch planes, ending in the CPU's output
 //!   quantizer's codes ([`TileEnd::Codes`]), or in the linear values that quantizer reads
-//!   ([`TileEnd::Linear`]). It copies the output into a buffer of its own, submits once, waits for
-//!   its own device once (`poll(Wait)`), maps the copy and unpads its rows. It blocks only its
-//!   caller, never touches Iced's device or queue, and starts no thread: it compiles on its
-//!   caller's thread, which is never the interface thread.
+//!   ([`TileEnd::Linear`]). It copies the output into a readback copy, submits once and returns
+//!   without waiting; [`TileRunner::finish`] waits for that submission alone, maps the copy and
+//!   unpads its rows, and [`TileRunner::run`] does both at once. At most [`TILES_IN_FLIGHT`] tiles
+//!   are submitted and not read back, so the GPU draws one while its caller encodes the next or
+//!   reads the one before back. It blocks only its caller, never touches Iced's device or queue,
+//!   and starts no thread: it compiles on its caller's thread, which is never the interface thread.
+//! - **Held between tiles.** The window of the source its last tile read, which a next tile of the
+//!   same window reads again — the desktop's worker hands every tile of a band its band's window, so
+//!   each band's rows are uploaded once — and the slot of its last tile's shape ([`SlotKey`]): the
+//!   boundary, each link's intermediate and buffers, a tail's intermediate and the output, which a
+//!   next tile of that shape draws into again, each written whole before it is read; and at most
+//!   two readback copies. A tile of another window or shape lets the old one go first.
 //! - **Lights.** A plan whose spatial steps read a global estimate ([`GpuPlan::lights`], Dehaze's
 //!   atmospheric light) is drawn as the photo surface draws it, each light computed by its light
 //!   link from the whole stage at full resolution: the runner runs the link once for the source
@@ -34,23 +42,27 @@
 //!   ([`super::spatial::Pool::write_light`]). The runner keeps the last [`TILE_LIGHTS`] lights it
 //!   computed, keyed by the source's version and the link's steps, words and blocks, so a stream's
 //!   tiles and a call's reads compute each light once.
-//! - **Bounds.** Everything a run creates is charged to [`GPU_TILE_BUDGET`], beside and apart from
+//! - **Bounds.** Everything a tile creates is charged to [`GPU_TILE_BUDGET`], beside and apart from
 //!   the photo surface's GPU-preview budget, before anything is created: the window of the source,
 //!   the boundary, each link's intermediate, words and blocks, every link's kept planes and the
 //!   pool once ([`super::chain_charge`]), a geometry tail's intermediate, the output and its
-//!   readback copy ([`TileRunner::charge`]); a light computed for it is charged on its own before,
-//!   its link, the largest window of the source one of its tiles is cut from and its readback
-//!   ([`light::read_light_charge`]), beside the window the runner keeps. A run past it is refused
-//!   (`tiles-budget`) having created and compiled nothing. Between runs the runner holds the window of the source its last
-//!   run read, which the next run of the same window reads again ([`TileRunner::release`] lets it
-//!   go), and at most [`TILE_PIPELINE_CACHE`] compiled sequences beside its spatial passes' own
-//!   cache of 64 modules. Everything else a run created goes before its wait, and the device frees
-//!   it once that wait ends; dropping the runner releases the rest. The window's upload passes
-//!   through wgpu's staging, one copy of the window's bytes until the wait ends, which, as the
-//!   photo surface's own uploads, is not charged.
-//! - **Figures.** Each run's time on its caller's thread, split into the lights it computed, the
-//!   window's upload, creating and encoding its work, the wait for its device and the readback
-//!   ([`TileTimes`]): the last tile's and every tile's summed ([`TileFigures`]).
+//!   readback copy ([`TileRunner::charge`]), beside what the tiles in flight hold — their readback
+//!   copies, and their slot and any window let go since, until the GPU is known to be done with
+//!   them; when only those pass the budget the tile waits for the GPU first. A light computed for
+//!   it is charged on its own before, its link, the largest window of the source one of its tiles
+//!   is cut from and its readback ([`light::read_light_charge`]), beside what the runner keeps. A
+//!   tile past it is refused (`tiles-budget`) having created and compiled nothing. Between tiles
+//!   the runner holds the window, the slot and the spare readback copies
+//!   ([`TileRunner::release`] lets them go, [`TileRunner::abandon`] the tiles in flight), and at
+//!   most [`TILE_PIPELINE_CACHE`] compiled sequences beside its spatial passes' own cache of 64
+//!   modules; a tile's planes and pool go as it is submitted, and the device frees them once the
+//!   GPU is done with them; dropping the runner releases the rest. The window's upload passes
+//!   through wgpu's staging, one copy of the window's bytes until the GPU is done with it, which,
+//!   as the photo surface's own uploads, is not charged.
+//! - **Figures.** Each tile's time on its caller's thread, split into the lights it computed, the
+//!   window's upload, fitting the slot and encoding its work, the wait for its device once it is
+//!   finished and the readback ([`TileTimes`]): the last tile's and every tile's summed, with the
+//!   tiles in flight, the windows uploaded and the slots created ([`TileFigures`]).
 //! - **Determinism.** One device, one driver: the same plan over the same window draws the same
 //!   bytes every run, each a fresh evaluation in a fixed order with no float atomics.
 //! - **Why the reference would answer instead.** Every failure is shaped as the core's tile
@@ -73,15 +85,20 @@ use std::sync::{
 };
 use std::time::Instant;
 
-/// What one tile runner may hold on its device at once: the window of the source, the tile's slot
-/// and its readback copy, the most a run holds. Proposed, not decided: 1 GiB, a budget of its own
-/// beside the photo surface's 2 GiB GPU-preview budget, whose slots a run never shares, so the
-/// two together may hold 3 GiB of unified memory. By the runner's own charge over the core's plan,
-/// an estimate and not a measurement, a tile in the interior of a 60-megapixel RAW (9504 × 6336)
-/// through Detail and all three Presence fields reads the tile grown by its summed halo of 465
-/// pixels on every side, anchored: at 2048 pixels a 3281-pixel square window, charged 1,331.5 MB,
-/// past it; at 1024 a 2257-pixel one, charged 622.6 MB.
-pub const GPU_TILE_BUDGET: u64 = 1 << 30;
+/// What one tile runner may hold on its device at once: the window of the source, the tile's slot,
+/// the readback copies of the tiles in flight, and what a tile in flight still holds of a window
+/// or a slot let go since. 2 GiB, the owner's decision of 2026-10-06 (`docs/decisions.md`, "GPU-first
+/// rendering"): a budget of its own beside the photo surface's 2 GiB GPU-preview budget, whose
+/// slots a run never shares, so the two together may hold 4 GiB of unified memory. By the runner's
+/// own charge over the core's plan, an estimate and not a measurement, a tile in the interior of a
+/// 60-megapixel RAW (9504 × 6336) through Detail and all three Presence fields reads the tile grown
+/// by its summed halo of 465 pixels on every side, anchored: at 2048 pixels a 3281-pixel square
+/// window, charged 1,331.5 MB; at 1024 a 2257-pixel one, charged 622.6 MB.
+pub const GPU_TILE_BUDGET: u64 = 2 << 30;
+
+/// How many tiles a runner keeps submitted and not yet read back: the GPU draws one while its
+/// caller encodes the next or reads the one before back.
+pub const TILES_IN_FLIGHT: usize = 2;
 
 /// How many compiled program sequences a tile runner keeps, ready and failed ones together, the
 /// least recently run evicted first: the photo surface's own bound ([`super::PIPELINE_CACHE`]),
@@ -196,8 +213,15 @@ pub struct TileRefusal {
 /// What a runner has held and done.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct TileFigures {
-    /// The bytes it holds now, as charged: the window of the source between runs.
+    /// The bytes it holds now, as charged: the window of the source and the slot between runs,
+    /// and what its tiles in flight hold.
     pub in_use: u64,
+    /// Tiles submitted and not yet read back.
+    pub in_flight: u32,
+    /// Slots it created, one a window shape: a run of the shape its slot holds reuses it.
+    pub slots: u64,
+    /// Windows of the source it uploaded: a run of the window it holds reads it again.
+    pub uploads: u64,
     /// The most it has held at once: a run's whole charge.
     pub peak: u64,
     /// Program sequences it has compiled, ready or failed: each one its cache did not hold.
@@ -220,9 +244,10 @@ pub struct TileTimes {
     pub light_us: u64,
     /// Uploading the window of the source, when the runner did not hold it already.
     pub upload_us: u64,
-    /// Creating the run's textures and buffers and encoding and submitting its passes.
+    /// Fitting the slot and encoding and submitting the tile's passes.
     pub encode_us: u64,
-    /// Waiting for the device to finish them: the GPU's work, an upper bound on it.
+    /// Waiting for the device to finish them once its caller asks for the tile: what of the GPU's
+    /// work the caller's own work did not overlap.
     pub wait_us: u64,
     /// Reading the output back and unpadding its rows.
     pub read_us: u64,
@@ -244,6 +269,15 @@ pub struct TileRunner {
     /// The window of the source the last run read, with its bytes as charged, kept for a next run
     /// of the same window.
     window: Option<(SourceSlot, u64)>,
+    /// The textures and buffers of the last run's shape, kept for a next run of the same shape.
+    slot: Option<Slot>,
+    /// What each window and slot held was, told apart from the ones after it.
+    generations: (u64, u64),
+    /// The tiles submitted and not yet read back, oldest first, at most [`TILES_IN_FLIGHT`].
+    in_flight: std::collections::VecDeque<InFlight>,
+    /// Readback copies a tile read back left, for the next tiles to copy into.
+    readbacks: Vec<(wgpu::Buffer, u64)>,
+    tickets: u64,
     sequences: Lru<Key, Sequence>,
     /// The lights it computed last, each under its key ([`light_key`]).
     lights: Lru<u64, [f32; 4]>,
@@ -291,15 +325,164 @@ fn holds(key: &Key, steps: &[GpuStep], format: wgpu::TextureFormat) -> bool {
             .eq(steps.iter().flat_map(GpuStep::signature))
 }
 
-/// A run's work on the GPU, submitted: the readback copy, its mapping's answer and its layout.
-struct Submitted {
+/// A tile submitted, which [`TileRunner::finish`] reads back.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Ticket(u64);
+
+/// A tile's work on the GPU, submitted: the readback copy, its mapping's answer and its layout,
+/// its submission, and what it holds until the GPU is done with it.
+struct InFlight {
+    ticket: u64,
+    index: wgpu::SubmissionIndex,
     readback: wgpu::Buffer,
+    readback_bytes: u64,
     mapped: mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>,
     size: (u32, u32),
     padded: u32,
-    /// The window's upload, and the rest of the run's creation, encoding and submission.
-    upload_us: u64,
-    encode_us: u64,
+    end: TileEnd,
+    /// The window and the slot it read and drew into, by generation, with their bytes: what it
+    /// still holds once the runner lets them go, until the GPU is known to be done with it.
+    window: (u64, u64),
+    slot: (u64, u64),
+    done: bool,
+    /// Its lights, the window's upload, and its encoding and submission.
+    times: TileTimes,
+}
+
+/// What decides every texture and buffer of a tile's slot but its spatial planes and its pool,
+/// which follow their own keys: the boundary's size and format, the output's size and what it is
+/// read back as, a geometry tail's intermediate, and how many links come before the last.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct SlotKey {
+    shape: Shape,
+    end: TileEnd,
+    links: usize,
+}
+
+/// A tile's slot, kept between runs of one shape: each run is still a fresh evaluation — new link
+/// states and schedules over these textures, every one of them written whole before it is read —
+/// and a run of another shape lets it go first.
+struct Slot {
+    key: SlotKey,
+    boundary: wgpu::Texture,
+    /// Each link's intermediate before the last, with its words and blocks buffers.
+    links: Vec<(wgpu::Texture, Charged, Charged)>,
+    cut: Charged,
+    words: Charged,
+    blocks: Charged,
+    intermediate: Option<wgpu::Texture>,
+    output: wgpu::Texture,
+    /// What its textures and buffers take; a tile's kept planes and pool are the tile's own.
+    bytes: u64,
+}
+
+impl Slot {
+    /// The textures of `key`, and buffers of the smallest capacity, which each tile fits to what it
+    /// writes ([`fitted`]). Charged with the run that creates it ([`TileRunner::submit`]).
+    fn create(device: &wgpu::Device, key: SlotKey) -> Result<Self, TileFailure> {
+        let texture = |label, (width, height), format, usage| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
+        };
+        let drawn = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT;
+        let smallest = buffer_capacity(device, MIN_BUFFER).map_err(TileFailure::Plan)?;
+        let buffer = |label| Charged {
+            buffer: storage_buffer(device, label, smallest),
+            bytes: smallest,
+        };
+        let size = key.shape.boundary;
+        let mut slot = Self {
+            key,
+            boundary: texture(
+                "luxforge.tiles.boundary",
+                size,
+                key.shape.format.texture(),
+                drawn,
+            ),
+            links: (0..key.links)
+                .map(|_| {
+                    (
+                        texture(
+                            "luxforge.tiles.link",
+                            size,
+                            intermediate_format(key.shape.format),
+                            drawn,
+                        ),
+                        buffer("luxforge.tiles.link_words"),
+                        buffer("luxforge.tiles.link_blocks"),
+                    )
+                })
+                .collect(),
+            cut: buffer("luxforge.tiles.cut"),
+            words: buffer("luxforge.tiles.words"),
+            blocks: buffer("luxforge.tiles.blocks"),
+            intermediate: key
+                .shape
+                .intermediate
+                .map(|format| texture("luxforge.tiles.intermediate", size, format, drawn)),
+            output: texture(
+                "luxforge.tiles.output",
+                key.shape.output,
+                key.end.format(),
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            ),
+            bytes: 0,
+        };
+        slot.account();
+        Ok(slot)
+    }
+
+    /// Count what its textures and buffers take, as their sizes and capacities stand.
+    fn account(&mut self) {
+        let texels = u64::from(self.key.shape.boundary.0) * u64::from(self.key.shape.boundary.1);
+        let (width, height) = self.key.shape.output;
+        let tail = self.key.shape.intermediate.map_or(0, |format| {
+            texels * u64::from(format.block_copy_size(None).unwrap_or(16))
+        });
+        self.bytes = texels * self.key.shape.format.texel_bytes() as u64
+            + self.links.len() as u64
+                * intermediate_bytes(self.key.shape.boundary, self.key.shape.format)
+            + self
+                .links
+                .iter()
+                .map(|(_, words, blocks)| words.bytes + blocks.bytes)
+                .sum::<u64>()
+            + self.cut.bytes
+            + self.words.bytes
+            + self.blocks.bytes
+            + tail
+            + u64::from(width) * u64::from(height) * u64::from(self.key.end.texel_bytes());
+    }
+}
+
+/// A buffer of at least `bytes` from `held`, or a new one of `bytes`' capacity in its place.
+fn fitted(
+    device: &wgpu::Device,
+    held: &mut Charged,
+    bytes: u64,
+    label: &str,
+) -> Result<(), TileFailure> {
+    if bytes <= held.bytes {
+        return Ok(());
+    }
+    let capacity = buffer_capacity(device, bytes).map_err(TileFailure::Plan)?;
+    *held = Charged {
+        buffer: storage_buffer(device, label, capacity),
+        bytes: capacity,
+    };
+    Ok(())
 }
 
 /// Microseconds since `since`.
@@ -372,6 +555,11 @@ impl TileRunner {
         let layouts = SourceLayouts::new(&device).ok();
         Ok(Self {
             window: None,
+            slot: None,
+            generations: (0, 0),
+            in_flight: std::collections::VecDeque::new(),
+            readbacks: Vec::new(),
+            tickets: 0,
             sequences: Lru::new(TILE_PIPELINE_CACHE),
             lights: Lru::new(TILE_LIGHTS),
             support,
@@ -400,11 +588,91 @@ impl TileRunner {
         self.figures
     }
 
-    /// Let the window of the source go, which a run keeps for a next run of the same window: the
-    /// runner then holds its compiled sequences alone.
+    /// Let the window of the source and the slot go, which a run keeps for a next run of the same
+    /// window and shape: the runner then holds its compiled sequences alone, beside what its tiles
+    /// in flight hold until they are read back or abandoned.
     pub fn release(&mut self) {
-        self.window = None;
-        self.figures.in_use = 0;
+        self.drop_window();
+        self.drop_slot();
+        self.readbacks.clear();
+        self.account();
+    }
+
+    /// Let every tile in flight go unread, with what it holds: its caller wants none of them.
+    pub fn abandon(&mut self) {
+        self.in_flight.clear();
+        self.account();
+    }
+
+    /// Tiles submitted and not yet read back.
+    pub fn in_flight(&self) -> usize {
+        self.in_flight.len()
+    }
+
+    fn drop_window(&mut self) {
+        if self.window.take().is_some() {
+            self.generations.0 += 1;
+        }
+    }
+
+    fn drop_slot(&mut self) {
+        if self.slot.take().is_some() {
+            self.generations.1 += 1;
+        }
+    }
+
+    /// What the tiles in flight hold beside the window and the slot the runner holds now: their
+    /// readback copies, and a window or a slot let go since they were submitted, until the GPU is
+    /// known to be done with them.
+    fn pinned(&self) -> u64 {
+        let (window, slot) = self.generations;
+        self.in_flight
+            .iter()
+            .map(|tile| {
+                let stale = |(generation, bytes): (u64, u64), now: u64| {
+                    if tile.done || generation == now {
+                        0
+                    } else {
+                        bytes
+                    }
+                };
+                tile.readback_bytes + stale(tile.window, window) + stale(tile.slot, slot)
+            })
+            .sum()
+    }
+
+    /// What the runner holds now, as charged: the window, the slot and what its tiles in flight
+    /// hold.
+    fn holding(&self) -> u64 {
+        self.window.as_ref().map_or(0, |(_, bytes)| *bytes)
+            + self.slot.as_ref().map_or(0, |slot| slot.bytes)
+            + self.pinned()
+            + self.spare()
+    }
+
+    /// The readback copies tiles read back left for the next to copy into.
+    fn spare(&self) -> u64 {
+        self.readbacks.iter().map(|(_, bytes)| *bytes).sum()
+    }
+
+    fn account(&mut self) {
+        self.figures.in_use = self.holding();
+        self.figures.in_flight = self.in_flight.len() as u32;
+    }
+
+    /// Wait for every tile in flight to be done on the GPU, so what they held of a window or a slot
+    /// let go is freed; their readback copies stay theirs until they are read back.
+    fn settle(&mut self) {
+        if self.in_flight.is_empty() {
+            return;
+        }
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+        for tile in &mut self.in_flight {
+            tile.done = true;
+        }
     }
 
     /// What a run of `plan` over `window` of `source`, reading back `end`, would hold at most, as
@@ -442,12 +710,9 @@ impl TileRunner {
     /// `plan` drawn over a boundary cut from `window` (`[x, y, width, height]` of the content
     /// stage) of `source`, as the photo surface draws a tile of its picture at rest, and read back
     /// as `end` asks: its output's pixels, row by row, the boundary's size, or its region's or
-    /// tail's output. The plan's boundary must be a cut of `source` inside `window`
-    /// ([`super::GpuBoundary::derived`]), and the plan hold no clipping marks, whose colours are not
-    /// codes; anything else is `pipeline-failed`. Charged to [`GPU_TILE_BUDGET`] before anything
-    /// is created; blocks its caller until its own device is done. An error the device raises
-    /// while the run's work is created and submitted — a validation, memory or internal one — is
-    /// `pipeline-failed` too, and a device lost, or a copy that could not be mapped, `device-lost`.
+    /// tail's output, the tile submitted ([`TileRunner::submit`]) and read back at once
+    /// ([`TileRunner::finish`]). Blocks its caller until its own device is done with it, and so with
+    /// any tile submitted before it, whose pixels stay for their own caller to read back.
     pub fn run(
         &mut self,
         plan: &GpuPlan,
@@ -455,10 +720,45 @@ impl TileRunner {
         window: [u32; 4],
         end: TileEnd,
     ) -> Result<TilePixels, TileFailure> {
+        let ticket = self.submit(plan, source, window, end)?;
+        self.finish(ticket)
+    }
+
+    /// Submit `plan` drawn over a boundary cut from `window` (`[x, y, width, height]` of the
+    /// content stage) of `source`, as the photo surface draws a tile of its picture at rest, its
+    /// output copied into a readback copy, without waiting for the device: what
+    /// [`TileRunner::finish`] reads back. The plan's boundary must be a cut of `source` inside
+    /// `window` ([`super::GpuBoundary::derived`]), and the plan hold no clipping marks, whose
+    /// colours are not codes; anything else is `pipeline-failed`.
+    ///
+    /// - **Held between tiles.** The window of the source is uploaded unless the runner holds that
+    ///   window already, so a caller handing every tile of a band the band's window uploads it
+    ///   once; the slot's textures and buffers are kept for a next tile of the same shape
+    ///   ([`SlotKey`]), each tile still a fresh evaluation over them.
+    /// - **In flight.** At most [`TILES_IN_FLIGHT`] tiles are submitted and not read back: with as
+    ///   many already, it refuses (`pipeline-failed`) having created nothing.
+    /// - **Charged.** To [`GPU_TILE_BUDGET`] before anything is created: the window, the slot and
+    ///   its readback copy ([`TileRunner::charge`]), beside what the tiles in flight hold; when
+    ///   only what they hold of a window or a slot let go passes the budget, it waits for them to be
+    ///   done on the GPU first.
+    /// - **Errors.** An error the device raises while the tile's work is created and submitted — a
+    ///   validation, memory or internal one — is `pipeline-failed` too, and a lost device
+    ///   `device-lost`, every tile in flight let go with it.
+    pub fn submit(
+        &mut self,
+        plan: &GpuPlan,
+        source: &GpuSource,
+        window: [u32; 4],
+        end: TileEnd,
+    ) -> Result<Ticket, TileFailure> {
         if self.lost() {
             // Nothing it held outlives its device.
+            self.in_flight.clear();
             self.release();
             return Err(TileFailure::Unavailable(TileUnavailable::DeviceLost));
+        }
+        if self.in_flight.len() >= TILES_IN_FLIGHT {
+            return Err(TileFailure::PIPELINE_FAILED);
         }
         if self.layouts.is_none() {
             // Opened before the output encoding was installed: the cut's passes, made now.
@@ -471,26 +771,45 @@ impl TileRunner {
             light_us: micros(lit),
             ..TileTimes::default()
         };
-        let requested = held.bytes() + self.slot_bytes(plan, end)?;
+        let slot_bytes = self.slot_bytes(plan, end)?;
+        let single = held.bytes() + slot_bytes;
+        if single > GPU_TILE_BUDGET {
+            return Err(TileFailure::Budget {
+                requested: single,
+                budget: GPU_TILE_BUDGET,
+            });
+        }
+        let pipelines = self.pipelines(plan, end)?;
+        // A window of another rectangle, or of another source, and a slot of another shape go
+        // before the tile's own are created: the runner holds what it was charged, never more.
+        if self
+            .window
+            .as_ref()
+            .is_some_and(|(slot, _)| !slot.holds(&held))
+        {
+            self.drop_window();
+        }
+        let key = SlotKey {
+            shape: Shape::of(plan),
+            end,
+            links: chain::chain(&plan.steps).links.len(),
+        };
+        if self.slot.as_ref().is_some_and(|slot| slot.key != key) {
+            self.drop_slot();
+        }
+        if single + self.pinned() + self.spare() > GPU_TILE_BUDGET {
+            self.settle();
+            self.readbacks.clear();
+        }
+        let requested = single + self.pinned() + self.spare();
         if requested > GPU_TILE_BUDGET {
             return Err(TileFailure::Budget {
                 requested,
                 budget: GPU_TILE_BUDGET,
             });
         }
-        let pipelines = self.pipelines(plan, end)?;
-        // A window of another rectangle, or of another source, goes before the run's own is
-        // created: it holds what it was charged, never more.
-        if self
-            .window
-            .as_ref()
-            .is_some_and(|(slot, _)| !slot.holds(&held))
-        {
-            self.release();
-        }
-        self.figures.in_use = requested;
         self.figures.peak = self.figures.peak.max(requested);
-        // Every error the run's work raises is the run's, never wgpu's default handler's.
+        // Every error the tile's work raises is the tile's, never wgpu's default handler's.
         for filter in [
             wgpu::ErrorFilter::Validation,
             wgpu::ErrorFilter::OutOfMemory,
@@ -498,42 +817,93 @@ impl TileRunner {
         ] {
             self.device.push_error_scope(filter);
         }
-        let waited = self
-            .submit(plan, &held, end, &pipelines, &lights)
-            .map(|submitted| {
-                (times.upload_us, times.encode_us) = (submitted.upload_us, submitted.encode_us);
-                let waiting = Instant::now();
-                let waited = self.wait(submitted);
-                times.wait_us = micros(waiting);
-                waited
-            });
+        let submitted = self.encode(
+            plan, &held, key, slot_bytes, &pipelines, &lights, &mut times,
+        );
         // Every scope is popped, whatever the first one answers.
         let answers: Vec<_> = (0..3)
             .map(|_| answered(self.device.pop_error_scope()))
             .collect();
         let raised = answers.iter().any(|answer| !matches!(answer, Some(None)));
-        let lost = self.lost();
-        if lost {
+        if self.lost() {
             // Nothing it held outlives its device.
-            self.window = None;
-        }
-        self.figures.in_use = self.window.as_ref().map_or(0, |(_, bytes)| *bytes);
-        let (submitted, mapped) = waited?;
-        if lost {
+            self.in_flight.clear();
+            self.release();
+            submitted?;
             return Err(TileFailure::Unavailable(TileUnavailable::DeviceLost));
         }
-        if raised {
+        let tile = match (submitted, raised) {
+            (Ok(tile), false) => tile,
+            (Ok(_), true) => {
+                // What it created is in doubt: nothing of it is kept.
+                self.drop_slot();
+                self.account();
+                return Err(TileFailure::PIPELINE_FAILED);
+            }
+            (Err(failure), _) => {
+                self.drop_slot();
+                self.account();
+                return Err(failure);
+            }
+        };
+        let ticket = Ticket(tile.ticket);
+        self.in_flight.push_back(tile);
+        self.account();
+        Ok(ticket)
+    }
+
+    /// Read `ticket`'s tile back as its submission asked: wait for the device to be done with it,
+    /// map its copy and unpad its rows. The tiles submitted before it stay in flight for their own
+    /// callers. A lost device, or a copy that could not be mapped, is `device-lost`, every tile in
+    /// flight let go with it; a ticket not in flight is `pipeline-failed`.
+    pub fn finish(&mut self, ticket: Ticket) -> Result<TilePixels, TileFailure> {
+        let Some(at) = self
+            .in_flight
+            .iter()
+            .position(|tile| tile.ticket == ticket.0)
+        else {
             return Err(TileFailure::PIPELINE_FAILED);
+        };
+        let waiting = Instant::now();
+        let waited = self
+            .device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(self.in_flight[at].index.clone()),
+                timeout: None,
+            })
+            .is_ok();
+        let wait_us = micros(waiting);
+        // The queue runs its submissions in order: every tile up to this one is done.
+        for tile in self.in_flight.iter_mut().take(at + 1) {
+            tile.done = true;
         }
+        let mut tile = self.in_flight.remove(at).expect("found above");
+        let mapped = waited && matches!(tile.mapped.try_recv(), Ok(Ok(())));
         if !mapped {
+            // A submission the device refused never completes: the device's maintenance then runs
+            // a destroyed or lost device's callback.
+            let _ = self.device.poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            });
+        }
+        if self.lost() || !mapped {
+            // Nothing it held outlives its device.
+            self.in_flight.clear();
+            self.release();
             return Err(TileFailure::Unavailable(TileUnavailable::DeviceLost));
         }
         let reading = Instant::now();
-        let read = Self::read(&submitted, end);
-        times.read_us = micros(reading);
+        let read = Self::read(&tile);
+        tile.times.wait_us = wait_us;
+        tile.times.read_us = micros(reading);
+        if self.readbacks.len() < TILES_IN_FLIGHT {
+            self.readbacks.push((tile.readback, tile.readback_bytes));
+        }
         self.figures.runs += 1;
-        self.figures.last = times;
-        self.figures.total.add(&times);
+        self.figures.last = tile.times;
+        self.figures.total.add(&tile.times);
+        self.account();
         Ok(read)
     }
 
@@ -796,19 +1166,24 @@ impl TileRunner {
         Ok((compiled.map_err(|_| TileFailure::PIPELINE_FAILED)?, id))
     }
 
-    /// The run's work, encoded and submitted with its mapping asked for: the window of the source
-    /// held, or uploaded whole; the boundary cut from it; every link before the last into its
-    /// intermediate; the last into the output, through a geometry tail's intermediate when it
-    /// holds one; and the output copied out. What it created besides the window and the copy goes
-    /// as it returns, before the wait, so the device frees it once the GPU is done with it.
-    fn submit(
+    /// The tile's work, encoded and submitted with its mapping asked for: the window of the source
+    /// held, or uploaded whole; the slot of `key` held, or created; the boundary cut from the
+    /// window; every link before the last into its intermediate; the last into the output, through
+    /// a geometry tail's intermediate when it holds one; and the output copied out. Each link's
+    /// state, kept planes and pool are the tile's own, a fresh evaluation, and go as it returns, so
+    /// the device frees them once the GPU is done with them; the slot's textures and buffers stay
+    /// for the next tile of its shape, each written whole before it is read.
+    #[allow(clippy::too_many_arguments)]
+    fn encode(
         &mut self,
         plan: &GpuPlan,
         held: &GpuSource,
-        end: TileEnd,
+        key: SlotKey,
+        slot_bytes: u64,
         pipelines: &[(Compiled, u64)],
         lights: &[[f32; 4]],
-    ) -> Result<Submitted, TileFailure> {
+        times: &mut TileTimes,
+    ) -> Result<InFlight, TileFailure> {
         let layouts = self.layouts.as_ref().ok_or(TileFailure::PIPELINE_FAILED)?;
         let started = Instant::now();
         if self.window.is_none() {
@@ -820,69 +1195,97 @@ impl TileRunner {
                 }
             }
             self.window = Some((slot, held.bytes()));
+            self.figures.uploads += 1;
         }
-        let upload_us = micros(started);
+        times.upload_us = micros(started);
         let encoding = Instant::now();
-        let (device, queue) = (&self.device, &self.queue);
-        let (window, _) = self.window.as_ref().expect("the window held");
-        let shape = Shape::of(plan);
-        let size = shape.boundary;
-        let origin = texel_origin(plan);
-        let texels = plan.texels;
         let chain = chain::chain(&plan.steps);
-        let texture = |label, (width, height), format, usage| {
-            device.create_texture(&wgpu::TextureDescriptor {
-                label: Some(label),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format,
-                usage,
-                view_formats: &[],
-            })
-        };
-        let drawn = wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::RENDER_ATTACHMENT;
-        let buffer = |label, bytes| {
-            buffer_capacity(device, bytes)
-                .map(|capacity| storage_buffer(device, label, capacity))
-                .map_err(TileFailure::Plan)
-        };
-        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("luxforge.tiles.encoder"),
-        });
-        // The boundary, cut from the window by the derivation's own pass.
-        let boundary = texture(
-            "luxforge.tiles.boundary",
-            size,
-            shape.format.texture(),
-            drawn,
-        );
+        let texels = plan.texels;
+        let origin = texel_origin(plan);
+        let size = key.shape.boundary;
+        // The words every link and the last write, packed before the slot is fitted to them.
+        let mut link_words = Vec::with_capacity(chain.links.len());
+        for steps in chain.links.iter().copied() {
+            let mut words = Vec::new();
+            chain::pack_words(texels, (0, 0), steps, &mut words);
+            link_words.push(words);
+        }
+        let mut last_words = Vec::new();
+        chain::pack_words(texels, output_offset(plan), chain.last, &mut last_words);
         let derivation = plan
             .boundary
             .derivation()
             .map(|(_, derivation)| derivation)
             .ok_or(TileFailure::PIPELINE_FAILED)?;
+        let (window, _) = self.window.as_ref().expect("the window held");
         let cut = window
             .words(derivation, size)
             .ok_or(TileFailure::PIPELINE_FAILED)?;
-        let cut_words = buffer("luxforge.tiles.cut", (cut.len() * 4) as u64)?;
-        queue.write_buffer(&cut_words, 0, &le_bytes(&cut));
+        if self.slot.is_none() {
+            self.slot = Some(Slot::create(&self.device, key)?);
+            self.figures.slots += 1;
+        }
+        let device = &self.device;
+        let queue = &self.queue;
+        let slot = self.slot.as_mut().expect("the slot fitted");
+        // Each buffer fitted to what this tile writes: one of a larger capacity replaces it.
+        fitted(
+            device,
+            &mut slot.cut,
+            (cut.len() * 4) as u64,
+            "luxforge.tiles.cut",
+        )?;
+        for ((_, words, blocks), (packed, steps)) in slot
+            .links
+            .iter_mut()
+            .zip(link_words.iter().zip(chain.links.iter().copied()))
+        {
+            fitted(
+                device,
+                words,
+                (packed.len() * 4) as u64,
+                "luxforge.tiles.link_words",
+            )?;
+            fitted(
+                device,
+                blocks,
+                (blocks::block_len(steps) * 4) as u64,
+                "luxforge.tiles.link_blocks",
+            )?;
+        }
+        fitted(
+            device,
+            &mut slot.words,
+            (last_words.len() * 4) as u64,
+            "luxforge.tiles.words",
+        )?;
+        fitted(
+            device,
+            &mut slot.blocks,
+            (blocks::block_len(chain.last) * 4) as u64,
+            "luxforge.tiles.blocks",
+        )?;
+        slot.account();
+        let slot = self.slot.as_ref().expect("the slot fitted");
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("luxforge.tiles.encoder"),
+        });
+        // The boundary, cut from the window by the derivation's own pass.
+        queue.write_buffer(&slot.cut.buffer, 0, &le_bytes(&cut));
+        let (window, _) = self.window.as_ref().expect("the window held");
         window.encode(
             device,
             &mut encoder,
             layouts,
             derivation,
-            &cut_words,
-            &boundary.create_view(&wgpu::TextureViewDescriptor::default()),
+            &slot.cut.buffer,
+            &slot
+                .boundary
+                .create_view(&wgpu::TextureViewDescriptor::default()),
             size,
         );
         // The pool every link's scratch planes are taken from, fitted to every link before any
-        // link's planes, as the slot fits its own; charged with the run.
+        // link's planes, as the slot fits its own; the tile's own, charged with it.
         let mut pool = spatial::Pool::default();
         let every = chain
             .links
@@ -901,37 +1304,28 @@ impl TileRunner {
         for (k, light) in (0u32..).zip(lights) {
             pool.write_light(queue, k, *light);
         }
-        // Each link before the last, from the boundary, into its intermediate.
+        // Each link before the last, from the boundary, into its intermediate: a link state of the
+        // tile's own over the slot's texture and buffers.
         let mut links: Vec<chain::LinkSlot> = Vec::with_capacity(chain.links.len());
         let mut input = chain::boundary_key(plan.boundary.version());
-        let mut words = Vec::new();
-        for (steps, (compiled, id)) in chain.links.iter().copied().zip(pipelines) {
-            chain::pack_words(texels, (0, 0), steps, &mut words);
-            let word_bytes =
-                buffer_capacity(device, (words.len() * 4) as u64).map_err(TileFailure::Plan)?;
-            let block_bytes = buffer_capacity(device, (blocks::block_len(steps) * 4) as u64)
-                .map_err(TileFailure::Plan)?;
-            let link_words = Charged {
-                buffer: storage_buffer(device, "luxforge.tiles.link_words", word_bytes),
-                bytes: word_bytes,
-            };
-            let link_blocks = Charged {
-                buffer: storage_buffer(device, "luxforge.tiles.link_blocks", block_bytes),
-                bytes: block_bytes,
-            };
-            let reads = links.last().map_or(&boundary, |link| &link.texture);
-            let bindings = self.bindings(reads, &link_words.buffer, &link_blocks.buffer);
+        let link_parts = slot.links.iter().zip(&link_words);
+        for ((steps, (compiled, id)), ((texture, words, blocks), packed)) in
+            chain.links.iter().copied().zip(pipelines).zip(link_parts)
+        {
+            let reads = links.last().map_or(&slot.boundary, |link| &link.texture);
+            let bindings = self.bindings(reads, &words.buffer, &blocks.buffer);
             let mut link = chain::LinkSlot::new(
-                texture(
-                    "luxforge.tiles.link",
-                    size,
-                    intermediate_format(shape.format),
-                    drawn,
-                ),
-                link_words,
-                link_blocks,
+                texture.clone(),
+                Charged {
+                    buffer: words.buffer.clone(),
+                    bytes: words.bytes,
+                },
+                Charged {
+                    buffer: blocks.buffer.clone(),
+                    bytes: blocks.bytes,
+                },
                 bindings,
-                intermediate_bytes(size, shape.format),
+                intermediate_bytes(size, key.shape.format),
             );
             link.spatial = spatial::PlanesKey::of(steps, size, origin).map(|key| {
                 Box::new(SpatialSlot::new(
@@ -939,7 +1333,7 @@ impl TileRunner {
                     &mut pool,
                 ))
             });
-            link.write(queue, &words, steps);
+            link.write(queue, packed, steps);
             link.encode(
                 device,
                 queue,
@@ -947,7 +1341,7 @@ impl TileRunner {
                 (compiled, *id),
                 &mut pool,
                 steps,
-                &words,
+                packed,
                 input,
                 (texels, size),
                 None,
@@ -958,17 +1352,11 @@ impl TileRunner {
         // The last link: its spatial step's passes, then its frame into the output, through the
         // geometry tail's intermediate when it holds one.
         let (compiled, id) = pipelines.last().ok_or(TileFailure::PIPELINE_FAILED)?;
-        chain::pack_words(texels, output_offset(plan), chain.last, &mut words);
-        let last_words = buffer("luxforge.tiles.words", (words.len() * 4) as u64)?;
-        queue.write_buffer(&last_words, 0, &le_bytes(&words));
-        let last_blocks = buffer(
-            "luxforge.tiles.blocks",
-            (blocks::block_len(chain.last) * 4) as u64,
-        )?;
+        queue.write_buffer(&slot.words.buffer, 0, &le_bytes(&last_words));
         let mut written = blocks::WrittenBlocks::default();
-        written.write(queue, &last_blocks, chain.last, BLOCK_CHUNK);
-        let reads = links.last().map_or(&boundary, |link| &link.texture);
-        let bindings = self.bindings(reads, &last_words, &last_blocks);
+        written.write(queue, &slot.blocks.buffer, chain.last, BLOCK_CHUNK);
+        let reads = links.last().map_or(&slot.boundary, |link| &link.texture);
+        let bindings = self.bindings(reads, &slot.words.buffer, &slot.blocks.buffer);
         let mut last = spatial::PlanesKey::of(chain.last, size, origin)
             .map(|key| SpatialSlot::new(spatial::Planes::create(device, key), &mut pool));
         if let Some(spatial) = last.as_mut() {
@@ -980,7 +1368,7 @@ impl TileRunner {
                 &bindings,
                 &mut pool,
                 chain.last,
-                (&words, written.words()),
+                (&last_words, written.words()),
                 input,
                 (texels, size),
                 None,
@@ -990,19 +1378,15 @@ impl TileRunner {
             .as_ref()
             .and_then(|spatial| spatial.groups())
             .and_then(|groups| groups.fragment.as_ref());
-        let output_size = shape.output;
-        let output = texture(
-            "luxforge.tiles.output",
-            output_size,
-            end.format(),
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
-        );
-        let output_view = output.create_view(&wgpu::TextureViewDescriptor::default());
+        let output_size = key.shape.output;
+        let output_view = slot
+            .output
+            .create_view(&wgpu::TextureViewDescriptor::default());
         let as_size = |(width, height): (u32, u32)| (width as f32, height as f32);
-        match (shape.intermediate, &compiled.tail) {
-            (Some(format), Some(tail)) => {
-                let intermediate = texture("luxforge.tiles.intermediate", size, format, drawn);
-                let tail_bindings = self.bindings(&intermediate, &last_words, &last_blocks);
+        match (&slot.intermediate, &compiled.tail) {
+            (Some(intermediate), Some(tail)) => {
+                let tail_bindings =
+                    self.bindings(intermediate, &slot.words.buffer, &slot.blocks.buffer);
                 encode_pass_over(
                     &mut encoder,
                     &intermediate.create_view(&wgpu::TextureViewDescriptor::default()),
@@ -1030,17 +1414,27 @@ impl TileRunner {
             ),
             _ => return Err(TileFailure::PIPELINE_FAILED),
         }
-        // The output copied out, each row padded to the copy's alignment.
+        // The output copied out, each row padded to the copy's alignment, into a copy a tile read
+        // back left or a new one.
+        let end = key.end;
         let (width, height) = output_size;
         let padded = padded(width * end.texel_bytes());
-        let readback = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("luxforge.tiles.readback"),
-            size: u64::from(padded) * u64::from(height),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
+        let readback_bytes = u64::from(padded) * u64::from(height);
+        let readback = match self
+            .readbacks
+            .iter()
+            .position(|(_, bytes)| *bytes == readback_bytes)
+        {
+            Some(at) => self.readbacks.swap_remove(at).0,
+            None => device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("luxforge.tiles.readback"),
+                size: readback_bytes,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            }),
+        };
         encoder.copy_texture_to_buffer(
-            output.as_image_copy(),
+            slot.output.as_image_copy(),
             wgpu::TexelCopyBufferInfo {
                 buffer: &readback,
                 layout: wgpu::TexelCopyBufferLayout {
@@ -1055,49 +1449,42 @@ impl TileRunner {
                 depth_or_array_layers: 1,
             },
         );
-        queue.submit([encoder.finish()]);
+        let index = queue.submit([encoder.finish()]);
         let (sender, mapped) = mpsc::channel();
         readback
             .slice(..)
             .map_async(wgpu::MapMode::Read, move |result| {
                 let _ = sender.send(result);
             });
-        Ok(Submitted {
+        times.encode_us = micros(encoding);
+        self.tickets += 1;
+        let (window_generation, slot_generation) = self.generations;
+        Ok(InFlight {
+            ticket: self.tickets,
+            index,
             readback,
+            readback_bytes,
             mapped,
             size: output_size,
             padded,
-            upload_us,
-            encode_us: micros(encoding),
+            end,
+            window: (window_generation, held.bytes()),
+            slot: (slot_generation, slot_bytes - readback_bytes),
+            done: false,
+            times: *times,
         })
     }
 
-    /// Wait, once, on the runner's own device, for its most recent submission — `submitted`'s, as
-    /// the runner is its device's one submitter — and answer whether its copy was mapped. A
-    /// submission the device refused leaves an earlier one most recent, so the wait still ends,
-    /// and a destroyed or lost device's maintenance then runs its lost callback.
-    fn wait(&self, submitted: Submitted) -> (Submitted, bool) {
-        let waited = self
-            .device
-            .poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            })
-            .is_ok();
-        let mapped = waited && matches!(submitted.mapped.try_recv(), Ok(Ok(())));
-        (submitted, mapped)
-    }
-
-    /// The mapped copy's rows, unpadded, as `end` reads them; the copy unmapped.
-    fn read(submitted: &Submitted, end: TileEnd) -> TilePixels {
-        let (width, height) = submitted.size;
-        let row = (width * end.texel_bytes()) as usize;
-        let mapped = submitted.readback.slice(..).get_mapped_range();
+    /// The mapped copy's rows, unpadded, as its tile's end reads them; the copy unmapped.
+    fn read(tile: &InFlight) -> TilePixels {
+        let (width, height) = tile.size;
+        let row = (width * tile.end.texel_bytes()) as usize;
+        let mapped = tile.readback.slice(..).get_mapped_range();
         let rows = mapped
-            .chunks_exact(submitted.padded as usize)
+            .chunks_exact(tile.padded as usize)
             .take(height as usize)
             .map(|line| &line[..row]);
-        let pixels = match end {
+        let pixels = match tile.end {
             TileEnd::Codes => {
                 let mut codes = Vec::with_capacity(row * height as usize);
                 for line in rows {
@@ -1124,7 +1511,7 @@ impl TileRunner {
             }
         };
         drop(mapped);
-        submitted.readback.unmap();
+        tile.readback.unmap();
         pixels
     }
 

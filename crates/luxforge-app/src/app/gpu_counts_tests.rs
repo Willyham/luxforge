@@ -318,6 +318,114 @@ fn before_the_surface_has_checked_its_stage_the_reference_renders_the_commit() {
     finish(editor, catalog);
 }
 
+/// The real photograph opened with the surface's GPU stage reporting `stage` and the picture at
+/// rest's programs compiled or not (`warm`), as the open's frame is asked for: the editor, its
+/// catalog and the open's events.
+fn opened_with(
+    name: &str,
+    stage: Option<GpuStageState>,
+    warm: bool,
+) -> (Editor, std::path::PathBuf, Vec<serde_json::Value>) {
+    let catalog = catalog(name);
+    let config = crate::Config::default();
+    let (owner, join) = crate::app::testing::start_owner(&catalog, &config);
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/s0/orientation-1.jpg");
+    let (mut editor, _, _, log) =
+        crate::app::testing::real_photo_prepared(owner, join, &fixture, config, |editor| {
+            editor.renderer.stage = stage;
+            editor.gpu.programs_warm = Some(warm);
+            attach_log(editor)
+        });
+    let records = logged(&mut editor, &log);
+    (editor, catalog, records)
+}
+
+/// An open whose picture at rest's programs are already compiled is presented by the GPU alone:
+/// no preview job is queued for it, so its first picture is the GPU's view plan, then its tiles,
+/// drawn over an empty frame placed at the photograph's stage, which holds no other pixels; its
+/// tiles' counts are its report; and the commit after it is the GPU's too.
+#[test]
+fn a_warm_open_is_presented_by_the_gpu_with_no_reference_job() {
+    let (mut editor, catalog, records) =
+        opened_with("open-warm", Some(GpuStageState::Available), true);
+    let content = editor.presentation.content_serial;
+    assert_eq!(editor.presentation.gpu_presented, Some(content));
+    assert!(
+        events(&records, "preview_job_requested").is_empty(),
+        "no reference job for the open: {records:?}"
+    );
+    let displayed = events(&records, "preview_displayed");
+    let first = displayed.first().expect("the open presented");
+    assert_eq!(
+        (&first["path"], &first["opened"]),
+        (&serde_json::json!("gpu"), &serde_json::json!(true))
+    );
+    let surfaces = editor.surfaces();
+    let under = surfaces.photo.expect("a frame placed at the stage");
+    assert_eq!(under.size(), (1, 1), "an empty frame, no reference pixels");
+    assert!(
+        surfaces.gpu.is_some() || surfaces.gpu_rest.is_some(),
+        "the GPU's picture handed in its place"
+    );
+    assert!(
+        editor.gpu.counts.is_some(),
+        "its tiles' counts are its report"
+    );
+    assert_eq!(
+        editor.workspace.canvas.photo,
+        crate::state::canvas::PhotoView::Plain
+    );
+    // The next commit draws over the GPU's own picture of the photograph.
+    editor.gpu.programs_warm = None;
+    let log = attach_log(&mut editor);
+    commit(&mut editor, 0.3);
+    let records = logged(&mut editor, &log);
+    assert!(
+        events(&records, "preview_job_requested").is_empty(),
+        "{records:?}"
+    );
+    assert_eq!(
+        editor.presentation.gpu_presented,
+        Some(editor.presentation.content_serial)
+    );
+    finish(editor, catalog);
+}
+
+/// An open on a cold cache — the picture at rest's programs not compiled yet — and an open with no
+/// GPU are the reference's: its job is queued and its exact frame is the first picture.
+#[test]
+fn a_cold_open_and_an_open_without_a_gpu_draw_the_reference_first() {
+    for (name, stage, warm) in [
+        ("open-cold", Some(GpuStageState::Available), false),
+        ("open-unchecked", Some(GpuStageState::Unchecked), true),
+        ("open-no-gpu", None, true),
+    ] {
+        let (mut editor, catalog, records) = opened_with(name, stage, warm);
+        assert_eq!(editor.presentation.gpu_presented, None, "{name}");
+        assert!(
+            !events(&records, "preview_job_requested").is_empty(),
+            "{name}: the reference's job queued"
+        );
+        deliver_until(&mut editor, "the reference's frame", |editor| {
+            editor.presentation.presenter.photo().is_some()
+                && editor.presentation.analysis.is_some()
+        });
+        let photo = editor.presentation.presenter.photo().expect("its frame");
+        assert!(photo.size().0 > 1, "{name}: the reference's own pixels");
+        assert_eq!(
+            editor
+                .presentation
+                .analysis
+                .as_ref()
+                .map(|analysis| analysis.source),
+            Some(AnalysisSource::Reference),
+            "{name}"
+        );
+        finish(editor, catalog);
+    }
+}
+
 /// Compare over a content the GPU presented waits for the reference's frame of it: the photograph
 /// under the GPU's picture is an earlier content's and is never taken as the After side.
 #[test]

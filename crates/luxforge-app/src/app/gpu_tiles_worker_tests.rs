@@ -800,13 +800,14 @@ fn a_plan_the_gpu_cannot_run_is_answered_by_the_reference_naming_why() {
     reference.stop();
 }
 
-/// A read submitted while the worker is held before an export's tile is answered once that one
-/// tile is drawn, before the next; a stream whose two bands its encoder has not taken draws
-/// nothing more, and a read then waits behind no tile at all; and once the encoder takes a band,
-/// the stream draws on.
+/// A read submitted while the worker is held before an export's step is answered once that step
+/// is taken, before the next: the stream has at most one tile in flight then, so the read waits
+/// behind at most that tile and the one the step read back; a stream whose two bands its encoder
+/// has not taken draws nothing more and holds no tile in flight, and a read then waits behind no
+/// tile at all; and once the encoder takes a band, the stream draws on.
 #[test]
-fn an_interactive_read_waits_behind_at_most_one_export_tile() {
-    let test = "an_interactive_read_waits_behind_at_most_one_export_tile";
+fn an_interactive_read_waits_behind_at_most_two_export_tiles() {
+    let test = "an_interactive_read_waits_behind_at_most_two_export_tiles";
     let Some((backend, name)) = host_adapter(test) else {
         return;
     };
@@ -828,7 +829,8 @@ fn an_interactive_read_waits_behind_at_most_one_export_tile() {
             client,
             Cancel::new(),
             move |tiles, cancel| {
-                let _ = seen.send(observer.figures().tiles);
+                let figures = observer.figures();
+                let _ = seen.send((figures.tiles, figures.in_flight));
                 let (stage, rect, values) = point(ReadStage::Output, 50, 60, ReadValues::Codes);
                 let answer = tiles.session(&held, cancel).read(stage, rect, values)?;
                 Ok(json!(answer.answered == Answered::gpu()))
@@ -852,10 +854,11 @@ fn an_interactive_read_waits_behind_at_most_one_export_tile() {
     let (noted, finished) = observed(&service);
     service.hold_steps(None);
     first.open();
-    assert_eq!(
-        noted.recv_timeout(HANG).expect("the read begins"),
-        drawn + 1,
-        "the read waited behind the one tile being drawn, and no more"
+    let (tiles, in_flight) = noted.recv_timeout(HANG).expect("the read begins");
+    assert!(
+        tiles <= drawn + 1 && in_flight <= 1,
+        "the read waited behind the step being taken and at most one tile in flight: {tiles} \
+         read back of {drawn} before, {in_flight} in flight"
     );
     assert_eq!(
         finished
@@ -875,7 +878,7 @@ fn an_interactive_read_waits_behind_at_most_one_export_tile() {
     let (noted, finished) = observed(&service);
     assert_eq!(
         noted.recv_timeout(HANG).expect("the read begins"),
-        parked.tiles,
+        (parked.tiles, 0),
         "a read waits behind no tile of a stream with no room"
     );
     finished
@@ -900,8 +903,9 @@ fn an_interactive_read_waits_behind_at_most_one_export_tile() {
 }
 
 /// Every family on both paths streamed in tiles of [`SIDE`], the worker's scratch starting from
-/// NaN: its bands, stitched, are bit for bit the whole output stage the photo surface's own
-/// drawing draws as one region on another device of the same adapter, so its tiles carry no seam.
+/// NaN, two tiles in flight and each band's window of the source uploaded once: its bands,
+/// stitched, are bit for bit the whole output stage the photo surface's own drawing draws as one
+/// region on another device of the same adapter, so its tiles carry no seam.
 #[test]
 fn a_stream_is_the_whole_stage_render_bit_for_bit() {
     let test = "a_stream_is_the_whole_stage_render_bit_for_bit";
@@ -915,6 +919,7 @@ fn a_stream_is_the_whole_stage_render_bit_for_bit() {
     let service = GpuTiles::new(Some((backend, name)), false);
     service.poison(true);
     service.draw_streams_at(vec![SIDE]);
+    let client = clients(1)[0];
     let mut versions = 0;
     for (format, path) in [
         (BoundaryFormat::Half, "the byte path"),
@@ -929,6 +934,8 @@ fn a_stream_is_the_whole_stage_render_bit_for_bit() {
             versions += 1;
             let (plan, codes) =
                 drawn_whole(&mut surface, &gpu, &stack, ReadStage::Output, versions);
+            settle(&service, client);
+            let before = service.figures();
             let bands = service
                 .stream(&stack, &Cancel::new())
                 .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"));
@@ -938,6 +945,16 @@ fn a_stream_is_the_whole_stage_render_bit_for_bit() {
             if let Some(difference) = first_difference(plan.size.width, &rgba, &codes.concat()) {
                 panic!("{what}: the stream against the surface's region: {difference}");
             }
+            // Each band's window of the source uploaded once for all of its tiles, and nothing
+            // held once the stream ends.
+            settle(&service, client);
+            let after = service.figures();
+            assert_eq!(
+                after.uploads - before.uploads,
+                u64::from(plan.size.height.div_ceil(SIDE)),
+                "{what}: one upload a band"
+            );
+            assert_eq!((after.in_flight, after.in_use), (0, 0), "{what}");
             eprintln!(
                 "{test}: {what}: {} x {} in tiles of {SIDE}, bit for bit the surface's region",
                 plan.size.width, plan.size.height
@@ -1005,8 +1022,9 @@ fn two_streams_are_byte_identical() {
 }
 
 /// A stream held before its second tile and cancelled there draws nothing more: its encoder reads
-/// the cancellation and then the end, the worker lets go of the window of the source its runner
-/// held and of the stack itself, and its figures say so.
+/// the cancellation and then the end, the worker lets go of its tile in flight, unread, of the
+/// window of the source and the slot its runner held and of the stack itself, and its figures say
+/// so.
 #[test]
 fn a_cancelled_stream_stops_between_tiles_and_frees_its_slots() {
     let test = "a_cancelled_stream_stops_between_tiles_and_frees_its_slots";
@@ -1033,8 +1051,15 @@ fn a_cancelled_stream_stops_between_tiles_and_frees_its_slots() {
     let first = next_step(&service, &begin);
     let second = next_step(&service, &first);
     let drawing = service.figures();
-    assert_eq!(drawing.tiles, 1, "one tile drawn");
-    assert!(drawing.in_use > 0, "the runner holds the tile's window");
+    assert_eq!(
+        (drawing.tiles, drawing.in_flight),
+        (0, 1),
+        "one tile submitted and in flight"
+    );
+    assert!(
+        drawing.in_use > 0,
+        "the runner holds the band's window and the tile"
+    );
 
     cancel.cancel();
     service.hold_steps(None);
@@ -1046,7 +1071,8 @@ fn a_cancelled_stream_stops_between_tiles_and_frees_its_slots() {
     let after = service.figures();
     assert_eq!(after.tiles, drawing.tiles, "no tile after the cancellation");
     assert_eq!(after.bands, 0);
-    assert_eq!(after.in_use, 0, "the runner's window let go");
+    assert_eq!(after.in_flight, 0, "the tile in flight let go unread");
+    assert_eq!(after.in_use, 0, "the runner's window and slot let go");
     assert!(
         held.upgrade().is_none(),
         "the worker holds nothing of a cancelled stream's stack"
