@@ -920,13 +920,64 @@ impl Compiled {
         }
         let content_end = first + spatial.len();
 
+        // The frame the tail's first resample reads, from the boundary's stage: the boundary
+        // segment's, through the exact steps after the boundary; or, after a chain, the last
+        // spatial segment's, through its own exact steps, a straight crop's among them.
+        let mut tail_reads = (after, segment.stage());
+        // The colour operations of the last spatial segment, when a resample or warp follows it:
+        // what a restoration layer such as Detail holds after it, every colour layer the host
+        // places after the restoration layers and before the geometry. They run on that
+        // operation's output at the boundary's stage, as the colour between two spatial
+        // operations does, each texel pointwise at the coordinate its units address — the frame
+        // the segment writes, through its exact steps — and its mask's stage, through the steps
+        // before it; the tail then carries the segment's exact steps with the rest.
+        if let Some(step) = spatial.last_mut()
+            && content_end < last
+        {
+            let chained = &self.segments[content_end];
+            let identity = ExactGeometry::identity(received.width, received.height);
+            let all = chained
+                .operations
+                .iter()
+                .fold(identity, |all, operation| match operation {
+                    Processing::ExactGeometry(exact) => all.then(*exact),
+                    _ => all,
+                });
+            let units = GpuPosition::of(all).then(origin(chained));
+            let mut between = identity;
+            for (position, operation) in chained.operations.iter().enumerate() {
+                match operation {
+                    Processing::ExactGeometry(exact) => between = between.then(*exact),
+                    Processing::Color(colour) => match plan_operation(
+                        self.layer_at(content_end, position),
+                        colour,
+                        units,
+                        GpuPosition::of(between),
+                        qualifying,
+                    )? {
+                        Ok(operation) => step.after.push(operation),
+                        Err(fallback) => return Ok(Err(fallback)),
+                    },
+                    Processing::PointReplace { .. }
+                    | Processing::Spatial(_)
+                    | Processing::Resample(_)
+                    | Processing::Warp(_) => {}
+                }
+            }
+            tail_reads = (all, chained.stage());
+        }
+
         // Every later segment: a resample or warp joins the tail; a spatial entry past the chain
-        // has no pass. Colour in the last one runs over the output stage; in a chained spatial
-        // segment before the last it ran between two spatial operations; anywhere else it has no
-        // pass.
+        // has no pass. Colour in the last one runs over the output stage; in a spatial segment of
+        // the chain before the last, or the chain's last one when the tail follows it, it ran on
+        // that operation's output above; anywhere else, between two resamples, it has no pass.
         let mut output_operations = Vec::new();
+        let chain_colour = !spatial.is_empty() && content_end < last;
         for index in (first + 1..=last).filter(|index| *index >= content_end) {
             let segment = &self.segments[index];
+            if index == content_end && chain_colour {
+                continue;
+            }
             if index > content_end
                 && let Some(Entry::Spatial(_)) = &segment.entry
             {
@@ -985,7 +1036,7 @@ impl Compiled {
             height: stage.height,
         };
         let map = GeometryMap::from_steps(size(received), size(self.stage()), steps)?;
-        let reads = after.unmap_region(Region::whole(segment.stage()));
+        let reads = tail_reads.0.unmap_region(Region::whole(tail_reads.1));
         // A layer that opens the next segment's stage boundary receives the frame this segment
         // wrote, which the CPU quantized: no colour run continues into it.
         let opens_boundary = start == segment.operations.len()
