@@ -10,7 +10,7 @@ Accepted target scope with provisional engineering baselines. These are intended
 
 Module secrets use the macOS Keychain, verified natively by an opt-in test on the M4. Windows Credential Manager and Linux Secret Service are not implemented: there, every secret method answers `not-ready` and nothing is stored in plain text, so a module that needs a secret cannot be configured yet. The module transport verifies TLS with the operating system's verifier on macOS and Windows and native roots on Linux; only macOS has been exercised.
 
-A build on a newer SDK does not prove execution on the floor. Desktop results must name the actual OS, architecture and backend. Linux ARM64 or Windows ARM emulation may supplement the x64 matrix, never replace it. No VM is installed or verified.
+A build on a newer SDK does not prove execution on the floor. Desktop results must name the actual OS, architecture and backend. Linux ARM64 or Windows ARM emulation may supplement the x64 matrix, never replace it. The owner's Omarchy VM runs ARM64 Arch Linux (kernel 7.2.6) with Rust 1.94.0. Focused core job-monitoring tests pass there: bounded waits and cancellation, disconnect cleanup and response ordering, and progress/terminal publication. These are VM functional checks, not Linux desktop or GPU acceptance. Native minimize/hide visibility facts remain unsupported on Linux, so minimizing a normal editor window does not pause UI sampling there yet.
 
 ## Prerequisites
 

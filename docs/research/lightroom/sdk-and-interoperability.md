@@ -36,7 +36,7 @@ The detailed references below are **Adobe-authored SDK documentation on a third-
 
 Parsing a numeric Clarity value proves only syntax-level access. A different processor with a slider called Clarity need not have the same output. Equal names/ranges are not a calibration. Sidecar settings are not executable implementations, and recent heavy edits can require an `.acr` companion. [Storage chapter](storage-and-history.md).
 
-**P.** A future Luxforge importer should report exactly which levels it supports. Useful options include importing metadata only, retaining unsupported recipe data, or linking an Adobe-rendered reference. Any conversion of effects needs explicit scope and validation. Luxforge's [preset importer](../../design/presets.md#import) works at the recipe-syntax level: it transfers values for the controls Luxforge has and reports the rest by name, without claiming processing semantics or an exact rendition. No catalog or sidecar migration is built.
+**P.** A future Luxforge importer should report exactly which levels it supports. Useful options include importing metadata only, retaining unsupported recipe data, or linking an Adobe-rendered reference. Any conversion of effects needs explicit scope and validation. Luxforge's [preset importer](../../design/presets.md#import) works at the recipe-syntax level: it transfers values for the controls Luxforge has and reports the rest by name, without claiming processing semantics or an exact rendition. No catalog or sidecar migration is built; the [Lightroom import](../../design/lightroom-import.md) and [Lightroom alignment](../../design/lightroom-alignment.md) proposals cover them.
 
 ## Extension boundaries still unknown
 

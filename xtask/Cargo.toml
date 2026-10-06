@@ -14,6 +14,7 @@ roxmltree.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 image = { workspace = true, features = ["jpeg"] }
+kamadak-exif.workspace = true
 luxforge-core = { path = "../crates/luxforge-core" }
 luxforge-evidence = { path = "../crates/luxforge-evidence" }
 luxforge-raw = { path = "../crates/luxforge-raw" }

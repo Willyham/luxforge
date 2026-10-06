@@ -71,7 +71,7 @@ Owner, 2026-10-04 ([GPU-first](gpu-first.md#decision)):
 
 8. The GPU renders exports where it can, and the reference renderer is the export of a machine without a usable GPU and an explicit option a test or a person asks for (`reference: true`). A GPU export is held to the reference export within the display limit of the stack's class over every pixel ([GPU-first](gpu-first.md#the-contract)). On one machine with one driver it is identical run to run, and across machines an export may differ in the last digit, which is accepted: the same entry exported on two machines, or by the desktop and by `luxforge-json`, need not be the same bytes.
 
-Also accepted: the build follows the accepted export contract rather than the earlier state-panel proposal with presets, resizing, unique names by default and durable export records, which stays unadopted; and the export lane is a lane of the one job table. Not in this build: presets, resizing, other formats, output sharpening, batch export and durable export records; each would need its own decision.
+Also accepted: the build follows the accepted export contract rather than the earlier state-panel proposal with presets, resizing, unique names by default and durable export records, which stays unadopted; and the export lane is a lane of the one job table. Not in this build: presets, resizing, other formats, output sharpening and durable export records; each would need its own decision. Batch export (`batch.export`, [the catalog](catalog.md#the-catalog)) writes many photographs through this same export — streamed through the tile service with the same reference fallback — and naming rule into one folder.
 
 ## Proposals with recorded defaults
 

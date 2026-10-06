@@ -136,13 +136,142 @@ pub fn serve_json_lines_with(
 }
 
 fn serve_stream(stream: TcpStream, owner: &OwnerHandle, token: Option<&str>) -> Result<(), Error> {
-    let (reader, writer) = session_halves(stream)?;
-    serve(reader, writer, owner, token, ClientAuthority::Edit)
+    stream
+        .set_nodelay(true)
+        .map_err(|error| Error::protocol(error.to_string()))?;
+    stream
+        .set_nonblocking(true)
+        .map_err(|error| Error::protocol(error.to_string()))?;
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .map_err(|error| Error::protocol(error.to_string()))?;
+    runtime.block_on(serve_socket(stream, owner, token))
+}
+
+/// A connection's existing thread multiplexes owner replies with reads. Buffered pipelined input
+/// has the same one-line byte bound as ordinary input; EOF cancels a quiet held wait immediately.
+async fn serve_socket(
+    stream: TcpStream,
+    owner: &OwnerHandle,
+    token: Option<&str>,
+) -> Result<(), Error> {
+    use std::{
+        future::{Future, poll_fn},
+        task::Poll,
+    };
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let registration = Registration {
+        owner,
+        client: owner.register(),
+    };
+    let mut stream = tokio::net::TcpStream::from_std(stream)
+        .map_err(|error| Error::protocol(error.to_string()))?;
+    let mut buffered = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    loop {
+        let line = loop {
+            if let Some(end) = buffered.iter().position(|byte| *byte == b'\n') {
+                if end >= MAX_REQUEST_BYTES {
+                    return socket_framing_failure(&mut stream, "request exceeds JSON line limit")
+                        .await;
+                }
+                break buffered.drain(..=end).collect::<Vec<_>>();
+            }
+            if buffered.len() >= MAX_REQUEST_BYTES {
+                return socket_framing_failure(&mut stream, "request exceeds JSON line limit")
+                    .await;
+            }
+            let count = stream
+                .read(&mut chunk)
+                .await
+                .map_err(|error| Error::protocol(error.to_string()))?;
+            if count == 0 {
+                return Ok(());
+            }
+            buffered.extend_from_slice(&chunk[..count]);
+        };
+        let response = match serde_json::from_slice::<ApiRequest>(&line) {
+            Ok(request) if token.is_some() && request.token.as_deref() != token => {
+                ApiResponse::failure(request.id, 0, Error::protocol("invalid live-session token"))
+            }
+            Ok(request) => {
+                let response_id = request.id.clone();
+                let mut answer = std::pin::pin!(owner.call_async(registration.client, request));
+                loop {
+                    enum Event {
+                        Answer(Result<ApiResponse, Error>),
+                        Input(std::io::Result<usize>),
+                    }
+                    let event = {
+                        let mut input = std::pin::pin!(stream.read(&mut chunk));
+                        poll_fn(|cx| {
+                            if let Poll::Ready(answer) = answer.as_mut().poll(cx) {
+                                return Poll::Ready(Event::Answer(answer));
+                            }
+                            if let Poll::Ready(input) = input.as_mut().poll(cx) {
+                                return Poll::Ready(Event::Input(input));
+                            }
+                            Poll::Pending
+                        })
+                        .await
+                    };
+                    match event {
+                        Event::Answer(Ok(response)) => break response,
+                        Event::Answer(Err(error)) => {
+                            break ApiResponse::failure(response_id.clone(), 0, error);
+                        }
+                        Event::Input(Ok(0)) => return Ok(()),
+                        Event::Input(Ok(count)) => {
+                            buffered.extend_from_slice(&chunk[..count]);
+                            if buffered.len() > MAX_REQUEST_BYTES {
+                                return socket_framing_failure(
+                                    &mut stream,
+                                    "pipelined request exceeds JSON line limit",
+                                )
+                                .await;
+                            }
+                        }
+                        Event::Input(Err(error)) => return Err(Error::protocol(error.to_string())),
+                    }
+                }
+            }
+            Err(error) => {
+                ApiResponse::failure(String::new(), 0, Error::protocol(error.to_string()))
+            }
+        };
+        let mut line =
+            serde_json::to_vec(&response).map_err(|error| Error::protocol(error.to_string()))?;
+        line.push(b'\n');
+        stream
+            .write_all(&line)
+            .await
+            .map_err(|error| Error::protocol(error.to_string()))?;
+    }
+}
+
+/// A framing violation answers explicitly before closing the connection and its held interest.
+async fn socket_framing_failure(
+    stream: &mut tokio::net::TcpStream,
+    reason: &str,
+) -> Result<(), Error> {
+    use tokio::io::AsyncWriteExt;
+    let response = ApiResponse::failure(String::new(), 0, Error::protocol(reason));
+    let mut line =
+        serde_json::to_vec(&response).map_err(|error| Error::protocol(error.to_string()))?;
+    line.push(b'\n');
+    stream
+        .write_all(&line)
+        .await
+        .map_err(|error| Error::protocol(error.to_string()))?;
+    Err(Error::protocol(reason))
 }
 
 /// The two ends one served connection reads and writes through. Answers are one line each, so
 /// `TCP_NODELAY` is set: with Nagle's algorithm on, a line's last bytes can wait for the peer's
 /// acknowledgement of the bytes before it. The option belongs to the socket, so both ends have it.
+#[cfg(test)]
 fn session_halves(stream: TcpStream) -> Result<(TcpStream, TcpStream), Error> {
     stream
         .set_nodelay(true)
@@ -287,7 +416,7 @@ mod tests {
         let mut output = Vec::new();
         let input = [
             request("schema", "schema.list", json!({})),
-            request("list", "catalog.list", json!({})),
+            request("info", "catalog.info", json!({})),
             request("pixel", "edit.set-pixel", json!({"asset_id":asset,"mutation":{"expected_revision":0,"request_id":"p1","actor":"api-test"},"x":0,"y":0,"rgb":[1,2,3]})),
             request("sample", "render.sample", json!({"asset_id":asset,"x":0,"y":0})),
             request("version", "version.create", json!({"asset_id":asset,"name":"Edited","mutation":{"request_id":"v1","actor":"api-test"}})),
@@ -312,7 +441,7 @@ mod tests {
         assert_eq!(responses.len(), 8);
         assert!(responses.iter().all(|response| response.error.is_none()));
         let result = |index: usize| responses[index].result.as_ref().unwrap();
-        assert_eq!(result(1)["assets"][0]["id"], json!(asset));
+        assert_eq!(result(1)["counts"]["photographs"], json!(1));
         assert_eq!(result(3)["rgba"], json!([1, 2, 3, 255]));
         assert_eq!(result(4)["outcome"], json!("applied"));
         assert_eq!(result(6)["versions"][0]["name"], json!("Edited"));
@@ -395,9 +524,9 @@ mod tests {
         // Small answers: three requests, three lines, and exactly one `write` and one flush each.
         let mut small = CountingWriter::default();
         let input = [
-            request("a", "catalog.list", json!({})),
-            request("b", "catalog.list", json!({})),
-            request("c", "catalog.list", json!({})),
+            request("a", "activity.list", json!({})),
+            request("b", "activity.list", json!({})),
+            request("c", "activity.list", json!({})),
         ]
         .concat();
         serve_json_lines_with(
@@ -475,5 +604,110 @@ mod tests {
         assert!(reader.nodelay().unwrap());
         assert!(writer.nodelay().unwrap());
         drop(client);
+    }
+}
+
+#[cfg(test)]
+mod monitoring_transport_tests {
+    use super::*;
+    use luxforge_testbase::paths::temp_path;
+    use serde_json::json;
+
+    #[test]
+    fn a_remote_close_releases_a_quiet_job_wait_and_pipeline_preserves_order() {
+        // An ordinary owner's catalog refresh is held before disk work; its globally readable
+        // queued/running job gives the transport a quiet indefinite wait.
+        let dir = luxforge_testbase::paths::temp_dir("remote-job-wait")
+            .canonicalize()
+            .unwrap();
+        let catalog = temp_path("remote-job-wait.sqlite");
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        let gate = Arc::new(luxforge_testbase::Gate::new());
+        gate.shut();
+        owner.hold_listings(gate.clone(), dir.clone());
+        let invoke = |method: &str, params: serde_json::Value| {
+            owner
+                .call(
+                    client,
+                    ApiRequest {
+                        id: method.into(),
+                        method: method.into(),
+                        params,
+                        token: None,
+                    },
+                )
+                .unwrap()
+                .result
+                .unwrap()
+        };
+        let refreshed = invoke(
+            "index.refresh",
+            json!({"source":{"kind":"folder","path":dir}}),
+        );
+        let job = refreshed["job_id"].clone();
+        assert!(job.is_string(), "{refreshed}");
+        gate.wait_reached(1, "held index listing");
+        let observed = invoke("job.wait", json!({"job_id":job}));
+        let session_file = temp_path("remote-job-wait-session.json");
+        let server = LocalServer::start(owner.clone(), &session_file).unwrap();
+        let mut stream = TcpStream::connect(server.info().address).unwrap();
+        let request = |id: &str, method: &str, params: serde_json::Value| {
+            format!(
+                "{}\n",
+                json!({"id":id,"method":method,"params":params,"token":server.info().token})
+            )
+        };
+        stream
+            .write_all(
+                request(
+                    "quiet",
+                    "job.wait",
+                    json!({"job_id":job,"after":observed["change"]}),
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        luxforge_testbase::wait_until("one remote held job wait", || {
+            owner.job_monitor_stats().held == 1
+        });
+        drop(stream);
+        luxforge_testbase::wait_until("the remote quiet wait released on EOF", || {
+            owner.job_monitor_stats().held == 0 && server.connected() == 0
+        });
+        let mut stream = TcpStream::connect(server.info().address).unwrap();
+        stream
+            .set_read_timeout(Some(luxforge_testbase::HANG))
+            .unwrap();
+        let pipelined =
+            request("one", "catalog.info", json!({})) + &request("two", "schema.list", json!({}));
+        stream.write_all(pipelined.as_bytes()).unwrap();
+        let mut reader = BufReader::new(stream);
+        for expected in ["one", "two"] {
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let response: ApiResponse = serde_json::from_str(&line).unwrap();
+            assert_eq!(response.id, expected);
+            assert!(response.error.is_none());
+        }
+        drop(reader);
+        let mut oversized = TcpStream::connect(server.info().address).unwrap();
+        oversized
+            .set_read_timeout(Some(luxforge_testbase::HANG))
+            .unwrap();
+        oversized
+            .write_all(&vec![b' '; MAX_REQUEST_BYTES + 1])
+            .unwrap();
+        let mut reader = BufReader::new(oversized);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let refused: ApiResponse = serde_json::from_str(&line).unwrap();
+        assert_eq!(refused.error.unwrap().code, "protocol");
+        drop(reader);
+        gate.open();
+        owner.disconnect(client);
+        drop(server);
+        owner.stop();
+        join.join().unwrap();
     }
 }

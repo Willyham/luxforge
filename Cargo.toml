@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/luxforge-raw", "crates/luxforge-process", "crates/luxforge-input", "crates/luxforge-jpeg", "crates/luxforge-core", "crates/luxforge-net", "crates/luxforge-ui", "crates/luxforge-app", "crates/luxforge-cli", "crates/luxforge-evidence", "crates/luxforge-reference", "crates/luxforge-testbase", "crates/luxforge-testkit", "xtask"]
+members = ["crates/luxforge-raw", "crates/luxforge-process", "crates/luxforge-watch", "crates/luxforge-input", "crates/luxforge-jpeg", "crates/luxforge-core", "crates/luxforge-net", "crates/luxforge-ui", "crates/luxforge-app", "crates/luxforge-cli", "crates/luxforge-evidence", "crates/luxforge-reference", "crates/luxforge-testbase", "crates/luxforge-testkit", "xtask"]
 resolver = "3"
 
 [workspace.package]
@@ -25,10 +25,9 @@ mozjpeg = { version = "=0.10.13", default-features = false, features = ["with_si
 # classifies so that a warning standing for lost data stops a decode.
 mozjpeg-sys = { version = "=2.2.3", default-features = false }
 iced = { version = "=0.14.0", default-features = false, features = ["advanced", "wgpu", "canvas", "image-without-codecs", "sysinfo", "tokio", "x11", "wayland"] }
-# The exact `tokio` Iced's executor runs on, for the desktop's job readers: a stream that waits for
-# its interval's next tick creates that timer on the runtime the subscription runs on, where Iced's
-# own `time::every` can only send a message for each tick. It is the version already in the
-# lockfile with the `time` feature Iced's `tokio` feature already turns on, so it adds no package.
+# The exact runtime Iced uses, pinned for the desktop's visible clocks. The core also enables
+# rt/net/io-util for one event loop on each existing loopback connection thread, so an indefinite
+# job.wait detects socket EOF without polling or a thread per wait; no runtime worker is spawned.
 tokio = { version = "=1.53.1", default-features = false, features = ["time"] }
 rfd = { version = "=0.15.4", default-features = false, features = ["xdg-portal", "async-std"] }
 rayon = "=1.12.0"
@@ -78,6 +77,17 @@ url = "=2.5.8"
 uuid = { version = "=1.26.1", features = ["v4"] }
 # Zeroes a module secret's buffer when the value is dropped.
 zeroize = "=1.9.0"
+# The folder watcher's macOS bindings, in `luxforge-watch`: FSEvents through `objc2-core-services`,
+# the one package the watcher adds to the lockfile, with only its FSEvents bindings built; and the
+# CoreFoundation strings, arrays and UUIDs and the dispatch queue those take, already in the
+# lockfile through rfd and winit and pinned to the versions they resolve to.
+objc2-core-services = { version = "=0.3.2", default-features = false, features = ["std", "FSEvents", "dispatch2", "libc"] }
+objc2-core-foundation = { version = "=0.3.2", default-features = false, features = ["std", "CFArray", "CFString", "CFUUID"] }
+dispatch2 = { version = "=0.3.1", default-features = false, features = ["std"] }
+# inotify, `poll` and `eventfd` for the folder watcher on Linux, already in the lockfile through the
+# desktop's portal dialogs and pinned to that version. They are safe calls, so the Linux watcher
+# writes no `unsafe`.
+rustix = { version = "=1.1.5", default-features = false, features = ["std", "fs", "event"] }
 # The exact `wgpu` Iced 0.14 resolves to, for the photo surface's own shader primitive. Iced 0.14
 # does not re-export it (`iced::widget::renderer` is hidden), so it is named here and pinned to the
 # version already in the lockfile; Cargo unifies it with Iced's own, so there is one `wgpu` in the

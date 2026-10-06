@@ -496,7 +496,7 @@ pub fn journey(
         Ok(())
     })?;
 
-    let imported = owner.import(editor, fixture)?;
+    let imported = owner.open(editor, fixture)?;
     let asset = imported["asset"]["id"].clone();
     let original = imported["current_entry"]["id"].clone();
     ensure(

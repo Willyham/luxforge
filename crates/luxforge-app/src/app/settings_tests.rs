@@ -409,16 +409,9 @@ fn auto_collapse_history_is_on_by_default_and_turning_it_off_keeps_every_entry()
     // The owner applies it to the next edit without a relaunch.
     let path =
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/s0/orientation-2.jpg");
-    let (queued, _) = call(
-        &editor.owner,
-        editor.client,
-        "catalog.import",
-        json!({"path": path, "mutation": super::tasks::request()}),
-    )
-    .unwrap();
-    let job = queued["job_id"].as_str().unwrap().to_owned();
-    let ready = super::tasks::wait_source_job(&editor.owner, editor.client, &job).unwrap();
-    let asset = ready["result"]["asset"]["id"].clone();
+    let (asset, job) = super::testing::develop_and_prepare(&editor.owner, editor.client, &path);
+    super::tasks::wait_source_job(&editor.owner, editor.client, &job).unwrap();
+    let asset = json!(asset);
     for (revision, contrast) in [(0, 15.0), (1, 20.0)] {
         let (answer, _) = call(
             &editor.owner,

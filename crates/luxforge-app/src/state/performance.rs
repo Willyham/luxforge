@@ -1,6 +1,9 @@
 //! The Performance section's model: what the state panel's last block says about this editor's own
-//! memory, CPU and GPU use and its long-running work, derived from the `resources.read` and
-//! `activity.list` answers the section's sampler collected (`docs/design/performance-panel.md`).
+//! memory, CPU and GPU use and its long-running work, derived from the `resources.read` answers the
+//! section's sampler collected and the activity board as the desktop last read it
+//! (`docs/design/performance-panel.md`). The board is long-running work's snapshot
+//! (`state/long_work.rs`), read at the sampler's tick and at each of long work's own reads, so the
+//! section's job rows and the status bar's job always come from the same read.
 //!
 //! Everything here is a pure function of those answers. The counters are cumulative, so a rate
 //! comes from two consecutive samples; values are formatted in Activity Monitor's units; each series
@@ -8,13 +11,16 @@
 //! Time enters only through the answers themselves — the monotonic clock each read was taken at and
 //! the elapsed and ended times each board snapshot carries — so nothing here reads a clock and
 //! every rule can be tested with made-up samples.
-use crate::state::Inputs;
+use crate::state::{
+    Inputs,
+    long_work::{LongWorkState, Rates, WorkInfo, followed, work_info, work_label},
+};
 use luxforge_core::{
     ActivitySnapshot, JobId,
     activity::{ActiveActivity, Outcome, RecentActivity},
     resources::{MemoryKind, ResourceReport},
 };
-use std::collections::VecDeque;
+use std::{collections::VecDeque, path::Path};
 
 /// The sparklines' window: one sample a second for a minute.
 pub(crate) const WINDOW: usize = 60;
@@ -50,13 +56,12 @@ const MEMORY_HEADROOM: f64 = 1.1;
 /// GPU time is drawn against one GPU's worth of time.
 const GPU_SCALE: f64 = 100.0;
 
-/// The sampler's window of raw samples and the board it read last. It is bounded to
-/// [`MAX_SAMPLES`] small samples, and its version moves with every change, so the section is
-/// re-derived — and its sparklines re-tessellated — once per sample rather than once per message.
+/// The sampler's window of raw samples. It is bounded to [`MAX_SAMPLES`] small samples, and its
+/// version moves with every change, so the section is re-derived — and its sparklines
+/// re-tessellated — once per sample rather than once per message.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct PerformanceHistory {
     samples: VecDeque<ResourceReport>,
-    activity: Option<ActivitySnapshot>,
     version: u64,
 }
 
@@ -65,17 +70,15 @@ impl PerformanceHistory {
     /// a line drawn across a gap in the samples would misplace every point before it.
     pub(crate) fn clear(&mut self) {
         self.samples.clear();
-        self.activity = None;
         self.version = self.version.wrapping_add(1);
     }
 
-    /// Record one read of the counters and the board, dropping the oldest sample past the bound.
-    pub(crate) fn push(&mut self, sample: ResourceReport, activity: ActivitySnapshot) {
+    /// Record one read of the counters, dropping the oldest sample past the bound.
+    pub(crate) fn push(&mut self, sample: ResourceReport) {
         if self.samples.len() == MAX_SAMPLES {
             self.samples.pop_front();
         }
         self.samples.push_back(sample);
-        self.activity = Some(activity);
         self.version = self.version.wrapping_add(1);
     }
 
@@ -85,10 +88,6 @@ impl PerformanceHistory {
 
     pub(crate) fn samples(&self) -> &VecDeque<ResourceReport> {
         &self.samples
-    }
-
-    pub(crate) fn activity(&self) -> Option<&ActivitySnapshot> {
-        self.activity.as_ref()
     }
 
     /// Changes whenever the samples do, and never otherwise.
@@ -116,8 +115,13 @@ pub(crate) struct MetricRow {
 /// One job row as the section shows it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct JobRow {
+    /// The job a running row's Cancel stops, when the row has one: none for a finished job, for
+    /// work without a job and for catalog work, whose work row has its own Cancel.
     pub(crate) job_id: Option<luxforge_core::JobId>,
+    /// A cancellation of `job_id` is in flight, so its Cancel is disabled.
     pub(crate) cancelling: bool,
+    /// What the work is doing; for catalog work, with the place or file it works on
+    /// (`Indexing ~/Pictures`).
     pub(crate) label: String,
     /// Elapsed while running, duration once finished; empty on the quiet row.
     pub(crate) trailing: String,
@@ -125,6 +129,31 @@ pub(crate) struct JobRow {
     /// Only for work that reports a truthful total.
     pub(crate) progress: Option<f32>,
     pub(crate) running: bool,
+    /// Running catalog work: the job Cancel stops, its count and its estimate. Such a row is drawn
+    /// as the components board's work row rather than a plain job row.
+    pub(crate) work: Option<WorkInfo>,
+}
+
+/// What the job rows read of long-running work: the board as the desktop last read it, each running
+/// catalog job's rate, for its estimate, and the home folder its place is shown from.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Work<'a> {
+    pub(crate) board: Option<&'a ActivitySnapshot>,
+    pub(crate) rates: &'a Rates,
+    pub(crate) home: Option<&'a Path>,
+}
+
+/// No rates read yet and no home folder.
+static NO_RATES: Rates = Rates::EMPTY;
+
+impl Default for Work<'_> {
+    fn default() -> Self {
+        Self {
+            board: None,
+            rates: &NO_RATES,
+            home: None,
+        }
+    }
 }
 
 /// The job rows, the `+N more` caption under them and the heading's caption.
@@ -155,26 +184,54 @@ pub(crate) struct PerformanceModel {
     pub(crate) more: Option<String>,
     /// The history's version: the sparklines' cache identity, which moves once per sample.
     pub(crate) version: u64,
+    /// The version of the board read its job rows came from (`LongWorkState::version`).
+    pub(crate) board: u64,
 }
 
 impl PerformanceModel {
-    /// Re-derive the section when its inputs changed: the expanded flag or a sample. Every other
-    /// message — most of them, a drag sends dozens a second — leaves the model and its sparklines'
-    /// version exactly as they were.
+    /// Re-derive the section when its inputs changed: the expanded flag, a sample, or, while it is
+    /// expanded, a read of the board. Every other message — most of them, a drag sends dozens a
+    /// second — leaves the model and its sparklines' version exactly as they were.
     pub(crate) fn refresh(&mut self, inputs: &Inputs<'_>) {
-        self.refresh_sample(inputs.performance_expanded, inputs.performance);
+        self.refresh_sample(
+            inputs.performance_expanded,
+            inputs.performance,
+            inputs.long_work,
+            inputs.select.home.as_deref(),
+        );
     }
 
-    pub(crate) fn refresh_sample(&mut self, expanded: bool, history: &PerformanceHistory) {
-        if self.expanded == expanded && self.version == history.version() {
+    /// [`Self::refresh`] from the parts it reads, as an idle sample's scoped refresh calls it
+    /// without deriving the rest of the screen.
+    pub(crate) fn refresh_sample(
+        &mut self,
+        expanded: bool,
+        history: &PerformanceHistory,
+        long_work: &LongWorkState,
+        home: Option<&Path>,
+    ) {
+        if self.expanded == expanded
+            && self.version == history.version()
+            && (!expanded || self.board == long_work.version)
+        {
             return;
         }
-        *self = derive(expanded, history);
+        let work = Work {
+            board: long_work.board.as_ref(),
+            rates: &long_work.rates,
+            home,
+        };
+        *self = derive(expanded, history, work);
+        self.board = long_work.version;
     }
 }
 
 /// The section for this history, expanded or collapsed.
-pub(crate) fn derive(expanded: bool, history: &PerformanceHistory) -> PerformanceModel {
+pub(crate) fn derive(
+    expanded: bool,
+    history: &PerformanceHistory,
+    work: Work<'_>,
+) -> PerformanceModel {
     if !expanded {
         return PerformanceModel {
             version: history.version(),
@@ -182,15 +239,19 @@ pub(crate) fn derive(expanded: bool, history: &PerformanceHistory) -> Performanc
         };
     }
     let samples: Vec<&ResourceReport> = history.samples().iter().collect();
-    let jobs = jobs(history.activity());
+    let jobs = jobs(work);
     PerformanceModel {
         expanded,
         caption: jobs.caption,
         metrics: vec![memory_row(&samples), cpu_row(&samples), gpu_row(&samples)],
-        reserve_detail: matches!(jobs.rows.as_slice(), [only] if only.detail.is_none()),
+        reserve_detail: matches!(
+            jobs.rows.as_slice(),
+            [only] if only.detail.is_none() && only.work.is_none()
+        ),
         jobs: jobs.rows,
         more: jobs.more,
         version: history.version(),
+        board: 0,
     }
 }
 
@@ -485,7 +546,7 @@ fn gpu_row(samples: &[&ResourceReport]) -> MetricRow {
     }
 }
 
-/// What the jobs part of the section shows for one board snapshot.
+/// What the jobs part of the section shows for the board snapshot `work` read.
 ///
 /// Every active entry that has run for at least [`LONG_JOB_MS`], in the board's order (oldest
 /// first), at most [`MAX_JOB_ROWS`] and then a `+N more` caption, with the heading counting all of
@@ -493,7 +554,11 @@ fn gpu_row(samples: &[&ResourceReport]) -> MetricRow {
 /// [`RECENT_JOB_MS`], dimmed, with its duration and how it ended. Otherwise one dimmed `No
 /// background work` row, so there is always one job line and the section's height changes only
 /// when two long jobs overlap. Before the first snapshot there is nothing running to show either.
-pub(crate) fn jobs(activity: Option<&ActivitySnapshot>) -> Jobs {
+///
+/// A running catalog job's row is a work row: its place in its label, its own count, its estimate
+/// once its rate is steady, and Cancel ([`JobRow::work`]).
+pub(crate) fn jobs(work: Work<'_>) -> Jobs {
+    let activity = work.board;
     let quiet = || Jobs {
         rows: vec![JobRow {
             label: "No background work".to_owned(),
@@ -516,7 +581,7 @@ pub(crate) fn jobs(activity: Option<&ActivitySnapshot>) -> Jobs {
             rows: long
                 .iter()
                 .take(MAX_JOB_ROWS)
-                .map(|job| running(job))
+                .map(|job| running(job, work))
                 .collect(),
             more: (hidden > 0).then(|| format!("+{hidden} more")),
             caption: Some(match long.len() {
@@ -530,16 +595,34 @@ pub(crate) fn jobs(activity: Option<&ActivitySnapshot>) -> Jobs {
         .iter()
         .find(|job| job.duration_ms >= LONG_JOB_MS && job.ended_ms_ago <= RECENT_JOB_MS)
         .map(|job| Jobs {
-            rows: vec![finished(job)],
+            rows: vec![finished(job, work)],
             more: None,
             caption: None,
         })
         .unwrap_or_else(quiet)
 }
 
-/// A running job: its elapsed time, and its detail and phase joined on the line under it.
-fn running(job: &ActiveActivity) -> JobRow {
+/// A running job: its elapsed time, and its detail and phase joined on the line under it; for
+/// catalog work, its place in its label and its work part.
+fn running(job: &ActiveActivity, work: Work<'_>) -> JobRow {
     let entry = &job.entry;
+    if let Some(info) = work_info(job, work.rates) {
+        return JobRow {
+            job_id: None,
+            cancelling: false,
+            label: work_label(entry, work.home),
+            trailing: format_elapsed(job.elapsed_ms),
+            detail: None,
+            progress: entry
+                .progress
+                .as_ref()
+                .and_then(|progress| progress.fraction)
+                .filter(|fraction| fraction.is_finite())
+                .map(|fraction| fraction.clamp(0.0, 1.0) as f32),
+            running: true,
+            work: Some(info),
+        };
+    }
     let parts: Vec<String> = entry
         .detail
         .iter()
@@ -561,26 +644,34 @@ fn running(job: &ActiveActivity) -> JobRow {
             .and_then(|progress| progress.fraction)
             .map(|fraction| fraction.clamp(0.0, 1.0) as f32),
         running: true,
+        work: None,
     }
 }
 
 /// A finished job: its duration, and how and when it ended. The time is whole seconds and at least
 /// one, because "0 s ago" reads as a mistake.
-fn finished(job: &RecentActivity) -> JobRow {
+fn finished(job: &RecentActivity, work: Work<'_>) -> JobRow {
     let how = match job.outcome {
         Outcome::Completed => "Finished",
         Outcome::Cancelled => "Cancelled",
         Outcome::Failed => "Failed",
     };
     let ago = job.ended_ms_ago.saturating_add(500) / 1000;
+    // Catalog work keeps the place it worked on, as it read while it ran.
+    let label = if followed(&job.entry) {
+        work_label(&job.entry, work.home)
+    } else {
+        job.entry.label.to_string()
+    };
     JobRow {
         job_id: None,
         cancelling: false,
-        label: job.entry.label.to_string(),
+        label,
         trailing: format_elapsed(job.duration_ms),
         detail: Some(format!("{how} {} s ago", ago.max(1))),
         progress: None,
         running: false,
+        work: None,
     }
 }
 
@@ -594,6 +685,18 @@ mod tests {
     use serde_json::json;
 
     const MS: u64 = 1_000_000;
+
+    /// The section with no catalog work read, as the tests of its own rules see it.
+    fn derive(expanded: bool, history: &PerformanceHistory) -> PerformanceModel {
+        super::derive(expanded, history, Work::default())
+    }
+
+    fn jobs(activity: Option<&ActivitySnapshot>) -> Jobs {
+        super::jobs(Work {
+            board: activity,
+            ..Work::default()
+        })
+    }
 
     /// A sample at `at_ms` on the monotonic clock with the given counters.
     fn sample(at_ms: u64, cpu_ms: u64, gpu_ms: u64, bytes: u64) -> ResourceReport {
@@ -641,9 +744,25 @@ mod tests {
     fn history(samples: impl IntoIterator<Item = ResourceReport>) -> PerformanceHistory {
         let mut history = PerformanceHistory::default();
         for sample in samples {
-            history.push(sample, ActivitySnapshot::default());
+            history.push(sample);
         }
         history
+    }
+
+    /// The section over this history with the board read as `board`.
+    fn derive_over(
+        expanded: bool,
+        history: &PerformanceHistory,
+        board: &ActivitySnapshot,
+    ) -> PerformanceModel {
+        super::derive(
+            expanded,
+            history,
+            Work {
+                board: Some(board),
+                ..Work::default()
+            },
+        )
     }
 
     fn close(found: &[f32], expected: &[f32]) -> bool {
@@ -1070,7 +1189,7 @@ mod tests {
             fraction: None,
             message: Some("preparing".into()),
         });
-        let no_fraction = running(&preparing);
+        let no_fraction = running(&preparing, Work::default());
         assert_eq!(no_fraction.progress, None, "no truthful fraction, no bar");
     }
 
@@ -1120,14 +1239,17 @@ mod tests {
             ("failed", "Failed"),
             ("completed", "Finished"),
         ] {
-            let row = finished(&recent("Rendering preview", outcome, 900, 10_000));
+            let row = finished(
+                &recent("Rendering preview", outcome, 900, 10_000),
+                Work::default(),
+            );
             assert_eq!(
                 row.detail.as_deref(),
                 Some(format!("{word} 10 s ago").as_str())
             );
         }
         assert_eq!(
-            finished(&recent("x", "completed", 900, 120))
+            finished(&recent("x", "completed", 900, 120), Work::default())
                 .detail
                 .as_deref(),
             Some("Finished 1 s ago"),
@@ -1164,15 +1286,11 @@ mod tests {
     #[test]
     fn one_job_line_keeps_room_for_its_detail() {
         let with = |active: Vec<ActiveActivity>| {
-            let mut history = PerformanceHistory::default();
-            history.push(
-                sample(0, 0, 0, 1 << 30),
-                ActivitySnapshot {
-                    active,
-                    ..ActivitySnapshot::default()
-                },
-            );
-            derive(true, &history)
+            derive_over(
+                true,
+                &history([sample(0, 0, 0, 1 << 30)]),
+                &board(active, Vec::new()),
+            )
         };
         assert!(with(Vec::new()).reserve_detail, "the quiet row");
         assert!(with(vec![active("Measuring histogram", 900)]).reserve_detail);
@@ -1193,19 +1311,13 @@ mod tests {
     /// three rows and at least one job line.
     #[test]
     fn collapsed_is_the_heading_alone() {
-        let mut history = history([sample(0, 0, 0, 1 << 30)]);
-        history.push(
-            sample(1_000, 900, 0, 1 << 30),
-            ActivitySnapshot {
-                active: vec![active("Developing RAW", 900)],
-                ..ActivitySnapshot::default()
-            },
-        );
-        let collapsed = derive(false, &history);
+        let history = history([sample(0, 0, 0, 1 << 30), sample(1_000, 900, 0, 1 << 30)]);
+        let board = board(vec![active("Developing RAW", 900)], Vec::new());
+        let collapsed = derive_over(false, &history, &board);
         assert!(!collapsed.expanded);
         assert!(collapsed.metrics.is_empty() && collapsed.jobs.is_empty());
         assert_eq!(collapsed.caption, None, "a stale count would lie");
-        let expanded = derive(true, &history);
+        let expanded = derive_over(true, &history, &board);
         assert_eq!(expanded.metrics.len(), 3);
         assert_eq!(expanded.caption.as_deref(), Some("1 job"));
         assert_eq!(expanded.version, history.version());
@@ -1218,7 +1330,7 @@ mod tests {
         let mut history = PerformanceHistory::default();
         let start = history.version();
         for index in 0..(MAX_SAMPLES as u64 + 5) {
-            history.push(sample(index, 0, 0, 0), ActivitySnapshot::default());
+            history.push(sample(index, 0, 0, 0));
         }
         assert_eq!(history.len(), MAX_SAMPLES);
         assert_eq!(history.samples().front().unwrap().monotonic_ns, 5 * MS);
@@ -1226,7 +1338,6 @@ mod tests {
         let before = history.version();
         history.clear();
         assert_eq!(history.len(), 0);
-        assert!(history.activity().is_none());
         assert_ne!(history.version(), before);
     }
 }

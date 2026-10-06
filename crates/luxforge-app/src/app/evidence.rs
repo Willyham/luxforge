@@ -3,6 +3,13 @@
 //! controls use, so a script proves the real paths rather than a parallel implementation.
 use crate::app::Before;
 use crate::app::outcome::{Outcome, Presented, Requested};
+mod develop;
+mod grid;
+mod long_work;
+mod loupe;
+mod select;
+mod select_catalog;
+mod select_missing;
 use crate::state::MenuTarget;
 use crate::state::palette::PaletteAction;
 use crate::{
@@ -68,6 +75,8 @@ pub(crate) struct Evidence {
     pub(crate) opens: u64,
     /// Steps still to run, in order.
     pub(crate) script: VecDeque<Step>,
+    /// Measurement scripts reserve time for repeated quiet windows, still bounded by the runner.
+    pub(crate) observing: bool,
     /// The one-based index of the running step; zero while the opens are still going.
     pub(crate) step: u64,
     /// What the running step waits for before its frame is captured.
@@ -122,6 +131,14 @@ pub(crate) struct Evidence {
     pub(crate) agent_wait: Option<AgentWait>,
     /// What a running `agent` step that sent a host method still waits for.
     pub(crate) agent_host: Option<AgentHostWait>,
+    /// What a running long-running-work step still waits for.
+    pub(crate) long_work_wait: Option<long_work::LongWorkWait>,
+    /// A running loupe `arrows` step's presses still to send. Its timer exists only
+    /// while presses remain after the first.
+    pub(crate) loupe_arrows: Option<loupe::HeldArrows>,
+    /// A running `grid_scroll` step's frames still to scroll. The window's frame
+    /// clock it rides is subscribed to only while it runs.
+    pub(crate) grid_scroll: Option<grid::GridScrolling>,
     pub(crate) sync: CaptureSync,
     /// What only a captured frame's state reports, from the outcomes the seams report.
     pub(crate) recorded: Recorded,
@@ -148,8 +165,6 @@ pub(crate) struct Recorded {
     /// oldest first, each with the wall-clock moment it was read, so a runner can re-derive the
     /// shown figures and the newest rate without trusting the model that derived them.
     pub(crate) performance: VecDeque<(u64, Value)>,
-    /// The Performance section's last `activity.list` answer as the owner sent it.
-    pub(crate) activity: Option<Value>,
 }
 
 /// A running `gpu_warmed` step: when it began, and the earliest and the latest it may end.
@@ -190,6 +205,7 @@ impl Evidence {
             dir,
             opens: queue.len() as u64,
             queue,
+            observing: script.iter().any(|step| matches!(step, Step::Observe(_))),
             script,
             step: 0,
             awaiting: None,
@@ -213,6 +229,9 @@ impl Evidence {
             agent: None,
             agent_wait: None,
             agent_host: None,
+            long_work_wait: None,
+            loupe_arrows: None,
+            grid_scroll: None,
             sync: CaptureSync::default(),
             recorded: Recorded::default(),
             gpu_identity: None,
@@ -223,6 +242,8 @@ impl Evidence {
 /// A native idle check in progress ([`luxforge_evidence::IdleStep`]): the settle, then the
 /// window, and what the window started from.
 pub(crate) struct IdleObservation {
+    pub(crate) require_idle: bool,
+    pub(crate) baseline: Value,
     pub(crate) settle_until: Instant,
     pub(crate) settle_ms: u64,
     pub(crate) ms: u64,
@@ -487,6 +508,7 @@ pub(crate) enum Settle {
     /// shows its figures rather than the dashes before them.
     Performance,
     PerformanceCancel,
+    Visibility,
     /// The Settings sheet's `flags.list` answered, or its last outstanding `flags.set` did.
     Flags,
     /// The preference writer's last outstanding `preferences.set` answered.
@@ -510,6 +532,19 @@ pub(crate) enum Settle {
     /// An agent step's host method has answered, and the desktop has followed it through the event
     /// sync: see [`AgentHostWait`].
     AgentHost,
+    /// Nothing the Select workspace asked the owner for is in flight, and, after an agent's pick,
+    /// the view has been evaluated again.
+    Select,
+    /// Missing originals' search has started, for Stop search to be pressed; then as `Select`.
+    MissingStop,
+    /// Long-running work shows what a long-work step waits for: a view's progress sheet, the sheet
+    /// sent to the background, or a cancelled job ended.
+    LongWork,
+    /// Nothing developing picks or the development set asked for is in flight, and the photograph
+    /// open in Develop has its exact frame on screen.
+    Develop,
+    /// The large previews Develop decodes ahead of a move are decoded.
+    DevelopAhead,
 }
 
 impl Settle {
@@ -531,6 +566,7 @@ impl Settle {
             Self::Quiet => "quiet",
             Self::Performance => "performance",
             Self::PerformanceCancel => "performance_cancel",
+            Self::Visibility => "visibility",
             Self::Flags => "flags",
             Self::Preferences => "preferences",
             Self::Theme => "theme",
@@ -540,6 +576,11 @@ impl Settle {
             Self::ExportListed => "export_listed",
             Self::Agent => "agent",
             Self::AgentHost => "agent_host",
+            Self::Select => "select",
+            Self::MissingStop => "missing_stop",
+            Self::LongWork => "long_work",
+            Self::Develop => "develop",
+            Self::DevelopAhead => "develop_ahead",
         }
     }
 
@@ -601,16 +642,12 @@ fn photo_drawn(
     }
 }
 
-/// Whether a Performance read's `activity.list` lists an export running past the section's
-/// half-second threshold, so the section shows it as long work.
-fn export_listed(activity: &Value) -> bool {
-    activity["active"].as_array().is_some_and(|active| {
-        active.iter().any(|job| {
-            job["kind"] == "export"
-                && job["elapsed_ms"]
-                    .as_u64()
-                    .is_some_and(|ms| ms >= crate::state::performance::LONG_JOB_MS)
-        })
+/// Whether the board the Performance section's job rows are drawn from (long work's, which the
+/// section's sampler reads at each tick) lists an export running past the section's half-second
+/// threshold, so the section shows it as long work.
+fn export_listed(board: &luxforge_core::ActivitySnapshot) -> bool {
+    board.active.iter().any(|job| {
+        job.entry.kind == "export" && job.elapsed_ms >= crate::state::performance::LONG_JOB_MS
     })
 }
 
@@ -620,9 +657,12 @@ impl Editor {
     /// deferred by a retiring photograph. Crop-stage and gallery captures have their own surface
     /// and do not inherit a stale diagnostic from the ordinary photograph.
     pub(super) fn capture_photo_ready(&self) -> bool {
-        if self.document.state.is_none()
+        // A cached preview drawn while a photograph of the development set prepares is the
+        // photograph on screen, though no document is open.
+        if (self.document.state.is_none() && self.develop.state.preview.is_none())
             || self.crop().is_some()
             || self.gallery_page().is_some()
+            || self.select_shown()
             || self.presentation.render_error.is_some()
         {
             return true;
@@ -786,6 +826,7 @@ impl Editor {
             || self.presentation.compare_after.is_some()
             || self.crop().is_some()
             || self.gallery_page().is_some()
+            || self.select_shown()
             || self.presentation.render_error.is_some()
         {
             return true;
@@ -854,12 +895,23 @@ impl Editor {
                     self.activity.backend.clone().unwrap_or(Value::Null)
                 });
             }
+            EvidenceMessage::VisibilityOperated(result) => {
+                if let Err(reason) = result {
+                    return self.fail_step(reason);
+                }
+                if let Some(operation) = &mut self.visibility.evidence_operation {
+                    operation.answered = true;
+                }
+                self.visibility_evidence_settle();
+            }
             EvidenceMessage::Tick => {
                 if self.evidence.as_ref().is_some_and(Evidence::suspended) {
                     return Task::none();
                 }
                 let expired = self.evidence.as_ref().is_some_and(|evidence| {
-                    let deadline = if evidence.step > 0 || !evidence.script.is_empty() {
+                    let deadline = if evidence.observing {
+                        Duration::from_secs(420)
+                    } else if evidence.step > 0 || !evidence.script.is_empty() {
                         SCRIPT_EVIDENCE_DEADLINE
                     } else {
                         EVIDENCE_DEADLINE
@@ -1022,6 +1074,7 @@ impl Editor {
                     scale,
                     state_panel,
                     tools_panel,
+                    self.filmstrip_shown(),
                 );
                 // Where Fit lays the photograph out: the canvas less the Fit padding.
                 let fit = view::canvas::fit_rect_in(canvas, scale);
@@ -1091,6 +1144,9 @@ impl Editor {
             }
             EvidenceMessage::AgentAnswered(result) => self.agent_answered(result),
             EvidenceMessage::AgentHostAnswered(result) => self.agent_host_answered(result),
+            EvidenceMessage::SelectAgentAnswered(result) => self.select_agent_answered(result),
+            EvidenceMessage::LoupeArrow => return self.loupe_arrow(),
+            EvidenceMessage::GridScrollFrame(at) => return self.grid_scroll_frame(at),
         }
         Task::none()
     }
@@ -1145,6 +1201,7 @@ impl Editor {
                     self.view_state.window,
                     self.session.workspace.state_panel,
                     self.session.workspace.tools_panel,
+                    self.filmstrip_shown(),
                 );
                 let revision = self.session.revision;
                 self.await_step(Settle::Session);
@@ -1161,7 +1218,8 @@ impl Editor {
                 task
             }
             Step::ViewIdle(step) => self.view_idle_step(step),
-            Step::Idle(step) => self.idle_check_step(step),
+            Step::Idle(step) => self.idle_check_step(step, true),
+            Step::Observe(step) => self.idle_check_step(step, false),
             Step::Workspace(workspace) => self.workspace_step(workspace),
             Step::Preview(preview) => self.preview_step(preview),
             Step::Compare(compare) => {
@@ -1221,6 +1279,7 @@ impl Editor {
             Step::PresetDelete(pick) => self.preset_delete_step(pick),
             Step::PresetImport { path } => self.preset_import_step(path),
             Step::Performance { expanded } => self.performance_step(expanded),
+            Step::WindowVisibility { action } => self.window_visibility_step(action),
             Step::PerformanceCancel { row } => {
                 let job = self
                     .workspace
@@ -1249,6 +1308,12 @@ impl Editor {
             Step::Capability(step) => self.capability_step(step),
             Step::Mask(step) => self.mask_step(step),
             Step::Export(step) => self.export_step(step),
+            Step::Select(step) => self.select_step(step),
+            Step::Missing(step) => self.missing_step(step),
+            Step::Loupe(step) => self.loupe_step(step),
+            Step::GridScroll(step) => self.grid_scroll_step(step),
+            Step::Catalog(step) => self.catalog_step(step),
+            Step::Develop(step) => self.develop_step(step),
         }
     }
 
@@ -3528,11 +3593,13 @@ impl Editor {
 
     /// Leave the editor alone, with evidence's own tick and capture streams suspended, for the
     /// step's settle and then its window ([`luxforge_evidence::IdleStep`]).
-    fn idle_check_step(&mut self, step: IdleStep) -> Task<Message> {
+    fn idle_check_step(&mut self, step: IdleStep, require_idle: bool) -> Task<Message> {
         if let Some(evidence) = &mut self.evidence {
             evidence.capture_pending = false;
             evidence.awaiting = None;
             evidence.idle = Some(IdleObservation {
+                require_idle,
+                baseline: Value::Null,
                 settle_until: Instant::now() + Duration::from_millis(step.settle_ms),
                 settle_ms: step.settle_ms,
                 ms: step.ms,
@@ -3540,6 +3607,14 @@ impl Editor {
             });
         }
         Task::none()
+    }
+
+    fn observation_counters(&self) -> Value {
+        json!({"wall_ms":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().map(|d|d.as_millis()),
+            "visibility":self.visibility.summary(),"performance":self.performance_summary(),
+            "long_work":self.long_work_summary(),"job_monitoring":self.owner.job_monitor_stats(),
+            "full_updates":self.full_updates,"updates":self.evidence.as_ref().map(|e|e.sync.updates),
+            "views":self.log.loop_timing.get().views})
     }
 
     /// The idle check's phase ends: the settle opens the window, counting from the surface's drawn
@@ -3564,6 +3639,8 @@ impl Editor {
                     .is_some_and(|warm_up| warm_up.running());
             let settle_until = observation.settle_until;
             if now >= settle_until && (!compiling || now >= settle_until + IDLE_COMPILE_WAIT) {
+                let measuring = !observation.require_idle;
+                let baseline = self.observation_counters();
                 let window = IdleWindow {
                     started: now,
                     until: now + Duration::from_millis(observation.ms),
@@ -3575,6 +3652,10 @@ impl Editor {
                 };
                 if let Some(idle) = self.evidence.as_mut().and_then(|e| e.idle.as_mut()) {
                     idle.window = Some(window);
+                    idle.baseline = baseline.clone();
+                }
+                if measuring {
+                    self.event("presentation_observation_started", || baseline);
                 }
             }
             return Task::none();
@@ -3590,15 +3671,21 @@ impl Editor {
         let drawn_delta = gpu.drawn_frames.saturating_sub(window.drawn);
         let views_delta = views.saturating_sub(window.views);
         // The window's start was an update of its own, whose view and frame it may count.
-        let passed = drawn_delta <= 1
-            && views_delta <= 1
-            && gpu.drawn_dissolve.is_none()
-            && self.gpu_settle.dissolve().is_none();
+        let require_idle = observation.require_idle;
+        let baseline = observation.baseline.clone();
+        let settle_ms = observation.settle_ms;
+        let window_ms = observation.ms;
+        let passed = !require_idle
+            || (drawn_delta <= 1
+                && views_delta <= 1
+                && gpu.drawn_dissolve.is_none()
+                && self.gpu_settle.dissolve().is_none());
         let detail = json!({
             "passed": passed,
-            "settle_ms": observation.settle_ms,
+            "wall_ms":std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok().map(|d|d.as_millis()),
+            "settle_ms": settle_ms,
             "compile_wait_ms": window.compile_wait_ms,
-            "window_ms": observation.ms,
+            "window_ms": window_ms,
             "drawn_frames_delta": drawn_delta,
             "views_delta": views_delta,
             "dissolve_drawn": gpu.drawn_dissolve.is_some(),
@@ -3609,9 +3696,15 @@ impl Editor {
             "process_cpu_percent_one_core": cpu_ns
                 .filter(|_| elapsed_ns > 0.0)
                 .map(|ns| 100.0 * ns as f64 / elapsed_ns),
+            "before":baseline,"after":self.observation_counters(),
         });
-        self.event("idle_check", || detail.clone());
-        self.note_step(json!({"idle_check": detail}));
+        let event = if require_idle {
+            "idle_check"
+        } else {
+            "presentation_observation_ended"
+        };
+        self.event(event, || detail.clone());
+        self.note_step(json!({(event): detail}));
         if let Some(evidence) = &mut self.evidence {
             evidence.idle = None;
         }
@@ -3892,6 +3985,7 @@ impl Editor {
             self.view_state.window,
             title.state_panel_open,
             title.tools_panel_open,
+            self.filmstrip_shown(),
         );
         let canvas = iced::Rectangle::new(
             iced::Point::new(left, top),
@@ -3966,6 +4060,23 @@ impl Editor {
             {
                 self.await_step(Settle::Session);
                 self.dispatch(Message::Key(event, status))
+            }
+            // A Select key waits for what it asked the owner for; a refused switch has nothing to
+            // wait for and is captured with its reason.
+            Some(Message::Select(_)) => {
+                let task = self.dispatch(Message::Key(event, status));
+                if self.select_shown() {
+                    self.await_step(Settle::Select);
+                } else {
+                    self.capture_next_frame();
+                }
+                task
+            }
+            // `D` and the development set's keys wait for what developing picks asked for.
+            Some(Message::Develop(_)) => {
+                let task = self.dispatch(Message::Key(event, status));
+                self.await_develop();
+                task
             }
             Some(Message::History(HistoryMessage::CompareToggle | HistoryMessage::CompareExit)) => {
                 self.await_step(Settle::Preview);
@@ -4051,8 +4162,8 @@ impl Editor {
     fn arm_performance_settle(&mut self) {
         let starts = performance::sampling(
             !self.performance.expanded,
-            self.session.workspace.state_panel && self.gallery_page().is_none(),
-        );
+            self.left_panel_shown() && self.gallery_page().is_none(),
+        ) && self.visibility.sampling_allowed();
         if starts {
             self.await_step(Settle::Performance);
         } else {
@@ -4070,6 +4181,68 @@ impl Editor {
         }
         self.arm_performance_settle();
         self.update(Message::Performance(PerformanceMessage::Toggle))
+    }
+
+    /// Exercise native window facts while the harness retains a transparent, background-only
+    /// process. Turning off the launch override makes this journey use the production gate.
+    fn window_visibility_step(&mut self, action: String) -> Task<Message> {
+        #[cfg(target_os = "macos")]
+        {
+            use luxforge_input::EvidenceVisibility as A;
+            let action = match action.as_str() {
+                "minimize" => A::Minimize,
+                "restore" => A::Restore,
+                "hide_window" => A::HideWindow,
+                "show_window" => A::ShowWindow,
+                "hide_app" => A::HideApp,
+                "show_app" => A::ShowApp,
+                _ => return self.fail_step("Unknown native visibility action"),
+            };
+            if self.evidence.is_none() || !self.visibility.facts.supported {
+                return self
+                    .fail_step("Native visibility evidence requires a supported evidence launch");
+            }
+            self.visibility.evidence_invisible_window = false;
+            self.visibility.evidence_operation = Some(super::visibility::EvidenceOperation {
+                action,
+                before_sequence: self.visibility.native_sequence,
+                answered: false,
+            });
+            self.await_step(Settle::Visibility);
+            iced::window::oldest()
+                .and_then(move |id| {
+                    iced::window::run(id, move |window| {
+                        luxforge_input::set_evidence_visibility(window, action).map(|_| ())
+                    })
+                })
+                .map(|result| Message::Evidence(EvidenceMessage::VisibilityOperated(result)))
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = action;
+            self.fail_step("Native visibility evidence is unsupported on this platform")
+        }
+    }
+
+    pub(super) fn visibility_evidence_settle(&mut self) {
+        let waiting = self
+            .evidence
+            .as_ref()
+            .is_some_and(|evidence| evidence.awaiting == Some(Settle::Visibility));
+        let observed = self
+            .visibility
+            .evidence_operation
+            .as_ref()
+            .is_some_and(|operation| {
+                operation.answered
+                    && operation.observed(self.visibility.facts, self.visibility.native_sequence)
+            });
+        if waiting
+            && observed
+            && (!self.performance_sampling() || self.performance.history.len() > 0)
+        {
+            self.settle_step(Settle::Visibility, "native_visibility_callback");
+        }
     }
 
     /// What opening the Settings sheet settles on: the flags it reads, unless it is already open,
@@ -4680,28 +4853,30 @@ impl Editor {
             // the frame before it, which could only show dashes.
             Outcome::PerformanceRead(read) => {
                 if let (Some(read), Some(evidence)) = (read, &mut self.evidence) {
-                    let PerformanceRead {
-                        resources,
-                        activity,
-                        wall_ms,
-                    } = *read;
+                    let PerformanceRead { resources, wall_ms } = *read;
                     let recorded = &mut evidence.recorded;
                     if recorded.performance.len() == 2 {
                         recorded.performance.pop_front();
                     }
                     recorded.performance.push_back((wall_ms, resources));
-                    let exporting = export_listed(&activity);
-                    recorded.activity = Some(activity);
-                    if exporting {
-                        self.settle_step(Settle::ExportListed, by);
-                    }
+                }
+                // The section's sampler read long work's board at this tick: a background export
+                // step settles once it lists the export as long work.
+                if self
+                    .long_work
+                    .state
+                    .board
+                    .as_ref()
+                    .is_some_and(export_listed)
+                {
+                    self.settle_step(Settle::ExportListed, by);
                 }
                 self.settle_step(Settle::Performance, by);
+                self.visibility_evidence_settle();
             }
             Outcome::PerformanceRestarted => {
                 if let Some(evidence) = &mut self.evidence {
                     evidence.recorded.performance.clear();
-                    evidence.recorded.activity = None;
                 }
             }
             Outcome::PerformanceCancelled { failed } => {
@@ -4777,6 +4952,8 @@ impl Editor {
                 }
                 self.settle_step(Settle::Export, by);
             }
+            Outcome::SelectSettled => self.select_settled(by),
+            Outcome::LongWorkShown => self.long_work_shown(by),
         }
     }
 
@@ -5153,30 +5330,38 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
                     .map(|_| Message::Evidence(EvidenceMessage::DoubleClickSecond)),
             );
         }
+        // A loupe `arrows` step's presses after its first, gated the same way.
+        subscriptions.extend(loupe::subscription(evidence));
+        // A `grid_scroll` step's frame clock, gated the same way.
+        subscriptions.extend(grid::subscription(evidence));
     }
     Subscription::batch(subscriptions)
 }
 
 /// After every message: a step waiting for quiet settles once this client has nothing in flight,
-/// and a capability step once its module's round trips and jobs have.
+/// a capability step once its module's round trips and jobs have, a loupe `arrows` step presses its
+/// first arrow once the look-ahead is warm, and the GPU identity hook follows the photograph at
+/// Fit.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     editor.settle_when_quiet();
     editor.settle_capability();
     editor.settle_agent_host();
+    let arrows = editor.loupe_arrows_when_warm();
     // The GPU identity hook follows the photograph at Fit, the one view it draws.
     let fit = matches!(editor.session.preview.view.zoom, luxforge_core::Zoom::Fit);
     let photo = editor
         .presentation
         .presenter
         .photo_for(editor.presentation.presented_content);
-    match editor
+    let identity = match editor
         .evidence
         .as_mut()
         .and_then(|evidence| evidence.gpu_identity.as_mut())
     {
         Some(hook) if fit => hook.follow(photo),
         _ => Task::none(),
-    }
+    };
+    Task::batch([arrows, identity])
 }
 
 #[cfg(test)]
@@ -5707,6 +5892,7 @@ mod tests {
             dir: std::env::temp_dir().join("luxforge-paced-slider-test"),
             queue: VecDeque::new(),
             opens: 1,
+            observing: false,
             script: parse_script(
                 r#"[{"slider":{"action":"set-basic","parameter":"exposure","values":[0.1,0.2,0.3],"interval_ms":8,"release":true}}]"#,
             )
@@ -5733,6 +5919,9 @@ mod tests {
             agent: None,
             agent_wait: None,
             agent_host: None,
+            long_work_wait: None,
+            loupe_arrows: None,
+            grid_scroll: None,
             sync: CaptureSync::default(),
             recorded: Recorded::default(),
             gpu_identity: None,
@@ -5969,7 +6158,6 @@ mod tests {
             epoch,
             result: Ok(Box::new(crate::app::tasks::PerformanceRead {
                 resources,
-                activity: json!({"sequence":0,"active":[],"recent":[],"untracked":0}),
                 wall_ms: 0,
             })),
         }));
@@ -5990,8 +6178,8 @@ mod tests {
         finish(editor, catalog);
     }
 
-    /// A background export step is captured on the first Performance read that lists the export
-    /// running past the section's half-second threshold, not before; one that ends before any read
+    /// A background export step is captured on the first Performance read whose board (long
+    /// work's) lists the export running past the section's half-second threshold, not before; one that ends before any read
     /// lists it fails, and with the section closed, which reads nothing, the step fails at once.
     #[test]
     fn a_background_export_step_is_captured_once_the_section_lists_it_running() {
@@ -5999,12 +6187,15 @@ mod tests {
             let (resources, _) =
                 crate::app::tasks::call(&editor.owner, editor.client, "resources.read", json!({}))
                     .unwrap();
+            // The board the section's read takes its rows from: long work's.
+            editor.long_work.state.observe(
+                serde_json::from_value(json!({"sequence":1,"active":[{"id":3,"kind":"export","label":"Exporting JPEG","detail":"a.jpg","phase":"rendering","elapsed_ms":elapsed_ms}],"recent":[],"untracked":0})).unwrap(),
+            );
             let epoch = editor.performance.epoch;
             let _ = editor.update(Message::Performance(PerformanceMessage::Sampled {
                 epoch,
                 result: Ok(Box::new(crate::app::tasks::PerformanceRead {
                     resources,
-                    activity: json!({"sequence":1,"active":[{"id":3,"kind":"export","label":"Exporting JPEG","detail":"a.jpg","phase":"rendering","elapsed_ms":elapsed_ms}],"recent":[],"untracked":0}),
                     wall_ms: 0,
                 })),
             }));
@@ -6042,8 +6233,13 @@ mod tests {
     fn a_performance_cancel_step_waits_for_the_buttons_own_command_answer() {
         let (mut editor, catalog, _, _) = scripted(r#"[{"performance_cancel":{"row":0}}]"#);
         let job_id = luxforge_core::JobId::new();
-        editor.performance.history.push(
-            luxforge_core::resources::read(&luxforge_core::RenderContext::new()),
+        editor
+            .performance
+            .history
+            .push(luxforge_core::resources::read(
+                &luxforge_core::RenderContext::new(),
+            ));
+        editor.long_work.state.observe(
             serde_json::from_value(json!({"sequence":1,"active":[{"id":1,"kind":"module.task","label":"Running task","job_id":job_id,"elapsed_ms":1600}],"recent":[],"untracked":0})).unwrap(),
         );
         editor.rederive();

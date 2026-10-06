@@ -247,6 +247,7 @@ const SHIPPED_SOURCES: &[&str] = &[
     "crates/luxforge-ui/src",
     "crates/luxforge-raw/src",
     "crates/luxforge-process/src",
+    "crates/luxforge-watch/src",
     "crates/luxforge-input/src",
     "crates/luxforge-evidence/src",
     "crates/luxforge-jpeg/src",
@@ -261,6 +262,7 @@ const SHIPPED_CRATES: &[&str] = &[
     "crates/luxforge-ui",
     "crates/luxforge-raw",
     "crates/luxforge-process",
+    "crates/luxforge-watch",
     "crates/luxforge-input",
     "crates/luxforge-evidence",
     "crates/luxforge-jpeg",
@@ -626,7 +628,11 @@ const SOURCE_RULES: &[SourceRule] = &[
     // (`EditorService::import`, `EditorService::prepare`) share. No service mode reads inline on a
     // cache miss, test code included: a test prepares through the helpers, never by hand. The
     // bounded read and the verified read are defined in `source.rs` and `artifacts/`, and `lib.rs`
-    // re-exports the first.
+    // re-exports the first. The other readers are the catalog's preview lane, whose design has
+    // it read browsed files off the editor's source cache on its own workers: its extraction reads
+    // a browsed JPEG for its grid and loupe tiers, and its 100% region a JPEG or a RAW, one RAW
+    // development at a time (`docs/design/catalog.md`, "The index and previews cache" and "The
+    // 100% region").
     SourceRule {
         name: "one-source-preparation",
         tokens: &[
@@ -642,13 +648,18 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-core/src/source.rs",
             "crates/luxforge-core/src/artifacts",
             "crates/luxforge-core/src/lib.rs",
+            "crates/luxforge-core/src/previews/extract.rs",
+            "crates/luxforge-core/src/previews/region.rs",
         ],
         mode: Match::Whole,
         tests: true,
         once: false,
         reason: "only the source work (SourceWork::run in crates/luxforge-core/src/editor/source.rs) \
-                 reads an original or an artifact, for the source worker and the blocking helpers \
-                 alike; prepare through EditorService::prepare or import, never inline",
+                 reads an original or an artifact for the editor, for the source worker and the \
+                 blocking helpers alike, and only the catalog's preview lane \
+                 (crates/luxforge-core/src/previews/extract.rs and region.rs) reads a browsed \
+                 file off the editor's cache; prepare through EditorService::prepare or import, \
+                 never inline",
     },
     // The desktop reads a committed crop, the stage it receives and the orientation ahead of it
     // from `recipe.describe` rows, and folds no geometry itself: its product code names neither
@@ -740,14 +751,15 @@ const SOURCE_RULES: &[SourceRule] = &[
         ],
         scope: &["crates/luxforge-app/src"],
         types: &["rs"],
-        allowed: &["crates/luxforge-app/src/app/evidence.rs"],
+        // The driver is `evidence.rs` and its own modules (`evidence/`), such as the Select steps.
+        allowed: &["crates/luxforge-app/src/app/evidence"],
         mode: Match::Whole,
         tests: false,
         once: false,
         reason: "a desktop seam reports what happened through Editor::outcome \
                  (crates/luxforge-app/src/app/outcome.rs); only the evidence driver \
-                 (crates/luxforge-app/src/app/evidence.rs) names a step's wait and settles, arms \
-                 or refuses it",
+                 (crates/luxforge-app/src/app/evidence.rs and its modules) names a step's wait and \
+                 settles, arms or refuses it",
     },
     // The one-megapixel parallel threshold and the 512 MiB frame limit every per-pixel pass picks
     // its path against are declared once, in luxforge-raw's limits module: luxforge-core depends on
@@ -838,10 +850,12 @@ const SOURCE_RULES: &[SourceRule] = &[
         allowed: &[
             "crates/luxforge-testbase",
             // The core's production blocking points: the source worker's plane gate, the
-            // latest-job worker and the reference tile worker.
+            // latest-job worker, the reference tile worker and the 100% focus check's one RAW
+            // development at a time.
             "crates/luxforge-core/src/source.rs",
             "crates/luxforge-core/src/latest.rs",
             "crates/luxforge-core/src/tiles/reference.rs",
+            "crates/luxforge-core/src/previews/region.rs",
             // Production RGBA handoff backpressure, not a test gate; keeps the overlay byte bound.
             "crates/luxforge-app/src/app/mask_coverage.rs",
             // The desktop's GPU tile worker, asleep while no call or export tile waits for it.
@@ -873,9 +887,10 @@ const SOURCE_RULES: &[SourceRule] = &[
     // ignored timing tests alike — is read from `luxforge_testbase::Distribution`'s nearest rank,
     // never from a sort-and-index of its own. The tokens are the shapes each hand-written
     // percentile, median or p50/p95 helper took, and a nearest-rank rank computed again. The Tone
-    // curve study's lifted-black noise spread is the one allowed second home: it is a code-spread
-    // figure, not a timing, and `luxforge-reference` may depend on no workspace crate
-    // (`independent-references`), so it cannot reach `Distribution`; it uses the same nearest rank.
+    // curve study's lifted-black noise spread and the RAW look study's corpus figures are the
+    // allowed second homes: they are study figures, not timings, and `luxforge-reference` may
+    // depend on no workspace crate (`independent-references`), so they cannot reach
+    // `Distribution`; they use the same nearest rank.
     SourceRule {
         name: "one-distribution",
         tokens: &[
@@ -893,6 +908,7 @@ const SOURCE_RULES: &[SourceRule] = &[
         allowed: &[
             "crates/luxforge-testbase/src/distribution.rs",
             "crates/luxforge-reference/tests/studies/curve.rs",
+            "crates/luxforge-reference/tests/studies/look.rs",
         ],
         mode: Match::Prefix,
         tests: true,
@@ -916,6 +932,15 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-core/src/jobs.rs",
             "crates/luxforge-core/src/latest.rs",
             "crates/luxforge-core/src/tiles/reference.rs",
+            // The catalog's bounded workers: the index lane and its watchers, the preview lane,
+            // and the develop lane (`docs/design/catalog.md`, "Architecture").
+            "crates/luxforge-core/src/index",
+            "crates/luxforge-core/src/previews",
+            "crates/luxforge-core/src/library",
+            // The folder watcher's one thread on Linux (blocking in `poll`) and on Windows
+            // (blocking on its completion port); macOS delivers on a dispatch queue instead.
+            "crates/luxforge-watch/src/linux.rs",
+            "crates/luxforge-watch/src/windows.rs",
             // The desktop's diagnostics log writer and its GPU tile worker.
             "crates/luxforge-app/src/diagnostics.rs",
             "crates/luxforge-app/src/app/gpu_tiles.rs",
@@ -1037,12 +1062,20 @@ const SOURCE_RULES: &[SourceRule] = &[
         tokens: &["Handle::from_rgba"],
         scope: &["crates", "xtask"],
         types: &["rs"],
-        allowed: &[],
+        allowed: &[
+            "crates/luxforge-ui/src/gallery_thumbnails.rs",
+            "crates/luxforge-app/src/app/select_previews.rs",
+            "crates/luxforge-app/src/app/loupe_frames.rs",
+        ],
         mode: Match::Whole,
         tests: true,
         once: false,
         reason: "an image handle made from pixels uploads a new texture each time it is made; the \
-                 photo surface owns the photograph's GPU uploads",
+                 photo surface owns the photograph's GPU uploads, the components gallery's \
+                 stand-in photographs are made once in gallery_thumbnails.rs, the Select \
+                 grid's decoded previews once each, when a decode lands, in \
+                 app/select_previews.rs, which holds each while its cell may be shown, and the \
+                 loupe's decoded frames and 100% regions likewise in app/loupe_frames.rs",
     },
     SourceRule {
         name: "project-name",
@@ -1159,6 +1192,17 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         tables: EVERY_TABLE,
         allowed: &[],
         reason: "luxforge-jpeg may depend on no workspace crate and no path",
+    },
+    // The watcher's platform code is a leaf the core's index uses: it builds against no workspace
+    // crate. Its tests may use the test base, which reaches no workspace crate either.
+    DependencyRule {
+        name: "watch-leaf",
+        refuses: Depends::WorkspaceCrate,
+        manifests: &["crates/luxforge-watch"],
+        tables: &[Table::Normal, Table::Build],
+        allowed: &[],
+        reason: "luxforge-watch may depend on no workspace crate and no path, except in its \
+                 [dev-dependencies]",
     },
     // One HTTP client: `ureq` and `ureq-proto` belong to the module transport in `luxforge-net`.
     DependencyRule {
@@ -1285,6 +1329,19 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         allowed: &[],
         reason: "only a [dev-dependencies] table may turn on luxforge-core's test-skip-disk-flush, \
                  so no build of a binary skips the flush of a durable write",
+    },
+    // Holding the core's work at a test's gate from outside it is for tests too, the same way.
+    DependencyRule {
+        name: "test-holds-only-in-tests",
+        refuses: Depends::Feature {
+            dependency: "luxforge-core",
+            feature: "test-holds",
+        },
+        manifests: &["", "crates/*", "xtask"],
+        tables: &[Table::Normal, Table::Build, Table::Workspace],
+        allowed: &[],
+        reason: "only a [dev-dependencies] table may turn on luxforge-core's test-holds, so no \
+                 build of a binary holds its work at a test's gate or links luxforge-testbase",
     },
     // Reading a plan's frame back outside the stage is for qualification: only a
     // `[dev-dependencies]` table turns the photo surface's `qualification` feature on, so the
@@ -3265,13 +3322,27 @@ fn frame() {}
     fn no_image_handle_is_made_from_pixels() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        // Another constructor may, and the rules file names the token without being read.
+        // Another constructor may, the gallery's stand-ins made once may, the Select grid's and the
+        // loupe's decoded previews made once each may, and the rules file names the token without
+        // being read.
         write_all(
             root,
             &[
                 (
                     "crates/luxforge-ui/src/photo.rs",
                     "let h = image::Handle::from_path(p);\nlet g = Handle::from_rgba8(p);\n",
+                ),
+                (
+                    "crates/luxforge-ui/src/gallery_thumbnails.rs",
+                    "Handle::from_rgba(w, h, render(&scene, ev))\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/select_previews.rs",
+                    "handle: Handle::from_rgba(width, height, rgba),\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/loupe_frames.rs",
+                    "handle: Handle::from_rgba(width, height, rgba),\n",
                 ),
                 (RULES_FILE, "tokens: &[\"Handle::from_rgba\"],\n"),
             ],
@@ -3285,6 +3356,10 @@ fn frame() {}
                 (
                     "crates/luxforge-app/src/view/canvas.rs",
                     "let h = image::Handle::from_rgba(w, h, pixels);\n",
+                ),
+                (
+                    "crates/luxforge-app/src/view/select.rs",
+                    "image: Some(&Handle::from_rgba(w, h, pixels)),\n",
                 ),
                 (
                     "crates/luxforge-ui/src/photo_tests.rs",
@@ -4533,6 +4608,42 @@ mod tests {
                 error.contains("luxforge-testbase/Cargo.toml:")
                     && error.contains("no workspace crate")
                     && error.contains("DEPENDENCY_RULES"),
+                "{what}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_watcher_builds_against_no_workspace_crate_but_its_tests_may_use_the_test_base() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = tmp.path().join("crates/luxforge-watch/Cargo.toml");
+        fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        let clean = "[package]\nname = \"luxforge-watch\"\n\n[dependencies]\n\n\
+                     [target.'cfg(target_os = \"linux\")'.dependencies]\n\
+                     rustix.workspace = true\n\n[dev-dependencies]\n\
+                     luxforge-testbase = { path = \"../luxforge-testbase\" }\n";
+        fs::write(&manifest, clean).unwrap();
+        let rule = &["watch-leaf"];
+        assert_eq!(read(tmp.path(), rule).unwrap(), (0, 1));
+        for (what, extra) in [
+            (
+                "the process counters",
+                "[dependencies]\nluxforge-process = { path = \"../luxforge-process\" }\n",
+            ),
+            (
+                "the core, for one platform",
+                "[target.'cfg(windows)'.dependencies]\nluxforge-core = { path = \"../luxforge-core\" }\n",
+            ),
+            (
+                "a path in its build",
+                "[build-dependencies]\nhelper = { path = \"../helper\" }\n",
+            ),
+        ] {
+            fs::write(&manifest, format!("{clean}\n{extra}")).unwrap();
+            let error = refusal(tmp.path(), rule, what);
+            assert!(
+                error.contains("luxforge-watch/Cargo.toml:")
+                    && error.contains("no workspace crate"),
                 "{what}: {error}"
             );
         }

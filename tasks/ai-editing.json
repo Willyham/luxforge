@@ -1,0 +1,1231 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "ai-editing",
+  "title": "AI editing: Remove, Select, generative fill and Replace, and sky replacement on local models",
+  "objective": "Bring AI editing into Luxforge on local, user-downloaded models behind one inference port and one analysis cache: detection-driven object removal with a fill that rebuilds structure rather than blur, automatic masks that list what each photograph contains, a generative tier with variations and prompted Replace, an optional deterministic sky replacement over the Select Sky mask, and the typed remote-provider shape delivered last, every result a durable artifact rendered without the model.",
+  "context_summary": "Decided by the owner on 2026-10-05 (docs/decisions.md, AI editing): the scope is accepted, models are chosen quality-first with no licence or provenance gate beyond a one-line use restriction, ONNX Runtime is the measured runtime, stale patches keep rendering, budgets are raised for quality rather than results reduced, remote consent is remembered per provider, and sky replacement is in scope. The plan runs in its own order once the GPU-first integration branch has merged, with the Corrections foundation scheduled beside its first stage. The plan builds on the September 2026 object removal research, the standalone object removal prototype measured on the M4 (probes/object-removal and docs/design/object-removal.md on the claude/object-removal-research-d3374b branch, not on main), the implemented module capabilities (resources, consent, tasks, derived artifacts, two capability lanes), the implemented Settings and flags surface, and the delivered mask model and Masks panel. It takes AI Remove over from the Corrections proposal and depends by name on that proposal's foundation: the repair stage with its bounded regional primitive, the Corrections brush descriptor and draft target, and the repair layer's frozen-patch operation with prefix invalidation; those land under the Corrections plan and this plan's Remove task waits for them to be merged; until the repair stage exists the analysis input is the developed content stage, which is the repair stage's output when there are no repairs. Under GPU-first every new coverage kind and composite needs a GPU program within the declared tolerance, which the mask-kind, Remove, sky and depth tasks each require. The GPU-first plan changes where the analysis input is rendered (a CPU render on the module lane until its stage 2 lands, the GPU's reduced stage afterwards) and requires every new layer to have a CPU reference and a GPU program within the declared tolerance. No cross-file task IDs are used.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Record the owner's twelve AI editing decisions and freeze the recorded defaults the plan runs on.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "Completed on 2026-10-05: the owner decided every question (docs/decisions.md, AI editing); the design's Decisions table records the outcomes, the roadmap's exclusion is lifted and the Corrections design carries the stale-patch rule.",
+        "The twelve decisions and their recommendations are the Decisions table of docs/design/ai-editing.md: scope, weights licence policy, training-data provenance, the inference runtime (ONNX Runtime through ort, measured by the prototype against tract, which loads one of the five pinned models), the segmenter and Fast fill model, the generative models and runtime, the effect region, stale patches, budgets, the generative hardware minimum, sky replacement and remote consent. The prototype's move onto main as the harness is a recorded default, not a decision, so the harness task is ready now and the measurements that inform decisions 4 to 6 can start before they are taken.",
+        "Decision 8 (stale patches) differs between this design (keep rendering the frozen patch, mark it stale, ask before export) and the Corrections design (fail render, sample and export explicitly); the owner picks one and the other design is updated to match.",
+        "Decision 2 gates which models later tasks may pin: OpenRAIL++-M removers and the SAM License are offered only as explicit, off-by-default downloads if admitted; non-commercial weights are never offered. Big-LaMa's weights are labelled Apache-2.0 only by a community mirror and its Places training images carry non-commercial and no-redistribution terms, which the owner weighs against MI-GAN's MIT weights.",
+        "Budgets (decision 9) are proposals replaced by measurements; a later task completes against the recorded figure, never against an unstated one."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "AI editing design",
+          "target": "docs/design/ai-editing.md",
+          "locator": "Decisions",
+          "relevance": "The questions, recommendations, recorded defaults and open questions to decide."
+        },
+        {
+          "kind": "file",
+          "label": "Object removal research",
+          "target": "docs/research/object-removal/README.md",
+          "locator": "Nine owner decisions and twelve M4 measurements gate the choice",
+          "relevance": "The research's decisions and the measurements the prototype has since taken."
+        },
+        {
+          "kind": "file",
+          "label": "Corrections proposal",
+          "target": "docs/design/corrections.md",
+          "relevance": "The repair stage, stale-prefix policy and consent decisions this plan shares."
+        },
+        {
+          "kind": "file",
+          "label": "Owner decisions",
+          "target": "docs/decisions.md",
+          "locator": "Open product questions",
+          "relevance": "Where each answer is recorded."
+        }
+      ],
+      "acceptance_criteria": [
+        "Each of the twelve decisions is accepted as recommended, changed with the design updated to match, or explicitly left as a recorded default the plan runs on, and docs/decisions.md records the outcome with its date.",
+        "The roadmap's exclusion of generative editing is lifted or kept in docs/plan.md according to decision 1, and the Corrections design's stale-prefix text agrees with decision 8.",
+        "Any question the owner leaves open stays listed as open in the design, and no dependent task treats it as decided."
+      ],
+      "test_strategy": {
+        "approach": "inspection",
+        "steps": [
+          "Review the Decisions table with the owner and record each answer.",
+          "Update the design, the roadmap and the Corrections design only for settled choices."
+        ],
+        "commands": [],
+        "expected_results": [
+          "One current design whose decisions are marked decided or open, with no proposal silently treated as accepted."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Bring the object removal prototype onto main as the AI harness and extend it with a corpus manifest and scoring.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "The prototype is the probes/object-removal Cargo workspace on the claude/object-removal-research-d3374b branch (its own lockfile, outside the editor's workspace, ort 2.0.0-rc.13 with the Core ML provider and tract 0.23.8): runtime::Session over interchangeable backends including fixed-shape Core ML copies, pinned models verified by size and SHA-256, the stroke-to-decision rules, the guided-filter region refinement, the LaMa fill pipeline with grain and pyramid blending, the removal-probe commands (models, inspect, segment, fill, remove, bench, parity) and the removal-lab window with its scripted hidden-window mode. Its README holds the M4 measurements of 2026-09-28 and 29.",
+        "The branch also adds docs/design/object-removal.md, a features row and an AGENTS map row. The design's prototype contract and measurements move into the probe's README (the AI editing design quotes the figures), the features row joins the AI editing row, and the AGENTS map carries the AI editing design rather than a second row.",
+        "The harness grows a corpus manifest naming the owner's private corpus (never committed) and a public CC0 subset with people, skies, water and small objects, and a score command: PSNR and SSIM in the region and the edge ring against the pasted-object ground truth, changed pixels outside the region (must be 0), and LPIPS only once its weights are pinned under acceptable terms. Later qualification tasks add their own commands to it.",
+        "The probe builds and tests with its own manifest path; the editor's quick tier is unchanged by it."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "AI editing design",
+          "target": "docs/design/ai-editing.md",
+          "locator": "Architecture",
+          "relevance": "What the harness measures for the later tasks and which figures it already holds."
+        },
+        {
+          "kind": "file",
+          "label": "Fixture conventions",
+          "target": "fixtures/README.md",
+          "relevance": "Private originals stay out of Git; CC0 corpora and generated fixtures are the public evidence."
+        },
+        {
+          "kind": "file",
+          "label": "Development guide",
+          "target": "docs/engineering/development.md",
+          "locator": "Repository rules",
+          "relevance": "The checks a new directory on main must pass or be scoped out of."
+        }
+      ],
+      "acceptance_criteria": [
+        "probes/object-removal is on main with its tests passing, its README carrying the prototype's contract and M4 measurements, and the branch's design doc retired into it; cargo xtask check and the quick tier pass unchanged.",
+        "A corpus manifest lists the private and CC0 images with their use, and the score command reports region and ring PSNR and SSIM, outside-region changes and, when available, LPIPS for a removal against its ground truth.",
+        "The harness runs with the models installed in the directory it names and refuses, by file, any model whose size or SHA-256 does not match."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Merge the branch, move the design text, and run the probe's tests with and without the models.",
+          "Score one known removal (the boy on the bridge) and one pasted-object case and check the report's fields."
+        ],
+        "commands": [
+          "cargo test --manifest-path probes/object-removal/Cargo.toml",
+          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "The harness is on main, documented, and scores a removal reproducibly."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Settle the Fast fill's quality on large regions by measuring larger model inputs, a finer second pass and detail transfer, and freeze the Fast pipeline.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002"
+      ],
+      "extra_context": [
+        "The prototype's fill is enlarged 8.9x for the boy on the bridge, 10 to 13x for a flower or water, 19.7x for a tall pole and 29.8x for a 60 MP quadrant because the pinned LaMa export takes a fixed 512x512 input and the crop is three times the region's longer side; grain is re-synthesised but structure is not. The full-precision Big-LaMa export scored within 0.1 dB of the quantized one and gave the same smeared deck, so the enlargement, not the weights, is the cause.",
+        "Remedies to measure in order: a Big-LaMa export at 1024 or 2048 or with dynamic shapes (the model is fully convolutional and coherent to about 1536 px; the CPU time grows with the input area); a second LaMa pass over the region in tiles at a finer scale with the coarse fill as context; HiFill-style detail transfer that keeps the model's low and middle frequencies and rebuilds high frequencies from the surrounding context by patch matching. MI-GAN runs at 2048 natively (1.2 s on an iPad Pro M2) with MIT weights and joins the comparison.",
+        "Quality is scored with the harness on the owner corpus and the pasted-object ground truth, plus a blinded owner preference on the bridge, the sunflowers, the kayaks and the road; time and peak memory are recorded per variant at 24 and 60 MP on the M4 with the host's load noted.",
+        "Fills remain byte-identical outside the region in every variant; a variant that changes an outside pixel is rejected."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "AI editing design",
+          "target": "docs/design/ai-editing.md",
+          "locator": "The Fast fill",
+          "relevance": "The problem, the three remedies and the acceptance the Fast tier needs."
+        },
+        {
+          "kind": "file",
+          "label": "Inpainting research",
+          "target": "docs/research/object-removal/inpainting-and-effects-removal.md",
+          "relevance": "LaMa's resolution behaviour, HiFill, the 60 MP strategy and the metrics."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Photo-sized measurement and recorded scope."
+        }
+      ],
+      "acceptance_criteria": [
+        "Each variant's region and ring scores, blinded preference, time and peak memory are recorded in the harness README with the host's load, for LaMa at 512, the larger inputs, the second pass, detail transfer and MI-GAN at 2048.",
+        "One Fast pipeline and model are frozen with the enlargement notice threshold, and the design's Fast fill section states the chosen pipeline and its measured cost; the owner's weight-licence flag on LaMa is answered or the MIT model is chosen.",
+        "Every measured fill changed zero pixels outside its region."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run each variant through the harness on the corpus and the synthetic ground truth with recorded parameters.",
+          "Hold the blinded comparison with the owner and record the preference per case."
+        ],
+        "commands": [
+          "cargo test --manifest-path probes/object-removal/Cargo.toml"
+        ],
+        "expected_results": [
+          "A frozen Fast pipeline whose large-object quality is measured and visibly better than the 512 fill, or a recorded finding that the Fast tier cannot and the generative tier must."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Qualify the Select models on the M4: the semantic model, the salient-subject model, the people detector, the parts model and depth, with the class mapping and presence rules.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002"
+      ],
+      "extra_context": [
+        "Candidates from the research and the design: EoMT on a DINOv2 backbone (MIT checkpoints; the ADE20K large model at 512 has 0.3 B parameters; a COCO-Stuff checkpoint preferred for cloud and snow classes) and a 2 MB MIT U2-Net-p sky model as a Sky-only alternative; BiRefNet general and BiRefNet_HR (MIT) for Subject; RF-DETR-Seg Nano or Small (Apache-2.0) for people instances refined by a box prompt to the segmenter; MediaPipe multiclass (Apache-2.0) for hair, face skin, body skin and clothes on a person crop; Depth Anything 3 Small or Base (Apache-2.0) for depth. Each is exported to ONNX where no export exists and run through the harness on the CPU provider and Core ML.",
+        "Measured per model at the design's analysis input (at most 1024 px): latency cold and warm, peak memory, Core ML placement and fp16 parity, download size, and, for the card, whether the licence restricts the person's use of their results (the owner's quality-first policy admits every candidate and discloses no training data); the guided upsampler's cost to 4096 px is measured once.",
+        "The class mapping table and the presence rules (area share and mean confidence) in the design are starting values tuned here on the corpus: per-class IoU against hand-marked sky, water and vegetation regions on a dozen photographs, and the false-presence rate on photographs without the class.",
+        "No model is pinned until its measured figures are recorded and its licence class is confirmed."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "AI editing design",
+          "target": "docs/design/ai-editing.md",
+          "locator": "Select: automatic masks",
+          "relevance": "The classes, the mapping table, the presence rules and the models proposed."
+        },
+        {
+          "kind": "file",
+          "label": "Semantic masking research",
+          "target": "docs/research/object-removal/semantic-masking.md",
+          "relevance": "Per-class model candidates, licences, resolution and refinement."
+        },
+        {
+          "kind": "file",
+          "label": "Detection and segmentation research",
+          "target": "docs/research/object-removal/detection-and-segmentation.md",
+          "relevance": "Detector-plus-segmenter refinement for people and the resolution strategy."
+        }
+      ],
+      "acceptance_criteria": [
+        "A qualification report in the harness records, per candidate, latency, memory, placement, parity, size and any use restriction, and names the model pinned for each class on measured quality, or a no-go with its reason.",
+        "The class mapping and presence thresholds are tuned and recorded with their per-class IoU and false-presence figures, and the design's table is updated to the recorded values.",
+        "Every pinned model has a resource descriptor draft with URL, bytes, SHA-256, licence, provenance URL and the one-line use restriction when the licence has one."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run each candidate through the harness on the corpus with the recorded settings, interleaving configurations and noting the host's load.",
+          "Mark classes on the evaluation photographs and compute IoU and false presence per class and threshold."
+        ],
+        "commands": [
+          "cargo test --manifest-path probes/object-removal/Cargo.toml"
+        ],
+        "expected_results": [
+          "A pinned, measured model set for Select with recorded class rules."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Qualify the generative tier: Moebius and FLUX.2 klein 4B on the M4 within the one-toolchain rule, with the shipped prompt embedding, candidates, memory and quality against the Fast fill.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002",
+        "TASK-003"
+      ],
+      "extra_context": [
+        "Moebius is a 0.22 B latent inpainter that takes an image and a binary mask, about 0.9 GB per checkpoint, Apache-2.0 in its repository and MIT on its model card (confirm which before pinning); FLUX.2 klein 4B is Apache-2.0 with a 7.75 GB bf16 transformer, a 168 MB VAE and the Qwen3-4B text encoder (8 GB bf16, 3.5 GB at 4-bit), no Fill checkpoint, a RePaint-style diffusers inpainting pipeline and an Apache-2.0 removal LoRA from fal trained on 100 pairs. Published Apple-silicon figures for klein at 1024 and 4 steps: about 17 s including load at 4-bit on an M4 Max with a 6.5 GB peak, 24 to 31 s on an M1 Max; none for an M4 Pro.",
+        "Runtime candidates: stable-diffusion.cpp (MIT; Metal, Vulkan, CUDA; GGUF; supports klein with Metal, its masked path for klein undocumented) through its Rust binding or directly, built from vendored pinned sources with the cc crate as LibRaw is, with no CMake and no Python; MLX behind a C ABI only as a macOS comparison. An ONNX export of klein does not run on Core ML. If no runtime builds within the rule, the task records it and the generative tier waits for the remote tier.",
+        "Measured: cold load, warm time per candidate at 512, 768 and 1024, three candidates in a row, peak memory, download size; quality on the corpus and the ground truth against the Fast fill as the fill-quality task froze it (the prototype's 512 px fill is scored too, so an early run is not wasted), with a blinded owner preference and a reference ceiling from a non-commercial model run for evaluation only; whether a precomputed empty-scene embedding reproduces the prompted result within tolerance so the text encoder can stay out of the removal download.",
+        "OSOR-SDXL and RORem are measured beside the Apache candidates under the owner's quality-first policy of 2026-10-05, and ObjectClear and TurboClear are measured too; every candidate is ranked on quality, and a model whose terms restrict the person's use is recorded with that restriction for its card and is never a default pick."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "AI editing design",
+          "target": "docs/design/ai-editing.md",
+          "locator": "Generative fill and Replace",
+          "relevance": "The two models, the runtime constraint, the prompt-free design and the budgets."
+        },
+        {
+          "kind": "file",
+          "label": "Inference runtimes research",
+          "target": "docs/research/object-removal/inference-runtimes.md",
+          "relevance": "stable-diffusion.cpp, MLX, candle and their licences and risks."
+        },
+        {
+          "kind": "file",
+          "label": "LibRaw build",
+          "target": "crates/luxforge-raw/build.rs",
+          "relevance": "The precedent for building vendored native sources with the cc crate and checked-in patches."
+        },
+        {
+          "kind": "file",
+          "label": "Dependency policy",
+          "target": "docs/engineering/dependencies.md",
+          "relevance": "Pinning, notices and the deferred review a new native dependency joins."
+        }
+      ],
+      "acceptance_criteria": [
+        "The report records, per model and runtime, load, time per candidate at each size, three-candidate time, peak memory, download size and the quality scores and blinded preference against the Fast fill, with the host's load.",
+        "A go or no-go is recorded for each model with the runtime that passed, its build route within the one-toolchain rule, its measured minimum machine memory, and whether the shipped embedding matches the prompted output.",
+        "Pinned resource descriptor drafts exist for every model that passed, the text encoder as a separate optional resource, each with its plain-language trade-off label and any use restriction."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Build each runtime from pinned sources in the harness, run the candidates on the corpus with fixed seeds, and record the figures.",
+          "Compare embedding-conditioned and prompted outputs, then hold the blinded comparison with the owner."
+        ],
+        "commands": [
+          "cargo test --manifest-path probes/object-removal/Cargo.toml"
+        ],
+        "expected_results": [
+          "A measured, licence-checked generative model set and runtime, or an explicit no-go that leaves generative fill to the remote tier."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Add the inference port to the core, the ONNX Runtime crate behind it, the deterministic fake, and the local-runtime capability with activation and unload.",
+      "status": "ready",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "The port is two traits the core declares and never implements natively: Session (open a verified model file on a named backend; run named tensors in and out; report placement and precision) and Generator (image, mask, optional prompt or embedding, seed; yield candidates one at a time, cancellably). A new crate, luxforge-onnx, implements Session over ort 2.0.0-rc.13 statically linked with the Core ML provider on macOS and DirectML on Windows, writes the fixed-shape Core ML copy of a model once at install time, keeps the compile cache under the application data root keyed by model hash, runtime version and OS build, and is handed to the host through HostConfig as luxforge-net's transport is. A deterministic fake backend implementing both traits lives in luxforge-core beside the proof modules and is served only to developer runs and tests: the core-free-test-base rule keeps every workspace crate out of luxforge-testbase and the core-builds-once rule keeps the core from naming luxforge-testkit, so the fake can live nowhere else.",
+        "A dependency rule row in xtask/src/repository.rs keeps ort, ort-sys and every runtime crate out of luxforge-core's manifest, with an allowed and a refused case in its tests; the prebuilt archive's SHA-256 and the published attestation are checked by xtask against the pinned version.",
+        "The local-runtime capability is defined by this consumer: a module declaring it may hold loaded sessions between tasks in a host-owned slot with a declared resident budget per model, is unloaded on a memory signal or after an idle interval (recorded default 10 minutes), is never loaded by module.list, a catalog open or a launch, and reports its resident set through module.status. The capability brings two generated methods, module.runtime.load {module_id, resource_id} (a tool's warm-up on pick) and module.runtime.unload {module_id, resource_id?} (the Models tab's Unload now), so loading and releasing are requests any client can send. Registration stops refusing the capability by name; managed-storage stays refused.",
+        "Nothing in this task renders, and no model ships: it is proven with the fake and with one pinned model file the test downloads nowhere (the harness's installed EfficientViT-SAM, opt-in)."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "AI editing design",
+          "target": "docs/design/ai-editing.md",
+          "locator": "The inference port and runtime",
+          "relevance": "The port, the runtime recommendation and how each cost of ort is held."
+        },
+        {
+          "kind": "file",
+          "label": "Capability descriptor",
+          "target": "crates/luxforge-core/src/capabilities/descriptor.rs",
+          "relevance": "Where local-runtime is refused by name today and the capability kinds it joins."
+        },
+        {
+          "kind": "file",
+          "label": "Transport injection",
+          "target": "crates/luxforge-net/src/lib.rs",
+          "relevance": "The pattern for a native crate the core never links, handed in through HostConfig."
+        },
+        {
+          "kind": "file",
+          "label": "Repository rules",
+          "target": "xtask/src/repository.rs",
+          "relevance": "The dependency rule table a runtime-free core joins."
+        },
+        {
+          "kind": "file",
+          "label": "Module capabilities design",
+          "target": "docs/design/module-capabilities.md",
+          "locator": "Lifecycle, jobs and resources",
+          "relevance": "The activation the contract deferred and the lanes a loaded session serves."
+        }
+      ],
+      "acceptance_criteria": [
+        "luxforge-core builds and tests without any runtime crate, the new dependency rule refuses one, and the desktop and luxforge-json link luxforge-onnx through HostConfig; the developer-only fake in the core drives every core test and scenario that needs a session or a generator, and luxforge-testbase's manifest is unchanged.",
+        "On the M4 the opt-in test opens the pinned segmenter on the CPU provider and on Core ML over the fixed-shape copy, matches the two within the recorded tolerance, and reports placement and precision.",
+        "A module declaring local-runtime loads once ahead of its tasks through module.runtime.load or on its first task, is reported by module.status, unloads through module.runtime.unload, after the idle interval and on the memory signal, and is never loaded by module.list, a catalog open or a launch; the capability's registration rules and the archive hash check have tests.",
+        "The performance-rules checklist is answered: no owner-thread or interface-thread inference, bounded resident memory, cancellation between runs."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Unit-test the port against the fake, the dependency rule, the activation lifecycle and the hash check.",
+          "Run the opt-in native test with the installed segmenter on both providers and compare outputs."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-core",
+          "cargo test --locked --package luxforge-onnx"
+        ],
+        "expected_results": [
+          "A runtime-free core with one port, one native implementation and one fake, and a defined local-runtime capability."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Deliver the model manager: multi-file resources, resumable hash-checked downloads, plain-language model choices with any use restriction in the disclosure, and the Settings Models tab.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-006"
+      ],
+      "extra_context": [
+        "A resource today is one file from one pinned URL, staged, length- and SHA-256-checked, validated by the module's hook, installed under <data>/modules/resources/<module>/<resource>/<version>/ with installed.json last; an interrupted download restarts. This task adds several files per resource installed together or not at all, resumption of a matching partial transfer with the whole-file hash still checked at the end, and the fixed-shape Core ML copy written after install as part of the resource's directory.",
+        "The resource descriptor gains a one-line use restriction, present only when the licence restricts how the person may use their results, a plain-language trade-off label for every choice between models (\"Finds smaller objects; slower to start\", never a technical name alone), and runtime requirements (backend, precision, resident budget, minimum machine memory); the disclosure before a download shows the size, the destination and the restriction line, and no training-data note (owner, 2026-10-05). A machine below a model's minimum cannot install it and sees the requirement.",
+        "Settings gains a Models tab: every known model with its state, size, trade-off label, any use restriction and Remove; the resident set with Unload now (module.runtime.unload); each feature's default tier; this machine's memory against each minimum. It reads module.resource.list and module.status and writes through module.resource.install, module.resource.remove and module.runtime.unload; nothing in it changes a recipe.",
+        "Grants stay per resource version and origin; nothing is fetched without one, and the quota across modules stays 16 GiB."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "AI editing design",
+          "target": "docs/design/ai-editing.md",
+          "locator": "Models: manifest, download, activation and memory",
+          "relevance": "The licence classes, the lazy activation and the Models tab."
+        },
+        {
+          "kind": "file",
+          "label": "Resource installs",
+          "target": "crates/luxforge-core/src/capabilities/resources.rs",
+          "relevance": "The staging, verification, quota and timeouts a resumable multi-file install extends."
+        },
+        {
+          "kind": "file",
+          "label": "Settings and flags design",
+          "target": "docs/design/settings-and-flags.md",
+          "relevance": "The Settings sheet a Models tab joins and the flag registry the policy flag uses."
+        },
+        {
+          "kind": "file",
+          "label": "Module capabilities design",
+          "target": "docs/design/module-capabilities.md",
+          "locator": "Configuration contract",
+          "relevance": "The resource declaration and its registration rules."
+        }
+      ],
+      "acceptance_criteria": [
+        "A multi-file resource installs atomically or not at all; an interrupted transfer resumes from its offset and is refused if the final hash differs; stale staging is removed; the fixed-shape copy is written once and recorded.",
+        "The disclosure and the resource card show size, destination, the trade-off label, the use restriction when there is one and the requirements, and no training-data note; a model above the machine's memory cannot be installed and says why.",
+        "The Models tab lists, removes and unloads models through module.resource.remove and module.runtime.unload, each shown by Copy as JSON request, and a settings smoke frame shows it with its state correlated to module.status.",
+        "The user-guide and capability design sections on resources describe the new fields, the plain-language labels and the resumable install."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Lifecycle tests over the loopback test server: multi-file, resume, hash mismatch after resume, quota, policy flag, machine minimum.",
+          "Extend the settings smoke scenario to the Models tab and read its frames against state."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-core",
+          "cargo test --locked --package luxforge-app",
+          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Models download on request, resume, verify and are managed from Settings, with every term disclosed first."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Add the model-selection mask kind, artifact binding for mask components, and the shared guided upsampler with its reference.",
+      "status": "ready",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "The kind is the masking workspace's phase E, position-based: model {artifact, class, model, model_version, input_fingerprint, prefix_hash, feather, threshold}, coverage the 8-bit alpha artifact sampled bilinearly, thresholded and feathered by the frozen smooth, bounds from the artifact's non-zero rectangle, min_feature_px from its resolution; a row of COMPONENT_KINDS in mask/mod.rs and its own file, with mask.create-model, mask.add-model and mask.set-model generated. The component-kind repository rule confines its tokens.",
+        "The kind table's compile binding carries no artifacts today and artifacts are found from layers only: the binding widens so every place a mask is compiled (the registry's stack compile, the preview worker, the coverage field) passes prepared artifacts, admission checks a component's artifact exists, the prepared-artifact cache pins it for every masked layer that draws the mask, and retention keeps it while any entry references it.",
+        "The guided upsampler is one pure-Rust function in the core (He and Sun's fast guided filter over a bounded window with a confidence-weighted prior), transcribed in f64 in luxforge-reference with bit-identity tests, used by every model mask and every removal region; the prototype's refine module is its starting point. Its guide is a luminance raster at the output's own resolution (the analysis task's cached guide at the artifact size for a selection; the source-resolution window for a removal region), never the 1024 px analysis input, so edges the reduction lost are recovered.",
+        "mask.list reports the component's model, version, computed-at time and staleness reason; Recompute and Keep are the panel's actions over the task and mask.set-model.",
+        "The GPU preview admits a mask component only with a well-formed coverage program (GpuProgramKind::Coverage in render/gpu/plan.rs), so the model kind ships one: the artifact bound as a texture, sampled, thresholded and feathered in WGSL, compared with the CPU coverage within the declared tolerance on the corpus. mask.add-model and mask.set-model check that the stack's artifacts bind within the 256 MiB prepared-artifact budget and refuse by name past it.",
+        "GPU-first's release gate, cargo xtask gpu-qualification (built on the GPU-first integration branch and run by verify --tier rendered), is how a GPU coverage program is held to the reference; the kind's CPU coverage is the reference renderer's, exact against its f64 transcription, not a second production path. The artifact texture is charged to the 2 GiB GPU-preview budget.",
+        "Corpus stacks carrying a model mask, with a small checked-in alpha fixture, join fixtures/preview/corpus.json so the gate judges the coverage program; the gate judges only what the corpus holds."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Masking workspace: model selections",
+          "target": "docs/design/masking-workspace.md",
+          "locator": "Model selections (phase E)",
+          "relevance": "The component shape, staleness and what a new kind still needs."
+        },
+        {
+          "kind": "file",
+          "label": "Kind table",
+          "target": "crates/luxforge-core/src/mask/mod.rs",
+          "relevance": "COMPONENT_KINDS and the compile binding to widen."
+        },
+        {
+          "kind": "file",
+          "label": "Mask reference",
+          "target": "crates/luxforge-reference/src/mask.rs",
+          "relevance": "Where the kind's and the upsampler's f64 references live."
+        },
+        {
+          "kind": "file",
+          "label": "Masking design",
+          "target": "docs/design/masking.md",
+          "locator": "Component kinds",
+          "relevance": "The kind-conformance suite a new kind must pass."
+        },
+        {
+          "kind": "file",
+          "label": "Prepared artifacts",
+          "target": "crates/luxforge-core/src/editor/artifact_store.rs",
+          "relevance": "Binding, pinning and retention a mask-referenced artifact joins."
+        }
+      ],
+      "acceptance_criteria": [
+        "The model kind passes the kind-conformance suite, its coverage equals its f64 reference bit for bit, render.sample equals the rendered byte inside, outside and across its feather, the overlay and proxy rules treat it like a gradient, and its GPU coverage program matches the CPU coverage within the declared tolerance natively, so a stored selection never forces the preview off the GPU.",
+        "A recipe whose mask references an artifact is admitted, rendered, sampled and exported with the artifact bound; a missing or corrupt artifact fails by name; retention keeps it across entries, branches, versions and restore; reopen renders it without the model.",
+        "The guided upsampler is bit-identical to its reference on synthetic fixtures at 1024 and 4096 px with a guide at the output resolution and allocates only its window; a stack whose artifacts exceed the bind budget is refused at mask.add-model by name.",
+        "mask.list reports the model fields and the staleness reason; the performance-rules checklist is answered."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Kind-conformance, reference and sample-equals-render tests on synthetic alpha artifacts.",
+          "Artifact binding tests through publish, commit, reopen, history and corruption on a fixture mask."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-core",
+          "cargo test --locked --package luxforge-reference"
+        ],
+        "expected_results": [
+          "A stored raster selection is a first-class mask component with exact coverage and durable artifacts."
+        ]
+      }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Implement the analysis tasks and cache, the hover worker and the picker query, and the object selection task on the luxforge.ai module.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004",
+        "TASK-006",
+        "TASK-007",
+        "TASK-008"
+      ],
+      "extra_context": [
+        "Three tasks run on the module lane, one per installed model set, because a task's declared resources must all be installed before it may run: task.analyse {asset_id} runs the segmenter's encoder (Remove and Objects); task.analyse-scene {asset_id} runs the semantic model, the salient-subject model (Subject, and Background as its inverse) and the people detector (Select); task.analyse-depth {asset_id} runs the depth model. Each renders the analysis input (the repair stage's output reduced to at most 1024 px, a bounded CPU render until the GPU-first stages supply the reduced stage; the developed content stage until the Corrections repair stage exists, which is the same thing when there are no repairs) and the one-channel luminance guide at the artifact resolution (at most 4096 px, at most 16 MiB), and fills a bounded in-memory cache (recorded default 256 MiB, least recently used) keyed by source fingerprint, repair-prefix hash (spatial::prefix_hash over the layers before the first colour layer) and model identity and version. Each result lists what it found (classes with area share and confidence, the subject, people with bounds, model versions); an unchanged input answers from the cache, and the cache's bytes count in the machine-memory minimum beside the resident models.",
+        "The hover worker is one thread of its own, started with the first Remove or Objects pick and stopped with it, holding the loaded decoder and the current embedding and keeping only the latest pointer position; its output is view state. It joins the declared worker homes in the thread-spawn repository rule.",
+        "query.pick-object {asset_id, prompt} is the picker's programmatic form: a point, points with labels, a box or a stroke become prompts as the prototype's stroke module does, candidates are scored on predicted IoU, stability, stroke coverage and object coverage, parts yield to wholes, duplicates are suppressed largest first, and the decision is One, Several or Nothing with fixed tie order. task.select-object publishes the chosen candidate as an alpha artifact through the guided upsampler against the cached guide.",
+        "The desktop's hover overlay is sampled from the candidate's logits over its bounds, under a pixel cap, so the frame uploads within its budget; the hover's pointer-to-overlay latency is measured in a hidden window as the prototype measured it.",
+        "The analysis cache's budget adds a memory target, so it is a named constant in the architecture's limits table and an owner-accepted budget (decisions, 2026-09-30: a cache whose budget adds to a memory target needs the owner's acceptance), not a private default.",
+        "Every pixel read goes through the GPU-first tile contract (luxforge_core::tiles: TileService, ReferenceTiles, built on the integration branch for stage 4 and not yet wired): the analysis input is reduced on the module lane from the stage's bands, the guide read at the artifact resolution, each answer naming the renderer that drew it, which the cache and every artifact's provenance record; no private render path is added."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "AI editing design",
+          "target": "docs/design/ai-editing.md",
+          "locator": "Analysis and the per-photo cache",
+          "relevance": "The analysis input, the cache key and bounds, and the hover and picker contract."
+        },
+        {
+          "kind": "file",
+          "label": "Prefix hash",
+          "target": "crates/luxforge-core/src/render/spatial.rs",
+          "relevance": "spatial::prefix_hash, the repair-prefix identity the cache and the stale rules use."
+        },
+        {
+          "kind": "file",
+          "label": "Latest-job worker",
+          "target": "crates/luxforge-core/src/latest.rs",
+          "relevance": "The latest-wins worker shape the hover worker follows."
+        },
+        {
+          "kind": "file",
+          "label": "Job table",
+          "target": "crates/luxforge-core/src/jobs.rs",
+          "relevance": "The module lane the analysis and selection tasks run on, and why hover does not."
+        },
+        {
+          "kind": "file",
+          "label": "Detection and segmentation research",
+          "target": "docs/research/object-removal/detection-and-segmentation.md",
+          "locator": "Turning a painted brush stroke into prompts, and deciding one object or several",
+          "relevance": "The stroke-to-decision rules."
+        }
+      ],
+      "acceptance_criteria": [
+        "The three analysis tasks fill the cache off the owner and interface threads, each refusing not-ready only for its own model set, answer from it for an unchanged input, invalidate on a source, prefix or model change, cache the guide beside the embedding, and never exceed the budget; their results list classes, the subject, people and versions.",
+        "query.pick-object returns the same candidates and decision as the desktop's hover and stroke for the same prompt, proven by the prototype's recorded decision fixtures ported as tests; task.select-object publishes an artifact identical across two runs.",
+        "On the M4 with the pinned segmenter, hover draws within the recorded budget (p50 20 ms, p95 33 ms pointer to overlay, or the owner's figure) in a hidden-window scenario, and analysis is ready within its budget after the tool is picked.",
+        "The fake runtime drives the whole path in CI; the performance-rules checklist is answered, including the hover worker's single mailbox and the cache's accounting."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Unit tests for the cache key and bounds, the decision rules on recorded fixtures, and parity between the hover path and the query.",
+          "A hidden-window scenario over the fake, then an opt-in native run with the real segmenter recording the latencies."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-core",
+          "cargo test --locked --package luxforge-app"
+        ],
+        "expected_results": [
+          "One analysis, one picker and one cache serve hover, Objects and Remove, with API parity and measured latency."
+        ]
+      }
+    },
+    {
+      "id": "TASK-010",
+      "description": "Deliver Select: the class and person selection tasks, the dynamic New mask Select group, People pins, the model rows with Recompute and Keep, and the ai-select scenario.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-008",
+        "TASK-009"
+      ],
+      "extra_context": [
+        "task.select-class {asset_id, class} and task.select-person {asset_id, person} read the analysis cache, refine the class probabilities or the person's detector mask (refined by a box prompt to the segmenter inside its bounds) through the guided upsampler to the artifact size, and publish the 8-bit alpha artifact with class, model identity, version, input fingerprint and dimensions in its metadata; the desktop then sends mask.add-model as one entry labelled with the class. Background is Subject's artifact with the component inverted, no second task.",
+        "The New mask menu's Select group draws exactly the classes the analysis result lists above the recorded presence thresholds, People one entry per detected person, Objects always; while analysis runs the group says so; when the Select models are not installed one entry opens their resource card with the combined size. The user guide names the class vocabulary.",
+        "A model component's row shows class, model, version and computed-at time, and Needs recompute with its reason when the source, the repair prefix or the installed model's version differs; Recompute runs the task and mask.set-model as one entry, Keep leaves it; the stored selection renders meanwhile.",
+        "The ai-select smoke scenario runs over the fake runtime with two fixtures, one with a sky and one without, and checks the Select group, a created Sky mask's coverage overlay and thumbnail, a brushed subtraction on it, a person entry, and the Needs recompute state after a staged source change."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "AI editing design",
+          "target": "docs/design/ai-editing.md",
+          "locator": "Select: automatic masks",
+          "relevance": "The classes, the menu, the tasks and the staleness rules."
+        },
+        {
+          "kind": "file",
+          "label": "Masking workspace",
+          "target": "docs/design/masking-workspace.md",
+          "locator": "The Masks panel",
+          "relevance": "The panel rows, menus and density the Select group and model rows join."
+        },
+        {
+          "kind": "file",
+          "label": "Lightroom masking research",
+          "target": "docs/research/lightroom/geometry-masks-and-retouching.md",
+          "locator": "A mask is an editable selection plus an effect",
+          "relevance": "Recomputing an automatic selection versus preserving an accepted one."
+        },
+        {
+          "kind": "file",
+          "label": "User guide",
+          "target": "docs/user-guide.md",
+          "relevance": "The Masks chapter that says no model-based selection exists, to be rewritten when Select lands."
+        }
+      ],
+      "acceptance_criteria": [
+        "Each Select entry creates a mask with a model component in one entry, through the same tasks and commands an API client uses; the group lists only present classes and one entry per person; Background is inverted Subject.",
+        "A selection's artifact is identical across two runs on the same input and model; Needs recompute appears for a changed source, prefix and model version with the reason, Recompute replaces the artifact in one entry, Keep leaves it and the mask keeps rendering; an uninstalled model still renders every stored selection.",
+        "The ai-select scenario passes with frames correlated to state; the parity tests cover every new control; on the M4 with the pinned models a class selection completes within its recorded budget at 24 and 60 MP.",
+        "The user guide, feature status and masking workspace describe Select as delivered, with the class vocabulary."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Drive Select through the desktop and luxforge-json over the fake, then natively with the pinned models on the corpus.",
+          "Run the ai-select scenario and the mask scenarios, and review the Sky and person masks on the corpus as images."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-core",
+          "cargo test --locked --package luxforge-app",
+          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Automatic masks that follow the photograph, editable like any mask, durable without the model."
+        ]
+      }
+    },
+    {
+      "id": "TASK-011",
+      "description": "Deliver Remove on the Fast tier: the canvas mode, the selection with its effect region, pins, the fill task with candidates, Accept into the repair layer, and the remove scenario.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003",
+        "TASK-009"
+      ],
+      "extra_context": [
+        "This task waits for the Corrections foundation to be merged: the repair stage with its bounded regional primitive, the Corrections brush descriptor and draft target, and the repair layer's frozen-patch operation with prefix invalidation. It adds no second repair stage and no second brush; a Remove selection is a Corrections draft and an accepted fill is a patch operation in the repair layer.",
+        "Remove is a takeover canvas mode of the Corrections module (mode strip, proposed letter Q), with hover highlight, click, Alt-click, box and stroke through the picker; the selection is the object core, the stroke footprint and an effect region (the contact-band suggestion, off until the person turns Detect shadow on, refined with Add and Subtract); Several shows numbered pins with Confirm and Cancel; Nothing removes the painted footprint.",
+        "task.fill-fast {asset_id, selection, effect_region?} runs the frozen Fast pipeline on the module lane against a held revision and prefix (the generative and remote tiers are separate tasks of the same request and result shape, so an optional model is never a prerequisite of Fast); its result is candidates addressed by job and index, at most 4 of at most 64 MiB per job and 1 GiB across jobs, the oldest finished job's released first and reported on job.read, never dropped because another job completed or the tool was left; the Corrections accept action rechecks revision and prefix, publishes the chosen patch as an artifact and commits one operation labelled Remove, storing the selection, transforms, prefix hash and provenance. Escape cancels the job; a late, cancelled or stale candidate cannot touch the recipe.",
+        "The enlargement notice shows when the crop's enlargement exceeds the recorded threshold; the Fast tier's models install from the Remove mode's resource card. The decision-8 outcome (stale patches) is implemented as recorded.",
+        "Admission: a region of at most 32 MP and half the frame; the crop is bounded only by the frame and reduced to the model's input size, with the enlargement notice past the recorded threshold. Accept checks that the stack's artifacts bind within the 256 MiB prepared-artifact budget and refuses by name past it. The repair composite's GPU program is the Corrections foundation's; this task proves the committed patch renders within the declared tolerance on the GPU on the corpus, display, samples and export alike.",
+        "The held-candidate budget is likewise a named constant in the limits table and an owner-accepted budget; the committed patch is held to the reference by cargo xtask gpu-qualification for the picture, and for samples and export once the GPU-first stages that render them land.",
+        "The fill's crop of the repair operation's input stage is read in linear values through the same tile contract; the patch's provenance records the renderer that drew it. Corpus stacks carrying a repair patch (with a checked-in patch fixture the fake backend reproduces) join fixtures/preview/corpus.json so gpu-qualification judges the composite."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "AI editing design",
+          "target": "docs/design/ai-editing.md",
+          "locator": "Remove",
+          "relevance": "The flow, the region, the Fast fill, candidates, Accept and stale patches."
+        },
+        {
+          "kind": "file",
+          "label": "Corrections proposal",
+          "target": "docs/design/corrections.md",
+          "locator": "Editing and persistence contract",
+          "relevance": "The repair stage, the frozen patch and the draft lifecycle Remove commits through."
+        },
+        {
+          "kind": "file",
+          "label": "Path primitives",
+          "target": "crates/luxforge-core/src/path.rs",
+          "relevance": "The stroke capture and store the Remove brush shares."
+        },
+        {
+          "kind": "file",
+          "label": "Develop workspace",
+          "target": "docs/design/develop-workspace.md",
+          "locator": "Tool array",
+          "relevance": "Canvas modes, the mode strip and the draft bar."
+        },
+        {
+          "kind": "file",
+          "label": "Keymap",
+          "target": "crates/luxforge-app/src/app/keymap.rs",
+          "relevance": "The one table the Remove letter joins."
+        }
+      ],
+      "acceptance_criteria": [
+        "Hover, click, box and stroke build the selection and decide One, Several or Nothing exactly as query.pick-object does; pins, Confirm, Detect shadow, Add and Subtract, Cancel and Accept each send a request Copy as JSON request shows, and the same journey runs through luxforge-json.",
+        "A fill holds its revision and prefix; candidates follow the retention rule and any client can accept any live one; Accept publishes the patch (at most 64 MiB, within the bind budget) and commits one entry with full provenance; the committed patch renders on the GPU within the declared tolerance; every accepted fill is byte-identical to its input outside the committed coverage; undo, redo, restore, reopen and export carry it; removing the models still renders it; stale patches behave as decision 8 records.",
+        "The remove scenario passes over the fake with frames for analysing, hover, pins, the tinted selection, the running fill and the result, correlated to state and logs; on the M4 with the pinned models the bridge, sunflowers, kayaks and road removals complete within the recorded fill budget at 24 to 60 MP with the host's load noted.",
+        "The performance-rules checklist is answered: bounded candidates, no owner-thread pixel work, cancellation, the hover worker's single mailbox."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Core tests for the selection algebra, the fill's outside-coverage identity, candidate bounds, races and stale rules; desktop and API parity tests for every control.",
+          "The remove scenario over the fake, then native opt-in runs with the pinned models on the corpus, reviewing results as images."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-core",
+          "cargo test --locked --package luxforge-app",
+          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Detection-driven removal with a frozen, durable result, usable offline and proven on the M4."
+        ]
+      }
+    },
+    {
+      "id": "TASK-012",
+      "description": "Deliver the generative workflow in the Remove tool and API over the fake generator: the Fill tier choice, the candidate strip with Regenerate, the Replace prompt, Accept with generative provenance, the experiment flag and the generative scenario.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-011"
+      ],
+      "extra_context": [
+        "The workflow is provider-independent so that a local no-go leaves it finished for the remote tier: it runs over the developer-only fake generator in the core, which yields deterministic candidates with the provenance fields a real model fills (model identity, version and hash, runtime, backend, precision, seed, steps, sampler, prompt hash).",
+        "task.fill-generative {asset_id, selection, effect_region?, model, candidates?, prompt?, seed?} shares the Fast task's request and result shape and the candidate retention rule; Generate yields three candidates from consecutive seeds, Regenerate is a new job for the same selection, the strip shows every live candidate, and Accept is the same Corrections accept action with the generative provenance stored. A prompt of at most 256 characters labels the entry Replace; the text encoder resource, when absent, is offered and nothing is generated.",
+        "The Fill setting offers Generative only when a generative model is installed and the ai.generative experiment flag admits it; the flag gates presence, never how a committed patch renders. Escape cancels a running generation at a step boundary and a late, cancelled or stale candidate cannot touch the recipe.",
+        "The generative smoke scenario runs over the fake: the tier choice, a generation's progress, the strip with three candidates, Regenerate, a prompt, Accept and the history label, correlated to state and logs."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "AI editing design",
+          "target": "docs/design/ai-editing.md",
+          "locator": "Candidates, seeds and provenance",
+          "relevance": "The strip, seeds, Accept, the prompt rules and the retention rule."
+        },
+        {
+          "kind": "file",
+          "label": "Flags registry",
+          "target": "crates/luxforge-core/src/flags.rs",
+          "relevance": "Where the ai.generative experiment flag is declared."
+        },
+        {
+          "kind": "file",
+          "label": "Develop workspace",
+          "target": "docs/design/develop-workspace.md",
+          "locator": "Module panels",
+          "relevance": "The density and controls the strip and the prompt field follow."
+        },
+        {
+          "kind": "file",
+          "label": "UI components",
+          "target": "docs/design/ui-components.md",
+          "relevance": "The control vocabulary a candidate strip and a prompt field extend."
+        }
+      ],
+      "acceptance_criteria": [
+        "Generate, Regenerate, the prompt, candidate choice and Accept each send a request Copy as JSON request shows, and the same journey runs through luxforge-json over the fake; the accepted entry stores the generative provenance and renders without any model.",
+        "Candidates follow the retention rule across Generate, Regenerate and a second client; a prompt over 256 characters is refused by name; Replace without the text encoder offers the download and generates nothing; cancellation leaves the recipe untouched.",
+        "The generative scenario passes with frames correlated to state and logs; the flag's presence rule and the desktop parity tests cover every new control; the performance-rules checklist is answered."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Desktop and API parity tests for the strip, Regenerate, the prompt and Accept over the fake generator.",
+          "The generative scenario over the fake, with a second luxforge-json client accepting a candidate the desktop generated."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-core",
+          "cargo test --locked --package luxforge-app",
+          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR"
+        ],
+        "expected_results": [
+          "A finished generative workflow that any provider, local or remote, fills."
+        ]
+      }
+    },
+    {
+      "id": "TASK-013",
+      "description": "Implement the local generative provider behind the Generator trait with the qualified runtime and models, memory admission and the shipped prompt embedding, and qualify it natively with the blinded comparison.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-005",
+        "TASK-007",
+        "TASK-012"
+      ],
+      "extra_context": [
+        "If the generative qualification recorded a no-go for every model, complete this task by recording that outcome in the design and feature status and by leaving the Generative tier absent: the workflow stays, the remote tier fills it, and no unqualified model or runtime is substituted.",
+        "The runtime the qualification chose is built from vendored, pinned sources with the cc crate in a crate of its own (luxforge-diffusion) that implements Generator and is handed in through HostConfig; the dependency rule keeps it out of the core. Candidates are produced one at a time from consecutive seeds so peak memory stays at one candidate's; progress and cancellation are per step.",
+        "Resources: the light model; the heavy model's transformer and VAE with the precomputed empty-scene embedding as part of the resource; the text encoder as a separate optional resource for Replace. Each declares its resident budget and minimum machine memory, counted with the held candidates and the analysis cache; a generation that would exceed the budget is refused with resource-limit before allocation.",
+        "Native evidence with the qualified models on the corpus: three candidates in sequence within the recorded budgets and memory, the embedding-conditioned fill matching the qualification's result, and the blinded comparison the owner runs against the Fast fill and Lightroom's Generative Remove on the same photographs and masks; the flag is removed, or kept as a recorded default, when the figures are met and the owner accepts the tier."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "AI editing design",
+          "target": "docs/design/ai-editing.md",
+          "locator": "Generative fill and Replace",
+          "relevance": "The models, the runtime constraint, prompt-free fill, admission and the flag."
+        },
+        {
+          "kind": "file",
+          "label": "Capability module hooks",
+          "target": "crates/luxforge-core/src/modules/capability.rs",
+          "relevance": "run_task, validate_resource and compile_bound the provider implements."
+        },
+        {
+          "kind": "file",
+          "label": "LibRaw build",
+          "target": "crates/luxforge-raw/build.rs",
+          "relevance": "The precedent for vendored native sources built with the cc crate."
+        },
+        {
+          "kind": "file",
+          "label": "Dependency policy",
+          "target": "docs/engineering/dependencies.md",
+          "relevance": "Pinning and notices for the vendored runtime."
+        }
+      ],
+      "acceptance_criteria": [
+        "The core links no generative runtime; luxforge-diffusion builds from pinned sources with no CMake or Python, its notices are recorded, and the workflow runs unchanged over it.",
+        "With the qualified models installed on the M4, three candidates generate in sequence within the recorded budgets and memory, each byte-identical to the input outside the coverage, with the embedding-conditioned fill matching the qualification's result; a machine below the minimum cannot install the model and a generation above the budget is refused by name.",
+        "The blinded comparison against the Fast fill and Lightroom's Generative Remove is recorded with its outcome, or the no-go is recorded with its evidence and the tier is absent; the performance-rules checklist is answered, including per-step cancellation and the resident budget."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Unit and lifecycle tests for admission, candidates, cancellation and provenance over the real Generator with a tiny pinned model where one exists, otherwise opt-in.",
+          "Opt-in native runs with the qualified models recording time and memory per candidate, and the blinded comparison."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-core",
+          "cargo test --locked --package luxforge-diffusion"
+        ],
+        "expected_results": [
+          "A local generative provider that fills within its budgets, or an explicit, evidence-backed no-go that leaves the workflow to the remote tier."
+        ]
+      }
+    },
+    {
+      "id": "TASK-014",
+      "description": "Deliver sky replacement as a deterministic Sky layer over the Select Sky mask, with imported and downloadable skies, exact CPU fixtures and a GPU program within tolerance.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-010",
+        "TASK-011"
+      ],
+      "extra_context": [
+        "This task runs only if decision 11 keeps sky replacement in scope; otherwise it is cancelled with the owner's reason recorded. The Sky module adds one maskable layer at the repair stage after the Corrections repair layer, compiled to the repair stage's regional primitive as a composite from a sky raster through a horizon, scale, shift and flip transform, blended inside the layer's mask in linear light; Relight is a second composed layer through the inverted mask.",
+        "Controls generated from the descriptor: Horizon, Scale, Shift, Flip, Exposure, Warmth, Defocus, Edge (feather and inward shift) and Relight; a sky chooser with Import (the read-user-file capability returns, consented per canonical path) and the downloaded set. The set is pinned per file from Poly Haven or ambientCG (CC0, redistribution permitted); preparing a sky reprojects an equirectangular file's upper hemisphere to a rectilinear backdrop once, and the artifact is at most 4096 px on its long side and 64 MiB.",
+        "The composite has an f64 reference and exact fixtures (horizon offsets, scales, flips, edges at the frame, feathered masks, relight amounts) and a WGSL program qualified within the declared tolerance as GPU-first requires; a generative sky is Replace with a sky prompt and needs no code here.",
+        "The sky scenario over the fake runtime creates a Select Sky mask on the sky fixture, applies a downloaded sky, moves the horizon and flips it, refines the mask with a brush and checks the composite's pixels against the core's render.",
+        "The GPU program is held to the reference renderer by cargo xtask gpu-qualification, the GPU-first release gate, for every output kind and view it touches.",
+        "Corpus stacks carrying a Sky layer, with a checked-in sky fixture, join fixtures/preview/corpus.json so the gate judges the composite."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "AI editing design",
+          "target": "docs/design/ai-editing.md",
+          "locator": "Sky replacement (optional)",
+          "relevance": "The layer, its controls, the sky sources and the exactness contract."
+        },
+        {
+          "kind": "file",
+          "label": "GPU-first design",
+          "target": "docs/design/gpu-first.md",
+          "locator": "The contract",
+          "relevance": "The tolerance a new layer's GPU program meets against the CPU reference."
+        },
+        {
+          "kind": "file",
+          "label": "Module placement",
+          "target": "crates/luxforge-core/src/modules/registry/placement.rs",
+          "relevance": "Where a Sky layer's stage and order are placed without moving stored layers."
+        },
+        {
+          "kind": "file",
+          "label": "Module contract",
+          "target": "docs/design/modules-and-api.md",
+          "locator": "Descriptor",
+          "relevance": "Effects, controls, artifacts and the Compose plan a two-layer Sky uses."
+        }
+      ],
+      "acceptance_criteria": [
+        "The Sky layer renders exactly against its f64 reference on the CPU and within the declared tolerance on the GPU on the corpus; render.sample equals the rendered byte; export carries it.",
+        "Import and the downloaded set each yield an artifact with its licence and provenance; a missing or corrupt sky fails by name; the layer's mask is an ordinary mask the person refines; every control sends a request Copy as JSON request shows and the same journey runs through luxforge-json.",
+        "The sky scenario passes with frames correlated to state; the user guide and feature status describe the Sky section, its sources and its limits (no water reflections).",
+        "The performance-rules checklist is answered: bounded sky reads, no full-frame allocation, one artifact pinned per layer."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Reference and fixture tests for the composite and transform; GPU readback comparison on the corpus.",
+          "The sky scenario over the fake, and a native run on the corpus reviewed as images."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-core",
+          "cargo test --locked --package luxforge-reference",
+          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR"
+        ],
+        "expected_results": [
+          "A sky replacement that is an exact, editable, durable layer whose only model input is the mask."
+        ]
+      }
+    },
+    {
+      "id": "TASK-015",
+      "description": "Add people parts and the depth-range mask kind to Select.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-010"
+      ],
+      "extra_context": [
+        "Parts: hair, face skin, body skin and clothes from the qualified multiclass model run on a crop of each detected person, refined by the guided upsampler, each published as an alpha artifact and added as a model component under the person's entry; eyes, lips and brows wait for a face parser whose training-data terms the owner accepts and are not in this task.",
+        "Depth: the qualified depth model joins the analysis when installed and gives a depth-range component kind on the generic range control, with the same reference, conformance and sample-equals-render obligations as the luminance range and a GPU coverage program within the declared tolerance, over a depth artifact at the analysis resolution upsampled by the guided filter.",
+        "Both are later slices the owner may defer; each lands with its scenario frames in ai-select and its user-guide text.",
+        "The GPU program is held to the reference renderer by cargo xtask gpu-qualification, the GPU-first release gate, for every output kind and view it touches.",
+        "A corpus stack carrying a depth-range component joins fixtures/preview/corpus.json so the gate judges its coverage program."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "AI editing design",
+          "target": "docs/design/ai-editing.md",
+          "locator": "From a class to a mask",
+          "relevance": "Parts and the depth kind as later slices."
+        },
+        {
+          "kind": "file",
+          "label": "Range study",
+          "target": "docs/design/range-study.md",
+          "relevance": "The range kind's equations and evidence a depth range follows."
+        },
+        {
+          "kind": "file",
+          "label": "Semantic masking research",
+          "target": "docs/research/object-removal/semantic-masking.md",
+          "locator": "Q3. People and parts: instance segmentation, human parsing, face parsing and hair matting",
+          "relevance": "The parts and depth model candidates and their terms."
+        }
+      ],
+      "acceptance_criteria": [
+        "Each person's entry offers its parts, each a model component with a durable artifact identical across two runs; the depth-range kind passes the kind-conformance suite with its f64 reference, sample-equals-render and its GPU coverage program within tolerance.",
+        "Both run through the same tasks and commands from luxforge-json; the ai-select scenario gains their frames; the user guide names the parts vocabulary and the depth range.",
+        "On the M4 with the pinned models, parts and depth complete within their recorded budgets."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Conformance, reference and artifact tests for the depth kind and the parts components.",
+          "Scenario frames over the fake and a native run on the corpus."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-core",
+          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR"
+        ],
+        "expected_results": [
+          "People parts and depth selections join Select with the same guarantees as every class."
+        ]
+      }
+    },
+    {
+      "id": "TASK-016",
+      "description": "Implement the remote provider module with the repair-crop data class, one hosted adapter and the documented loopback service protocol.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-007",
+        "TASK-012"
+      ],
+      "extra_context": [
+        "The remote module publishes the same candidates and patches as the local provider through task.fill-remote {asset_id, selection, effect_region?, profile_id, candidates?, prompt?}, which declares the remote-image-request capability, so the recipe cannot tell them apart. Its adapter declares the repair-crop data class (an sRGB 8-bit crop of at most 2048 px on the long side with its coverage mask, the prompt, the candidate count; no path, EXIF or full frame), bearer authentication with the key in the OS credential store, request and response limits, timeout, retention note and cost; a full-frame class, if a provider needs it, is a separate class with its own consent.",
+        "Consent is remembered per provider profile and data class until revoked (owner, 2026-10-05), which changes the capability contract's remote-image-request grant scope to drop the asset; the disclosure states the bytes, the destination and the retention note, nothing is sent before the first Generate and its grant, and Revoke all withdraws it. The capability design and user guide change with it. Responses are validated for dimensions, format, finite values and size; a refusal, timeout, disconnect or malformed answer leaves the recipe untouched.",
+        "The first hosted provider is the owner's choice; the loopback protocol is documented so a person can run their own service, and luxforge-testbase gains a fake provider on the loopback test server for every malformed, error and cancel case with exact sent-byte inspection. Live tests run on rights-cleared images with explicit consent and cost bounds and are labelled separately from mocks.",
+        "The Models tab and the Fill setting list configured profiles beside the local tiers.",
+        "The Corrections plan's cancelled qualification compared a hosted provider with the local candidates on the same rights-cleared corpus and masks and set a provider-selection threshold; that work moves here: the hosted adapter is scored with the harness beside the Fast and local generative fills on the same crops, with a blinded owner preference, and the threshold a provider must clear to be listed is recorded. The remote smoke scenario runs over the loopback fake provider: the profile in the Fill setting, the consent notice, a generation, a refusal and Accept."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "AI editing design",
+          "target": "docs/design/ai-editing.md",
+          "locator": "The remote tier (later)",
+          "relevance": "The data class, consent and interchangeability with local fills."
+        },
+        {
+          "kind": "file",
+          "label": "Module capabilities design",
+          "target": "docs/design/module-capabilities.md",
+          "locator": "Capability and consent contract",
+          "relevance": "Grant scopes, the transport's rules and the disclosure."
+        },
+        {
+          "kind": "file",
+          "label": "Test base",
+          "target": "crates/luxforge-testbase/src/lib.rs",
+          "relevance": "The loopback test server the fake provider joins."
+        }
+      ],
+      "acceptance_criteria": [
+        "No photograph data leaves without the remembered per-provider grant, asked once and shown with Revoke all; denial, a missing secret, an endpoint change, a provider refusal, malformed output, timeout and disconnect each leave the recipe unchanged and are reported by name; the sent bytes are exactly the declared class.",
+        "The hosted adapter and the loopback protocol each produce candidates the same strip and Accept handle; the accepted patch records the provider and model without any secret or endpoint.",
+        "Mock protocol tests and live small-case tests are labelled separately, and the user guide describes configuring a provider, its consent and its cost disclosure.",
+        "The hosted adapter's quality on the shared corpus is scored beside the local tiers with a blinded preference and the provider-selection threshold is recorded; the remote scenario passes with frames correlated to state and logs."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Fake-server tests for every error and cancel case with sent-byte inspection; desktop and API parity for the profile choice.",
+          "Live small-case runs against the chosen provider with explicit consent and cost bounds."
+        ],
+        "commands": [
+          "cargo test --locked --package luxforge-core",
+          "cargo test --locked --package luxforge-net",
+          "cargo run --release --locked --package xtask -- verify --tier rendered --output NEW_DIR"
+        ],
+        "expected_results": [
+          "A remote fill that is interchangeable with a local one to the recipe and truthful about what it sends."
+        ]
+      }
+    },
+    {
+      "id": "TASK-017",
+      "description": "Check the inference port, the model manager, Remove and Select functionally on Windows and Linux.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-010",
+        "TASK-011"
+      ],
+      "extra_context": [
+        "Windows runs the port on DirectML from the operating system's copy and the CPU provider; Linux runs the CPU provider, with CUDA only as a later user-installed option. These are functional checks of the same journeys (install, analyse, hover, select, fill, reopen) with the pinned models, in real desktop sessions where available and otherwise in VMs, and never a native GPU performance claim.",
+        "The secret store on both platforms still answers not-ready, which touches only the remote tier; the Models tab and the download flow are checked, and the compile cache's keying by OS build is exercised by a second run.",
+        "The platforms guide records what was run, on what, and what was not."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Platforms",
+          "target": "docs/engineering/platforms.md",
+          "relevance": "The engineering baselines and what counts as verified there."
+        },
+        {
+          "kind": "file",
+          "label": "AI editing design",
+          "target": "docs/design/ai-editing.md",
+          "locator": "Platforms",
+          "relevance": "The per-platform accelerator and the no-native-claims rule."
+        }
+      ],
+      "acceptance_criteria": [
+        "The install, analyse, hover, select, fill and reopen journeys complete on Windows and Linux with the pinned models, and every provider placement, refusal and fallback is recorded by platform.",
+        "Outputs on the CPU provider match the macOS CPU provider's within the recorded tolerance for the same inputs.",
+        "The platforms guide and feature status state the checks that ran, their hosts and what remains unverified."
+      ],
+      "test_strategy": {
+        "approach": "manual",
+        "steps": [
+          "Run the journeys on each platform through the desktop and luxforge-json with the fake and with the pinned models.",
+          "Compare outputs with the macOS CPU results and record the session."
+        ],
+        "commands": [],
+        "expected_results": [
+          "Portability is demonstrated for function, with no inferred performance."
+        ]
+      }
+    },
+    {
+      "id": "TASK-018",
+      "description": "Run the AI editing qualification and measurement: latency, memory, downloads, quality and the blinded comparison, and record the evidence package.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-010",
+        "TASK-011",
+        "TASK-012",
+        "TASK-013"
+      ],
+      "extra_context": [
+        "Measured on the M4 Pro on a quiet host with the pinned models and photo-sized inputs: hover pointer-to-overlay, analysis-ready time after the tool is picked, warm model loads, a class selection's time, the Fast fill at 24 and 60 MP, a generative candidate and three in a row, peak resident memory per model and for the whole resident set, download sizes, and the idle cost of the hover worker and the analysis cache; each against the recorded budget, with misses published beside the scope.",
+        "Quality: the harness scores on the owner corpus and the CC0 corpus for the Fast and generative fills, the per-class IoU for Select, and the blinded preference test the owner runs against Lightroom's Remove and Generative Remove on the same photographs and masks.",
+        "The optional slices (sky, parts and depth, the remote provider) add their own evidence to the same package when they land; this task does not wait for them. A local generative no-go is recorded as such and the generative figures are omitted with the reason, never inferred.",
+        "Timing runs wait until the feature work above is merged and take the host-wide timing lock; the full tier states every skipped component."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "AI editing design",
+          "target": "docs/design/ai-editing.md",
+          "locator": "Budgets and limits",
+          "relevance": "The budgets each figure is measured against."
+        },
+        {
+          "kind": "file",
+          "label": "Performance spec",
+          "target": "docs/specs/performance.md",
+          "relevance": "Where the measured figures, their scope and the budgets are recorded."
+        },
+        {
+          "kind": "file",
+          "label": "Development guide",
+          "target": "docs/engineering/development.md",
+          "locator": "Verification tiers",
+          "relevance": "The timing lock, the load threshold and the incomplete rule."
+        }
+      ],
+      "acceptance_criteria": [
+        "Every budget in the design has a measured figure with its distribution, sample count, host load and scope recorded in the performance spec, marked pass or miss, with the design's budgets table updated to the recorded figures.",
+        "The quality scores and the blinded comparison are recorded with their outcome, and the full tier passes or names every skipped component.",
+        "The evidence package (summaries, captures, logs and the harness reports) is referenced from the performance spec."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the timing tier and the harness measurements on a quiet host behind the timing lock.",
+          "Hold the blinded comparison and record it; run the full tier with the owner's manifest."
+        ],
+        "commands": [
+          "cargo run --release --locked --package xtask -- verify --tier timing --output NEW_DIR",
+          "cargo run --release --locked --package xtask -- verify --tier full --output NEW_DIR"
+        ],
+        "expected_results": [
+          "A bounded, reproducible M4 evidence package supporting only the claims tested."
+        ]
+      }
+    },
+    {
+      "id": "TASK-019",
+      "description": "Update the shipped contracts and documentation to the delivered AI editing behaviour.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-018"
+      ],
+      "extra_context": [
+        "Only delivered behaviour enters feature status and the user guide: the Remove tool and its tiers, Select and its class vocabulary, the Models tab, the download disclosure and licence classes, stale and Needs recompute states, and the Sky section, parts, depth and remote providers only if they landed. Every unqualified model, unverified platform, deferred licence review and measured miss stays labelled.",
+        "The masking design's exclusion of model selections, the masking workspace's phase E proposal, the Corrections design's AI Remove text, the capabilities design's deferred activation and the roadmap's exclusion of generative editing each change to describe what shipped; the research README notes which of its proposals were adopted."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Feature status",
+          "target": "docs/features.md",
+          "relevance": "Implemented versus proposed capability."
+        },
+        {
+          "kind": "file",
+          "label": "User guide",
+          "target": "docs/user-guide.md",
+          "relevance": "The Masks, Corrections, Settings and JSON chapters to rewrite."
+        },
+        {
+          "kind": "file",
+          "label": "Roadmap",
+          "target": "docs/plan.md",
+          "relevance": "Outstanding work after delivery."
+        },
+        {
+          "kind": "file",
+          "label": "AI editing design",
+          "target": "docs/design/ai-editing.md",
+          "relevance": "The design's status and decisions sections become current behaviour."
+        }
+      ],
+      "acceptance_criteria": [
+        "The design, masking, masking workspace, Corrections, capabilities, roadmap, feature status and user guide describe the delivered behaviour, its precision and persistence limits, privacy and consent, model downloads and recovery, with proposals removed or marked open.",
+        "No proposed command, model or provider is documented as shipped, and every measured miss remains stated.",
+        "Repository and plan validation and the quick tier pass for the documentation change."
+      ],
+      "test_strategy": {
+        "approach": "inspection",
+        "steps": [
+          "Compare the documentation with schema.list, module.list, the evidence package and the packaged desktop.",
+          "Run repository validation and the quick tier."
+        ],
+        "commands": [
+          "cargo run --release --locked --package xtask -- verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Current documentation matches shipped behaviour and open limitations."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-003",
+        "TASK-004",
+        "TASK-006",
+        "TASK-008"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-005",
+        "TASK-007"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-009"
+      ]
+    },
+    {
+      "wave": 5,
+      "task_ids": [
+        "TASK-010",
+        "TASK-011"
+      ]
+    },
+    {
+      "wave": 6,
+      "task_ids": [
+        "TASK-012",
+        "TASK-014",
+        "TASK-015",
+        "TASK-017"
+      ]
+    },
+    {
+      "wave": 7,
+      "task_ids": [
+        "TASK-013",
+        "TASK-016"
+      ]
+    },
+    {
+      "wave": 8,
+      "task_ids": [
+        "TASK-018"
+      ]
+    },
+    {
+      "wave": 9,
+      "task_ids": [
+        "TASK-019"
+      ]
+    }
+  ]
+}

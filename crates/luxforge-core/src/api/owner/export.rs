@@ -210,15 +210,8 @@ enum Streamed {
 }
 
 impl ExportJob {
-    /// Render the frozen entry, encode it into a temporary file beside the destination and publish
-    /// that under the destination's name without replacing anything. Unless the export asked for
-    /// the reference renderer or the host has no GPU provider, the tile service renders the output
-    /// stage in bands that the encoder takes as they arrive; when the service says why it cannot,
-    /// before the stream or during it, the staged file is dropped and the reference renderer
-    /// renders the whole frame instead, so one file is never two renderers' pixels. A cancel stops
-    /// the stream between tiles, the render within a row or chunk and the encoder within about 1%
-    /// of the rows; a failure or a cancel before the publish drops the staged file, which removes
-    /// it.
+    /// Write the frozen entry to its destination ([`write`]), publishing each phase on the board
+    /// and naming it in the progress message too, which is what `job.read` answers with.
     fn run(self) -> Result<Value, Error> {
         let Self {
             plan,
@@ -231,8 +224,6 @@ impl ExportJob {
             #[cfg(test)]
             hold,
         } = self;
-        // Each phase is published on the board and named by the progress message too, which is
-        // what `job.read` answers with; a cancel that arrived meanwhile stops the job there.
         let phase = |phase: &'static str| {
             control.set_phase(phase);
             control.set_progress(None, phase);
@@ -242,70 +233,121 @@ impl ExportJob {
             }
             control.checkpoint()
         };
-        phase(RENDERING)?;
-        let ExportPlan {
-            identity,
-            evaluation,
-            capture,
-        } = plan;
-        let encoding = Encoding {
-            control: &control,
-            capture: &capture,
-            keep_metadata,
-            pixels_per_inch,
-        };
-        // Which renderer renders the file, and why the reference does: the reference when the
-        // export asked for it or the host has no GPU provider, whose only renderer it is; the GPU
-        // otherwise, unless the service says why it cannot.
-        let reason = if reference {
-            Some(RendererReason::Requested)
-        } else if tiles.status() == TileStatus::Reference(None) {
-            None
-        } else {
-            match tiles.stream(&evaluation, control.render_cancel()) {
-                Ok(stream) => {
-                    let size = (identity.width, identity.height);
-                    match streamed(stream, size, &destination, &encoding, &phase)? {
-                        Streamed::Written(staged, renderer) => {
-                            drop(evaluation);
-                            phase(WRITING)?;
-                            return written(&destination, staged, size, &encoding, renderer);
-                        }
-                        // Rendered again from nothing by the reference, which begins with its own
-                        // render.
-                        Streamed::Stopped(reason) => {
-                            phase(RENDERING)?;
-                            Some(reason)
-                        }
+        write(
+            plan,
+            &destination,
+            Options {
+                keep_metadata,
+                pixels_per_inch,
+                reference,
+            },
+            tiles.as_ref(),
+            &control,
+            &phase,
+            &mut |fraction| control.set_progress(Some(fraction), ENCODING),
+        )
+    }
+}
+
+/// How one export is written: its metadata and density, and whether it asked for the reference
+/// renderer.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Options {
+    pub(super) keep_metadata: bool,
+    /// The JFIF density, if any.
+    pub(super) pixels_per_inch: Option<u16>,
+    /// The export asked for the reference renderer.
+    pub(super) reference: bool,
+}
+
+/// One export's work once its entry is frozen, shared by `export.jpeg`'s job and each photograph of
+/// `batch.export`: render the entry, encode it into a temporary file beside `destination` and
+/// publish that under the destination's name without replacing anything, answering `{path, bytes,
+/// width, height, metadata, renderer}`.
+///
+/// Unless the export asked for the reference renderer or the host has no GPU provider, `tiles`
+/// renders the output stage in bands that the encoder takes as they arrive; when the service says
+/// why it cannot, before the stream or during it, the staged file is dropped and the reference
+/// renderer renders the whole frame instead, so one file is never two renderers' pixels.
+///
+/// `phase` is called as each phase begins (`rendering`, `encoding`, then `writing`; `rendering`
+/// again when the reference renders after a stream stopped) and stops the export where it answers
+/// an error, as a cancel that arrived meanwhile does; `encoded` is told the fraction of rows
+/// encoded. A cancel of `control` stops the stream between tiles, the render within a row or chunk
+/// and the encoder within about 1% of the rows; a failure or a cancel before the publish drops the
+/// staged file, which removes it.
+pub(super) fn write(
+    plan: ExportPlan,
+    destination: &Destination,
+    options: Options,
+    tiles: &dyn TileService,
+    control: &JobControl,
+    phase: &dyn Fn(&'static str) -> Result<(), Error>,
+    encoded: &mut dyn FnMut(f64),
+) -> Result<Value, Error> {
+    phase(RENDERING)?;
+    let ExportPlan {
+        identity,
+        evaluation,
+        capture,
+    } = plan;
+    let encoding = Encoding {
+        control,
+        capture: &capture,
+        keep_metadata: options.keep_metadata,
+        pixels_per_inch: options.pixels_per_inch,
+    };
+    // Which renderer renders the file, and why the reference does: the reference when the export
+    // asked for it or the host has no GPU provider, whose only renderer it is; the GPU otherwise,
+    // unless the service says why it cannot.
+    let reason = if options.reference {
+        Some(RendererReason::Requested)
+    } else if tiles.status() == TileStatus::Reference(None) {
+        None
+    } else {
+        match tiles.stream(&evaluation, control.render_cancel()) {
+            Ok(stream) => {
+                let size = (identity.width, identity.height);
+                match streamed(stream, size, destination, &encoding, phase, encoded)? {
+                    Streamed::Written(staged, renderer) => {
+                        drop(evaluation);
+                        phase(WRITING)?;
+                        return written(destination, staged, size, &encoding, renderer);
+                    }
+                    // Rendered again from nothing by the reference, which begins with its own
+                    // render.
+                    Streamed::Stopped(reason) => {
+                        phase(RENDERING)?;
+                        Some(reason)
                     }
                 }
-                Err(fallback) => Some(RendererReason::from(&fallback)),
             }
-        };
-        let renderer = reason.map_or(Renderer::headless(), Renderer::reference);
-        // The frame is the render's own exact frame, from the compilation the plan made, inside the
-        // evaluated-frame limit; the encoder reads it in place. The source, the recipe and its
-        // artifacts are released with the evaluation.
-        let frame = evaluation
-            .exact(control.render_cancel())?
-            .frame(identity.snapshot_id.clone())?;
-        drop(evaluation);
-        let mut staged = destination.stage()?;
-        phase(ENCODING)?;
-        let size = (frame.width, frame.height);
-        let exif = encoding.exif(size);
-        encode_jpeg(
-            &mut staged,
-            &frame,
-            exif.as_deref(),
-            pixels_per_inch,
-            &mut |fraction| control.set_progress(Some(fraction), ENCODING),
-            &|| control.checkpoint(),
-        )?;
-        drop(frame);
-        phase(WRITING)?;
-        written(&destination, staged, size, &encoding, renderer)
-    }
+            Err(fallback) => Some(RendererReason::from(&fallback)),
+        }
+    };
+    let renderer = reason.map_or(Renderer::headless(), Renderer::reference);
+    // The frame is the render's own exact frame, from the compilation the plan made, inside the
+    // evaluated-frame limit; the encoder reads it in place. The source, the recipe and its
+    // artifacts are released with the evaluation.
+    let frame = evaluation
+        .exact(control.render_cancel())?
+        .frame(identity.snapshot_id.clone())?;
+    drop(evaluation);
+    let mut staged = destination.stage()?;
+    phase(ENCODING)?;
+    let size = (frame.width, frame.height);
+    let exif = encoding.exif(size);
+    encode_jpeg(
+        &mut staged,
+        &frame,
+        exif.as_deref(),
+        options.pixels_per_inch,
+        encoded,
+        &|| control.checkpoint(),
+    )?;
+    drop(frame);
+    phase(WRITING)?;
+    written(destination, staged, size, &encoding, renderer)
 }
 
 /// What every encode of one export shares: its control, the original's metadata and its options.
@@ -325,7 +367,7 @@ impl Encoding<'_> {
 }
 
 /// Encode `stream`'s bands of the `size` output stage into a new temporary file as they arrive, in
-/// the phase `encoding`, progress as the rows encoded over the stage's height and the cancel
+/// the phase `encoding`, `encoded` told the fraction of the stage's rows encoded and the cancel
 /// checked before every strip. A cancellation, the encoder's own failure and an error of the
 /// stream's own end the export with it; a stream its provider stopped drawing for a reason the
 /// reference renders instead is dropped with the temporary file, and that reason is answered.
@@ -335,6 +377,7 @@ fn streamed(
     destination: &Destination,
     encoding: &Encoding<'_>,
     phase: &dyn Fn(&'static str) -> Result<(), Error>,
+    encoded: &mut dyn FnMut(f64),
 ) -> Result<Streamed, Error> {
     let control = encoding.control;
     let mut staged = destination.stage()?;
@@ -343,16 +386,16 @@ fn streamed(
     let bands = stream
         .by_ref()
         .map(|band| band.map(|band| (band.rows, band.rgba)));
-    let encoded = encode_jpeg_rows(
+    let result = encode_jpeg_rows(
         &mut staged,
         size,
         bands,
         exif.as_deref(),
         encoding.pixels_per_inch,
-        &mut |fraction| control.set_progress(Some(fraction), ENCODING),
+        encoded,
         &|| control.checkpoint(),
     );
-    match encoded {
+    match result {
         Ok(()) => Ok(Streamed::Written(staged, stream.answered().into())),
         Err(error) => {
             // Nothing of the stream is kept: the temporary file goes now, and the provider stops

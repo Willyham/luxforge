@@ -14,6 +14,7 @@ mod detail_corpus;
 mod dng;
 mod exposure;
 mod geometry;
+mod look;
 mod mask;
 mod mixer;
 mod presence;

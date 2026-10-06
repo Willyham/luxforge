@@ -13,12 +13,19 @@
 //!   request joins the job for the same identity, including a finished report, and cancels release
 //!   interest as for source work. A newer request supersedes the pending one.
 //! - **Capability** jobs run on this table's `transfer` and `module` lanes and **export** on its
-//!   `export` lane. Each lane is one thread, spawned on its first job, that blocks on its channel
+//!   `export` lane. A lane is one thread, spawned on its first job, that blocks on its channel
 //!   while idle, runs one job at a time and posts the result into the catalog owner's own channel;
-//!   nothing polls. The table keeps each lane's waiting jobs, at most `LANE_QUEUE` of them, so a
+//!   nothing polls. The table keeps every lane's waiting jobs, at most `LANE_QUEUE` of them, so a
 //!   queued job can be cancelled without touching the thread. A lane job belongs to no client: any
 //!   client may read or cancel it, a cancel stops it for everyone, and a client's disconnect never
 //!   touches it.
+//! - **Catalog** jobs run on the own workers of the lane that schedules them (the index, preview or
+//!   library lane), and the lane tells the table when one starts and ends. Most belong to no
+//!   client, as a lane job does. A lane may instead share a job by interest
+//!   ([`Jobs::open_catalog_shared`]), one job per task that every request for the task joins by its
+//!   id ([`Jobs::join_catalog`]): a preview read's or render's. Such a job belongs to the clients
+//!   interested in it, as source work does: a cancel or disconnect releases the caller's interest,
+//!   and only the last release stops it, through its lane.
 //!
 //! Progress travels from a worker to the owner through a [`JobControl`] the worker writes and the
 //! owner reads when a client asks.
@@ -38,7 +45,7 @@ use std::{
     panic::{self, AssertUnwindSafe},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{Receiver, SyncSender, sync_channel},
     },
     thread::{self, JoinHandle},
@@ -46,8 +53,8 @@ use std::{
 
 /// Jobs that may wait on one lane behind the running one.
 pub(crate) const LANE_QUEUE: usize = 4;
-/// Finished capability, export and analysis records the table keeps of each of those families; the
-/// oldest of a family is forgotten first.
+/// Finished capability, export and analysis records the table keeps of each of those families, and
+/// of each catalog kind; the oldest of a family (or catalog kind) is forgotten first.
 pub(crate) const FINISHED_RECORDS: usize = 32;
 /// Finished source records the table keeps.
 pub(crate) const FINISHED_SOURCE_RECORDS: usize = 64;
@@ -56,6 +63,7 @@ pub(crate) const MAX_READY_REPORTS: usize = 8;
 
 /// The job methods, which serve every kind.
 pub const JOB_READ: &str = "job.read";
+pub const JOB_WAIT: &str = "job.wait";
 pub const JOB_CANCEL: &str = "job.cancel";
 
 /// The reason a job is cancelled when a grant it depends on is revoked.
@@ -108,6 +116,28 @@ pub enum JobKind {
     Task,
     /// A JPEG export.
     Export,
+    // The catalog's long-running work (`crate::catalog_types::jobs`), each scheduled by the index,
+    // preview or library lane that runs it.
+    /// Listing a card or folder and reading its headers.
+    IndexRefresh,
+    /// Extracting a file's embedded previews into the grid and loupe tiers.
+    PreviewExtract,
+    /// A 100% region.
+    PreviewRegion,
+    /// Rendering a developed photograph's grid and large previews.
+    PreviewRender,
+    /// Bringing picks into the catalog.
+    DevelopPicks,
+    /// Checking originals' availability.
+    SourceCheck,
+    /// Searching a folder for missing originals.
+    SourceFind,
+    /// Verifying one chosen file before relinking it.
+    SourceLocate,
+    /// Applying a preset to many photographs.
+    BatchPreset,
+    /// Exporting many photographs.
+    BatchExport,
 }
 
 /// How a kind is scheduled and cancelled.
@@ -121,14 +151,21 @@ pub(crate) enum Family {
     Capability,
     /// The export lane; a cancel stops the job for everyone.
     Export,
+    /// The index, preview or library lane, which schedules the job itself; a cancel stops it for
+    /// everyone, as an export's does, and the lane hears of it (`CatalogLanes::cancelled`). A job
+    /// the lane shares by interest ([`Jobs::open_catalog_shared`]) is released as a source job is
+    /// instead, and the lane hears when its last client leaves it.
+    Catalog,
 }
 
 impl Family {
-    /// How many finished records of this family the table keeps.
+    /// How many finished records of this family the table keeps: of the catalog family, of each of
+    /// its kinds, so the many short `preview-extract` records never push out an `index-refresh`
+    /// or a `develop-picks` record its client has still to read.
     fn retained(self) -> usize {
         match self {
             Self::Source => FINISHED_SOURCE_RECORDS,
-            Self::Analysis | Self::Capability | Self::Export => FINISHED_RECORDS,
+            Self::Analysis | Self::Capability | Self::Export | Self::Catalog => FINISHED_RECORDS,
         }
     }
 }
@@ -140,6 +177,16 @@ impl JobKind {
             Self::Analysis => Family::Analysis,
             Self::Install | Self::Remove | Self::Task => Family::Capability,
             Self::Export => Family::Export,
+            Self::IndexRefresh
+            | Self::PreviewExtract
+            | Self::PreviewRegion
+            | Self::PreviewRender
+            | Self::DevelopPicks
+            | Self::SourceCheck
+            | Self::SourceFind
+            | Self::SourceLocate
+            | Self::BatchPreset
+            | Self::BatchExport => Family::Catalog,
         }
     }
 
@@ -152,6 +199,17 @@ impl JobKind {
             Self::Prepare | Self::Develop | Self::Artifacts | Self::Collect | Self::Analysis => {
                 None
             }
+            // The index, preview and library lanes run their own workers.
+            Self::IndexRefresh
+            | Self::PreviewExtract
+            | Self::PreviewRegion
+            | Self::PreviewRender
+            | Self::DevelopPicks
+            | Self::SourceCheck
+            | Self::SourceFind
+            | Self::SourceLocate
+            | Self::BatchPreset
+            | Self::BatchExport => None,
         }
     }
 }
@@ -189,7 +247,8 @@ impl From<&Error> for JobError {
 /// about: `asset_id` for work on one photo, `module_id` and `resource_id` for capability work, and
 /// `identity` for an analysis. `result` is the kind's result once it is `ready`: a prepared
 /// asset's state, a collection's counts, an analysis report, a capability job's value or an
-/// export's written file.
+/// export's written file. While a job that reports its answer as it goes runs, `result` is that
+/// partial answer ([`JobControl::update_partial`]), such as a `source-find` job's rows so far.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct JobRecord {
     pub job_id: JobId,
@@ -210,8 +269,8 @@ pub struct JobRecord {
     pub result: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<JobError>,
-    /// What each module's first-open action came to, for an import that created its asset
-    /// ([`crate::FirstOpen`]). Empty for every other job.
+    /// What each module's first-open action came to, for the preparation that first opened its
+    /// photograph ([`crate::FirstOpen`]). Empty for every other job.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub first_open: Vec<crate::FirstOpen>,
     /// The request that started the job.
@@ -230,8 +289,36 @@ impl JobRecord {
 /// owner, and the activity it publishes to once its lane picks it up, which carries its progress.
 /// A job has no activity before that: nothing reports progress before it runs, and a queued job's
 /// progress reads empty.
+#[derive(Default)]
+struct JobChanges {
+    revision: AtomicU64,
+    armed: AtomicBool,
+    wake: Mutex<Option<crate::api::EventWake>>,
+}
+impl std::fmt::Debug for JobChanges {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JobChanges")
+            .field("revision", &self.revision.load(Ordering::Acquire))
+            .finish()
+    }
+}
+impl JobChanges {
+    fn changed(&self) {
+        // A saturated token fails explicitly rather than silently dropping all subsequent changes.
+        self.revision
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| n.checked_add(1))
+            .expect("job change token exhausted");
+        if self.armed.swap(false, Ordering::AcqRel) {
+            let wake = self.wake.lock().expect("job wake").clone();
+            if let Some(wake) = wake {
+                wake();
+            }
+        }
+    }
+}
 #[derive(Debug, Default)]
 pub struct JobControl {
+    changes: Arc<JobChanges>,
     cancelled: AtomicBool,
     reason: Mutex<Option<String>>,
     activity: Mutex<Option<Activity>>,
@@ -241,6 +328,9 @@ pub struct JobControl {
     /// A clone of the socket of the network request the job is making, if any: its cancel shuts
     /// the socket down, so a read or write blocked on it returns at once.
     connection: Mutex<Option<TcpStream>>,
+    /// The answer so far of a job that reports one while it runs, which `job.read` answers as its
+    /// `result` until the job ends; none for every other job.
+    partial: Mutex<Option<Value>>,
 }
 
 impl JobControl {
@@ -318,7 +408,9 @@ impl JobControl {
 
     /// Attach the activity this job publishes to, once its lane picks it up. Owner-only: called
     /// exactly once, from `Jobs::dispatch`, before the job's work reaches its worker thread.
-    pub(crate) fn begin_activity(&self, activity: Activity) {
+    pub(crate) fn begin_activity(&self, mut activity: Activity) {
+        let changes = self.changes.clone();
+        activity.on_progress(Arc::new(move || changes.changed()));
         *self.activity.lock().expect("job activity") = Some(activity);
     }
 
@@ -338,6 +430,23 @@ impl JobControl {
         }
     }
 
+    /// Change the answer so far that `job.read` reports as the running job's `result`, starting
+    /// from `null`: a job whose answer grows as it works, a row at a time, updates it in place.
+    /// Called from the job's own worker thread; forgotten once the job ends, when its result, or
+    /// its error, is what is read.
+    pub(crate) fn update_partial(&self, update: impl FnOnce(&mut Value)) {
+        {
+            let mut partial = self.partial.lock().expect("job partial answer");
+            update(partial.get_or_insert(Value::Null));
+        }
+        self.changes.changed();
+    }
+
+    /// The answer so far, for `job.read` while the job runs.
+    fn partial(&self) -> Option<Value> {
+        self.partial.lock().expect("job partial answer").clone()
+    }
+
     /// The progress this job currently reports on the board, for `job.read` to answer with while it
     /// runs. A job with no activity yet reports nothing.
     fn progress(&self) -> JobProgress {
@@ -349,9 +458,9 @@ impl JobControl {
             .unwrap_or_default()
     }
 
-    /// End the job's activity with this outcome. Owner-only, called once a job's result is in; a
-    /// job that never started running has no activity to end.
-    fn finish_activity(&self, outcome: Outcome) {
+    /// End the job's activity with this outcome, once a job's result is in; a job that never
+    /// started running has no activity to end. The index lane also ends its own listings' this way.
+    pub(crate) fn finish_activity(&self, outcome: Outcome) {
         if let Some(activity) = self.activity.lock().expect("job activity").take() {
             activity.finish(outcome);
         }
@@ -426,6 +535,19 @@ pub(crate) struct Opened {
     pub control: Arc<JobControl>,
 }
 
+/// A job the index, preview or library lane is about to run on its own workers
+/// ([`Family::Catalog`]). Its identity is
+/// chosen by the lane, so the work it queues can carry it before it is recorded.
+pub(crate) struct CatalogOpened {
+    pub job_id: JobId,
+    pub kind: JobKind,
+    pub asset_id: Option<AssetId>,
+    /// The request that started it, when one did.
+    pub origin: Option<Origin>,
+    /// Shared with the lane's worker: the cancel flag it checks and the activity it publishes to.
+    pub control: Arc<JobControl>,
+}
+
 /// What a client's leaving a shared job means for its work.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Release {
@@ -487,10 +609,15 @@ impl Entry {
 
     fn read(&self) -> JobRecord {
         let mut record = self.record.clone();
-        if !record.status.is_finished() {
+        let live = !record.status.is_finished();
+        if live {
             record.progress = self.control.progress();
         }
-        record.result = self.output.as_ref().map(Output::value);
+        record.result = match &self.output {
+            Some(output) => Some(output.value()),
+            None if live => self.control.partial(),
+            None => None,
+        };
         if let Some(Output::Asset(_, first_open)) = &self.output {
             record.first_open.clone_from(first_open);
         }
@@ -513,6 +640,18 @@ impl Entry {
         self.interest
             .as_ref()
             .is_none_or(|interest| interest.requesters.contains(&client))
+    }
+
+    /// `client` asks for this shared job: it becomes one of its requesters, and one of the clients
+    /// that want it while it is live. A finished job needs no worker, so joining it never revives
+    /// interest in work.
+    fn join(&mut self, client: ClientId) {
+        let live = self.is_live();
+        let interest = self.interest.get_or_insert_with(Interest::default);
+        interest.requesters.insert(client);
+        if live {
+            interest.interested.insert(client);
+        }
     }
 }
 
@@ -588,6 +727,8 @@ fn unknown(job_id: &JobId) -> Error {
 /// The one job table and its lanes. The catalog owner holds the only instance.
 pub(crate) struct Jobs {
     entries: HashMap<JobId, Entry>,
+    wake: Option<crate::api::EventWake>,
+    watched: BTreeSet<JobId>,
     /// Finished jobs in the order they finished, every family together; [`Family::retained`] bounds
     /// each family's share.
     finished: VecDeque<JobId>,
@@ -604,6 +745,8 @@ impl Jobs {
     pub(crate) fn new(deliver: Deliver, board: Arc<ActivityBoard>) -> Self {
         Self {
             entries: HashMap::new(),
+            wake: None,
+            watched: BTreeSet::new(),
             finished: VecDeque::new(),
             keys: HashMap::new(),
             lanes: [
@@ -614,6 +757,36 @@ impl Jobs {
             deliver,
             board,
         }
+    }
+
+    pub(crate) fn set_wake(&mut self, wake: crate::api::EventWake) {
+        self.wake = Some(wake);
+    }
+
+    pub(crate) fn change_for(&self, job: &JobId, client: ClientId) -> Result<u64, Error> {
+        let entry = self
+            .entries
+            .get(job)
+            .filter(|entry| entry.readable_by(client))
+            .ok_or_else(|| unknown(job))?;
+        Ok(entry.control.changes.revision.load(Ordering::Acquire))
+    }
+    pub(crate) fn watch_job(&mut self, job: &JobId) {
+        self.watched.insert(job.clone());
+        if let Some(entry) = self.entries.get(job) {
+            *entry.control.changes.wake.lock().expect("job wake") = self.wake.clone();
+            entry.control.changes.armed.store(true, Ordering::Release);
+        }
+    }
+    pub(crate) fn watched_jobs<'a>(&mut self, watched: impl Iterator<Item = &'a JobId>) {
+        let watched: BTreeSet<_> = watched.cloned().collect();
+        for job in self.watched.difference(&watched) {
+            if let Some(entry) = self.entries.get(job) {
+                entry.control.changes.armed.store(false, Ordering::Release);
+                *entry.control.changes.wake.lock().expect("job wake") = None;
+            }
+        }
+        self.watched = watched;
     }
 
     /// The board this table publishes every running lane job to, for a test that wants to read what
@@ -638,6 +811,12 @@ impl Jobs {
             .filter(|entry| entry.readable_by(client))
             .map(Entry::read)
             .ok_or_else(|| unknown(job_id))
+    }
+
+    /// One job as any client reads it, whoever requested it: for a cancel that may stop a shared
+    /// job its caller never requested. One the table does not keep is `validation`.
+    pub(crate) fn read_any(&self, job_id: &JobId) -> Result<JobRecord, Error> {
+        self.read(job_id).ok_or_else(|| unknown(job_id))
     }
 
     /// The kind of a job `client` may read.
@@ -707,16 +886,6 @@ impl Jobs {
         self.entries.get(job_id)?.origin.as_ref()
     }
 
-    /// Name the request that started a job that has none yet, as an import does for the
-    /// preparation it joined or opened.
-    pub(crate) fn set_origin(&mut self, job_id: &JobId, origin: Origin) {
-        if let Some(entry) = self.entries.get_mut(job_id)
-            && entry.origin.is_none()
-        {
-            entry.origin = Some(origin);
-        }
-    }
-
     /// A finished shared job's outcome as `client` reads it: its status, what it left and its
     /// error, for `job.adopt` to take the prepared asset from.
     pub(crate) fn outcome_for(
@@ -741,20 +910,14 @@ impl Jobs {
         self.keys.get(key)
     }
 
-    // Shared jobs: source preparation and analysis.
+    // Shared jobs: source preparation, analysis and the catalog's jobs.
 
     /// Join the job for this key: `client` becomes one of its requesters, and one of the clients
     /// that want it while it is live. A finished job needs no worker, so joining it never revives
     /// interest in work.
     pub(crate) fn join(&mut self, key: &JoinKey, client: ClientId) -> Option<JobId> {
         let job_id = self.keys.get(key)?.clone();
-        let entry = self.entries.get_mut(&job_id)?;
-        let live = entry.is_live();
-        let interest = entry.interest.get_or_insert_with(Interest::default);
-        interest.requesters.insert(client);
-        if live {
-            interest.interested.insert(client);
-        }
+        self.entries.get_mut(&job_id)?.join(client);
         Some(job_id)
     }
 
@@ -770,6 +933,87 @@ impl Jobs {
         let job_id = opened.job_id.clone();
         self.insert(opened);
         self.finish(&job_id, Ok(output));
+    }
+
+    /// Record a job the index, preview or library lane runs on its own workers
+    /// ([`Family::Catalog`]): `queued` until
+    /// the lane starts it ([`Self::start`]), then finished through [`Self::finish`]. Like a lane
+    /// job it belongs to no client: any client reads it, a cancel stops it for everyone
+    /// ([`Self::cancel`], after which the owner tells the lane) and a disconnect never touches it.
+    pub(crate) fn open_catalog(&mut self, opened: CatalogOpened) {
+        self.insert_catalog(opened, None);
+    }
+
+    /// Record a catalog job shared by interest, one per task of its lane: `client`, the request
+    /// that opened it, is its first requester and wants it; a later request for the same task
+    /// joins it by its id ([`Self::join_catalog`]). It belongs to the clients that want it, as a
+    /// source job does: its requesters read it, a cancel or disconnect releases the caller's
+    /// interest ([`Self::release`], [`Self::disconnect`]), and only the last release stops it,
+    /// after which the owner tells the lane. `None` for work no client has requested yet, which no
+    /// client reads until one joins it.
+    pub(crate) fn open_catalog_shared(&mut self, opened: CatalogOpened, client: Option<ClientId>) {
+        let interest = Interest {
+            requesters: client.into_iter().collect(),
+            interested: client.into_iter().collect(),
+        };
+        self.insert_catalog(opened, Some(interest));
+    }
+
+    /// `client` joins `job_id`, a catalog job shared by interest ([`Self::open_catalog_shared`]):
+    /// a later request for its task. It becomes one of its requesters, and one of the clients that
+    /// want it while it is live. `false`, changing nothing, when the table holds no shared catalog
+    /// job of that id.
+    pub(crate) fn join_catalog(&mut self, job_id: &JobId, client: ClientId) -> bool {
+        match self.entries.get_mut(job_id) {
+            Some(entry) if entry.family() == Family::Catalog && entry.interest.is_some() => {
+                entry.join(client);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether `job_id` belongs to the clients interested in it — a source job, an analysis or a
+    /// catalog job shared by interest — rather than to no client.
+    pub(crate) fn shared(&self, job_id: &JobId) -> bool {
+        self.entries
+            .get(job_id)
+            .is_some_and(|entry| entry.interest.is_some())
+    }
+
+    fn insert_catalog(&mut self, opened: CatalogOpened, interest: Option<Interest>) {
+        let CatalogOpened {
+            job_id,
+            kind,
+            asset_id,
+            origin,
+            control,
+        } = opened;
+        debug_assert_eq!(
+            kind.family(),
+            Family::Catalog,
+            "{kind:?} is not a catalog job"
+        );
+        let mut entry = Entry::new(
+            JobRecord {
+                job_id: job_id.clone(),
+                kind,
+                status: JobStatus::Queued,
+                progress: JobProgress::default(),
+                asset_id,
+                module_id: None,
+                resource_id: None,
+                identity: None,
+                result: None,
+                first_open: Vec::new(),
+                error: None,
+                request_id: None,
+            },
+            control,
+        );
+        entry.origin = origin;
+        entry.interest = interest;
+        self.entries.insert(job_id, entry);
     }
 
     fn insert(&mut self, opened: Opened) {
@@ -819,6 +1063,7 @@ impl Jobs {
             && entry.record.status == JobStatus::Queued
         {
             entry.record.status = JobStatus::Running;
+            entry.control.changes.changed();
         }
     }
 
@@ -846,7 +1091,8 @@ impl Jobs {
 
     /// A client is gone: it leaves every shared job it wanted, exactly as a cancel does, and owns
     /// nothing any more. Returns the live jobs that lost their last interested client, whose work
-    /// the owner then stops. Lane jobs are untouched: a disconnect never cancels them.
+    /// the owner then stops (a shared catalog job's through its lane). Lane jobs, and catalog jobs
+    /// not shared by interest, are untouched: a disconnect never cancels them.
     pub(crate) fn disconnect(&mut self, client: ClientId) -> Vec<(JobId, JobKind)> {
         let mut orphaned = Vec::new();
         for (job_id, entry) in &mut self.entries {
@@ -939,6 +1185,7 @@ impl Jobs {
             record: entry.read(),
             origin: entry.origin.clone(),
         };
+        entry.control.changes.changed();
         self.retire(job_id);
         Some(finished)
     }
@@ -957,6 +1204,7 @@ impl Jobs {
             interest.interested.clear();
         }
         let record = entry.read();
+        entry.control.changes.changed();
         self.retire(job_id);
         Some(record)
     }
@@ -969,6 +1217,7 @@ impl Jobs {
             return;
         };
         let family = entry.family();
+        let kind = entry.record.kind;
         if let Some(key) = &entry.key
             && !key.kept_after(entry.record.status)
             && self.keys.get(key) == Some(job_id)
@@ -984,8 +1233,13 @@ impl Jobs {
                 self.forget_oldest(|entry| entry.family() == Family::Analysis && report(entry));
             }
         }
-        while self.count(|entry| entry.family() == family) > family.retained() {
-            self.forget_oldest(|entry| entry.family() == family);
+        // The catalog's kinds each keep their own share ([`Family::retained`]).
+        let share = move |entry: &Entry| match family {
+            Family::Catalog => entry.record.kind == kind,
+            _ => entry.family() == family,
+        };
+        while self.count(share) > family.retained() {
+            self.forget_oldest(share);
         }
     }
 
@@ -1104,6 +1358,7 @@ impl Jobs {
             .expect("a waiting job has an entry");
         let work = entry.work.take().expect("a waiting job holds its work");
         entry.record.status = JobStatus::Running;
+        entry.control.changes.changed();
         let spec = match entry.activity.take() {
             Some(spec) => ActivitySpec {
                 job_id: Some(entry.record.job_id.to_string()),
@@ -1257,15 +1512,21 @@ impl Jobs {
             .count()
     }
 
-    /// Stop everything: ask every live job to stop, including those on the owner's own workers,
-    /// drop the lanes' waiting jobs, close the lanes and wait for their threads, which finish at
-    /// their job's next checkpoint.
-    pub(crate) fn shutdown(&mut self) {
+    /// Ask every live job to stop, including those on the owner's own workers, without waiting for
+    /// any of them.
+    pub(crate) fn cancel_live(&self) {
         for entry in self.entries.values() {
             if entry.is_live() {
                 entry.control.cancel("the editor is closing");
             }
         }
+    }
+
+    /// Stop everything: ask every live job to stop ([`Self::cancel_live`]), drop the lanes'
+    /// waiting jobs, close the lanes and wait for their threads, which finish at their job's next
+    /// checkpoint.
+    pub(crate) fn shutdown(&mut self) {
+        self.cancel_live();
         for lane in &mut self.lanes {
             lane.waiting.clear();
             lane.sender = None;
@@ -1768,6 +2029,219 @@ mod tests {
         jobs.shutdown();
     }
 
+    /// A catalog job belongs to no client: any client reads it, a disconnect leaves it, and
+    /// a cancel stops it for everyone, at once while it waits and at its next checkpoint while its
+    /// lane runs it. Its outcome is recorded like any other job's.
+    #[test]
+    fn a_catalog_job_is_read_and_cancelled_by_any_client() {
+        let (mut jobs, _) = jobs();
+        let one = ClientId::testing(1);
+        let two = ClientId::testing(2);
+        let open = |jobs: &mut Jobs| {
+            let job_id = JobId::new();
+            let control = JobControl::new();
+            jobs.open_catalog(CatalogOpened {
+                job_id: job_id.clone(),
+                kind: JobKind::PreviewExtract,
+                asset_id: None,
+                origin: Some(Origin::new("preview.read", "request")),
+                control: control.clone(),
+            });
+            (job_id, control)
+        };
+
+        let (waiting, waiting_control) = open(&mut jobs);
+        let record = jobs.read_for(&waiting, two).unwrap();
+        assert_eq!(record.status, JobStatus::Queued);
+        assert_eq!(record.kind, JobKind::PreviewExtract);
+        assert_eq!(record.request_id.as_deref(), Some("request"));
+        assert!(jobs.disconnect(one).is_empty(), "a disconnect leaves it");
+        let Some(Cancelled::Removed(record)) = jobs.cancel(&waiting, "stopped by a client") else {
+            panic!("a waiting catalog job is removed at once");
+        };
+        assert_eq!(record.status, JobStatus::Cancelled);
+        assert!(waiting_control.is_cancelled());
+
+        let (running, running_control) = open(&mut jobs);
+        jobs.start(&running);
+        assert_eq!(
+            jobs.read_for(&running, one).unwrap().status,
+            JobStatus::Running
+        );
+        assert!(matches!(
+            jobs.cancel(&running, "stopped by a client"),
+            Some(Cancelled::Requested(_))
+        ));
+        let error = running_control.checkpoint().unwrap_err();
+        let finished = jobs.finish(&running, Err(error)).unwrap();
+        assert_eq!(finished.record.status, JobStatus::Cancelled);
+        assert_eq!(
+            finished.record.error.unwrap().message,
+            "stopped by a client"
+        );
+
+        let (ready, _) = open(&mut jobs);
+        jobs.start(&ready);
+        let finished = jobs
+            .finish(&ready, Ok(Output::Value(json!({"done": true}))))
+            .unwrap();
+        assert_eq!(finished.record.status, JobStatus::Ready);
+        assert_eq!(
+            jobs.read_for(&ready, two).unwrap().result,
+            Some(json!({"done": true}))
+        );
+        jobs.shutdown();
+    }
+
+    /// A catalog job shared by interest belongs to the clients that asked for it, as a source job
+    /// does: a later request joins it by its id, only its requesters read it, a release leaves the
+    /// caller's interest alone and the last one stops it — its control is cancelled, and whatever
+    /// its lane reports afterwards it ends `cancelled` — while every requester still reads the
+    /// outcome. A disconnect releases as a cancel does. A catalog job not shared this way is never
+    /// joined, and one opened for nobody is read by nobody until a request joins it.
+    #[test]
+    fn a_shared_catalog_job_is_joined_by_id_and_only_its_last_release_stops_it() {
+        let (mut jobs, _) = jobs();
+        let one = ClientId::testing(1);
+        let two = ClientId::testing(2);
+        let three = ClientId::testing(3);
+        let open = |jobs: &mut Jobs, client: Option<ClientId>| {
+            let job_id = JobId::new();
+            let control = JobControl::new();
+            jobs.open_catalog_shared(
+                CatalogOpened {
+                    job_id: job_id.clone(),
+                    kind: JobKind::PreviewExtract,
+                    asset_id: None,
+                    origin: Some(Origin::new("preview.read", "request")),
+                    control: control.clone(),
+                },
+                client,
+            );
+            (job_id, control)
+        };
+        let status = |jobs: &Jobs, job: &JobId, client: ClientId| {
+            jobs.read_for(job, client).map(|record| record.status)
+        };
+
+        let (job, control) = open(&mut jobs, Some(one));
+        assert!(jobs.shared(&job));
+        assert!(jobs.join_catalog(&job, two), "a later request joins by id");
+        jobs.start(&job);
+        assert_eq!(status(&jobs, &job, two).unwrap(), JobStatus::Running);
+        assert_eq!(
+            status(&jobs, &job, three).unwrap_err().kind,
+            ErrorKind::Validation,
+            "only its requesters read it"
+        );
+        assert_eq!(jobs.release(&job, one).unwrap(), Release::Kept);
+        assert!(!control.is_cancelled(), "the other client still wants it");
+        assert!(jobs.wanted_by(&job, two) && !jobs.wanted_by(&job, one));
+        assert_eq!(
+            status(&jobs, &job, one).unwrap(),
+            JobStatus::Running,
+            "the released client still reads it"
+        );
+        assert_eq!(
+            jobs.release(&job, one).unwrap(),
+            Release::Kept,
+            "a repeat changes nothing"
+        );
+        assert_eq!(jobs.release(&job, two).unwrap(), Release::Stopped);
+        assert!(control.is_cancelled(), "the last release stops it");
+        let finished = jobs
+            .finish(&job, Ok(Output::Value(json!({"done": true}))))
+            .unwrap();
+        assert_eq!(finished.record.status, JobStatus::Cancelled);
+        assert!(finished.record.result.is_none(), "its result is discarded");
+        assert_eq!(finished.record.error.unwrap().message, CANCELLED);
+        for client in [one, two] {
+            assert_eq!(status(&jobs, &job, client).unwrap(), JobStatus::Cancelled);
+        }
+        assert!(jobs.join_catalog(&job, three), "a finished job answers");
+        assert!(!jobs.wanted(&job), "and no one wants its work");
+
+        // A disconnect leaves the client's interest; a job it alone wanted stops.
+        let (kept, kept_control) = open(&mut jobs, Some(one));
+        assert!(jobs.join_catalog(&kept, two));
+        let (alone, alone_control) = open(&mut jobs, Some(one));
+        assert_eq!(
+            jobs.disconnect(one),
+            vec![(alone.clone(), JobKind::PreviewExtract)]
+        );
+        assert!(alone_control.is_cancelled() && !kept_control.is_cancelled());
+        assert!(jobs.wanted_by(&kept, two));
+        assert_eq!(
+            status(&jobs, &kept, one).unwrap_err().kind,
+            ErrorKind::Validation,
+            "a gone client owns nothing"
+        );
+
+        // Work nobody requested is read by nobody until a request joins it.
+        let (unrequested, _) = open(&mut jobs, None);
+        assert!(status(&jobs, &unrequested, two).is_err());
+        assert!(jobs.join_catalog(&unrequested, two));
+        assert_eq!(status(&jobs, &unrequested, two).unwrap(), JobStatus::Queued);
+
+        // A catalog job that belongs to no client is not shared and never joined.
+        let lane = JobId::new();
+        jobs.open_catalog(CatalogOpened {
+            job_id: lane.clone(),
+            kind: JobKind::PreviewExtract,
+            asset_id: None,
+            origin: None,
+            control: JobControl::new(),
+        });
+        assert!(!jobs.shared(&lane));
+        assert!(!jobs.join_catalog(&lane, one));
+        assert!(!jobs.join_catalog(&JobId::new(), one), "nor an unknown one");
+        assert_eq!(status(&jobs, &lane, three).unwrap(), JobStatus::Queued);
+        jobs.shutdown();
+    }
+
+    /// The catalog family keeps its finished records per kind: a flood of short preview reads
+    /// never pushes out another catalog kind's record its client has still to read.
+    #[test]
+    fn each_catalog_kind_keeps_its_own_finished_records() {
+        let (mut jobs, _) = jobs();
+        let finished = |jobs: &mut Jobs, kind: JobKind| {
+            let job_id = JobId::new();
+            jobs.open_catalog(CatalogOpened {
+                job_id: job_id.clone(),
+                kind,
+                asset_id: None,
+                origin: None,
+                control: JobControl::new(),
+            });
+            jobs.start(&job_id);
+            jobs.finish(&job_id, Ok(Output::Value(json!({}))));
+            job_id
+        };
+        let refresh = finished(&mut jobs, JobKind::IndexRefresh);
+        let reads: Vec<JobId> = (0..FINISHED_RECORDS + 5)
+            .map(|_| finished(&mut jobs, JobKind::PreviewExtract))
+            .collect();
+        let one = ClientId::testing(1);
+        assert_eq!(
+            jobs.read_for(&refresh, one).unwrap().status,
+            JobStatus::Ready,
+            "another kind's record is kept"
+        );
+        assert!(
+            jobs.read_for(&reads[0], one).is_err(),
+            "the oldest read is forgotten"
+        );
+        assert!(jobs.read_for(&reads[5], one).is_ok());
+        assert_eq!(
+            reads
+                .iter()
+                .filter(|id| jobs.read_for(id, one).is_ok())
+                .count(),
+            FINISHED_RECORDS
+        );
+        jobs.shutdown();
+    }
+
     /// Each family keeps its own share of finished records, and analysis at most
     /// [`MAX_READY_REPORTS`] reports, the oldest forgotten first. A live job is never forgotten.
     #[test]
@@ -1813,5 +2287,73 @@ mod tests {
         jobs.complete(&id, result).unwrap();
         assert_eq!(jobs.of_module("test.module").len(), 1);
         jobs.shutdown();
+    }
+}
+
+#[cfg(test)]
+mod monitoring_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn job_changes_cover_unwatched_progress_rearm_partial_and_terminal_publication() {
+        let board = ActivityBoard::new();
+        let mut jobs = Jobs::new(Arc::new(|_, _| {}), board.clone());
+        let client = ClientId::testing(1);
+        let control = JobControl::new();
+        let job = JobId::new();
+        jobs.open_catalog(CatalogOpened {
+            job_id: job.clone(),
+            kind: JobKind::SourceFind,
+            asset_id: None,
+            origin: None,
+            control: control.clone(),
+        });
+        control.begin_activity(board.begin(ActivitySpec {
+            kind: "catalog.source-find",
+            label: "Find",
+            detail: None,
+            asset_id: None,
+            job_id: Some(job.to_string()),
+        }));
+        let queued = jobs.change_for(&job, client).unwrap();
+        jobs.start(&job);
+        assert!(jobs.change_for(&job, client).unwrap() > queued);
+        let first = jobs.change_for(&job, client).unwrap();
+        control.set_progress(Some(0.2), "found one");
+        let changed = jobs.change_for(&job, client).unwrap();
+        assert!(
+            changed > first,
+            "a change before waiter registration remains observable"
+        );
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let counted = wakes.clone();
+        jobs.set_wake(Arc::new(move || {
+            counted.fetch_add(1, Ordering::Relaxed);
+        }));
+        jobs.watch_job(&job);
+        control.update_partial(|value| *value = json!({"paths": ["one"]}));
+        control.set_progress(Some(0.3), "found two");
+        assert_eq!(
+            wakes.load(Ordering::Relaxed),
+            1,
+            "wakes coalesce until rearm"
+        );
+        assert_eq!(
+            jobs.read_for(&job, client).unwrap().result,
+            Some(json!({"paths": ["one"]}))
+        );
+        jobs.watch_job(&job);
+        jobs.finish(&job, Ok(Output::Value(json!({"paths": ["one", "two"]}))));
+        assert_eq!(wakes.load(Ordering::Relaxed), 2);
+        assert_eq!(
+            jobs.read_for(&job, client).unwrap().status,
+            JobStatus::Ready
+        );
+        assert_eq!(
+            jobs.read_for(&job, client).unwrap().result,
+            Some(json!({"paths": ["one", "two"]}))
+        );
+        jobs.watched_jobs(std::iter::empty());
     }
 }

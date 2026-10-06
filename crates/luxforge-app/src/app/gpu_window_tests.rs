@@ -1300,7 +1300,7 @@ fn harness_view(editor: &mut Editor, view: View, zoom: luxforge_core::Zoom) {
     editor.session.workspace.state_panel = view.panels;
     editor.session.workspace.tools_panel = view.panels;
     editor.session.preview.view.zoom = zoom;
-    let surface = crate::layout::photo_surface(view.window, view.panels, view.panels);
+    let surface = crate::layout::photo_surface(view.window, view.panels, view.panels, false);
     let (width, height) = editor.presentation.dimensions.unwrap_or((0, 0));
     // Logical pixels an output pixel takes at 100% at 2×.
     let scale = 0.5;

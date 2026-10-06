@@ -119,7 +119,7 @@ pub(crate) fn worst(statistics: &[Statistics]) -> Statistics {
 /// The Fit bounds of an evidence run's window, 1440 × 900 logical at 2× with both panels open,
 /// as the desktop computes them ([`crate::app::Editor::proxy_bounds`]).
 pub(crate) fn fit_bounds() -> luxforge_core::ProxyBounds {
-    let surface = crate::layout::photo_surface((1440.0, 900.0), true, true);
+    let surface = crate::layout::photo_surface((1440.0, 900.0), true, true, false);
     let inset = crate::layout::FIT_INSET;
     crate::app::preview::bounds_of(((surface.0 - inset.0) * 2.0, (surface.1 - inset.1) * 2.0))
         .expect("room for a photograph")
@@ -428,7 +428,7 @@ pub(crate) const LARGEST_WINDOW: (f32, f32) = (1512.0, 982.0);
 /// The visible region of an output stage of `stage` at `zoom` percent in [`LARGEST_WINDOW`],
 /// scrolled to its centre, as the desktop computes it ([`crate::app::preview::viewport_rect`]).
 pub(crate) fn largest_view(stage: (u32, u32), zoom: f32) -> Option<luxforge_core::Region> {
-    let surface = crate::layout::photo_surface(LARGEST_WINDOW, false, false);
+    let surface = crate::layout::photo_surface(LARGEST_WINDOW, false, false, false);
     // Logical pixels an output pixel takes at 2×.
     let scale = zoom / 100.0 / 2.0;
     let pan = (

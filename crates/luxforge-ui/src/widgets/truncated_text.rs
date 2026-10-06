@@ -11,6 +11,11 @@
 //! history row's tag) follows the text, and a container can align it right (a band's hint). The
 //! measurement is cached against the content, the available width, the size, the line height and
 //! the font, so a layout pass with nothing changed shapes and allocates nothing.
+//!
+//! A [`TruncatedText::suffix`] is a second, shorter text kept whole right after the first, such as
+//! an event's dates after its name: the first text ends in its ellipsis before the suffix loses a
+//! character. This widget draws it itself, so it follows the drawn text even where a row gives the
+//! widget the whole of its filling share (Iced's rows set a filling child's minimum width to it).
 
 use crate::{Element, Ink, Theme};
 use iced::advanced::text::{self as core_text, Paragraph as _, Renderer as _};
@@ -98,6 +103,26 @@ pub struct TruncatedText {
     font: Font,
     ink: Ink,
     line_height: LineHeight,
+    suffix: Option<Suffix>,
+}
+
+/// A short text kept whole after the truncated one, in the same font and line height.
+#[derive(Debug, Clone, PartialEq)]
+struct Suffix {
+    content: String,
+    size: f32,
+    ink: Ink,
+    /// The space between the first text and the suffix.
+    gap: f32,
+}
+
+/// How far below the first text's top a suffix set `smaller` points smaller is drawn, so the two
+/// share a baseline: both lines are centred in the same line height, and Inter's baseline sits
+/// this fraction of the size below a centred line's middle (its ascender is 1984 and its descender
+/// 494 units of 2048).
+pub(crate) fn suffix_drop(smaller: f32) -> f32 {
+    const BASELINE_BELOW_CENTRE: f32 = (1984.0 - (1984.0 + 494.0) / 2.0) / 2048.0;
+    smaller * BASELINE_BELOW_CENTRE
 }
 
 /// A one-line label at `size` in `font` and `ink`, ending in "…" when it does not fit.
@@ -113,6 +138,7 @@ pub fn truncated_text(
         font,
         ink: ink.into(),
         line_height: LineHeight::default(),
+        suffix: None,
     }
 }
 
@@ -120,6 +146,24 @@ impl TruncatedText {
     /// Sets the line height, which is also the widget's height.
     pub fn line_height(mut self, line_height: LineHeight) -> Self {
         self.line_height = line_height;
+        self
+    }
+
+    /// Adds `content` at `size` in `ink`, `gap` after the text and kept whole: the text gives way
+    /// to it.
+    pub fn suffix(
+        mut self,
+        content: impl Into<String>,
+        size: f32,
+        ink: impl Into<Ink>,
+        gap: f32,
+    ) -> Self {
+        self.suffix = Some(Suffix {
+            content: content.into(),
+            size,
+            ink: ink.into(),
+            gap,
+        });
         self
     }
 }
@@ -135,6 +179,9 @@ struct State {
     font: Option<Font>,
     line_height: Option<LineHeight>,
     paragraph: Paragraph,
+    /// The suffix it measured and its paragraph.
+    suffix: Option<Suffix>,
+    suffix_paragraph: Paragraph,
     /// The candidate buffer the search reuses.
     scratch: String,
 }
@@ -146,15 +193,20 @@ impl State {
             && self.size == text.size
             && self.available == available
             && self.content == text.content
+            && self.suffix == text.suffix
     }
 }
 
 impl TruncatedText {
     fn paragraph(&self, content: &str) -> Paragraph {
+        self.paragraph_at(content, self.size)
+    }
+
+    fn paragraph_at(&self, content: &str, size: f32) -> Paragraph {
         Paragraph::with_text(core_text::Text {
             content,
             bounds: Size::INFINITE,
-            size: Pixels(self.size),
+            size: Pixels(size),
             line_height: self.line_height,
             font: self.font,
             align_x: core_text::Alignment::Left,
@@ -165,10 +217,19 @@ impl TruncatedText {
     }
 
     fn remeasure(&self, state: &mut State, available: f32) {
+        // The suffix is measured first and keeps its width; the text fits what it leaves.
+        let room = match &self.suffix {
+            Some(suffix) => {
+                state.suffix_paragraph = self.paragraph_at(&suffix.content, suffix.size);
+                available - state.suffix_paragraph.min_width() - suffix.gap
+            }
+            None => available,
+        };
+        state.suffix.clone_from(&self.suffix);
         let mut scratch = std::mem::take(&mut state.scratch);
         let fit = fit_one_line(
             &self.content,
-            available,
+            room.max(0.0),
             |candidate| self.paragraph(candidate).min_width(),
             &mut scratch,
         );
@@ -216,7 +277,10 @@ impl<M> Widget<M, Theme, Renderer> for TruncatedText {
             self.remeasure(state, available);
         }
         let height = self.line_height.to_absolute(Pixels(self.size)).0;
-        let width = state.paragraph.min_width().min(available);
+        let suffix = self.suffix.as_ref().map_or(0.0, |suffix| {
+            suffix.gap + state.suffix_paragraph.min_width()
+        });
+        let width = (state.paragraph.min_width() + suffix).min(available);
         layout::Node::new(limits.resolve(Length::Shrink, Length::Shrink, Size::new(width, height)))
     }
 
@@ -231,12 +295,23 @@ impl<M> Widget<M, Theme, Renderer> for TruncatedText {
         viewport: &Rectangle,
     ) {
         let state = tree.state.downcast_ref::<State>();
+        let origin = layout.bounds().position();
         renderer.fill_paragraph(
             &state.paragraph,
-            layout.bounds().position(),
+            origin,
             self.ink.resolve(theme.palette()),
             *viewport,
         );
+        if let Some(suffix) = &self.suffix {
+            let at = iced::Point::new(
+                origin.x + state.paragraph.min_width() + suffix.gap,
+                origin.y + suffix_drop(self.size - suffix.size),
+            );
+            // Clipped to the widget, so a suffix that cannot fit never draws past its row.
+            let clip = layout.bounds().intersection(viewport).unwrap_or_default();
+            let ink = suffix.ink.resolve(theme.palette());
+            renderer.fill_paragraph(&state.suffix_paragraph, at, ink, clip);
+        }
     }
 
     fn operate(
@@ -273,6 +348,13 @@ mod tests {
             Fit::Prefix(end) => format!("{}{ELLIPSIS}", &content[..end]),
             Fit::Nothing => String::new(),
         }
+    }
+
+    /// A 10.5 pt suffix after 12 pt text sits about half a point lower, on the same baseline.
+    #[test]
+    fn a_smaller_suffix_drops_to_the_texts_baseline() {
+        assert_eq!(suffix_drop(0.0), 0.0);
+        assert!((suffix_drop(1.5) - 0.545).abs() < 0.01);
     }
 
     #[test]

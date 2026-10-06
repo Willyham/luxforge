@@ -13,11 +13,17 @@ mod capabilities;
 mod compare_canvas;
 pub(crate) mod crop_canvas;
 pub(crate) mod cursor_probe;
+pub(crate) mod develop;
 mod gallery;
+pub(crate) mod long_work;
+pub(crate) mod loupe;
 pub(crate) mod mask_canvas;
 pub(crate) mod masks_panel;
 pub(crate) mod palette;
 pub(crate) mod query_choice;
+pub(crate) mod select;
+pub(crate) mod select_catalog;
+pub(crate) mod select_missing;
 pub(crate) mod settings;
 pub(crate) mod state_panel;
 pub(crate) mod status_bar;
@@ -117,7 +123,11 @@ impl Surfaces<'_> {
     }
 }
 
-pub(crate) fn workspace<'a>(model: &'a Workspace, surfaces: Surfaces<'a>) -> Element<'a, Message> {
+pub(crate) fn workspace<'a>(
+    model: &'a Workspace,
+    surfaces: Surfaces<'a>,
+    strip: crate::app::develop::StripImages<'a>,
+) -> Element<'a, Message> {
     let title = container(title_bar::title_bar(model))
         .width(Length::Fill)
         .height(Length::Fixed(TITLE_BAR_HEIGHT))
@@ -127,6 +137,14 @@ pub(crate) fn workspace<'a>(model: &'a Workspace, surfaces: Surfaces<'a>) -> Ele
         .width(Length::Fill)
         .height(Length::Fill)
         .style(canvas::background_surface(model.canvas.background));
+    // Develop's filmstrip under the canvas, between the side panels, while it holds a set.
+    let canvas_area: Element<'a, Message> = match &model.develop.strip {
+        Some(model) => column![canvas_area, develop::strip(model, strip)]
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into(),
+        None => canvas_area.into(),
+    };
 
     let mut middle = row![].height(Length::Fill);
     if model.title.state_panel_open {
@@ -154,7 +172,7 @@ pub(crate) fn workspace<'a>(model: &'a Workspace, surfaces: Surfaces<'a>) -> Ele
         );
     }
 
-    let status = container(status_bar::status_bar(&model.status))
+    let status = container(status_bar::status_bar(&model.status, &model.long_work))
         .height(Length::Fixed(STATUS_BAR_HEIGHT))
         .padding([0.0, theme::TITLE_BAR_INSET])
         .align_y(iced::alignment::Vertical::Center)

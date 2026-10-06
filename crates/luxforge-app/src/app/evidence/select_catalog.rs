@@ -1,0 +1,383 @@
+//! Evidence steps on the catalog in Select: each gesture sent through the
+//! message its control sends, as the model offers it — a source row's press, a menu's choice, a
+//! Metadata browser value, the search field's text — and captured once nothing Select asked the
+//! owner for is in flight, a library change's view evaluated again.
+use super::Settle;
+use crate::app::{
+    Editor,
+    message::{Message, select::SelectMessage, select_catalog::CatalogMessage},
+};
+use crate::state::select_catalog::{
+    ActionChoice, CatalogAction, CatalogMenu, CatalogRow, FacetColumnModel, NamingTarget,
+};
+use iced::Task;
+use luxforge_evidence::{CatalogStep, FacetColumn};
+
+fn act(action: CatalogAction) -> Message {
+    Message::Select(SelectMessage::Catalog(CatalogMessage::Act(action)))
+}
+
+/// The choice labelled `label` of a menu, when it does something.
+fn choice(menu: Option<&[ActionChoice]>, label: &str) -> Result<CatalogAction, String> {
+    let menu = menu.ok_or("the menu did not open")?;
+    let found = menu
+        .iter()
+        .find(|choice| choice.label == label)
+        .ok_or_else(|| {
+            let listed: Vec<&str> = menu.iter().map(|choice| choice.label.as_str()).collect();
+            format!("no choice is labelled {label:?}: {listed:?}")
+        })?;
+    found.action.clone().ok_or_else(|| {
+        format!(
+            "{label:?} is refused: {}",
+            found.reason.clone().unwrap_or_default()
+        )
+    })
+}
+
+impl Editor {
+    /// Run one catalog step.
+    pub(super) fn catalog_step(&mut self, step: CatalogStep) -> Task<Message> {
+        if !self.select_shown() {
+            return self.fail_step("Select is not shown");
+        }
+        self.select.evidence_after = None;
+        let pressed_source = matches!(step, CatalogStep::Source(_));
+        let result = match step {
+            CatalogStep::Source(name) => self
+                .catalog_row(&name)
+                .and_then(|row| row.press.ok_or_else(|| format!("{name:?} does nothing")))
+                .map(|press| vec![act(press)]),
+            CatalogStep::Search(text) => Ok(vec![act(CatalogAction::Search(text))]),
+            CatalogStep::Metadata => Ok(vec![act(CatalogAction::Metadata)]),
+            CatalogStep::Facet { column, value } => self.facet_press(column, &value),
+            CatalogStep::Edited(item) => {
+                let _ = self.update(act(CatalogAction::Menu(Some(CatalogMenu::Edited))));
+                let menu = self
+                    .workspace
+                    .select
+                    .catalog
+                    .filter
+                    .as_ref()
+                    .and_then(|bar| bar.edited.menu.clone());
+                choice(menu.as_deref(), &item).map(|action| vec![act(action)])
+            }
+            CatalogStep::Rename { folder, name } => self
+                .folder_menu(&folder, None, "Rename\u{2026}")
+                .map(|rename| {
+                    vec![
+                        act(rename),
+                        act(CatalogAction::NameText(name)),
+                        act(CatalogAction::Submit),
+                    ]
+                }),
+            CatalogStep::Nest { folder, into } => self
+                .folder_menu(&folder, Some("Move to\u{2026}"), &into)
+                .map(|nest| vec![act(nest)]),
+            CatalogStep::Merge { folder, into } => self
+                .folder_menu(&folder, Some("Merge into\u{2026}"), &into)
+                .map(|merge| vec![act(merge)]),
+            CatalogStep::NewFolder(name) => {
+                let _ = self.update(act(CatalogAction::Menu(Some(CatalogMenu::Add))));
+                let menu = self.workspace.select.catalog.sources.add_menu.clone();
+                choice(menu.as_deref(), "New folder").map(|new| {
+                    vec![
+                        act(new),
+                        act(CatalogAction::NameText(name)),
+                        act(CatalogAction::Submit),
+                    ]
+                })
+            }
+            CatalogStep::MoveTo(folder) => {
+                let _ = self.update(act(CatalogAction::Menu(Some(CatalogMenu::MovePhotos))));
+                let menu = self
+                    .workspace
+                    .select
+                    .catalog
+                    .info
+                    .as_ref()
+                    .and_then(|info| info.move_menu.clone());
+                choice(menu.as_deref(), &folder).map(|action| vec![act(action)])
+            }
+            CatalogStep::AddTo(collection) => {
+                let _ = self.update(act(CatalogAction::Menu(Some(CatalogMenu::AddTo))));
+                let menu = self
+                    .workspace
+                    .select
+                    .catalog
+                    .info
+                    .as_ref()
+                    .and_then(|info| info.add_menu.clone());
+                choice(menu.as_deref(), &collection).map(|action| vec![act(action)])
+            }
+            CatalogStep::SaveSmart(name) => {
+                match self
+                    .workspace
+                    .select
+                    .catalog
+                    .filter
+                    .as_ref()
+                    .map(|bar| bar.save_refused.clone())
+                {
+                    Some(None) => Ok(vec![
+                        act(CatalogAction::Name(NamingTarget::SmartCollection)),
+                        act(CatalogAction::NameText(name)),
+                        act(CatalogAction::Submit),
+                    ]),
+                    Some(Some(reason)) => {
+                        Err(format!("Save as smart collection… is refused: {reason}"))
+                    }
+                    None => Err("the view is not over the catalog".to_owned()),
+                }
+            }
+            CatalogStep::ApplyPreset(name) => self.preset_press(&name),
+            // The native folder dialog answered with the step's folder.
+            CatalogStep::ExportInto(folder) => self.band_refusal().map(|()| {
+                vec![act(CatalogAction::ExportInto(Some(
+                    std::path::PathBuf::from(folder),
+                )))]
+            }),
+            CatalogStep::Report => {
+                if self.workspace.select.catalog.status_report {
+                    Ok(vec![act(CatalogAction::Report(true))])
+                } else {
+                    Err("the status bar offers no report".to_owned())
+                }
+            }
+            CatalogStep::Remove | CatalogStep::PutBack => {
+                let wanted = if matches!(step, CatalogStep::Remove) {
+                    CatalogAction::Remove
+                } else {
+                    CatalogAction::Restore
+                };
+                match self
+                    .workspace
+                    .select
+                    .catalog
+                    .info
+                    .as_ref()
+                    .and_then(|info| info.removal.as_ref())
+                {
+                    Some(button) if button.action == wanted => Ok(vec![act(wanted)]),
+                    Some(button) => Err(format!("the Info panel offers {:?}", button.label)),
+                    None => Err("the Info panel describes no photograph".to_owned()),
+                }
+            }
+            CatalogStep::DeleteKey => self.delete_key(),
+            CatalogStep::SendBack => match self
+                .workspace
+                .select
+                .catalog
+                .info
+                .as_ref()
+                .and_then(|info| info.send_back.as_ref())
+            {
+                Some(button) => match &button.refused {
+                    None => Ok(vec![act(CatalogAction::SendBack)]),
+                    Some(reason) => Err(format!("Send back is refused: {reason}")),
+                },
+                None => Err("the Info panel offers no Send back".to_owned()),
+            },
+            CatalogStep::Context(position) => self.context_press(position),
+            CatalogStep::ContextChoice(label) => {
+                let menu = self
+                    .workspace
+                    .select
+                    .catalog
+                    .context
+                    .as_ref()
+                    .map(|menu| menu.choices.clone());
+                choice(menu.as_deref(), &label).map(|action| vec![act(action)])
+            }
+            CatalogStep::Confirm => match &self.workspace.select.catalog.sheet {
+                Some(sheet) if sheet.confirm.is_some() => Ok(vec![act(CatalogAction::Confirmed)]),
+                _ => Err("no confirmation is shown".to_owned()),
+            },
+            CatalogStep::EmptyRemoved => match self
+                .workspace
+                .select
+                .catalog
+                .filter
+                .as_ref()
+                .and_then(|bar| bar.empty.as_ref())
+            {
+                Some(empty) => match &empty.refused {
+                    None => Ok(vec![act(CatalogAction::Empty)]),
+                    Some(reason) => Err(format!("Empty Removed… is refused: {reason}")),
+                },
+                None => Err("Empty Removed… is offered only over Removed".to_owned()),
+            },
+        };
+        let messages = match result {
+            Ok(messages) => messages,
+            Err(reason) => {
+                let _ = self.update(act(CatalogAction::Menu(None)));
+                return self.fail_step(reason);
+            }
+        };
+        let mut tasks: Vec<Task<Message>> = messages
+            .into_iter()
+            .map(|message| self.update(message))
+            .collect();
+        // The Catalog section is at the foot of the sources panel: scrolled to, as a person
+        // scrolls to the row they press, so the frame shows it.
+        if pressed_source {
+            tasks.push(iced::widget::operation::snap_to_end(
+                iced::widget::Id::from(crate::view::select::SOURCES_SCROLL),
+            ));
+        }
+        // A gesture that asked the owner for nothing (the Metadata browser opened over counts it
+        // holds) is captured at once; any other once what it asked for has answered.
+        if self.select_quiet() {
+            self.capture_next_frame();
+        } else {
+            self.await_step(Settle::Select);
+        }
+        Task::batch(tasks)
+    }
+
+    /// A right-click on the grid cell showing view position `position`, at its centre, as the grid
+    /// publishes it.
+    fn context_press(&self, position: u32) -> Result<Vec<Message>, String> {
+        let layout = &self.select.layout;
+        let cell = layout
+            .cell_of_item(position)
+            .map(|cell| layout.cell(cell))
+            .ok_or_else(|| format!("no grid cell shows position {position}"))?;
+        let rect = layout
+            .item_rect(position)
+            .ok_or_else(|| format!("position {position} has no cell rectangle"))?;
+        Ok(vec![Message::Select(SelectMessage::Context(
+            luxforge_ui::GridContext {
+                cell: cell.cell,
+                item: cell.item,
+                span: cell.span,
+                at: iced::Point::new(rect.center_x(), rect.center_y() - self.select.scroll),
+            },
+        ))])
+    }
+
+    /// Why the Develop band's Apply preset… and Export… are refused, as it draws them.
+    fn band_refusal(&self) -> Result<(), String> {
+        let info = self
+            .workspace
+            .select
+            .catalog
+            .info
+            .as_ref()
+            .ok_or("the Info panel describes no photograph")?;
+        match &info.batch.refused {
+            None => Ok(()),
+            Some(reason) => Err(format!("the Develop band is refused: {reason}")),
+        }
+    }
+
+    /// Apply preset…'s menu opened, the library listed as its task lists it, and the preset named
+    /// `name` chosen.
+    fn preset_press(&mut self, name: &str) -> Result<Vec<Message>, String> {
+        self.band_refusal()?;
+        let _ = self.update(act(CatalogAction::Menu(Some(CatalogMenu::Presets))));
+        // The menu's `preset.list`, read here exactly as its owner task reads it.
+        let presets = crate::app::select_catalog::presets_now(&self.owner, self.client);
+        let _ = self.update(Message::Select(SelectMessage::Catalog(
+            CatalogMessage::Presets(presets),
+        )));
+        let menu = self
+            .workspace
+            .select
+            .catalog
+            .info
+            .as_ref()
+            .and_then(|info| info.batch.presets.clone());
+        choice(menu.as_deref(), name).map(|action| vec![act(action)])
+    }
+
+    /// ⌫ through the key table, as the keyboard presses it.
+    fn delete_key(&mut self) -> Result<Vec<Message>, String> {
+        use iced::keyboard::{
+            Event as KeyEvent, Key, Location, Modifiers,
+            key::{Named, NativeCode, Physical},
+        };
+        let key = Key::Named(Named::Backspace);
+        let event = iced::Event::Keyboard(KeyEvent::KeyPressed {
+            key: key.clone(),
+            modified_key: key,
+            physical_key: Physical::Unidentified(NativeCode::Unidentified),
+            location: Location::Standard,
+            modifiers: Modifiers::empty(),
+            text: None,
+            repeat: false,
+        });
+        let status = iced::event::Status::Ignored;
+        crate::app::keymap::keymap(&event, status, &self.key_context())
+            .map(|message| vec![message])
+            .ok_or_else(|| "⌫ does nothing here".to_owned())
+    }
+
+    /// The catalog folder, year or collection row showing `name`, as the sources panel lists it.
+    fn catalog_row(&self, name: &str) -> Result<CatalogRow, String> {
+        let sources = &self.workspace.select.catalog.sources;
+        sources
+            .folders
+            .iter()
+            .chain(&sources.collections)
+            .find(|row| row.name == name)
+            .cloned()
+            .ok_or_else(|| format!("no catalog row shows {name:?}"))
+    }
+
+    /// Open `folder`'s menu and choose `label`, or, through `picker`, the folder listed as `label`.
+    fn folder_menu(
+        &mut self,
+        folder: &str,
+        picker: Option<&str>,
+        label: &str,
+    ) -> Result<CatalogAction, String> {
+        let row = self.catalog_row(folder)?;
+        let open = row
+            .context
+            .ok_or_else(|| format!("{folder:?} has no menu"))?;
+        let _ = self.update(act(open));
+        let menu = self.catalog_row(folder)?.menu;
+        let Some(picker) = picker else {
+            return choice(menu.as_deref(), label);
+        };
+        let opened = choice(menu.as_deref(), picker)?;
+        let _ = self.update(act(opened));
+        choice(self.catalog_row(folder)?.menu.as_deref(), label)
+    }
+
+    /// The Metadata browser's value labelled `value` in `column`, pressed as its row publishes it.
+    fn facet_press(&self, column: FacetColumn, value: &str) -> Result<Vec<Message>, String> {
+        let title = match column {
+            FacetColumn::Date => "Date",
+            FacetColumn::Place => "Place",
+            FacetColumn::Camera => "Camera",
+            FacetColumn::Lens => "Lens",
+        };
+        let columns = self
+            .workspace
+            .select
+            .catalog
+            .metadata
+            .as_deref()
+            .ok_or("the Metadata browser is not open")?;
+        let column: &FacetColumnModel = columns
+            .iter()
+            .find(|column| column.title == title)
+            .ok_or_else(|| format!("no {title} column"))?;
+        let row = column
+            .rows
+            .iter()
+            .find(|row| row.label == value)
+            .ok_or_else(|| {
+                let listed: Vec<&str> = column.rows.iter().map(|row| row.label.as_str()).collect();
+                format!("the {title} column lists no {value:?}: {listed:?}")
+            })?;
+        let change = row
+            .change
+            .clone()
+            .ok_or_else(|| format!("{value:?} names no condition"))?;
+        Ok(vec![act(CatalogAction::Change(change))])
+    }
+}

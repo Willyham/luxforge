@@ -1,0 +1,615 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "lightroom-alignment",
+  "title": "Lightroom alignment",
+  "objective": "Make every supported slider do about what the same value does in Lightroom Classic: measure each setting's response from rendered outputs, calibrate the importers' conversions in the meantime, realign each control's response by editing area, and change an algorithm only where a dimension still differs past the threshold.",
+  "context_summary": "Planned from docs/design/lightroom-alignment.md, the contract every task follows; the owner decided every question on 2026-10-06 and did not authorize implementation, so nothing here starts until authorized. Lightroom is driven by generated XMP and one manual import and export per round by the owner; agents cannot run Lightroom. Only rendered outputs are compared: no Adobe code, SDK source or binary is read or used, and no Adobe data ships. Response changes run by editing area (Basic and the Tone curve, then Presence, the mixer and the vignette, then Detail, then masks and geometry, then RAW white balance); each raises its module's format marker so earlier recipes are refused. Behaviour changes follow only past the threshold (median ΔE2000 above 2 at ±25 and beyond, or a difference in kind). Decisions: docs/decisions.md.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Build the rig's generator: the synthetic JPEG targets (grey wedge, Oklab patch grid, edge and zone-plate chart, flat field, geometric grids), the corpus selection, and cargo xtask lr-align generate, which writes a round folder of copies with each variant's settings as XMP and a manifest.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Only the round's own copies carry XMP: embedded in a JPEG copy, a sidecar beside a RAW copy. Originals and the corpus are never written.",
+        "Every variant's XMP must read back through Luxforge's own preset reader to the manifest's settings.",
+        "Round 1 is single settings across each range; round 2 the interacting pairs the design names. Supplied and corpus RAW files come from their manifests; none enter the repository."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom alignment design",
+          "target": "docs/design/lightroom-alignment.md",
+          "relevance": "The rig, targets and rounds.",
+          "locator": "The rig"
+        },
+        {
+          "kind": "file",
+          "label": "Sample corpus",
+          "target": "docs/design/sample-corpus.md",
+          "relevance": "The CC0 RAW files the rounds use."
+        },
+        {
+          "kind": "file",
+          "label": "Preset XMP reader",
+          "target": "crates/luxforge-core/src/presets/xmp.rs",
+          "relevance": "The reader every variant round-trips through."
+        }
+      ],
+      "acceptance_criteria": [
+        "A round is deterministic: generating twice gives identical folders and manifests.",
+        "Every variant round-trips through the preset reader; the generator writes only inside the round folder."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Generate a round twice and compare; run the round-trip tests."
+        ],
+        "commands": [
+          "cargo test -p xtask lr_align",
+          "cargo xtask lr-align generate --round 1 --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Both rounds are identical and every variant round-trips."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Build measurement and fitting: render each variant through the CPU reference renderer, read Lightroom's 16-bit TIFF exports, measure responses relative to each editor's neutral rendering, fit a monotone map per setting with its residual and range shortfall, and write per-setting pages, contact sheets and a ranked summary (cargo xtask lr-align measure).",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "The TIFF decoder is a pinned development dependency of the study, never of the editor.",
+        "Measures: transfer curves, ΔE2000 and signed ΔL*, Oklab chroma ratio and hue shift per sector, overshoot and halo width, band gain, radial profiles, grid positions; each checked on synthetic cases with known answers.",
+        "Outputs only: no Adobe code, SDK source or binary is read or used."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom alignment design",
+          "target": "docs/design/lightroom-alignment.md",
+          "relevance": "Measuring responses and fitting.",
+          "locator": "Measuring a response, not a look"
+        },
+        {
+          "kind": "file",
+          "label": "Development guide",
+          "target": "docs/engineering/development.md",
+          "relevance": "Where studies and evidence live.",
+          "locator": "Rendered evidence"
+        }
+      ],
+      "acceptance_criteria": [
+        "Every measure recovers its known answer on synthetic cases; maps are monotone; shortfalls are reported, never clamped."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the measurement and fit tests on synthetic cases."
+        ],
+        "commands": [
+          "cargo test -p luxforge-reference --test studies lr_align::"
+        ],
+        "expected_results": [
+          "Every measurement test passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Run round 1 with the owner: single-setting sweeps over every supported setting, measured and fitted, with the figures, residuals and the settings past the A8 threshold recorded in the design.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002"
+      ],
+      "extra_context": [
+        "The owner imports the round folder into a scratch Lightroom catalog and exports it with the round's export settings (16-bit TIFF, sRGB, full size, no output sharpening, no metadata); agents cannot run Lightroom."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom alignment design",
+          "target": "docs/design/lightroom-alignment.md",
+          "relevance": "What is measured and recorded.",
+          "locator": "What is measured"
+        }
+      ],
+      "acceptance_criteria": [
+        "Every supported setting has a page with its response curves, map, residual and sheet, and the design records the summary."
+      ],
+      "test_strategy": {
+        "approach": "manual",
+        "steps": [
+          "Generate round 1, hand it to the owner, measure the exports, record the figures."
+        ],
+        "commands": [
+          "cargo xtask lr-align generate --round 1 --output NEW_DIR",
+          "cargo xtask lr-align measure --round 1 --exports DIR --output NEW_DIR"
+        ],
+        "expected_results": [
+          "The round's figures are recorded in the design."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Add the calibrated mapping rows: each fitted level A map becomes a frozen fixture and a calibrated rule in the preset mapping, used by preset import and the Lightroom import until that setting's response change lands, with the report naming the rule applied.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003"
+      ],
+      "extra_context": [
+        "One mapping table; the calibrated rule sits beside value transfer and curve transfer."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Presets design",
+          "target": "docs/design/presets.md",
+          "relevance": "The mapping table and report.",
+          "locator": "Mapping"
+        },
+        {
+          "kind": "file",
+          "label": "Lightroom alignment design",
+          "target": "docs/design/lightroom-alignment.md",
+          "relevance": "Maps as the importers' bridge.",
+          "locator": "Fitting the translation (level A)"
+        }
+      ],
+      "acceptance_criteria": [
+        "Each calibrated row converts exactly as its fixture says; uncalibrated rows are unchanged; the report says which rule applied."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the preset mapping tests."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core presets::"
+        ],
+        "expected_results": [
+          "Every preset test passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Run round 2 with the owner: the interacting pairs (Exposure with Highlights and Whites, Contrast with Blacks and Whites, Vibrance with Saturation, Clarity with Texture, Dehaze with Contrast), checking that single-setting maps hold together and reporting pairs whose combined residual grows sharply.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003"
+      ],
+      "extra_context": [
+        "Same owner round-trip as round 1."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom alignment design",
+          "target": "docs/design/lightroom-alignment.md",
+          "relevance": "Interactions.",
+          "locator": "Fitting the translation (level A)"
+        }
+      ],
+      "acceptance_criteria": [
+        "The pairs' figures are recorded in the design, with any pair that breaks its single-setting maps named."
+      ],
+      "test_strategy": {
+        "approach": "manual",
+        "steps": [
+          "Generate round 2, hand it to the owner, measure, record."
+        ],
+        "commands": [
+          "cargo xtask lr-align generate --round 2 --output NEW_DIR",
+          "cargo xtask lr-align measure --round 2 --exports DIR --output NEW_DIR"
+        ],
+        "expected_results": [
+          "The round's figures are recorded."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Realign Basic tone and colour (Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Vibrance, Saturation, JPEG Temperature and Tint) and the Tone curve to Lightroom's responses.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004",
+        "TASK-005"
+      ],
+      "extra_context": [
+        "Each response change follows the design's path: a study with figures and contact sheets, the f64 reference refrozen, the CPU unit exact against it, the GPU program within the declared tolerance, the module's payload format marker raised so earlier recipes are refused, the owner's review of the sheets before freezing, and the setting's level A map refitted to the identity within tolerance.",
+        "The algorithm, stage and processing cost stay unchanged; a confirming Lightroom round by the owner closes each batch.",
+        "A setting past the A8 threshold is recorded with the dimension that differs, for a behaviour-change task."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom alignment design",
+          "target": "docs/design/lightroom-alignment.md",
+          "relevance": "Response changes.",
+          "locator": "Changing a control (levels B and C)"
+        },
+        {
+          "kind": "file",
+          "label": "Basic tone",
+          "target": "docs/design/basic-tone.md",
+          "relevance": "The frozen tone numerics."
+        },
+        {
+          "kind": "file",
+          "label": "Basic colour",
+          "target": "docs/design/basic-colour.md",
+          "relevance": "The frozen colour numerics."
+        }
+      ],
+      "acceptance_criteria": [
+        "Basic and the Tone curve: each setting's response matches Lightroom's within the study's tolerance on the confirming round, with figures and sheets recorded in the design and reviewed by the owner.",
+        "Earlier recipes of each changed module are refused naming the format; exact CPU fixtures and GPU qualification pass."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the studies and the modules' tests; run the confirming round with the owner."
+        ],
+        "commands": [
+          "cargo test -p luxforge-reference --test studies tone::",
+          "cargo test -p luxforge-core modules::basic",
+          "cargo xtask check"
+        ],
+        "expected_results": [
+          "Studies, module tests and check pass; the confirming round is recorded."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Realign Presence (Texture, Clarity, Dehaze), the colour mixer and the vignette to Lightroom's responses.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-006"
+      ],
+      "extra_context": [
+        "Each response change follows the design's path: a study with figures and contact sheets, the f64 reference refrozen, the CPU unit exact against it, the GPU program within the declared tolerance, the module's payload format marker raised so earlier recipes are refused, the owner's review of the sheets before freezing, and the setting's level A map refitted to the identity within tolerance.",
+        "The algorithm, stage and processing cost stay unchanged; a confirming Lightroom round by the owner closes each batch.",
+        "A setting past the A8 threshold is recorded with the dimension that differs, for a behaviour-change task."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom alignment design",
+          "target": "docs/design/lightroom-alignment.md",
+          "relevance": "Response changes.",
+          "locator": "Changing a control (levels B and C)"
+        },
+        {
+          "kind": "file",
+          "label": "Presence, mixer and vignette",
+          "target": "docs/design/presence-mixer-vignette.md",
+          "relevance": "The modules' numerics."
+        }
+      ],
+      "acceptance_criteria": [
+        "Presence, the mixer and the vignette: each setting's response matches Lightroom's within the study's tolerance on the confirming round, with figures and sheets recorded in the design and reviewed by the owner.",
+        "Earlier recipes of each changed module are refused naming the format; exact CPU fixtures and GPU qualification pass."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the studies and the modules' tests; run the confirming round with the owner."
+        ],
+        "commands": [
+          "cargo test -p luxforge-reference --test studies presence::",
+          "cargo test -p luxforge-reference --test studies mixer::",
+          "cargo test -p luxforge-reference --test studies vignette::",
+          "cargo xtask check"
+        ],
+        "expected_results": [
+          "Studies, module tests and check pass; the confirming round is recorded."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Realign Detail (sharpening and noise reduction) to Lightroom's responses.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-007"
+      ],
+      "extra_context": [
+        "Each response change follows the design's path: a study with figures and contact sheets, the f64 reference refrozen, the CPU unit exact against it, the GPU program within the declared tolerance, the module's payload format marker raised so earlier recipes are refused, the owner's review of the sheets before freezing, and the setting's level A map refitted to the identity within tolerance.",
+        "The algorithm, stage and processing cost stay unchanged; a confirming Lightroom round by the owner closes each batch.",
+        "A setting past the A8 threshold is recorded with the dimension that differs, for a behaviour-change task."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom alignment design",
+          "target": "docs/design/lightroom-alignment.md",
+          "relevance": "Response changes.",
+          "locator": "Changing a control (levels B and C)"
+        },
+        {
+          "kind": "file",
+          "label": "Detail",
+          "target": "docs/design/detail.md",
+          "relevance": "The module's numerics."
+        }
+      ],
+      "acceptance_criteria": [
+        "Detail: each setting's response matches Lightroom's within the study's tolerance on the confirming round, with figures and sheets recorded in the design and reviewed by the owner.",
+        "Earlier recipes of each changed module are refused naming the format; exact CPU fixtures and GPU qualification pass."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the study and the module's tests; run the confirming round with the owner."
+        ],
+        "commands": [
+          "cargo test -p luxforge-reference --test studies detail::",
+          "cargo xtask check"
+        ],
+        "expected_results": [
+          "Study, module tests and check pass; the confirming round is recorded."
+        ]
+      }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Realign mask falloffs (linear, radial, brush feather and flow, range masks) and manual perspective to Lightroom's responses; crop and straighten are confirmed exact.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-008"
+      ],
+      "extra_context": [
+        "Each response change follows the design's path: a study with figures and contact sheets, the f64 reference refrozen, the CPU unit exact against it, the GPU program within the declared tolerance, the module's payload format marker raised so earlier recipes are refused, the owner's review of the sheets before freezing, and the setting's level A map refitted to the identity within tolerance.",
+        "The algorithm, stage and processing cost stay unchanged; a confirming Lightroom round by the owner closes each batch.",
+        "A setting past the A8 threshold is recorded with the dimension that differs, for a behaviour-change task."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom alignment design",
+          "target": "docs/design/lightroom-alignment.md",
+          "relevance": "Response changes.",
+          "locator": "Changing a control (levels B and C)"
+        },
+        {
+          "kind": "file",
+          "label": "Masking",
+          "target": "docs/design/masking.md",
+          "relevance": "The frozen mask equations.",
+          "locator": "Component kinds"
+        },
+        {
+          "kind": "file",
+          "label": "Lens and perspective",
+          "target": "docs/design/lens-and-perspective.md",
+          "relevance": "The perspective model."
+        }
+      ],
+      "acceptance_criteria": [
+        "Masks and perspective: each setting's response matches Lightroom's within the study's tolerance on the confirming round, with figures and sheets recorded in the design and reviewed by the owner.",
+        "Earlier recipes of each changed module are refused naming the format; exact CPU fixtures and GPU qualification pass."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the studies and the tests; run the confirming round with the owner."
+        ],
+        "commands": [
+          "cargo test -p luxforge-reference --test studies mask::",
+          "cargo test -p luxforge-reference --test studies geometry::",
+          "cargo xtask check"
+        ],
+        "expected_results": [
+          "Studies, tests and check pass; the confirming round is recorded."
+        ]
+      }
+    },
+    {
+      "id": "TASK-010",
+      "description": "Realign RAW white balance (Temperature in kelvin and Tint) to Lightroom's responses on the corpus and the owner's colour-checker frames.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-009"
+      ],
+      "extra_context": [
+        "Each response change follows the design's path: a study with figures and contact sheets, the f64 reference refrozen, the CPU unit exact against it, the GPU program within the declared tolerance, the module's payload format marker raised so earlier recipes are refused, the owner's review of the sheets before freezing, and the setting's level A map refitted to the identity within tolerance.",
+        "The algorithm, stage and processing cost stay unchanged; a confirming Lightroom round by the owner closes each batch.",
+        "A setting past the A8 threshold is recorded with the dimension that differs, for a behaviour-change task."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom alignment design",
+          "target": "docs/design/lightroom-alignment.md",
+          "relevance": "Response changes.",
+          "locator": "Changing a control (levels B and C)"
+        },
+        {
+          "kind": "file",
+          "label": "Basic white balance",
+          "target": "docs/design/basic-white-balance.md",
+          "relevance": "The white balance numerics."
+        },
+        {
+          "kind": "file",
+          "label": "Lightroom preset research",
+          "target": "docs/research/lightroom/presets.md",
+          "relevance": "The current Kelvin and tint conversion.",
+          "locator": "RAW Temperature/Tint conversion"
+        }
+      ],
+      "acceptance_criteria": [
+        "RAW white balance: each setting's response matches Lightroom's within the study's tolerance on the confirming round, with figures and sheets recorded in the design and reviewed by the owner.",
+        "Earlier recipes of each changed module are refused naming the format; exact CPU fixtures and GPU qualification pass."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the study and the tests; run the confirming round with the owner."
+        ],
+        "commands": [
+          "cargo test -p luxforge-reference --test studies white_balance::",
+          "cargo xtask check"
+        ],
+        "expected_results": [
+          "Study, tests and check pass; the confirming round is recorded."
+        ]
+      }
+    },
+    {
+      "id": "TASK-011",
+      "description": "Make the targeted behaviour changes: for each setting recorded past the A8 threshold, change only the dimension that differs, through its own study, reference, format marker and owner review; one task is added per change as the threshold identifies it.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-010"
+      ],
+      "extra_context": [
+        "Candidates are confirmed by measurement, never assumed. Each change answers the performance-rules checklist."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom alignment design",
+          "target": "docs/design/lightroom-alignment.md",
+          "relevance": "When a setting needs C.",
+          "locator": "When a setting needs C"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "The checklist a changed algorithm answers."
+        }
+      ],
+      "acceptance_criteria": [
+        "Each change meets its study's acceptance and its setting falls within the A8 threshold on a confirming round."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Plan each change as its own task when identified."
+        ],
+        "commands": [
+          "cargo xtask check"
+        ],
+        "expected_results": [
+          "Each added change passes its own acceptance."
+        ]
+      }
+    },
+    {
+      "id": "TASK-012",
+      "description": "Validate on the owner's real edits and document: cargo xtask lr-align validate reads the owner's catalog read-only with consent asked each run, renders a sample of edited photographs through the import mapping with and without calibration, compares each with Lightroom's preview, and records the figures; the user guide, feature status and design describe what is built.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-010"
+      ],
+      "extra_context": [
+        "Needs the Lightroom catalog reader and preview reading by name; figures only, nothing leaves the machine or is committed.",
+        "Base rendering differences are measured on unedited photographs and reported separately."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom alignment design",
+          "target": "docs/design/lightroom-alignment.md",
+          "relevance": "Validation on real edits.",
+          "locator": "Validation on real edits"
+        },
+        {
+          "kind": "file",
+          "label": "Lightroom import design",
+          "target": "docs/design/lightroom-import.md",
+          "relevance": "The catalog reader and previews.",
+          "locator": "Lightroom's previews"
+        }
+      ],
+      "acceptance_criteria": [
+        "The median difference against Lightroom's previews, calibrated and not, is recorded; docs describe current behaviour only; the quick tier passes."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run validation with the owner's consent; update the docs; run the quick tier."
+        ],
+        "commands": [
+          "cargo xtask check",
+          "cargo xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Check and quick pass; the figures are recorded."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-002"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-003"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-004",
+        "TASK-005"
+      ]
+    },
+    {
+      "wave": 5,
+      "task_ids": [
+        "TASK-006"
+      ]
+    },
+    {
+      "wave": 6,
+      "task_ids": [
+        "TASK-007"
+      ]
+    },
+    {
+      "wave": 7,
+      "task_ids": [
+        "TASK-008"
+      ]
+    },
+    {
+      "wave": 8,
+      "task_ids": [
+        "TASK-009"
+      ]
+    },
+    {
+      "wave": 9,
+      "task_ids": [
+        "TASK-010"
+      ]
+    },
+    {
+      "wave": 10,
+      "task_ids": [
+        "TASK-011",
+        "TASK-012"
+      ]
+    }
+  ]
+}

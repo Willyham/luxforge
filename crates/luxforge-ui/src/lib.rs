@@ -19,7 +19,7 @@ pub mod photo_surface;
 pub mod theme;
 mod widgets;
 
-pub use theme::{Ink, Mode, Palette, Theme, Token};
+pub use theme::{Derived, Ink, Mode, Palette, Theme, Token};
 
 /// An element drawn in Luxforge's [`Theme`]: every widget here returns one, and the desktop's view
 /// is built of them.
@@ -36,6 +36,9 @@ mod gallery;
 mod gallery_components;
 mod gallery_masks;
 mod gallery_performance;
+mod gallery_select;
+mod gallery_select_grid;
+mod gallery_thumbnails;
 
 /// Builds one instance of every widget in every state shown on the components board
 /// (`docs/design/develop-workspace/components.png`), as `Element<'_, ()>` values, so a caller can
@@ -52,7 +55,7 @@ pub fn gallery_states() -> Vec<Element<'static, ()>> {
 /// keep every example visible in a native 1440×1000 background capture: the two large canvases get
 /// their own pages, while related compact states stay together.
 #[doc(hidden)]
-pub const GALLERY_PAGES: [(&str, &[&str]); 14] = [
+pub const GALLERY_PAGES: &[(&str, &[&str])] = &[
     (
         "Sliders and sections",
         &[
@@ -224,6 +227,61 @@ pub const GALLERY_PAGES: [(&str, &[&str]); 14] = [
             "Zoom stops · disabled",
         ],
     ),
+    // -- Select: the thumbnail grid's pages.
+    (
+        "Select grid · cells and moments",
+        &[
+            "Cells · resting, selected, active, picked, in the catalog, a collapsed burst, offline, unreadable, loading",
+            "Burst · wider than the view, wrapping in one frame, then a single",
+            "Day and camera · a burst with its pick, a bracket from metadata with Pick all 3",
+            "Bracket from previews · a collapsed burst beside it, singles under it",
+        ],
+    ),
+    (
+        "Select grid · 10,000 files and the catalog's cells",
+        &[
+            "10,000 files · scrolled to a day in the middle",
+            "Catalog cells · edited, selected, active, offline",
+        ],
+    ),
+    // -- end Select: the thumbnail grid's pages.
+    //
+    // -- Select: chrome's pages.
+    (
+        "Select sources and filters",
+        &[
+            "Sources · files by card, event and disk; the catalog by folder and collection",
+            "Filter bar · over files, at rest and with conditions set",
+            "Search fields · the panel's and the filter bar's, empty and typed",
+            "Filter bar · over the catalog, search, set conditions, save",
+            "Filter chip · the Group menu open",
+        ],
+    ),
+    (
+        "Select title bar and long-running work",
+        &[
+            "Workspace switch · Select and Develop, with Add a folder…",
+            "Develop N · ready, busy, nothing picked, a large count",
+            "Status bar job · with a total, without one, alone",
+            "Performance rows · a count and estimate, no estimate yet, working",
+            "Progress sheet · reading a card, with its count and estimate",
+            "Progress sheet · no total yet, working",
+        ],
+    ),
+    (
+        "Select loupe and filmstrip",
+        &[
+            "Loupe info bar · moment, frame, exposure and source",
+            "Moment frames · a window of six, frame 3 active and picked",
+            "100% inset · a camera preview and a Luxforge development",
+            "Moment frames · the middle of a 1,000-frame burst",
+            "Region box · the 100% region under the pointer",
+            "Filmstrip · the development set's first photograph",
+            "Key hints · the loupe's keys",
+            "Filmstrip · deep in a long set, two previews still loading",
+        ],
+    ),
+    // -- end Select: chrome's pages.
 ];
 
 /// Builds gallery page `page`'s states in draw order, each with its 1-based number on the whole
@@ -270,7 +328,7 @@ mod tests {
                 next += 1;
             }
         }
-        assert_eq!(next - 1, 104);
+        assert_eq!(next - 1, 129);
         assert!(gallery_page(GALLERY_PAGES.len()).is_none());
     }
 }

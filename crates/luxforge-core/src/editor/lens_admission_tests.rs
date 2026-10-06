@@ -1,8 +1,9 @@
 //! The shared admission boundary protects every source path without decoding or reading profiles.
 use super::*;
+use crate::editor::catalog::encode;
 use crate::editor::test_support::synthetic_raw_metadata;
 use crate::modules::lens::{index, payload, resolve};
-use crate::{Layer, ModuleRegistry, OpticalIdentity, Recipe, SourceOptics};
+use crate::{Layer, ModuleRegistry, MutationOutcome, OpticalIdentity, Recipe, SourceOptics};
 use luxforge_raw::{
     DngCalibrationMetadata, DngCorrectionMetadata, DngOpcodeProvenance, OpticalStatus, RawMode,
 };
@@ -406,6 +407,10 @@ fn owner_dji_raw_neutral_pick_inverts_recipe_then_queries_corrected_sensor_once(
     let (canonical, signature) = EditorService::request_signature(&path).unwrap();
     let catalog = crate::editor::test_support::temp("dji-neutral-recipe.sqlite");
     let mut service = EditorService::open(&catalog).unwrap();
+    // The photograph is brought in as a Develop brings it in, at its Original; what that read of
+    // the file is dropped, so the worker's decode below is what its preparation adopts.
+    let photograph = service.develop_one(&path).unwrap();
+    service.forget_read(&photograph);
     let index = index::LensIndex::parse(
         &std::fs::read(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -422,6 +427,7 @@ fn owner_dji_raw_neutral_pick_inverts_recipe_then_queries_corrected_sensor_once(
     let completion = service
         .complete_preparation(Prepared::File(
             PreparedFile {
+                asset_id: photograph,
                 canonical,
                 signature,
                 source: PreparedSource::Raw(raw),
@@ -431,9 +437,8 @@ fn owner_dji_raw_neutral_pick_inverts_recipe_then_queries_corrected_sensor_once(
         ))
         .unwrap();
     // The Air 2S DNG's distortion is known uncorrected, so its detected FC3411 profile is applied
-    // once, as the system entry after the Original.
+    // once, as the system entry after the Original, when its first preparation completes.
     let initial = completion.state;
-    assert!(completion.created);
     assert_eq!(initial.revision, 1);
     assert_eq!(
         (

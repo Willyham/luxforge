@@ -127,7 +127,7 @@ pub(crate) struct Preferences {
     /// history ([`crate::EditorService::set_auto_collapse`]). On unless the person turned it off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) auto_collapse_history: Option<bool>,
-    /// Whether an import commits a new RAW photo's detected lens profile
+    /// Whether a first preparation commits a new RAW photo's detected lens profile
     /// ([`crate::EditorService::set_auto_lens_profile`]). On unless the person turned it off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) auto_lens_profile: Option<bool>,

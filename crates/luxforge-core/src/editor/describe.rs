@@ -1,15 +1,13 @@
 use super::{
-    AssetPage, AssetSummary, EditorService, EditorState, LayerDescription, RecipeDescription,
-    SourceTag,
-    catalog::{MAX_ASSET_PAGE, stored_revision},
-    entries::Head,
+    AssetRecord, EditorService, EditorState, LayerDescription, RecipeDescription,
+    catalog::stored_revision, entries::Head, source_signature,
 };
 use crate::{
     AssetId, EntryId, Error, HistoryEntry, Layer, LayerReport, ModuleRegistry, ORIENTATION_EFFECT,
     Orientation, StageSize, modules::stored_orientation,
 };
 use rusqlite::{OptionalExtension, params};
-use std::path::PathBuf;
+use std::fs::Metadata;
 
 impl EditorState {
     /// The state a cached head and its current entry describe: a copy of both.
@@ -20,6 +18,16 @@ impl EditorState {
             current_entry: current.clone(),
             redo: head.redo,
         }
+    }
+}
+
+impl AssetRecord {
+    /// Whether `metadata`, read of the file now at [`Self::locator`], is still this asset's
+    /// original: the file identity and length the catalog recorded, the rule the editor applies
+    /// before it prepares an original.
+    pub(crate) fn is_original(&self, metadata: &Metadata) -> bool {
+        let signature = source_signature(&self.locator, metadata);
+        signature.file_identity == self.file_identity && signature.byte_len == self.byte_len
     }
 }
 
@@ -40,6 +48,29 @@ impl EditorService {
         Ok(self.head(asset_id)?.current)
     }
 
+    /// The record of `asset_id`'s original — its path, kind and the identity and length the catalog
+    /// recorded — for a reader outside the editor that reads the original itself, such as the 100%
+    /// region of a developed photograph; `entry_id`, when named, must be one of its entries. It
+    /// copies the cached head and reads no entry.
+    pub(crate) fn photo_original(
+        &self,
+        asset_id: &AssetId,
+        entry_id: Option<&EntryId>,
+    ) -> Result<AssetRecord, Error> {
+        let asset = self.head(asset_id)?.asset;
+        if let Some(entry_id) = entry_id {
+            self.connection
+                .query_row(
+                    "SELECT 1 FROM entries WHERE id=?1 AND asset_id=?2",
+                    params![entry_id.as_str(), asset_id.as_str()],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .ok_or_else(|| Error::validation("history entry does not belong to this asset"))?;
+        }
+        Ok(asset)
+    }
+
     /// The asset's current revision, which is all a draft's conflict check compares. It decodes
     /// nothing, whether or not the asset's head is cached.
     pub(crate) fn revision(&self, asset_id: &AssetId) -> Result<u64, Error> {
@@ -49,70 +80,17 @@ impl EditorService {
         }
     }
 
-    /// One page of at most `limit` referenced assets in import order, after the asset `after` names
-    /// (the `next` cursor of the page before), or from the first. Each row is read from the asset's
-    /// own columns — its kind from the tag stored beside the interpretation — so no source
-    /// interpretation is decoded and a page costs `O(limit)` however large the catalog or its RAW
-    /// interpretations are; an interpretation this build cannot read still lists, and is refused
-    /// by name when the asset is read ([`Self::state`], `source.inspect`).
-    ///
-    /// Import order is the table's insertion order, which no write reorders: an asset is never
-    /// removed and a relocation rewrites its row in place. A cursor that names no asset is refused.
-    pub fn assets(&self, after: Option<&AssetId>, limit: usize) -> Result<AssetPage, Error> {
-        if limit == 0 || limit > MAX_ASSET_PAGE {
-            return Err(Error::validation(format!(
-                "asset page limit must be 1..={MAX_ASSET_PAGE}"
-            )));
-        }
-        let after = match after {
-            None => 0,
-            Some(asset_id) => self
-                .connection
-                .query_row(
-                    "SELECT rowid FROM assets WHERE id=?1",
-                    [asset_id.as_str()],
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()?
-                .ok_or_else(|| Error::validation("unknown asset"))?,
-        };
-        let mut statement = self.connection.prepare(
-            "SELECT id,locator,source_kind,width,height FROM assets
-             WHERE rowid>?1 ORDER BY rowid LIMIT ?2",
-        )?;
-        // One row past the page says whether another page follows.
-        let rows = statement.query_map(params![after, limit as i64 + 1], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, i64>(4)?,
-            ))
-        })?;
-        let mut assets = Vec::with_capacity(limit);
-        let mut more = false;
-        for row in rows {
-            let (id, locator, kind, width, height) = row?;
-            if assets.len() == limit {
-                more = true;
-                break;
-            }
-            assets.push(AssetSummary {
-                id: AssetId::parse(id)?,
-                locator: PathBuf::from(locator),
-                kind: SourceTag::parse(&kind).ok_or_else(|| {
-                    Error::incompatible(format!("stored source kind {kind} is not supported"))
-                })?,
-                width: u32::try_from(width).map_err(|_| Error::catalog("invalid asset width"))?,
-                height: u32::try_from(height)
-                    .map_err(|_| Error::catalog("invalid asset height"))?,
-            });
-        }
-        let next = more
-            .then(|| assets.last().map(|asset| asset.id.clone()))
-            .flatten();
-        Ok(AssetPage { assets, next })
+    /// The first `limit` photographs of the catalog, in the order they were developed: a bounded
+    /// read for a tool or test that opens a catalog directly. Clients list photographs through
+    /// their views (`browse.view` over the catalog).
+    pub fn asset_ids(&self, limit: usize) -> Result<Vec<AssetId>, Error> {
+        self.connection
+            .prepare_cached("SELECT id FROM assets ORDER BY row_id LIMIT ?1")?
+            .query_map([limit.min(i64::MAX as usize) as i64], |row| {
+                row.get::<_, String>(0)
+            })?
+            .map(|id| AssetId::parse(id?))
+            .collect()
     }
 
     /// One entry of this asset's history with its strokes resolved: decoded once, then copied

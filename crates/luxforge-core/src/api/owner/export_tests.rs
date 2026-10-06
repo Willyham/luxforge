@@ -152,18 +152,18 @@ impl Harness {
             .unwrap_or_else(|| panic!("{method} was expected to be refused"))
     }
 
-    /// Copy the fixture into this harness's directory and import it; answers the asset state.
+    /// Copy the fixture into this harness's directory, develop it and prepare its photograph, as a
+    /// client opens a file; answers the photograph's state.
     fn import(&self, name: &str) -> Value {
         let path = self.dir.join(name);
         fs::copy(fixture(), &path).unwrap();
-        let queued = self.ok(
-            "catalog.import",
-            json!({"path": path, "mutation": request_envelope()}),
-        );
-        let job = queued["job_id"].clone();
-        let status = self.settle_source(&job);
-        assert_eq!(status["status"], "ready", "{status}");
-        status["result"].clone()
+        self.opened(&path)
+    }
+
+    /// Develop the file at `path` and prepare its photograph; answers the photograph's state.
+    fn opened(&self, path: &std::path::Path) -> Value {
+        let asset = super::library::opening::import(&self.owner, self.client, path);
+        self.ok("asset.state", json!({"asset_id": asset}))
     }
 
     fn settle_source(&self, job: &Value) -> Value {
@@ -862,13 +862,7 @@ fn keep_metadata_writes_one_exif_segment_and_the_default_writes_none() {
     let harness = Harness::start("metadata");
     let original = harness.dir.join("camera.jpg");
     fs::write(&original, camera_jpeg()).unwrap();
-    let queued = harness.ok(
-        "catalog.import",
-        json!({"path": original, "mutation": request_envelope()}),
-    );
-    let status = harness.settle_source(&queued["job_id"]);
-    assert_eq!(status["status"], "ready", "{status}");
-    let asset = status["result"]["asset"]["id"].clone();
+    let asset = harness.opened(&original)["asset"]["id"].clone();
     let out = destinations(&harness);
     let stripped =
         harness.export(json!({"asset_id": asset, "destination": out.join("stripped.jpg")}));
@@ -1259,8 +1253,24 @@ fn stopping_the_owner_cancels_a_running_export_and_leaves_no_file() {
     reached.recv_timeout(luxforge_testbase::HANG).unwrap();
     assert_eq!(listing(&out).len(), 1, "staged");
     harness.owner.stop();
-    // The owner is now joining the lane, which is held; letting it go stops the job at its next
-    // check.
+    // A call after the stop is dropped unanswered once the owner has asked every live job to stop
+    // and closed its channel, so the export is cancelled before it is let go; it then stops at its
+    // next check.
+    assert!(
+        harness
+            .owner
+            .call(
+                harness.client,
+                ApiRequest {
+                    id: "after-stop".into(),
+                    method: "catalog.info".into(),
+                    params: json!({}),
+                    token: None,
+                },
+            )
+            .is_err(),
+        "the stopped owner answers nothing"
+    );
     release.send(()).unwrap();
     harness.join.take().unwrap().join().unwrap();
     assert!(listing(&out).is_empty(), "{:?}", listing(&out));
@@ -1275,14 +1285,9 @@ fn a_raw_export_matches_the_exact_render() {
     let raw = PathBuf::from(std::env::var("LUXFORGE_RAW_FIXTURE").expect("LUXFORGE_RAW_FIXTURE"));
     let original = fs::read(&raw).unwrap();
     let mut harness = Harness::start("raw");
-    let queued = harness.ok(
-        "catalog.import",
-        json!({"path": raw, "mutation": request_envelope()}),
-    );
-    let status = harness.settle_source(&queued["job_id"]);
-    assert_eq!(status["status"], "ready", "{status}");
-    let asset = status["result"]["asset"]["id"].clone();
-    let original_entry = status["result"]["current_entry"]["id"].clone();
+    let opened = harness.opened(&raw);
+    let asset = opened["asset"]["id"].clone();
+    let original_entry = opened["current_entry"]["id"].clone();
     harness.expose(&asset, 1.0);
     let revision = harness.ok("asset.state", json!({"asset_id": asset}))["revision"].clone();
     harness.ok("edit.set-presence", json!({
@@ -1375,13 +1380,7 @@ fn lens_asset(h: &Harness) -> (Value, PathBuf) {
         &path,
     )
     .unwrap();
-    let queued = h.ok(
-        "catalog.import",
-        json!({"path":path,"mutation":request_envelope()}),
-    );
-    let imported = h.settle_source(&queued["job_id"]);
-    assert_eq!(imported["status"], "ready");
-    let asset = imported["result"]["asset"]["id"].clone();
+    let asset = h.opened(&path)["asset"]["id"].clone();
     let profiles =
         luxforge_testbase::wait_for("the offline lens index to finish its one parse", || {
             let response = h.send(
@@ -1866,4 +1865,124 @@ fn a_cancel_between_tiles_writes_nothing_more_and_removes_the_staged_file() {
     assert_eq!(stub.sent(), 2, "nothing drawn after the cancel");
     assert!(listing(&out).is_empty(), "{:?}", listing(&out));
     assert_eq!(digest(&original), original_digest, "the original");
+}
+
+/// The same held command used by the desktop sleeps without rereads, releases on cancellation,
+/// and answers only after a terminal outcome is readable. A single executor thread can hold sixteen
+/// waits while the owner serves unrelated commands.
+#[test]
+fn job_wait_is_event_driven_bounded_cancel_safe_and_publishes_final_results() {
+    use std::{
+        future::Future,
+        task::{Context, Poll, Waker},
+    };
+    let h = Harness::start("job-wait");
+    let asset = h.import("input.jpg")["asset"]["id"].clone();
+    let (reached, release) = h.hold_at("writing");
+    let accepted = h.export(json!({"asset_id":asset,"destination":h.dir.join("output.jpg")}));
+    reached.recv_timeout(luxforge_testbase::HANG).unwrap();
+    let job = accepted["job_id"].clone();
+    let first = h.ok("job.wait", json!({"job_id":job}));
+    assert_eq!(first["job"]["status"], "running");
+    let token = first["change"].clone();
+    let request = || ApiRequest {
+        id: "monitor".into(),
+        method: "job.wait".into(),
+        params: json!({"job_id":job,"after":token}),
+        token: None,
+    };
+    let mut context = Context::from_waker(Waker::noop());
+    let mut held: Vec<_> = (0..MAX_CLIENT_JOB_WAITERS)
+        .map(|_| Box::pin(h.owner.call_async(h.client, request())))
+        .collect();
+    for wait in &mut held {
+        assert!(wait.as_mut().poll(&mut context).is_pending());
+    }
+    assert_eq!(h.owner.job_monitor_stats().held, MAX_CLIENT_JOB_WAITERS);
+    let before = h.owner.job_monitor_stats();
+    let _ = h.ok("catalog.info", json!({}));
+    assert_eq!(
+        h.owner.job_monitor_stats().requests,
+        before.requests,
+        "other commands do not read monitored jobs"
+    );
+    assert_eq!(
+        h.owner.job_monitor_stats().replies,
+        before.replies,
+        "quiet jobs have no timer-driven replies"
+    );
+    let mut excess = Box::pin(h.owner.call_async(h.client, request()));
+    assert!(excess.as_mut().poll(&mut context).is_pending());
+    let _ = h.owner.job_monitor_stats();
+    let Poll::Ready(Ok(refused)) = excess.as_mut().poll(&mut context) else {
+        panic!("the waiter limit answers immediately");
+    };
+    assert_eq!(refused.error.unwrap().code, "resource-limit");
+    let second = h.owner.register();
+    for _ in 0..MAX_CLIENT_JOB_WAITERS {
+        let mut wait = Box::pin(h.owner.call_async(second, request()));
+        assert!(wait.as_mut().poll(&mut context).is_pending());
+        held.push(wait);
+    }
+    assert_eq!(h.owner.job_monitor_stats().held, MAX_JOB_WAITERS);
+    let third = h.owner.register();
+    let mut global_excess = Box::pin(h.owner.call_async(third, request()));
+    assert!(global_excess.as_mut().poll(&mut context).is_pending());
+    let _ = h.owner.job_monitor_stats();
+    let Poll::Ready(Ok(refused)) = global_excess.as_mut().poll(&mut context) else {
+        panic!("the global waiter limit answers immediately");
+    };
+    assert_eq!(refused.error.unwrap().code, "resource-limit");
+    held.clear();
+    assert_eq!(
+        h.owner.job_monitor_stats().held,
+        0,
+        "dropping futures releases interests while the job runs"
+    );
+    let queued = h.export(json!({"asset_id":asset,"destination":h.dir.join("queued.jpg")}));
+    let queued_id = queued["job_id"].clone();
+    let observed = h.ok("job.wait", json!({"job_id":queued_id}));
+    assert_eq!(observed["job"]["status"], "queued");
+    let mut cancelled = Box::pin(h.owner.call_async(
+        h.client,
+        ApiRequest {
+            id: "queued-cancel".into(),
+            method: "job.wait".into(),
+            params: json!({"job_id":queued_id,"after":observed["change"]}),
+            token: None,
+        },
+    ));
+    assert!(cancelled.as_mut().poll(&mut context).is_pending());
+    assert_eq!(h.owner.job_monitor_stats().held, 1);
+    h.ok("job.cancel", json!({"job_id":queued_id}));
+    let _ = h.owner.job_monitor_stats();
+    let Poll::Ready(Ok(response)) = cancelled.as_mut().poll(&mut context) else {
+        panic!("queued cancellation wakes its waiter");
+    };
+    assert_eq!(response.result.unwrap()["job"]["status"], "cancelled");
+    assert!(!h.dir.join("queued.jpg").exists());
+    assert_eq!(
+        h.ok(
+            "job.wait",
+            json!({"job_id":job,"after":token,"timeout_ms":0})
+        )["job"]["status"],
+        "running",
+        "an explicit zero timeout observes immediately"
+    );
+    let mut final_wait = Box::pin(h.owner.call_async(h.client, request()));
+    assert!(final_wait.as_mut().poll(&mut context).is_pending());
+    assert_eq!(h.owner.job_monitor_stats().held, 1);
+    release.send(()).unwrap();
+    let ready = h.settle(&job);
+    assert_eq!(ready["status"], "ready");
+    let _ = h.owner.job_monitor_stats();
+    let Poll::Ready(Ok(response)) = final_wait.as_mut().poll(&mut context) else {
+        panic!("terminal result wakes its held command");
+    };
+    assert_eq!(response.result.unwrap()["job"], ready);
+    assert_eq!(
+        h.ok("job.wait", json!({"job_id":job,"after":token}))["job"],
+        ready,
+        "completion before rearm is immediate"
+    );
 }

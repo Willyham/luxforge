@@ -616,12 +616,13 @@ fn expected_stroke(fields: &Value, path: &[[f64; 2]]) -> Result<luxforge_core::m
 fn stored_strokes(launch: &Checked, kept_fields: &Value, fresh_fields: &Value) -> Result<Value> {
     let final_frame = launch.at("combined-restored-current")?;
     let service = luxforge_core::EditorService::open(&launch.evidence.join("catalog.sqlite"))?;
-    let assets = service.assets(None, 1)?;
+    // Two identities say whether a second photograph exists.
+    let assets = service.asset_ids(2)?;
     ensure(
-        assets.assets.len() == 1 && assets.next.is_none(),
+        assets.len() == 1,
         "The regression catalog does not contain exactly one source",
     )?;
-    let state = service.state(&assets.assets[0].id)?;
+    let state = service.state(&assets[0])?;
     ensure(
         state.current_entry.id.as_str() == final_frame.entry()?
             && state.revision == final_frame.revision()?,

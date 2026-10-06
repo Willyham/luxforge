@@ -1,4 +1,4 @@
-//! Native input missing from the window framework, behind a safe, numerical callback.
+//! Native desktop events missing from the window framework, behind safe callbacks of copied facts.
 //! No recipe, catalog, image or GUI-framework dependency belongs here.
 
 /// One trackpad magnification increment, at a top-left-origin content-view position in points.
@@ -17,3 +17,11 @@ mod macos;
 /// monitor; the main thread owns the new one until replacement or exit. Events still reach AppKit.
 #[cfg(target_os = "macos")]
 pub use macos::install_pinch_handler;
+
+mod visibility;
+pub use visibility::{EvidenceVisibility, Visibility};
+
+#[cfg(target_os = "macos")]
+pub use macos::visibility::{
+    install_visibility_handler, set_evidence_visibility, uninstall_visibility_handler,
+};

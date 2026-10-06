@@ -1,6 +1,6 @@
 # Luxforge RAW adapter
 
-`luxforge-raw` is one of the few Luxforge crates with an explicit unsafe FFI boundary ([architecture](../../docs/design/architecture.md#unsafe-code)). It builds pinned native source locally; the rest of the workspace keeps its `forbid(unsafe_code)` rule. The safe API takes source bytes owned by the caller, unpacks one qualified RAW image on a worker, retains one immutable sensor mosaic, and develops green-normalized white-balance edits (positive gains up to 32×) into one owned planar float allocation. It never rewrites an original or creates an intermediate file. [THIRD_PARTY.md](THIRD_PARTY.md) records provenance, notices, build flags, and the exact native source selection.
+`luxforge-raw` is one of the few Luxforge crates with an explicit unsafe FFI boundary ([architecture](../../docs/design/architecture.md#unsafe-code)). It builds pinned native source locally; the rest of the workspace keeps its `forbid(unsafe_code)` rule. The safe API takes source bytes owned by the caller, unpacks one qualified RAW image on a worker, retains one immutable sensor mosaic, and develops green-normalized white-balance edits (positive gains up to 32×) into one owned planar float allocation. It also lists and extracts the embedded previews of any RAW file LibRaw identifies, reading the file by position and never unpacking it ([embedded previews](#embedded-previews)). It never rewrites an original or creates an intermediate file. [THIRD_PARTY.md](THIRD_PARTY.md) records provenance, notices, build flags, and the exact native source selection.
 
 The pinned [RawSpeed](../../docs/design/rawspeed-unpack.md) and its pugixml are also built, unpatched, as C++20 in their own `cc` build, with RawSpeed's `cameras.xml` embedded and parsed once per process on first use. A catalog mode whose `unpacker` is `rawspeed` has its mosaic filled by RawSpeed inside LibRaw's unpack, in place of a replaceable LibRaw decoder; LibRaw still identifies the file and supplies all metadata. 64 catalog modes are routed ([modern camera support](../../docs/design/modern-camera-support.md#rawspeed-routed-modes)); every other mode keeps LibRaw's decoder. `RawMetadata::backend` names what filled the mosaic: `LibRaw 0.22.2 + RawSpeed c835b05a + librtprocess 9a858270` for a routed mode, `LibRaw 0.22.2 + librtprocess 9a858270` otherwise. RawSpeed's log messages go to standard error, never standard output.
 
@@ -43,6 +43,37 @@ bounded sparse replacements from an immutable source mosaic; unresolved points
 remain unchanged and are reported. Vignette evaluation follows DNG normalized
 outer-pixel coordinates; this implementation records its interpretation rather
 than claiming blanket SDK bit identity.
+
+## Embedded previews
+
+`EmbeddedPreviews` lists the images a RAW file carries beside its mosaic and extracts one, for browsing: it never unpacks the mosaic (by LibRaw or RawSpeed) and never consults the camera catalog, so it serves any RAW LibRaw identifies, from any camera. `RawSource::decode` and its catalog and mode checks are separate and unchanged.
+
+```rust
+let file = std::fs::File::open(path)?;
+let mut previews = EmbeddedPreviews::open(file, 16 << 20, &cancel)?; // read budget
+// Make, model, visible and raw size, orientation and every embedded image.
+let largest = previews.listing().largest_jpeg().map(|preview| preview.index);
+if let Some(index) = largest {
+    let image = previews.extract(index, 16 << 20, &cancel)?; // EmbeddedImage::Jpeg(bytes)
+}
+println!("{} bytes read", previews.bytes_read());
+```
+
+**Reading by position.** LibRaw reads the source through a datastream of the adapter's own, in [native/embedded.cpp](native/embedded.cpp) (a sibling of the decode adapter, compiled into the same native library), whose every fetch calls back into Rust for a positional read of the caller's `RandomAccess` source: a `File` (`read_at` on Unix, `seek_read` on Windows), bytes in memory, or a reference, `Box` or `Arc` of either. Small reads come from a cache of eight 4 KiB-aligned 16 KiB blocks, the least recently read replaced first, so identify's many 1–4-byte reads cost one fetch per block; a read of at least a block goes straight to its destination in pieces of at most 1 MiB. Every call answers as LibRaw's own buffer datastream (the one `open_buffer` uses) does, which a test drives both with the same random calls to prove; `gets` follows `fgets`, where the buffer stream writes its terminator one byte late at the end of the data. Every file of the [inventory](../../docs/research/embedded-previews.md) lists exactly what the buffer stream lists for the whole file in memory. Listing read 17 to 205 KB a file there, 121 KB on average.
+
+**Listing.** After identify the handle lists LibRaw's thumbnail list (at most eight images) with each image's LibRaw index, format, listed dimensions and stored length, and the item's own orientation where LibRaw read one, beside LibRaw's make and model, the visible and raw sizes and the file's EXIF orientation. LibRaw writes `FF D8` over the first two bytes of every JPEG it extracts, and lists Canon's H.265 previews and any TIFF preview whose compression it does not name as JPEGs, so the handle reads each listed JPEG's first eight stored bytes: SOI makes a `Jpeg`, Canon's H.265 header an `H265`, anything else `NotJpeg`. Listed dimensions cannot rank previews (LibRaw lists a Canon CR3's full-size JPEG as 0 × 0); `largest_jpeg` ranks by stored length.
+
+**Extraction.** `extract(index, max_bytes, cancel)` runs LibRaw's `unpack_thumb_ex` and returns owned bytes: a JPEG exactly as stored, checked to begin with SOI, or 8-bit RGB. It hands over JPEGs and 8-bit bitmaps (LibRaw's layer and PPM kinds, one or three channels, a one-channel bitmap repeated into three), Rollei's 5-6-5 bitmap and 16-bit bitmaps, which LibRaw converts to 8 bits itself by keeping each sample's high byte (the adapter never sets `LIBRAW_RAWOPTIONS_USE_PPM16_THUMBS`). H.265, JPEG XL, a listed JPEG without SOI, LibRaw's Kodak kinds (which also take any uncompressed TIFF preview of more than 8 bits, such as Canon CR2's 16-bit RGB image, and which LibRaw decodes through a small development), DNG YCbCr, X3F and bitmaps LibRaw would misread are refused as `RawError::UnsupportedCompression` naming the format. Before LibRaw allocates, the adapter refuses an image whose stored bytes run past the end of the source, or whose LibRaw allocation would pass `max_bytes`: the stored length for a JPEG or PPM, twice the pixels for a layer bitmap, five bytes a pixel for Rollei, three times the samples for a 16-bit bitmap. It checks again what LibRaw produced. LibRaw's buffer and the Rust copy exist together, so one extraction holds at most twice `max_bytes`; LibRaw's buffer is freed, through its own allocator, before `extract` returns.
+
+**Failure and cancellation.** Each fetch checks the cancel token, and LibRaw's progress callback checks it too; both are set for one synchronous call and cleared when it returns. A reader's error or panic is caught in the callback, never unwinding into C++, and reported: an I/O error, or a source shorter than its length at open, as `RawError::Io` with the error's kind, so a caller can tell an unplugged card from a corrupt file, and a panic as `RawError::Native` (`source read: …`); running past the read budget is `RawError::ResourceLimit`, checked before the bytes are read. A stopped read throws inside LibRaw, which may discard its state, so after a cancellation or failure while reading the handle refuses further extractions: open the source again. A refused index, format or byte limit leaves it usable.
+
+**Ownership and threads.** Rust owns the reader and the native handle: the native stream points at the reader, which the handle frees only after closing the native handle, exactly once, on every path. One handle serves one source on one thread at a time (every native call takes `&mut self`); it is `Send` when its reader is, and never `Sync`. Each handle holds about 1.2 MB of native memory: LibRaw's object (750 KiB), its per-object scratch (277 KiB) and the 128 KiB read cache.
+
+| Bound | Figure |
+| --- | --- |
+| One extracted image, LibRaw's buffer and the copy each | The caller's `max_bytes`, at most `MAX_EMBEDDED_IMAGE_BYTES` (64 MiB) |
+| Bytes a handle reads from its source over its life | The caller's read budget, at most `MAX_EMBEDDED_READ_BUDGET` (128 MiB) |
+| A handle's read cache | 8 blocks of 16 KiB |
 
 ## Camera catalog
 
@@ -161,3 +192,12 @@ LUXFORGE_RAW_SAMPLE_DIRS=/path/to/selection:/path/to/popular:/path/to/owner/raw 
 ```
 
 The authentic tests compare full sensor u16 buffers to the hashes the [RAW backend comparison](../../docs/research/raw-backend-selection.md) recorded independently, verify source hashes before/after, mode, crop, CFA, white metadata, owner Z6 EXIF orientation, finite developed floats, the developed float range (printed), invalid gains and cancellation. The DJI test also checks the opcode/calibration payload hashes, fixed matrix against LibRaw's rendered matrix, malformed mandatory operations, and 18 corrected camera-plane samples computed independently from sparse pre-correction pixels in [the DNG reference](../../fixtures/raw-dng-reference.json) (`luxforge_reference::dng`). Its crate-private required-opcode list and corrected point queries are checked against the same file by the ignored library tests `owner_dji_dng_requires_warp_and_gain_map` and `owner_dji_dng_answers_corrected_point_queries` (`--lib owner_dji -- --ignored`). The fixture itself and generated sparse dump stay outside the repository. Manual dependency/native/asset review and clean Windows/Linux package verification are still outstanding. This crate alone does not qualify visible color, export or end-to-end latency.
+
+The embedded-preview unit tests (`cargo test -p luxforge-raw --locked --lib embedded`) build a DNG laid out as cameras write one, a JPEG preview in IFD0 and the mosaic in a SubIFD, and check the listing and the extracted bytes exactly, reading 17.6 KB of its 1.6 MB; that a file and the same bytes in memory list and extract alike; typed refusals, with no handle left open, for empty, garbage and every truncated prefix of the DNG; cancellation before work and at each of identify's and an extraction's fetches; the read budget at and one byte below what identify needs; the byte limit and index checked before any read; a reader's error, panic and early end; H.265 and non-JPEG bytes behind a listed JPEG; `largest_jpeg`'s ranking; and the native stream against LibRaw's buffer datastream over four sequences of 20,000 random calls across block boundaries and the end of the data. The authentic checks only read their files. The first extracts every image of the owner's three originals, decodes each JPEG with `image`, checks that `largest_jpeg` is the largest, that listing and extracting it read under half the file, and that each file is unchanged; the second checks that every file of a corpus lists through the native stream exactly what LibRaw's buffer stream lists for it in memory; the third is the [per-camera inventory](../../docs/research/embedded-previews.md), whose command is given there:
+
+```sh
+LUXFORGE_RAW_OWNER_DIR=/path/to/owner/raw \
+  cargo test --release -p luxforge-raw --locked --test embedded_previews embedded_owner -- --ignored --nocapture
+LUXFORGE_PREVIEW_DIRS=/path/to/selection:/path/to/popular:/path/to/owner/raw \
+  cargo test --release -p luxforge-raw --locked --lib embedded_corpus -- --ignored --nocapture
+```

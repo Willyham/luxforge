@@ -420,15 +420,17 @@ impl EditorService {
         self.needing(Evaluated::exactly(&state.asset, &entry.id, recipe), answer)
     }
 
-    /// Commit the first-open actions of `asset_id`, an asset an import has just created: each
+    /// Commit the first-open actions of `asset_id`, a photograph whose head has never moved and
+    /// whose original a preparation has just adopted: each
     /// available module that applies to its source kind is asked in registry order
     /// ([`crate::ToolModule::first_open`]) against the current stack, and an action it proposes is
     /// committed through [`Self::run_action`] by the `system` actor, as one ordinary entry after the
     /// ones before it. The source is prepared, so a module reads its optics from the verified
     /// cache; planning reads metadata only. A refusal commits nothing and is reported, and the next
-    /// module is still asked. Only an import that inserted the asset calls this, so it never runs
-    /// for a file imported again, a reopen or an asset that already has history. The lens module is
-    /// not asked while the person's lens switch is off ([`Self::set_auto_lens_profile`]).
+    /// module is still asked. Only a preparation that adopts the original of a photograph at
+    /// revision 0 calls this, so it never runs once anything has moved the photograph's head. The
+    /// lens module is not asked while the person's lens switch is off
+    /// ([`Self::set_auto_lens_profile`]).
     pub(crate) fn first_open(&mut self, asset_id: &AssetId) -> Vec<crate::FirstOpen> {
         let registry = self.registry.clone();
         let mut reports = Vec::new();

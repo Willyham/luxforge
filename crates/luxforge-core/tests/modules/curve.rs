@@ -20,7 +20,7 @@ use luxforge_reference::{
     curve::{CurvePoints, curve_pixel, curve_pixel_with_input_error},
 };
 use luxforge_testbase::paths;
-use luxforge_testkit::client::{self, call, import, refused};
+use luxforge_testkit::client::{self, call, open, refused};
 use luxforge_testkit::fixtures::{
     self, linear_source_of, recipe, render, render_linear, source_of,
 };
@@ -320,7 +320,7 @@ fn the_curve_lands_after_basic_and_before_the_mixer_in_every_touch_order() {
     let catalog = paths::temp_catalog("curve-placement");
     let (owner, join) = OwnerHandle::start(&catalog).expect("an owner");
     let editor = owner.register();
-    let imported = import(&owner, editor, &paths::jpeg(), "curve-placement").unwrap();
+    let imported = open(&owner, editor, &paths::jpeg(), "curve-placement").unwrap();
     let asset = imported["asset"]["id"].clone();
     let original = imported["current_entry"]["id"].clone();
     let payload_for = |action: &str| match action {
@@ -525,7 +525,7 @@ fn a_seventeenth_point_a_decreasing_output_a_repeated_input_and_a_coordinate_out
     let (owner, join) = OwnerHandle::start(&catalog).expect("an owner");
     let editor = owner.register();
     let asset =
-        import(&owner, editor, &paths::jpeg(), "curve-refusals").unwrap()["asset"]["id"].clone();
+        open(&owner, editor, &paths::jpeg(), "curve-refusals").unwrap()["asset"]["id"].clone();
     let seventeen: Vec<[f64; 2]> = (0..17)
         .map(|k| [f64::from(k) / 16.0, f64::from(k) / 16.0])
         .collect();

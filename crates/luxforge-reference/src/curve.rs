@@ -31,7 +31,7 @@ use crate::tone::luminance;
 /// It is `tone.rs`'s `EPSILON_L`, the Basic tone contract's near-black threshold
 /// (`docs/design/basic-tone.md`, "Luminance ratio and gamut policy"), declared again here because
 /// that constant is private to the frozen module and this reference does not edit it.
-const EPSILON_L: f64 = 1e-6;
+pub(crate) const EPSILON_L: f64 = 1e-6;
 
 /// The most points a curve may hold: the Tone curve field's `points_max`.
 pub const MAX_POINTS: usize = 16;
@@ -40,18 +40,25 @@ pub const MAX_POINTS: usize = 16;
 /// secants, the knot slopes and the black level the reconstruction subtracts.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CurvePoints {
-    xs: Vec<f64>,
-    ys: Vec<f64>,
+    pchip: Pchip,
+    /// `L_floor = decode(y_0)`.
+    floor: f64,
+    /// The exact identity map: `(0, 0)` first, `(1, 1)` last and every point on the diagonal.
+    identity: bool,
+}
+
+/// The open monotone PCHIP through a checked knot list, on its span only: what the Tone curve and
+/// the RAW look's tone unit share. Each owner checks its own knot domain and adds its own tails.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct Pchip {
+    pub(crate) xs: Vec<f64>,
+    pub(crate) ys: Vec<f64>,
     /// `h_i = x_{i+1} - x_i`, strictly positive.
     widths: Vec<f64>,
     /// `Δ_i = (y_{i+1} - y_i) / h_i`, non-negative; `+∞` only for a subnormal `h_i`.
     secants: Vec<f64>,
     /// `d_i`, the knot slopes; `0` where a slope belongs only to linear segments.
-    slopes: Vec<f64>,
-    /// `L_floor = decode(y_0)`.
-    floor: f64,
-    /// The exact identity map: `(0, 0)` first, `(1, 1)` last and every point on the diagonal.
-    identity: bool,
+    pub(crate) slopes: Vec<f64>,
 }
 
 impl CurvePoints {
@@ -89,6 +96,42 @@ impl CurvePoints {
             );
         }
 
+        let identity = points[0] == [0.0, 0.0]
+            && points[n - 1] == [1.0, 1.0]
+            && points.iter().all(|p| p[0] == p[1]);
+
+        Self {
+            floor: decode_encoded(points[0][1]),
+            pchip: Pchip::new(points),
+            identity,
+        }
+    }
+
+    /// The knot slopes `d_i`, one per point.
+    pub fn knot_slopes(&self) -> &[f64] {
+        &self.pchip.slopes
+    }
+
+    /// The largest value of `C'` on any segment of the span, from each segment's quadratic
+    /// derivative: an exactly flat segment contributes `0`, a linear (non-finite secant) segment
+    /// its secant, which is `+∞`, and a cubic segment the maximum of its derivative at its ends
+    /// and, where the quadratic is concave, at its vertex. The flat holds (slope `0`) and the
+    /// unit-slope tails (slope `1`) are not segments of the span.
+    pub fn peak_slope(&self) -> f64 {
+        self.pchip.peak_slope()
+    }
+
+    /// `L_floor = decode(C(0)) = decode(y_0)`, the curve's black level in linear light.
+    pub fn floor(&self) -> f64 {
+        self.floor
+    }
+}
+
+impl Pchip {
+    /// The interpolant through `points`, which the caller has checked: at least two, every
+    /// coordinate finite, `x` strictly increasing and `y` non-decreasing.
+    pub(crate) fn new(points: &[[f64; 2]]) -> Self {
+        let n = points.len();
         let xs: Vec<f64> = points.iter().map(|p| p[0]).collect();
         let ys: Vec<f64> = points.iter().map(|p| p[1]).collect();
         let widths: Vec<f64> = xs.windows(2).map(|pair| pair[1] - pair[0]).collect();
@@ -116,45 +159,32 @@ impl CurvePoints {
                 (w1 + w2) / (w1 / before + w2 / after)
             };
         }
-
-        let identity = points[0] == [0.0, 0.0]
-            && points[n - 1] == [1.0, 1.0]
-            && points.iter().all(|p| p[0] == p[1]);
-
         Self {
-            floor: decode_encoded(ys[0]),
             xs,
             ys,
             widths,
             secants,
             slopes,
-            identity,
         }
     }
 
-    /// The knot slopes `d_i`, one per point.
-    pub fn knot_slopes(&self) -> &[f64] {
-        &self.slopes
+    pub(crate) fn len(&self) -> usize {
+        self.xs.len()
     }
 
-    /// The largest value of `C'` on any segment of the span, from each segment's quadratic
-    /// derivative: an exactly flat segment contributes `0`, a linear (non-finite secant) segment
-    /// its secant, which is `+∞`, and a cubic segment the maximum of its derivative at its ends
-    /// and, where the quadratic is concave, at its vertex. The flat holds (slope `0`) and the
-    /// unit-slope tails (slope `1`) are not segments of the span.
-    pub fn peak_slope(&self) -> f64 {
+    /// See [`CurvePoints::peak_slope`].
+    pub(crate) fn peak_slope(&self) -> f64 {
         (0..self.widths.len())
             .map(|i| self.segment_peak_slope(i))
             .fold(0.0, f64::max)
     }
 
-    /// `L_floor = decode(C(0)) = decode(y_0)`, the curve's black level in linear light.
-    pub fn floor(&self) -> f64 {
-        self.floor
-    }
-
-    fn len(&self) -> usize {
-        self.xs.len()
+    /// The interpolant at `x` on the span `[x_0, x_{n-1}]`: the segment whose left knot is the
+    /// last one at or below `x`. The caller handles `x` outside the span.
+    pub(crate) fn value(&self, x: f64) -> f64 {
+        let n = self.len();
+        let segment = (self.xs.partition_point(|&k| k <= x) - 1).min(n - 2);
+        self.segment_value(segment, x)
     }
 
     fn is_flat(&self, segment: usize) -> bool {
@@ -231,22 +261,22 @@ fn finite_or_zero(value: f64) -> f64 {
 /// below `0` and above `1`, the flat hold inside `[0, 1]` beyond the span, and otherwise the
 /// segment whose left knot is the last one at or below `x`.
 pub fn curve(points: &CurvePoints, x: f64) -> f64 {
-    let n = points.len();
-    let (first, last) = (points.ys[0], points.ys[n - 1]);
+    let pchip = &points.pchip;
+    let n = pchip.len();
+    let (first, last) = (pchip.ys[0], pchip.ys[n - 1]);
     if x < 0.0 {
         return first + x;
     }
     if x > 1.0 {
         return last + (x - 1.0);
     }
-    if x <= points.xs[0] {
+    if x <= pchip.xs[0] {
         return first;
     }
-    if x >= points.xs[n - 1] {
+    if x >= pchip.xs[n - 1] {
         return last;
     }
-    let segment = (points.xs.partition_point(|&k| k <= x) - 1).min(n - 2);
-    points.segment_value(segment, x)
+    pchip.value(x)
 }
 
 /// The Tone curve unit on one linear-sRGB triple, unclamped: the floor-subtracted
@@ -276,7 +306,12 @@ pub fn curve_pixel_with_input_error(
 /// The frozen luminance-ratio reconstruction applied to the floor-subtracted output: near black
 /// the additive rule `rgb + (L_out - L)`, elsewhere `L_floor + rgb · (L_out - L_floor) / L`. With
 /// no lifted black (`L_floor == 0`) it is the frozen rule, `rgb · L_out / L`, bit for bit.
-fn reconstruct_over_floor(rgb: [f64; 3], l_in: f64, l_out: f64, l_floor: f64) -> [f64; 3] {
+pub(crate) fn reconstruct_over_floor(
+    rgb: [f64; 3],
+    l_in: f64,
+    l_out: f64,
+    l_floor: f64,
+) -> [f64; 3] {
     if l_in.abs() < EPSILON_L {
         let delta = l_out - l_in;
         return rgb.map(|channel| channel + delta);

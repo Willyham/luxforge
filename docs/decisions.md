@@ -2,6 +2,14 @@
 
 Accepted owner decisions and the questions still open. Proposals stay proposals until the owner decides; record each answer here and in the affected spec.
 
+## Window visibility and job monitoring
+
+Decided on 2026-10-05 for the planned [visibility and monitoring](design/visibility-and-monitoring.md) work:
+
+- Scope is visibility and event monitoring only; proxy CPU work, rendering, preview scheduling and CPU-pool scheduling are excluded.
+- Pause presentation sampling only when the window is minimized or explicitly hidden. A visible window keeps sampling when unfocused or fully covered by other windows.
+- Background jobs and required result handling continue; pausing presentation does not cancel work.
+
 ## Product and platform
 
 - A fast, non-destructive desktop editor for professional and prosumer collections on macOS, Windows and Linux.
@@ -11,15 +19,15 @@ Accepted owner decisions and the questions still open. Proposals stay proposals 
 - Project code is GPL-3.0-or-later. Dependencies and extensions should be open source and license-compatible; no proprietary hosted service is a development prerequisite. The manual license, native and asset review is deferred and is not a passing result.
 - Everything is v0 and breaking changes are expected. Only current catalog, recipe, API and module shapes are supported; no migrations, compatibility shims, old-version fixtures or historical parity requirements. Unsupported data is refused without rewriting it. No release-version planning, cloud or accounts, marketplace or generalized processing graph.
 - Initial RAW targets are the original Nikon Z6 and the Fujifilm X100VI; implementation is requested, with the supplied DJI Air 2S DNG added for qualification. Benchmark established decoders before proposing a custom one.
-- RAW editing stays continuous and non-destructive, in the same workflow sense as Lightroom: the original remains the source, adjustments remain recipe data and later edits do not operate on a JPEG baked from earlier WB/exposure settings. Keep high precision through editing and convert for display or explicit export. Neutral development is the initial direction; this does not select Adobe or camera-look matching. See the [initial RAW design](design/initial-raw.md).
-- Lightroom Library and Develop are familiarity references. Map, Book, Slideshow, Print, Web and Publish Services are out of scope.
+- RAW editing stays continuous and non-destructive, in the same workflow sense as Lightroom: the original remains the source, adjustments remain recipe data and later edits do not operate on a JPEG baked from earlier WB/exposure settings. Keep high precision through editing and convert for display or explicit export. The development itself is neutral and selects no Adobe matching; new RAW photos start from a Luxforge look on top of it, with camera-preview matching as a setting ([RAW looks](#raw-looks)). See the [initial RAW design](design/initial-raw.md).
+- Lightroom Library and Develop are familiarity references; their sliders' responses are followed ([Lightroom alignment](#lightroom-alignment)). Map, Book, Slideshow, Print, Web and Publish Services are out of scope.
 - All development tooling is Rust (`cargo xtask`); no second toolchain.
 
 ## Editing and storage
 
 - Originals are read-only. Import references existing files with a stable asset ID, a verified content fingerprint and a changeable locator. SQLite is the local catalog. Folder relinking, sidecars, portability, backups and sync need their own workflow decisions.
 - A "layer" is an ordered edit operation in a recipe. Each committed action stores a complete immutable recipe snapshot and one attributed history entry. Bitmap compositing, blend modes and arbitrary layer reordering are not selected.
-- History is a graph: entries keep their undo parent and nothing is truncated. **Auto collapse history** (owner, 2026-10-04) is a preference, on by default: an edit that sets the same control as the entry just committed hides that entry, and one that returns the control to where the run began moves back to the run's base without writing an entry. Collapsing hides entries and never deletes them; they stay in the catalog and reachable by id ([auto-collapse](design/versions-and-lineage.md#auto-collapse)). A named **version** (the owner's name for the Lightroom-style saved state) is a reference to one retained entry, not a branch. The catalog uses its [current internal format](design/versions-and-lineage.md#storage-catalog-format-12); unsupported formats are refused.
+- History is a graph: entries keep their undo parent and nothing is truncated. **Auto collapse history** (owner, 2026-10-04) is a preference, on by default: an edit that sets the same control as the entry just committed hides that entry, and one that returns the control to where the run began moves back to the run's base without writing an entry. Collapsing hides entries and never deletes them; they stay in the catalog and reachable by id ([auto-collapse](design/versions-and-lineage.md#auto-collapse)). A named **version** (the owner's name for the Lightroom-style saved state) is a reference to one retained entry, not a branch. The catalog uses its [current internal format](design/versions-and-lineage.md#storage-catalog-format-13); unsupported formats are refused.
 - Undo and redo navigate saved entries without appending rows. Preview is read-only. Restore appends an action and keeps all later entries. A new edit clears shortcut redo, but every entry stays available. Committed state survives restart; drafts do not.
 - One workspace: centered photo, collapsible controls, visible history, Fit, numeric zoom and true 100%. No library grid during the editor milestones. Cmd/Ctrl+O imports; Cmd/Ctrl+Z and Shift+Cmd/Ctrl+Z navigate history.
 - Geometry: the visible composition travels with mirror and quarter-turns, and a locked ratio swaps orientation on a quarter-turn. Fine angle is limited to ±45°. Space-drag pans.
@@ -97,8 +105,9 @@ Decided on 2026-09-23 under the owner's delegation for the [shared module capabi
 - Sending image data is consented **per asset**: a grant names the module, profile, adapter, endpoint origin, data class and asset, and is not remembered for later photos. Downloads are granted per resource version and origin.
 - Only the desktop (after Allow) or `luxforge-json --permission-authority` may grant. Live-session clients cannot; anyone may deny or revoke. Revocation cancels dependent jobs and never touches recipes, history or accepted artifacts; an endpoint change revokes the old grants.
 - Remote endpoints require HTTPS and public addresses; plain HTTP is allowed only to loopback, labelled as such. No proxies.
-- No remote provider adapter ships with the framework; the first real adapters arrive with Corrections. `managed-storage` and `local-runtime` wait for their first consumer.
-- Derived artifacts live in a directory beside the catalog and move with it; the [current catalog format](design/versions-and-lineage.md#storage-catalog-format-12) holds their references beside the preset library, the mask table and the stroke store, and earlier formats are refused.
+- No remote provider adapter ships with the framework; the first real adapters arrive with [AI editing](design/ai-editing.md). `managed-storage` waits for its first consumer; `local-runtime` is defined by AI editing.
+- Revised by the owner on 2026-10-05: consent to send photo data to a provider is remembered per provider profile and data class until revoked, in place of per asset; the change lands with AI editing's remote tier.
+- Derived artifacts live in a directory beside the catalog and move with it; the [current catalog format](design/versions-and-lineage.md#storage-catalog-format-13) holds their references beside the preset library, the mask table and the stroke store, and earlier formats are refused.
 
 Revised by the owner on 2026-09-24, after the [architecture review](#architecture-review):
 
@@ -125,7 +134,7 @@ The owner edits local files and syncs them to an external drive, so moved-origin
 
 ## Presets
 
-The owner asked on 2026-09-23 for presets, with native presets and Lightroom import through a presets module whose apply is a history entry, and for the work to proceed without blocking on questions. It is delivered on the defaults recorded in the [presets design](design/presets.md#decisions-taken-on-defaults), each a proposal the owner reviews: presets as catalog data (see [versions and lineage](design/versions-and-lineage.md#storage-catalog-format-12)), only field-patch actions presettable, `apply-preset` carrying its settings, Lightroom values transferred for the controls Luxforge has and never clamped with RAW Kelvin and tint refused, the section first in the tools panel, and white balance unchecked when creating a preset.
+The owner asked on 2026-09-23 for presets, with native presets and Lightroom import through a presets module whose apply is a history entry, and for the work to proceed without blocking on questions. It is delivered on the defaults recorded in the [presets design](design/presets.md#decisions-taken-on-defaults), each a proposal the owner reviews: presets as catalog data (see [versions and lineage](design/versions-and-lineage.md#storage-catalog-format-13)), only field-patch actions presettable, `apply-preset` carrying its settings, Lightroom values transferred for the controls Luxforge has and never clamped with RAW Kelvin and tint refused, the section first in the tools panel, and white balance unchecked when creating a preset.
 
 ## Rendering memory
 
@@ -383,17 +392,78 @@ Decided by the owner on 2026-10-05, on the [UI themes](design/ui-themes.md) prop
 
 The rest are proposals with recorded defaults in the [design](design/ui-themes.md#proposals-with-recorded-defaults): which themes are bundled (Tokyo Night, Catppuccin, Catppuccin Latte, Gruvbox, Nord and Everforest), the contrast floors, which Omarchy forms are read, a Theme choice for the canvas background as its default, the Appearance tab, and leaving Omarchy's current theme and the system appearance for later.
 
+## AI editing
+
+Decided by the owner on 2026-10-05, on the [AI editing](design/ai-editing.md) proposal of 2026-10-04, together with the two Corrections decisions it depends on:
+
+- **AI editing is in scope**: Remove, Select, generative fill and Replace, and sky replacement, on local models the person downloads on request. The roadmap's exclusion of generative editing is lifted.
+- **Quality first; no licence or provenance gate on models.** Models are chosen and ranked by measured results. A weight licence keeps no model out of the lists and the terms of a model's training data are neither a criterion nor disclosed. The one thing shown is what affects the person: when a licence restricts how they may use their own results, the model's card says so in one line, and each feature's default pick is the best model without such a restriction. Weights are the person's downloads from their publishers, not project dependencies.
+- **The Fast fill model is the best measured result**, LaMa or MI-GAN, whatever its source.
+- **A stale AI patch keeps rendering.** When a RAW white-balance change or an earlier repair invalidates a frozen patch, it is marked stale, the row and the status bar say so, and export asks for an acknowledgement; render, sample and export do not fail. The Corrections design's fail-explicitly rule is replaced.
+- **The inference runtime is delegated**, to be chosen for quality first, then performance, then maintainability; ONNX Runtime through `ort` with Core ML is the measured choice under that order.
+- **Every choice between models is presented as a plain trade-off** ("Finds smaller objects; slower to start", "Higher quality, needs 24 GB of memory"), never by a model's technical name alone.
+- **The shadow and reflection region is an editable part of the selection**, suggested by a heuristic, where the models allow it.
+- **Budgets are accepted as starting figures under a quality-first rule**: the 256 MiB analysis cache and the 1 GiB of held candidates are accepted; a budget that would degrade a result is raised, with the measurement, rather than the result reduced; optimisation comes after the quality is right.
+- **The generative tier refuses to install below a model's declared minimum**, 24 GB of unified memory by default, with the requirement shown.
+- **Consent to send photo data to a remote provider is remembered** per provider profile and data class until revoked, in place of the per-asset default of 2026-09-23; the capability contract changes with the remote tier.
+- **The repair stage** sits after source development and before colour, in content coordinates, and the developer-only `PointReplace` primitive is deleted rather than reused (the Corrections decision).
+- **Sky replacement** is a deterministic layer over the Select Sky mask, with imported skies or a CC0 set.
+
+Recorded defaults and the remaining open questions (the first hosted provider, a removal fine-tune, a macOS 27 Swift shim, what a CPU-only machine is offered) are in the [design](design/ai-editing.md#decisions).
+
+## RAW looks
+
+Decided by the owner on 2026-10-05, after noticing that photos which look vivid in the catalog, where the camera's embedded preview is shown, look flat once developed ([design](design/raw-looks.md)):
+
+- **New RAW photos start from a Luxforge look**, Standard, rather than the bare neutral development. The development stays neutral; the look is a recipe layer on it.
+- **Matching the camera's preview is a setting**, Match camera, fitted per photo to its embedded preview.
+- **Standard is built first**, on an architecture that carries Match camera.
+
+The owner accepted the design's recorded defaults the same day ([design](design/raw-looks.md#decided)): Standard written into a new photograph's Original; the look after Basic and before the Tone curve; resolved knots stored in every payload; Reset Look returning to Standard, the dot lit only away from it; Amount 0–200; not presettable; no baseline exposure read; colour kept under a monochrome preview; sRGB and Adobe RGB previews fitted. The owner approved the Standard look the corpus study proposed (+1.15 EV, contrast 1.6, 1.5 EV of headroom, chroma 1.2) on its contact sheets the same day.
+
+## Lightroom import
+
+Decided by the owner on 2026-10-06 for the [Lightroom import](design/lightroom-import.md#decided), which is planned and not authorized for implementation ([plan](../tasks/lightroom-import.json)):
+
+- **Only the photographs worked on in Lightroom enter the catalog** (L1): edited, picked, in a plain collection, or a virtual copy. The rest stay on disk and Select browses their folders.
+- **Ratings and colour labels become collections** (L2) in a "From Lightroom" group; the catalog's no-ratings decision stands. **Keywords** are kept in the import record and not shown (L3).
+- **Catalog folders come from events** (L4), as Develop makes them, not from Lightroom's folder tree.
+- **Virtual copies and snapshots become named versions** (L5); Lightroom's history steps are counted, not imported (L6).
+- **Lightroom's previews are the imported photographs' first tiles** in Select and the filmstrip until Luxforge renders them, and are never shown in Compare (L7).
+- **Each photograph's Lightroom settings text is kept** with an explicit Re-map (L8); the import is one-way (L9); smart collections are reported, not imported (L10); only catalog versions verified on the owner's installation are read (L11).
+
+## Lightroom alignment
+
+Decided by the owner on 2026-10-06 for the [Lightroom alignment](design/lightroom-alignment.md) proposal:
+
+- **Lightroom is not a rendering target, but its controls' responses are.** They are the result of years of research and people are used to them: someone who reaches for +10 Clarity or −10 Vignette expects the same result. Every supported setting's slider is realigned so a value does about what the same value does in Lightroom (level B).
+- **Where a dimension still differs widely, a targeted algorithm change is considered** (level C), aimed at the dimension that differs.
+
+Decided the same day ([design](design/lightroom-alignment.md#decided)):
+
+- **Settings are realigned by editing area** (A2): Basic tone and colour, then Presence, the mixer and the vignette, then Detail, then masks and geometry, then RAW white balance.
+- **Lightroom is driven by generated XMP** (A3), with one manual import and export per round by the owner; all tooling stays in Rust.
+- **Only Lightroom's rendered outputs are compared** (A4). No reverse engineering: no Adobe SDK source or binary is read, decompiled or used, and no Adobe profile, table or curve ships.
+- **The base rendering is measured and subtracted** (A5); the Standard look stands.
+- **A realigned module refuses recipes of the earlier scale** (A6) through its raised format marker; edited photographs need a new catalog.
+- **Validation on the owner's real edits** runs locally, figures only, with consent asked each run (A7).
+- **A setting gets an algorithm change** (A8) when, after its rescaling, its median ΔE2000 against Lightroom's response exceeds 2 at values of ±25 and beyond, or it differs in kind; the change targets that dimension.
+
+The [task plan](../tasks/lightroom-alignment.json) is written; whether it is authorized remains open.
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/product-decisions.json).
 
 - How should catalog backup, portability, sidecars, folder relinking and external-drive sync work?
 - Beyond the supplied files, which RAW recording modes/firmware and controlled quality scenes should be prioritized? The implemented decoder/developer and neutral defaults are explicit; broad visual acceptance, the measured resource target and additional DJI modes/scenes remain in [RAW qualification](design/initial-raw.md#remaining-qualification-and-decisions).
-- Masking is authorized (2026-09-23) and is being implemented. Decided the same day: brush strokes are held in a **content-addressed stroke store** keyed by a hash of their contents, because every history entry stores a complete recipe and embedded strokes grow quadratically — about 37.5 MB across history for 200 strokes against 1.08 MB addressed. Entries stay full snapshots and pure deltas are rejected; a missing or corrupt stroke fails explicitly. It lands in phase C before the first brush ships, in the [current catalog format](design/versions-and-lineage.md#storage-catalog-format-12). The `points` kind, the stroke list and the `brush-paint` interaction are host primitives shared with the corrections proposal, not mask-private ones. See [masking](design/masking.md#stroke-storage).
+- Masking is authorized (2026-09-23) and is being implemented. Decided the same day: brush strokes are held in a **content-addressed stroke store** keyed by a hash of their contents, because every history entry stores a complete recipe and embedded strokes grow quadratically — about 37.5 MB across history for 200 strokes against 1.08 MB addressed. Entries stay full snapshots and pure deltas are rejected; a missing or corrupt stroke fails explicitly. It lands in phase C before the first brush ships, in the [current catalog format](design/versions-and-lineage.md#storage-catalog-format-13). The `points` kind, the stroke list and the `brush-paint` interaction are host primitives shared with the corrections proposal, not mask-private ones. See [masking](design/masking.md#stroke-storage).
 - Do masking's remaining recorded defaults stand — masks as a target for the delivered modules rather than a local-adjustment module of their own, the idempotent component algebra, a radial that selects inside, one stroke amount instead of Flow and Density, and the A-to-D phase order with brushes before range selections?
+- Do the [catalog design](design/catalog.md#proposals)'s eighteen recorded defaults stand — browsing files through an automatic event layer and developing only picks into the catalog, no ratings, keywords or flags, the event rules and offline place names, burst and bracket rules (brackets from metadata or previews), the loupe's camera previews with an on-demand development for 100%, moving on after picking a burst frame, cards browsed in place with copied files preferred, sending unedited photographs back, per-workspace undo, per-photograph resolution of missing originals and batch export in the first version, Empty Removed for permission authority only, the design scale, folders replacing import, events becoming catalog folders named at develop time, "On disk" for the filesystem, watching and reconciling the index, and showing every long job with progress — and is its implementation authorized?
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
 - Which of the [UI themes proposals](design/ui-themes.md#proposals-with-recorded-defaults) stand? They are the six bundled Omarchy themes; the contrast floors, with an imported theme's own text or accent moved to meet them; the Omarchy forms read; a Theme choice for the canvas background as its default; the Appearance tab; and leaving Omarchy's current theme and the system appearance for later.
-- For the proposed [Corrections module](design/corrections.md), should AI Remove enter the accepted scope, and should a changed RAW source-development prefix require regeneration of a saved AI patch? Remote-photo consent is per asset by the [module capabilities](#module-capabilities) default.
+- [AI editing](design/ai-editing.md) was decided on 2026-10-05 ([above](#ai-editing)); still open: the first hosted provider, whether to fund a removal fine-tune, whether a macOS 27 Swift shim is worth a Mac-only accelerator, and what a CPU-only machine is offered.
+- Are the [Lightroom import](../tasks/lightroom-import.json) and [Lightroom alignment](../tasks/lightroom-alignment.json) plans authorized for implementation? Every design question was decided on 2026-10-06 ([above](#lightroom-alignment)).
 - Which measured workloads and responsiveness budgets become acceptance requirements?
 - For interactive previews, which additional measured quality levels and approximation error bounds are acceptable beyond the authorized viewport baseline? Temporary softness, the updating histogram, and viewport-bounded clipping are accepted above. For GPU previews the owner chose speed first ([above](#gpu-previews)); do the [proposed limits](design/gpu-preview.md#the-preview-error-limit) stand?
 - Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand? RAW white balance import converts values without calibration ([source-kind controls](#source-kind-controls)).

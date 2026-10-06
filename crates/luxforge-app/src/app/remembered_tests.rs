@@ -316,6 +316,7 @@ fn export_to(editor: &mut Editor, asset: &AssetId, destination: PathBuf) {
         identity: job,
         owner: editor.owner.clone(),
         client: editor.client,
+        presentation_visible: true,
     }));
     while let Some(message) = reader.next() {
         let _ = editor.update(message);
