@@ -20,7 +20,7 @@ Decided on 2026-10-05 for the planned [visibility and monitoring](design/visibil
 - Everything is v0 and breaking changes are expected. Only current catalog, recipe, API and module shapes are supported; no migrations, compatibility shims, old-version fixtures or historical parity requirements. Unsupported data is refused without rewriting it. No release-version planning, cloud or accounts, marketplace or generalized processing graph.
 - Initial RAW targets are the original Nikon Z6 and the Fujifilm X100VI; implementation is requested, with the supplied DJI Air 2S DNG added for qualification. Benchmark established decoders before proposing a custom one.
 - RAW editing stays continuous and non-destructive, in the same workflow sense as Lightroom: the original remains the source, adjustments remain recipe data and later edits do not operate on a JPEG baked from earlier WB/exposure settings. Keep high precision through editing and convert for display or explicit export. The development itself is neutral and selects no Adobe matching; new RAW photos start from a Luxforge look on top of it, with camera-preview matching as a setting ([RAW looks](#raw-looks)). See the [initial RAW design](design/initial-raw.md).
-- Lightroom Library and Develop are familiarity references. Map, Book, Slideshow, Print, Web and Publish Services are out of scope.
+- Lightroom Library and Develop are familiarity references; their sliders' responses are followed ([Lightroom alignment](#lightroom-alignment)). Map, Book, Slideshow, Print, Web and Publish Services are out of scope.
 - All development tooling is Rust (`cargo xtask`); no second toolchain.
 
 ## Editing and storage
@@ -411,6 +411,36 @@ Decided by the owner on 2026-10-05, after noticing that photos which look vivid 
 
 The owner accepted the design's recorded defaults the same day ([design](design/raw-looks.md#decided)): Standard written into a new photograph's Original; the look after Basic and before the Tone curve; resolved knots stored in every payload; Reset Look returning to Standard, the dot lit only away from it; Amount 0–200; not presettable; no baseline exposure read; colour kept under a monochrome preview; sRGB and Adobe RGB previews fitted. The owner approved the Standard look the corpus study proposed (+1.15 EV, contrast 1.6, 1.5 EV of headroom, chroma 1.2) on its contact sheets the same day.
 
+## Lightroom import
+
+Decided by the owner on 2026-10-06 for the [Lightroom import](design/lightroom-import.md#decided), which is planned and not authorized for implementation ([plan](../tasks/lightroom-import.json)):
+
+- **Only the photographs worked on in Lightroom enter the catalog** (L1): edited, picked, in a plain collection, or a virtual copy. The rest stay on disk and Select browses their folders.
+- **Ratings and colour labels become collections** (L2) in a "From Lightroom" group; the catalog's no-ratings decision stands. **Keywords** are kept in the import record and not shown (L3).
+- **Catalog folders come from events** (L4), as Develop makes them, not from Lightroom's folder tree.
+- **Virtual copies and snapshots become named versions** (L5); Lightroom's history steps are counted, not imported (L6).
+- **Lightroom's previews are the imported photographs' first tiles** in Select and the filmstrip until Luxforge renders them, and are never shown in Compare (L7).
+- **Each photograph's Lightroom settings text is kept** with an explicit Re-map (L8); the import is one-way (L9); smart collections are reported, not imported (L10); only catalog versions verified on the owner's installation are read (L11).
+
+## Lightroom alignment
+
+Decided by the owner on 2026-10-06 for the [Lightroom alignment](design/lightroom-alignment.md) proposal:
+
+- **Lightroom is not a rendering target, but its controls' responses are.** They are the result of years of research and people are used to them: someone who reaches for +10 Clarity or −10 Vignette expects the same result. Every supported setting's slider is realigned so a value does about what the same value does in Lightroom (level B).
+- **Where a dimension still differs widely, a targeted algorithm change is considered** (level C), aimed at the dimension that differs.
+
+Decided the same day ([design](design/lightroom-alignment.md#decided)):
+
+- **Settings are realigned by editing area** (A2): Basic tone and colour, then Presence, the mixer and the vignette, then Detail, then masks and geometry, then RAW white balance.
+- **Lightroom is driven by generated XMP** (A3), with one manual import and export per round by the owner; all tooling stays in Rust.
+- **Only Lightroom's rendered outputs are compared** (A4). No reverse engineering: no Adobe SDK source or binary is read, decompiled or used, and no Adobe profile, table or curve ships.
+- **The base rendering is measured and subtracted** (A5); the Standard look stands.
+- **A realigned module refuses recipes of the earlier scale** (A6) through its raised format marker; edited photographs need a new catalog.
+- **Validation on the owner's real edits** runs locally, figures only, with consent asked each run (A7).
+- **A setting gets an algorithm change** (A8) when, after its rescaling, its median ΔE2000 against Lightroom's response exceeds 2 at values of ±25 and beyond, or it differs in kind; the change targets that dimension.
+
+The [task plan](../tasks/lightroom-alignment.json) is written; whether it is authorized remains open.
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/product-decisions.json).
@@ -423,6 +453,7 @@ Tracked in [product decisions](../tasks/product-decisions.json).
 - What is the first external module the owner would use, and what enablement and recovery behavior does it need?
 - Which of the [UI themes proposals](design/ui-themes.md#proposals-with-recorded-defaults) stand? They are the six bundled Omarchy themes; the contrast floors, with an imported theme's own text or accent moved to meet them; the Omarchy forms read; a Theme choice for the canvas background as its default; the Appearance tab; and leaving Omarchy's current theme and the system appearance for later.
 - [AI editing](design/ai-editing.md) was decided on 2026-10-05 ([above](#ai-editing)); still open: the first hosted provider, whether to fund a removal fine-tune, whether a macOS 27 Swift shim is worth a Mac-only accelerator, and what a CPU-only machine is offered.
+- Are the [Lightroom import](../tasks/lightroom-import.json) and [Lightroom alignment](../tasks/lightroom-alignment.json) plans authorized for implementation? Every design question was decided on 2026-10-06 ([above](#lightroom-alignment)).
 - Which measured workloads and responsiveness budgets become acceptance requirements?
 - For interactive previews, which additional measured quality levels and approximation error bounds are acceptable beyond the authorized viewport baseline? Temporary softness, the updating histogram, and viewport-bounded clipping are accepted above. For GPU previews the owner chose speed first ([above](#gpu-previews)); do the [proposed limits](design/gpu-preview.md#the-preview-error-limit) stand?
 - Which of the [presets defaults](design/presets.md#decisions-taken-on-defaults) stand? RAW white balance import converts values without calibration ([source-kind controls](#source-kind-controls)).

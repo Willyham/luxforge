@@ -3,7 +3,7 @@
   "plan_id": "product-decisions",
   "title": "Open product decisions",
   "objective": "Resolve the product questions that gate later roadmap phases, recording each answer in docs/decisions.md and the affected specification.",
-  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks are the open questions: storage/backup workflow, RAW recording-mode and quality priorities, the first external module use case, accepted performance workloads and budgets, the Presence, colour mixer and vignette defaults, and interactive-preview quality levels beyond the authorized baseline, and the GPU-first rendering questions left open by the owner's decision of 2026-10-04, and the UI themes questions left as recorded defaults by the owner's decisions of 2026-10-05, and the AI editing decisions of the 2026-10-04 proposal, taken on 2026-10-05.",
+  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks are the open questions: storage/backup workflow, RAW recording-mode and quality priorities, the first external module use case, accepted performance workloads and budgets, the Presence, colour mixer and vignette defaults, and interactive-preview quality levels beyond the authorized baseline, and the GPU-first rendering questions left open by the owner's decision of 2026-10-04, and the UI themes questions left as recorded defaults by the owner's decisions of 2026-10-05, and the AI editing decisions of the 2026-10-04 proposal, taken on 2026-10-05, and the Lightroom import and Lightroom alignment proposals of 2026-10-06.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -523,6 +523,98 @@
           "No proposal is silently treated as accepted."
         ]
       }
+    },
+    {
+      "id": "TASK-011",
+      "description": "Decide the Lightroom import proposals L1 to L11 and whether implementation is authorized.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "Completed on 2026-10-06: every question is recorded in docs/decisions.md under Lightroom import and in the design's Decided table. L4 (catalog folders by event) and L7 (Lightroom's previews as first tiles, not in Compare) differ from the recommendation. The owner asked for a task plan and did not authorize implementation."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom import design",
+          "target": "docs/design/lightroom-import.md",
+          "locator": "Proposals",
+          "relevance": "The questions and their recommendations."
+        },
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "The catalog principles the scope and ratings questions bear on."
+        },
+        {
+          "kind": "file",
+          "label": "Owner decisions",
+          "target": "docs/decisions.md",
+          "locator": "Open product questions",
+          "relevance": "Where each answer is recorded."
+        }
+      ],
+      "acceptance_criteria": [
+        "Each question is accepted as its recommendation or changed with the design updated to match, and docs/decisions.md records the outcome with its date.",
+        "A validated task plan for the import exists."
+      ],
+      "test_strategy": {
+        "approach": "manual",
+        "steps": [
+          "Review the design's Proposals table with the owner.",
+          "Record the outcomes in the decisions document and adjust the design where a recommendation changed."
+        ],
+        "commands": [],
+        "expected_results": [
+          "No proposal is silently treated as accepted."
+        ]
+      }
+    },
+    {
+      "id": "TASK-012",
+      "description": "Decide whether the Lightroom import and Lightroom alignment task plans are authorized for implementation; every design question of both is decided.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Decided on 2026-10-06 and recorded in docs/decisions.md under Lightroom alignment and in AGENTS.md's seventh pillar: sliders follow Lightroom's responses (level B) for every supported setting, targeted algorithm changes (level C) past the A8 threshold, order by editing area, generated XMP with a manual round-trip, rendered outputs compared only, with no reverse engineering or Adobe code, the base rendering subtracted, earlier recipes refused, local validation with consent each run."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom alignment design",
+          "target": "docs/design/lightroom-alignment.md",
+          "locator": "Proposals",
+          "relevance": "The questions and their recommendations."
+        },
+        {
+          "kind": "file",
+          "label": "Project pillars",
+          "target": "AGENTS.md",
+          "locator": "Pillars",
+          "relevance": "The seventh pillar the levels bear on."
+        },
+        {
+          "kind": "file",
+          "label": "Owner decisions",
+          "target": "docs/decisions.md",
+          "locator": "Open product questions",
+          "relevance": "Where each answer is recorded."
+        }
+      ],
+      "acceptance_criteria": [
+        "The owner's answer is recorded in docs/decisions.md and in each plan's status."
+      ],
+      "test_strategy": {
+        "approach": "manual",
+        "steps": [
+          "Review the design's Proposals table with the owner.",
+          "Record the outcomes in the decisions document and adjust the design where a recommendation changed."
+        ],
+        "commands": [],
+        "expected_results": [
+          "No proposal is silently treated as accepted."
+        ]
+      }
     }
   ],
   "execution_waves": [
@@ -538,7 +630,9 @@
         "TASK-007",
         "TASK-008",
         "TASK-009",
-        "TASK-010"
+        "TASK-010",
+        "TASK-011",
+        "TASK-012"
       ]
     }
   ]

@@ -1,0 +1,609 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "lightroom-import",
+  "title": "Lightroom import",
+  "objective": "Bring the photographs worked on in a Lightroom Classic catalog, or a folder of XMP sidecars, into the Luxforge catalog read-only, with their organization, their settings as one history entry each, a per-photograph report, re-mapping from the kept source text, and Lightroom's previews as first tiles.",
+  "context_summary": "Planned from docs/design/lightroom-import.md, the contract every task follows; the owner decided all eleven questions on 2026-10-06 and did not authorize implementation, so nothing here starts until authorized. Phase 1 is TASK-001 to TASK-010, deliverable alone; TASK-011 is phase 2 (masks); TASK-012 is phase 3, mappings that land with later tools. The importer never writes to a Lightroom catalog, its previews, sidecars or originals; nothing from the owner's library enters the repository. It reuses the preset mapping and Lua reader, Develop's fingerprinting and event folders, the catalog's library changes and the rendered-preview fallback rule. Fidelity beyond value transfer comes from the Lightroom alignment design, not from this plan. Decisions: docs/decisions.md.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Confirm the Lightroom Classic catalog format against the owner's catalog: the catalog version, the table and column subset the design names, the develop settings text including masks, the preview cache's index and file layout, and how the lock file and journal behave while Lightroom is open and closed.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Read-only probe of a copy of the owner's .lrcat and its Previews.lrdata in a temporary directory; never open the owner's live files for writing and never commit them or anything read from them.",
+        "Record what is confirmed in a new docs/research/lightroom/catalog-format.md (tables, columns, value encodings such as pick, rating, colorLabels, orientation codes, masterImage and copyName; the Lua settings text, its size distribution and whether mask geometry, brush dabs and AI mask references are in it; previews.db and the .lrprev container; how a preview's currency against the last edit can be told), and correct the design where it differs.",
+        "Confirm that the preset parser's Lua subset (presets/lrtemplate.rs) reads the settings text, or list what it lacks.",
+        "This research task needs no code under crates/."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom import design",
+          "target": "docs/design/lightroom-import.md",
+          "relevance": "The tables and behaviour to confirm.",
+          "locator": "The Lightroom catalog"
+        },
+        {
+          "kind": "file",
+          "label": "Storage research",
+          "target": "docs/research/lightroom/storage-and-history.md",
+          "relevance": "Lightroom's files and auxiliary data."
+        },
+        {
+          "kind": "file",
+          "label": "Lua subset reader",
+          "target": "crates/luxforge-core/src/presets/lrtemplate.rs",
+          "relevance": "The parser the settings text should reuse."
+        }
+      ],
+      "acceptance_criteria": [
+        "The research note records the confirmed subset with the catalog version it was observed on, and the design agrees with it.",
+        "Nothing from the owner's catalog is committed."
+      ],
+      "test_strategy": {
+        "approach": "inspection",
+        "steps": [
+          "Probe a copy of the owner's catalog read-only and record the findings.",
+          "Run the repository checks."
+        ],
+        "commands": [
+          "cargo xtask check-repository"
+        ],
+        "expected_results": [
+          "The note and design agree; links pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Build the read-only Lightroom catalog reader and a test-catalog generator: open read-only, refuse a locked catalog and an unverified version by name, stream photographs, files, folders, collections, keywords, snapshots, history-step counts and settings text, and parse the settings text into the preset mapping's setting table.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "New module under luxforge-core (for example crate::lightroom); SQLite through the pinned rusqlite, opened read-only with no journal written; rows streamed, never loaded whole.",
+        "The generator writes a catalog with exactly the schema subset TASK-001 confirmed, from a declarative description, for tests; it ships no Adobe-made file.",
+        "Bounds as preset import's: settings text size, nesting and value count refused with resource-limit; earlier process versions are identified for refusal by the mapping."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom import design",
+          "target": "docs/design/lightroom-import.md",
+          "relevance": "Read-only rules and refusals.",
+          "locator": "The Lightroom catalog"
+        },
+        {
+          "kind": "file",
+          "label": "Storage research",
+          "target": "docs/research/lightroom/storage-and-history.md",
+          "relevance": "Lightroom's files; the confirmed schema subset is in the catalog-format note TASK-001 writes beside it."
+        },
+        {
+          "kind": "file",
+          "label": "Presets design",
+          "target": "docs/design/presets.md",
+          "relevance": "Parser bounds and the setting table.",
+          "locator": "Import"
+        }
+      ],
+      "acceptance_criteria": [
+        "A generated catalog reads back to its description; a locked catalog and an unknown version are refused with their reasons; the catalog file's bytes hash the same before and after every read.",
+        "Settings text from the generator parses into the same setting table an equivalent XMP sidecar gives."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the reader's tests over generated catalogs, including the lock and version refusals and the unchanged-bytes check."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core lightroom::"
+        ],
+        "expected_results": [
+          "Every reader test passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Map one Lightroom photograph to a Luxforge edit and report: the preset mapping for global settings plus the per-photo rows (crop, user orientation, lens profile switch, camera profile to the look, perspective and everything else reported), built as one composite of module actions with every setting accounted for in the report.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002"
+      ],
+      "extra_context": [
+        "Extend the presets mapping table rather than adding a second one; per-photo rows are marked as not presettable so preset import keeps excluding them.",
+        "The crop conversion (CropTop/Left/Bottom/Right and CropAngle with the photo's orientation into the crop module's normalized rotated box) is frozen by a small study against Lightroom exports of known crops the owner makes once; record the round's figures in the design.",
+        "Camera Matching profiles map to Standard with an approximate note until Match camera exists; Adobe Color and Adobe Standard map to Standard.",
+        "The report keeps preset import's shape and adds crop, orientation, lens and look rows, and which rule (value transfer or a calibrated conversion) each mapped row used."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom import design",
+          "target": "docs/design/lightroom-import.md",
+          "relevance": "The mapping rows and the report.",
+          "locator": "The edit"
+        },
+        {
+          "kind": "file",
+          "label": "Presets design",
+          "target": "docs/design/presets.md",
+          "relevance": "The mapping table and report shape.",
+          "locator": "Mapping"
+        },
+        {
+          "kind": "file",
+          "label": "Crop and orientation",
+          "target": "docs/design/orientation-layer.md",
+          "relevance": "The orientation layer the user rotation maps to."
+        }
+      ],
+      "acceptance_criteria": [
+        "Every mapping row has a test from a settings table to its actions and report rows; every setting in a test photograph appears in its report exactly once.",
+        "The crop conversion matches the owner's Lightroom exports within one pixel on the study's cases."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the mapping tests and the crop study."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core lightroom::mapping",
+          "cargo test -p luxforge-core presets::"
+        ],
+        "expected_results": [
+          "Mapping, crop and preset tests pass; preset import is unchanged."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Add the catalog format for imports: the import table and each photograph's Lightroom origin (import, Lightroom id, copy or snapshot name, settings text, keywords, report), with earlier formats refused.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002"
+      ],
+      "extra_context": [
+        "Follow the current-format rule in versions-and-lineage: bump the format, refuse earlier ones by name, no migration.",
+        "Measure the stored text's size on the owner's catalog (from TASK-001's distribution) and record whether compression is needed."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom import design",
+          "target": "docs/design/lightroom-import.md",
+          "relevance": "What is stored.",
+          "locator": "Storage"
+        },
+        {
+          "kind": "file",
+          "label": "Versions and lineage",
+          "target": "docs/design/versions-and-lineage.md",
+          "relevance": "The current catalog format and its rules.",
+          "locator": "Storage: catalog format 13"
+        }
+      ],
+      "acceptance_criteria": [
+        "A catalog of the new format round-trips an import record and origins; an earlier format is refused naming it."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the storage tests."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core lightroom::storage",
+          "cargo test -p luxforge-core catalog"
+        ],
+        "expected_results": [
+          "Storage and catalog tests pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Run the import as a job: lightroom.inspect and lightroom.import over a catalog on the library lane, importing the photographs worked on, fingerprinting through Develop's path, catalog folders by event, collections and groups, ratings and labels as collections, virtual copies and snapshots as named versions, duplicates linked with a Lightroom version, missing originals and unsupported kinds reported, one undoable library change, idempotent re-runs and cancellation; with lightroom.report and lightroom.imports.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003",
+        "TASK-004"
+      ],
+      "extra_context": [
+        "Index the folders of the photographs in scope before computing their events, so catalog folders come from events as Develop's do; an event with a catalog folder reuses it.",
+        "Nothing on the owner thread but commits; paths are read by the worker. Each photograph's edit is its own history entry, `Imported from Lightroom` by the system actor.",
+        "Register every method in the command registry with its schema."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom import design",
+          "target": "docs/design/lightroom-import.md",
+          "relevance": "Photographs, organization, API and re-running.",
+          "locator": "What becomes what"
+        },
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Developing picks, events, folders, collections and library changes.",
+          "locator": "Developing picks"
+        }
+      ],
+      "acceptance_criteria": [
+        "Over generated catalogs: only photographs worked on are imported; folders follow events; collections, ratings, labels, copies and snapshots land as decided; duplicates link; missing originals are reported; a re-run imports only what is new; a cancel keeps finished photographs and nothing partial; undo of the library change restores the catalog.",
+        "The Lightroom catalog, its sidecars and the originals hash the same before and after, cancelled and failed runs included."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Run the import tests over generated catalogs and originals from the fixture generator."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core lightroom::import",
+          "cargo test -p luxforge-core library::"
+        ],
+        "expected_results": [
+          "Every import and library test passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Use Lightroom's previews as the imported photographs' first tiles: read each imported photograph's largest current preview from the preview cache and write its grid and large tiers with origin lightroom, reported as thumbnail and replaced by Luxforge's render under the camera preview rule; a stale preview is not used.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-005"
+      ],
+      "extra_context": [
+        "Reads happen on the extraction workers; the preview cache is opened read-only and never written.",
+        "Never shown in Develop or Compare."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom import design",
+          "target": "docs/design/lightroom-import.md",
+          "relevance": "The tile rule.",
+          "locator": "Lightroom's previews"
+        },
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Rendered previews, origins and fallbacks.",
+          "locator": "Rendered previews"
+        }
+      ],
+      "acceptance_criteria": [
+        "A Lightroom preview becomes the entry's tiers with origin lightroom, is reported thumbnail, is replaced by the render and never written after it; a stale preview falls back to the camera preview."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the preview tests over generated preview caches."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core previews::lightroom"
+        ],
+        "expected_results": [
+          "Every preview test passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Re-map from Lightroom: lightroom.remap over selected photographs runs the current mapping on the stored text and commits a new entry only where the result differs.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-005"
+      ],
+      "extra_context": [
+        "Never automatic. A batch follows batch.apply-preset's job, retry and report rules."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom import design",
+          "target": "docs/design/lightroom-import.md",
+          "relevance": "Re-mapping.",
+          "locator": "Re-running and re-mapping"
+        },
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Batch job rules.",
+          "locator": "The catalog"
+        }
+      ],
+      "acceptance_criteria": [
+        "An unchanged mapping commits nothing; a changed mapping commits one entry per changed photograph; retries apply nothing twice."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the re-map tests."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core lightroom::remap"
+        ],
+        "expected_results": [
+          "Every re-map test passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Import a folder of originals with XMP sidecars through the same job, mapping and report, for people without a catalog.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-005"
+      ],
+      "extra_context": [
+        "Without a catalog there are no collections, picks, ratings or copies: every original with a sidecar holding develop settings is in scope."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom import design",
+          "target": "docs/design/lightroom-import.md",
+          "relevance": "The sidecar source.",
+          "locator": "Scope"
+        }
+      ],
+      "acceptance_criteria": [
+        "A generated sidecar folder imports with the same reports an equivalent catalog gives; sidecars and originals are unchanged."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the sidecar import tests."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core lightroom::sidecar"
+        ],
+        "expected_results": [
+          "Every sidecar test passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Build the desktop workflow: File › Import from Lightroom… in Select, the inspection sheet with counts and bytes to read, progress on the activity board, the summary with Copy and a partial filter, the Partial tag and Copy import report on the history row, and Re-map; with a background rendered smoke scenario.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-006",
+        "TASK-007",
+        "TASK-008"
+      ],
+      "extra_context": [
+        "Every gesture sends the registered commands; no import logic in widgets.",
+        "Smoke scenario lightroom-import over a generated catalog in a background bundle, correlating frames with state and logs: the sheet, progress, the summary, Lightroom tiles then rendered tiles, a partial photograph's row."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom import design",
+          "target": "docs/design/lightroom-import.md",
+          "relevance": "The desktop flow.",
+          "locator": "Desktop"
+        },
+        {
+          "kind": "file",
+          "label": "Development guide",
+          "target": "docs/engineering/development.md",
+          "relevance": "Rendered evidence rules.",
+          "locator": "Rendered evidence"
+        }
+      ],
+      "acceptance_criteria": [
+        "The scenario passes with correlated captures, state and logs; UI and API parity holds for every step."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Build the release app and run the scenario in the background."
+        ],
+        "commands": [
+          "cargo xtask build --release",
+          "cargo xtask smoke --scenario lightroom-import --output NEW_DIR"
+        ],
+        "expected_results": [
+          "The scenario passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-010",
+      "description": "Qualify phase 1 on the owner's catalog and document it: a private background import into an isolated Luxforge catalog with the summary, partial rate, time, bytes read and catalog growth recorded, a rendered check in Select and Develop, and the user guide, feature status and design updated to what is built.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-009"
+      ],
+      "extra_context": [
+        "Run with cargo xtask develop --background and an isolated catalog; nothing from the owner's library is committed.",
+        "Timing is recorded here, once, after feature work."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom import design",
+          "target": "docs/design/lightroom-import.md",
+          "relevance": "Acceptance.",
+          "locator": "Verification and acceptance"
+        },
+        {
+          "kind": "file",
+          "label": "User guide",
+          "target": "docs/user-guide.md",
+          "relevance": "Where the workflow is documented."
+        }
+      ],
+      "acceptance_criteria": [
+        "The figures and the rendered check are recorded in the design; docs describe current behaviour only; the quick tier passes."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Import the owner's catalog privately and record the figures.",
+          "Update the docs.",
+          "Run the quick tier."
+        ],
+        "commands": [
+          "cargo xtask check",
+          "cargo xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Check and quick pass; the figures are recorded."
+        ]
+      }
+    },
+    {
+      "id": "TASK-011",
+      "description": "Phase 2: import Lightroom's masks: linear, radial, brush and range components with intersect, subtract and invert, and their supported local adjustments as masked Basic and Presence layers, with every unsupported component and adjustment reported and nothing silently omitted.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-010"
+      ],
+      "extra_context": [
+        "Brush dabs go to the stroke store; density other than 100 is reported. A radial that Lightroom applies outside gets Invert.",
+        "AI masks are reported as not imported until model-based Select exists; their adjustments are reported as not applied."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom import design",
+          "target": "docs/design/lightroom-import.md",
+          "relevance": "The mask mapping.",
+          "locator": "Masks"
+        },
+        {
+          "kind": "file",
+          "label": "Masking design",
+          "target": "docs/design/masking.md",
+          "relevance": "Mask kinds, algebra and the stroke store.",
+          "locator": "Component kinds"
+        }
+      ],
+      "acceptance_criteria": [
+        "Each mask mapping has a test from settings to mask and layers; a mask with no supported component is not created and its adjustments are reported; the rendered scenario shows an imported masked photograph."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the mask mapping tests and the scenario."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core lightroom::masks",
+          "cargo xtask smoke --scenario lightroom-import --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Tests and the scenario pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-012",
+      "description": "Phase 3: map the settings whose tools land later, each with its tool: Camera Matching profiles to Match camera, spot removal to Clone and Heal, AI masks recomputed through Select, and Detail and perspective once Lightroom alignment has measured them; existing imports reach them through Re-map.",
+      "status": "blocked",
+      "dependencies": [
+        "TASK-011"
+      ],
+      "extra_context": [
+        "Blocked on the capabilities by name: Match camera (RAW looks phase 2), Clone and Heal (Corrections), model-based Select (AI editing), and the Detail and perspective alignment studies. Each mapping lands as its capability does."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Lightroom import design",
+          "target": "docs/design/lightroom-import.md",
+          "relevance": "Phase 3.",
+          "locator": "Phases"
+        },
+        {
+          "kind": "file",
+          "label": "Lightroom alignment design",
+          "target": "docs/design/lightroom-alignment.md",
+          "relevance": "Calibrated conversions."
+        }
+      ],
+      "acceptance_criteria": [
+        "Each added mapping has its tests and report rows; Re-map applies it to existing imports."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Run the mapping tests as each lands."
+        ],
+        "commands": [
+          "cargo test -p luxforge-core lightroom::"
+        ],
+        "expected_results": [
+          "Every mapping test passes."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-002"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-003",
+        "TASK-004"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-005"
+      ]
+    },
+    {
+      "wave": 5,
+      "task_ids": [
+        "TASK-006",
+        "TASK-007",
+        "TASK-008"
+      ]
+    },
+    {
+      "wave": 6,
+      "task_ids": [
+        "TASK-009"
+      ]
+    },
+    {
+      "wave": 7,
+      "task_ids": [
+        "TASK-010"
+      ]
+    },
+    {
+      "wave": 8,
+      "task_ids": [
+        "TASK-011"
+      ]
+    },
+    {
+      "wave": 9,
+      "task_ids": [
+        "TASK-012"
+      ]
+    }
+  ]
+}
