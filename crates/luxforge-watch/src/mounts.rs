@@ -10,9 +10,9 @@
 //!   browsing (`MNT_DONTBROWSE`: the system's own volumes). `getattrlist` reads each local
 //!   volume's name and UUID, which stays the same across mounts; a network volume's are not read,
 //!   so nothing waits on its server.
-//! - **Linux**: `/proc/self/mountinfo`; a mount of a block device or a network file system outside
-//!   the system's own trees is browsable, and one under `/media` or `/run/media` counts as
-//!   removable. No UUID is read yet.
+//! - **Linux**: `/proc/self/mountinfo`; the root filesystem, and a mount of a block device or a
+//!   network file system outside the system's own trees, are browsable. A mount under `/media` or
+//!   `/run/media` counts as removable. No UUID is read yet.
 //! - **Windows**: each drive letter whose root exists; no name, UUID or removability is read yet.
 use crate::VolumeEvent;
 use std::{
@@ -128,7 +128,7 @@ fn mountinfo_line(line: &str) -> Option<Mount> {
             .map(|name| name.to_string_lossy().into_owned()),
         mount_point,
         uuid: None,
-        browsable: (source.starts_with("/dev/") || network) && !system,
+        browsable: (root || source.starts_with("/dev/") || network) && !system,
         local: !network,
         removable,
         root,
@@ -339,6 +339,23 @@ mod tests {
         assert!(!mounts[1].browsable);
         let root = &mounts[2];
         assert!(root.root && root.browsable && root.name.is_none());
+    }
+
+    #[test]
+    fn a_linux_root_is_browsable_without_a_block_device_source() {
+        let mounts = parse_mountinfo(
+            "1 0 0:62 / / rw - overlay overlay rw\n\
+             2 1 0:63 / /tmp rw - tmpfs tmpfs rw\n",
+        );
+        assert_eq!(mounts.len(), 2);
+        let root = &mounts[0];
+        assert_eq!(root.mount_point, Path::new("/"));
+        assert!(root.root && root.browsable && root.local && !root.removable);
+        assert!(root.name.is_none());
+        assert!(
+            !mounts[1].browsable,
+            "other virtual filesystems stay hidden"
+        );
     }
 
     #[test]
