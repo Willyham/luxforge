@@ -924,8 +924,8 @@ fn seed_previews(fx: &Fixture) {
         index
             .execute(
                 "INSERT INTO photo_previews (asset_id, entry_id, tier, renderer, path, width, height,
-                     bytes, origin, last_used_ms)
-                 VALUES (?1, ?2, 'grid', 1, ?3, 512, 341, 9000, 'rendered', 1)",
+                     bytes, origin, last_used_ms, drawn_by)
+                 VALUES (?1, ?2, 'grid', 1, ?3, 512, 341, 9000, 'rendered', 1, 'gpu')",
                 rusqlite::params![asset, entry, format!("/p/{at}.jpg")],
             )
             .unwrap();
