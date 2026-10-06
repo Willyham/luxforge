@@ -209,12 +209,16 @@ impl CoordinateGrid {
         self.nodes[(row * self.columns + column) as usize]
     }
 
-    /// The cell holding stage lattice coordinate `g` on an axis of `count` nodes from lattice node
-    /// `first`, and the fraction across it: both from the stage's own lattice, never from where the
-    /// grid starts, so every grid of the spacing that holds the cell interpolates a pixel alike.
-    fn cell(g: f32, first: u32, count: u32) -> (u32, f32) {
-        let index = ((g.floor() - first as f32).max(0.0) as u32).min(count - 2);
-        (index, g - (first + index) as f32)
+    /// The cell holding the output pixel-edge coordinate `at` on an axis of `count` nodes from
+    /// lattice node `first`, and the fraction across it: the cell is the stage pixel's, in
+    /// integers, and the fraction its offset from the cell's node over the spacing, both from the
+    /// stage's own lattice and the coordinate alone, never from where the grid starts, so every
+    /// grid of the spacing that holds the cell interpolates a pixel to the same bits.
+    fn cell(at: f32, spacing: u32, first: u32, count: u32) -> (u32, f32) {
+        let pixel = at.max(0.0).floor() as u32;
+        let index = ((pixel / spacing).max(first) - first).min(count - 2);
+        let node = ((first + index) * spacing) as f32;
+        (index, (at - node) / spacing as f32)
     }
 
     /// The boundary coordinate at the output pixel-edge coordinate `(x, y)`, a pixel centre being
@@ -222,9 +226,9 @@ impl CoordinateGrid {
     /// evaluates it. Linear filtering by a texture sampler is not this: its weights carry too few
     /// bits to hold the tolerance.
     pub fn sample(&self, x: f32, y: f32) -> [f32; 2] {
-        let spacing = self.spacing as f32;
-        let (column, fx) = Self::cell(x / spacing, self.origin.0 / self.spacing, self.columns);
-        let (row, fy) = Self::cell(y / spacing, self.origin.1 / self.spacing, self.rows);
+        let spacing = self.spacing.max(1);
+        let (column, fx) = Self::cell(x, spacing, self.origin.0 / spacing, self.columns);
+        let (row, fy) = Self::cell(y, spacing, self.origin.1 / spacing, self.rows);
         let lerp =
             |a: [f32; 2], b: [f32; 2], t: f32| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
         let top = lerp(self.node(column, row), self.node(column + 1, row), fx);
