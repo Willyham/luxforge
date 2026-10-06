@@ -1072,6 +1072,9 @@ impl Editor {
         surfaces.gpu_warm = self.gpu.warm();
         surfaces.gpu_source = self.gpu_source_handed();
         surfaces.gpu_rest = self.gpu_rest_handed();
+        surfaces.stage_rest = self
+            .gpu_stage_handed()
+            .filter(|_| self.crop_stage_gpu_shown());
         surfaces.gpu_counts = self.gpu_counts_handed();
         let (after, after_rest) = self.gpu_compare_after();
         surfaces.compare_gpu = after.map(|(plan, _)| plan);
