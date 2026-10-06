@@ -376,8 +376,8 @@ impl<'de> Deserialize<'de> for RendererReason {
 
 /// Which renderer draws the desktop's picture on this machine, and why the reference does, as
 /// `{record, reason}` (`docs/design/gpu-first.md`): `{record: "gpu", reason: null}` while the
-/// desktop's photo surface can draw on its GPU, and `{record: "reference", reason}` while it
-/// cannot. An owner that draws nothing, `luxforge-json`'s, always reports the reference with no
+/// desktop's photo surface can draw on its GPU, with `software: true` when that GPU is the
+/// platform's software adapter, and `{record: "reference", reason}` while it cannot. An owner that draws nothing, `luxforge-json`'s, always reports the reference with no
 /// reason: it has no GPU stage to fall back from.
 ///
 /// The process hosting the owner reports it ([`OwnerHandle::report_renderer`], a desktop-internal
@@ -393,6 +393,10 @@ impl<'de> Deserialize<'de> for RendererReason {
 pub struct Renderer {
     record: RendererRecord,
     reason: Option<RendererReason>,
+    /// The GPU record's adapter is a software one, a rasterizer on the CPU such as lavapipe or
+    /// WARP: written only when true, and only with the GPU record.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    software: bool,
 }
 
 /// [`Renderer`]'s fields as they are read, before the GPU record's missing reason is checked.
@@ -401,6 +405,8 @@ pub struct Renderer {
 struct RendererFields {
     record: RendererRecord,
     reason: Option<RendererReason>,
+    #[serde(default)]
+    software: bool,
 }
 
 impl TryFrom<RendererFields> for Renderer {
@@ -411,8 +417,22 @@ impl TryFrom<RendererFields> for Renderer {
             RendererFields {
                 record: RendererRecord::Gpu,
                 reason: Some(_),
+                ..
             } => Err("a GPU renderer has no reason"),
-            RendererFields { record, reason } => Ok(Self { record, reason }),
+            RendererFields {
+                record: RendererRecord::Reference,
+                software: true,
+                ..
+            } => Err("only a GPU renderer draws on a software adapter"),
+            RendererFields {
+                record,
+                reason,
+                software,
+            } => Ok(Self {
+                record,
+                reason,
+                software,
+            }),
         }
     }
 }
@@ -423,6 +443,16 @@ impl Renderer {
         Self {
             record: RendererRecord::Gpu,
             reason: None,
+            software: false,
+        }
+    }
+
+    /// The desktop's photo surface draws on its GPU stage through the platform's software adapter.
+    pub const fn gpu_software() -> Self {
+        Self {
+            record: RendererRecord::Gpu,
+            reason: None,
+            software: true,
         }
     }
 
@@ -431,6 +461,7 @@ impl Renderer {
         Self {
             record: RendererRecord::Reference,
             reason: Some(reason),
+            software: false,
         }
     }
 
@@ -439,7 +470,13 @@ impl Renderer {
         Self {
             record: RendererRecord::Reference,
             reason: None,
+            software: false,
         }
+    }
+
+    /// Whether the GPU draws through a software adapter.
+    pub fn software(self) -> bool {
+        self.software
     }
 
     pub fn record(self) -> RendererRecord {

@@ -72,7 +72,7 @@ pub(crate) fn start_owner(
         catalog,
         Arc::new(luxforge_core::ModuleRegistry::builtin()),
         luxforge_core::HostConfig {
-            renderer: crate::app::renderer::launched(config.no_gpu_render),
+            renderer: crate::app::renderer::launched(config.launch_renderer().refused()),
             ..luxforge_core::HostConfig::unconfigured()
         },
     )

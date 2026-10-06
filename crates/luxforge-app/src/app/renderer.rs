@@ -6,6 +6,11 @@
 //!   photograph is drawn, whether its device can run the GPU stage, and a lost device makes the
 //!   stage unavailable later ([`GpuStageState`]). The surface wakes the desktop when its answer
 //!   comes or changes, and the desktop reads it live ([`Editor::gpu_stage`]).
+//! - **A software adapter.** Before the window opens the launch chooses its renderer from what the
+//!   host offers ([`luxforge_ui::adapters::choose`]): a host whose only adapter is a software one
+//!   (lavapipe, WARP), where Iced's request lands, refuses the stage as `--no-gpu-render` does
+//!   until the software adapter is adopted, unless the launch passes `--software-adapter`; a stage
+//!   drawing on it is the GPU record with `software`, which the status bar names.
 //! - **A forced launch.** `--no-gpu-render` refuses the stage before the window opens
 //!   ([`luxforge_ui::photo_surface::refuse_gpu_stage`]): its capability check answers unavailable,
 //!   exactly as on a machine whose adapter cannot run it, and nothing of the stage is created. The
@@ -36,7 +41,10 @@ use super::{
 };
 use iced::Task;
 use luxforge_core::{Renderer, RendererReason};
-use luxforge_ui::{adapters::Adapter, photo_surface::GpuStageState};
+use luxforge_ui::{
+    adapters::{Adapter, LaunchRenderer},
+    photo_surface::GpuStageState,
+};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -44,8 +52,14 @@ use std::sync::Arc;
 /// adapter.
 #[derive(Debug)]
 pub(crate) struct RendererReport {
-    /// The launch refused the GPU stage (`--no-gpu-render`).
+    /// The renderer the launch chose before its window opened.
+    launch: LaunchRenderer,
+    /// The launch refused the GPU stage: `--no-gpu-render`, or a host whose only adapter is a
+    /// software one that is neither adopted nor asked for.
     refused: bool,
+    /// The GPU stage draws on the platform's software adapter (`--software-adapter`, or once it is
+    /// adopted), which the session and the status bar name.
+    software: bool,
     /// What the owner was last told, or is being told: the launch's own answer before any report.
     reported: Renderer,
     /// A report is on its way to the owner; the next waits for its answer.
@@ -76,12 +90,14 @@ pub(crate) enum WindowAdapter {
 }
 
 impl RendererReport {
-    /// A launch that refused the GPU stage or not, whose answer the owner already holds
-    /// ([`launched`]), with the launch's GPU tile worker.
-    pub(crate) fn new(refused: bool) -> Self {
+    /// A launch that chose `launch`, refusing the GPU stage or not, whose answer the owner already
+    /// holds ([`launched`]), with the launch's GPU tile worker.
+    pub(crate) fn new(launch: LaunchRenderer) -> Self {
         Self {
-            refused,
-            reported: launched(refused),
+            launch,
+            refused: launch.refused(),
+            software: launch.software(),
+            reported: launched(launch.refused()),
             in_flight: false,
             tiles: super::gpu_tiles::launched(),
             adapter: WindowAdapter::Unknown,
@@ -106,6 +122,11 @@ impl RendererReport {
     pub(crate) fn reported(&self) -> Renderer {
         self.reported
     }
+
+    /// The renderer the launch chose before its window opened.
+    pub(crate) fn launch(&self) -> LaunchRenderer {
+        self.launch
+    }
 }
 
 /// What a launch knows of its renderer before its window opens, which the owner reports from the
@@ -127,6 +148,33 @@ pub(crate) fn of(stage: GpuStageState, refused: bool) -> Renderer {
     }
 }
 
+/// `renderer` on a launch whose GPU stage draws on a software adapter or not: the GPU record names
+/// the software adapter, and the reference's is unchanged.
+pub(crate) fn on_adapter(renderer: Renderer, software: bool) -> Renderer {
+    if software && renderer == Renderer::gpu() {
+        Renderer::gpu_software()
+    } else {
+        renderer
+    }
+}
+
+/// How the launch's choice reads in its event: `gpu`, `gpu-software`, or the reference with why.
+pub(crate) fn launch_record(launch: LaunchRenderer) -> Value {
+    use luxforge_ui::adapters::Refusal;
+    match launch {
+        LaunchRenderer::Gpu { software: false } => json!({"renderer": "gpu"}),
+        LaunchRenderer::Gpu { software: true } => json!({"renderer": "gpu-software"}),
+        LaunchRenderer::Reference(refusal) => json!({
+            "renderer": "reference",
+            "refusal": match refusal {
+                Refusal::Requested => "no-gpu-render",
+                Refusal::SoftwareNotAdopted => "software-adapter-not-adopted",
+                Refusal::NoAdapter => "no-adapter",
+            },
+        }),
+    }
+}
+
 impl Editor {
     /// The photo surface's GPU stage, read live.
     pub(crate) fn gpu_stage(&self) -> GpuStageState {
@@ -137,10 +185,13 @@ impl Editor {
         luxforge_ui::photo_surface::gpu_stage()
     }
 
-    /// The renderer that draws the desktop's picture now: the surface's stage, read live, and the
-    /// launch's refusal.
+    /// The renderer that draws the desktop's picture now: the surface's stage, read live, the
+    /// launch's refusal and whether its adapter is a software one.
     pub(crate) fn renderer_now(&self) -> Renderer {
-        of(self.gpu_stage(), self.renderer.refused)
+        on_adapter(
+            of(self.gpu_stage(), self.renderer.refused),
+            self.renderer.software,
+        )
     }
 
     /// Why the GPU stage cannot draw at all, as its frames name it, while it cannot or the launch
@@ -277,13 +328,14 @@ pub(crate) fn identify(backend: &str, name: &str) -> Option<Adapter> {
 
 /// An adapter as evidence and `--gpu-adapters` record it: its backend and name, and the rest of its
 /// identity as wgpu describes it — the device type (`Cpu` for a software rasterizer such as
-/// lavapipe), the vendor and device ids and the driver — or `null` for each where no enumeration
-/// found it.
+/// lavapipe), whether that makes it a software adapter, the vendor and device ids and the driver —
+/// or `null` for each where no enumeration found it.
 pub(crate) fn adapter_record(backend: &str, name: &str, adapter: Option<&Adapter>) -> Value {
     json!({
         "backend": backend,
         "adapter": name,
         "device_type": adapter.map(|adapter| &adapter.device_type),
+        "software": adapter.map(|adapter| luxforge_ui::adapters::is_software(&adapter.device_type)),
         "vendor": adapter.map(|adapter| adapter.vendor),
         "device": adapter.map(|adapter| adapter.device),
         "driver": adapter.map(|adapter| &adapter.driver),
@@ -316,6 +368,51 @@ mod tests {
         }
     }
 
+    /// A GPU stage on a software adapter is the GPU record with `software`; the reference's record
+    /// is the same whatever the adapter, and the launch's event says which it chose and why.
+    #[test]
+    fn a_software_adapters_gpu_is_named_and_its_reference_is_not() {
+        use luxforge_ui::adapters::Refusal;
+        assert_eq!(on_adapter(Renderer::gpu(), true), Renderer::gpu_software());
+        assert_eq!(on_adapter(Renderer::gpu(), false), Renderer::gpu());
+        for reason in [
+            RendererReason::SurfacePending,
+            RendererReason::NoAdapter,
+            RendererReason::DeviceLost,
+        ] {
+            let reference = Renderer::reference(reason);
+            assert_eq!(on_adapter(reference, true), reference);
+        }
+        assert_eq!(
+            serde_json::to_value(Renderer::gpu_software()).unwrap(),
+            json!({"record": "gpu", "reason": null, "software": true})
+        );
+        assert_eq!(
+            serde_json::to_value(Renderer::gpu()).unwrap(),
+            json!({"record": "gpu", "reason": null}),
+            "a hardware GPU's record is unchanged"
+        );
+        assert!(
+            serde_json::from_value::<Renderer>(
+                json!({"record": "reference", "reason": "no-adapter", "software": true})
+            )
+            .is_err(),
+            "only a GPU record draws on a software adapter"
+        );
+        assert_eq!(
+            launch_record(LaunchRenderer::Gpu { software: true }),
+            json!({"renderer": "gpu-software"})
+        );
+        assert_eq!(
+            launch_record(LaunchRenderer::Reference(Refusal::SoftwareNotAdopted)),
+            json!({"renderer": "reference", "refusal": "software-adapter-not-adopted"})
+        );
+        assert_eq!(
+            launch_record(LaunchRenderer::Reference(Refusal::Requested)),
+            json!({"renderer": "reference", "refusal": "no-gpu-render"})
+        );
+    }
+
     /// The record names the adapter as Iced does and the rest as the enumeration found it.
     #[test]
     fn an_adapter_record_names_what_the_enumeration_found() {
@@ -331,13 +428,14 @@ mod tests {
         assert_eq!(
             adapter_record("Vulkan", &lavapipe.name, Some(&lavapipe)),
             json!({"backend": "Vulkan", "adapter": "llvmpipe (LLVM 17.0.6, 256 bits)",
-                "device_type": "Cpu", "vendor": 0x10005, "device": 0, "driver": "llvmpipe",
-                "driver_info": "Mesa 24.0.9"})
+                "device_type": "Cpu", "software": true, "vendor": 0x10005, "device": 0,
+                "driver": "llvmpipe", "driver_info": "Mesa 24.0.9"})
         );
         assert_eq!(
             adapter_record("Metal", "Unknown", None),
             json!({"backend": "Metal", "adapter": "Unknown", "device_type": null,
-                "vendor": null, "device": null, "driver": null, "driver_info": null})
+                "software": null, "vendor": null, "device": null, "driver": null,
+                "driver_info": null})
         );
         assert_eq!(identify("Noop", "Unknown"), None, "no backend of that name");
     }

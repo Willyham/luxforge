@@ -414,7 +414,7 @@ fn the_graphics_backend_stays_unknown_until_an_evidence_run_reads_it() {
         adapter,
     )))));
     let named = json!({"backend": "Metal", "adapter": "Test adapter", "device_type": null,
-        "vendor": null, "device": null, "driver": null, "driver_info": null});
+        "software": null, "vendor": null, "device": null, "driver": null, "driver_info": null});
     assert_eq!(editor.activity.backend, Some(named.clone()));
     assert_eq!(editor.snapshot()["backend"], named);
     finish(editor, catalog);
