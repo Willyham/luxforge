@@ -272,7 +272,7 @@
       "extra_context": [
         "Section before Basic on RAW photos only: the Standard and Neutral choice and Amount with the core draft lifecycle. No Camera choice in phase 1.",
         "Scenario look (xtask/src/look_smoke.rs, registered in SCENARIOS) over the supplied Z6, X100VI and Air 2S files through the owner manifest, launched in the background bundle with an isolated catalog: a new photo opens with Standard; switch to Neutral and back through the section and the API; drag Amount; the catalog tile carries the look; export matches the render. Correlate every frame with asset.state, the draft and the events log. Build the release app first.",
-        "Docs: user guide (RAW development, Settings), feature status (a RAW looks row), initial-raw.md (the neutral development is now the look's input, not the starting rendition), preferences.md, product-decisions.json TASK-002 context (camera matching decided as an option), the design's status."
+        "Docs: user guide (RAW development, Settings), feature status (a RAW looks row), initial-raw.md (the neutral development is now the look's input, not the starting rendition), preferences.md, the design's status."
       ],
       "context_links": [
         {

@@ -144,11 +144,11 @@ reference. A fast Exposure shader alone does not solve arbitrary masked spatial 
 
 ## How to qualify the result
 
-The existing [rendering plan](../../tasks/rendering.json) already includes exact-phase deferral,
+The existing [rendering plan](../../tasks/rendering/gpu-memory.json) already includes exact-phase deferral,
 viewport design, row reads for estimates and other byte-identical optimizations. The viewport
 design and histogram answer are recorded; its remaining owner gate is the proposed clipping
 answer, tracked with the outstanding quality/error choices in the
-[product decisions plan](../../tasks/product-decisions.json). Extend implementation planning
+[product decisions plan](../../tasks/project/product-decisions.json). Extend implementation planning
 with the accepted interaction priority and explicit quality/overlay contracts, rather than start a
 competing renderer or duplicate plan. This research does not mark any implementation task complete.
 

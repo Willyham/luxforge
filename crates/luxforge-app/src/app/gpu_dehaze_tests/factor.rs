@@ -1,6 +1,6 @@
 //! The per-frame light's reduction factor (`docs/specs/performance.md`, "The per-frame light's
 //! reduction factor"): the measurement that chooses the one free parameter of stage 3's estimate
-//! twin (`tasks/gpu-first.json`, TASK-005). The twin computes Dehaze's atmospheric light every
+//! twin (`tasks/rendering/gpu-first.json`, TASK-005). The twin computes Dehaze's atmospheric light every
 //! frame from the stack compiled at a block stage — the content stage reduced by a factor f per
 //! side, f dividing 16 — the colour run over each f × f cell's mean, each 16 px block's cells
 //! averaged, and the light selected as Dehaze prepares it. Where the colour run clips or crushes,

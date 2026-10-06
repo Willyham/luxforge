@@ -326,6 +326,19 @@ passes or fails the same way however loaded that host is:
   bound, `luxforge_testbase::HANG` (two minutes); no test outside the timing tier asserts how fast
   anything happened.
 
+The macOS library tests use real scratch disk images for offline-volume and relinking checks.
+Their `hdiutil` operations retry within that same hang bound when the disk-image service refuses
+them, then still wait for the kernel's mount table to show the transition. A persistent command
+failure reports its exit status, stdout and stderr; it never skips the volume checks.
+
+The GPU spatial-plan replacement test waits for full adoption across scratch-pool and kept-plane
+retirements, checking each budget fallback and then stable residency. Callback scheduling does
+not guarantee that both replacements fit on the same attempt.
+
+File-mutation fixtures that require a changed signature explicitly advance the scratch file's
+modification time. Same-size writes within one filesystem clock tick can retain their timestamp;
+the tests do not rely on sleeping long enough for it to advance.
+
 `luxforge-testbase` holds the one gate and the one wait. It depends on no workspace crate, so the
 core's own unit tests and the widget crate's can use it; a crate adapts it (a module that holds a
 render at it, a helper that polls its own queue through `wait_until`) rather than writing a second
