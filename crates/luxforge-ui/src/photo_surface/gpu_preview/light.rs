@@ -34,6 +34,10 @@
 //!   ([`PhotoPipeline::evaluate_lit`]): the main slot's plan and every tile of a picture at rest
 //!   alike. A link whose light did not change encodes nothing; a light that changed makes the slot
 //!   evaluate the plan whole, every link reading it drawn again.
+//! - **Kept across refits.** The pipeline keeps the last [`LIGHT_CACHE`] lights its links wrote,
+//!   one texel each under its content key ([`LightCache`]): a slot refitted to another window's
+//!   shape, whose new pool's light planes hold no light, copies an unchanged light in and encodes
+//!   no light pass. They are charged as scratch and retire with the source.
 use super::super::{PhotoPipeline, SurfaceSlots};
 use super::{
     BLOCK_CHUNK, BoundaryFormat, Charged, Compiled, GpuFallback, GpuStep, Held, TexelMap,
@@ -313,6 +317,133 @@ impl LightTile {
     fn view(&self) -> &wgpu::TextureView {
         self.texture.view()
     }
+}
+
+/// How many lights a pipeline keeps beside its slots' pools ([`LightCache`]), the least recently
+/// used overwritten first: a plan reads at most one for each estimating layer.
+pub const LIGHT_CACHE: usize = 8;
+
+/// The lights a pipeline keeps, each under its content key, one [`spatial::LIGHT_BYTES`] texel
+/// apiece, so a slot refitted to another window's shape — whose new pool's light planes hold no
+/// light — copies an unchanged light in rather than computing it again over the whole stage.
+///
+/// - **Kept.** After a light link encodes its passes, its light plane is copied into the cache
+///   under its key, in the same encoder, overwriting the least recently used entry once
+///   [`LIGHT_CACHE`] are held.
+/// - **Restored.** A light link whose plane does not hold its key, but the cache does, copies the
+///   kept texel into its plane and records the key: no light pass is encoded.
+/// - **Bounds.** At most [`LIGHT_CACHE`] one-texel textures, 128 bytes, each charged to the
+///   GPU-preview budget as scratch before it is created; one the budget refuses is not kept. They
+///   retire with the source they were computed from ([`PhotoPipeline::retire_kept_lights`]),
+///   whose version every key holds.
+#[derive(Default)]
+pub(in crate::photo_surface) struct LightCache {
+    entries: Vec<KeptLight>,
+    clock: u64,
+    /// Over the pipeline's life: light links whose passes were encoded, lights copied in from the
+    /// cache instead, and light links' blocks buffers outgrown and bound again.
+    encoded: u64,
+    restored: u64,
+    rebinds: u64,
+}
+
+/// One kept light: its key, its texel and when it was last used.
+struct KeptLight {
+    key: u64,
+    texture: PoolTexture,
+    used: u64,
+}
+
+/// What a kept light's texture is created with: a light plane copied into it, and it into one.
+const KEPT_USAGE: wgpu::TextureUsages =
+    wgpu::TextureUsages::COPY_SRC.union(wgpu::TextureUsages::COPY_DST);
+
+impl LightCache {
+    /// The texel kept under `key`, now the most recently used.
+    fn find(&mut self, key: u64) -> Option<&wgpu::Texture> {
+        self.clock += 1;
+        let clock = self.clock;
+        let kept = self.entries.iter_mut().find(|kept| kept.key == key)?;
+        kept.used = clock;
+        Some(kept.texture.texture())
+    }
+
+    /// The texture to keep `key`'s light in: its own, the least recently used one's once the cache
+    /// is full, or a new one, charged by `charge` first; `None` when the charge is refused.
+    fn slot(
+        &mut self,
+        device: &wgpu::Device,
+        key: u64,
+        charge: impl FnOnce(u64) -> Result<(), GpuFallback>,
+    ) -> Option<&wgpu::Texture> {
+        self.clock += 1;
+        let clock = self.clock;
+        let at = match self.entries.iter().position(|kept| kept.key == key) {
+            Some(at) => at,
+            None if self.entries.len() >= LIGHT_CACHE => {
+                let (at, _) = self
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, kept)| kept.used)?;
+                self.entries[at].key = key;
+                at
+            }
+            None => {
+                charge(spatial::LIGHT_BYTES).ok()?;
+                let texture = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("luxforge.gpu_light.kept"),
+                    size: wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: spatial::PlaneFormat::Quad.texture(),
+                    usage: KEPT_USAGE,
+                    view_formats: &[],
+                });
+                self.entries.push(KeptLight {
+                    key,
+                    texture: PoolTexture::new(texture),
+                    used: clock,
+                });
+                self.entries.len() - 1
+            }
+        };
+        self.entries[at].used = clock;
+        Some(self.entries[at].texture.texture())
+    }
+
+    /// The lights it keeps, and the bytes they are charged.
+    #[cfg(any(test, feature = "qualification"))]
+    pub(super) fn held(&self) -> (usize, u64) {
+        (
+            self.entries.len(),
+            self.entries.len() as u64 * spatial::LIGHT_BYTES,
+        )
+    }
+
+    /// Light links encoded, lights restored from the cache and light links' blocks rebound, over
+    /// the pipeline's life.
+    pub(super) fn counts(&self) -> (u64, u64, u64) {
+        (self.encoded, self.restored, self.rebinds)
+    }
+}
+
+/// Copy the one texel of `from` into `to` on `encoder`.
+fn copy_light(encoder: &mut wgpu::CommandEncoder, from: &wgpu::Texture, to: &wgpu::Texture) {
+    encoder.copy_texture_to_texture(
+        from.as_image_copy(),
+        to.as_image_copy(),
+        wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
 }
 
 /// A surface's light links, light `k` the `k`-th, and the one tile texture they cut their tiles
@@ -600,6 +731,7 @@ impl PhotoPipeline {
             held.buffer_bytes = held.buffer_bytes - old.bytes + capacity;
             self.retire_preview(Held::Buffer(old.buffer), old.bytes);
             held.written_blocks.forget();
+            self.kept_lights.rebinds += 1;
         }
         held.shape.blocks = shape.blocks;
         // The steps' blocks first, whose key the light's is made of.
@@ -620,9 +752,19 @@ impl PhotoPipeline {
         if pool.light_key(k) == Some(key) {
             return Ok(key);
         }
+        let plane = pool
+            .light_texture(k)
+            .expect("the pool holds the light plane");
+        // A light the pipeline keeps, its plane's pool refitted since it was computed: copied in.
+        if let Some(kept) = self.kept_lights.find(key) {
+            copy_light(encoder, kept, plane);
+            self.kept_lights.restored += 1;
+            pool.set_light_key(k, key);
+            return Ok(key);
+        }
         encode_tiles(
             (held, tile.view()),
-            (device, queue, encoder),
+            (device, queue, &mut *encoder),
             (
                 &compiled,
                 self.gpu.support.as_deref().expect("a supported stage"),
@@ -631,8 +773,31 @@ impl PhotoPipeline {
             light,
             pool.light_view(k).expect("the pool holds the light plane"),
         )?;
+        self.kept_lights.encoded += 1;
+        // Kept for a pool refitted later, charged before its texel is created.
+        let preview = &self.figures.preview;
+        if let Some(kept) = self.kept_lights.slot(device, key, |bytes| {
+            preview.charge(bytes)?;
+            preview.scratch.fetch_add(bytes, Ordering::AcqRel);
+            Ok(())
+        }) {
+            copy_light(encoder, plane, kept);
+        }
         pool.set_light_key(k, key);
         Ok(key)
+    }
+
+    /// Retire every light the pipeline keeps ([`LightCache`]), through the retirement worker,
+    /// still charged as scratch until the GPU is done with them: the source they were computed
+    /// from is let go.
+    pub(super) fn retire_kept_lights(&mut self) {
+        let entries = std::mem::take(&mut self.kept_lights.entries);
+        if entries.is_empty() {
+            return;
+        }
+        let bytes = entries.len() as u64 * spatial::LIGHT_BYTES;
+        let textures = entries.into_iter().map(|kept| kept.texture).collect();
+        self.retire_preview(Held::Pool(textures), bytes);
     }
 }
 
@@ -655,6 +820,7 @@ impl PhotoPipeline {
         plan: &super::GpuPlan,
         change: Option<super::GpuChange>,
     ) -> Result<u64, GpuFallback> {
+        surface.evaluation = super::EvaluationFigures::default();
         self.retire_lights(&mut surface.gpu_lights, plan.lights.len());
         if plan.lights.is_empty() {
             return self.evaluate(surface, device, queue, plan, change);
@@ -689,6 +855,7 @@ impl PhotoPipeline {
             label: Some("luxforge.gpu_light.encoder"),
         });
         let mut encoded = Ok(());
+        let before = self.kept_lights.counts();
         for (light, link) in plan.lights.iter().zip(links.iter_mut()) {
             encoded = self
                 .encode_light(
@@ -708,6 +875,11 @@ impl PhotoPipeline {
         // What was encoded is submitted whatever stopped the rest: each light plane's key names
         // the light its passes write.
         queue.submit([encoder.finish()]);
+        let after = self.kept_lights.counts();
+        let figures = &mut surface.evaluation;
+        figures.lights_encoded += (after.0 - before.0) as u32;
+        figures.lights_restored += (after.1 - before.1) as u32;
+        figures.rebinds += (after.2 - before.2) as u32;
         encoded?;
         if (0..count).any(|k| slot.pool.light_key(k) != held[k as usize]) {
             slot.forget_evaluation();
@@ -1476,6 +1648,24 @@ mod bench {
         /// How many light links the surface holds for its slot, and what they hold, as charged.
         pub fn surface_lights(&self) -> (usize, u64) {
             self.surface.gpu_lights.held()
+        }
+
+        /// What the slot's last evaluation did: refits, rebinds, links run, lights encoded or
+        /// restored.
+        pub fn evaluation(&self) -> super::super::EvaluationFigures {
+            self.surface.evaluation
+        }
+
+        /// How many lights the pipeline keeps, and what they are charged
+        /// ([`super::LightCache`]).
+        pub fn kept_lights(&self) -> (usize, u64) {
+            self.pipeline.kept_lights.held()
+        }
+
+        /// Over the pipeline's life: light links encoded, lights restored from the ones it keeps,
+        /// and light links' blocks rebound.
+        pub fn light_counts(&self) -> (u64, u64, u64) {
+            self.pipeline.kept_lights.counts()
         }
 
         /// How many spatial passes the slot has dispatched, over every draw.
