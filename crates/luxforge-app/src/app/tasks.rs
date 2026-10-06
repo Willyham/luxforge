@@ -1074,13 +1074,14 @@ pub(crate) fn crop_preview_task(
     asset_id: AssetId,
     layer_count: usize,
     plan: StagePlan,
+    view: StageAsk,
 ) -> Task<Message> {
     let entry = match &plan {
         StagePlan::Open => None,
         StagePlan::Zoom(entry) => Some(entry.clone()),
     };
     owner_task(
-        move || crop_preview(&owner, client, asset_id, entry, layer_count),
+        move || crop_preview(&owner, client, asset_id, entry, layer_count, view),
         |result| {
             Message::Crop(crate::app::message::crop::CropMessage::PreviewReady(
                 plan,
@@ -1090,21 +1091,37 @@ pub(crate) fn crop_preview_task(
     )
 }
 
+/// How a crop draft's input stage is asked for: at the stage's display bounds, with the GPU's
+/// picture at rest of the layer prefix planned at them when the GPU is to draw it, or exactly, as
+/// a percentage zoom that draws the stage at its own size asks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct StageAsk {
+    pub(crate) bounds: Option<ProxyBounds>,
+    pub(crate) gpu: bool,
+}
+
 /// The plain calls [`crop_preview_task`] runs: `entry`'s stack, or the current one's, truncated to
-/// its first `layer_count` layers.
+/// its first `layer_count` layers, at `view`'s bounds and with the GPU's plan where it asks.
 pub(crate) fn crop_preview(
     owner: &OwnerHandle,
     client: ClientId,
     asset_id: AssetId,
     entry: Option<EntryId>,
     layer_count: usize,
+    view: StageAsk,
 ) -> Result<PreviewJob, String> {
-    ready_preview_job(
-        owner,
+    let request = proxied(
         PreviewRequest::new(client, asset_id)
             .entry(entry)
             .layers(layer_count),
-    )
+        view.bounds,
+    );
+    let request = if view.gpu && view.bounds.is_some() {
+        request.gpu()
+    } else {
+        request
+    };
+    ready_preview_job(owner, request)
 }
 
 /// Open this client's one draft for a gesture, on the calling thread, as [`draft_set_now`] runs:

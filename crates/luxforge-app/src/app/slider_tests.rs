@@ -201,7 +201,7 @@ fn the_single_parameter_control_under_test_is_one_number_with_a_default() {
 #[test]
 fn a_single_parameter_actions_slider_drafts_previews_and_commits_once() {
     let (mut editor, catalog, log, _, _, _) = drafting();
-    // The reference renderer draws the drafted frames.
+    // The reference renderer draws the drafted frames, the session having no GPU.
     editor.renderer.stage =
         Some(luxforge_ui::photo_surface::GpuStageState::NoAdapter { refused: true });
     let (action, parameter) = single_parameter_control(&editor);
@@ -234,12 +234,12 @@ fn a_single_parameter_actions_slider_drafts_previews_and_commits_once() {
         ],
         "one draft.set per value, each carrying it as the whole request"
     );
-    // One reference frame is in flight at a time and no tick supersedes it: the first set's frame
-    // is queued, and each later set's waits behind it, the newest winning.
+    // A session the GPU does not draw at all drags on the proxy: every accepted set queues the
+    // proxy its value produces, the newest winning.
     assert_eq!(
         events(&records, "slider_draft_preview").len(),
-        1,
-        "the first accepted set queues the preview its value produces"
+        3,
+        "every accepted set queues the preview its value produces"
     );
     assert_eq!(
         events(&records, "gpu_preview_tick")
