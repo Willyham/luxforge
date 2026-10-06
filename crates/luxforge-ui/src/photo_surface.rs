@@ -2239,6 +2239,10 @@ struct SurfaceSlots {
     gpu_outcome: Option<Result<u64, GpuFallback>>,
     /// The frame holds the GPU stage's slot but draws its CPU frame ([`PhotoSurface::gpu_hold`]).
     gpu_hold: bool,
+    /// The plan waits for a light the picture at rest's sweeps compute
+    /// ([`GpuFallback::LightPending`]) and the slot's output, the GPU frame the last draw showed,
+    /// stays on screen until it is drawn.
+    gpu_held_frame: bool,
     /// The tag of the plan this frame was handed ([`PhotoSurface::gpu_tag`]).
     gpu_tag: Option<u64>,
     /// This frame's dissolve from the slot's output to the photograph's frame, if one runs.
@@ -2303,7 +2307,7 @@ impl SurfaceSlots {
 
     /// The GPU stage's output, when this frame draws it in place of the photograph's frame.
     fn gpu_output(&self) -> Option<&Picture> {
-        if matches!(self.gpu_outcome, Some(Ok(_))) && !self.gpu_hold {
+        if (matches!(self.gpu_outcome, Some(Ok(_))) || self.gpu_held_frame) && !self.gpu_hold {
             self.gpu.as_ref().map(gpu_preview::GpuSlot::output)
         } else {
             None
@@ -2476,6 +2480,7 @@ impl PhotoPipeline {
             gpu_lights: Default::default(),
             gpu_outcome: None,
             gpu_hold: false,
+            gpu_held_frame: false,
             gpu_tag: None,
             dissolving: None,
             gpu_marks: None,

@@ -215,7 +215,7 @@ fn gpu_rest_a_stage_in_tiles_is_the_stage_in_one_region_bit_for_bit() {
 }
 
 /// A committed evaluation of `recipe` over `source`, as a displayed stack's job is.
-fn committed(source: PreviewSource, recipe: Recipe) -> Evaluation {
+pub(super) fn committed(source: PreviewSource, recipe: Recipe) -> Evaluation {
     let asset = AssetId::new();
     let entry = HistoryEntry {
         id: EntryId::new(),

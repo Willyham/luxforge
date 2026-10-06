@@ -23,14 +23,16 @@
 //! - **Lights.** A spatial operation's global estimate, Dehaze's atmospheric light, is read from the
 //!   light plane its plan's light link writes from the whole stage at full resolution, per frame
 //!   ([`super::GpuLight`]), at every view: the one the picture at rest draws with, with every
-//!   spatial layer before it included, whose input only a sweep of the whole stage through those
-//!   layers gives, which no slot runs yet, so a slot computes such a light by its stand-in over the
-//!   source with them left out ([`super::GpuLight::stand_in`]). A drag that leaves a light's input
-//!   unchanged reads that light, which the slot keeps; one that changes it only through
-//!   restoration or spatial layers reads the light of the stack it started from, the slot's still;
-//!   and one that changes it through a colour layer computes it every tick from the source with
-//!   every spatial layer before it left out ([`super::GpuLightRestoration::LeftOut`]), as the
-//!   recorded default sets (`docs/design/gpu-first.md`, "Proposals with recorded defaults").
+//!   spatial layer before it included. Behind a spatial layer its input is that layer's exact
+//!   output, which only the picture at rest's staged sweeps write ([`super::GpuLightInput::Stage`]):
+//!   the view plan at rest reads the light they computed, kept under its input's key, and never its
+//!   stand-in ([`super::GpuLight::stand_in`], none at rest). A drag that leaves a light's input
+//!   unchanged reads that light; one that changes it only through restoration or spatial layers
+//!   reads the light of the stack it started from; either computes the stand-in over the source,
+//!   those layers left out, where the slot keeps no exact light. One that changes it through a
+//!   colour layer computes it every tick from the source with every spatial layer before it left
+//!   out ([`super::GpuLightRestoration::LeftOut`]), the owner's decision of 2026-10-06
+//!   (`docs/decisions.md`, "GPU-first rendering").
 //! - **The boundary key** names everything the boundary's texels depend on: the source's identity
 //!   (fingerprint, development and view), the layers before the boundary and the masks they read,
 //!   the boundary's index, and the reduced-stage plan with its bounds and window, or at the exact stage at
@@ -507,8 +509,8 @@ enum LightInput {
     /// rest drew with, which the slot keeps.
     Unchanged,
     /// Only restoration or spatial layers before it change, or are drafted: the light of the stack
-    /// the drag started from, the slot's still. Detail's filters barely move the block means the
-    /// light is chosen from, and a spatial layer's exact output exists only at rest.
+    /// the drag started from, kept at rest, since a spatial layer's exact output exists only at
+    /// rest; the release's picture at rest computes the new one exactly.
     Spatial,
     /// A colour layer before it, or a mask such a layer reads, changes or is drafted: the light is
     /// computed every tick over the source with every spatial layer before it left out.
@@ -1150,10 +1152,9 @@ pub(crate) fn lights_bytes(
     let mut blocks = 0;
     let mut tile = 0;
     for light in plan.lights.iter().filter(|light| read(light)) {
-        let link = match light.stand_in.as_deref() {
-            Some(stand_in) if !light.over_source() => stand_in,
-            _ => light,
-        };
+        // A staged light's link reduces a stage texture as a link over the source reduces the
+        // source, and its stand-in the same stage: one block plane and one tile, whichever runs.
+        let link = light;
         let block = link
             .light
             .passes
@@ -1163,7 +1164,7 @@ pub(crate) fn lights_bytes(
                 super::GpuPlaneSize::Reduced(s) => Some(s.max(1)),
                 super::GpuPlaneSize::Fixed { .. } => None,
             });
-        let (Some(block), true) = (block, link.over_source()) else {
+        let (Some(block), true) = (block, link.over_source() || link.staged()) else {
             continue;
         };
         let stage = (link.stage.width, link.stage.height);
@@ -1449,6 +1450,13 @@ fn plan_tiles(
         budget: share,
         order: super::sweeps::TileOrder::ByShape,
     });
+    // A light behind a spatial layer is computed from a staged sweep's stage texture alone: a stack
+    // reading one that cannot be staged is drawn by the reference, never with a stand-in.
+    if let super::GpuStaging::Chained(chained) = &staging
+        && let Some(fallback) = staged_light_fallback(&plan, chained)
+    {
+        return Ok(Err(fallback));
+    }
     Ok(Ok(Box::new(RestTiles {
         plan,
         tiles: by_shape(tiles),
@@ -1463,6 +1471,28 @@ fn plan_tiles(
         source: evaluation.source().identity(),
         format,
     })))
+}
+
+/// Why `plan`, drawn chained for `chained`, cannot be drawn by the GPU: it reads a light whose
+/// input only a staged sweep computes ([`super::GpuLightInput::Stage`]). `None` for a plan that
+/// reads none. `O(lights)`.
+pub(crate) fn staged_light_fallback(
+    plan: &GpuPlan,
+    chained: &super::Chained,
+) -> Option<GpuFallback> {
+    let light = plan.lights.iter().find(|light| light.staged())?;
+    let why = match chained {
+        super::Chained::OneSweep => "its links make one sweep".to_owned(),
+        super::Chained::OverBudget { needed, budget } => format!(
+            "its sweeps need {needed} bytes beside their stage textures, past the {budget} \
+             available"
+        ),
+        super::Chained::Unplannable(reason) => reason.clone(),
+    };
+    Some(GpuFallback::LightStage {
+        layer: light.layer,
+        why,
+    })
 }
 
 /// The GPU picture at rest of a committed stack, `evaluation` a job of no draft, drawn as `view`
@@ -1508,10 +1538,18 @@ fn planned_preview(
 ) -> Result<GpuPreview, Error> {
     let registry = evaluation.registry();
     let recipe = evaluation.recipe();
+    // At rest a staged light is the exact one or none: the view plan waits for the picture at
+    // rest's sweeps to compute it, and never draws with its stand-in.
     let relit = |answer: GpuAnswer, request: GpuPlanRequest| -> Result<GpuAnswer, Error> {
         match (answer, committed) {
             (GpuAnswer::Plan(mut plan), Some(committed)) => {
                 drag_lights(registry, committed, planned, request, &mut plan.lights)?;
+                Ok(GpuAnswer::Plan(plan))
+            }
+            (GpuAnswer::Plan(mut plan), None) => {
+                for light in plan.lights.iter_mut().filter(|light| light.staged()) {
+                    light.stand_in = None;
+                }
                 Ok(GpuAnswer::Plan(plan))
             }
             (answer, _) => Ok(answer),

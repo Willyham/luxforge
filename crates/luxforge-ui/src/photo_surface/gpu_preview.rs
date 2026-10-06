@@ -703,6 +703,11 @@ pub enum GpuFallback {
     /// surface this frame, another version, or one whose pixels its caller let go before it was
     /// uploaded.
     SourceMissing,
+    /// The plan reads a light behind a spatial step that only the picture at rest's staged sweeps
+    /// compute, and they have not yet: a picture at rest's view plan, which never draws with a
+    /// stand-in light. The frame on screen stays, and the frame after the sweep that computes it
+    /// draws the plan ([`light::LightInput::Kept`]).
+    LightPending,
 }
 
 impl GpuFallback {
@@ -718,6 +723,7 @@ impl GpuFallback {
             Self::BoundaryUploading { .. } => "boundary-uploading",
             Self::SourceUploading { .. } => "source-uploading",
             Self::SourceMissing => "source-missing",
+            Self::LightPending => "light-pending",
         }
     }
 }
@@ -2374,7 +2380,9 @@ impl PhotoPipeline {
     ) {
         // The GPU frame the last draw showed, which is all a dissolve may start from.
         let shown = surface.gpu_output().is_some() || surface.dissolving.is_some();
+        let output_shown = surface.gpu_output().is_some();
         surface.gpu_outcome = None;
+        surface.gpu_held_frame = false;
         surface.dissolving = None;
         let Some(plan) = plan else {
             match dissolve {
@@ -2387,14 +2395,19 @@ impl PhotoPipeline {
         // A sequence still compiling leaves the slot as it was, its boundary included, for the
         // frame that finds the pipeline ready, and a boundary still uploading leaves it for the
         // frame that writes the next chunks; any other fallback lets the slot go.
+        // A light the picture at rest computes leaves it as it was too, and the GPU frame on
+        // screen stays until the plan is drawn with that light.
         if outcome.is_err()
             && !matches!(
                 outcome,
-                Err(GpuFallback::Compiling | GpuFallback::BoundaryUploading { .. })
+                Err(GpuFallback::Compiling
+                    | GpuFallback::BoundaryUploading { .. }
+                    | GpuFallback::LightPending)
             )
         {
             self.release_gpu(surface);
         }
+        surface.gpu_held_frame = output_shown && matches!(outcome, Err(GpuFallback::LightPending));
         // A dissolve handed beside a plan runs behind it while it is held: the slot keeps the
         // output of the GPU frame the last draw showed, which the plan's unchanged words leave as
         // it was.

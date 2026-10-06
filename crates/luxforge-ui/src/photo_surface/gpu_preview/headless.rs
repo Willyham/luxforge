@@ -339,8 +339,40 @@ impl HeadlessSurface {
     /// The `size` texels at the origin of `texture`, four bytes each, read back: the submission
     /// waited for.
     fn read(&self, texture: &wgpu::Texture, size: (u32, u32)) -> Result<Vec<[u8; 4]>, GpuFallback> {
+        Ok(self
+            .read_bytes(texture, size, 4)?
+            .chunks_exact(4)
+            .map(|texel| [texel[0], texel[1], texel[2], texel[3]])
+            .collect())
+    }
+
+    /// The lights the surface's pipeline keeps ([`super::light::LightCache`]), `[r, g, b, 1]`
+    /// each, read back in the order they were first kept: what a picture at rest's staged sweep
+    /// computed from a stage texture, for a test to hold to the CPU's.
+    pub fn kept_lights(&self) -> Result<Vec<[f32; 4]>, GpuFallback> {
+        let mut lights = Vec::new();
+        for texture in self.pipeline.kept_lights.textures() {
+            let bytes = self.read_bytes(texture, (1, 1), 16)?;
+            lights.push(std::array::from_fn(|channel| {
+                f32::from_le_bytes(
+                    bytes[channel * 4..channel * 4 + 4]
+                        .try_into()
+                        .expect("four bytes"),
+                )
+            }));
+        }
+        Ok(lights)
+    }
+
+    /// `size` texels of `texture` at its origin, `texel` bytes each, read back unpadded.
+    fn read_bytes(
+        &self,
+        texture: &wgpu::Texture,
+        size: (u32, u32),
+        texel: u32,
+    ) -> Result<Vec<u8>, GpuFallback> {
         let (width, height) = size;
-        let row = width * 4;
+        let row = width * texel;
         let padded =
             row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
         let readback = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -398,16 +430,12 @@ impl HeadlessSurface {
         })
         .map_err(|_| GpuFallback::DeviceLost)??;
         let mapped = readback.slice(..).get_mapped_range();
-        let mut codes = Vec::with_capacity((width * height) as usize);
+        let mut bytes = Vec::with_capacity((row * height) as usize);
         for line in mapped.chunks_exact(padded as usize) {
-            codes.extend(
-                line[..row as usize]
-                    .chunks_exact(4)
-                    .map(|texel| [texel[0], texel[1], texel[2], texel[3]]),
-            );
+            bytes.extend_from_slice(&line[..row as usize]);
         }
         drop(mapped);
         readback.unmap();
-        Ok(codes)
+        Ok(bytes)
     }
 }

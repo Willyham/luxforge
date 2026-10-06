@@ -495,3 +495,122 @@ fn a_stack_reaching_far_before_a_spatial_layer_is_planned_in_staged_sweeps() {
         Ok(whole)
     );
 }
+
+/// The lights of `preview`'s plan.
+fn lights(preview: &GpuPreview) -> &[crate::GpuLight] {
+    &planned(preview).lights
+}
+
+/// A light behind a spatial layer reads that layer's exact output, which only a staged sweep
+/// writes: Detail, whose reach alone would never split a sweep, then Presence's Dehaze is planned
+/// in two sweeps, the first covering the whole content stage, the second reducing the light from
+/// the stage texture it reads before its first tile. The view plan at rest reads the same light by
+/// the same key, with no stand-in to draw; a drag after Dehaze or of Detail reads it too, with its
+/// stand-in for a slot that has none kept; a colour drag between them computes the stand-in over
+/// the source. A Dehaze with no spatial layer before it is over the source and chained, as before.
+/// A stack whose stage textures fit no share is the reference's at rest, named.
+#[test]
+fn a_light_behind_a_spatial_layer_is_reduced_from_the_stage_its_sweep_reads() {
+    let bounds = ProxyBounds {
+        width: 160,
+        height: 120,
+    };
+    let detail = || Layer::new(crate::DETAIL_EFFECT, json!({"sharpening": 50.0}));
+    let dehaze = || Layer::new(crate::PRESENCE_EFFECT, json!({"dehaze": 60.0}));
+    let stage_key = |light: &crate::GpuLight| match &light.input {
+        crate::GpuLightInput::Stage { key } => key.clone(),
+        crate::GpuLightInput::Source => panic!("a staged light: {light:?}"),
+    };
+
+    // Dehaze alone: over the source, one sweep, chained.
+    let alone = evaluation(vec![dehaze()], vec![dehaze()], None);
+    let tiles = super::plan_rest_tiles(&alone, bounds, super::RestSizing::Side(64))
+        .unwrap()
+        .expect("tiles")
+        .unwrap();
+    assert!(tiles.plan.lights[0].over_source() && !tiles.plan.lights[0].staged());
+    assert_eq!(
+        tiles.staging,
+        super::GpuStaging::Chained(super::Chained::OneSweep)
+    );
+
+    // Behind Detail: staged, split before Dehaze whatever Detail's reach.
+    let entry = vec![detail(), dehaze()];
+    let rest = evaluation(entry.clone(), entry.clone(), None);
+    let tiles = super::plan_rest_tiles(&rest, bounds, super::RestSizing::Side(64))
+        .unwrap()
+        .expect("tiles")
+        .unwrap();
+    let [light] = &tiles.plan.lights[..] else {
+        panic!("{:?}", tiles.plan.lights);
+    };
+    let key = stage_key(light);
+    let super::GpuStaging::Staged(sweeps) = &tiles.staging else {
+        panic!("{:?}", tiles.staging);
+    };
+    let [first, last] = &sweeps.sweeps[..] else {
+        panic!("{sweeps:?}");
+    };
+    assert!(first.reach <= super::SWEEP_SPLIT_REACH, "{}", first.reach);
+    assert_eq!((first.spatial.clone(), last.spatial.clone()), (0..1, 1..2));
+    assert_eq!(
+        (first.lights.as_slice(), last.lights.as_slice()),
+        (&[][..], &[0][..])
+    );
+    assert_eq!(first.covers, crate::modules::Region::whole(sweeps.stage));
+    assert_eq!(last.reads, first.writes);
+    // The view plan at rest reads the same light and never its stand-in.
+    let view = plan_rest(&rest, GpuView::Fit(bounds)).unwrap().view;
+    let [at_rest] = lights(&view) else {
+        panic!("one light");
+    };
+    assert_eq!(stage_key(at_rest), key);
+    assert!(at_rest.stand_in.is_none());
+    // A drag after Dehaze leaves its input as it was: the same light, its stand-in beside it.
+    let mut drafted = entry.clone();
+    drafted.push(basic(json!({"exposure": 0.5})));
+    let (after, draft) = drag(entry.clone(), drafted);
+    let preview = plan_preview(&after, &draft, GpuView::Fit(bounds)).unwrap();
+    let [kept] = lights(&preview) else {
+        panic!("one light");
+    };
+    assert_eq!(stage_key(kept), key);
+    assert!(kept.stand_in.as_deref().is_some_and(|stand_in| {
+        stand_in.over_source() && !stand_in.staged() && stand_in.left_out == [0]
+    }));
+    // A colour drag between them changes the input: the stand-in over the source, every tick.
+    let between = vec![detail(), basic(json!({"exposure": 0.2})), dehaze()];
+    let mut drafted = between.clone();
+    drafted[1].payload = json!({"exposure": 0.6});
+    let (colour, draft) = drag(between, drafted);
+    let preview = plan_preview(&colour, &draft, GpuView::Fit(bounds)).unwrap();
+    let [moving] = lights(&preview) else {
+        panic!("one light");
+    };
+    assert!(moving.over_source() && !moving.staged() && moving.left_out == [0]);
+    // A drag of Detail itself reads the light of the stack it started from, kept at rest.
+    let mut draft = Draft::new("set-detail", AssetId::new(), 1);
+    draft.draft_revision = 3;
+    let mut drafted = entry.clone();
+    drafted[0].payload = json!({"sharpening": 80.0});
+    let spatial = evaluation(entry.clone(), drafted, Some(&draft));
+    let preview = plan_preview(&spatial, &draft, GpuView::Fit(bounds)).unwrap();
+    let [held] = lights(&preview) else {
+        panic!("one light");
+    };
+    assert_eq!(stage_key(held), key);
+    assert!(held.stand_in.is_some());
+
+    // A share no stage texture fits: the reference draws it, never a stand-in.
+    let refused = super::plan_rest_tiles(
+        &rest,
+        bounds,
+        super::RestSizing::Beside(super::GPU_PREVIEW_BYTES),
+    )
+    .unwrap()
+    .expect("tiles");
+    match refused {
+        Err(super::GpuFallback::LightStage { layer, .. }) => assert_eq!(layer, 1),
+        other => panic!("{other:?}"),
+    }
+}
