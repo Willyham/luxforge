@@ -257,9 +257,9 @@ impl Drawn {
         match self.gpu {
             super::gpu_preview::GpuAsk::Off => request,
             super::gpu_preview::GpuAsk::Fit => request.gpu(),
-            super::gpu_preview::GpuAsk::Region(rect, magnification) => {
-                request.gpu_region(rect, magnification)
-            }
+            super::gpu_preview::GpuAsk::Region(rect, magnification, reduce_after) => request
+                .gpu_region(rect, magnification)
+                .reduce_regions_after(reduce_after),
         }
     }
 }
@@ -1326,8 +1326,10 @@ fn draft_set_at(
                 let request = match gpu {
                     super::gpu_preview::GpuAsk::Off => request,
                     super::gpu_preview::GpuAsk::Fit => request.gpu(),
-                    super::gpu_preview::GpuAsk::Region(rect, magnification) => {
-                        request.gpu_region(rect, magnification)
+                    super::gpu_preview::GpuAsk::Region(rect, magnification, reduce_after) => {
+                        request
+                            .gpu_region(rect, magnification)
+                            .reduce_regions_after(reduce_after)
                     }
                 };
                 plan_preview(owner, proxied(request, proxy))
@@ -1632,8 +1634,10 @@ pub(crate) fn view_preview_task(
             if let Some(draft) = draft {
                 request = request.draft(draft);
             }
-            if let super::gpu_preview::GpuAsk::Region(rect, magnification) = gpu {
-                request = request.gpu_region(rect, magnification);
+            if let super::gpu_preview::GpuAsk::Region(rect, magnification, reduce_after) = gpu {
+                request = request
+                    .gpu_region(rect, magnification)
+                    .reduce_regions_after(reduce_after);
             }
             ready_preview_job(&owner, request)
         },
