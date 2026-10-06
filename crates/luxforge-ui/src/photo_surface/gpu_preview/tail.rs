@@ -84,32 +84,37 @@ fn lf_tail_projective(pixel: vec2<f32>, words: u32, block: u32) -> vec2<f32> {
 }
 ";
 
-/// The coordinate grid's bilinear interpolation at the pixel-edge coordinate `pixel`, as
-/// `CoordinateGrid::sample` computes it: the grid's origin, a node of the stage's lattice of its
-/// spacing, the spacing, columns and rows after the tail's header, and its nodes in the block,
-/// `(u, v)` pairs row by row. The cell and the fraction across it come from the stage's lattice,
-/// never from where the grid starts, so every window of the stage interpolates a pixel alike.
+/// The coordinate grid's bilinear interpolation at the pixel-edge coordinate `pixel`, a pixel's
+/// centre, as `CoordinateGrid::sample` computes it: the grid's first node's column and row on the
+/// stage's lattice of its spacing, the spacing, columns and rows after the tail's header, and its
+/// nodes in the block, `(u, v)` pairs row by row. The cell is the stage pixel's, in integers, and
+/// the fraction across it the pixel's offset from the cell's node over the spacing: both from the
+/// stage's lattice and the pixel alone, never from where the grid starts, so every window of the
+/// stage interpolates a pixel to the same bits. A division whose operands depend on the grid's
+/// start would not: the shading language may divide by a reciprocal, whose rounding then differs
+/// from tile to tile.
 const GRID_SOURCE: &str = "
 fn lf_tail_grid_node(column: u32, row: u32, columns: u32, block: u32) -> vec2<f32> {
     let at = block + 2u * (row * columns + column);
     return vec2<f32>(lf_block_f32(at), lf_block_f32(at + 1u));
 }
 
-fn lf_tail_grid_cell(g: f32, first: f32, count: u32) -> u32 {
-    return min(u32(max(floor(g) - first, 0.0)), count - 2u);
+fn lf_tail_grid_cell(cell: u32, first: u32, count: u32) -> u32 {
+    return min(max(cell, first) - first, count - 2u);
 }
 
 fn lf_tail_grid(pixel: vec2<f32>, words: u32, block: u32) -> vec2<f32> {
     let spacing = lf_f32(words + 8u);
-    let first = vec2<f32>(lf_f32(words + 6u), lf_f32(words + 7u)) / spacing;
+    let step = u32(spacing);
+    let first = vec2<u32>(lf_word(words + 6u), lf_word(words + 7u));
     let columns = lf_word(words + 9u);
     let rows = lf_word(words + 10u);
-    let gx = pixel.x / spacing;
-    let gy = pixel.y / spacing;
-    let column = lf_tail_grid_cell(gx, first.x, columns);
-    let row = lf_tail_grid_cell(gy, first.y, rows);
-    let fx = gx - (first.x + f32(column));
-    let fy = gy - (first.y + f32(row));
+    let texel = vec2<u32>(floor(pixel));
+    let column = lf_tail_grid_cell(texel.x / step, first.x, columns);
+    let row = lf_tail_grid_cell(texel.y / step, first.y, rows);
+    let node = vec2<f32>(vec2<u32>((first.x + column) * step, (first.y + row) * step));
+    let fx = (pixel.x - node.x) / spacing;
+    let fy = (pixel.y - node.y) / spacing;
     let a = lf_tail_grid_node(column, row, columns, block);
     let b = lf_tail_grid_node(column + 1u, row, columns, block);
     let c = lf_tail_grid_node(column, row + 1u, columns, block);
@@ -172,8 +177,8 @@ impl GpuTail {
     }
 
     /// A coordinate grid's tail onto an output stage of `output`: node `(i, j)` at the pixel-edge
-    /// coordinate `origin + (i, j)·spacing`, `columns` × `rows` of them, `nodes` their `(u, v)`
-    /// `f32` bits row by row, shared.
+    /// coordinate `origin + (i, j)·spacing`, `origin` a node of the stage's lattice of that
+    /// spacing, `columns` × `rows` of them, `nodes` their `(u, v)` `f32` bits row by row, shared.
     #[allow(clippy::too_many_arguments)]
     pub fn grid(
         output: (u32, u32),
@@ -185,9 +190,13 @@ impl GpuTail {
         nodes: Arc<[u32]>,
     ) -> Self {
         let mut words = header(output, reads);
+        // The first node's column and row on the stage's lattice, so the pass needs no division
+        // by the spacing that depends on where the grid starts.
+        let spacing = spacing.max(1);
+        debug_assert!(origin.0 % spacing == 0 && origin.1 % spacing == 0);
         words.extend([
-            (origin.0 as f32).to_bits(),
-            (origin.1 as f32).to_bits(),
+            origin.0 / spacing,
+            origin.1 / spacing,
             (spacing as f32).to_bits(),
             columns,
             rows,
