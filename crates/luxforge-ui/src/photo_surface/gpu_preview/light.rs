@@ -1531,8 +1531,77 @@ pub(super) fn read_light(
     select_and_read((device, queue), (compiled, support), &link, &cut_into)
 }
 
+/// What [`read_staged_light`] holds at once on `device` for `light` over a stage texture in
+/// `format`: the link's textures and buffers, the tile it copies each of the stage's tiles into,
+/// the light texture and its readback copy. Creates nothing; refused as [`read_staged_light`]
+/// would be.
+pub(super) fn read_staged_light_charge(
+    device: &wgpu::Device,
+    format: BoundaryFormat,
+    light: &GpuLight,
+) -> Result<u64, GpuFallback> {
+    if !matches!(light.input, LightInput::Stage { .. }) {
+        return Err(GpuFallback::PipelineFailed);
+    }
+    let limit = device.limits().max_texture_dimension_2d;
+    let shape = Shape::of(light, format, limit).ok_or(GpuFallback::PipelineFailed)?;
+    let (textures, sizes) = LightLink::sized(device, &shape)?;
+    Ok(textures
+        + shape.tile_bytes()
+        + sizes.iter().sum::<u64>()
+        + spatial::LIGHT_BYTES
+        + LIGHT_READBACK)
+}
+
+/// `light`, whose input is a stage texture ([`LightInput::Stage`]), computed on `device` from
+/// `holder`, the whole content stage in `format` a staged sweep wrote, and read back, `[r, g, b,
+/// 1]`, its sequence `compiled`: what a tile runner drawing a staged stream runs once before the
+/// sweep that reads the light, which every tile of that sweep then writes into its light plane.
+/// Each tile of the stage is copied out of the stage texture into one tile texture and reduced into
+/// the stage's block plane, in the order a link over the whole stage reduces it, so the light is
+/// the photo surface's own from the same stage, bit for bit. Blocks its caller until the device is
+/// done; never on the interface thread. The caller charges [`read_staged_light_charge`] first.
+pub(super) fn read_staged_light(
+    (device, queue): (&wgpu::Device, &wgpu::Queue),
+    (compiled, support): (&Compiled, &super::Support),
+    (holder, format): (&super::staged::StageHolder, BoundaryFormat),
+    light: &GpuLight,
+) -> Result<[f32; 4], GpuFallback> {
+    if !matches!(light.input, LightInput::Stage { .. }) || holder.stage() != light.stage {
+        return Err(GpuFallback::PipelineFailed);
+    }
+    let limit = device.limits().max_texture_dimension_2d;
+    let shape = Shape::of(light, format, limit).ok_or(GpuFallback::PipelineFailed)?;
+    let sized = LightLink::sized(device, &shape)?;
+    let cut_into = LightTile::create(device, shape.format, shape.tile());
+    let mut link = LightLink::create(device, shape, sized);
+    link.written_blocks
+        .write(queue, &link.block_words.buffer, &light.steps, BLOCK_CHUNK);
+    let places = prepare_tiles(&mut link, queue, light)?;
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("luxforge.gpu_light.read_stage"),
+    });
+    for (index, (tile, place)) in link.shape.tiles().into_iter().zip(&places).enumerate() {
+        let [x0, y0, x1, y1] = tile;
+        holder.copy_out(
+            &mut encoder,
+            cut_into.texture.texture(),
+            [x0, y0, x1 - x0, y1 - y0],
+        );
+        encode_reduce_held(
+            (&link, cut_into.view()),
+            (device, &mut encoder),
+            (compiled, support),
+            index,
+            place,
+        )?;
+    }
+    queue.submit([encoder.finish()]);
+    select_and_read((device, queue), (compiled, support), &link, &cut_into)
+}
+
 /// The selection of `link`'s light from its block plane, copied out and read back, the device
-/// waited for: the end of [`read_light`].
+/// waited for: the end of [`read_light`] and [`read_staged_light`].
 fn select_and_read(
     (device, queue): (&wgpu::Device, &wgpu::Queue),
     (compiled, support): (&Compiled, &super::Support),
