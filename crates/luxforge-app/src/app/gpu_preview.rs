@@ -952,7 +952,7 @@ pub(crate) fn region_charge(plan: &CorePlan, request: &SourceBoundary) -> Option
 /// it creates ([`surface::gpu_preview::light::light_charge`]): its tile of the source, the whole
 /// stage's block plane and its buffers, whatever window the plan draws over. Lights the surface
 /// cannot run are charged nothing; the tick that converts the plan refuses them.
-fn light_charge(plan: &CorePlan, format: luxforge_core::BoundaryFormat) -> u64 {
+pub(crate) fn light_charge(plan: &CorePlan, format: luxforge_core::BoundaryFormat) -> u64 {
     gpu_plan::surface_lights(plan).map_or(0, |lights| {
         lights
             .iter()
@@ -983,7 +983,7 @@ fn over_budget(plan: &CorePlan, request: &SourceBoundary, budget: u64) -> Option
 /// What a drag's plan at the reduced stage takes when it is drawn at 100% or more in a region's
 /// place, the softer frame ([`SOFTER`]): [`region_charge`]'s figures over the window of the reduced
 /// stage its boundary holds, its frame the whole reduced output in a region's size bucket.
-fn reduced_charge(plan: &CorePlan, request: &SourceBoundary) -> u64 {
+pub(crate) fn reduced_charge(plan: &CorePlan, request: &SourceBoundary) -> u64 {
     let Some(proxy) = request.key.plan() else {
         return u64::MAX;
     };
