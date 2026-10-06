@@ -840,15 +840,52 @@ pub struct GpuRest {
 }
 
 /// The sides a picture at rest's tiles of the output stage take, longest first: the first whose
-/// tile's slot the plan's own figures hold within [`REST_TILE_BYTES`].
+/// tile's slot the plan's own figures hold within the rest's share ([`RestTiles::share`]) and whose
+/// window carries at most [`REST_TILE_WORK`].
 pub const REST_TILE_SIDES: [u32; 4] = [2048, 1024, 512, 256];
 
-/// What one tile's evaluation may take on the GPU by the plan's own figures — the boundary over the
-/// tile's window, an intermediate for each link and a tail, the spatial planes and the tile's
-/// output — a quarter of the photo surface's 2 GiB GPU-preview budget, so a tile's slot sits beside
-/// a gesture's, the source and the picture at rest's own accumulator. A constant and the plan: never
-/// the bytes in use.
-pub const REST_TILE_BYTES: u64 = 512 << 20;
+/// The photo surface's GPU-preview budget, the widget crate's `GPU_PREVIEW_BUDGET`, which every
+/// slot, the source and a picture at rest's own parts are charged to: what the rest's share is
+/// planned within. A test holds the two equal.
+pub const GPU_PREVIEW_BYTES: u64 = 2 << 30;
+
+/// The most a picture at rest's tile slot may take by the plan's own figures, whatever the budget
+/// leaves beside the source, the view plan and the accumulator ([`RestTiles::share`]): half the
+/// GPU-preview budget, so a gesture's slot still fits beside it.
+pub const REST_SHARE_MAX: u64 = 1 << 30;
+
+/// The most work one tile of a picture at rest may carry: its window's texels times the plan's
+/// spatial links, about 24 MP·links, estimated at 50 to 70 ms of the M4's GPU at 2 to 4 ms a
+/// megapixel a link. A side whose window would carry more steps down, so a gesture started while
+/// the tiles are drawn waits behind at most one such tile.
+pub const REST_TILE_WORK: u64 = 24_000_000;
+
+/// The largest texture side on the editor's device, Iced's limit, which an output's size bucket
+/// and a light link's tile follow.
+const DEVICE_TEXTURE_SIDE: u32 = 8192;
+
+/// A light link's tile side before its block rounds it down, the widget crate's `LIGHT_TILE`.
+const LIGHT_TILE_SIDE: u32 = 2048;
+
+/// The most a region's output reserves past its own size, the widget crate's
+/// `REGION_BUCKET_BUDGET`.
+const REGION_BUCKET_BYTES: u64 = 32 << 20;
+
+/// The largest whole frame's output the widget crate reserves a square for, its `FULL_BUDGET`.
+const FULL_BUCKET_BYTES: u64 = 512 << 20;
+
+/// A slot's placement uniform, six `vec4<f32>`.
+const UNIFORM_BYTES: u64 = 96;
+
+/// One pass's slice of a link's parameter buffer.
+const PARAMS_STRIDE: u64 = 256;
+
+/// One light plane: a single `rgba32float` texel.
+const LIGHT_PLANE_BYTES: u64 = 16;
+
+/// What a picture at rest's accumulator and its rest output take a view pixel: an `f32` sum of
+/// four channels and the quantized codes.
+const ACCUMULATOR_PIXEL_BYTES: u64 = 20;
 
 /// The stack at full resolution in tiles of the output stage, each the whole stack's plan over its
 /// tile at full scale from its own window of the source (`docs/design/gpu-preview.md`, "The
@@ -861,9 +898,18 @@ pub struct RestTiles {
     /// The plan of the whole stack at the exact stage, from the source, reading its lights: every
     /// tile's plan, which a tile's region and window place.
     pub plan: Box<GpuPlan>,
-    /// The tiles, row by row: each its rectangle of the output stage and the window of the source
-    /// it reads, anchored ([`GpuPlan::anchor`]). They cover every pixel of the output stage once.
+    /// The tiles, each its rectangle of the output stage and the window of the source it reads,
+    /// anchored ([`GpuPlan::anchor`]). They cover every pixel of the output stage once, in the
+    /// order they are drawn: by the shape of their slot — the window's size and the rectangle's —
+    /// each shape's tiles together and row by row, the shapes in the order a row-by-row walk first
+    /// meets them, so the slot is refitted once a shape rather than wherever an edge tile falls
+    /// between two of the middle's.
     pub tiles: Vec<RestTile>,
+    /// What a tile's slot may take by the plan's own figures ([`rest_slot_bytes`] with its light
+    /// links, [`rest_light_bytes`]): the GPU-preview budget less the source the surface holds, the
+    /// view plan's slot and the accumulator with its rest output, at most [`REST_SHARE_MAX`].
+    /// `None` for tiles of a side their caller named.
+    pub share: Option<u64>,
     /// The output stage the tiles cover.
     pub output: Stage,
     /// Where the view draws the output stage smaller than it is, the reduction of the tiles to the
@@ -922,28 +968,292 @@ fn fitted(output: Stage, bounds: ProxyBounds) -> Option<(u32, u32)> {
     })
 }
 
-/// What a tile's evaluation over `window` of a `format` boundary takes by `plan`'s own figures: the
-/// boundary, an intermediate for every link and a tail's, the spatial planes and a `side` square
-/// output's codes.
-fn tile_bytes(plan: &GpuPlan, window: Region, format: crate::BoundaryFormat, side: u32) -> u64 {
+/// What the photo surface's slot drawing `plan` over a boundary of `window` in `format` takes of the
+/// GPU-preview budget, its output `output` pixels — a region's when `region`, a whole frame's
+/// otherwise — by the plan's own figures, as the slot charges it before it creates anything (the
+/// widget crate's `texture_charge` and `chain_charge`), with no device:
+///
+/// - the boundary, and an intermediate of its size and format for each link before the last, a
+///   link starting at every spatial operation and one more before the first for the colour steps
+///   ahead of it;
+/// - a geometry tail's intermediate of the boundary's size: 8-bit codes where the tail clamps, `f32`
+///   on the linear path, else half floats;
+/// - the output in its size bucket, 4 bytes a pixel, and its placement uniform;
+/// - each link's kept planes, the ones an apply reads, and its passes' parameter slices;
+/// - the pool of scratch planes every link takes in turn, counted once: for each texture format and
+///   plane size, the most any one link holds, and a texel for each light plane.
+///
+/// What it leaves out: the links' words and blocks buffers, kilobytes the device's limits size, and
+/// the light links ([`rest_light_bytes`]). `O(planes)`.
+pub fn rest_slot_bytes(
+    plan: &GpuPlan,
+    window: Region,
+    format: crate::BoundaryFormat,
+    output: (u32, u32),
+    region: bool,
+) -> u64 {
     let texels = u64::from(window.width) * u64::from(window.height);
-    let links = plan.spatial.len() as u64 + 1;
-    let planes: u64 = plan
-        .spatial
+    let (origin, size) = ((window.x0, window.y0), (window.width, window.height));
+    // The links the surface splits the steps into: one at each spatial step, and one before the
+    // first for the colour steps a content operation gives.
+    let ahead = plan
+        .content
         .iter()
-        .map(|spatial| spatial.plane_bytes((window.x0, window.y0), (window.width, window.height)))
-        .sum();
-    texels * format.texel_bytes() as u64 * (links + 1) + planes + u64::from(side).pow(2) * 4
+        .any(|operation| operation.mask.is_some() || !operation.units.is_empty());
+    let links = match plan.spatial.len() as u64 {
+        0 => 1,
+        spatial => spatial + u64::from(ahead),
+    };
+    let tail = if has_tail(plan) {
+        let texel = if plan.geometry.clamps {
+            4
+        } else if plan.linear {
+            16
+        } else {
+            8
+        };
+        texels * texel
+    } else {
+        0
+    };
+    let output = if region {
+        region_capacity(output)
+    } else {
+        full_capacity(output)
+    };
+    let output = u64::from(output.0) * u64::from(output.1) * 4 + UNIFORM_BYTES;
+    // Each link's kept planes and parameters, and the most scratch planes of each class any link
+    // holds: a class is the plane's texture format and its size.
+    let class = |plane: &super::GpuPlane| {
+        let format = match plane.format {
+            super::GpuPlaneFormat::HalfScalar => super::GpuPlaneFormat::Scalar,
+            super::GpuPlaneFormat::HalfPair => super::GpuPlaneFormat::Pair,
+            other => other,
+        };
+        (format, plane.size)
+    };
+    let mut kept = 0;
+    let mut pool: Vec<((super::GpuPlaneFormat, super::GpuPlaneSize), u64)> = Vec::new();
+    let mut lights = 0;
+    for spatial in &plan.spatial {
+        let mut scratch: Vec<((super::GpuPlaneFormat, super::GpuPlaneSize), u64)> = Vec::new();
+        for (number, plane) in spatial.planes.iter().enumerate() {
+            if spatial.light == Some(number) {
+                // The slot's light plane, which its pool holds once for every link.
+                if let Some(k) = plan.light_of(spatial.layer) {
+                    lights = lights.max(k as u64 + 1);
+                }
+                continue;
+            }
+            let (width, height) = plane.extent(origin, size);
+            let bytes = u64::from(width) * u64::from(height) * plane.format.texel_bytes();
+            if spatial
+                .applies
+                .iter()
+                .any(|apply| apply.planes.contains(&number))
+            {
+                kept += bytes;
+            } else {
+                match scratch.iter_mut().find(|(held, _)| *held == class(plane)) {
+                    Some((_, count)) => *count += 1,
+                    None => scratch.push((class(plane), 1)),
+                }
+            }
+        }
+        kept += PARAMS_STRIDE * spatial.passes.len().max(1) as u64;
+        for (held, count) in scratch {
+            match pool.iter_mut().find(|(class, _)| *class == held) {
+                Some((_, most)) => *most = (*most).max(count),
+                None => pool.push((held, count)),
+            }
+        }
+    }
+    let pool: u64 = pool
+        .into_iter()
+        .map(|((class, extent), count)| {
+            let plane = super::GpuPlane {
+                format: class,
+                size: extent,
+                scratch: true,
+            };
+            let (width, height) = plane.extent(origin, size);
+            count * u64::from(width) * u64::from(height) * class.texel_bytes()
+        })
+        .sum::<u64>()
+        + lights * LIGHT_PLANE_BYTES;
+    texels * format.texel_bytes() as u64 * links + tail + output + kept + pool
 }
 
-/// The picture at rest of `evaluation` at Fit bounds `bounds`, process-first ([`RestTiles`]):
-/// `None` when the bounds draw the output stage at its own size; the reason when the GPU cannot
-/// draw the stack so, a stack the window planner cannot cut among them. `O(tiles × segments)` on
-/// the catalog owner: one plan, a window per tile, no pixel read.
+/// What the light links of `plan` take beside a slot whose boundary is held in `format`, by the
+/// plan's own figures, as the photo surface charges them (the widget crate's `lights_charge`) but
+/// for their buffers: each link's block plane, a `rgba32float` texel for each of the whole stage's
+/// blocks, and the one tile texture of the source in `format` they cut their tiles into in turn,
+/// the largest any of them needs. A link the surface cannot run is charged nothing. `O(lights)`.
+pub fn rest_light_bytes(plan: &GpuPlan, format: crate::BoundaryFormat) -> u64 {
+    let mut blocks = 0;
+    let mut tile = 0;
+    for light in &plan.lights {
+        let link = match light.stand_in.as_deref() {
+            Some(stand_in) if !light.over_source() => stand_in,
+            _ => light,
+        };
+        let block = link
+            .light
+            .passes
+            .first()
+            .and_then(|pass| link.light.planes.get(pass.output))
+            .and_then(|plane| match plane.size {
+                super::GpuPlaneSize::Reduced(s) => Some(s.max(1)),
+                super::GpuPlaneSize::Fixed { .. } => None,
+            });
+        let (Some(block), true) = (block, link.over_source()) else {
+            continue;
+        };
+        let stage = (link.stage.width, link.stage.height);
+        blocks += u64::from(stage.0.div_ceil(block)) * u64::from(stage.1.div_ceil(block)) * 16;
+        let side = (LIGHT_TILE_SIDE.min(DEVICE_TEXTURE_SIDE) / block * block).max(block);
+        tile = tile.max(
+            u64::from(side.min(stage.0))
+                * u64::from(side.min(stage.1))
+                * format.texel_bytes() as u64,
+        );
+    }
+    blocks + tile
+}
+
+/// Whether the surface runs `plan`'s geometry as a tail of its own: anything but an affine identity
+/// onto the boundary's stage that reads all of it, clamps nothing and has no output operation after
+/// it.
+fn has_tail(plan: &GpuPlan) -> bool {
+    let (geometry, stage) = (&plan.geometry, plan.boundary.stage);
+    let output = geometry.output();
+    let reads = geometry.reads;
+    let identity = (output.width, output.height) == (stage.width, stage.height)
+        && geometry.affine() == Some([1.0, 0.0, 0.0, 0.0, 1.0, 0.0])
+        && !geometry.clamps
+        && (reads.x0, reads.y0, reads.width, reads.height) == (0, 0, stage.width, stage.height);
+    !(identity && plan.output.is_empty())
+}
+
+/// The texture a region's output of `size` pixels takes: two more pixels each way, in steps of 64,
+/// so a pan's one-pixel change reuses it, where that is within the region bucket and the device's
+/// side; its own size otherwise.
+fn region_capacity((width, height): (u32, u32)) -> (u32, u32) {
+    let reserved = (
+        width.saturating_add(2).next_multiple_of(64),
+        height.saturating_add(2).next_multiple_of(64),
+    );
+    let fits = reserved.0 <= DEVICE_TEXTURE_SIDE
+        && reserved.1 <= DEVICE_TEXTURE_SIDE
+        && u64::from(reserved.0) * u64::from(reserved.1) * 4 <= REGION_BUCKET_BYTES;
+    if fits { reserved } else { (width, height) }
+}
+
+/// The texture a whole frame's output of `size` pixels takes: a square of the longer side, to the
+/// next power of two up to 2048 and the next multiple of 512 past it, where that fits the device's
+/// side and the full bucket; its own size otherwise.
+fn full_capacity((width, height): (u32, u32)) -> (u32, u32) {
+    let longer = width.max(height);
+    let edge = if longer <= 2048 {
+        longer.next_power_of_two()
+    } else {
+        longer.next_multiple_of(512)
+    };
+    let fits = edge <= DEVICE_TEXTURE_SIDE && u64::from(edge).pow(2) * 4 <= FULL_BUCKET_BYTES;
+    if fits { (edge, edge) } else { (width, height) }
+}
+
+/// What `preview`'s slot and its light links take by its plan's own figures ([`rest_slot_bytes`],
+/// [`rest_light_bytes`]): the view plan a picture at rest's share is planned beside. Zero for a
+/// preview the GPU does not draw.
+fn view_bytes(preview: &GpuPreview) -> u64 {
+    let (GpuAnswer::Plan(plan), Some(boundary)) = (&preview.answer, &preview.boundary) else {
+        return 0;
+    };
+    let stage = plan.boundary.stage;
+    let window = boundary
+        .window
+        .or_else(|| {
+            boundary.key.plan().map(|proxy| {
+                let [x0, y0, width, height] = proxy.held();
+                Region {
+                    x0,
+                    y0,
+                    width,
+                    height,
+                }
+            })
+        })
+        .unwrap_or(Region {
+            x0: 0,
+            y0: 0,
+            width: stage.width,
+            height: stage.height,
+        });
+    let (output, region) = match boundary.key.region() {
+        Some(rect) => ((rect.width, rect.height), true),
+        None => {
+            let output = plan.geometry.output();
+            ((output.width, output.height), false)
+        }
+    };
+    rest_slot_bytes(plan, window, boundary.format, output, region)
+        + rest_light_bytes(plan, boundary.format)
+}
+
+/// What the photo surface holds of `source` on the GPU: a JPEG's codes, 4 bytes a pixel, or a
+/// developed RAW's three `f32` planes, 12.
+fn source_bytes(source: &crate::PreviewSource) -> u64 {
+    let (width, height) = source.dimensions();
+    let pixel = match source {
+        crate::PreviewSource::Jpeg(_) => 4,
+        crate::PreviewSource::Raw { .. } => 12,
+    };
+    u64::from(width) * u64::from(height) * pixel
+}
+
+/// How a picture at rest's tiles are sized.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RestSizing {
+    /// The longest of [`REST_TILE_SIDES`] within the rest's share beside a view plan that takes
+    /// these bytes ([`RestTiles::share`]).
+    Beside(u64),
+    /// The side a test or the release gate's harness names.
+    #[cfg(any(test, feature = "qualification"))]
+    Side(u32),
+}
+
+/// `tiles`, given row by row, in the order a picture at rest draws them: by their slot's shape,
+/// the window's size and the rectangle's, each shape's tiles together in their row-by-row order,
+/// the shapes in the order that walk first meets them. `O(tiles)`.
+fn by_shape(tiles: Vec<RestTile>) -> Vec<RestTile> {
+    let mut shapes = std::collections::HashMap::new();
+    let mut keyed: Vec<(usize, RestTile)> = tiles
+        .into_iter()
+        .map(|tile| {
+            let shape = (
+                tile.window.width,
+                tile.window.height,
+                tile.rect.width,
+                tile.rect.height,
+            );
+            let next = shapes.len();
+            (*shapes.entry(shape).or_insert(next), tile)
+        })
+        .collect();
+    // Stable, so each shape's tiles keep their row-by-row order.
+    keyed.sort_by_key(|(shape, _)| *shape);
+    keyed.into_iter().map(|(_, tile)| tile).collect()
+}
+
+/// The picture at rest of `evaluation` at Fit bounds `bounds`, process-first ([`RestTiles`]), its
+/// tiles sized as `sizing` says: `None` when the bounds draw the output stage at its own size; the
+/// reason when the GPU cannot draw the stack so, a stack the window planner cannot cut among them.
+/// `O(tiles × segments)` on the catalog owner: one plan, a window per tile, no pixel read.
 pub(crate) fn plan_rest_tiles(
     evaluation: &Evaluation,
     bounds: ProxyBounds,
-    side: Option<u32>,
+    sizing: RestSizing,
 ) -> Result<Option<Result<Box<RestTiles>, GpuFallback>>, Error> {
     let output = evaluation.compiled()?.stage();
     // The view's size: the CPU proxy frame's, which a gesture's frame draws at too, or the output
@@ -959,25 +1269,25 @@ pub(crate) fn plan_rest_tiles(
             None => return Ok(None),
         },
     };
-    plan_tiles(evaluation, Some(view), side).map(Some)
+    plan_tiles(evaluation, Some(view), sizing).map(Some)
 }
 
 /// The stack of `evaluation` at full resolution in tiles with no reduction to a view
-/// ([`RestTiles`]): the tiles the histogram and clipping counts are reduced from where the view
-/// draws the output stage at its own size or larger. The reason when the stack cannot be drawn so
-/// now, as [`plan_rest_tiles`] names it. `O(tiles × segments)`, no pixel read.
+/// ([`RestTiles`]), sized as `sizing` says: the tiles the histogram and clipping counts are reduced
+/// from where the view draws the output stage at its own size or larger. The reason when the stack
+/// cannot be drawn so now, as [`plan_rest_tiles`] names it. `O(tiles × segments)`, no pixel read.
 pub(crate) fn plan_count_tiles(
     evaluation: &Evaluation,
-    side: Option<u32>,
+    sizing: RestSizing,
 ) -> Result<Result<Box<RestTiles>, GpuFallback>, Error> {
-    plan_tiles(evaluation, None, side)
+    plan_tiles(evaluation, None, sizing)
 }
 
 /// The stack of `evaluation` at full resolution in tiles, reduced to `view` where it names one.
 fn plan_tiles(
     evaluation: &Evaluation,
     view: Option<(u32, u32)>,
-    side: Option<u32>,
+    sizing: RestSizing,
 ) -> Result<Result<Box<RestTiles>, GpuFallback>, Error> {
     let registry = evaluation.registry();
     let recipe = evaluation.recipe();
@@ -1002,24 +1312,51 @@ fn plan_tiles(
         WindowPlan::of_gpu_rect(compiled, source, rect)
             .map(|windows| super::plan::anchored(windows.reads(0), anchor))
     };
+    // What a tile's slot may take: the budget less the source the surface holds, the view plan's
+    // slot and the accumulator with its rest output, at most half the budget.
+    let share =
+        match sizing {
+            #[cfg(any(test, feature = "qualification"))]
+            RestSizing::Side(_) => None,
+            RestSizing::Beside(view_bytes) => {
+                let accumulator = view.map_or(0, |(width, height)| {
+                    u64::from(width) * u64::from(height) * ACCUMULATOR_PIXEL_BYTES
+                });
+                Some(REST_SHARE_MAX.min(
+                    GPU_PREVIEW_BYTES.saturating_sub(
+                        source_bytes(evaluation.source()) + view_bytes + accumulator,
+                    ),
+                ))
+            }
+        };
     // The longest side whose tile in the middle of the stage, its window grown on every side, the
-    // plan's own figures hold; a test may name its own.
-    let side = side.unwrap_or_else(|| {
-        REST_TILE_SIDES
-            .into_iter()
-            .find(|side| {
-                let (width, height) = ((*side).min(output.width), (*side).min(output.height));
-                let middle = Region {
-                    x0: (output.width - width) / 2,
-                    y0: (output.height - height) / 2,
-                    width,
-                    height,
-                };
-                window_of(middle)
-                    .is_ok_and(|window| tile_bytes(&plan, window, format, *side) <= REST_TILE_BYTES)
-            })
-            .unwrap_or(REST_TILE_SIDES[REST_TILE_SIDES.len() - 1])
-    });
+    // share holds by the plan's own figures, its light links with it, and whose window carries at
+    // most the work a tile may; a caller may name its own.
+    let side = match sizing {
+        #[cfg(any(test, feature = "qualification"))]
+        RestSizing::Side(side) => side,
+        RestSizing::Beside(_) => {
+            let share = share.unwrap_or(0);
+            let lights = rest_light_bytes(&plan, format);
+            let links = plan.spatial.len().max(1) as u64;
+            REST_TILE_SIDES
+                .into_iter()
+                .find(|side| {
+                    let (width, height) = ((*side).min(output.width), (*side).min(output.height));
+                    let middle = Region {
+                        x0: (output.width - width) / 2,
+                        y0: (output.height - height) / 2,
+                        width,
+                        height,
+                    };
+                    window_of(middle).is_ok_and(|window| {
+                        let slot = rest_slot_bytes(&plan, window, format, (width, height), true);
+                        slot + lights <= share && window.pixels() * links <= REST_TILE_WORK
+                    })
+                })
+                .unwrap_or(REST_TILE_SIDES[REST_TILE_SIDES.len() - 1])
+        }
+    };
     let mut tiles = Vec::new();
     for y0 in (0..output.height).step_by(side as usize) {
         for x0 in (0..output.width).step_by(side as usize) {
@@ -1042,7 +1379,8 @@ fn plan_tiles(
     }
     Ok(Ok(Box::new(RestTiles {
         plan,
-        tiles,
+        tiles: by_shape(tiles),
+        share,
         output,
         reduction: view.map(|view| RestReduction {
             view,
@@ -1066,13 +1404,15 @@ pub(crate) fn plan_rest(evaluation: &Evaluation, view: GpuView) -> Result<GpuRes
     let request = fit.request();
     let planned = planned_preview(evaluation, &fit, recipe, request, None, None)?;
     // Reduced to the view where it draws the stage smaller than it is; the counts' alone elsewhere.
+    // Within the rest's share beside the view plan, whose slot stays held while the tiles are drawn.
+    let sizing = RestSizing::Beside(view_bytes(&planned));
     let reduced = match view {
-        GpuView::Fit(bounds) => plan_rest_tiles(evaluation, bounds, None)?,
+        GpuView::Fit(bounds) => plan_rest_tiles(evaluation, bounds, sizing)?,
         GpuView::Region { .. } => None,
     };
     let tiles = Some(match reduced {
         Some(tiles) => tiles,
-        None => plan_count_tiles(evaluation, None)?,
+        None => plan_count_tiles(evaluation, sizing)?,
     });
     Ok(GpuRest {
         view: planned,
