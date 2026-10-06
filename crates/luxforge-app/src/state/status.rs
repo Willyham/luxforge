@@ -15,14 +15,15 @@ use std::time::Duration;
 pub(crate) struct RenderTime {
     pub(crate) ms: f64,
     /// The frame approximates a drafted RAW white balance on planes developed at another one
-    /// ([`luxforge_core::PreviewResult::approximate_white_balance`]).
+    /// ([`luxforge_core::PreviewResult::approximate_white_balance`]), or is a drag's display-size
+    /// proxy in a session the GPU does not draw at all.
     pub(crate) approximate: bool,
 }
 
 impl RenderTime {
     /// "Exact render · 85 ms" for the reference renderer's exact frame, or its reduction to the
-    /// view, and "Approximate render · 12 ms" for a drafted RAW white balance approximated on the
-    /// developed planes.
+    /// view, and "Approximate render · 12 ms" for a drag's display-size proxy or a drafted RAW
+    /// white balance approximated on the developed planes.
     pub(crate) fn text(self) -> String {
         let kind = if self.approximate {
             "Approximate"

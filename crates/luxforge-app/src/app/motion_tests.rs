@@ -2,14 +2,17 @@
 //! that waits for its boundary holds the frame on screen and queues nothing, ending when the
 //! surface draws it or rendering the reference frame once it has lasted half a second; a tick the
 //! GPU cannot draw for a reason that lasts has the reference draw one whole frame at a time, the
-//! newest tick's next; and a pan during a paused drag at 100% plans the drag's region again.
+//! newest tick's next; a pan during a paused drag at 100% plans the drag's region again; and a
+//! session the GPU does not draw at all drags on the display-size proxy, which a session with a GPU
+//! never asks for.
 use super::{
     gpu_preview::SurfaceReport,
     gpu_preview_tests::{catalog, deliver_until, surface_ready, zoomed},
     message::{draft::DraftMessage, preview::PreviewMessage, view::ViewMessage},
-    testing::{attach_log, events, finish, logged, real_photo, slide},
+    testing::{attach_log, events, finish, let_go, logged, real_photo, run_commit, slide},
     *,
 };
+use luxforge_ui::photo_surface::GpuStageState;
 use std::time::Duration;
 
 const ACTION: &str = "set-basic";
@@ -18,6 +21,14 @@ const FIELD: &str = "exposure";
 /// How many jobs went to the preview worker.
 fn jobs(records: &[Value]) -> usize {
     events(records, "preview_job_requested").len()
+}
+
+/// How many of them asked for a drag's display-size proxy.
+fn proxy_jobs(records: &[Value]) -> usize {
+    events(records, "preview_job_requested")
+        .iter()
+        .filter(|job| job["interactive"] == true)
+        .count()
 }
 
 /// The surface reports that its last frame drew the open draft's newest tick over the boundary
@@ -79,6 +90,11 @@ fn motion_a_hold_that_lasts_renders_the_newest_ticks_reference_frame() {
     assert!(!editor.motion_hold_pending(), "the hold is over");
     let records = logged(&mut editor, &log);
     assert_eq!(jobs(&records), 1, "one reference frame, the newest tick's");
+    assert_eq!(
+        proxy_jobs(&records),
+        0,
+        "a session with a GPU asks for no proxy"
+    );
     let ended = events(&records, "gpu_preview_hold_ended");
     assert_eq!(ended.len(), 1);
     assert_eq!(ended[0]["why"], "lasted");
@@ -115,6 +131,7 @@ fn motion_a_lasting_reason_renders_one_reference_frame_at_a_time_the_newest_next
     assert!(editor.drag_frame_waiting(), "the newest tick waits");
     let first = logged(&mut editor, &log);
     assert_eq!(jobs(&first), 1, "one frame in flight");
+    assert_eq!(proxy_jobs(&first), 0, "a whole frame, never a proxy");
     let ticks = events(&first, "gpu_preview_tick");
     assert_eq!(ticks.len(), 3);
     assert!(
@@ -230,5 +247,128 @@ fn motion_mask_coverage_at_100_percent_is_a_grid_of_the_gpus_region() {
     editor.session.preview.view.zoom = luxforge_core::Zoom::Fit;
     assert!(editor.gpu_view_region().is_none());
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
+    finish(editor, catalog);
+}
+
+/// A photograph in a session the GPU does not draw at all, its photo surface smaller than the
+/// 480 × 320 photograph so that Fit draws it smaller than it is: Fit's bounds.
+fn without_a_gpu(editor: &mut Editor) -> luxforge_core::ProxyBounds {
+    editor.renderer.stage = Some(GpuStageState::NoAdapter { refused: true });
+    editor.session.workspace.state_panel = false;
+    editor.session.workspace.tools_panel = false;
+    editor.view_state.window = (360.0, 300.0);
+    let bounds = editor.fit_bounds().expect("Fit's bounds");
+    assert!(bounds.width < 480 && bounds.height < 320, "{bounds:?}");
+    bounds
+}
+
+/// Drag Basic's exposure through `values` and take up frames until the newest tick's is on
+/// screen: the drag's records.
+fn proxied_drag(editor: &mut Editor, values: &[f64]) -> Vec<Value> {
+    let log = attach_log(editor);
+    for value in values {
+        let _ = slide(editor, ACTION, FIELD, *value);
+        assert!(!editor.drag_frame_waiting(), "no tick holds or waits");
+    }
+    let revision = editor.session.draft.as_ref().unwrap().draft_revision;
+    deliver_until(editor, "the newest tick's proxy", |editor| {
+        editor.presentation.displayed_draft_revision == Some(revision)
+            && !editor.presentation.queue.is_busy()
+    });
+    logged(editor, &log)
+}
+
+/// Release the drag and take up the reference's frame of the committed stack.
+fn release(editor: &mut Editor) {
+    let _ = let_go(editor, ACTION, FIELD);
+    assert!(run_commit(editor));
+    deliver_until(editor, "the committed frame", |editor| {
+        editor.presentation.displayed_draft_revision.is_none()
+            && editor.presentation.presented_proxy.is_none()
+            && !editor.presentation.queue.is_busy()
+    });
+}
+
+/// In a session the GPU does not draw at all, a drag at Fit asks the reference for each tick's
+/// display-size proxy, latest winning, and holds no tick: the frame on screen is the proxy at Fit's
+/// bounds, labelled approximate. The release draws the reference's frame of the committed stack,
+/// its exact frame reduced to the view.
+#[test]
+fn motion_a_session_without_a_gpu_drags_on_the_proxy_at_fit() {
+    let catalog = catalog("motion-proxy-fit");
+    let (mut editor, _, _) = real_photo(&catalog);
+    let bounds = without_a_gpu(&mut editor);
+    let records = proxied_drag(&mut editor, &[0.1, 0.2, 0.3]);
+    assert_eq!(jobs(&records), 3, "one job a tick");
+    assert_eq!(proxy_jobs(&records), 3, "each the tick's proxy");
+    assert!(
+        events(&records, "gpu_preview_tick")
+            .iter()
+            .all(|tick| tick["path"] == "cpu" && tick["reason"] == "no-adapter"),
+        "{records:?}"
+    );
+    assert!(editor.presentation.presented_proxy.is_some());
+    assert!(editor.presentation.presented_reduced);
+    assert_eq!(editor.presentation.dimensions, Some((480, 320)));
+    let (width, height) = editor
+        .presentation
+        .presenter
+        .photo()
+        .expect("a frame")
+        .size();
+    assert!(
+        width <= bounds.width && height <= bounds.height,
+        "the proxy is display-sized: {width} × {height} within {bounds:?}"
+    );
+    assert!(editor.surfaces().whole_frame());
+    assert!(editor.activity.render.expect("a render time").approximate);
+    let displayed = events(&records, "preview_displayed");
+    assert_eq!(displayed.last().expect("a frame")["proxy"], true);
+    release(&mut editor);
+    assert!(!editor.activity.render.expect("a render time").approximate);
+    finish(editor, catalog);
+}
+
+/// In a session the GPU does not draw at all, a drag at 400% asks for each tick's proxy at Fit's
+/// bounds and plans no view of its own: the view draws the proxy whole, magnified to the stage's
+/// box. The release draws the reference's exact frame of the committed stack, sharp.
+#[test]
+fn motion_a_session_without_a_gpu_drags_on_the_magnified_proxy_at_100_percent() {
+    let catalog = catalog("motion-proxy-zoom");
+    let (mut editor, _, _) = real_photo(&catalog);
+    let bounds = without_a_gpu(&mut editor);
+    zoomed(&mut editor);
+    let records = proxied_drag(&mut editor, &[0.1, 0.2]);
+    assert_eq!(jobs(&records), 2, "one job a tick, and none for the view");
+    assert_eq!(proxy_jobs(&records), 2);
+    assert!(!editor.view_plan.in_flight, "no view is planned");
+    assert!(editor.presentation.presented_proxy.is_some());
+    let (width, height) = editor
+        .presentation
+        .presenter
+        .photo()
+        .expect("a frame")
+        .size();
+    assert!(
+        width <= bounds.width && height <= bounds.height,
+        "Fit's proxy: {width} × {height} within {bounds:?}"
+    );
+    assert!(
+        editor.surfaces().whole_frame(),
+        "drawn whole, magnified to the stage's box"
+    );
+    release(&mut editor);
+    assert_eq!(
+        editor
+            .presentation
+            .presenter
+            .photo()
+            .expect("a frame")
+            .size(),
+        (480, 320),
+        "the exact frame at rest"
+    );
+    assert!(!editor.presentation.presented_reduced);
+    assert!(!editor.surfaces().whole_frame());
     finish(editor, catalog);
 }

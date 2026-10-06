@@ -5,7 +5,8 @@
 //!
 //! Every job of the photograph is the reference's: its whole frame and report, reduced to the
 //! view where the view draws the stage smaller than it is, or a retained exact frame reduced again
-//! with no render. The GPU draws everything else: a committed stack at rest
+//! with no render; and, in a session the GPU does not draw at all, a drag tick's display-size proxy
+//! ([`super::motion`]). The GPU draws everything else: a committed stack at rest
 //! ([`super::gpu_counts`]) and a gesture's ticks ([`super::gpu_preview`], [`super::motion`]).
 //!
 //! [`Presentation`] owns all of it: the one [`Presenter`] every frame goes to, the preview queue,
@@ -36,8 +37,10 @@ use luxforge_core::{
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
-/// The exact frame of one generation reduced to its view's bounds: the reference frame of a whole
-/// stack where the view draws it smaller than it is, retained beside the exact raster.
+/// A whole frame of one generation smaller than its stage: the exact frame reduced to its view's
+/// bounds, the reference frame of a whole stack where the view draws it smaller than it is, or a
+/// drag tick's display-size proxy in a session the GPU does not draw at all ([`super::motion`]),
+/// which the view magnifies at 100% and above.
 ///
 /// It is what a zoom back to Fit hands the surface again instead of rendering. Retaining it copies
 /// no pixels: it shares the reduction's own `Arc<Vec<u8>>` with the surface.
@@ -45,6 +48,10 @@ use std::{collections::BTreeMap, sync::Arc, time::Instant};
 pub(crate) struct ReducedFrame {
     pub(crate) generation: u64,
     pub(crate) raster: Arc<luxforge_core::Raster>,
+    /// The frame is a drag tick's proxy, the drafted stack rendered against the source reduced to
+    /// the display, and how it approximates the exact render at that size; `None` for the exact
+    /// frame's reduction.
+    pub(crate) proxy: Option<luxforge_core::ProxyApproximation>,
     /// The reduction is of a frame that approximates a drafted RAW white balance.
     pub(crate) approximate_white_balance: bool,
     /// The exact phase's own worker time, so a zoom that hands this frame back to the surface
@@ -119,6 +126,14 @@ impl Retained {
     fn reduced(&self) -> bool {
         matches!(self, Self::Reduced(_))
     }
+
+    /// The frame is a drag tick's display-size proxy.
+    pub(crate) fn proxy(&self) -> Option<luxforge_core::ProxyApproximation> {
+        match self {
+            Self::Reduced(frame) => frame.proxy,
+            Self::Exact(_) => None,
+        }
+    }
 }
 
 /// How a frame reaches the surface.
@@ -150,7 +165,8 @@ pub(crate) struct Delivery {
 pub(crate) enum Presented {
     /// Older than the frame on screen, or not a frame of the photograph: it presents nothing.
     Stale,
-    /// The exact phase's frame reduced to the view's bounds, its exact frame already received.
+    /// The exact phase's frame reduced to the view's bounds, its exact frame already received; or
+    /// a drag tick's proxy, its job's one phase.
     Reduced(Box<(Delivery, ReducedFrame)>),
     /// The exact phase — its frame, already received as the retained exact raster or with its
     /// report, or its failure.
@@ -225,6 +241,8 @@ pub(crate) struct Presentation {
     reduction_job: Option<PreviewJob>,
     /// Whether the frame on screen is the reduced one.
     pub(crate) presented_reduced: bool,
+    /// Whether the frame on screen is a drag tick's display-size proxy, and how it approximates.
+    pub(crate) presented_proxy: Option<luxforge_core::ProxyApproximation>,
     /// The exact frame of the newest job whose exact phase landed.
     pub(crate) exact: Option<ExactFrame>,
     /// The displayed frame's histogram report, adopted with the pixels under the same generation:
@@ -397,10 +415,23 @@ impl Presentation {
             entry_id,
             draft_revision,
         };
-        // The photograph's jobs ask for no proxy phase and no region: every one is its exact
+        // A drag tick's proxy, in a session the GPU does not draw at all, is its job's one phase.
+        // The photograph's other jobs ask for no proxy phase and no region: every one is its exact
         // phase alone.
-        let PhaseOutcome::Exact(outcome) = outcome else {
-            return Presented::Stale;
+        let outcome = match outcome {
+            PhaseOutcome::Proxy(proxy) => {
+                let reduced = ReducedFrame {
+                    generation,
+                    raster: Arc::new(proxy.raster),
+                    proxy: Some(proxy.approximation),
+                    approximate_white_balance,
+                    render_ms,
+                };
+                self.reduced_frame = Some(reduced.clone());
+                return Presented::Reduced(Box::new((delivery, reduced)));
+            }
+            PhaseOutcome::Exact(outcome) => outcome,
+            _ => return Presented::Stale,
         };
         let ExactOutcome {
             result,
@@ -438,6 +469,7 @@ impl Presentation {
                 let reduced = ReducedFrame {
                     generation,
                     raster: Arc::new(raster),
+                    proxy: None,
                     approximate_white_balance,
                     render_ms,
                 };
@@ -515,6 +547,7 @@ impl Presentation {
         self.presented_generation = generation;
         self.presented_content = content;
         self.presented_reduced = frame.reduced();
+        self.presented_proxy = frame.proxy();
         self.presented_approximate_white_balance = frame.approximate_white_balance();
         if let Some(bounds) = self.pending_bounds.get(&generation).copied() {
             self.presented_bounds = bounds;
@@ -561,6 +594,7 @@ impl Presentation {
         self.gpu_presented = None;
         self.presented_asset = None;
         self.presented_reduced = false;
+        self.presented_proxy = None;
         self.presented_approximate_white_balance = false;
         self.displayed_draft_revision = None;
         self.displayed_draft_id = None;
@@ -574,7 +608,12 @@ impl Presentation {
         view::Surfaces {
             comparison: None,
             photo: self.presenter.photo_for(self.presented_content),
-            photo_content: self.presenter.full_content(),
+            // A frame smaller than its stage — a reduction, or a drag's proxy magnified at 100% and
+            // above — is drawn whole, whatever exact frame the surface held before it.
+            photo_content: self
+                .presenter
+                .full_content()
+                .filter(|_| !self.presented_reduced),
             current_content: self.presented_content,
             region_coverage: self.presenter.region_coverage(self.presented_generation),
             stage: self.presenter.stage(),
@@ -685,6 +724,7 @@ impl Presentation {
         self.preview_generation = generation;
         self.presented_content = content;
         self.presented_reduced = false;
+        self.presented_proxy = None;
         self.presented_approximate_white_balance = false;
         self.presented_bounds = bounds;
         self.refit_pending = false;
@@ -1103,6 +1143,9 @@ impl Editor {
             .as_ref()
             .filter(|_| self.core_gesture().is_some())
         {
+            // In a session the GPU does not draw at all every tick queues a whole frame, its proxy,
+            // which holds every view.
+            Some(_) if self.gpu_stage_refusal().is_some() => true,
             Some(draft) => {
                 (self.presentation.displayed_draft_id.as_ref() == Some(&draft.draft_id)
                     && self.presentation.displayed_draft_revision == Some(draft.draft_revision)
@@ -1209,19 +1252,7 @@ impl Editor {
     /// percentage that draws it smaller than it is, and the exact render otherwise.
     pub(crate) fn proxy_bounds_for(&self, stage: Option<(u32, u32)>) -> Option<ProxyBounds> {
         match self.session.preview.view.zoom {
-            Zoom::Fit => {
-                let workspace = &self.session.workspace;
-                let surface = layout::photo_surface(
-                    self.view_state.window,
-                    workspace.state_panel,
-                    workspace.tools_panel,
-                );
-                let inset = layout::FIT_INSET;
-                bounds_of((
-                    (surface.0 - inset.0).max(0.0) * self.view_state.scale_factor,
-                    (surface.1 - inset.1).max(0.0) * self.view_state.scale_factor,
-                ))
-            }
+            Zoom::Fit => self.fit_bounds(),
             Zoom::Percent { .. } => {
                 let stage = stage?;
                 let displayed = self.displayed_size(stage)?;
@@ -1232,6 +1263,23 @@ impl Editor {
                     .flatten()
             }
         }
+    }
+
+    /// The bounds Fit draws the photograph in, physical pixels: the photo surface this window and
+    /// these panels leave, less the Fit inset. A drag's proxy is rendered at them at 100% and
+    /// above too, in a session the GPU does not draw at all, and magnified to the view.
+    pub(crate) fn fit_bounds(&self) -> Option<ProxyBounds> {
+        let workspace = &self.session.workspace;
+        let surface = layout::photo_surface(
+            self.view_state.window,
+            workspace.state_panel,
+            workspace.tools_panel,
+        );
+        let inset = layout::FIT_INSET;
+        bounds_of((
+            (surface.0 - inset.0).max(0.0) * self.view_state.scale_factor,
+            (surface.1 - inset.1).max(0.0) * self.view_state.scale_factor,
+        ))
     }
 
     /// The physical size a frame whose exact stage is `stage` is drawn at in the current view,
@@ -1364,7 +1412,12 @@ impl Editor {
             return (Task::none(), false);
         }
         if let Some(queue_wait_ms) = result.queue_wait_ms {
-            let phase = "exact";
+            // Only a drag tick in a session the GPU does not draw at all asks for a proxy phase.
+            let phase = if result.proxy().is_some() {
+                "proxy"
+            } else {
+                "exact"
+            };
             self.event("preview_result_received", || {
                 json!({
                     "generation":result.generation,
@@ -1453,8 +1506,8 @@ impl Editor {
 
     /// The crop layer's input stage, shown in place of the photograph from the render's own buffer
     /// with the open frame drawn over it in this same update: nothing is uploaded through the
-    /// runtime, so nothing waits for it. Its proxy is the Fit view and its exact phase the
-    /// percentage zoom's; neither is ever reduced, sampled or committed, retained as the
+    /// runtime, so nothing waits for it. Where the reference draws it, its frame reduced to the
+    /// bounds is the Fit view's and its exact frame the percentage zoom's; neither is ever reduced, sampled or committed, retained as the
     /// photograph's or held to the photograph's delivery rule.
     fn stage_ready(&mut self, result: PreviewResult) -> (Task<Message>, bool) {
         // The reference's one frame of the stage: reduced to the bounds the job offered, or its
@@ -1735,6 +1788,10 @@ impl Editor {
             // only for a view that needs it ([`Self::present_crop_stage`]). No report is reduced
             // from the stage.
             self.crop_stage_bounds()
+        } else if job.intent == PreviewIntent::Interactive {
+            // A drag tick's proxy in a session the GPU does not draw at all ([`super::motion`]):
+            // the view's own bounds below 100%, and Fit's at 100% and above, magnified to the view.
+            self.proxy_bounds().or_else(|| self.fit_bounds())
         } else {
             self.proxy_bounds()
         };
@@ -1799,6 +1856,10 @@ impl Editor {
             && self.presentation.has_picture()
             && self.presentation.render_error.is_none()
             && !self.presentation.presented_approximate_white_balance
+            // A drag's proxy serves only another tick of the same pixels: a release asks for the
+            // reference's sharp frame.
+            && (self.presentation.presented_proxy.is_none()
+                || job.intent == PreviewIntent::Interactive)
             && !self.presentation.queue.is_busy()
             && !self.presentation.queue.ready()
             && complete_analysis
@@ -1847,16 +1908,17 @@ impl Editor {
         // draft it was for ends here, as a cancelled one does in `poll_preview`. The request names
         // it in the same step, because the worker takes a pending job by itself the moment the
         // active one ends: a job it took up meanwhile is running, and ends through `poll_preview`.
-        let layer_count = job.layer_count;
+        let (layer_count, intent) = (job.layer_count, job.intent);
         self.presentation.remember_reduction_job(&job, reference);
         let Requested {
             generation,
             replaced,
             at,
         } = self.presentation.request(job, content, timed);
+        let interactive = intent == PreviewIntent::Interactive;
         self.event(
             "preview_job_requested",
-            || json!({"generation":generation,"layer_count":layer_count}),
+            || json!({"generation":generation,"layer_count":layer_count,"interactive":interactive}),
         );
         if replaced.is_some() && replaced == self.view_plan.request_generation {
             self.view_plan.request_generation = None;
@@ -2062,7 +2124,7 @@ impl Editor {
         // zoom hand-over or a refit presents long after.
         self.activity.render = Some(state::status::RenderTime {
             ms: frame.render_ms(),
-            approximate: frame.approximate_white_balance(),
+            approximate: frame.approximate_white_balance() || frame.proxy().is_some(),
         });
         let raster = frame.raster();
         let picture = self.displayed_picture();
@@ -2078,6 +2140,10 @@ impl Editor {
                 "dimensions":[stage.0,stage.1],
                 "path":"surface",
                 "reduced":frame.reduced(),
+                // A drag tick's display-size proxy, in a session the GPU does not draw at all, and
+                // why it approximates the exact render at that size.
+                "proxy":frame.proxy().is_some(),
+                "proxy_approximate_reason":frame.proxy().and_then(luxforge_core::ProxyApproximation::reason),
                 "approximate_white_balance":frame.approximate_white_balance(),
                 "reason":zoom.then_some("zoom"),
                 "render_ms":frame.render_ms(),
@@ -2170,6 +2236,17 @@ impl Editor {
                 state::status::showing(state.current_entry.sequence, &state.current_entry.label)
             }
             (None, None) => String::new(),
+        };
+        // A drag's proxy over a restoration layer, whose full-resolution filters run on averaged
+        // proxy pixels, says it is approximate.
+        let sentence = if self
+            .presentation
+            .presented_proxy
+            .is_some_and(|proxy| proxy.restoration)
+        {
+            format!("{sentence} \u{b7} Moving preview \u{b7} Detail approximate")
+        } else {
+            sentence
         };
         match &self.status.skipped {
             Some(skipped) => format!("{sentence} \u{b7} {skipped}"),
