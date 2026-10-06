@@ -683,6 +683,17 @@ impl Editor {
             }
             None => return false,
         };
+        // The reasons the GPU does not take the stage, before it is asked: the gate's, or a stage
+        // the view draws at its own size, whose tiles hold no reduction to draw.
+        let before = match (self.gpu_preview_allowed(), tiles.reduction.is_none()) {
+            (Err(reason), _) => Some(reason),
+            (Ok(()), true) => Some("at-own-size"),
+            (Ok(()), false) => None,
+        };
+        if let Some(reason) = before {
+            self.event("crop_stage_reference", || json!({ "reason": reason }));
+            return false;
+        }
         if !self.gpu_stage_from(tiles, source) {
             let reason = match self.gpu_stage_state() {
                 StageState::Refused(reason) => reason,
