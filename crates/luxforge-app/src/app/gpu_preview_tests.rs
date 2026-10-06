@@ -1217,7 +1217,8 @@ fn gpu_preview_a_pan_past_the_held_region_draws_the_cpu_frame_until_the_new_boun
     finish(editor, catalog);
 }
 
-/// A region whose boundary and frame alone would pass the GPU-preview budget asks for no boundary:
+/// A region whose boundary and frame, beside the source the surface holds, would pass the
+/// GPU-preview budget asks for no boundary:
 /// every tick takes the CPU path, naming the budget, and the drag's evidence carries the bytes and
 /// the budget they pass.
 #[test]
@@ -1232,7 +1233,9 @@ fn gpu_preview_a_region_over_the_budget_keeps_the_cpu_path_and_names_it() {
     let needed = u64::from(wanted.width) * u64::from(wanted.height) * 8
         + bucket(wanted.width) * bucket(wanted.height) * 4
         + 96;
-    editor.gpu.budget = Some(needed - 1);
+    // The budget holds the source the surface holds too.
+    let source = editor.gpu.source().map_or(0, |source| source.bytes());
+    editor.gpu.budget = Some(source + needed - 1);
     let log = attach_log(&mut editor);
     let _ = slide(&mut editor, ACTION, FIELD, 0.1);
     let _ = slide(&mut editor, ACTION, FIELD, 0.2);
@@ -1253,7 +1256,7 @@ fn gpu_preview_a_region_over_the_budget_keeps_the_cpu_path_and_names_it() {
     assert_eq!(editor.gpu_plan_fallback(), Some("budget-exceeded".into()));
     assert!(editor.surfaces().gpu.is_none());
     // Within the budget the same region is drawn on the GPU.
-    editor.gpu.budget = Some(needed);
+    editor.gpu.budget = Some(source + needed);
     let _ = slide(&mut editor, ACTION, FIELD, 0.3);
     assert_eq!(editor.gpu.ticks().2, 1, "the boundary is asked for");
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
@@ -1308,8 +1311,9 @@ fn gpu_preview_a_percentage_spatial_drag_draws_the_shape_the_budget_holds() {
     let log = attach_log(&mut editor);
     let _ = slide(&mut editor, PRESENCE, "clarity", 30.0);
     assert_eq!(applies(&editor), Some(3), "Dehaze, Texture and Clarity");
-    // Only the CPU's shape fits: Clarity alone, over the same boundary.
-    editor.gpu.budget = Some(cpu);
+    // Only the CPU's shape fits, beside the source: Clarity alone, over the same boundary.
+    let source = editor.gpu.source().map_or(0, |source| source.bytes());
+    editor.gpu.budget = Some(source + cpu);
     let _ = slide(&mut editor, PRESENCE, "clarity", 35.0);
     assert_eq!(shape(&editor), "cpu");
     assert_eq!(applies(&editor), Some(1), "Clarity alone");
@@ -1461,38 +1465,6 @@ fn gpu_preview_dehaze_behind_detail_draws_its_region_on_the_gpu() {
     assert_eq!(region(&plan), corners, "the visible region");
     assert_eq!(spatial(&plan), 2, "Detail's operation, then Presence's");
     finish(editor, catalog);
-}
-
-/// Every family of the qualification corpus at 100%, in the largest window the owner's display
-/// holds: the worker's exact visible region against the GPU frame of the region plan over the
-/// region's own boundary, each held to its recipe's class, and a slot over the GPU-preview budget
-/// a gap naming it.
-#[test]
-#[ignore = "the GPU preview corpus at 100%: set LUXFORGE_GPU_CORPUS_OUTPUT to a new directory, \
-            LUXFORGE_GENERATED_FIXTURES to the generated JPEGs and, for the RAWs, \
-            LUXFORGE_RAW_MANIFEST"]
-fn gpu_preview_corpus_at_100_percent() {
-    super::gpu_qualification::corpus_at_percent(
-        "gpu_preview_corpus_at_100_percent",
-        &[
-            "basic",
-            "tone-curve",
-            "mixer",
-            "vignette",
-            "colour-stack",
-            "mask-linear",
-            "mask-radial",
-            "mask-brush",
-            "mask-luminance-range",
-            "mask-colour-range",
-            "mask-composed",
-            "crop",
-            "lens-perspective",
-            "presence",
-            "detail",
-        ],
-        100.0,
-    );
 }
 
 /// What the surface reports of the source the desktop hands it: `version`, every row uploaded.

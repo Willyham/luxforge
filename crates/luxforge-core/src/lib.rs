@@ -112,9 +112,10 @@ pub use render::gpu::{
     GpuComponent, GpuDescription, GpuFallback, GpuGeometry, GpuLight, GpuLightPasses,
     GpuLightRestoration, GpuMask, GpuOperation, GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest,
     GpuPlane, GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuPreview, GpuProgram, GpuProgramKind,
-    GpuRest, GpuSpatial, GpuSpatialUnit, GpuView, GpuWarmList, REST_TILE_BYTES, REST_TILE_SIDES,
-    RestReduction, RestTile, RestTiles, STREAM_TILE_SIDES, SourceBoundary, StreamPlan, TilePlan,
-    anchored, gpu_lights, gpu_plan, plan_read, plan_stream,
+    GpuRest, GpuSpatial, GpuSpatialUnit, GpuView, GpuWarmList, REDUCED_AFTER_BYTES,
+    REST_TILE_BYTES, REST_TILE_SIDES, RestReduction, RestTile, RestTiles, STREAM_TILE_SIDES,
+    SourceBoundary, StreamPlan, TilePlan, anchored, gpu_fit_plan, gpu_lights, gpu_plan, plan_read,
+    plan_stream,
 };
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{
@@ -131,6 +132,7 @@ pub use source::{LinearImage, OpticalIdentity, SourceImage, SourceOptics, open_s
 pub mod qualification {
     pub use crate::modules::detail_qualification as detail;
     pub use crate::modules::presence_qualification as presence;
+    pub use crate::render::gpu::reduce_regions_after;
 
     /// The proxy plan a Fit job's worker builds for `recipe` over `render`'s source within
     /// `bounds`, as the GPU preview's plan reads it, and the window of the whole proxy stage the
@@ -207,11 +209,6 @@ pub mod qualification {
             layer,
             format,
         )
-    }
-
-    /// `plan` over its whole proxy stage, with no window.
-    pub fn whole_proxy(plan: crate::ProxyPlan) -> crate::ProxyPlan {
-        plan.whole()
     }
 
     /// The boundary at the source of `render`'s stack — the first segment's input before its
@@ -348,9 +345,9 @@ pub mod qualification {
                     // the others read nothing.
                     hold_estimates(&render, place, &vec![Some(light); HELD_UNITS])?;
                 }
-                cells::arm(context.estimates(), &asked)?;
+                cells::arm(&context, &asked)?;
                 let framed = render.frame(crate::SnapshotId::new());
-                let captured = cells::take(context.estimates());
+                let captured = cells::take(&context);
                 framed?;
                 let captured = captured.last().ok_or_else(|| {
                     crate::Error::internal("the estimating layer's input was not reduced")
@@ -500,67 +497,6 @@ pub mod qualification {
         Ok(unit
             .prepare(&reduction)
             .map(|light| light.values().to_vec()))
-    }
-
-    /// The proxy phase of `render`'s stack as a preview job's worker renders it at `bounds`: the
-    /// stack compiled at the proxy stage of [`fit_proxy`]'s plan, cut to its window when it has
-    /// one, over `proxied`, the proxy source that plan builds, in `context`, whose store a frame of
-    /// it fills.
-    pub fn proxy_render<'s>(
-        render: &crate::Render,
-        registry: &crate::ModuleRegistry,
-        recipe: &crate::Recipe,
-        bounds: crate::ProxyBounds,
-        proxied: crate::RenderSource<'s>,
-        context: &'s crate::RenderContext,
-    ) -> Result<crate::Render<'s>, crate::Error> {
-        let plan = render
-            .proxy_plan(bounds)
-            .ok_or_else(|| crate::Error::validation("no proxy fits these bounds"))?;
-        let stage = render.proxy_window(registry, recipe, plan);
-        render.render_proxy(proxied, stage, &crate::Cancel::never(), context)
-    }
-
-    /// The input of layer `layer` of `render`'s stack at the proxy stage a Fit job's worker plans
-    /// at `bounds`, over `proxied`, the proxy source that plan builds, held as `format`: the
-    /// boundary the worker's proxy phase renders for a GPU preview of a drag from that layer, cut
-    /// as that phase cuts it and read from the proxy stage's own uncut compilation for where the
-    /// layer begins, as the worker reads it. What a boundary after a geometry layer is, such as a
-    /// vignette's after a lens warp, which the proxy source itself is not.
-    pub fn proxy_boundary(
-        render: &crate::Render,
-        registry: &crate::ModuleRegistry,
-        recipe: &crate::Recipe,
-        bounds: crate::ProxyBounds,
-        proxied: crate::RenderSource<'_>,
-        layer: usize,
-        format: crate::BoundaryFormat,
-    ) -> Result<crate::BoundaryFrame, crate::Error> {
-        let plan = render
-            .proxy_plan(bounds)
-            .ok_or_else(|| crate::Error::validation("no proxy fits these bounds"))?;
-        let stage = render.proxy_window(registry, recipe, plan);
-        let plan = stage.plan();
-        let uncut = stage.compiled()?.clone();
-        let position = crate::render::gpu::position(&uncut, layer)
-            .ok_or_else(|| crate::Error::validation(format!("layer {layer} is past the stack")))?;
-        let whole = crate::modules::Stage {
-            width: plan.width,
-            height: plan.height,
-        };
-        let window = plan
-            .window
-            .map_or(crate::modules::Region::whole(whole), |window| {
-                crate::modules::Region {
-                    x0: window.x,
-                    y0: window.y,
-                    width: window.width,
-                    height: window.height,
-                }
-            });
-        let context = crate::RenderContext::new();
-        let proxy = render.render_proxy(proxied, stage, &crate::Cancel::never(), &context)?;
-        proxy.boundary(&uncut, whole, window, position, format)
     }
 
     /// The global estimates the spatial operation of layer `layer` reads in a frame of `render`,

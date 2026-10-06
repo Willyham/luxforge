@@ -171,6 +171,7 @@ pub(crate) fn surface_plan_over(
             Some(GpuRegion {
                 rect: corners,
                 stage: (stage.width, stage.height),
+                full_stage: (stage.width, stage.height),
             })
         }
     };
@@ -181,6 +182,26 @@ pub(crate) fn surface_plan_over(
         region,
         lights: surface_lights(plan)?,
     })
+}
+
+/// `plan`, a whole frame of a reduced stage, as a region of its own stage holding all of it, placed
+/// over `full`, the photograph's full output stage at a percentage zoom of 100% or more: the softer
+/// drag frame, which the surface magnifies to fill the photograph as it places a region.
+pub(crate) fn placed_over(mut plan: GpuPlan, full: (u32, u32)) -> GpuPlan {
+    let output = plan
+        .steps
+        .iter()
+        .find_map(|step| match step {
+            GpuStep::Geometry(tail) => Some(tail.output()),
+            _ => None,
+        })
+        .unwrap_or_else(|| plan.boundary.size());
+    plan.region = Some(GpuRegion {
+        rect: [0, 0, output.0, output.1],
+        stage: output,
+        full_stage: full,
+    });
+    plan
 }
 
 /// A lens warp's coordinate grid as the tail reads it: where its nodes sit, and every node's

@@ -726,6 +726,9 @@ struct Drag {
     /// What a region's boundary or slot would take, and the bound on a boundary or the budget it
     /// passes, when the latest tick derived no boundary because of them ([`region_charge`]).
     over_budget: Option<(u64, u64)>,
+    /// The percentage zoom at which this drag's region went past the budget, from when it is drawn
+    /// at the reduced stage of the view's area while it stays at that zoom ([`SOFTER`]).
+    softer: Option<f32>,
     /// At a percentage zoom, the shape the latest tick's restoration or spatial layer is planned
     /// in when its owner planned both: `gpu`, every unit, or `cpu`, the units its values need,
     /// when only that one fits the budget. `None` when there was no choice.
@@ -755,6 +758,7 @@ impl Drag {
             compiling: None,
             zoom: None,
             over_budget: None,
+            softer: None,
             shape: None,
             ended: None,
             gpu_ticks: 0,
@@ -948,7 +952,7 @@ pub(crate) fn region_charge(plan: &CorePlan, request: &SourceBoundary) -> Option
 /// it creates ([`surface::gpu_preview::light::light_charge`]): its tile of the source, the whole
 /// stage's block plane and its buffers, whatever window the plan draws over. Lights the surface
 /// cannot run are charged nothing; the tick that converts the plan refuses them.
-fn light_charge(plan: &CorePlan, format: luxforge_core::BoundaryFormat) -> u64 {
+pub(crate) fn light_charge(plan: &CorePlan, format: luxforge_core::BoundaryFormat) -> u64 {
     gpu_plan::surface_lights(plan).map_or(0, |lights| {
         lights
             .iter()
@@ -975,6 +979,37 @@ fn over_budget(plan: &CorePlan, request: &SourceBoundary, budget: u64) -> Option
         (slot > budget).then_some((slot, budget))
     }
 }
+
+/// What a drag's plan at the reduced stage takes when it is drawn at 100% or more in a region's
+/// place, the softer frame ([`SOFTER`]): [`region_charge`]'s figures over the window of the reduced
+/// stage its boundary holds, its frame the whole reduced output in a region's size bucket.
+pub(crate) fn reduced_charge(plan: &CorePlan, request: &SourceBoundary) -> u64 {
+    let Some(proxy) = request.key.plan() else {
+        return u64::MAX;
+    };
+    let [x0, y0, width, height] = proxy.held();
+    let window = Region {
+        x0,
+        y0,
+        width,
+        height,
+    };
+    let output = plan.geometry.output();
+    surface::gpu_preview::texture_charge(
+        (window.width, window.height),
+        gpu_plan::boundary_format(request.format),
+        (output.width, output.height),
+        gpu_plan::has_tail(plan).then_some((plan.geometry.clamps, plan.linear)),
+        true,
+        super::compare_after::DEVICE_TEXTURE_LIMIT,
+    ) + chain_charge(plan, window, request.format)
+        + light_charge(plan, request.format)
+}
+
+/// What a drag's frame drawn at the reduced stage of the view's area at 100% or more is called,
+/// where its region's slot would pass the budget: the drag's reason while it is drawn so, which the
+/// status bar's notice says, though the GPU draws every tick.
+pub(crate) const SOFTER: &str = "budget-reduced";
 
 /// The bytes a boundary over `window` in `format` takes, and so does each of a chain's
 /// intermediates over it, which take the boundary's size and format.
@@ -1040,6 +1075,16 @@ fn proxy_evidence(key: &BoundaryKey) -> Value {
         json!({"width": plan.width, "height": plan.height,
             "bounds": [plan.bounds.width, plan.bounds.height]})
     })
+}
+
+/// Whether a plan's region frame holds `wanted` of the photograph's full output stage: a region at
+/// full scale whose rectangle holds it, or a reduced whole frame placed over the full stage, the
+/// softer drag frame, which holds every part of it.
+fn holds_view(region: surface::GpuRegion, wanted: Region) -> bool {
+    if region.stage != region.full_stage {
+        return region.rect == [0, 0, region.stage.0, region.stage.1];
+    }
+    super::preview::contains_region(rect_of(region), wanted)
 }
 
 /// A surface region's rectangle of its stage, as the core's.
@@ -1194,6 +1239,9 @@ impl GpuPreviews {
                     json!({"requested": requested, "budget": budget})
                 }),
                 "shape": drag.shape,
+                // At 100% and above, the zoom at which the drag went to its reduced stage, the
+                // softer frame, past the budget.
+                "softer": drag.softer,
                 "boundaries_derived": drag.derived,
                 "reason": drag.reason,
                 "ended": drag.ended.is_some(),
@@ -1293,7 +1341,14 @@ impl Editor {
             luxforge_core::Zoom::Percent { value } => Some(value),
             luxforge_core::Zoom::Fit => None,
         };
-        let budget = self.gpu_budget();
+        // The budget a slot is held to: the GPU-preview budget less the source the surface holds,
+        // which is charged to the same budget.
+        let budget = self.gpu_budget().saturating_sub(
+            self.gpu
+                .source
+                .as_ref()
+                .map_or(0, |source| source.gpu.bytes()),
+        );
         let over_budget =
             |plan: &CorePlan, request: &SourceBoundary| over_budget(plan, request, budget);
         let report = self.surface_report();
@@ -1357,6 +1412,7 @@ impl Editor {
                 answer: GpuAnswer::Plan(plan),
                 boundary,
                 cpu_shape,
+                reduced,
                 ..
             }) => {
                 let Some(request) = boundary else {
@@ -1364,13 +1420,6 @@ impl Editor {
                     drag.cpu_ticks += 1;
                     return Tick::Cpu;
                 };
-                if let Some(held) = drag.held.take_if(|held| !held.serves(&request)) {
-                    // The plan needs another boundary: the window moved, the bounds changed, or
-                    // the source did.
-                    drag.surface = None;
-                    released = Some(held.boundary.version());
-                }
-
                 let revision = set.draft_revision;
                 // At a percentage zoom a spatial layer is drawn in its GPU shape when that fits,
                 // else in the CPU's shape when that does, with a compile where a value crosses
@@ -1383,6 +1432,36 @@ impl Editor {
                     (over, Some(_)) => (plan, over, Some("gpu")),
                     (over, None) => (plan, over, None),
                 };
+                // A region whose slot would pass the budget, now or earlier in this drag at this
+                // zoom, is drawn from the draft's plan at the reduced stage of the view's area,
+                // scaled to the view: the softer drag frame, when that fits.
+                let full = plan.geometry.output();
+                let softer = reduced
+                    .filter(|_| {
+                        over_budget.is_some() || (drag.softer.is_some() && drag.softer == zoom)
+                    })
+                    .and_then(|reduced| match *reduced {
+                        luxforge_core::GpuPreview {
+                            answer: GpuAnswer::Plan(plan),
+                            boundary: Some(request),
+                            ..
+                        } => Some((plan, request)),
+                        _ => None,
+                    })
+                    .filter(|(plan, request)| reduced_charge(plan, request) <= budget);
+                let (plan, request, over_budget, shape, placed) = match softer {
+                    Some((plan, request)) => {
+                        drag.softer = zoom;
+                        (plan, request, None, None, Some((full.width, full.height)))
+                    }
+                    None => (plan, request, over_budget, shape, None),
+                };
+                if let Some(held) = drag.held.take_if(|held| !held.serves(&request)) {
+                    // The plan needs another boundary: the window moved, the bounds changed, the
+                    // drag went to its reduced stage, or the source changed.
+                    drag.surface = None;
+                    released = Some(held.boundary.version());
+                }
                 drag.shape = shape;
                 drag.wanted = Some(request.clone());
                 drag.plan = Some((plan, revision));
@@ -1423,7 +1502,10 @@ impl Editor {
                             held.key.region(),
                         )
                         .map(|converted| super::gpu_settle::marked(converted, plan, clip))
-                        {
+                        .map(|converted| match placed {
+                            Some(full) => gpu_plan::placed_over(converted, full),
+                            None => converted,
+                        }) {
                             Err(unrunnable) => {
                                 drag.surface = None;
                                 drag.stopped(unrunnable.code(), None, now);
@@ -1437,8 +1519,22 @@ impl Editor {
                                     && report.fallback.is_none()
                                 {
                                     drag.drew();
+                                    if placed.is_some() {
+                                        // Drawn on the GPU at the reduced stage: the notice says
+                                        // the frame is softer than the picture at rest.
+                                        drag.reason = Some(SOFTER.into());
+                                    }
                                     Tick::Gpu
                                 } else {
+                                    // A region slot the surface found over the budget, beside
+                                    // what else it holds: the next tick draws the reduced stage.
+                                    if matches!(
+                                        report.fallback,
+                                        Some(SurfaceFallback::BudgetExceeded { .. })
+                                    ) && held.key.region().is_some()
+                                    {
+                                        drag.softer = zoom;
+                                    }
                                     drag.stopped(
                                         report
                                             .fallback
@@ -2262,8 +2358,7 @@ impl Editor {
         let Some((plan, _)) = self.gesture_gpu_plan() else {
             return false;
         };
-        plan.region
-            .is_some_and(|region| super::preview::contains_region(rect_of(region), wanted))
+        plan.region.is_some_and(|region| holds_view(region, wanted))
             && !self.gpu_held()
             && self.surface_report().ready_boundary == Some(plan.boundary.version())
     }
@@ -2315,11 +2410,9 @@ impl Editor {
                     self.presentation.gpu_presented == Some(self.presentation.presented_content);
                 self.presentation
                     .dimensions
-                    .filter(|stage| *stage == region.stage)
+                    .filter(|stage| *stage == region.full_stage)
                     .and_then(|stage| self.desired_view_for(stage))
-                    .is_some_and(|wanted| {
-                        presented || super::preview::contains_region(rect_of(region), wanted)
-                    })
+                    .is_some_and(|wanted| presented || holds_view(region, wanted))
             }
             _ => false,
         }
