@@ -198,29 +198,21 @@ fn sweep(from: f64, to: f64, count: usize) -> Vec<f64> {
         .collect()
 }
 
-/// Nearest-rank percentile `p` of `ms`, in milliseconds.
-fn percentile(ms: &[f64], p: f64) -> f64 {
-    let mut sorted = ms.to_vec();
-    sorted.sort_by(f64::total_cmp);
-    let rank = ((p / 100.0) * sorted.len() as f64).ceil() as usize;
-    sorted[rank.clamp(1, sorted.len()) - 1]
-}
-
 fn ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
 }
 
 /// A run of timings as the report records it.
 fn summary(ms: &[f64]) -> Value {
-    if ms.is_empty() {
+    let Some(distribution) = luxforge_testbase::Distribution::of(ms.iter().copied()) else {
         return json!({"count": 0});
-    }
+    };
     json!({
-        "count": ms.len(),
-        "p50_ms": percentile(ms, 50.0),
-        "p95_ms": percentile(ms, 95.0),
+        "count": distribution.count,
+        "p50_ms": distribution.p50,
+        "p95_ms": distribution.p95,
         "mean_ms": ms.iter().sum::<f64>() / ms.len() as f64,
-        "max_ms": ms.iter().copied().fold(0.0, f64::max),
+        "max_ms": distribution.max,
         "ms": ms,
     })
 }
@@ -788,6 +780,8 @@ fn drag_tick_benchmark() {
 fn a_sweep_goes_to_and_fro_between_its_ends() {
     assert_eq!(sweep(0.0, 1.0, 5), vec![0.0, 0.5, 1.0, 0.5, 0.0]);
     assert_eq!(sweep(10.0, 90.0, 3), vec![10.0, 90.0, 10.0]);
-    assert_eq!(percentile(&[5.0, 1.0, 3.0, 2.0, 4.0], 50.0), 3.0);
-    assert_eq!(percentile(&[5.0, 1.0, 3.0, 2.0, 4.0], 95.0), 5.0);
+    let summarised = summary(&[5.0, 1.0, 3.0, 2.0, 4.0]);
+    assert_eq!(summarised["p50_ms"], json!(3.0));
+    assert_eq!(summarised["p95_ms"], json!(5.0));
+    assert_eq!(summary(&[]), json!({"count": 0}));
 }
