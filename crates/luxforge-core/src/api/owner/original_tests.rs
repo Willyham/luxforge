@@ -11,7 +11,7 @@
 use super::*;
 use crate::{
     ActionDescriptor, ActionInput, ActionPlan, BASIC_EFFECT, CompileStage, DETAIL_EFFECT,
-    EditorService, Layer, LayerReport, ModuleDescriptor, Orientation, OriginalContext,
+    EditorService, LOOK_EFFECT, Layer, LayerReport, ModuleDescriptor, Orientation, OriginalContext,
     OriginalLayer, Processing, RawInterpretation, SourceKind, SourceTag, Stage, StageContext,
     ToolModule,
     catalog_types::{CatalogFolderId, FolderValue},
@@ -279,8 +279,9 @@ fn each_new_raw_original_holds_the_contributed_layers_where_their_stages_place_t
         }
         assert_eq!(
             effects(recipe),
-            [RAW_EFFECT, DETAIL_EFFECT, BASIC_EFFECT],
-            "the source layer stays first, then each by its stage"
+            [RAW_EFFECT, DETAIL_EFFECT, BASIC_EFFECT, LOOK_EFFECT],
+            "the source layer stays first, then each by its stage and order: the built-in \
+             Standard look after Basic"
         );
         assert_eq!(recipe.layers[1].payload, json!({"sharpening": 40}));
         assert_eq!(recipe.layers[2].payload, json!({"exposure": 0.5}));
@@ -332,7 +333,7 @@ fn each_new_raw_original_holds_the_contributed_layers_where_their_stages_place_t
                 .recipe
         )
         .len(),
-        3
+        4
     );
     drop(service);
     fs::remove_dir_all(dir).unwrap();
@@ -590,7 +591,7 @@ fn a_seeded_raw_original_follows_the_same_rule() {
     let layers = &raw.current_entry.snapshot.recipe.layers;
     assert_eq!(
         effects(&raw.current_entry.snapshot.recipe),
-        [RAW_EFFECT, DETAIL_EFFECT, BASIC_EFFECT]
+        [RAW_EFFECT, DETAIL_EFFECT, BASIC_EFFECT, LOOK_EFFECT]
     );
     let suffix = &seeded[0].id.as_str()[AssetId::PREFIX.len()..];
     let ids: Vec<_> = layers.iter().map(|layer| layer.id.as_str()).collect();
@@ -598,8 +599,9 @@ fn a_seeded_raw_original_follows_the_same_rule() {
         ids,
         [
             format!("layer-{suffix}"),
-            format!("layer-{suffix}-3"),
+            format!("layer-{suffix}-4"),
             format!("layer-{suffix}-2"),
+            format!("layer-{suffix}-3"),
         ]
     );
     let jpeg = service.state(&seeded[1].id).unwrap();

@@ -671,3 +671,31 @@ fn basic_the_look_and_the_tone_curve_render_in_that_order_whatever_order_they_we
         );
     }
 }
+
+fn original_on(source: SourceTag, raw_look: RawLook) -> Option<OriginalLayer> {
+    let header = crate::catalog_types::HeaderMetadata::default();
+    module()
+        .original(&OriginalContext {
+            source,
+            raw: None,
+            header: &header,
+            preferences: crate::OriginalPreferences { raw_look },
+        })
+        .expect("the look never refuses an Original")
+}
+
+#[test]
+fn a_new_raw_photo_starts_from_the_standard_look_unless_neutral_is_preferred() {
+    let layer = original_on(SourceTag::Raw, RawLook::Standard).expect("a Standard look");
+    assert_eq!(layer.effect_id, LOOK_EFFECT);
+    assert_eq!(layer.payload, standard_payload(100.0));
+    module()
+        .validate_payload(LOOK_EFFECT, EFFECT_FORMAT, &layer.payload)
+        .expect("the starting look is a valid stored look");
+    let report = module()
+        .describe(LOOK_EFFECT, EFFECT_FORMAT, &layer.payload)
+        .unwrap();
+    assert!(report.neutral, "the starting Standard look is not an edit");
+    assert_eq!(original_on(SourceTag::Raw, RawLook::Neutral), None);
+    assert_eq!(original_on(SourceTag::Jpeg, RawLook::Standard), None);
+}

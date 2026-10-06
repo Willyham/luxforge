@@ -23,10 +23,11 @@ pub(crate) use unit::PROGRAM as LOOK_PROGRAM;
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, ColorOperation, CompileStage, Control,
     EffectDescriptor, EffectStage, LayerReport, LayerUpdate, ModuleDescriptor, NewLayer,
-    ParameterDescriptor, PointwiseColor, Processing, ResetAction, StageContext, ToolModule,
+    OriginalContext, OriginalLayer, ParameterDescriptor, PointwiseColor, Processing, ResetAction,
+    StageContext, ToolModule,
     curve::{Interpolant, Tails},
 };
-use crate::{EFFECT_FORMAT, Error, Layer, SourceTag};
+use crate::{EFFECT_FORMAT, Error, Layer, SourceTag, preferences::RawLook};
 use serde_json::{Map, Value, json};
 use standard::{STANDARD_CHROMA, STANDARD_KNEE, STANDARD_KNOTS};
 use std::sync::Arc;
@@ -560,6 +561,22 @@ impl ToolModule for LookModule {
     /// hold yet: in the GPU shape it is the look's one unit as the identity.
     fn neutral_payload(&self, _: &str) -> Value {
         Payload::Neutral.to_value()
+    }
+
+    /// A new RAW photograph starts from the look the person chose for new RAW photos
+    /// (`raw_look`): the current Standard at amount 100, in its Original, or no look layer for
+    /// Neutral, which is the bare development. A JPEG has no look. Preferences only.
+    fn original(&self, context: &OriginalContext<'_>) -> Result<Option<OriginalLayer>, Error> {
+        if context.source != SourceTag::Raw {
+            return Ok(None);
+        }
+        Ok(match context.preferences.raw_look {
+            RawLook::Standard => Some(OriginalLayer {
+                effect_id: LOOK_EFFECT.to_owned(),
+                payload: Payload::Standard(Resolved::standard(100.0)).to_value(),
+            }),
+            RawLook::Neutral => None,
+        })
     }
 
     /// The Neutral look and amount 0 compile to no units, the identity path. Every other look is
