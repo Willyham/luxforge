@@ -3,8 +3,9 @@
 //! development's on the global target: a Temperature drag in kelvin left open, which the GPU draws
 //! over the planes the entry developed with the change as a leading step, then released, which
 //! redevelops the mosaic and lands the exact picture at rest, at Fit and again at 100%. The moving
-//! GPU frame is held to the release's picture at rest within the pointwise limits, at Fit the whole
-//! frame and at 100% the visible region (the owner's decision of 2026-10-05). Both drags keep the
+//! GPU frame is reported against the release's picture at rest, at Fit the whole frame and at 100%
+//! the visible region, and fails only on a gross error (the owner's decision of 2026-10-06). Both
+//! drags keep the
 //! tint in force (the first, from As shot, the camera's as-shot tint); and a double-click reset on
 //! Temperature, Tint and Exposure after the committed jump the first press makes: Temperature and
 //! Tint back to As shot, labelled `Reset White balance`, whose fields then show the camera's
@@ -344,12 +345,15 @@ fn development_gains(frame: &Value) -> Result<[f32; 3]> {
         .map_err(|error| format!("The RAW layer's gains are unreadable: {error}").into())
 }
 
+/// The worst 16 × 16 block, in ΔE00, past which a moving white-balance frame is a gross error
+/// rather than the approximation's own difference from the release (owner, 2026-10-06).
+const GROSS_WORST_BLOCK: f64 = 10.0;
+
 /// The moving GPU white-balance frame against the release's picture at rest, over the photograph
 /// on screen — the whole frame at Fit, the visible region at 100% — as the pointwise statistics
-/// report it, and whether they are within the pointwise limits (owner, 2026-10-05: the moving GPU
-/// frame is held to the release within the pointwise limits, with no quiet-policy refinement and
-/// no relative-residual gate).
-fn white_balance_accuracy(moving: &Frame, settled: &Frame) -> Result<(Value, bool)> {
+/// and verdict report it: reported, not gated (owner, 2026-10-06), but for a gross error, a worst
+/// block past [`GROSS_WORST_BLOCK`].
+fn white_balance_report(moving: &Frame, settled: &Frame) -> Result<Value> {
     let rect = moving.visible_photo()?;
     ensure(
         settled.visible_photo()? == rect,
@@ -364,33 +368,37 @@ fn white_balance_accuracy(moving: &Frame, settled: &Frame) -> Result<(Value, boo
         rect,
         Some(luxforge_reference::preview_error::Class::Pointwise),
     )?;
-    let passed = report["verdict"]["passed"] == json!(true);
-    Ok((
-        json!({"moving": moving["file"], "settled": settled["file"],
-            "statistics": report["statistics"], "verdict": report["verdict"]}),
-        passed,
-    ))
+    let figures = json!({"moving": moving["file"], "settled": settled["file"],
+        "statistics": report["statistics"], "pointwise_verdict": report["verdict"],
+        "gated": false, "gross_worst_block": GROSS_WORST_BLOCK});
+    gross_error(&figures)?;
+    Ok(figures)
 }
 
-/// The exception the owner recorded on 2026-09-30 for the white-balance accuracy gates: a Bayer
-/// scene with enough sites at sensor white keeps the approved `W` draft, whose first-order
-/// `diag(g'/g)` cannot follow the demosaic's input clamp there. See
-/// `docs/decisions.md#raw-white-balance-drafts`.
-const HIGHLIGHT_CLIP_EXCEPTION: &str = "highlight-clipped Bayer scene";
+/// A report whose worst block is past [`GROSS_WORST_BLOCK`] ΔE00 fails; any other passes, whatever
+/// the pointwise verdict says.
+fn gross_error(figures: &Value) -> Result {
+    let worst = figures["statistics"]["worst_block_mean_de00"]
+        .as_f64()
+        .ok_or("The white-balance report has no worst block")?;
+    ensure(
+        worst <= GROSS_WORST_BLOCK,
+        format!(
+            "The moving GPU white-balance frame is grossly unlike the release's picture at rest: \
+             its worst block {worst:.2} ΔE00 is past {GROSS_WORST_BLOCK}: {figures}"
+        ),
+    )
+}
+
 /// A site counts as clipped when its normalized, gained value reaches this share of sensor white.
 const CLIP_FRACTION: f32 = 0.99;
-/// The share of the default crop's sites, clipped at any of the drags' developments, from which a
-/// Bayer scene qualifies. Chosen from the 2026-09-30 measurement of 33 sources (see
-/// `docs/design/instant-preview.md#popular-cameras`): the five that miss a limit clip 1.25% to
-/// 4.07%, and the next Bayer scene below 1% clips 0.61%. Two passing scenes (2.50%, 1.42%) also
-/// qualify, which changes nothing for them while their figures stay within the limits.
-const MIN_HIGHLIGHT_CLIP_SHARE: f64 = 0.01;
 
 /// How much of the scene the drags' developments clip, from the source itself: the share of its
 /// Bayer sites at [`CLIP_FRACTION`] of sensor white or above under the channel-wise largest of the
 /// gains the scenario develops at (as shot and each committed temperature), since a site clipped
-/// at any of them is one the draft's `diag(g'/g)` cannot follow. `share` is `None` for a
-/// development without one clip ceiling: X-Trans, or a DNG corrected after the demosaic.
+/// at any of them is one the draft's first-order `diag(g'/g)` cannot follow: context for the
+/// reported white-balance figures. `share` is `None` for a development without one clip ceiling:
+/// X-Trans, or a DNG corrected after the demosaic.
 #[derive(Debug, Clone, PartialEq)]
 struct Highlights {
     gains: [f32; 3],
@@ -411,43 +419,13 @@ impl Highlights {
         Ok(Self { gains, share })
     }
 
-    fn qualifies(&self) -> bool {
-        self.share
-            .is_some_and(|share| share >= MIN_HIGHLIGHT_CLIP_SHARE)
-    }
-
     fn record(&self) -> Value {
         json!({
             "gains": self.gains,
             "clip_fraction_of_sensor_white": CLIP_FRACTION,
             "clipped_share": self.share,
             "uniform_clip_ceiling": self.share.is_some(),
-            "minimum_share": MIN_HIGHLIGHT_CLIP_SHARE,
-            "exception": self.qualifies().then_some(HIGHLIGHT_CLIP_EXCEPTION),
         })
-    }
-}
-
-/// The white-balance accuracy verdict for one drag: [`white_balance_accuracy`] within the pointwise
-/// limits, except that a limit a highlight-clipped Bayer scene misses is recorded, not failed.
-fn white_balance_accuracy_verdict(
-    figures: Value,
-    passed: bool,
-    highlights: &Highlights,
-) -> Result<Value> {
-    match (passed, highlights.qualifies()) {
-        (true, _) => Ok(json!({"figures": figures, "held": true, "exception": null})),
-        (false, true) => Ok(json!({
-            "figures": figures,
-            "held": false,
-            "exception": HIGHLIGHT_CLIP_EXCEPTION,
-            "clipped_share": highlights.share,
-        })),
-        (false, false) => Err(format!(
-            "The moving GPU white-balance frame misses the pointwise limits of the release's \
-             picture at rest: {figures}"
-        )
-        .into()),
     }
 }
 
@@ -578,7 +556,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         checks.note(
             launch.at(drag.release)?,
             "a temperature drag's approximate draft and its exact release",
-            white_balance_drag(launch, drag, &highlights)?,
+            white_balance_drag(launch, drag)?,
         );
     }
 
@@ -1366,10 +1344,10 @@ const PASSING: [&str; 5] = [
 /// histogram stays the last exact one marked updating, and no report is adopted for it.
 ///
 /// Released, the commit redevelops the mosaic, and the GPU draws the exact picture at rest with
-/// its own report. The moving GPU frame is held to that picture at rest within the pointwise
-/// limits, the whole frame at Fit and the visible region at 100%, a highlight-clipped Bayer scene
-/// recorded rather than failed. The plan checks one history entry.
-fn white_balance_drag(launch: &Checked, drag: &Drag, highlights: &Highlights) -> Result<Value> {
+/// its own report. The moving GPU frame is reported against that picture at rest, the whole frame
+/// at Fit and the visible region at 100%, and fails only past a worst block of
+/// [`GROSS_WORST_BLOCK`] (owner, 2026-10-06). The plan checks one history entry.
+fn white_balance_drag(launch: &Checked, drag: &Drag) -> Result<Value> {
     use crate::gpu_preview_smoke::{at_rest_after, gpu_drawn, span_events, ticks};
     let kelvin = drag.kelvin;
     let view = if drag.fit { "Fit" } else { "100%" };
@@ -1501,9 +1479,9 @@ fn white_balance_drag(launch: &Checked, drag: &Drag, highlights: &Highlights) ->
         raw_payload(settled)?["temperature_kelvin"] == json!(kelvin),
         "The picture at rest is not the released development's",
     )?;
-    // The moving GPU frame against the release's picture at rest, within the pointwise limits.
-    let (figures, passed) = white_balance_accuracy(drafted, settled)?;
-    let accuracy = white_balance_accuracy_verdict(figures, passed, highlights)?;
+    // The moving GPU frame against the release's picture at rest: reported, failing only on a
+    // gross error.
+    let accuracy = white_balance_report(drafted, settled)?;
     let (change_mean, _) = surface_difference(before, settled)?;
     ensure(
         change_mean > 0.0,
@@ -1612,57 +1590,30 @@ mod tests {
         assert_eq!(value.parse::<f64>().unwrap(), DRAFT_DIM_OPACITY);
     }
 
-    /// A scene qualifies as highlight-clipped Bayer from its clip share alone: at or above the
-    /// minimum, and only with one clip ceiling. The lowest failing source measured, the A7 IV
-    /// (6932), clipped 1.25%; the highest below it, the A6700 (6735), 0.61%.
+    /// The clip share is context: recorded beside the reported figures, deciding nothing.
     #[test]
-    fn a_highlight_clipped_bayer_scene_is_decided_by_its_clip_share() {
-        let scene = |share| Highlights {
+    fn the_highlight_clip_share_is_recorded_as_context() {
+        let record = Highlights {
             gains: [2.0, 1.0, 2.5],
-            share,
-        };
-        assert!(scene(Some(0.012_54)).qualifies());
-        assert!(scene(Some(MIN_HIGHLIGHT_CLIP_SHARE)).qualifies());
-        assert!(!scene(Some(0.006_11)).qualifies());
-        assert!(!scene(Some(0.0)).qualifies());
-        assert!(
-            !scene(None).qualifies(),
-            "X-Trans or a corrected DNG never qualifies"
-        );
-        let record = scene(Some(0.04)).record();
-        assert_eq!(record["exception"], HIGHLIGHT_CLIP_EXCEPTION);
+            share: Some(0.04),
+        }
+        .record();
+        assert_eq!(record["clipped_share"], 0.04);
         assert_eq!(record["uniform_clip_ceiling"], true);
-        assert!(scene(None).record()["exception"].is_null());
+        assert!(record.get("exception").is_none());
     }
 
-    /// A qualifying scene's frame past the pointwise limits is recorded with the exception and its
-    /// share; a non-qualifying scene's fails; a frame within the limits carries no exception either
-    /// way.
+    /// A moving frame past the pointwise limits is reported and passes; only a worst block past
+    /// the gross bound fails (the Air 2S's misses, 2.7 to 8.7 ΔE00, are reported).
     #[test]
-    fn a_highlight_clipped_scene_records_its_missed_accuracy_limits_and_others_fail() {
-        let clipped = Highlights {
-            gains: [2.4, 1.0, 2.6],
-            share: Some(0.0407),
-        };
-        let unclipped = Highlights {
-            gains: [2.0, 1.0, 1.8],
-            share: Some(0.0),
-        };
-        let figures = || json!({"statistics": {"worst_block": 2.68}});
-        let recorded = white_balance_accuracy_verdict(figures(), false, &clipped).unwrap();
-        assert_eq!(recorded["exception"], HIGHLIGHT_CLIP_EXCEPTION);
-        assert_eq!(recorded["held"], false);
-        assert_eq!(recorded["clipped_share"], 0.0407);
-        let failure = white_balance_accuracy_verdict(figures(), false, &unclipped).unwrap_err();
-        assert!(
-            failure.to_string().contains("pointwise limits"),
-            "{failure}"
-        );
-        for highlights in [&clipped, &unclipped] {
-            let within = white_balance_accuracy_verdict(figures(), true, highlights).unwrap();
-            assert_eq!(within["held"], true);
-            assert!(within["exception"].is_null());
+    fn a_white_balance_frame_fails_only_on_a_gross_error() {
+        let figures = |worst: f64| json!({"statistics": {"worst_block_mean_de00": worst}});
+        for worst in [0.4, 2.68, 8.75, GROSS_WORST_BLOCK] {
+            assert!(gross_error(&figures(worst)).is_ok(), "{worst}");
         }
+        let failure = gross_error(&figures(10.01)).unwrap_err();
+        assert!(failure.to_string().contains("grossly"), "{failure}");
+        assert!(gross_error(&json!({})).is_err(), "no figures");
     }
 
     /// What the plan scripts at the named step.
