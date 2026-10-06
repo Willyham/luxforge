@@ -20,8 +20,7 @@ A persistent list of the work that can start now: each plan below has a validate
 
 | Plan | Ready tasks | Notes | Minimum model |
 | --- | --- | --- | --- |
-| [GPU memory accounting](../tasks/rendering/gpu-memory.json) | TASK-001 measure and bound GPU resources outside the photo-texture ceiling | A measurement: run after feature work, on a quiet host, beside the RAW whole-editor measurement | High tier |
-| [RAW qualification](../tasks/raw/raw.json) ([design](design/initial-raw.md)) | TASK-006 full-editor RAW responsiveness, memory and JPEG measurement | A measurement on the owner's M4; TASK-001, 002, 004 and 005 are in progress | High tier |
+| [GPU memory accounting](../tasks/rendering/gpu-memory.json) | TASK-001 measure and bound GPU resources outside the photo-texture ceiling | A measurement: run after feature work, on a quiet host | High tier |
 | [RAW looks](../tasks/raw/raw-looks.json) ([design](design/raw-looks.md)) | TASK-002 the shared colour primitives (curve tail policy, Oklab chroma unit, path to white) | Phase 1 first; its GPU programs join the GPU-first renderer's program list and qualification, now on `main` | High tier |
 | [Corrections](../tasks/editing/corrections.json) ([design](design/corrections.md)) | TASK-001 freeze the remaining contract; TASK-002 Clone and Heal numerics | Renderer integration targets the merged GPU-first interfaces; the repair-versus-Detail placement is still open | High tier |
 | [AI editing](../tasks/editing/ai-editing.json) ([design](design/ai-editing.md)) | TASK-002 the prototype on `main` as the harness; TASK-006 the inference port and ONNX Runtime crate; TASK-008 the model-selection mask kind | The GPU-first integration they were sequenced after has merged; the Corrections foundation runs beside the first stage | High tier |
@@ -38,7 +37,7 @@ Ready tasks in plans the owner has decided but not yet authorized for implementa
 
 ### In progress
 
-Continue these rather than starting them again: [GPU-first rendering](../tasks/rendering/gpu-first.json) TASK-008, portability without a native GPU, which TASK-010 and 011 wait on; [Detail](../tasks/editing/detail.json) TASK-013, 016 and 017; the [Tone curve](../tasks/editing/tone-curve.json) measurement, TASK-009; and the [RAW qualification](../tasks/raw/raw.json) tasks above. The [Lens and perspective](../tasks/editing/lens-and-perspective.json) measurement and first-open checks wait on other work, the [Efficiency](../tasks/rendering/efficiency.json) `dist` profile is blocked by the owner's deferral, and the [product decisions](../tasks/project/product-decisions.json) are the owner's to make.
+Continue these rather than starting them again: [GPU-first rendering](../tasks/rendering/gpu-first.json) TASK-008, portability without a native GPU, which TASK-010 and 011 wait on. The [Efficiency](../tasks/rendering/efficiency.json) `dist` profile is blocked by the owner's deferral, and the [product decisions](../tasks/project/product-decisions.json) are the owner's to make.
 
 ## Engineering
 
@@ -85,13 +84,8 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 
 ## RAW
 
-**RAW qualification.** Make the [continuous RAW editing](design/initial-raw.md) that exists trustworthy ([plan](../tasks/raw/raw.json)).
-- High-precision development and neutral defaults on every qualified camera
-- Foundation checkpoint across cameras, geometry and history
-- Failure hardening: source, native worker, cache, recipe
-- Packaged dependency delivery and portability
-- M4 responsiveness, memory and JPEG regression measurements
-- End-to-end RAW editing journey
+**RAW follow-ups** ([continuous RAW editing](design/initial-raw.md)). Continuous RAW editing is delivered; the owner closed its broader qualification plan on 2026-10-06 ([remaining boundaries](design/initial-raw.md#remaining-qualification-and-decisions)).
+- Bayer highlight latitude: the owner decided to retain it, as X-Trans does, if the rendering change on the supplied Z6 and Air 2S files shows no new highlight artefacts; not built, so RCD still clips each gained Bayer site at sensor white
 - Measure the cost and accuracy of a clip-aware white-balance draft on Bayer developments, whose drag frames on highlight-clipped scenes are reported and not gated ([decisions](decisions.md#gpu-first-rendering)). The candidate is in [instant previews](design/instant-preview.md#popular-cameras)
 
 **RAW looks** ([design](design/raw-looks.md), [plan](../tasks/raw/raw-looks.json)). Planned, decided 2026-10-05. New RAW photos start from a Luxforge look instead of the bare neutral development.
@@ -104,19 +98,9 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 
 ## Editing tools
 
-**Tone curve follow-ups** ([design](design/tone-curve.md), [plan](../tasks/editing/tone-curve.json)). The Tone curve is delivered ([feature status](features.md)).
-- Photo-sized measurement at 24 MP and 60 MP: the point drag to the presented frame, its settled histogram and the unit's frame cost
+**Tone curve follow-ups** ([design](design/tone-curve.md)). The Tone curve is delivered ([feature status](features.md)).
 - Owner review of the recorded defaults: what the composite acts on, channels, order, endpoints, the point limit, the Lightroom transfer and the editor gestures; below black the curve uses a floor-subtracted ratio (decided 2026-09-30)
 - Follow-up: whether Basic's Blacks adopts the same floor-subtracted ratio, since lifting Blacks turns near-black noise into coloured speckle
-
-**Detail** (implemented; qualification in progress, [design](design/detail.md), [plan](../tasks/editing/detail.json)). Manual noise reduction and capture sharpening before tone, on RAW and JPEG.
-- Bounded numerical kernels and shared restoration/scale contracts
-- Off-owner pixel queries and mutations behind a spatial prefix, the 16-bit JPEG hand-off (which also changes Presence) and an input-grid overlay cache
-- Generated controls/API, masks, native presets and history
-- Approximate motion, the picture at rest on the GPU and 100% inspection
-- Photographic quality and native M4 cost qualification; output sharpening remains export follow-up scope
-
-**Lens and perspective correction** (implemented; qualification in progress, [design](design/lens-and-perspective.md), [plan](../tasks/editing/lens-and-perspective.json)). Offline Lensfun profile distortion and manual two-axis perspective, with a fixed covered canvas, shared nonlinear mapping for crop and masks, and explicit prevention of duplicate embedded DNG correction. Functional implementation is verified; performance and photographic qualification remain outstanding. Coverage and read bounds are closed forms; the pinned index ships as a separate resource; Perspective is not presettable and strong minification is refused. Qualification needs authentic photographs for the qualified camera, lens and focal combinations.
 
 **Corrections** (proposal, [design](design/corrections.md), [plan](../tasks/editing/corrections.json)). Remove blemishes by hand; offline Clone/Heal has its own delivery and qualification.
 - Decided: repair after source development and before colour, deletion of `PointReplace`, stale patches kept rendering with export acknowledgement. Open: repair versus Detail restoration placement, correction preset eligibility, Heal numerics, brush/source-edge behaviour and bounded candidate/export shapes
