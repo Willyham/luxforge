@@ -804,6 +804,10 @@ fn a_starting_draft_whose_input_stage_a_newer_request_cancels_ends_explicitly() 
 /// exact job, reduced to the bounds, which a newer request supersedes as it supersedes any: the
 /// starting draft whose stage will not arrive ends explicitly, and the new entry's frame becomes the
 /// photograph. (A stage the GPU draws is no job and is superseded by nothing.)
+///
+/// The new entry's frame is held until the draft has ended, so the draft's discard happens while
+/// that frame is still rendering, and must leave it running: nothing of the abandoned start is in
+/// the queue to hold back.
 #[test]
 fn a_starting_draft_at_fit_whose_reference_stage_a_newer_request_supersedes_ends() {
     let (mut editor, catalog, asset, _) = opened(vec![basic()], 4);
@@ -827,6 +831,17 @@ fn a_starting_draft_at_fit_whose_reference_stage_a_newer_request_supersedes_ends
     let newer = editor.presentation.preview_generation;
     assert!(newer > draft);
     stage.open();
+    poll_until(&mut editor, "the starting draft's end", |editor| {
+        editor.crop().is_none()
+    });
+    assert!(
+        editor.gesture.is_none(),
+        "the abandoned start was discarded"
+    );
+    assert_eq!(
+        editor.presentation.preview_generation, newer,
+        "the discard left the new entry's frame running"
+    );
     frame.open();
     poll_until(&mut editor, "the new entry's frame", |editor| {
         editor.presentation.presented_generation == newer && !editor.presentation.queue.is_busy()
