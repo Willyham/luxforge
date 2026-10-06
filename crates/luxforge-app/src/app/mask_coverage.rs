@@ -1601,6 +1601,76 @@ mod tests {
         finish(editor, catalog);
     }
 
+    /// Turning the overlay off, or any spec change, cancels the coverage worker's job, but a job
+    /// already running keeps the worker busy until it returns while nothing it produces is ever
+    /// delivered: that busy worker is no coverage pending, so a step waiting on coverage does not
+    /// wait for a frame nothing renders. The worker is held at a gate so the cancel always lands
+    /// while the job is still on it.
+    #[test]
+    fn a_cancelled_coverage_grid_is_nothing_pending() {
+        use crate::app::testing::{finish, opened};
+        use luxforge_testbase::Gate;
+        let (mut editor, catalog, _, _) = opened(Vec::new(), 1);
+        let gate = Arc::new(Gate::new());
+        gate.shut();
+        editor.coverage_worker.queue = CoverageQueue::held(gate.clone());
+        let (parts, mask) = fixture();
+        let entry = editor
+            .document
+            .state
+            .as_ref()
+            .unwrap()
+            .current_entry
+            .clone();
+        let evaluation = Evaluation::new(
+            parts.registry().clone(),
+            parts.context().clone(),
+            parts.source().clone(),
+            entry,
+            parts.recipe().clone(),
+            None,
+        );
+        editor.request_preview(PreviewJob::new(evaluation.clone()).unwrap());
+        drain_photo(&mut editor);
+        editor.session.workspace.mode = luxforge_core::MASK_MODE.into();
+        editor.session.workspace.mask_overlay = MaskOverlayMode::Tint;
+        editor.mask_panel.selected_mask = Some(mask.id.clone());
+        editor.reconcile_coverage_spec();
+        let epoch = editor.coverage_worker.epoch;
+        editor.coverage_worker.latest = Some(evaluation.identity().unwrap());
+        editor.coverage_worker.planning = Some(epoch);
+        editor.mask_coverage_source_planned(
+            epoch,
+            Ok(Box::new(PreviewJob::new(evaluation).unwrap())),
+        );
+        assert!(editor.coverage_worker.requested.is_some());
+        gate.wait_reached(1, "the coverage grid");
+        assert!(
+            editor.mask_coverage_pending(),
+            "a requested grid is pending"
+        );
+
+        editor.invalidate_mask_coverage();
+        editor.coverage_worker.queue.cancel();
+        assert!(
+            editor.coverage_worker.queue.is_busy(),
+            "the cancelled grid is still on the worker"
+        );
+        assert!(
+            !editor.mask_coverage_pending(),
+            "a cancelled grid is no coverage anything waits for"
+        );
+        gate.open();
+        luxforge_testbase::wait_until("the cancelled grid returns", || {
+            !editor.coverage_worker.queue.is_busy()
+        });
+        assert!(
+            editor.coverage_worker.queue.poll().is_none(),
+            "the cancelled grid delivered nothing"
+        );
+        finish(editor, catalog);
+    }
+
     #[test]
     fn an_unpolled_photo_completion_prevents_logical_reuse() {
         use crate::app::testing::{boot, finish};
