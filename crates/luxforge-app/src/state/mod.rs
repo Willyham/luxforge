@@ -2019,6 +2019,113 @@ mod tests {
         );
     }
 
+    /// On a RAW photo the Look section is listed directly above Basic's, though its layer follows
+    /// Basic's in the stack: its controls are the descriptor's Look choice and Amount, under the
+    /// module's own reset, and its band is dark for the Standard look a new RAW photo starts from and
+    /// lit once the amount moves. A JPEG lists no Look section.
+    #[test]
+    fn the_look_section_sits_directly_above_basic_on_a_raw_photo_only() {
+        use crate::state::testing::{Z6_AS_SHOT, Z6_CAM_XYZ, raw_source};
+        use luxforge_core::{
+            LOOK_EFFECT, OriginalContext, OriginalPreferences, RawPayload, SourceTag,
+            catalog_types::HeaderMetadata,
+        };
+        let modules = descriptors();
+        let listed = |workspace: &Workspace| -> Vec<String> {
+            workspace
+                .tools
+                .sections
+                .iter()
+                .map(|section| section.module_id.clone())
+                .collect()
+        };
+        let jpeg = Scene::new(modules.clone()).opened(Vec::new()).derive();
+        assert!(
+            !listed(&jpeg).iter().any(|id| id == "luxforge.look"),
+            "{:?}",
+            listed(&jpeg)
+        );
+
+        // The look a new RAW photo's Original holds, as the module gives it.
+        let registry = luxforge_core::ModuleRegistry::builtin();
+        let standard = registry
+            .module("luxforge.look")
+            .expect("the look module")
+            .original(&OriginalContext {
+                source: SourceTag::Raw,
+                raw: None,
+                header: &HeaderMetadata::default(),
+                preferences: OriginalPreferences::default(),
+            })
+            .expect("an Original layer")
+            .expect("the Standard look");
+        assert_eq!(standard.effect_id, LOOK_EFFECT);
+        let derive = |payload: &Value| {
+            let raw = RawPayload::for_as_shot(Z6_AS_SHOT, Z6_CAM_XYZ).unwrap();
+            let mut scene = Scene::new(modules.clone()).opened(vec![
+                raw.layer(luxforge_core::LayerId::new()),
+                luxforge_core::Layer::new(LOOK_EFFECT, payload.clone()),
+            ]);
+            scene
+                .document
+                .state
+                .as_mut()
+                .expect("an asset")
+                .asset
+                .source = raw_source();
+            scene.derive()
+        };
+        let opened = derive(&standard.payload);
+        let order = listed(&opened);
+        let look = order.iter().position(|id| id == "luxforge.look");
+        let basic = order.iter().position(|id| id == "luxforge.basic");
+        assert!(
+            look.is_some() && basic == look.map(|at| at + 1),
+            "the Look section is not directly above Basic's: {order:?}"
+        );
+        let shown = section(&opened, "luxforge.look");
+        assert_eq!(shown.title, "Look");
+        assert!(shown.expanded);
+        assert_eq!(
+            shown.reset.as_ref().map(|reset| reset.action.as_str()),
+            Some("reset-look")
+        );
+        let controls: Vec<(String, String, String)> = shown
+            .controls
+            .iter()
+            .map(|control| match control {
+                ControlModel::Enum(choice) => (
+                    choice.label.clone(),
+                    choice.action.clone(),
+                    choice.parameter.clone(),
+                ),
+                ControlModel::Slider(slider) => (
+                    slider.label.clone(),
+                    slider.action.clone(),
+                    slider.parameter.clone(),
+                ),
+                other => panic!("the Look section draws {other:?}"),
+            })
+            .collect();
+        let owned = |label: &str, parameter: &str| {
+            (
+                label.to_owned(),
+                "set-look".to_owned(),
+                parameter.to_owned(),
+            )
+        };
+        assert_eq!(controls, [owned("Look", "look"), owned("Amount", "amount")]);
+        let ControlModel::Enum(choice) = &shown.controls[0] else {
+            unreachable!("checked above");
+        };
+        assert_eq!(choice.options, ["standard", "neutral"]);
+        assert!(!shown.active, "the starting Standard look is not an edit");
+
+        let mut at_80 = standard.payload.clone();
+        at_80["amount"] = json!(80.0);
+        assert!(section(&derive(&at_80), "luxforge.look").active);
+    }
+
     /// Basic's White balance controls edit it, so Basic's dot and its White balance caption ask the
     /// core whether that layer does anything: an untouched RAW, at As shot, has neither; a custom
     /// temperature and tint and a neutral pick each light both. No RAW section is drawn at all.

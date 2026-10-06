@@ -600,8 +600,8 @@ fn a_seeded_raw_original_follows_the_same_rule() {
         [
             format!("layer-{suffix}"),
             format!("layer-{suffix}-4"),
-            format!("layer-{suffix}-2"),
             format!("layer-{suffix}-3"),
+            format!("layer-{suffix}-2"),
         ]
     );
     let jpeg = service.state(&seeded[1].id).unwrap();
