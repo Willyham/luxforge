@@ -20,8 +20,7 @@ use super::{
     transform_of,
 };
 use crate::{
-    Cancel, Error, LinearImage, ModuleRegistry, ProxyApproximation, ProxyBounds, ProxyPlan, Recipe,
-    SnapshotId, SourceImage,
+    Cancel, Error, LinearImage, ModuleRegistry, Recipe, SnapshotId, SourceImage,
     analysis::{MaskInputPixel, cell_pixel},
     mask_field::MaskSampling,
     modules::{Region, Stage},
@@ -138,23 +137,6 @@ pub struct Render<'a> {
     pub(super) compiled: Cow<'a, Compiled>,
     pub(super) options: RenderOptions,
     pub(super) context: &'a RenderContext,
-}
-
-/// A job's proxy stage, planned by [`Render::proxy_stage`] and rendered by
-/// [`Render::render_proxy`]: the stack's one compilation at the whole proxy stage, so the render
-/// reuses what the plan compiled.
-pub(crate) struct ProxyStage {
-    plan: ProxyPlan,
-    /// The compilation, or why the stack does not compile at the proxy stage, which the render
-    /// reports as the proxy phase's reason.
-    compiled: Result<Compiled, Error>,
-}
-
-impl ProxyStage {
-    /// The plan the proxy source is built to and cached under: the whole proxy stage.
-    pub(crate) fn plan(&self) -> ProxyPlan {
-        self.plan
-    }
 }
 
 #[cfg(any(test, feature = "qualification"))]
@@ -517,73 +499,6 @@ impl<'a> Render<'a> {
         transform_of(&self.compiled, width, height)
     }
 
-    /// Why this render's frame is an approximation of the exact render at its size, read from the
-    /// compilation the frame itself uses, so what is reported and what is drawn cannot disagree:
-    /// a spatial operation, whose neighbourhoods scale with the stage, and a mask the proxy phase
-    /// supersampled. `O(layers + components)`, no pixel read.
-    pub(crate) fn approximation(&self) -> ProxyApproximation {
-        self.compiled.approximation()
-    }
-
-    /// The proxy of this render's source that fits `bounds`, planned from this compilation's
-    /// output stage, or `None` when no proxy strictly smaller than the source would fit
-    /// (`ProxyPlan::fit`).
-    pub fn proxy_plan(&self, bounds: ProxyBounds) -> Option<ProxyPlan> {
-        ProxyPlan::fit(self.source.dimensions(), self.stage(), bounds)
-    }
-
-    /// The proxy stage of this render's stack for `plan`, fitted from this render's output stage
-    /// ([`Self::proxy_plan`]): the plan over the whole proxy stage, its scale lowered so that stage
-    /// holds no more than a display-sized proxy ([`ProxyPlan::whole_within`]), and the stack
-    /// compiled once against it. [`Self::render_proxy`] renders this compilation, so a job
-    /// compiles its stack once at the proxy stage. `O(layers)`, and reads no pixel.
-    pub(crate) fn proxy_stage(
-        &self,
-        registry: &ModuleRegistry,
-        recipe: &Recipe,
-        plan: ProxyPlan,
-    ) -> ProxyStage {
-        #[cfg(test)]
-        self.context.note_compile();
-        let plan = plan.whole_within(self.source.dimensions());
-        let compiled = registry.compile_sampled(
-            plan.width,
-            plan.height,
-            self.source.dimensions().0,
-            self.source.dimensions().1,
-            recipe,
-            RenderPhase::Proxy.sampling(),
-        );
-        ProxyStage { plan, compiled }
-    }
-
-    /// The proxy phase of this render's stack: `stage`'s compilation, from [`Self::proxy_stage`],
-    /// rendered at the proxy phase against `source`, the proxy source its plan built, under
-    /// `cancel`. Compiles nothing: `O(layers)` and no pixel.
-    pub(crate) fn render_proxy<'s>(
-        &self,
-        source: RenderSource<'s>,
-        stage: ProxyStage,
-        cancel: &Cancel,
-        context: &'s RenderContext,
-    ) -> Result<Render<'s>, Error> {
-        let ProxyStage { plan, compiled } = stage;
-        let compiled = compiled?;
-        if let RenderSource::Byte(image) = source {
-            check_source(image)?;
-        }
-        if source.dimensions() != plan.source_dimensions() {
-            return Err(Error::internal(format!(
-                "a proxy source of {}x{} was handed a {}x{} source",
-                plan.source_dimensions().0,
-                plan.source_dimensions().1,
-                source.dimensions().0,
-                source.dimensions().1
-            )));
-        }
-        Render::compiled(source, compiled, RenderOptions::proxy(cancel), context)
-    }
-
     /// The global estimates the spatial operation entering segment `index` reads, resolved as a
     /// frame of this render resolves them: the ones it was handed, or one reduction of that
     /// operation's whole input stage, for which the whole frames of the spatial segments before it
@@ -704,6 +619,17 @@ impl<'a> Render<'a> {
     /// The source this render reads.
     pub(crate) fn source(&self) -> RenderSource<'a> {
         self.source
+    }
+
+    /// The compilation this render evaluates.
+    pub(crate) fn compilation(&self) -> &Compiled {
+        &self.compiled
+    }
+
+    /// The context this render reads, for a test that counts what it compiles.
+    #[cfg(test)]
+    pub(crate) fn render_context(&self) -> &'a RenderContext {
+        self.context
     }
 
     /// This compilation evaluated in `domain`, answering its spatial segments as `mode` says.

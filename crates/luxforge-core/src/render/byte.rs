@@ -16,7 +16,7 @@ use crate::{
 use rayon::prelude::*;
 use std::sync::Arc;
 
-pub(super) fn check_source(source: &SourceImage) -> Result<(), Error> {
+pub(crate) fn check_source(source: &SourceImage) -> Result<(), Error> {
     if source.rgba.len() != Raster::expected_len(source.width, source.height)? {
         return Err(Error::validation(
             "source pixel buffer has the wrong length",

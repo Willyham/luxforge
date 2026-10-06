@@ -56,13 +56,14 @@ pub(crate) mod tests;
 mod warp_tests;
 
 pub use boundary::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
-use byte::{Byte, check_source, rasterize};
+pub(crate) use byte::check_source;
+use byte::{Byte, rasterize};
 use colour_runs::{ColorRun, MaskedInput, apply_units, color_chunk_rows, color_runs};
 use compiled::ResampleEntry;
 use compiled::mapped_replacements;
 pub(crate) use compiled::{Compiled, Entry, Segment};
 pub use context::{RenderContext, ScratchBudget};
-pub(crate) use entry::{MaskInputMode, ProxyStage, StagePixels, layer_input, prefix_pixels};
+pub(crate) use entry::{MaskInputMode, StagePixels, layer_input, prefix_pixels};
 pub use entry::{Render, RenderOptions, RenderSource, render};
 use geometry::{bilinear, nearest_index, resample_frame};
 pub(crate) use input_grid::{GridRequest, grid_input};

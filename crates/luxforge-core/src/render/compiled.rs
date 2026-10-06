@@ -440,16 +440,12 @@ impl Compiled {
         })
     }
 
-    /// Why a frame of this compilation is an approximation of the exact render at its size: a
-    /// spatial operation, whose neighbourhoods scale with the stage, and a mask the proxy phase
-    /// supersampled. `O(layers + components)`, no pixel read.
-    pub(crate) fn approximation(&self) -> crate::ProxyApproximation {
-        crate::ProxyApproximation {
-            spatial: self.segments.iter().any(|s| matches!(&s.entry, Some(Entry::Spatial(e)) if e.stage == crate::EffectStage::Spatial)),
-            restoration: self.segments.iter().any(|s| matches!(&s.entry, Some(Entry::Spatial(e)) if e.stage == crate::EffectStage::Restoration)),
-            mask: self.supersampled_masks(),
-            reduced_detail: false,
-        }
+    /// Whether a spatial operation placed at `stage` (a restoration or a spatial layer) enters any
+    /// segment. `O(segments)`, no pixel read.
+    pub(crate) fn runs_spatial(&self, stage: crate::EffectStage) -> bool {
+        self.segments
+            .iter()
+            .any(|s| matches!(&s.entry, Some(Entry::Spatial(e)) if e.stage == stage))
     }
 
     /// The width the full recipe demands at the sampled prefix's last spatial boundary.

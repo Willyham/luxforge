@@ -3,8 +3,9 @@
 #[cfg(doc)]
 use super::{PreviewQueue, PreviewSource};
 use crate::{
-    EntryId, Error, ErrorKind, ProxyApproximation, Raster,
+    EntryId, Error, ErrorKind, Raster,
     analysis::{AnalysisIdentity, Report},
+    cpu_proxy::ProxyOutcome,
 };
 
 /// Which phase of a job produced a result.
@@ -71,21 +72,6 @@ pub struct PreviewResult {
 pub enum PhaseOutcome {
     Proxy(ProxyOutcome),
     Exact(Box<ExactOutcome>),
-}
-
-/// The display-size frame a job presents first.
-#[derive(Debug)]
-pub struct ProxyOutcome {
-    pub raster: Raster,
-    /// The proxy source dimensions this frame was rendered against.
-    pub dimensions: (u32, u32),
-    /// Whether this frame's proxy source was built for this job rather than taken from the worker's
-    /// cache.
-    pub built: bool,
-    /// Whether this frame is an approximation of the exact render at display size, and why: a
-    /// spatial-stage layer whose neighbourhoods scale with the stage, a mask drawing a feature
-    /// narrower than two proxy pixels, or both.
-    pub approximation: ProxyApproximation,
 }
 
 /// The full-resolution phase, the one every number comes from: every job that starts ends with
