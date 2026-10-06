@@ -1726,3 +1726,117 @@ fn gpu_window_the_paint_harness_masks_at_100_fit_the_budget_up_to_a_count() {
         finish(editor, catalog);
     }
 }
+
+/// Measurement, not a gate: a 60 MP RAW's planes (9504 × 6336, 12 bytes a pixel, the source the
+/// surface holds and charges to the GPU-preview budget) under the recipe's cap of masked Presence
+/// layers, each of all three fields through a radial mask of its own. At Fit the slot of its view
+/// plan — the frame a drag draws, and the reduced stage a 100% drag past the budget falls back to —
+/// beside the source, against the 2 GiB budget; at 100% over the largest view's region, what the
+/// region's slot takes against what the budget leaves it beside the source. Allocates the planes,
+/// 722 MB. `cargo test --release -p luxforge-app sixty_mp_raw -- --ignored --nocapture`.
+#[test]
+#[ignore = "allocates a 60 MP RAW's planes"]
+fn gpu_window_a_sixty_mp_raw_at_the_masked_presence_cap_against_the_budget_beside_its_source() {
+    use luxforge_core::{
+        AssetId, Component, ComponentMode, EntryId, Evaluation, GpuView, HistoryEntry,
+        MAX_MASKED_SPATIAL_LAYERS, Mask, Snapshot, SnapshotId,
+    };
+    let (width, height) = (9504u32, 6336u32);
+    let planes = vec![0.18f32; 3 * (width * height) as usize];
+    let image = LinearImage::new(width, height, planes).expect("finite planes");
+    let mut recipe = Recipe::default();
+    for index in 0..MAX_MASKED_SPATIAL_LAYERS {
+        let t = index as f64 / MAX_MASKED_SPATIAL_LAYERS as f64;
+        let mut mask = Mask::new(format!("Mask {}", index + 1));
+        let name = mask.next_component_name("radial");
+        mask.components.push(Component::new(
+            name,
+            ComponentMode::Add,
+            "radial",
+            serde_json::json!({"x": 0.1 + 0.8 * t, "y": 0.5, "radius_x": 0.12,
+                               "radius_y": 0.2, "angle": 0.0, "feather": 40.0}),
+        ));
+        recipe.layers.push(Layer {
+            mask: Some(mask.id.clone()),
+            ..Layer::new(
+                luxforge_core::PRESENCE_EFFECT,
+                serde_json::json!({"texture": 40, "clarity": 50, "dehaze": 15}),
+            )
+        });
+        recipe.masks.push(mask);
+    }
+    let asset = AssetId::new();
+    let entry = HistoryEntry {
+        id: EntryId::new(),
+        asset_id: asset.clone(),
+        sequence: 1,
+        action_id: "set-presence".into(),
+        label: "Presence".into(),
+        parameters: serde_json::json!({}),
+        actor: "test".into(),
+        timestamp_ms: 0,
+        request_id: None,
+        base_revision: 0,
+        result_revision: 1,
+        snapshot: Snapshot {
+            id: SnapshotId::new(),
+            asset_id: asset,
+            recipe: recipe.clone(),
+        },
+        undo_parent: None,
+        restore_target: None,
+    };
+    let evaluation = Evaluation::new(
+        std::sync::Arc::new(ModuleRegistry::builtin()),
+        RenderContext::new(),
+        PreviewSource::Raw {
+            image,
+            settings: LinearSettings::default(),
+        },
+        entry,
+        recipe,
+        None,
+    );
+    let source = u64::from(width) * u64::from(height) * 12;
+    let budget = luxforge_ui::photo_surface::gpu_preview::GPU_PREVIEW_BUDGET;
+    let megabytes = |bytes: u64| bytes as f64 / 1e6;
+    let planned = |view: GpuView| {
+        let rest = luxforge_core::qualification::rest_plan(&evaluation, view).expect("a rest plan");
+        match (rest.view.answer, rest.view.boundary) {
+            (GpuAnswer::Plan(plan), Some(request)) => (plan, request),
+            (answer, _) => panic!("no plan: {:?}", answer.fallback()),
+        }
+    };
+    let (plan, request) = planned(GpuView::Fit(super::gpu_qualification::fit_bounds()));
+    assert_eq!(plan.spatial.len(), MAX_MASKED_SPATIAL_LAYERS);
+    let fit = super::gpu_preview::reduced_charge(&plan, &request);
+    let lights = (
+        super::gpu_preview::light_charge(&plan, request.format),
+        plan.lights.len(),
+    );
+    let region = super::gpu_qualification::largest_view((width, height), 100.0).unwrap();
+    let (plan, request) = planned(GpuView::Region {
+        rect: region,
+        magnification: 1.0,
+    });
+    let (_, at_100) = super::gpu_preview::region_charge(&plan, &request).expect("a region");
+    let verdict = if fit + source <= budget {
+        "within"
+    } else {
+        "past"
+    };
+    eprintln!(
+        "60 MP RAW, {MAX_MASKED_SPATIAL_LAYERS} masked Presence layers: source {:.1} MB; at Fit \
+         the slot {:.1} MB ({:.1} MB of it its {} light links), with the source {:.1} MB, {verdict} \
+         the {:.1} MB budget; at 100% the region's slot {:.1} MB against the {:.1} MB the budget \
+         leaves it",
+        megabytes(source),
+        megabytes(fit),
+        megabytes(lights.0),
+        lights.1,
+        megabytes(fit + source),
+        megabytes(budget),
+        megabytes(at_100),
+        megabytes(budget - source)
+    );
+}
