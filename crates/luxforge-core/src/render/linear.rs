@@ -125,8 +125,8 @@ impl WhiteBalanceApproximation {
         }
     }
 
-    /// The matrix applied to each linear-sRGB pixel, row by row.
-    #[cfg(test)]
+    /// The matrix applied to each linear-sRGB pixel, row by row: what a GPU plan of a drafted RAW
+    /// preview applies to each source texel, narrowed to `f32`.
     pub(crate) fn matrix(&self) -> [[f64; 3]; 3] {
         self.matrix
     }

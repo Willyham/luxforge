@@ -30,7 +30,7 @@ use super::{
     Drag, basic, basic_moderate, cropped_drags, detail_sharpen, drags, light, presence, step,
 };
 use crate::app::gpu_qualification::{
-    CorpusSource, Opened, corpus_sources, figures, first_pixel_layer, fit_bounds, headless,
+    CorpusSource, Opened, corpus_sources, figures, first_pixel_layer, fit_size, headless,
     largest_view,
 };
 use luxforge_core::{
@@ -255,35 +255,6 @@ fn compare(candidate: &[u8], reference: &[u8], size: (u32, u32)) -> Result<Stati
         delta_l.extend(l);
     }
     preview_error::statistics_of(width as usize, height as usize, &delta_e, &delta_l)
-}
-
-/// The size of the Fit frame of `opened`'s stack: the preview worker's moving frame at the Fit
-/// bounds of an evidence run's window, its proxy, or its exact frame where no smaller proxy fits.
-fn fit_size(opened: &Opened) -> Result<(u32, u32), String> {
-    use luxforge_core::{PhaseOutcome, PreviewIntent, PreviewQueue};
-    let mut job = crate::app::tasks::ready_preview_job(
-        &opened.owner,
-        PreviewRequest::new(opened.client, opened.asset.clone()).proxy(fit_bounds()),
-    )?;
-    job.intent = PreviewIntent::Interactive;
-    let mut queue = PreviewQueue::default();
-    let generation = queue.request(job);
-    luxforge_testbase::wait_for("the Fit frame", || {
-        let result = queue.poll()?;
-        if result.generation != generation {
-            return None;
-        }
-        match result.outcome {
-            PhaseOutcome::Proxy(proxy) => Some(Ok((proxy.raster.width, proxy.raster.height))),
-            PhaseOutcome::Exact(exact) => Some(
-                exact
-                    .result
-                    .map(|raster| (raster.width, raster.height))
-                    .map_err(|error| error.to_string()),
-            ),
-            _ => None,
-        }
-    })
 }
 
 /// `lights`, one for each estimating layer in recipe order, as a plan's light planes hold them:
@@ -561,7 +532,7 @@ fn cell(
             ((rect.width, rect.height), Some(rect), reference)
         }
         View::Fit => {
-            let size = fit_size(&opened)?;
+            let size = fit_size(&evaluation)?;
             (size, None, reduce(&whole.rgba, 4, stage, size)?)
         }
     };

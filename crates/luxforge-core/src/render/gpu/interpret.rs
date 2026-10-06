@@ -38,6 +38,12 @@ fn colour(
     match unit.program.entry {
         "lf_test_exposure" | "lf_test_disabled" => rgb.map(|channel| channel * word(0)),
         "lf_test_positional" => [rgb[0] + pos[0] / word(0), rgb[1] + pos[1] / word(1), rgb[2]],
+        // A RAW white-balance draft's leading step, which no layer's CPU unit describes: the one
+        // 3 x 3 multiply its program runs, each row summed left to right.
+        "lf_basic_white_balance" if !units.contains_key(&layer) => {
+            let row = |at: usize| [word(at), word(at + 1), word(at + 2)];
+            [row(0), row(3), row(6)].map(|row| row[0] * rgb[0] + row[1] * rgb[1] + row[2] * rgb[2])
+        }
         other if other.starts_with("lf_test_") => {
             panic!("the reference executor has no twin of {other}")
         }

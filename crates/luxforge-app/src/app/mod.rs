@@ -79,6 +79,8 @@ mod gpu_tiles_tests;
 mod gpu_tiles_worker_tests;
 pub(crate) mod gpu_warm;
 #[cfg(test)]
+mod gpu_white_balance_tests;
+#[cfg(test)]
 mod gpu_window_tests;
 // The one conversion Fit drags will hand the photo surface its GPU plan through; the desktop does
 // not draw a gesture on the GPU yet, so only its tests reach it.
