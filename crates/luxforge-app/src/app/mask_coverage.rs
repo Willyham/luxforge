@@ -196,6 +196,14 @@ pub(crate) struct CoverageQueue {
 
 impl Default for CoverageQueue {
     fn default() -> Self {
+        Self::passing("luxforge-mask-coverage", || {})
+    }
+}
+
+impl CoverageQueue {
+    /// The coverage worker, named `name`, calling `pass` before each job: nothing in production,
+    /// a test's gate in [`Self::held`].
+    fn passing(name: &str, pass: impl Fn() + Send + 'static) -> Self {
         let mut cached: Option<(u64, Arc<MaskOverlayOutcome>)> = None;
         let mut input_cache = luxforge_core::InputGridCache::default();
         let paint_slot = Arc::new(PaintSlot::default());
@@ -205,26 +213,24 @@ impl Default for CoverageQueue {
         Self {
             paint_slot,
             photo_gate,
-            worker: Latest::new(
-                "luxforge-mask-coverage",
-                move |job: Job, running: &Running<'_, _, _>| {
-                    let lease = slot.reserve(running.abandoned()).ok()?;
-                    let mut done = run_coverage(job, running, &mut cached, &mut input_cache)?;
+            worker: Latest::new(name, move |job: Job, running: &Running<'_, _, _>| {
+                pass();
+                let lease = slot.reserve(running.abandoned()).ok()?;
+                let mut done = run_coverage(job, running, &mut cached, &mut input_cache)?;
+                if done.painted.is_some() {
+                    done.lease = Some(lease);
+                }
+                // An unavailable outcome needs no matching photo and must wake immediately.
+                gate.ready.store(
                     if done.painted.is_some() {
-                        done.lease = Some(lease);
-                    }
-                    // An unavailable outcome needs no matching photo and must wake immediately.
-                    gate.ready.store(
-                        if done.painted.is_some() {
-                            done.stamp.content
-                        } else {
-                            0
-                        },
-                        Ordering::SeqCst,
-                    );
-                    Some(done)
-                },
-            ),
+                        done.stamp.content
+                    } else {
+                        0
+                    },
+                    Ordering::SeqCst,
+                );
+                Some(done)
+            }),
         }
     }
 }
@@ -294,6 +300,14 @@ impl CoverageQueue {
     pub(crate) fn poll(&mut self) -> Option<Completion> {
         self.worker.poll().map(|(_, done)| done)
     }
+
+    /// The production worker with `gate` in front of every job, so a test can hold a job running
+    /// while it changes what the desktop asks for.
+    #[cfg(test)]
+    pub(crate) fn held(gate: Arc<luxforge_testbase::Gate>) -> Self {
+        Self::passing("luxforge-mask-coverage-held", move || gate.pass())
+    }
+
     /// Hold the paint slot as an undelivered result does: a job taken meanwhile waits to paint
     /// until the hold drops, so its completion cannot arrive inside the message that asked for it.
     #[cfg(test)]
@@ -391,8 +405,13 @@ impl Editor {
             "unavailable":worker.unavailable.as_ref().map(|(stamp,reason)| json!({"request":stamp.summary(),"reason":reason}))})
     }
 
-    /// Coverage the current choice asked for has still to arrive. A job a choice change abandoned
-    /// may still be winding down on the worker; its answer is dropped, so nothing waits for it.
+    /// A grid for the current spec is still on its way: planned, computing, delivered but not yet
+    /// taken up, or held for its photograph.
+    ///
+    /// The worker's own work counts only while a request is outstanding. A spec change, Off or an
+    /// invalidation clears the request and cancels the worker, and a job cancelled while it runs
+    /// keeps the worker busy until it returns although nothing it produces is ever delivered. That
+    /// job brings no grid, so a step that waited on it would wait for a frame nothing renders.
     pub(crate) fn mask_coverage_pending(&self) -> bool {
         let worker = &self.coverage_worker;
         (worker.requested.is_some() && (worker.queue.is_busy() || worker.queue.ready()))

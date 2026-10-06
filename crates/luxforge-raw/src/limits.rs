@@ -18,6 +18,20 @@ pub const MAX_RGB_BYTES: usize = 1536 * 1024 * 1024;
 /// X100VI development (468 MiB of planes) fits, a development at the [`MAX_PIXELS`] limit does not.
 pub const RETAINED_DEVELOPMENT_BYTES: usize = 600 * 1024 * 1024;
 
+/// The largest embedded image `EmbeddedPreviews::extract` hands over (64 MiB); a caller's own byte
+/// limit goes below it. It bounds LibRaw's thumbnail allocation, checked from the list item before
+/// LibRaw allocates, and the copy returned, so one extraction holds at most twice this at once.
+/// Camera JPEG previews are a few megabytes even at full size (at most about 12 MB in the
+/// inventory, `docs/research/embedded-previews.md`), and 64 MiB of 8-bit RGB is a 22 MP bitmap.
+pub const MAX_EMBEDDED_IMAGE_BYTES: usize = 64 * 1024 * 1024;
+/// The largest read budget an embedded-preview handle accepts (128 MiB): the most it may fetch
+/// from its source over its life, by identify and every extraction. Twice
+/// [`MAX_EMBEDDED_IMAGE_BYTES`], so the largest extraction fits beside identify's scattered header
+/// reads (well under a megabyte on every camera in the inventory) with room for blocks read again.
+/// A caller's own budget goes below it: previews are for browsing, and a file whose previews
+/// need more is better developed.
+pub const MAX_EMBEDDED_READ_BUDGET: u64 = 128 * 1024 * 1024;
+
 /// Above this many pixels a per-pixel pass that is not a rendering pass moves from a serial loop to
 /// the shared Rayon pool: the RAW development passes (the camera-matrix conversion and the DNG
 /// corrections), a spatial operation's global-estimate reduction, the analysis reducer and the

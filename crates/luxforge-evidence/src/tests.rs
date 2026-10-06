@@ -1168,3 +1168,193 @@ impl Step {
         }
     }
 }
+
+#[test]
+fn every_select_step_round_trips_and_a_malformed_one_is_refused() {
+    let steps = round_trip(json!([
+        {"select": {"switch": "select"}},
+        {"select": {"source": "Konstanz \u{b7} 12\u{2013}13 Sep"}},
+        {"select": {"folder": "/Volumes/SSD/Pictures"}},
+        {"select": {"arrow": {"direction": "right"}}},
+        {"select": {"arrow": {"direction": "up", "extend": true}}},
+        {"select": {"choose": {"menu": "group", "item": "Day"}}},
+        {"select": {"choose": {"menu": "pick", "item": "Picked"}}},
+        {"select": {"click": {"position": 5, "shift": true}}},
+        {"select": {"click": {"position": 0, "command": true}}},
+        {"select": {"agent_pick": {"positions": [5, 6]}}},
+        {"select": {"agent_pick": {"positions": [5], "picked": false}}},
+        {"select": {"switch": "develop"}},
+        {"select": {"library": "undo"}},
+        {"select": {"library": "redo"}},
+        {"select": {"pick_all": {"position": 12}}},
+        {"select": {"first_look": "/Volumes/SSD/Pictures"}},
+        {"select": "continue_in_background"},
+        {"select": "cancel_work"},
+        {"select": {"add_folder": "/Volumes/SSD/Card dumps"}},
+    ]));
+    assert_eq!(
+        steps[12],
+        Step::Select(SelectStep::Library(LibraryKey::Undo))
+    );
+    assert_eq!(
+        steps[14],
+        Step::Select(SelectStep::PickAll { position: 12 })
+    );
+    assert_eq!(
+        steps[15],
+        Step::Select(SelectStep::FirstLook("/Volumes/SSD/Pictures".into()))
+    );
+    assert_eq!(steps[16], Step::Select(SelectStep::ContinueInBackground));
+    assert_eq!(steps[17], Step::Select(SelectStep::CancelWork));
+    assert_eq!(
+        steps[18],
+        Step::Select(SelectStep::AddFolder("/Volumes/SSD/Card dumps".into()))
+    );
+    assert_eq!(
+        steps[3],
+        Step::Select(SelectStep::Arrow {
+            direction: ArrowKey::Right,
+            extend: false
+        })
+    );
+    assert_eq!(
+        steps[9],
+        Step::Select(SelectStep::AgentPick {
+            positions: vec![5, 6],
+            picked: true
+        })
+    );
+    refused(json!([{"select": {"source": " "}}]), "select source");
+    refused(json!([{"select": {"folder": ""}}]), "select folder");
+    refused(
+        json!([{"select": {"add_folder": " "}}]),
+        "select add_folder",
+    );
+    refused(
+        json!([{"select": {"first_look": " "}}]),
+        "select first_look",
+    );
+    refused(
+        json!([{"select": {"agent_pick": {"positions": []}}}]),
+        "1 to 64 positions",
+    );
+    refused(
+        json!([{"select": {"choose": {"menu": "lens", "item": "x"}}}]),
+        "unknown variant `lens`",
+    );
+    refused(
+        json!([{"select": {"switch": "library"}}]),
+        "unknown variant",
+    );
+}
+
+#[test]
+fn loupe_steps_round_trip_and_bound_their_presses() {
+    let steps = round_trip(json!([
+        {"loupe": {"arrows": {"direction": "right", "count": 1}}},
+        {"loupe": {"arrows": {"direction": "left", "count": 30, "interval_ms": 30}}},
+        {"loupe": {"pointer": [0.25, 0.75]}},
+    ]));
+    assert_eq!(
+        steps[0],
+        Step::Loupe(LoupeStep::Arrows(LoupeArrows {
+            direction: ArrowKey::Right,
+            count: 1,
+            interval_ms: None,
+        }))
+    );
+    assert_eq!(
+        steps[1],
+        Step::Loupe(LoupeStep::Arrows(LoupeArrows {
+            direction: ArrowKey::Left,
+            count: 30,
+            interval_ms: Some(30),
+        }))
+    );
+    assert_eq!(steps[2], Step::Loupe(LoupeStep::Pointer([0.25, 0.75])));
+    for (arrows, expected) in [
+        (json!({"direction": "right", "count": 0}), "from 1 to 240"),
+        (
+            json!({"direction": "right", "count": 241, "interval_ms": 30}),
+            "from 1 to 240",
+        ),
+        (
+            json!({"direction": "right", "count": 1, "interval_ms": 30}),
+            "one loupe arrow press takes no interval_ms",
+        ),
+        (
+            json!({"direction": "right", "count": 2}),
+            "need interval_ms from 1 to 1000",
+        ),
+        (
+            json!({"direction": "right", "count": 2, "interval_ms": 0}),
+            "need interval_ms from 1 to 1000",
+        ),
+    ] {
+        refused(json!([{"loupe": {"arrows": arrows}}]), expected);
+    }
+    refused(
+        json!([{"loupe": {"pointer": [1.5, 0.5]}}]),
+        "loupe pointer x needs a finite fraction",
+    );
+}
+
+#[test]
+fn a_grid_scroll_round_trips_and_bounds_its_speed_and_frames() {
+    let steps = round_trip(json!([{"grid_scroll": {"px_per_frame": 60.0, "frames": 240}}]));
+    assert_eq!(
+        steps[0],
+        Step::GridScroll(GridScrollStep {
+            px_per_frame: 60.0,
+            frames: 240,
+        })
+    );
+    refused(
+        json!([{"grid_scroll": {"px_per_frame": 0.5, "frames": 240}}]),
+        "px_per_frame takes a number from 1 to 2000",
+    );
+    refused(
+        json!([{"grid_scroll": {"px_per_frame": 60.0, "frames": 1001}}]),
+        "frames takes an integer from 1 to 1000",
+    );
+    refused(
+        json!([{"grid_scroll": {"px_per_frame": 60.0}}]),
+        "missing field `frames`",
+    );
+}
+
+#[test]
+fn window_visibility_requires_a_known_native_action() {
+    for action in [
+        "minimize",
+        "restore",
+        "hide_window",
+        "show_window",
+        "hide_app",
+        "show_app",
+    ] {
+        let step = super::Step::WindowVisibility {
+            action: action.into(),
+        };
+        assert!(step.validate().is_ok());
+        assert_eq!(
+            serde_json::from_value::<super::Step>(step.to_value()).unwrap(),
+            step
+        );
+    }
+    assert!(
+        super::Step::WindowVisibility {
+            action: "occluded".into()
+        }
+        .validate()
+        .is_err()
+    );
+}
+
+#[test]
+fn presentation_observation_has_a_bounded_measurement_window() {
+    let steps = parse(r#"[{"observe":{"settle_ms":1000,"ms":30000}}]"#).unwrap();
+    assert_eq!(parse(&write(&steps).to_string()).unwrap(), steps);
+    assert!(parse(r#"[{"observe":{"settle_ms":1000,"ms":60001}}]"#).is_err());
+    assert!(parse(r#"[{"observe":{"settle_ms":0,"ms":30000}}]"#).is_err());
+}

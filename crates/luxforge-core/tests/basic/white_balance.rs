@@ -16,7 +16,7 @@ use luxforge_core::{
 use luxforge_reference::srgb;
 use luxforge_reference::white_balance::{self, RejectReason};
 use luxforge_testbase::paths;
-use luxforge_testkit::client::{call, import, refused};
+use luxforge_testkit::client::{call, open, refused};
 use luxforge_testkit::fixtures::render;
 use luxforge_testkit::fixtures::{self, recipe, source_of};
 use serde_json::{Value, json};
@@ -261,7 +261,7 @@ fn a_client_discovers_the_picker_runs_it_and_applies_what_it_returns() {
     let (owner, join) = OwnerHandle::start(&catalog).expect("the owner loop");
     let client = owner.register();
 
-    let asset = import(&owner, client, &image.path, "test").unwrap()["asset"]["id"].clone();
+    let asset = open(&owner, client, &image.path, "test").unwrap()["asset"]["id"].clone();
     let (x, y) = image.neutral;
     let picked = call(
         &owner,
@@ -355,7 +355,7 @@ fn the_picker_on_a_mask_reads_the_stage_with_the_global_white_balance() {
             .is_some(),
         "the query lists the mask target"
     );
-    let asset = import(&owner, client, &image.path, "test").unwrap()["asset"]["id"].clone();
+    let asset = open(&owner, client, &image.path, "test").unwrap()["asset"]["id"].clone();
     let (x, y) = image.neutral;
     let pick = |mask: Option<&Value>| {
         let mut request = json!({"asset_id": asset, "x": x, "y": y});
@@ -432,7 +432,7 @@ fn the_picker_reads_the_stage_before_the_basic_layer() {
     let catalog = paths::temp_catalog("basic-wb-before");
     let (owner, join) = OwnerHandle::start(&catalog).expect("the owner loop");
     let client = owner.register();
-    let asset = import(&owner, client, &image.path, "test").unwrap()["asset"]["id"].clone();
+    let asset = open(&owner, client, &image.path, "test").unwrap()["asset"]["id"].clone();
     let (x, y) = image.neutral;
     let params = json!({"asset_id": asset, "x": x, "y": y});
     let before = call(&owner, client, "query.neutral-sample", params.clone()).unwrap();
@@ -481,7 +481,7 @@ fn edges_are_clipped_and_bad_patches_are_refused_with_their_reason() {
     let catalog = paths::temp_catalog("basic-wb-edges");
     let (owner, join) = OwnerHandle::start(&catalog).expect("the owner loop");
     let client = owner.register();
-    let asset = import(&owner, client, &image.path, "test").unwrap()["asset"]["id"].clone();
+    let asset = open(&owner, client, &image.path, "test").unwrap()["asset"]["id"].clone();
     let pick = |x: i64, y: i64| json!({"asset_id": asset, "x": x, "y": y});
 
     // The four corners of the stage, and one edge: the patch shrinks and says which rectangle it
@@ -604,7 +604,7 @@ fn locate_then_query_matches_the_direct_content_coordinates_through_geometry() {
     let catalog = paths::temp_catalog("basic-wb-locate");
     let (owner, join) = OwnerHandle::start(&catalog).expect("the owner loop");
     let client = owner.register();
-    let asset = import(&owner, client, &image.path, "test").unwrap()["asset"]["id"].clone();
+    let asset = open(&owner, client, &image.path, "test").unwrap()["asset"]["id"].clone();
     let (content_x, content_y) = image.neutral;
     let direct = call(
         &owner,
@@ -712,7 +712,7 @@ fn a_query_is_read_only_and_two_clients_agree() {
     let (owner, join) = OwnerHandle::start(&catalog).expect("the owner loop");
     let first = owner.register();
     let second = owner.register();
-    let asset = import(&owner, first, &image.path, "test").unwrap()["asset"]["id"].clone();
+    let asset = open(&owner, first, &image.path, "test").unwrap()["asset"]["id"].clone();
     let entries_before = call(
         &owner,
         first,

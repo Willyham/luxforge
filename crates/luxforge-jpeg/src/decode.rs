@@ -1,7 +1,9 @@
 //! One JPEG decode: the container walked and checked, libjpeg's header read and checked, then RGBA
-//! rows on request, with the decoder's own error manager deciding which libjpeg warnings stop it.
+//! rows on request, at full scale or one of libjpeg's DCT scales, with the decoder's own error
+//! manager deciding which libjpeg warnings stop it. The error manager and the frame checks serve
+//! the region decode's session too.
 
-use crate::{JpegError, Limits, container, icc, warnings};
+use crate::{JpegError, Limits, Scale, container, icc, warnings};
 use mozjpeg::{ColorSpace, Decompress, Marker, decompress::DecompressStarted};
 use mozjpeg_sys::{jpeg_common_struct, jpeg_error_mgr};
 use std::{
@@ -31,11 +33,12 @@ enum Stop {
 /// libjpeg's message code for the warning or error being raised on `cinfo`.
 #[allow(unsafe_code)]
 fn message_code(cinfo: &jpeg_common_struct) -> c_int {
-    // SAFETY: libjpeg calls the error manager only with the session's own `cinfo`, whose `err`
-    // `mozjpeg` points at the manager `error_manager()` built, boxed and owned by that session for
-    // its whole life, before any call into libjpeg; libjpeg's raise macros and `mozjpeg`'s own
-    // source manager set `msg_code` before they call. A session runs on one thread, so nothing
-    // writes the field while it is read.
+    // SAFETY: libjpeg calls the error manager only with a session's own `cinfo`, whose `err`
+    // points at the manager `error_manager()` built, on the heap and owned by that session until
+    // after it is destroyed, set before any call into libjpeg: by `mozjpeg` for a `Decoder`, by
+    // `Session::open` for a region. libjpeg's raise macros and `mozjpeg`'s own source manager set
+    // `msg_code` before they call. A session runs on one thread, so nothing writes the field while
+    // it is read.
     unsafe { (*cinfo.err).msg_code }
 }
 
@@ -72,7 +75,7 @@ extern "C-unwind" fn no_text(_: &mut jpeg_common_struct, _: &[u8; 80]) {}
 /// The decoder's error manager: every error and every refused warning unwinds, nothing is printed.
 /// libjpeg calls only `error_exit`, `emit_message` and `reset_error_mgr` itself; the message
 /// tables are read only by the formatting functions replaced here, so they stay empty.
-fn error_manager() -> jpeg_error_mgr {
+pub(crate) fn error_manager() -> jpeg_error_mgr {
     jpeg_error_mgr {
         error_exit: Some(stop_on_error),
         emit_message: Some(on_message),
@@ -92,7 +95,7 @@ fn error_manager() -> jpeg_error_mgr {
 }
 
 /// The error a decode's unwind stands for.
-fn decode_failure(payload: Box<dyn Any + Send>) -> JpegError {
+pub(crate) fn decode_failure(payload: Box<dyn Any + Send>) -> JpegError {
     match payload.downcast_ref::<Stop>() {
         Some(Stop::Warning(code)) => JpegError::Corrupt(*code),
         Some(Stop::Fatal) => JpegError::Undecodable,
@@ -122,6 +125,9 @@ enum Session<'a> {
 /// One JPEG decode: the header read and checked, then RGBA rows on request.
 pub struct Decoder<'a> {
     session: Session<'a>,
+    /// The frame's size, as libjpeg's header gives it.
+    frame: (u32, u32),
+    /// The size decoded: the frame's, or its size at the scale set.
     width: u32,
     height: u32,
     components: u8,
@@ -134,14 +140,10 @@ impl<'a> Decoder<'a> {
     /// `limits` and the supported colour spaces (greyscale, and three-component YCbCr or RGB);
     /// then read libjpeg's header, check its reading of the frame the same way, and reassemble the
     /// ICC profile. Decompression starts with the first [`Self::read_rows`], so a caller can
-    /// refuse the profile first; a progressive frame is decoded into libjpeg's coefficient buffer
-    /// then.
+    /// refuse the profile or choose a scale first; a multi-scan frame is decoded into libjpeg's
+    /// coefficient buffer then, at the frame's full size whatever the scale.
     pub fn new(bytes: &'a [u8], limits: Limits) -> Result<Self, JpegError> {
-        let declared = container::header(bytes)?;
-        check_frame(declared.width, declared.height, limits)?;
-        if ![1, 3].contains(&declared.components) {
-            return Err(JpegError::ColourSpace);
-        }
+        check_declared(bytes, limits)?;
         let header = guarded(|| {
             Decompress::builder()
                 .with_err(error_manager())
@@ -153,14 +155,11 @@ impl<'a> Decoder<'a> {
         let (width, height) = header.size();
         let (width, height) = (width as u32, height as u32);
         check_frame(width, height, limits)?;
-        let components = match (header.components().len(), header.color_space()) {
-            (1, ColorSpace::JCS_GRAYSCALE) => 1,
-            (3, ColorSpace::JCS_YCbCr | ColorSpace::JCS_RGB) => 3,
-            _ => return Err(JpegError::ColourSpace),
-        };
+        let components = supported_components(header.components().len(), header.color_space())?;
         let icc = icc::reassemble(header.markers().map(|marker| marker.data))?;
         Ok(Self {
             session: Session::Header(header),
+            frame: (width, height),
             width,
             height,
             components,
@@ -169,12 +168,31 @@ impl<'a> Decoder<'a> {
         })
     }
 
+    /// The width decoded: the frame's, or its width at the scale set.
     pub fn width(&self) -> u32 {
         self.width
     }
 
+    /// The height decoded: the frame's, or its height at the scale set.
     pub fn height(&self) -> u32 {
         self.height
+    }
+
+    /// Decode at `scale` ([`Scale::covering`] chooses one for a target size): from then on
+    /// [`Self::width`] and [`Self::height`] report the scaled output, whose rows
+    /// [`Self::read_rows`] writes. Only before the first row; a later call sets the scale again
+    /// from the frame's size. The header was checked against the caller's [`Limits`] at the
+    /// frame's full size, which bounds what libjpeg allocates whatever the scale: its row buffers
+    /// scale with the output, a multi-scan frame's coefficient buffer with the full frame.
+    pub fn set_scale(&mut self, scale: Scale) -> Result<(), JpegError> {
+        let Session::Header(header) = &mut self.session else {
+            return Err(JpegError::Internal(
+                "jpeg decode: the scale is set before the first row".into(),
+            ));
+        };
+        header.scale(scale.numerator());
+        (self.width, self.height) = scale.output(self.frame.0, self.frame.1);
+        Ok(())
     }
 
     /// 1 for greyscale, 3 for colour.
@@ -213,9 +231,10 @@ impl<'a> Decoder<'a> {
             let started = guarded(move || header.rgba())
                 .map_err(decode_failure)?
                 .map_err(|error| JpegError::Malformed(format!("JPEG decode: {error}")))?;
+            // libjpeg's output size must be the header's at the scale set (`Scale::output`).
             if (started.width(), started.height()) != (self.width as usize, self.height as usize) {
                 return Err(JpegError::Internal(
-                    "jpeg decode: output size differs from the header".into(),
+                    "jpeg decode: output size differs from the header's at its scale".into(),
                 ));
             }
             self.session = Session::Started(started);
@@ -251,8 +270,29 @@ impl<'a> Decoder<'a> {
     }
 }
 
+/// Walk the container ([`container::header`]) and check the frame it declares against `limits`
+/// and the component counts the decoder supports, before libjpeg reads anything.
+pub(crate) fn check_declared(bytes: &[u8], limits: Limits) -> Result<container::Header, JpegError> {
+    let declared = container::header(bytes)?;
+    check_frame(declared.width, declared.height, limits)?;
+    if ![1, 3].contains(&declared.components) {
+        return Err(JpegError::ColourSpace);
+    }
+    Ok(declared)
+}
+
+/// The components a decode reports for libjpeg's reading of the frame: 1 for greyscale, 3 for
+/// YCbCr or RGB. Any other colour space is refused.
+pub(crate) fn supported_components(count: usize, space: ColorSpace) -> Result<u8, JpegError> {
+    match (count, space) {
+        (1, ColorSpace::JCS_GRAYSCALE) => Ok(1),
+        (3, ColorSpace::JCS_YCbCr | ColorSpace::JCS_RGB) => Ok(3),
+        _ => Err(JpegError::ColourSpace),
+    }
+}
+
 /// A frame of at least one pixel and within `limits`.
-fn check_frame(width: u32, height: u32, limits: Limits) -> Result<(), JpegError> {
+pub(crate) fn check_frame(width: u32, height: u32, limits: Limits) -> Result<(), JpegError> {
     if width == 0
         || height == 0
         || width > limits.max_side

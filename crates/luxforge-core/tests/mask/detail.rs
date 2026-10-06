@@ -195,7 +195,7 @@ fn detail_overlapping_masks_process_in_mask_list_order() {
     )
     .unwrap();
     let client = owner.client();
-    let asset = owner.import(client, &paths::jpeg()).unwrap()["asset"]["id"].clone();
+    let asset = owner.open(client, &paths::jpeg()).unwrap()["asset"]["id"].clone();
     let mutate = |method: &str, mut params: Value| {
         params["asset_id"] = asset.clone();
         params["mutation"] = client::mutation(

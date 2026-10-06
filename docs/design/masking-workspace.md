@@ -51,7 +51,7 @@ The kind table is the delivered one: a kind that declares geometry parameters is
 
 ### Model selections (phase E)
 
-Subject, Sky and Background, and later People and Objects, are a **model** kind whose coverage is a raster the host computed once and stored, not a rule it evaluates per pixel. Everything a model selection needs already exists in the [module capabilities](module-capabilities.md) contract; this design uses it and adds no capability.
+Subject, Sky and Background, and later People and Objects, are a **model** kind whose coverage is a raster the host computed once and stored, not a rule it evaluates per pixel. Everything a model selection needs already exists in the [module capabilities](module-capabilities.md) contract; this design uses it and adds no capability. The [AI editing](ai-editing.md) proposal of 2026-10-04 carries this phase's delivery: the kind as written here, a Select group in the New mask menu that lists the classes an analysis found in the photograph, the models and runtime chosen by measurement, and the `local-runtime` capability the row below leaves to the owner.
 
 | Concern | Design |
 | --- | --- |

@@ -531,6 +531,19 @@ pub(crate) fn reduce_raster(
     })
 }
 
+/// Display bytes — a decoded camera preview, an embedded JPEG — area-averaged to `plan` by the
+/// same reduction as [`reduce_raster`], with a checkpoint in every row: the catalog's preview
+/// downscales, which are not the CPU proxy's.
+pub(crate) fn downscale_bytes(
+    image: &SourceImage,
+    plan: ProxyPlan,
+    cancel: &Cancel,
+) -> Result<SourceImage, Error> {
+    cancel.check()?;
+    check_plan(plan, image.width, image.height)?;
+    downscale_jpeg(image, plan, cancel, BAND_BYTES)
+}
+
 /// The area average of a JPEG source, re-quantized through the render path's own threshold
 /// boundary. A uniform region therefore comes out as exactly its own code, and the proxy of an
 /// identity stack agrees with the exact render's arithmetic everywhere it can. The output frame is

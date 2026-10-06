@@ -8,7 +8,15 @@ use crate::app::message::{
     mask::TypingEdit, overlay::OverlayMessage, palette::PaletteMessage, settings::SettingsMessage,
     sync::SyncMessage, view::ViewMessage,
 };
+use crate::app::message::{
+    develop::DevelopMessage,
+    loupe::LoupeMessage,
+    select::{SelectMessage, Step},
+    select_catalog::CatalogMessage,
+};
 use crate::state::palette::Panel;
+use crate::state::select::{SelectPanel, Shown};
+use crate::state::select_catalog::CatalogAction;
 use iced::{
     Event, Subscription,
     event::Status,
@@ -136,6 +144,16 @@ pub(crate) struct KeyContext {
     /// Mask mode is active with no shape gesture open, so the panel's keys act on its selection:
     /// `X` inverts, `⌫` deletes, the arrows move the selection and `⌥` with them reorders.
     pub(crate) mask_keys: bool,
+    /// The Select workspace is shown: its own keys act, and none of Develop's.
+    pub(crate) select: bool,
+    /// One of Select's chip or sort menus is open, so Escape closes it.
+    pub(crate) select_menu_open: bool,
+    /// The loupe is open over Select's centre, so Escape returns to the grid.
+    pub(crate) loupe_open: bool,
+    /// Develop N's confirmation is open, so Escape cancels it and Return develops.
+    pub(crate) develop_confirm: bool,
+    /// Develop has a development set, so `←` and `→` move through it.
+    pub(crate) development_set: bool,
 }
 
 /// One event as one message, or nothing. `status` is Iced's: a key a text field already consumed
@@ -179,7 +197,7 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         return Some(Message::History(HistoryMessage::CompareKeyReleased));
     }
     // The Settings sheet is modal: Escape and its own shortcut close it, and no other key reaches
-    // the workspace behind it. Its fields still receive their own typing.
+    // the workspace behind it, Select's included. Its fields still receive their own typing.
     if context.settings_open {
         return match keyboard {
             Keys::KeyPressed {
@@ -193,6 +211,11 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
             }
             _ => None,
         };
+    }
+    // The Select workspace has its own keys (`docs/design/catalog.md#keyboard`). None of Develop's
+    // reaches it, so nothing acts on a photograph it does not show.
+    if context.select {
+        return select_keys(keyboard, status, context);
     }
     // The slider guard emits one release for keyboard stepping. The window keymap must not send a
     // second commit for the same key-up; it only handles Escape for an open gesture below.
@@ -269,6 +292,10 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
             if character(key, "]") {
                 return Some(Message::View(ViewMessage::TogglePanel(Panel::Tools)));
             }
+            // The filmstrip collapses and expands with the side panels' modifiers.
+            if context.development_set && character(key, "f") {
+                return Some(Message::Develop(DevelopMessage::Collapse));
+            }
         }
         return None;
     }
@@ -319,6 +346,11 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     }
     if status != Status::Ignored {
         return None;
+    }
+    // `G` shows the Select workspace. The switch answers the one start refusal, so an open draft
+    // refuses it with its reason.
+    if !*repeat && character(key, "g") && plain(modifiers) {
+        return Some(Message::Select(SelectMessage::Switch(Shown::Select)));
     }
     // While a kind menu is open its letters start its kinds. The menu is what the person is looking
     // at, so its letters win over a canvas-mode letter that happens to be the same.
@@ -384,6 +416,27 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
             if character(key, "x") && !modifiers.shift() {
                 return Some(Message::Mask(MaskMessage::Key(MaskKey::Invert)));
             }
+        }
+    }
+    // `←` and `→` move through the development set when no text field, draft or gesture holds
+    // them, and repeat while held. A slider on the pointer's rail captures them itself.
+    if context.development_set
+        && !context.drafting
+        && !context.slider_drafting
+        && !context.mask_keys
+        && !modifiers.shift()
+        && !modifiers.alt()
+        && !modifiers.control()
+        && !modifiers.logo()
+    {
+        match key {
+            Key::Named(Named::ArrowLeft) => {
+                return Some(Message::Develop(DevelopMessage::Step(-1)));
+            }
+            Key::Named(Named::ArrowRight) => {
+                return Some(Message::Develop(DevelopMessage::Step(1)));
+            }
+            _ => {}
         }
     }
     // A canvas mode without a draft of its own — a pick mode — is left with Escape, which commits
@@ -458,6 +511,157 @@ fn character(key: &Key, letter: &str) -> bool {
     matches!(key, Key::Character(value) if value.eq_ignore_ascii_case(letter))
 }
 
+/// No modifier held.
+fn plain(modifiers: &iced::keyboard::Modifiers) -> bool {
+    !modifiers.shift() && !modifiers.alt() && !modifiers.control() && !modifiers.logo()
+}
+
+/// The Select workspace's keys: Escape closes an open menu whatever has focus; otherwise only a key
+/// no text field took acts. The arrows move the active item and repeat while held, with Shift
+/// extending the selection; `Cmd+A` and `Cmd+D` select all and none; `Cmd+Z` and `Shift+Cmd+Z`
+/// undo and redo this desktop's library changes; `Cmd+F` puts the focus in the search field (the
+/// catalog's over the catalog, the sources panel's otherwise); `Tab` toggles the side panels, and
+/// `Cmd+Option+[` and `]` one each, as in Develop; `Cmd+O` adds a folder to the indexed folders;
+/// `S` collapses or expands the active burst; `P`
+/// picks or clears the selection; `D` develops the active frame, picking it when it is not picked
+/// (over the catalog it opens Develop on the active photograph with the view as its set), and
+/// `Cmd+Return` the picks in view, through Develop N's confirmation, which Escape cancels and
+/// Return confirms; the loupe's keys are the loupe's.
+fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<Message> {
+    let Keys::KeyPressed {
+        key,
+        modifiers,
+        repeat,
+        ..
+    } = keyboard
+    else {
+        return None;
+    };
+    if context.select_menu_open && matches!(key, Key::Named(Named::Escape)) {
+        return Some(Message::Select(SelectMessage::Menu(None)));
+    }
+    // Develop N's confirmation takes Escape whatever has focus; its name field takes Return itself.
+    if context.develop_confirm && matches!(key, Key::Named(Named::Escape)) {
+        return Some(Message::Develop(DevelopMessage::Cancel));
+    }
+    if context.loupe_open && matches!(key, Key::Named(Named::Escape)) && status == Status::Ignored {
+        return Some(Message::Select(SelectMessage::Loupe(LoupeMessage::Close)));
+    }
+    if status != Status::Ignored {
+        return None;
+    }
+    // The loupe's own keys, ahead of the grid's (`app/loupe.rs`).
+    if context.loupe_open
+        && let Some(message) = crate::app::loupe::loupe_keys(key, modifiers, *repeat)
+    {
+        return Some(message);
+    }
+    // Settings is the application's, so its shortcut opens it from Select as from Develop.
+    if modifiers.command() && !modifiers.alt() && character(key, ",") {
+        return Some(Message::Settings(SettingsMessage::Toggle));
+    }
+    if modifiers.command() {
+        if modifiers.alt() {
+            if character(key, "[") {
+                return Some(Message::Select(SelectMessage::TogglePanel(
+                    SelectPanel::Sources,
+                )));
+            }
+            if character(key, "]") {
+                return Some(Message::Select(SelectMessage::TogglePanel(
+                    SelectPanel::Info,
+                )));
+            }
+            return None;
+        }
+        if *repeat {
+            return None;
+        }
+        // Develop N: `Cmd+Return` develops the picks in view.
+        if matches!(key, Key::Named(Named::Enter)) && !modifiers.shift() {
+            return Some(Message::Develop(DevelopMessage::Open));
+        }
+        // Library undo and redo: in Select, `Cmd+Z` and `Shift+Cmd+Z` are the journal's, never
+        // the photograph's history (the design's P10).
+        if character(key, "z") {
+            return Some(Message::Select(if modifiers.shift() {
+                SelectMessage::Redo
+            } else {
+                SelectMessage::Undo
+            }));
+        }
+        if modifiers.shift() {
+            return None;
+        }
+        if character(key, "a") {
+            return Some(Message::Select(SelectMessage::SelectAll));
+        }
+        if character(key, "d") {
+            return Some(Message::Select(SelectMessage::SelectNone));
+        }
+        // Add a folder…; in Develop `Cmd+O` opens a single file.
+        if character(key, "o") {
+            return Some(Message::Select(SelectMessage::AddFolder));
+        }
+        if character(key, "f") {
+            return Some(Message::Select(SelectMessage::Catalog(
+                CatalogMessage::Act(CatalogAction::FocusSearch),
+            )));
+        }
+        return None;
+    }
+    let step = match key {
+        Key::Named(Named::ArrowLeft) => Some(Step::Left),
+        Key::Named(Named::ArrowRight) => Some(Step::Right),
+        Key::Named(Named::ArrowUp) => Some(Step::Up),
+        Key::Named(Named::ArrowDown) => Some(Step::Down),
+        _ => None,
+    };
+    if let Some(step) = step {
+        if modifiers.alt() || modifiers.control() || modifiers.logo() {
+            return None;
+        }
+        return Some(Message::Select(SelectMessage::Move {
+            step,
+            extend: modifiers.shift(),
+        }));
+    }
+    if *repeat || !plain(modifiers) {
+        return None;
+    }
+    // Return develops once the confirmation is open.
+    if context.develop_confirm && matches!(key, Key::Named(Named::Enter)) {
+        return Some(Message::Develop(DevelopMessage::Confirm));
+    }
+    // `D`, over the grid or in the loupe: develop the active frame, picking it when it is not
+    // picked; over the catalog, Develop on the active photograph with the view's photographs as the
+    // set.
+    if character(key, "d") {
+        return Some(Message::Develop(DevelopMessage::Key));
+    }
+    if matches!(key, Key::Named(Named::Tab)) {
+        return Some(Message::Select(SelectMessage::TogglePanels));
+    }
+    if character(key, "s") {
+        return Some(Message::Select(SelectMessage::Collapse));
+    }
+    // `P` picks or clears the selection over the grid; the loupe's `P` is the loupe's own.
+    if !context.loupe_open && character(key, "p") {
+        return Some(Message::Select(SelectMessage::Pick));
+    }
+    // `Delete` asks to remove the selection from the catalog; over files it does nothing.
+    if !context.loupe_open && matches!(key, Key::Named(Named::Backspace | Named::Delete)) {
+        return Some(Message::Select(SelectMessage::Catalog(
+            CatalogMessage::Act(CatalogAction::Remove),
+        )));
+    }
+    // `Space` or `E` shows the active frame in the loupe.
+    if !context.loupe_open && (matches!(key, Key::Named(Named::Space)) || character(key, "e")) {
+        return Some(Message::Select(SelectMessage::Loupe(LoupeMessage::Open)));
+    }
+    None
+}
+
 /// The events the keyboard table can act on. Everything else never wakes the update function, so a
 /// pointer move costs nothing here.
 pub(super) fn raw_event(
@@ -470,6 +674,11 @@ pub(super) fn raw_event(
         | iced::Event::Window(
             iced::window::Event::CloseRequested | iced::window::Event::Unfocused,
         ) => Some(Message::Key(event, status)),
+        // A file or folder dropped on the window: Select adds a folder to the indexed folders,
+        // Develop opens a file.
+        iced::Event::Window(iced::window::Event::FileDropped(path)) => {
+            Some(Message::Select(SelectMessage::Dropped(path.clone())))
+        }
         // A resize changes how large a fitted photograph is drawn, and so how fine a clipping
         // overlay's cells may be. It rides the subscription that is already listening; nothing new
         // polls for it, and a resize with no overlay on starts no work.
@@ -699,6 +908,11 @@ mod tests {
             mask_menu_open: false,
             kind_menu: None,
             mask_keys: false,
+            select: false,
+            select_menu_open: false,
+            loupe_open: false,
+            develop_confirm: false,
+            development_set: false,
         }
     }
 
@@ -1360,5 +1574,18 @@ mod tests {
             .is_none(),
             "a pointer event still never wakes the update function"
         );
+        // A file or folder dropped on the window reaches Select, which adds a folder in Select and
+        // opens a file in Develop.
+        let dropped = raw_event(
+            iced::Event::Window(iced::window::Event::FileDropped(
+                "/Users/w/Card dumps".into(),
+            )),
+            iced::event::Status::Ignored,
+            window,
+        );
+        assert!(matches!(
+            dropped,
+            Some(Message::Select(SelectMessage::Dropped(path))) if path == std::path::Path::new("/Users/w/Card dumps")
+        ));
     }
 }

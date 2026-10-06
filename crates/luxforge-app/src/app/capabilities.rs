@@ -15,7 +15,7 @@ use crate::{
     app::{
         Editor,
         evidence::{CapabilityAction, CapabilityStep, Reference},
-        job_reads::{self, Pass, Reader, Verdict, Watch},
+        job_reads::{self, Pass, Reader, Watch},
         message::{Message, action::ActionMessage, capability::CapabilityMessage},
         tasks::{self, mutation, owner_task, request},
     },
@@ -40,18 +40,10 @@ use luxforge_core::{
     redact_params,
 };
 use serde_json::{Map, Value, json};
-use std::time::Duration;
 
+#[cfg(test)]
+use crate::app::job_reads::Verdict;
 pub(crate) use tasks::CallError;
-
-/// How often the tracked live jobs are read. The worker posts its completions into the owner's
-/// channel, but no client is pushed anything: a client that wants a job's progress reads it. So
-/// the desktop reads its live jobs every 100 ms, and only while one is queued or running — with no
-/// live job there is no reader at all, which keeps an idle desktop asleep (performance rule 8). A
-/// read is one owner lookup per job, and a progress bar that moves ten times a second is as smooth
-/// as a job's own reports, which a worker makes between chunks of real work. A read that finds a
-/// job as the one before it did never reaches the update loop.
-pub(crate) const JOB_POLL: Duration = Duration::from_millis(100);
 
 /// How many times a task retries after its source or artifacts were prepared.
 const PREPARATION_RETRIES: usize = 4;
@@ -350,6 +342,7 @@ pub(crate) fn run(
 }
 
 /// `job.read` for one tracked job.
+#[cfg(test)]
 pub(crate) fn read_job(
     owner: &OwnerHandle,
     client: ClientId,
@@ -363,19 +356,45 @@ pub(crate) fn read_job(
 /// What a reader of capability jobs sends: each read that is news, by module and job.
 pub(crate) type Polled = Vec<(String, String, Result<JobRecord, String>)>;
 
-/// The reader of the tracked live jobs, as the subscription starts it: one `job.read` per job
-/// through the owner at once and every [`JOB_POLL`] after, inside the subscription's stream
-/// ([`job_reads`]).
-pub(crate) fn capability_reads(
-    reader: &Reader<Vec<(String, String)>>,
-) -> BoxStream<'static, Message> {
+/// A stable reader for one capability job; changing the tracked set keeps unrelated readers.
+pub(crate) fn capability_reads(reader: &Reader<(String, String)>) -> BoxStream<'static, Message> {
     let (owner, client) = (reader.owner.clone(), reader.client);
-    job_reads::reads(
-        JOB_POLL,
-        capability_pass(reader.identity.clone(), move |job| {
-            read_job(&owner, client, job)
-        }),
-    )
+    let (module, job) = reader.identity.clone();
+    let visible = reader.presentation_visible;
+    let state = std::sync::Arc::new(std::sync::Mutex::new((None, Watch::default())));
+    job_reads::reads(move || {
+        let (owner, module, job) = (owner.clone(), module.clone(), job.clone());
+        let (previous, mut watch) = std::mem::take(&mut *state.lock().expect("capability reader"));
+        let state = state.clone();
+        async move {
+            let result = job_reads::wait(&owner, client, &job, previous).await;
+            let (next, result) = match result {
+                Ok((change, value)) => (Some(change), Ok(value)),
+                Err(error) => (previous, Err(error)),
+            };
+            let verdict = watch.observe_filtered(
+                &result,
+                |record| !matches!(record["status"].as_str(), Some("queued" | "running")),
+                |one, two| {
+                    if visible {
+                        one == two
+                    } else {
+                        job_reads::same_without_progress(one, two)
+                    }
+                },
+            );
+            *state.lock().expect("capability reader") = (next, watch);
+            Pass::of(verdict, || {
+                Message::Capability(CapabilityMessage::Polled(vec![(
+                    module,
+                    job,
+                    result.and_then(|value| {
+                        serde_json::from_value(value).map_err(|error| error.to_string())
+                    }),
+                )]))
+            })
+        }
+    })
 }
 
 /// One pass of the reader of capability jobs: read each job it still follows and send, in one
@@ -383,6 +402,7 @@ pub(crate) fn capability_reads(
 /// differs from the one sent before it (progress included); a job that ended, or whose read
 /// failed, is sent once and read no more, and the reader ends with its last job. The message is
 /// the one the desktop applies entry by entry, so it needs only the entries that changed.
+#[cfg(test)]
 pub(crate) fn capability_pass(
     jobs: Vec<(String, String)>,
     mut read: impl FnMut(&str) -> Result<JobRecord, String>,
@@ -473,19 +493,20 @@ impl Editor {
         )
     }
 
-    /// The reader of the tracked live jobs, which exists only while one is queued or running. It
-    /// is identified by the set of live jobs, module and job id, so a changed set is a new reader
-    /// and the same set, rebuilt after every message, keeps its one.
+    /// Each job's subscription identity survives changes to the other tracked jobs.
     pub(crate) fn capability_reader_subscription(&self) -> Option<Subscription<Message>> {
         self.capabilities.live().then(|| {
-            Subscription::run_with(
-                Reader {
-                    identity: self.capabilities.live_jobs(),
-                    owner: self.owner.clone(),
-                    client: self.client,
-                },
-                capability_reads,
-            )
+            Subscription::batch(self.capabilities.live_jobs().into_iter().map(|identity| {
+                Subscription::run_with(
+                    Reader {
+                        identity,
+                        owner: self.owner.clone(),
+                        client: self.client,
+                        presentation_visible: self.visibility.sampling_allowed(),
+                    },
+                    capability_reads,
+                )
+            }))
         })
     }
 

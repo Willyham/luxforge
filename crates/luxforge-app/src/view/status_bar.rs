@@ -5,7 +5,7 @@
 //! this display.
 use crate::{
     app::message::{Message, view::ViewMessage},
-    state::status::StatusBarModel,
+    state::{long_work::LongWorkModel, status::StatusBarModel},
 };
 use iced::{
     Alignment, Length,
@@ -17,7 +17,10 @@ use luxforge_ui::{Icon, IconButtonModel, header_icon_button, theme, truncated_te
 /// The widest the notice's tooltip grows before its sentence wraps.
 const NOTICE_TOOLTIP_WIDTH: f32 = 320.0;
 
-pub(crate) fn status_bar(model: &StatusBarModel) -> Element<'_, Message> {
+pub(crate) fn status_bar<'a>(
+    model: &'a StatusBarModel,
+    work: &'a LongWorkModel,
+) -> Element<'a, Message> {
     // The sentence hugs its text, so Copy follows it, and ends in an ellipsis before it would push
     // the facts along.
     let message = row![
@@ -63,7 +66,7 @@ pub(crate) fn status_bar(model: &StatusBarModel) -> Element<'_, Message> {
     };
     // Why the gesture is drawn on the CPU, a muted phrase right after the render slot with its
     // sentence on hover; nothing is drawn on the photograph.
-    let notice: Option<Element<'_, Message>> = model.fallback.as_ref().map(|notice| {
+    let notice: Option<Element<'a, Message>> = model.fallback.as_ref().map(|notice| {
         tooltip(
             text(notice.phrase.clone())
                 .size(theme::SIZE_CAPTION)
@@ -81,16 +84,22 @@ pub(crate) fn status_bar(model: &StatusBarModel) -> Element<'_, Message> {
         )
         .into()
     });
-    let facts = row![
-        row![dot, fact(&model.clients)]
-            .spacing(theme::STATUS_DOT_SIZE)
-            .align_y(Alignment::Center),
-        fact(&model.render),
-    ]
-    .extend(notice)
-    .push(fact(&model.view))
-    .spacing(theme::STATUS_FACT_SPACING)
-    .align_y(Alignment::Center);
+    // Long-running work's busiest job leads the facts while any job runs.
+    let mut facts = row![]
+        .spacing(theme::STATUS_FACT_SPACING)
+        .align_y(Alignment::Center);
+    if let Some(job) = crate::view::long_work::busiest(work) {
+        facts = facts.push(job);
+    }
+    let facts = facts
+        .push(
+            row![dot, fact(&model.clients)]
+                .spacing(theme::STATUS_DOT_SIZE)
+                .align_y(Alignment::Center),
+        )
+        .push(fact(&model.render))
+        .extend(notice)
+        .push(fact(&model.view));
     // A shrinking container lays the sentence out at its own width, where a filling one would give
     // it the whole slot and push Copy to the slot's far end.
     row![

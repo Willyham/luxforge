@@ -191,7 +191,7 @@ Current discoverable operations use the same command service as the desktop:
 | Operation | Semantics |
 | --- | --- |
 | `source.inspect`, `module.list` with optional `asset_id` | Source kind, immutable interpretation, readiness and applicable provider/control descriptors |
-| `catalog.import`, `source.prepare`, `job.read`, `job.cancel`, `job.adopt` | Bounded asynchronous work; client-owned jobs, newest-import adoption and explicit preparation retries |
+| `pick.develop`, `source.prepare`, `job.read`, `job.cancel`, `job.adopt` | Bounded asynchronous work: a file is developed in, then prepared; client-owned jobs, newest-preparation adoption and explicit preparation retries |
 | `edit.set-raw {temperature?, tint?, white-balance?}` | The revision-checked white-balance patch of the source layer: custom Kelvin and Luxforge tint, or `white-balance: as-shot` for the captured white balance |
 | `edit.set-basic {exposure}` | Exposure, Basic's on every kind |
 | `edit.set-raw-red-gain`, `edit.set-raw-blue-gain` | Explicit sensor gain patches for programmatic callers |

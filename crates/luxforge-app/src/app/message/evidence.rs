@@ -8,6 +8,9 @@ use serde_json::Value;
 pub(crate) enum EvidenceMessage {
     /// The evidence deadline check.
     Tick,
+    /// A native evidence operation returned. A separate native callback proves its transition.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    VisibilityOperated(Result<(), String>),
     /// The one gated deadline of a `view_idle` step, before any evidence capture can redraw.
     ViewIdleDeadline,
     /// The end of an `idle` step's settle or of its window.
@@ -37,6 +40,13 @@ pub(crate) enum EvidenceMessage {
     /// The host method an `agent` step sent through the run's second client answered, with the
     /// event sequence it was answered at.
     AgentHostAnswered(Result<(Value, u64), String>),
+    /// The `pick.set` a Select `agent_pick` step sent through the run's second client answered.
+    SelectAgentAnswered(Result<Value, String>),
+    /// One press of a loupe `arrows` step: the first once the look-ahead is warm, the rest one per
+    /// tick of the step's own timer, which exists only while presses remain.
+    LoupeArrow,
+    /// A display frame of a running `grid_scroll` step: scroll the grid on by the step's speed.
+    GridScrollFrame(std::time::Instant),
     /// Iced's name for the adapter that draws the window and its backend, which an enumeration of
     /// that backend, off the update loop, identifies further.
     Info(iced::system::Information),

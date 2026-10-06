@@ -35,13 +35,14 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 ## Library
 
-**Source recovery.** Keep edits reachable when originals move.
-- Manual Locate through the UI and API, with verification
-
-**Small library.** Work across many photos, not one ([decisions](decisions.md)).
-- Multi-image import and virtualized browsing
-- Filtering, tagging and collections
-- Multi-selection and stacking
+**Browse, pick, develop** ([design](design/catalog.md)). The Select workspace, events and moments, picks, developing picks into the catalog, catalog folders and collections, Locate and resolving missing originals, removal and batch preset and export are implemented on the design's recorded defaults ([feature status](features.md)). What remains ([outstanding](design/catalog.md#outstanding)):
+- Owner decisions on the design's proposals, P13's choice of how to meet the photographs view's time among them
+- Recording the `catalog-measure` figures, the first browse from a card reader included, and meeting the `browse.view` target over 100,000 photographs
+- A labelled corpus of real trips, bursts and brackets from several makes, to check events and moments against
+- Native Linux and Windows runs of the folder and volume watchers
+- In the desktop: Add a folder…, the card-connected notice, Send back, dragging photographs onto a catalog folder, moving collections between groups, changing a smart collection's query, and Locate original… in export's refusal
+- Background availability checks, and a browse filter for a missing value
+- Later: merging brackets to HDR and stitching panoramas as a merge source kind (not selected)
 - Catalog portability and backup, carrying each catalog's derived-artifact directory with it (decision pending)
 
 ## RAW
@@ -54,6 +55,10 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - M4 responsiveness, memory and JPEG regression measurements
 - End-to-end RAW editing journey
 - Measure the cost and accuracy of a clip-aware white-balance draft on Bayer developments, whose drag frames on highlight-clipped scenes are reported and not gated ([decisions](decisions.md#gpu-first-rendering)). The candidate is in [instant previews](design/instant-preview.md#popular-cameras)
+
+**RAW looks** ([design](design/raw-looks.md), [plan](../tasks/raw-looks.json)). Planned, decided 2026-10-05. New RAW photos start from a Luxforge look instead of the bare neutral development.
+- Phase 1: the Standard look, chosen on the corpus and reviewed by the owner, in every new RAW photograph's Original; a Look section with Standard, Neutral and Amount; a Settings row for the starting look
+- Phase 2: Match camera, a tone curve and chroma gain fitted per photo to its embedded camera preview off the owner, as a first-open entry or on request
 
 **Camera coverage follow-ups** ([popular camera support](design/popular-camera-support.md)).
 - Nikon High Efficiency NEF once upstream LibRaw decodes it; refused explicitly until then
@@ -75,10 +80,20 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 **Lens and perspective correction** (implemented; qualification in progress, [design](design/lens-and-perspective.md), [plan](../tasks/lens-and-perspective.json)). Offline Lensfun profile distortion and manual two-axis perspective, with a fixed covered canvas, shared nonlinear mapping for crop and masks, and explicit prevention of duplicate embedded DNG correction. Functional implementation is verified; performance and photographic qualification remain outstanding. Coverage and read bounds are closed forms; the pinned index ships as a separate resource; Perspective is not presettable and strong minification is refused. Qualification needs authentic photographs for the qualified camera, lens and focal combinations.
 
-**Corrections** (proposal, [design](design/corrections.md), [plan](../tasks/corrections.json)). Remove blemishes and objects.
-- Owner decisions: behaviour, repair-stage order, scope
-- Offline Clone and Heal: numerical contract, repair stage, brush masks, desktop workflow
-- AI Remove: provider qualification, local and remote adapters, candidate review and acceptance
+**Corrections** (proposal, [design](design/corrections.md), [plan](../tasks/corrections.json)). Remove blemishes by hand; offline Clone/Heal has its own delivery and qualification.
+- Decided: repair after source development and before colour, deletion of `PointReplace`, stale patches kept rendering with export acknowledgement. Open: repair versus Detail restoration placement, correction preset eligibility, Heal numerics, brush/source-edge behaviour and bounded candidate/export shapes
+- Reuse the delivered typed stroke store and drafts, module/capability contracts, Develop/prepare/adopt, Locate/library cleanup and nonlinear geometry; add the production brush interaction and ordered repair module
+- Integrate rendering against the merged GPU-first interfaces and comparison harness; qualify offline UI/API, catalog previews, single/batch export and native performance after feature work
+- Separately extend the same repair layer with frozen patches, bounded candidate jobs and source plus intra-layer prefix invalidation for AI editing; no model/provider prerequisite for the offline milestone
+
+**AI editing** (decided 2026-10-05, [design](design/ai-editing.md), [plan](../tasks/ai-editing.json)). Local, user-downloaded models behind one inference port and one analysis cache; nothing bundled, nothing sent without consent. The plan runs once the GPU-first integration branch has merged, with the Corrections foundation beside its first stage.
+- Decided: scope, quality-first model policy with no licence or provenance gate beyond a one-line use restriction, the runtime by quality then performance then maintainability, plain-language model choices, the effect region, stale patches kept rendering, budgets raised for quality, the 24 GB generative minimum, consent remembered per provider, the repair stage, sky replacement. Open: the first hosted provider, a fine-tune, a Swift shim, CPU-only machines
+- Groundwork: the prototype on `main` as the harness; the fill-quality study (the 512 px fill's softness on large objects), the Select model qualification and the generative qualification (Moebius, FLUX.2 klein 4B) on the M4
+- Foundation: the inference port and ONNX Runtime crate, `local-runtime` with activation and unload, the model manager with resumable multi-file downloads and a Models tab, the analysis task and cache, the hover worker and picker, the model-selection mask kind
+- **Remove** on the Fast tier through the Corrections repair stage; **Select** with a class menu that follows the photograph (Subject, Background, Sky, People, Water, Mountains, Vegetation, Ground, Architecture, Objects)
+- **Generative fill and Replace** on the local model, with variations, behind an experiment flag until qualified
+- Optional: **sky replacement** as a deterministic layer over the Select Sky mask; people parts and depth-range masks
+- Last: the typed remote-provider adapter and loopback protocol, Windows and Linux functional checks, qualification and measurement, documentation
 
 **Presets follow-ups** ([design](design/presets.md#later)). The library, apply, create and Lightroom import are delivered.
 - Owner review of the recorded defaults
@@ -86,12 +101,20 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 - RAW white balance import through a calibrated conversion from Lightroom's Kelvin and tint
 - Copy and Paste Settings over the same composite action
 
+**Lightroom import** (decided 2026-10-06, planned, not authorized; [design](design/lightroom-import.md), [plan](../tasks/lightroom-import.json)). Bring a Lightroom Classic catalog or a folder of XMP sidecars across, read-only.
+- Phase 1: the photographs worked on, catalog folders by event, collections, ratings and labels as collections, virtual copies and snapshots as versions, global settings, crop, orientation, lens and the look, the report and re-mapping, Lightroom's previews as first tiles
+- Phase 2: masks and local adjustments; phase 3: spot removal, AI masks, Detail and perspective as their tools land
+
+**Lightroom alignment** (decided 2026-10-06, planned, not authorized; [design](design/lightroom-alignment.md), [plan](../tasks/lightroom-alignment.json)). Every supported slider follows Lightroom Classic's response, with targeted algorithm changes where a dimension still differs widely, in order of editing area: Basic, then Presence, the mixer and the vignette, then Detail, then masks and geometry, then RAW white balance.
+- Open: authorization
+- The rig (generated XMP, one Lightroom import and export per round by the owner), round 1 of single settings and round 2 of pairs, calibrated mapping rows as the importers' bridge, a response change per setting, targeted behaviour changes, validation on the owner's edited photographs
+
 **Masks** ([design](design/masking.md)). Local adjustments. All four phases are delivered: the mask model and its persistence, the `mask.*` command family, the masked colour and spatial primitives, the Mask mode and panel, the coverage overlay — including for a mask that reads pixels, which [proposal P16](design/range-study.md#proposals) settled by reading the input of the mask's first bound layer once per display cell, measured and inside the preview budget, with the refusal kept where there is no operation to read or where reading one would cost a tile per cell — both gradients, brushes over the content-addressed stroke store, and the non-AI luminance and colour range selections with the colour-constrained brush.
 - [Interaction repairs](design/masking-interactions.md): live candidate coverage, coherent selection and brush targets, unplaced/exclusive creation, `O` visibility and bounded live capture are implemented and verified. Native RAW liveness and scoped 24/60 MP hover/paint measurements pass; [performance](specs/performance.md#native-masking-interaction-qualification) records the memory and diagnostic limits
 - [Mask performance](design/mask-performance.md) reduces overlay handoff and preview-worker cost within the existing buffer bounds. General photo/coverage tail latency remains open; the [matched native comparison](specs/performance.md#mask-feedback-and-the-coverage-handoff) keeps loaded runs and delayed positions visible
 - A paint gesture's latency misses the provisional p95 bound on every recipe measured; the figures and their scope are in [performance](specs/performance.md#a-painted-strokes-own-latency)
 - The range selections have no photographic corpus: every figure in the [range study](design/range-study.md) is over flat synthetic patches
-- Density, edge-aware refinement, model-based selections, copying masks between photographs and mask presets are out of scope with their reasons recorded
+- Density, edge-aware refinement, copying masks between photographs and mask presets are out of scope with their reasons recorded; model-based selections are the [AI editing](design/ai-editing.md) proposal's Select
 
 **Tuning delivered tools.** Refine the recorded defaults of Presence, the colour mixer and the vignette (decision pending).
 
@@ -110,13 +133,13 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 ## Extensibility
 
 **Shared module capabilities follow-ups** ([design](design/module-capabilities.md)). Settings and secrets, consent, the transport, resources, tasks and derived artifacts are delivered on macOS; activation is deferred until a module needs `local-runtime`.
-- Owner review of the recorded defaults: per-asset photo consent, who may grant, loopback-only plain HTTP ([decisions](decisions.md#module-capabilities))
+- Owner review of the recorded defaults: who may grant, loopback-only plain HTTP ([decisions](decisions.md#module-capabilities)); per-asset photo consent was revised on 2026-10-05 to consent remembered per provider, landing with AI editing's remote tier
 - Windows Credential Manager and Linux Secret Service for module secrets, verified natively; both refuse with `not-ready` today
 - Native Windows and Linux checks of the transport's certificate verification and of resource removal, which on Windows must release a module's files before deleting them
-- The first reviewed provider adapters and their crop and mask data classes, with Corrections
+- The first reviewed provider adapters and their crop and mask data classes, with [AI editing](design/ai-editing.md)
 - Resumable, hash-checked downloads for large model files; an interrupted download restarts today
 - Setting and clearing secrets off the catalog owner, so an OS keychain prompt never holds other clients
-- `managed-storage` and `local-runtime` capabilities, when a module first needs them
+- `managed-storage` when a module first needs it; `local-runtime` is defined by the [AI editing](design/ai-editing.md) proposal as its first consumer
 
 **External modules.** Load separately authored modules.
 - Measure optional-module activation cost
@@ -147,4 +170,4 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 ## Not in scope
 
-Map, Book, Slideshow, Print, Web and Publish Services. Accounts, cloud sync, built-in AI chat, a plugin marketplace, a public compatibility framework and a generalized processing graph. General bitmap layers with blend modes. Generative editing, pending the owner's review of the Corrections proposal.
+Map, Book, Slideshow, Print, Web and Publish Services. Accounts, cloud sync, built-in AI chat, a plugin marketplace, a public compatibility framework and a generalized processing graph. General bitmap layers with blend modes. AI denoise, upscaling, generative expand, text-to-image and face retouching are not proposed ([AI editing](design/ai-editing.md) covers removal, selection, generative fill and sky replacement).

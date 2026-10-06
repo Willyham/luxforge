@@ -2106,6 +2106,7 @@ dependencies = [
  "luxforge-raw",
  "luxforge-reference",
  "luxforge-testbase",
+ "luxforge-watch",
  "moxcms",
  "naga",
  "rayon",
@@ -2114,6 +2115,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tokio",
  "toml_edit",
  "url",
  "uuid",
@@ -2136,6 +2138,7 @@ dependencies = [
  "block2 0.6.2",
  "objc2 0.6.4",
  "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "raw-window-handle",
 ]
 
@@ -2181,6 +2184,7 @@ name = "luxforge-raw"
 version = "0.0.0"
 dependencies = [
  "cc",
+ "image",
  "jxl-image",
  "jxl-oxide",
  "libc",
@@ -2231,6 +2235,19 @@ dependencies = [
  "luxforge-reference",
  "luxforge-testbase",
  "wgpu",
+]
+
+[[package]]
+name = "luxforge-watch"
+version = "0.0.0"
+dependencies = [
+ "dispatch2",
+ "libc",
+ "luxforge-testbase",
+ "objc2-core-foundation",
+ "objc2-core-services",
+ "rustix 1.1.5",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2351,6 +2368,17 @@ checksum = "b63fbc4a50860e98e7b2aa7804ded1db5cbc3aff9193adaff57a6931bf7c4b4c"
 dependencies = [
  "adler2",
  "simd-adler32",
+]
+
+[[package]]
+name = "mio"
+version = "1.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1788edb87fdc09c7e26304471e2f5be8cdefb1b6930d6e3985fc02ff53bf86ee"
+dependencies = [
+ "libc",
+ "wasi",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2644,6 +2672,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-core-services"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "583300ad934cba24ff5292aee751ecc070f7ca6b39a574cc21b7b5e588e06a0b"
+dependencies = [
+ "dispatch2",
+ "libc",
+ "objc2-core-foundation",
+]
+
+[[package]]
 name = "objc2-encode"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2669,6 +2708,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e3e0adef53c21f888deb4fa59fc59f7eb17404926ee8a6f59f5df0fd7f9f3272"
 dependencies = [
  "bitflags 2.13.2",
+ "block2 0.6.2",
  "objc2 0.6.4",
  "objc2-core-foundation",
 ]
@@ -3723,6 +3763,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "socket2"
+version = "0.6.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "softbuffer"
 version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4007,7 +4057,12 @@ version = "1.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
 dependencies = [
+ "bytes",
+ "libc",
+ "mio",
  "pin-project-lite",
+ "socket2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5040,6 +5095,7 @@ version = "0.0.0"
 dependencies = [
  "flate2",
  "image",
+ "kamadak-exif",
  "luxforge-core",
  "luxforge-evidence",
  "luxforge-raw",

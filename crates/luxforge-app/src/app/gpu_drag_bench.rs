@@ -167,7 +167,7 @@ impl View {
 /// The evidence window's photo surface, 1440 × 900 logical at 2× with both panels open, at 100%
 /// over an output stage of `stage`, scrolled to its centre: the visible region a 100% drag draws.
 fn full_view(stage: (u32, u32)) -> Option<Region> {
-    let surface = crate::layout::photo_surface((1440.0, 900.0), true, true);
+    let surface = crate::layout::photo_surface((1440.0, 900.0), true, true, false);
     let pan = (
         ((stage.0 as f32 / 2.0 - surface.0) / 2.0).max(0.0),
         ((stage.1 as f32 / 2.0 - surface.1) / 2.0).max(0.0),

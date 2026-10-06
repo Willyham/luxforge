@@ -9,7 +9,7 @@
 //! unavailable provider and reopen — is the field-patch conformance chapter's
 //! ([`crate::conformance`]), which runs the same suite the core's own test does. Their numerics
 //! against their frozen references are the core's tests.
-use crate::basic_acceptance::{FIXTURE, import, mutation, render};
+use crate::basic_acceptance::{FIXTURE, mutation, open, render};
 use crate::*;
 use luxforge_core::{
     BASIC_EFFECT, ClientId, MIXER_EFFECT, ORIENTATION_EFFECT, OwnerHandle, PRESENCE_EFFECT,
@@ -69,7 +69,7 @@ fn section(fixture: &Path, catalog: &Path, run: Section) -> Result<Value> {
     let (owner, join) = OwnerHandle::start(catalog)?;
     let outcome = (|| -> Result {
         let editor = owner.register();
-        let imported = import(&owner, editor, fixture)?;
+        let imported = open(&owner, editor, fixture)?;
         let asset = imported["asset"]["id"].clone();
         let original = imported["current_entry"]["id"].clone();
         let mut record =

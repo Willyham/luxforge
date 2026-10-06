@@ -273,8 +273,8 @@ pub(crate) const AUTO_COLLAPSE_DESCRIPTION: &str = "Successive edits of one cont
 
 /// What the lens row says under its title.
 pub(crate) const AUTO_LENS_DESCRIPTION: &str = "New RAW photos get their detected lens profile as \
-     a history entry. Applies to imports from now on; photos already in the catalog keep their \
-     history.";
+     a history entry when first opened. Applies from now on; photos you have already edited keep \
+     their history.";
 
 /// What the mask overlay colour row says under its title.
 pub(crate) const MASK_OVERLAY_COLOUR_DESCRIPTION: &str =

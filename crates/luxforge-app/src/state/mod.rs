@@ -4,10 +4,13 @@
 pub(crate) mod canvas;
 pub(crate) mod capabilities;
 pub(crate) mod control_tree;
+pub(crate) mod develop;
 pub(crate) mod document;
 pub(crate) mod fields;
 pub(crate) mod histogram;
 pub(crate) mod information;
+pub(crate) mod long_work;
+pub(crate) mod loupe;
 pub(crate) mod masks;
 pub(crate) mod number;
 pub(crate) mod palette;
@@ -16,6 +19,9 @@ pub(crate) mod performance;
 pub(crate) mod preferences;
 pub(crate) mod presets;
 pub(crate) mod query_choice;
+pub(crate) mod select;
+pub(crate) mod select_catalog;
+pub(crate) mod select_missing;
 pub(crate) mod settings;
 pub(crate) mod status;
 #[cfg(test)]
@@ -404,6 +410,14 @@ pub(crate) struct Inputs<'a> {
     pub(crate) performance_expanded: bool,
     /// What the Performance section's sampler has read since it last started sampling.
     pub(crate) performance: &'a performance::PerformanceHistory,
+    /// The Select workspace's state: which workspace is shown, what Select last read and its own
+    /// choices.
+    pub(crate) select: &'a select::SelectState,
+    /// Long-running work: the board as last read, each job's rate and the view waiting on a job.
+    pub(crate) long_work: &'a long_work::LongWorkState,
+    /// Developing picks and the development set: Develop N's confirmation, a Develop running, the
+    /// set, and the cached preview drawn while a photograph of it prepares.
+    pub(crate) develop: &'a develop::DevelopState,
 }
 
 impl Inputs<'_> {
@@ -430,6 +444,12 @@ pub(crate) struct Workspace {
     /// The state panel's pinned last block. It keeps itself across derivations and is rebuilt only
     /// when a sample lands or the section opens or closes.
     pub(crate) performance: performance::PerformanceModel,
+    /// The Select workspace, empty while Develop is shown.
+    pub(crate) select: select::SelectModel,
+    /// Long-running work: the status bar's busiest job and Select's progress sheet.
+    pub(crate) long_work: long_work::LongWorkModel,
+    /// Develop N's confirmation and progress, the filmstrip and the cached preview's words.
+    pub(crate) develop: develop::DevelopModel,
 }
 
 impl Workspace {
@@ -449,6 +469,17 @@ impl Workspace {
         // The panel draws sections unless Mask mode's list has no mask open to bind them to.
         let sections_shown = !(self.canvas.mask_panel && self.masks.selected.is_none());
         self.palette = palette::derive(inputs, &self.tools, sections_shown);
+        self.select = select::derive(inputs);
+        self.long_work = long_work::derive(inputs);
+        let progress = inputs
+            .develop
+            .developing
+            .as_ref()
+            .and_then(|developing| developing.job.as_deref())
+            .and_then(|job| inputs.long_work.job(job))
+            .and_then(|job| job.entry.progress.as_ref())
+            .and_then(|progress| progress.fraction);
+        self.develop = develop::derive(inputs.develop, progress);
         self.settings = settings::derive(
             inputs.settings,
             inputs.preferences,
@@ -638,6 +669,9 @@ mod tests {
         preferences: preferences::PreferenceWriter,
         themes: themes::Themes,
         version_form: VersionForm,
+        select: select::SelectState,
+        long_work: long_work::LongWorkState,
+        develop: develop::DevelopState,
     }
 
     impl Scene {
@@ -682,6 +716,9 @@ mod tests {
                 preferences: preferences::PreferenceWriter::default(),
                 themes: themes::Themes::default(),
                 version_form: VersionForm::default(),
+                select: select::SelectState::default(),
+                long_work: long_work::LongWorkState::default(),
+                develop: develop::DevelopState::default(),
             }
         }
 
@@ -797,6 +834,9 @@ mod tests {
                 capabilities: &self.capabilities,
                 performance_expanded: self.performance_expanded,
                 performance: &self.performance,
+                select: &self.select,
+                long_work: &self.long_work,
+                develop: &self.develop,
             }
         }
 
@@ -895,9 +935,7 @@ mod tests {
             "budgets": {"colour_scratch": budget, "spatial": budget}
         }))
         .unwrap();
-        scene
-            .performance
-            .push(sample, luxforge_core::ActivitySnapshot::default());
+        scene.performance.push(sample);
         workspace.derive(&scene.inputs());
         assert_ne!(workspace.performance.version, version);
         assert_eq!(workspace.performance.metrics[0].value, "1.42");
@@ -905,6 +943,89 @@ mod tests {
         scene.performance_expanded = false;
         workspace.derive(&scene.inputs());
         assert!(workspace.performance.metrics.is_empty(), "collapsed");
+    }
+
+    /// The Performance section's job rows and the status bar's job come from the one board read:
+    /// after the read a wake asks for, both show the job that began, and after the read that finds
+    /// it ended, neither shows it running — with no sample of the section's in between. A read
+    /// rebuilds the open section's rows but not its sparklines, and nothing of the collapsed one.
+    #[test]
+    fn the_section_and_the_status_bar_show_the_same_board_read() {
+        use luxforge_core::activity::{ActiveActivity, ActivityEntry, Outcome, RecentActivity};
+        let indexing = ActivityEntry {
+            id: 4,
+            kind: "index.refresh".into(),
+            label: "Indexing".into(),
+            detail: Some("/Volumes/Archive/2026".into()),
+            job_id: Some("job-4".into()),
+            ..ActivityEntry::default()
+        };
+        let board = |active: Vec<ActiveActivity>, recent: Vec<RecentActivity>| {
+            luxforge_core::ActivitySnapshot {
+                active,
+                recent,
+                ..luxforge_core::ActivitySnapshot::default()
+            }
+        };
+        let mut scene = Scene::new(descriptors());
+        scene.performance_expanded = true;
+        let mut workspace = scene.derive();
+        let version = workspace.performance.version;
+        assert_eq!(workspace.performance.jobs[0].label, "No background work");
+        assert_eq!(workspace.long_work.busiest, None);
+
+        // The read a wake asks for: the job has run long enough to show.
+        scene.long_work.observe(board(
+            vec![ActiveActivity {
+                entry: indexing.clone(),
+                elapsed_ms: 1_200,
+            }],
+            Vec::new(),
+        ));
+        workspace.derive(&scene.inputs());
+        let busiest = workspace
+            .long_work
+            .busiest
+            .clone()
+            .expect("the status bar's job");
+        let row = &workspace.performance.jobs[0];
+        assert_eq!(
+            (busiest.job_id.as_str(), busiest.label.as_str()),
+            (
+                row.work.as_ref().map_or("", |work| work.job_id.as_str()),
+                row.label.as_str()
+            ),
+            "{row:?}"
+        );
+        assert_eq!(workspace.performance.caption.as_deref(), Some("1 job"));
+        assert_eq!(
+            workspace.performance.version, version,
+            "the sparklines are left as they were"
+        );
+
+        // The read that finds it ended: neither shows it running.
+        scene.long_work.observe(board(
+            Vec::new(),
+            vec![RecentActivity {
+                entry: indexing,
+                outcome: Outcome::Cancelled,
+                duration_ms: 1_400,
+                ended_ms_ago: 10,
+            }],
+        ));
+        workspace.derive(&scene.inputs());
+        assert_eq!(workspace.long_work.busiest, None);
+        let row = &workspace.performance.jobs[0];
+        assert!(!row.running && row.work.is_none(), "{row:?}");
+        assert_eq!(row.detail.as_deref(), Some("Cancelled 1 s ago"));
+
+        // Collapsed, a read changes nothing of the section.
+        scene.performance_expanded = false;
+        workspace.derive(&scene.inputs());
+        let collapsed = workspace.performance.clone();
+        scene.long_work.observe(board(Vec::new(), Vec::new()));
+        workspace.derive(&scene.inputs());
+        assert_eq!(workspace.performance, collapsed);
     }
 
     #[test]
@@ -2535,7 +2656,7 @@ mod tests {
             notice.body, "Crop is unavailable: disabled by --disable-module",
             "the notice names the module and the reason, not the effect identity"
         );
-        assert!(notice.actions.is_empty(), "Locate is a later feature");
+        assert!(notice.actions.is_empty(), "a stale preview offers nothing");
 
         // A layer nothing provides is still named, by its effect identity.
         scene.render_error = Some(luxforge_core::Error::unavailable_effect(
@@ -2559,7 +2680,19 @@ mod tests {
             let notice = &scene.derive().canvas.notices[0];
             assert_eq!(notice.title, title, "{kind:?}");
             assert_eq!(notice.body, "the detail");
-            assert!(notice.actions.is_empty());
+            let locates = kind != luxforge_core::ErrorKind::ResourceLimit;
+            assert_eq!(
+                notice.actions,
+                if locates {
+                    vec![(
+                        "Locate original\u{2026}".to_owned(),
+                        canvas::NoticeAction::LocateOriginal,
+                    )]
+                } else {
+                    Vec::new()
+                },
+                "{kind:?}: an original that is not there offers Locate original…"
+            );
         }
         // A kind the workspace has nothing to say about is left to the status bar.
         scene.render_error = Some(luxforge_core::Error::internal("boom"));

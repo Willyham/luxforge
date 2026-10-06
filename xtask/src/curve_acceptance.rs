@@ -10,7 +10,7 @@
 //! both paths, an unavailable provider and reopen — is the field-patch conformance chapter's
 //! ([`crate::conformance`]). The frozen fixture through render on both paths is the core's
 //! `modules` test (`curve`).
-use crate::basic_acceptance::{FIXTURE, import, mutation, render};
+use crate::basic_acceptance::{FIXTURE, mutation, open, render};
 use crate::*;
 use luxforge_core::{
     BASIC_EFFECT, CURVE_EFFECT, ClientId, MIXER_EFFECT, OwnerHandle, Recipe, SourceImage,
@@ -92,7 +92,7 @@ fn section(source_path: &Path, catalog: &Path, run: Section) -> Result<Value> {
     let (owner, join) = OwnerHandle::start(catalog)?;
     let outcome = (|| -> Result {
         let editor = owner.register();
-        let imported = import(&owner, editor, source_path)?;
+        let imported = open(&owner, editor, source_path)?;
         let asset = imported["asset"]["id"].clone();
         let original = imported["current_entry"]["id"].clone();
         prepare(&owner, editor, &asset)?;

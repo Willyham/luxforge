@@ -40,7 +40,7 @@ impl Fixture {
     fn import(catalog: &Path, source: &Path) -> Result<Self> {
         let owner = Owner::start(catalog, ModuleRegistry::builtin(), "detail-performance")?;
         let client = owner.client();
-        let state = owner.import(client, source)?;
+        let state = owner.open(client, source)?;
         let fixture = Self {
             owner,
             client,

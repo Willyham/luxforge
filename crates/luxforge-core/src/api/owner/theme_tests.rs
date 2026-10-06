@@ -481,17 +481,22 @@ fn no_theme_method_changes_an_asset_revision() {
     let path = harness.dir.join("photo.jpg");
     fs::copy(fixture(), &path).unwrap();
     let queued = harness.ok(
-        "catalog-import",
-        "catalog.import",
-        json!({"path": path, "mutation": mutation("photo")}),
+        "develop",
+        "pick.develop",
+        json!({
+            "targets": {"kind": "paths", "paths": [path]},
+            "into": [],
+            "confirm_removable": true,
+            "mutation": mutation("photo"),
+        }),
     );
     let job = queued["job_id"].clone();
-    let status = luxforge_testbase::wait_for("the import to settle", || {
+    let status = luxforge_testbase::wait_for("the development to settle", || {
         let status = harness.ok("job", "job.read", json!({"job_id": job}));
         (!matches!(status["status"].as_str(), Some("queued" | "running"))).then_some(status)
     });
     assert_eq!(status["status"], "ready", "{status}");
-    let asset = status["result"]["asset"]["id"].clone();
+    let asset = status["result"]["developed"][0]["asset_id"].clone();
     let state = || harness.ok("state", "asset.state", json!({"asset_id": asset}));
     let before = state();
     let history = harness.ok("history", "history.list", json!({"asset_id": asset}));

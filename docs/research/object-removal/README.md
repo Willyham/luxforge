@@ -1,6 +1,6 @@
 # Object removal and AI masking research
 
-Researched September 2026. Proposals only: nothing here is an accepted decision, and every M4 number is either the cited single-image spot check or an estimate until the [measurements](#nine-owner-decisions-and-twelve-m4-measurements-gate-the-choice) run. It informs the [corrections design](../../design/corrections.md)'s AI Remove and the [masking workspace](../../design/masking-workspace.md)'s model selections.
+Researched September 2026. Proposals only: nothing here is an accepted decision, and every M4 number is either the cited single-image spot check or an estimate until the [measurements](#nine-owner-decisions-and-twelve-m4-measurements-gate-the-choice) run. It informs the [corrections design](../../design/corrections.md)'s AI Remove and the [masking workspace](../../design/masking-workspace.md)'s model selections, and the [AI editing design](../../design/ai-editing.md) of 2026-10-04 that plans both on the prototype's measurements.
 
 | Chapter | Covers |
 | --- | --- |
@@ -94,7 +94,7 @@ Luxforge should therefore make the **effect region a first-class, editable compo
 
 **Big-LaMa** is the permissive baseline. It has 51 M parameters of fast Fourier convolutions and was trained on 256-px crops of Places images. It stays coherent at 1536² and is strong on periodic structure such as fences and windows. It "struggles when a strong perspective distortion gets involved" ([LaMa paper](https://arxiv.org/pdf/2109.07161)). Its code is Apache-2.0 ([repo](https://github.com/advimman/lama)). Its weights are labelled Apache-2.0, but only on a Hugging Face mirror ([big-lama](https://huggingface.co/smartywu/big-lama)).
 
-**MI-GAN** is the lightweight fallback. It has MIT code, separately MIT-licensed weights and 5.95 M parameters. It ran at 2048² in 1.2 s on an iPad Pro M2 ([MI-GAN](https://github.com/Picsart-AI-Research/MI-GAN), [RETHINED](https://arxiv.org/html/2503.14757)).
+**MI-GAN** is the lightweight fallback. It has MIT code, separately MIT-licensed weights and 5.95 M parameters. It ran in 1.2 s at 1024² and 3.9 s at 2048² on an iPad Pro M2 ([MI-GAN](https://github.com/Picsart-AI-Research/MI-GAN), [RETHINED](https://arxiv.org/html/2503.14757), Table 2 and Figure 3).
 
 Both models are deterministic, give one answer, and leave shadows alone unless the shadows are masked. Both need full precision. LaMa's Fourier blocks collapse to garbage in FP16, so its MLX port runs in bf16 ([mlx-lama-swift](https://github.com/xocialize/mlx-lama-swift)). Core ML LaMa runs well on the macOS GPU but fails in FP16 on the Neural Engine ([CoreMLaMa](https://github.com/mallman/CoreMLaMa)). **The fill runs on the GPU or CPU in fp32 or bf16, never on the ANE.**
 

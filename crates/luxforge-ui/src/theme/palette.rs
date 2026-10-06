@@ -5,6 +5,7 @@
 //! names are also listed in [`Palette::TOKEN_NAMES`], which a desktop test holds equal to the
 //! core's. Luxforge Dark's values are the visual language's, exactly, alpha included.
 
+use super::Derived;
 use iced::Color;
 
 /// Declares [`Palette`], [`Token`], the token names, the name-based reads and Luxforge Dark's
@@ -193,21 +194,30 @@ impl Default for Palette {
     }
 }
 
-/// The colour a widget model asks for: a token of the running theme's palette, resolved when the
-/// widget draws, or a fixed colour, the same in every theme.
+/// The colour a widget model asks for: a token of the running theme's palette or a colour
+/// [`Derived`] from its tokens, resolved when the widget draws, or a fixed colour, the same in
+/// every theme.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Ink {
     Token(Token),
+    Derived(Derived),
     Fixed(Color),
 }
 
 impl Ink {
     /// The colour this ink draws in `palette`.
-    pub const fn resolve(self, palette: &Palette) -> Color {
+    pub fn resolve(self, palette: &Palette) -> Color {
         match self {
             Ink::Token(token) => palette.get(token),
+            Ink::Derived(derived) => derived.resolve(palette),
             Ink::Fixed(colour) => colour,
         }
+    }
+}
+
+impl From<Derived> for Ink {
+    fn from(derived: Derived) -> Self {
+        Ink::Derived(derived)
     }
 }
 

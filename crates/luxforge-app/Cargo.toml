@@ -37,9 +37,10 @@ luxforge-reference = { path = "../luxforge-reference" }
 luxforge-ui = { path = "../luxforge-ui", features = ["qualification"] }
 luxforge-testbase = { path = "../luxforge-testbase" }
 luxforge-testkit = { path = "../luxforge-testkit" }
-# The core with the disk flush skipped, for this crate's tests only (luxforge-core's
-# `test-skip-disk-flush`).
-luxforge-core = { path = "../luxforge-core", features = ["test-skip-disk-flush", "qualification"] }
+# The core with the disk flush skipped, its index listings held at a test's gate and its Presence
+# CPU filters exposed, for this crate's tests only (luxforge-core's `test-skip-disk-flush`,
+# `test-holds` and `qualification`).
+luxforge-core = { path = "../luxforge-core", features = ["test-skip-disk-flush", "test-holds", "qualification"] }
 
 [lints]
 workspace = true

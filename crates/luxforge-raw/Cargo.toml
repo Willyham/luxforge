@@ -33,6 +33,9 @@ cc = "=1.4.7"
 luxforge-testbase = { path = "../luxforge-testbase" }
 sha2.workspace = true
 serde_json.workspace = true
+# The embedded-preview tests decode extracted JPEGs as an independent check; shipped code decodes
+# JPEG only through luxforge-jpeg.
+image = { workspace = true, features = ["jpeg"] }
 
 # Only the ignored release timing tests read `getrusage` and `getloadavg`. It is a dev-dependency, so it never
 # links into the library, and the lockfile already resolves this version for `luxforge-process`.

@@ -529,7 +529,7 @@ fn gpu_presence_near_black_variants() {
             .filter(|source| source.raw)
             .collect();
     // The 100% view: the photo surface of the evidence window, one source pixel a device pixel.
-    let surface = crate::layout::photo_surface((1440.0, 900.0), true, true);
+    let surface = crate::layout::photo_surface((1440.0, 900.0), true, true, false);
     let view = ((surface.0 * 2.0) as u32, (surface.1 * 2.0) as u32);
     eprintln!(
         "{test}: adapter {}, 100% view {view:?}",

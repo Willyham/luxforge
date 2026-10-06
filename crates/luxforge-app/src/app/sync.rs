@@ -195,6 +195,8 @@ impl Editor {
             // The poll itself starts once nothing is in flight ([`Editor::sync_when_wanted`]).
             SyncMessage::Changed => {
                 self.sync.poll.offer(());
+                // The Select workspace reads the session to see whether its view went stale.
+                self.select_woken();
             }
             SyncMessage::Synced(result) => {
                 self.sync.poll.answered();
@@ -289,6 +291,8 @@ impl Editor {
         if let Some(queued) = &queued {
             self.activity.request_started = queued.started;
         }
+        // A file opened is opened alone: Develop has no development set for it.
+        self.develop_opened_alone();
         let generation = self.activity.requested;
         self.open_generation.store(generation, Ordering::Release);
         // Preserve the last displayed photo, but prevent an older in-flight render from becoming

@@ -10,10 +10,13 @@ pub(crate) mod action;
 pub(crate) mod capability;
 pub(crate) mod control;
 pub(crate) mod crop;
+pub(crate) mod develop;
 pub(crate) mod draft;
 pub(crate) mod evidence;
 pub(crate) mod export;
 pub(crate) mod history;
+pub(crate) mod long_work;
+pub(crate) mod loupe;
 pub(crate) mod mask;
 pub(crate) mod overlay;
 pub(crate) mod palette;
@@ -23,10 +26,14 @@ pub(crate) mod preferences;
 pub(crate) mod preset;
 pub(crate) mod preview;
 pub(crate) mod renderer;
+pub(crate) mod select;
+pub(crate) mod select_catalog;
+pub(crate) mod select_missing;
 pub(crate) mod settings;
 pub(crate) mod sync;
 pub(crate) mod theme;
 pub(crate) mod view;
+pub(crate) mod visibility;
 
 /// The semantic messages the desktop understands: one variant per seam, each carrying that seam's
 /// own message, which the seam's update function handles. [`Editor::update`](super::Editor::update)
@@ -40,6 +47,7 @@ pub(crate) enum Message {
     Overlay(overlay::OverlayMessage),
     History(history::HistoryMessage),
     View(view::ViewMessage),
+    Visibility(visibility::VisibilityMessage),
     Palette(palette::PaletteMessage),
     Control(control::ControlMessage),
     Action(action::ActionMessage),
@@ -66,6 +74,13 @@ pub(crate) enum Message {
     Evidence(evidence::EvidenceMessage),
     /// The owner's answer to the desktop's report of which renderer draws its picture.
     Renderer(renderer::RendererMessage),
+    /// One Select workspace gesture or owner answer.
+    Select(select::SelectMessage),
+    /// Long-running work: the status bar's busiest job, a job's Cancel, the progress sheet.
+    LongWork(long_work::LongWorkMessage),
+    /// Developing picks and the development set: Develop N's confirmation, the filmstrip and moving
+    /// through it.
+    Develop(develop::DevelopMessage),
     Close,
 }
 

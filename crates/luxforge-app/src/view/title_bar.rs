@@ -1,6 +1,6 @@
-//! The title bar: the file's identity and Open at the leading edge, the view control, Compare and
-//! Clipping centred on the window, and Undo, Redo, the two panel-visibility toggles and Settings at
-//! the trailing edge.
+//! The title bar: the workspace switch, the file's identity and Open at the leading edge, the view
+//! control, Compare and Clipping centred on the window, and Undo, Redo, the two panel-visibility
+//! toggles and Settings at the trailing edge.
 //!
 //! Open sits beside the file's identity, as the default board draws it: the editor has no library
 //! to open a photograph from, and without it a fresh launch could reach no photograph at all.
@@ -47,10 +47,13 @@ const EXPORT_MENU_WIDTH: f32 = 220.0;
 /// on the window over them rather than between them, so they stay put whatever the file's name.
 pub(crate) fn title_bar(model: &Workspace) -> Element<'_, Message> {
     let edges = row![
+        // The workspace switch at the bar's leading edge, Develop raised.
+        crate::view::select::switch(crate::state::select::Shown::Develop),
         identity(&model.title),
         Space::new().width(Length::Fill),
         actions(&model.title),
     ]
+    .spacing(theme::TITLE_GROUP_SPACING)
     .align_y(Alignment::Center)
     .height(Length::Fill)
     .padding(Padding {

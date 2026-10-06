@@ -29,21 +29,11 @@ use crate::app::{
 };
 use crate::state::MenuTarget;
 use iced::{Subscription, Task, futures::stream::BoxStream};
-use luxforge_core::{AssetId, ClientId, EntryId, ErrorKind, OwnerHandle, jobs::JOB_READ};
+#[cfg(test)]
+use luxforge_core::jobs::JOB_READ;
+use luxforge_core::{AssetId, ClientId, EntryId, ErrorKind, OwnerHandle};
 use serde_json::{Value, json};
-use std::{
-    path::{Path, PathBuf},
-    time::Duration,
-};
-
-/// How often the running export is read. The core pushes no client anything, so a client that
-/// wants to know when its export ended reads it. The reader exists only while this window's export
-/// is queued or running; an idle desktop has none. An export of a photograph takes a few hundred
-/// milliseconds to seconds, so a read every 100 ms ends the status line within a tenth of a second
-/// of the file appearing, at one owner lookup per read, and matches the capability job poll. An
-/// export reports no progress, so nearly every read answers what the one before it did, and none
-/// of those reaches the update loop.
-pub(crate) const EXPORT_POLL: Duration = Duration::from_millis(100);
+use std::path::{Path, PathBuf};
 
 /// How many times `export.jpeg` is asked again after its source was prepared.
 const PREPARATION_RETRIES: usize = 4;
@@ -365,6 +355,7 @@ impl Editor {
                     identity: job_id.to_owned(),
                     owner: self.owner.clone(),
                     client: self.client,
+                    presentation_visible: self.visibility.sampling_allowed(),
                 },
                 export_reads,
             )
@@ -590,6 +581,7 @@ pub(crate) fn send_now(
 }
 
 /// `job.read` for one job.
+#[cfg(test)]
 pub(crate) fn read_now(
     owner: &OwnerHandle,
     client: ClientId,
@@ -598,20 +590,55 @@ pub(crate) fn read_now(
     call(owner, client, JOB_READ, json!({"job_id": job_id})).map(|(read, _)| read)
 }
 
-/// The reader of one export job, as the subscription starts it: a `job.read` through the owner at
-/// once and every [`EXPORT_POLL`] after, inside the subscription's stream ([`job_reads`]).
+/// Follow one authoritative job change at a time, without polling.
 pub(crate) fn export_reads(reader: &Reader<String>) -> BoxStream<'static, Message> {
     let (owner, client, job_id) = (reader.owner.clone(), reader.client, reader.identity.clone());
-    job_reads::reads(
-        EXPORT_POLL,
-        export_pass(job_id.clone(), move || read_now(&owner, client, &job_id)),
-    )
+    let visible = reader.presentation_visible;
+    let state = std::sync::Arc::new(std::sync::Mutex::new((None, Watch::default())));
+    job_reads::reads(move || {
+        let (owner, job_id) = (owner.clone(), job_id.clone());
+        // Keep token/watch between pulls; the future owns only this pass's copy.
+        let (previous, mut observing) = std::mem::take(&mut *state.lock().expect("export reader"));
+        let future = async move {
+            let result = job_reads::wait(&owner, client, &job_id, previous).await;
+            let (next, result) = match result {
+                Ok((change, record)) => (Some(change), Ok(record)),
+                Err(error) => (previous, Err(error)),
+            };
+            let verdict = observing.observe_filtered(
+                &result,
+                |record| !matches!(record["status"].as_str(), Some("queued" | "running")),
+                |one, two| {
+                    if visible {
+                        one == two
+                    } else {
+                        job_reads::same_without_progress(one, two)
+                    }
+                },
+            );
+            (
+                next,
+                observing,
+                Pass::of(verdict, || {
+                    Message::Export(ExportMessage::Read { job_id, result })
+                }),
+            )
+        };
+        // The pass is awaited before another is made; shared state commits its token on completion.
+        let state = state.clone();
+        async move {
+            let (next, watch, pass) = future.await;
+            *state.lock().expect("export reader") = (next, watch);
+            pass
+        }
+    })
 }
 
 /// One pass of an export's reader: read the job, and send the read only when it is news. A queued
 /// or running record is news when it is the first or differs from the one sent before it; any
 /// other status is the job's end, and a failed read ends the export too. Each of those is sent
 /// once, and the reader reads no more.
+#[cfg(test)]
 pub(crate) fn export_pass(
     job_id: String,
     mut read: impl FnMut() -> Result<Value, String>,

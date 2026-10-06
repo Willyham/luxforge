@@ -210,6 +210,19 @@ pub(crate) mod kind {
         ParameterDescriptor::new("", ParameterKind::Artifact)
     }
 
+    pub(crate) fn catalog_folder() -> ParameterDescriptor {
+        identity(IdentityKind::CatalogFolder)
+    }
+
+    pub(crate) fn collection() -> ParameterDescriptor {
+        identity(IdentityKind::Collection)
+    }
+
+    /// A position in the caller's view, from 0.
+    pub(crate) fn position() -> ParameterDescriptor {
+        integer(0, crate::catalog_types::MAX_VIEW_ITEMS as i64 - 1)
+    }
+
     pub(crate) fn integer(min: i64, max: i64) -> ParameterDescriptor {
         ParameterDescriptor::integer("", min, max)
     }
@@ -302,6 +315,8 @@ pub(crate) mod kind {
 /// `Option<Option<T>>` is optional and tells `null` (`Some(None)`) from an absent field (`None`).
 /// `mutation: Mutation` and `mutation: MutationRequest` name the envelope and take no kind,
 /// because `schema.list` describes each envelope once. Field attributes pass through to serde.
+/// Every field is `pub(crate)`, so a handler in the module that owns the method reads the struct
+/// another module declared (the catalog methods are declared in `catalog_types`).
 macro_rules! host_params {
     ($(#[$attr:meta])* $vis:vis struct $name:ident { $($body:tt)* }) => {
         $crate::api::params::host_params!(
@@ -325,7 +340,7 @@ macro_rules! host_params {
     (@munch [$($head:tt)*] $name:ident [$($fields:tt)*] [$($params:tt)*] [$env:expr]
         $(#[$fmeta:meta])* $f:ident : Option<$t:ty> = $kind:expr $(, $($rest:tt)*)?) => {
         $crate::api::params::host_params!(
-            @munch [$($head)*] $name [$($fields)* $(#[$fmeta])* $f: Option<$t>,]
+            @munch [$($head)*] $name [$($fields)* $(#[$fmeta])* pub(crate) $f: Option<$t>,]
             [$($params)* (stringify!($f), false, $kind),] [$env] $($($rest)*)?
         );
     };
@@ -335,14 +350,14 @@ macro_rules! host_params {
     (@munch [$($head:tt)*] $name:ident [$($fields:tt)*] [$($params:tt)*] [$env:expr]
         mutation : Mutation $(, $($rest:tt)*)?) => {
         $crate::api::params::host_params!(
-            @munch [$($head)*] $name [$($fields)* #[allow(dead_code)] mutation: $crate::Mutation,]
+            @munch [$($head)*] $name [$($fields)* #[allow(dead_code)] pub(crate) mutation: $crate::Mutation,]
             [$($params)*] [$crate::api::params::Envelope::Revision] $($($rest)*)?
         );
     };
     (@munch [$($head:tt)*] $name:ident [$($fields:tt)*] [$($params:tt)*] [$env:expr]
         mutation : MutationRequest $(, $($rest:tt)*)?) => {
         $crate::api::params::host_params!(
-            @munch [$($head)*] $name [$($fields)* #[allow(dead_code)] mutation: $crate::MutationRequest,]
+            @munch [$($head)*] $name [$($fields)* #[allow(dead_code)] pub(crate) mutation: $crate::MutationRequest,]
             [$($params)*] [$crate::api::params::Envelope::Request] $($($rest)*)?
         );
     };
@@ -350,7 +365,7 @@ macro_rules! host_params {
     (@munch [$($head:tt)*] $name:ident [$($fields:tt)*] [$($params:tt)*] [$env:expr]
         $(#[$fmeta:meta])* $f:ident : $t:ty = $kind:expr $(, $($rest:tt)*)?) => {
         $crate::api::params::host_params!(
-            @munch [$($head)*] $name [$($fields)* $(#[$fmeta])* $f: $t,]
+            @munch [$($head)*] $name [$($fields)* $(#[$fmeta])* pub(crate) $f: $t,]
             [$($params)* (stringify!($f), true, $kind),] [$env] $($($rest)*)?
         );
     };

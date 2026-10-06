@@ -6,7 +6,7 @@
 //! --test json_cli -- --ignored --nocapture raw::`.
 
 use luxforge_testbase::paths;
-use luxforge_testkit::{JsonProcess, client::request_id};
+use luxforge_testkit::JsonProcess;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 
@@ -68,25 +68,10 @@ fn wait_job(client: &mut JsonProcess, job_id: &str) -> Value {
     status
 }
 
-fn import_and_adopt(client: &mut JsonProcess, path: &Path) -> Value {
-    let imported = client.call(
-        "catalog.import",
-        json!({
-            "path": path.to_str().expect("fixture is UTF-8"),
-            "mutation": {
-                "request_id": request_id("import"),
-                "actor": "raw-json-cli",
-            },
-        }),
-    );
-    let job_id = imported["job_id"]
-        .as_str()
-        .expect("import job id")
-        .to_owned();
-    let ready = wait_job(client, &job_id);
-    let adopted = client.call("job.adopt", json!({"job_id":job_id}));
-    assert_eq!(asset_id(&adopted["asset"]), asset_id(&ready["result"]));
-    adopted["asset"].clone()
+/// Open the RAW file at `path` as a client does — develop it, prepare its photograph, adopt it —
+/// answering the adopted photograph's state.
+fn open(client: &mut JsonProcess, path: &Path) -> Value {
+    client.open(path, "raw-json-cli")
 }
 
 fn sample_after_preparation(
@@ -197,7 +182,7 @@ fn run_fixture(path: &Path, label: &str, wb_after_geometry: bool) {
     assert_eq!(superseded("exposure"), Value::Null);
     assert_eq!(schema["methods"]["edit.set-raw"]["sources"], json!(["raw"]));
 
-    let initial = import_and_adopt(&mut client, path);
+    let initial = open(&mut client, path);
     let asset = asset_id(&initial);
     let fingerprint = initial["asset"]["fingerprint"].as_str().unwrap().to_owned();
     assert_eq!(initial["asset"]["source"]["kind"], "raw");

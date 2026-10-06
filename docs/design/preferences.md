@@ -21,7 +21,7 @@ The person's preferences live outside every catalog, in the host's `preferences.
 | --- | --- | --- | --- | --- |
 | `performance_expanded` | boolean | `true` | Performance disclosure (today) | at once |
 | `auto_collapse_history` | boolean | `true` | General: **Auto collapse history** (today) | next edit |
-| `auto_lens_profile` | boolean | `true` | General: **Correct lens distortion on new RAW photos** | next import |
+| `auto_lens_profile` | boolean | `true` | General: **Correct lens distortion on new RAW photos** | next first preparation |
 | `mask_overlay_colour` | `green` or `white` | `green` | General: **Mask overlay colour**, and the Masks panel's colour control | at once |
 | `canvas_background` | `theme`, `dark`, `black` or `grey` | `theme` | General: **Canvas background** | at once |
 | `theme` | a theme id, or `null` | `null`: Luxforge Dark | Settings › Appearance ([UI themes](ui-themes.md)) | at once |
@@ -60,7 +60,7 @@ An open Settings sheet reads them again. The desktop applies the theme, the canv
 
 ## Behaviour
 
-- **Correct lens distortion on new RAW photos.** On by default: the [first-open lens action](lens-and-perspective.md) is committed as it is today. Off, an import does not ask the lens module for a first-open action. The Lens section offers the detected profile with Apply, as it does for any photo without one. The change applies to imports from then on; it never adds or removes an entry on a photo already in the catalog. This is a core preference, so every client's imports follow it.
+- **Correct lens distortion on new RAW photos.** On by default: the [first-open lens action](lens-and-perspective.md) is committed as it is today. Off, a photograph's first preparation does not ask the lens module for a first-open action. The Lens section offers the detected profile with Apply, as it does for any photo without one. The change applies to first preparations from then on; it never adds or removes an entry on a photograph whose head has moved. A photograph still at its Original (revision 0) is asked at its next preparation, so turning the switch on later can still correct it there. This is a core preference, so every client follows it.
 - **Mask overlay colour.** The colour the Tint overlay is drawn in. The General row and the Masks panel's control both set this desktop's session colour (`workspace.set {mask_overlay_colour}`) and store the preference.
 - **Canvas background.** The colour around the photograph:
   - `theme`, the active theme's surround, held neutral ([UI themes](ui-themes.md#rules)); for Luxforge Dark the same `#19191b` as `dark`;
@@ -74,10 +74,10 @@ An open Settings sheet reads them again. The desktop applies the theme, the canv
   - **Changing it.** Iced keeps the window's physical size and sends no resize, so the desktop rescales its logical window size itself and Fit, the clipping grid and region requests follow through the ordinary view-geometry path. The window never resizes.
   - **The rest.** The Settings sheet shrinks to fit a window too small for it. The status bar's `2×` names the display's own factor. A window moved to a display of another scale is not followed, as before.
 - **Catalog.** The row shows the catalog this launch uses, with **Choose Folder…**, and **Use Default** when a location is stored.
-  - **Choosing.** Choose Folder… opens a native folder dialog in the open catalog's folder and stores `<folder>/catalog.sqlite`. At the next launch the desktop opens that catalog, creating it if the folder holds none, as it creates the default today. The open catalog stays where it is, and the row says so.
+  - **Choosing.** Choose Folder… opens a native folder dialog in the open catalog's folder and stores `<folder>/catalog.sqlite`. At the next launch the desktop opens that catalog, creating it in the current catalog format if the folder holds none, as it creates the default today; its `catalog.index` cache and any `catalog.artifacts` live beside it in that folder. The open catalog stays where it is, and the row says so.
   - **Notes.** While the stored location differs from this launch's, the row says "Relaunch to use `<path>`". `--catalog` and evidence runs take precedence, and the row says "This launch uses `--catalog`" or "This launch uses the evidence run's catalog".
   - **Missing folder.** If the stored catalog's folder does not exist at launch, as with an unplugged drive, the desktop opens the default catalog instead. The status bar says "Catalog folder not found: `<folder>`; using the default catalog", and the row repeats it. The stored location is kept, so the next launch with the drive present opens it. The event log records `catalog_folder_missing`.
-  - **Other failures.** A catalog that cannot be opened for any other reason (another instance owns it, or its format is unsupported) is refused as the default catalog is today.
+  - **Other failures.** A catalog that cannot be opened for any other reason (another instance owns it, or its format is unsupported) is refused as the default catalog is today: the launch stops, naming the catalog and, for an older catalog, its format and the one expected, and the file is left unchanged. There is no fallback to the default for these, so the way past an older catalog is a launch with `--catalog` and Use Default there.
   - **The command line.** `luxforge-json` keeps requiring `--catalog`.
 - **Remembered workspace.** As the editor is built, before its first frame, the desktop starts its session from the stored `workspace` and `mask_overlay_colour` through one `workspace.set`, sent only when they differ from the defaults, so a launch with nothing stored sends nothing.
   - **Storing.** After the desktop adopts a `workspace.set` answer that changed any of the five remembered fields, it stores them. This covers the panel toggles, `O`, `J`, the histogram's triangles, the palette and an evidence run's own workspace steps, which store into the evidence directory.
@@ -122,7 +122,7 @@ A held `[` key that resizes the brush therefore writes at most one call in fligh
   - the canvas background set to grey, with the canvas pixels beside the photograph exactly `#777777`, and no pixel of the panels or the photograph changed, then back to dark;
   - the interface size set to 125%, with the combined scale factor recorded and the title bar's drawn height 1.25 times its height at 100%, then back to 100%;
   - the mask overlay colour set to white;
-  - the lens switch turned off, checked on the row and in what is applied and stored. No RAW is checked into the repository, so importing one with the switch off is proven by the owner tests instead;
+  - the lens switch turned off, checked on the row and in what is applied and stored. No RAW is checked into the repository, so developing one with the switch off is proven by the owner tests instead;
   - a catalog folder chosen inside the evidence directory, with the row's relaunch note checked.
 - **Across launches.** The integrator launches `cargo xtask develop --background --hidden-window` over one isolated `--data-root`. One launch stores a catalog location through `preferences.set`; the next opens it, shown by where its live-session file appears; a location whose folder is missing opens the default catalog and logs `catalog_folder_missing`. The desktop's own session is not readable by another client, and a hidden launch never opens at or stores a window frame, so the remembered workspace, brush and window are proven by the unit tests that build the editor over stored preferences.
 
@@ -131,7 +131,7 @@ A held `[` key that resizes the brush therefore writes at most one call in fligh
 - **Original reads and decodes.** None added.
 - **Full-frame allocations.** None. `preferences.json` stays bounded at 16 KiB, and the two paths are its largest values.
 - **Point queries.** None added.
-- **Owner thread.** `preferences.read` reads one small file. Each `preferences.set` is one locked read-modify-write of it. An import with the lens switch off does less work.
+- **Owner thread.** `preferences.read` reads one small file. Each `preferences.set` is one locked read-modify-write of it. A first preparation with the lens switch off does less work.
 - **Desktop messages.**
   - Each remembered change adds at most one `preferences.set`, coalesced by the writer. The window's frame is written once, at close.
   - A changed canvas background or interface size draws one new frame. The interface size reflows the layout once.
@@ -160,4 +160,4 @@ Recorded defaults, proposals the owner can revise:
 - **Window:** the frame is not remembered in fullscreen.
 - **Brush:** only size, feather and flow are remembered.
 - **Export folder:** stored only after an export the person chose in the dialog.
-- **Lens switch:** on by default, applying to new imports only.
+- **Lens switch:** on by default, applying only to photographs still at their Original when first prepared.

@@ -38,9 +38,9 @@ qualification = ["dep:luxforge-testbase"]
 [dev-dependencies]
 # The one gate and wait. Core-free, so the widget crate, which may not reach the core, can use it.
 luxforge-testbase = { path = "../luxforge-testbase" }
-# The one independent sRGB transfer function, which tests compute linear-light expectations and the
-# GPU stage's identity readback through. It depends on no workspace crate, so the widget crate stays
-# core-free.
+# The one independent sRGB transfer function, which the tokens' linear-light composites and the
+# tests' linear-light expectations and the GPU stage's identity readback are computed through. It
+# depends on no workspace crate, so the widget crate stays core-free.
 luxforge-reference = { path = "../luxforge-reference" }
 # The process's memory figures, core-free, which the measurement of a boundary's arrival reads.
 luxforge-process = { path = "../luxforge-process" }

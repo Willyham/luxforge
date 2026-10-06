@@ -380,7 +380,6 @@ impl Step {
         Self::with(name, Some(script.into()))
     }
 
-    #[cfg(test)]
     pub fn name(&self) -> &str {
         &self.name
     }

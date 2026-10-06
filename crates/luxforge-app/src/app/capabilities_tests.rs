@@ -841,9 +841,16 @@ fn a_job_read_that_changes_nothing_skips_the_hooks_and_the_derive() {
     proof.endpoint.generation().open();
     assert!(proof.editor.capability_reader_subscription().is_some());
     let mut reader = Followed::new(capability_reads(&Reader {
-        identity: proof.editor.capabilities.live_jobs(),
+        identity: proof
+            .editor
+            .capabilities
+            .live_jobs()
+            .into_iter()
+            .next()
+            .expect("one live job"),
         owner: proof.editor.owner.clone(),
         client: proof.editor.client,
+        presentation_visible: true,
     }));
     let mut sent = 0;
     let mut ended_seen = false;
@@ -1042,24 +1049,22 @@ fn a_capability_reader_yields_a_message_only_for_a_pass_in_which_a_job_changed()
     let counted = reads.clone();
     // Job a runs unchanged for ten passes and is ready on the eleventh. Job b is queued for three,
     // running for three and then cannot be read.
-    let mut stream = Followed::new(job_reads::reads(
-        std::time::Duration::from_micros(200),
-        capability_pass(
-            vec![(MODULE.into(), a.into()), (MODULE.into(), b.into())],
-            move |job| {
-                let mut counts = counted.lock().unwrap();
-                let pass = counts.entry(job.to_owned()).or_default();
-                *pass += 1;
-                match (job == a, *pass) {
-                    (true, 1..=10) => Ok(job_at(a, "running", Some(0.1))),
-                    (true, _) => Ok(job_at(a, "ready", Some(1.0))),
-                    (false, 1..=3) => Ok(job_at(b, "queued", None)),
-                    (false, 4..=6) => Ok(job_at(b, "running", None)),
-                    (false, _) => Err("gone".to_owned()),
-                }
-            },
-        ),
-    ));
+    let mut pass = capability_pass(
+        vec![(MODULE.into(), a.into()), (MODULE.into(), b.into())],
+        move |job| {
+            let mut counts = counted.lock().unwrap();
+            let pass = counts.entry(job.to_owned()).or_default();
+            *pass += 1;
+            match (job == a, *pass) {
+                (true, 1..=10) => Ok(job_at(a, "running", Some(0.1))),
+                (true, _) => Ok(job_at(a, "ready", Some(1.0))),
+                (false, 1..=3) => Ok(job_at(b, "queued", None)),
+                (false, 4..=6) => Ok(job_at(b, "running", None)),
+                (false, _) => Err("gone".to_owned()),
+            }
+        },
+    );
+    let mut stream = Followed::new(job_reads::reads(move || std::future::ready(pass())));
     let mut sent = Vec::new();
     while let Some(message) = stream.next() {
         let Message::Capability(CapabilityMessage::Polled(entries)) = message else {
@@ -1098,10 +1103,10 @@ fn a_capability_reader_yields_a_message_only_for_a_pass_in_which_a_job_changed()
     assert_eq!(counts[b], 7, "b is read until its read failed");
 }
 
-/// The reader is identified by the set of live jobs: the same set, however often the desktop
-/// rebuilds its subscriptions, is the same reader, and a different set is another.
+/// A reader is identified by its job and presentation visibility; unchanged records and repeated
+/// subscription derivations keep that job's reader.
 #[test]
-fn a_capability_reader_is_identified_by_the_set_of_live_jobs() {
+fn a_capability_reader_keeps_its_job_identity_through_progress() {
     use iced::advanced::subscription::{Hasher, into_recipes};
     use std::hash::Hasher as _;
     let mut proof = Proof::start();
@@ -1248,5 +1253,5 @@ fn only_capability_events_ask_for_capability_reads() {
     assert!(capability_event("module.permission.revoke"));
     assert!(capability_event("task.generate-proof-tint"));
     assert!(!capability_event("edit.apply-proof-tint"));
-    assert!(!capability_event("catalog.import"));
+    assert!(!capability_event("pick.develop"));
 }

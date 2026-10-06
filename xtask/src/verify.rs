@@ -1559,12 +1559,21 @@ mod tests {
         );
         assert_eq!(
             &rendered[2..6],
-            [
-                "smoke-detail",
-                "smoke-detail-fit",
-                "smoke-detail-zoom",
-                "smoke-empty"
-            ]
+            if cfg!(target_os = "macos") {
+                [
+                    "smoke-visibility-monitoring",
+                    "smoke-detail",
+                    "smoke-detail-fit",
+                    "smoke-detail-zoom",
+                ]
+            } else {
+                [
+                    "smoke-detail",
+                    "smoke-detail-fit",
+                    "smoke-detail-zoom",
+                    "smoke-empty",
+                ]
+            }
         );
         // The release gate last, alone after the pool, given the manifest when there is one and
         // the longest bound.

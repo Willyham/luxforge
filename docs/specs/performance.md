@@ -40,6 +40,99 @@ Engineering hypotheses until measured and accepted on the recorded M4 configurat
 
 A single float32 RGBA buffer for 60 MP is about 916 MiB, so unrestricted full-resolution float processing needs tiling before it is promised.
 
+## Window visibility and event-driven monitoring
+
+The [visibility contract](../design/visibility-and-monitoring.md) pauses presentation sampling only
+for native minimization or explicit window/app hiding. Visible unfocused or covered windows keep
+sampling. Export, capability and catalog readers use bounded authoritative `job.wait` notifications;
+background work and final/partial business answers remain active. Windows/Linux native visibility
+facts are unsupported and retain ordinary sampling.
+
+Native functional qualification on the Apple M4 Pro, Metal, macOS aarch64, 2026-10-06:
+`verify --tier quick` passes, as do the touched `select`, `resolve-missing`, `develop-picks`,
+`export`, `capabilities`, `performance` and `visibility-monitoring` rendered scenarios. Actual
+AppKit order-out/order-in, minimize/restore and app hide/unhide callbacks correlate with timer/read
+counts and captured state. Hidden resource reads stop, both long-work display timers are absent,
+and restoring takes exactly one fresh sample with CPU/GPU rates unavailable until the second.
+Photo pixels, geometry, recipes, disclosure preferences and original hashes stay unchanged.
+Hidden export success/refusal and capability success/failure/cancellation are adopted. Catalog
+first-look, folder-add, Search partial answers, Locate and Batch adoption retain job identity and
+are tested independently of the activity board's display progress.
+
+Measurement scope is the optimized `release` editor, binary SHA-256
+`e9a4abbb29cb14245c96b4d6c59c7a0348afa68078e3b3e1bf534f16e00c2fd4`, Cargo.lock SHA-256
+`d3fd725c365ad4eca4a24d6187e71dc5fc9f8f6678d04e603acb17a2f1624318`, and the generated
+6000×4000 JPEG (source SHA-256
+`b54c2a158a3d384674f5d731f940d553039d61f51b83a0e7b1e3b0247aa056eb`). The window is 1440×900
+logical points in a background-only bundle: physically ordered in for native visible facts,
+transparent and ignoring pointer input, never key or activated. Frames are renderer readbacks.
+This qualifies the presentation gate and process cost in that harness; it does not qualify an
+opaque foreground window's compositing or compare against a pre-change build.
+
+Each run has three rounds of expanded, collapsed and hidden-expanded observations, 30 seconds
+per state after a one-second settle. Evidence ticks and captures are suspended in each window.
+External cumulative process CPU is read with `ps` every 500 ms; only readings entirely within the
+app's declared window count, and the checks retain endpoints, actual elapsed time and excluded
+edge gaps. `ps` has 10 ms CPU resolution: an unchanged counter means below that resolution, not
+literal zero CPU. The external observer runs outside the editor. The internal observation still
+includes its own start update/view and diagnostic boundaries; it is reported separately, rather
+than treated as an observer-free CPU estimate. Evidence mode also retains the full update/derive
+path for sampling, whereas an ordinary quiet editor has a sampling fast path. No kernel wakeup count is claimed: counters here
+are application updates, board wakes and command requests/replies.
+
+The held-job workload is three 20-second hidden observations while a local proof endpoint delays
+an install. It uses the 480×320 orientation fixture, so only the separate idle workload above is
+photo-sized evidence. Each held interval retains one waiter and changes neither job requests nor
+replies, resource reads or board wakes; both display timers stay absent. Install completion and
+restoration are checked after each interval.
+
+Two runs, six observations per photo presentation state:
+
+| State | Run | External CPU, % of one core (three rounds) | Contained elapsed span | Resource reads per 30 s |
+| --- | --- | --- | --- | --- |
+| Visible, expanded | 1 | 0.742, 0.740, 0.642 | 29.579–29.734 s | 30, 30, 30 |
+| Visible, collapsed | 1 | Below 10 ms resolution, all three | 29.638–29.832 s | 0, 0, 0 |
+| Hidden, expanded | 1 | Below resolution, below resolution, 0.034 | 29.262–29.649 s | 0, 0, 0 |
+| Visible, expanded | 2 | 0.822, 1.183, 0.843 | 29.206–29.646 s | 30, 30, 30 |
+| Visible, collapsed | 2 | Below resolution, 0.644, below resolution | 29.475–29.522 s | 0, 0, 0 |
+| Hidden, expanded | 2 | Below resolution, below resolution, 0.034 | 29.030–29.574 s | 0, 0, 0 |
+
+One 10 ms CPU step is about 0.034% over these contained photo windows. Every hidden window had
+one full update and view from the observation start, no resource reads and no long-work display
+timer. The ordinary visible expanded windows had 61 updates/views (two per sample plus the start),
+and five collapsed windows had one. Run 2's adjacent second expanded/collapsed windows instead
+had 93/47 updates/views, with resource cadence still 30/0, no job requests/replies or board wakes,
+and stable native facts. Their extra UI activity is unattributed; keep their higher CPU figures
+rather than treating those windows as quiescent or dropping them from the report.
+
+| Hidden held install | External CPU, % of one core (three rounds) | Contained elapsed span | Requests/replies added |
+| --- | --- | --- | --- |
+| Run 1 | Below 10 ms resolution, all three | 19.155–19.662 s | 0 / 0 |
+| Run 2 | Below resolution, 0.052, 0.051 | 19.215–19.548 s | 0 / 0 |
+
+Each held window had one observation-start update/view, one held waiter, zero resource reads,
+zero board wakes and no display timer. One CPU step is about 0.052% at this shorter duration.
+Internal counters including diagnostic boundaries measured 5.7–10.6 ms for the quiescent hidden,
+collapsed and held intervals. They are a different scope from the contained external readings.
+
+Other builds and editor workloads ran on the host. Spot checks during the first photo run showed
+one-minute load between about 5.9 and 28.1; the first capability run began around 38.3. A separate
+five-second host-load trace for the second photo/capability runs recorded 4.43–18.87, and the
+second held windows themselves were at 4.43–7.21. These are process CPU observations with native
+functional evidence, without a generalized quiet-host baseline or a before/after speedup claim.
+Rendering, proxy CPU work, preview/decode scheduling, CPU pools and memory targets are outside
+this change.
+
+Evidence: `/private/tmp/luxforge-visibility-monitoring-20261006-{1,2}` and
+`/private/tmp/luxforge-visibility-rendered-capabilities-20261006-{1,2}` hold each run's result,
+external process readings, correlated event/state/frames and `*-checks.json`, including raw
+endpoints for every window. The host trace is
+`/private/tmp/luxforge-visibility-host-load-20261006.jsonl`. Reproduce with
+`cargo run --release --locked --package xtask -- smoke --scenario visibility-monitoring --output NEW_DIR`
+and the `capabilities` scenario. The quick result is
+`/private/tmp/luxforge-visibility-quick-20261006-4/summary.json`; its ignored/slow checks and timing
+and full tiers are not claimed as passes.
+
 ## Detail and shared restoration: contract and review
 
 Scope: the Restoration placement stage and `CompileStage`, Detail's bounded spatial units,
@@ -3350,10 +3443,11 @@ DNGs take 8 to 13 ms either way, so their 2.2× saves under 7 ms. The owner Z6 u
 `cold_saved_white_balance_preparation_timing` in `luxforge-core` reproduces the method of
 [native development and saved-white-balance preparation](#native-development-and-saved-white-balance-preparation):
 a catalog whose RAW has a saved custom red gain of 1.1 × as-shot, a new owner and empty source cache
-per observation with the filesystem warm, and the clock from immediately before `catalog.import`
-until a strict exact-source `PreviewJob` for the current entry is available, through the one source
-job's wait and adoption. The harness that produced the earlier figures is not in the repository, so
-this one was written to that description. Before is the same source built with the Z6's
+per observation with the filesystem warm, and the clock from immediately before the photograph's
+`source.prepare` (the figures below were taken through `catalog.import` of its file, which queued
+the same preparation) until a strict exact-source `PreviewJob` for the current entry is available,
+through the one source job's wait and adoption. The harness that produced the earlier figures is
+not in the repository, so this one was written to that description. Before is the same source built with the Z6's
 `NikonZ6Lossless14` and the Air 2S's `DjiAir2sDng16` on LibRaw (their two `unpacker` lines removed);
 after is the source as routed. The two builds differ only in those catalog lines, so each builds
 its own catalog. 15 observations per leg in before, after, after, before order give 30 per variant.
@@ -3399,6 +3493,32 @@ generated JPEGs only and does not exercise RAW unpacking; it passed on the measu
 timing components started at one-minute load 12.0 to 12.6, after the tier's own `check`, so their
 rows are marked unreliable and are not compared with earlier figures. Native Windows and Linux
 builds are not measured.
+
+## Catalog: browse, pick, develop
+
+Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, release builds, 2026-10-01, `cargo run --release --locked --package xtask -- catalog-measure --scale full --raw-corpus <the private CC0 corpus>` at commit 33090901 (30 samples a figure, 5 a first-browse journey), on a host shared with other sessions: one-minute load 13 to 18 throughout, above the harness's threshold of 8, so every figure is marked unreliable by the harness and none is a baseline. The data is generated in scratch: a 1,000-frame RAW trip copied from 102 CC0 files of the corpus under new names with rewritten capture times (the originals read only, checked unchanged), a 10,000-file folder and a 200,000-file tree of APFS clones of generated JPEGs, a 200,000-link tree of hard links, and a generated 100,000-photograph catalog. The OS file cache is warm; no card reader was measured. The photographs-view rows come from the harness's `--only browse-generated` step after the allocation fix (4a8183b5), four runs at load 10 to 23.
+
+| Target (provisional, [catalog design](../design/catalog.md#performance)) | Measured | Verdict |
+| --- | --- | --- |
+| First browse of a 1,000-frame folder, internal SSD: first grid screen within 1 s; every file, event and moment within 5 s | first screen 181 / 246 ms p50 / p95; every file, event and moment 182 / 249 ms | Met |
+| Grid previews for every file of that first browse: reported | 11.7 / 15.1 s (embedded previews of 1,000 RAWs read on two workers; the Canon R5 Mark II and R8 developed) | Reported |
+| Browsing from a card reader: reported | Not measured (no card) | Outstanding |
+| Returning to a known 1,000-file folder: reconciled and drawn within 1 s | reconciled 4.4 / 4.8 ms, drawn 12.1 / 12.6 ms | Met |
+| First index of 200,000 files: reported, the editor responsive | 55.0 s; owner round trips during it 0.025 / 0.41 ms. 200,000 hard links to 500 files: 54.4 s, 0.026 / 0.046 ms | Reported; responsive |
+| `browse.view` p95 under 50 ms: 10,000 files | 18.4 / 27.5 ms (first evaluation 66 ms) | Met |
+| `browse.view` p95 under 50 ms: 100,000 photographs | 106 / 107 ms at best, 119–167 / 169–188 ms in the other runs, first evaluation about 0.9–1.0 s | **Missed.** Stepping the photographs' rows in SQLite alone takes about 52 ms; the two ways past it are a [proposal](../design/catalog.md#performance) |
+| `browse.rows` of 200 under 2 ms | files 2.5 / 3.9 ms, photographs 2.7 / 4.1 ms (0.9 / 1.2 and 1.1 / 1.4 ms in the first run at load 6 to 17) | Missed under this load; met in the earlier run |
+| The owner grows by the view's id list | 47–49 MiB settled after the first 100,000-photograph view (the 1.6 MB id list, the preview lane's 20,000 queued tasks, the layout and SQLite's caches); growth over 30 more evaluations 11–15 MiB | Met for held memory |
+| Bracket detection from previews under 1 ms a run | 0.033 / 0.058 ms (1,650 runs) | Met |
+| Developing 20 RAW picks: reported | 2.69 s; the first photograph committed after 91 ms | Reported |
+| Grid scroll over 10,000 files: presented frames p95 within 16 ms at 120 Hz | frame time 8.5 / 9.0 ms (119 frames) | Met |
+| Loupe stepping with the look-ahead warm: the next frame presented in the frame after the key | 1 / 1 frames (key to present 0.26 / 0.37 ms); a held arrow at 30 ms presents at 32 / 41 ms intervals; over the RAW trip 1 / 1 frames, held 26 / 58 ms | Met |
+| 100% focus check from a full-size embedded preview within 50 ms | 25.6–34.5 ms p50 per camera, 26.6–52.4 ms p95; a second region 25–36 ms | Met at p50; one camera's p95 at 52 ms |
+| 100% focus check from an on-demand development: reported per camera | first region 84–1,340 ms p50 by camera (the slowest a large Bayer RAW), a second region of the same frame 25–29 ms | Reported |
+| Switching photographs in Develop with a cached large preview: presented in the frame after the key | 1 / 1 frames (31 photographs) | Met |
+| Decoded grid and loupe previews within 192 and 256 MiB | grid 32 / 54 MiB, loupe 81 / 87 MiB (high-water mark) | Met |
+| Idle CPU with the watchers armed | core 0.30%, editor 0.99% (editor without a catalog view 1.03%) of one core over 30 s | Met |
+| A Basic drag during indexing and during a preview backlog | input to presented frame 8.7 / 9.7 ms and 8.7 / 9.4 ms, against 9.0 / 9.6 ms alone (24 MP, warm) | No effect |
 
 ## Preview error baseline
 
