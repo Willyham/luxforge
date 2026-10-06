@@ -348,8 +348,8 @@ pub enum TileInput {
 }
 
 /// What a tile's last link writes: its output, read back as [`TileEnd`] asks; or, for a staged
-/// sweep before the last, its last link's intermediate — linear, unclamped, as a chain's link
-/// writes it — of which `rect` (`[x0, y0, x1, y1)` of the content stage) is copied into stage
+/// sweep before the last, its last link's output over the boundary — linear, unclamped, as a chain's
+/// link writes it, which the sweep's identity tail leaves in the slot's tail intermediate — of which `rect` (`[x0, y0, x1, y1)` of the content stage) is copied into stage
 /// texture `writes` at `rect`, nothing read back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TileOutput {
@@ -493,7 +493,11 @@ impl Slot {
             intermediate: key
                 .shape
                 .intermediate
-                .map(|format| texture("luxforge.tiles.intermediate", size, format, drawn)),
+                .map(|format| {
+                    // A sweep before the last copies it into a stage texture.
+                    let usage = drawn | wgpu::TextureUsages::COPY_SRC;
+                    texture("luxforge.tiles.intermediate", size, format, usage)
+                }),
             output: texture(
                 "luxforge.tiles.output",
                 key.shape.output,
@@ -1674,7 +1678,13 @@ impl TileRunner {
                 let Derivation::Cut { origin: (x, y) } = derivation else {
                     return Err(TileFailure::PIPELINE_FAILED);
                 };
-                let (width, height) = output_size;
+                // A sweep's identity tail leaves its last link's output over the whole boundary in
+                // the tail's intermediate; a plan with no tail and no region leaves it in the
+                // output.
+                let (from, (width, height)) = match &slot.intermediate {
+                    Some(intermediate) => (intermediate, size),
+                    None => (&slot.output, output_size),
+                };
                 if rect[0] < *x
                     || rect[1] < *y
                     || u64::from(rect[2]) > u64::from(*x) + u64::from(width)
@@ -1684,7 +1694,7 @@ impl TileRunner {
                 }
                 self.stages[writes as usize].copy_in(
                     &mut encoder,
-                    &slot.output,
+                    from,
                     (rect[0] - x, rect[1] - y),
                     rect,
                 );

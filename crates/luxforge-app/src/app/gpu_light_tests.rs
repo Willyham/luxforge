@@ -1061,6 +1061,9 @@ fn gpu_light_a_refit_slot_restores_its_unchanged_light() {
         let after_refit = bench.light_counts();
         eprintln!("{path:?}: the refit's evaluation {evaluation:?}");
         assert_eq!(evaluation.refits, 1, "{path:?}: the slot was refitted");
+        // Fitted first, its light copied in, then the one link run once: not evaluated to fit
+        // the slot and again with the light.
+        assert_eq!(evaluation.links_run, 1, "{path:?}: the link ran once");
         assert_eq!(
             (evaluation.lights_encoded, evaluation.lights_restored),
             (0, 1),

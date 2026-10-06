@@ -452,6 +452,21 @@ fn sent(
 ) -> Result<(Value, u64), CallError> {
     #[cfg(test)]
     owner_calls::record(method);
+    let started = std::time::Instant::now();
+    let answered = sent_now(owner, client, id, method, params, parks);
+    call_latency::record(method, started.elapsed());
+    answered
+}
+
+/// [`sent`] itself, untimed.
+fn sent_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    id: String,
+    method: &str,
+    params: Value,
+    parks: bool,
+) -> Result<(Value, u64), CallError> {
     let request = ApiRequest {
         id,
         method: method.into(),
@@ -2902,5 +2917,61 @@ mod tests {
                 .with_preparation(luxforge_core::Preparation::Queued(job.clone())),
         );
         assert_eq!(waiting.job_id, Some(job.to_string()));
+    }
+}
+
+/// How long the desktop's owner calls took, per method, from the call to its answer on the
+/// calling thread: for an evidence run's last event ([`call_latency::record`], [`call_latency::report`]).
+pub(crate) mod call_latency {
+    use serde_json::{Value, json};
+    use std::{
+        collections::BTreeMap,
+        sync::{Mutex, PoisonError},
+        time::Duration,
+    };
+
+    #[derive(Default)]
+    struct Calls {
+        count: u64,
+        total_ms: f64,
+        longest_ms: f64,
+        over_50ms: u64,
+    }
+
+    /// Per method, at most the registry's methods' worth of entries.
+    static CALLS: Mutex<BTreeMap<String, Calls>> = Mutex::new(BTreeMap::new());
+
+    pub(crate) fn record(method: &str, took: Duration) {
+        let ms = took.as_secs_f64() * 1000.0;
+        let mut calls = CALLS.lock().unwrap_or_else(PoisonError::into_inner);
+        let entry = match calls.get_mut(method) {
+            Some(entry) => entry,
+            None => calls.entry(method.to_owned()).or_default(),
+        };
+        entry.count += 1;
+        entry.total_ms += ms;
+        entry.longest_ms = entry.longest_ms.max(ms);
+        entry.over_50ms += u64::from(ms > 50.0);
+    }
+
+    /// Each method's count, mean, longest and calls over 50 ms.
+    pub(crate) fn report() -> Value {
+        let calls = CALLS.lock().unwrap_or_else(PoisonError::into_inner);
+        Value::Object(
+            calls
+                .iter()
+                .map(|(method, calls)| {
+                    (
+                        method.clone(),
+                        json!({
+                            "count": calls.count,
+                            "mean_ms": calls.total_ms / calls.count.max(1) as f64,
+                            "longest_ms": calls.longest_ms,
+                            "over_50ms": calls.over_50ms,
+                        }),
+                    )
+                })
+                .collect(),
+        )
     }
 }

@@ -59,6 +59,9 @@ pub struct RestDrawn {
     pub codes: Vec<[u8; 4]>,
     pub frames: u32,
     pub counts: Result<super::histogram::Counts, super::histogram::HistogramError>,
+    /// What its tiles did, as the surface's diagnostics report it once the last is in: the sweeps
+    /// a staged picture was drawn in among them.
+    pub figures: super::RestFigures,
 }
 
 /// A drag's ticks drawn headless ([`HeadlessSurface::ticks`]): each timed tick's duration, and the
@@ -116,6 +119,7 @@ impl HeadlessSurface {
     /// waiting past the test base's hang bound.
     pub fn rest(&mut self, source: &GpuSource, rest: &GpuRest) -> Result<RestDrawn, GpuFallback> {
         let mut frames = 0;
+        let mut done = super::RestFigures::default();
         // One frame a look, through the one hang-bounded wait: what can keep it waiting is a
         // sequence's compile on the compile thread, since the source's rows are written here.
         let drawn = luxforge_testbase::try_wait_for("the picture at rest's last tile", || {
@@ -134,6 +138,7 @@ impl HeadlessSurface {
             if !figures.done {
                 return None;
             }
+            done = figures;
             Some(Ok(()))
         });
         let codes = drawn
@@ -166,6 +171,7 @@ impl HeadlessSurface {
             codes,
             frames,
             counts,
+            figures: done,
         })
     }
 

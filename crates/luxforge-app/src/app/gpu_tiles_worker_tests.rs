@@ -1793,3 +1793,61 @@ fn a_no_gpu_launch_exports_the_reference_naming_why() {
         assert!(exports.original() == original, "{reason}: the original");
     }
 }
+
+/// A worker the launch named, whose window then names another adapter while a stream has a tile
+/// in flight: between jobs the worker lets go of its runner, the tile in flight unread, and the
+/// stream ends at its next step naming `adapter-mismatch`, so the export lane draws it again with
+/// the reference and no output mixes two adapters' tiles. The window naming the same adapter
+/// confirms it, and a stream draws on to its end.
+#[test]
+fn the_windows_other_adapter_ends_a_stream_drawn_on_the_launchs() {
+    use super::gpu_tiles::AdapterNaming;
+    let test = "the_windows_other_adapter_ends_a_stream_drawn_on_the_launchs";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let (_, recipe) = families()
+        .into_iter()
+        .find(|(family, _)| *family == "Presence after Detail")
+        .expect("the family");
+    let client = clients(1)[0];
+    for other in [false, true] {
+        let service = GpuTiles::pending(false);
+        assert!(service.adopt_adapter(&backend, &name, AdapterNaming::Launch));
+        service.draw_streams_at(vec![SIDE]);
+        let (stack, _) = fresh_stack(&stack(&source(BoundaryFormat::Half), &recipe));
+        let begin = shut();
+        service.hold_steps(Some(Arc::clone(&begin)));
+        let mut bands = service.stream(&stack, &Cancel::new()).expect("a stream");
+        drop(stack);
+        wait_until("the worker held before the stream begins", || {
+            begin.holding()
+        });
+        let first = next_step(&service, &begin);
+        let second = next_step(&service, &first);
+        assert_eq!(service.figures().in_flight, 1, "a tile in flight");
+        let window = if other { "Another GPU" } else { name.as_str() };
+        assert!(service.adopt_adapter(&backend, window, AdapterNaming::Window));
+        service.hold_steps(None);
+        second.open();
+        if other {
+            let ended = bands.next().expect("the end").expect_err("ended");
+            assert_eq!(
+                bands.fallback(),
+                Some(&TileFallback::Unavailable(TileUnavailable::AdapterMismatch)),
+                "{ended}"
+            );
+            assert!(bands.next().is_none());
+            settle(&service, client);
+            let after = service.figures();
+            assert_eq!(after.in_flight, 0, "the tile in flight let go unread");
+            assert_eq!(after.bands, 0, "no band of the old adapter's tiles sent");
+        } else {
+            let stitched: Vec<_> = bands.by_ref().map(|band| band.expect("a band")).collect();
+            assert!(!stitched.is_empty() && bands.fallback().is_none());
+            assert_eq!(service.figures().status, TileStatus::Gpu);
+        }
+        assert_eq!(service.figures().named, Some(AdapterNaming::Window));
+    }
+}

@@ -1001,6 +1001,10 @@ impl Editor {
                     self.note_step(json!({"cursor_probe":trace}));
                     self.event("cursor_probe", || trace);
                 }
+                // A move's timing as the frame this capture reads back has it: the surface may have
+                // drawn the move's preview since the last message's hooks read its diagnostics, as
+                // it does when the GPU presents the opening photograph in the update after.
+                self.follow_timing();
                 let recorded = (self.snapshot(), self.activity.requested, self.drawn_photo());
                 let clipping_version = self.overlay_surface().map(luxforge_ui::Frame::version);
                 if let Some(evidence) = &mut self.evidence {
@@ -5008,7 +5012,20 @@ impl Editor {
     }
 
     pub(crate) fn finish_evidence(&mut self) -> Task<Message> {
-        self.event("shutdown", || json!({}));
+        // What the run cost the update loop and the owner, and what the GPU tile worker drew.
+        self.event("shutdown", || {
+            let timing = self.log.loop_timing.get();
+            json!({
+                "update_loop": {
+                    "updates": timing.updates,
+                    "longest_ms": timing.longest_update_ms,
+                    "over_8ms": timing.updates_over_8ms,
+                    "over_50ms": timing.updates_over_50ms,
+                },
+                "owner_calls": super::tasks::call_latency::report(),
+                "tiles": self.renderer.tiles.as_ref().map(|tiles| tiles.figures().record()),
+            })
+        });
         let evidence = self.evidence.as_mut().expect("evidence mode");
         let dir = evidence.dir.clone();
         let frames = std::mem::take(&mut evidence.frames);
