@@ -1558,8 +1558,8 @@ fn setup_steps(options: &Options, field: &FieldTarget, source: SourceTag) -> Vec
 const CONTEND_MAX: usize = 5;
 
 /// The idle check a drag run with `--idle` makes after its release has dissolved from the drag's
-/// last GPU frame: a settle long enough for the dissolve and the committed frame's exact phase and
-/// histogram, then the longest window an evidence step takes.
+/// last GPU frame: a settle long enough for the dissolve and the committed stack's picture at rest,
+/// its tiles and their counts, then the longest window an evidence step takes.
 const IDLE_AFTER_DISSOLVE: script::IdleStep = script::IdleStep {
     settle_ms: 4000,
     ms: script::MAX_WAIT_MS,
@@ -3417,7 +3417,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
                 _ => "Developer proof curve: identity colour operation. Draft/preview scheduling and GPU upload are timed while the curve canvas is visible; the curve does not alter photo pixels.".to_owned(),
             },
             (Control::Slider, SET_BASIC, EXPOSURE) => "Basic exposure: the photograph's colour pass is measured with the generated slider.".to_owned(),
-            (Control::Slider, "set-raw", parameter) => format!("{} {parameter}: the slider is measured through draft.begin/set/commit exactly as Basic exposure is. Each drafted value is previewed approximately on the planes developed at the committed white balance (approximate_white_balance frames, never analysed); each release commits and redevelops the mosaic before its exact frame and histogram.", field.action),
+            (Control::Slider, "set-raw", parameter) => format!("{} {parameter}: the slider is measured through draft.begin/set/commit exactly as Basic exposure is. Each drafted value is drawn on the GPU from the planes developed at the committed white balance, the drafted one approximated over them by one matrix (approximate_white_balance frames, whose counts are never adopted); each release commits and redevelops the mosaic before its picture at rest and histogram.", field.action),
             (Control::Slider, action, parameter) => format!("{action} {parameter}: the slider is measured through draft.begin/set/commit exactly as Basic exposure is."),
         },
         "view_setup":match &field.curve {

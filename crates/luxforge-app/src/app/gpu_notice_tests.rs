@@ -183,9 +183,9 @@ fn gpu_preview_the_notice_says_nothing_while_the_source_or_the_plan_comes() {
     finish(editor, catalog);
 }
 
-/// Below 100% a drag is drawn on the GPU from the displayed-size proxy as at Fit, so the zoom has
-/// no reason of its own: the first tick's `surface-pending` passes, the ticks after it are drawn on
-/// the GPU, and nothing is said through the release until the settle ends.
+/// Below 100% a drag is drawn on the GPU over the whole stage at its displayed size, as at Fit, so
+/// the zoom has no reason of its own: the first tick's `surface-pending` passes, the ticks after it
+/// are drawn on the GPU, and nothing is said through the release until the settle ends.
 #[test]
 fn gpu_preview_the_notice_says_nothing_of_a_zoom_below_100() {
     for value in [50.0, 33.0] {

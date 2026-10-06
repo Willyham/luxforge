@@ -21,7 +21,7 @@ use serde_json::json;
 use std::path::{Path, PathBuf};
 
 /// The five workspace switches a session holds that the desktop remembers. The canvas mode, the
-/// mask overlay mode, zoom and the GPU preview are left out: they are not remembered.
+/// mask overlay mode and zoom are left out: they are not remembered.
 pub(crate) fn remembered_workspace(workspace: &WorkspaceState) -> WorkspacePreference {
     WorkspacePreference {
         state_panel: workspace.state_panel,
@@ -100,7 +100,7 @@ impl Editor {
 
     /// A `workspace.set` answer was adopted: when it changed any of the five remembered switches
     /// from `before`, and they now differ from what the preference shows, store them. A change of
-    /// mode, mask overlay or GPU preview leaves them as they were and stores nothing.
+    /// mode or mask overlay leaves them as they were and stores nothing.
     pub(super) fn remember_workspace(&mut self, before: WorkspacePreference) -> Task<Message> {
         let now = remembered_workspace(&self.session.workspace);
         if now == before {

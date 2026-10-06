@@ -20,10 +20,9 @@ use crate::{
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-/// Physical pixels of the photo area the display can show. Fit proxies clamp these bounds before
-/// planning. A viewport's virtual half-resolution stage instead records its full half dimensions
-/// here for cache identity and admits only the requested output/source windows, so a 60 MP image
-/// does not silently scale below half because its uncut virtual stage exceeds the Fit area cap.
+/// Physical pixels of the photo area the display can show: the bounds a reference frame is reduced
+/// to, a drag's CPU proxy is rendered at and the GPU's whole-frame plans are planned at. A plan
+/// clamps them before planning ([`Self::clamped`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ProxyBounds {

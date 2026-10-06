@@ -734,7 +734,7 @@ impl Editor {
             );
             // The GPU identity hook draws the photograph at Fit through the GPU stage, so the
             // frame to capture is that draw, over the boundary held from this frame; with the
-            // GPU preview turned off it hands the surface nothing, and the frame is the CPU's.
+            // GPU stage refused it hands the surface nothing, and the frame is the CPU's.
             let forced = self
                 .evidence
                 .as_ref()

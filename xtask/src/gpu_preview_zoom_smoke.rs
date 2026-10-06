@@ -1,14 +1,14 @@
 //! The `gpu-preview-zoom` smoke scenario: drags at percentage zooms drawn on the GPU with no
 //! preview job per tick, on the real editor: at 100% and above over the visible region at full
-//! scale, and below 100% over the displayed-size proxy of the whole stage
+//! scale, and below 100% over the whole stage at its displayed size
 //! (`docs/design/gpu-preview.md`, "At 100% and above" and "Below 100%").
 //!
 //! One launch over the quadrant fixture the `gpu-preview` scenario uses. A Basic exposure drag at
 //! 100% draws from the region's boundary, a window of the source cut at full scale, which the
-//! view's own job or the drag's first tick derives on the GPU; its first tick is on the CPU only
-//! until the surface has evaluated the plan and compiled its sequence, and its later ticks are
-//! drawn on the GPU with no preview job — no tick's, and no region job for the view — the plan's
-//! region holding the view, their pixels against the CPU frame the release commits. The boundary
+//! view's own job or the drag's first tick derives on the GPU; its first tick holds the frame on
+//! screen only until the surface has evaluated the plan and compiled its sequence, and its later
+//! ticks are drawn on the GPU with no preview job — no tick's, and no region job for the view — the
+//! plan's region holding the view, their pixels against the frame the release commits. The boundary
 //! stays on the GPU as the resident one when the drag ends, and at 200%, where the view still
 //! shows the whole photograph, the same region at full scale, a drag draws from it at its first
 //! tick, deriving nothing. At 800%, where the view shows a corner of the photograph, the drag is
@@ -27,14 +27,14 @@
 //! shows it running or follows its end, which a capture after 150 ms allows.
 //!
 //! A second, short launch drags Basic's exposure at 50% and then at 33%, where the view draws the
-//! displayed-size proxy of the whole stage, as Fit draws the display-bounded one. Each drag draws
-//! from the source reduced to that proxy on the GPU, derived by the view's own job or the drag's
-//! first tick; once the surface has evaluated the plan its ticks are drawn on the GPU from a whole
-//! frame's plan with no preview job,
-//! each GPU frame's boundary, draft revision, budget figures and label checked against its state,
-//! the same settings drawn twice to the same bytes, and the status bar saying nothing of the zoom.
-//! The release's committed proxy frame dissolves in from the drag's last GPU frame, whose pixels
-//! are the CPU frame's of the same settings, within the pointwise limits, and the boundary stays
+//! whole stage at its displayed size, as Fit draws it at the display's bounds. Each drag draws from
+//! the source reduced to that size on the GPU, derived by the view's own job or the drag's first
+//! tick; once the surface has evaluated the plan its ticks are drawn on the GPU from a whole
+//! frame's plan with no preview job, each GPU frame's boundary, draft revision, budget figures and
+//! label checked against its state, the same settings drawn twice to the same bytes, and the status
+//! bar saying nothing of the zoom. The release's committed stack is drawn at rest by the GPU, its
+//! picture at rest dissolving in over the drag's last GPU frame, whose pixels are the release
+//! frame's within the pointwise limits, the distance between them recorded, and the boundary stays
 //! resident. (The first launch's script holds the evidence's 64 steps.)
 use crate::{
     gpu_preview_smoke::{
@@ -121,7 +121,7 @@ const BEHIND_DETAIL: f64 = 40.0;
 const BEHIND_TEXTURE: [f64; 3] = [30.0, 40.0, 60.0];
 const BEHIND_SHARPEN: [f64; 3] = [55.0, 70.0, 85.0];
 
-/// A drag in the second launch, below 100%, over the displayed-size proxy of the whole stage.
+/// A drag in the second launch, below 100%, over the whole stage at its displayed size.
 struct Below {
     zoom: f32,
     /// The first tick's value, then the GPU ticks' values, which a second step draws again.
@@ -473,15 +473,14 @@ fn passing(reason: &Value) -> bool {
             .any(|passing| reason == passing)
 }
 
-/// The drags below 100%, each over the displayed-size proxy of the whole stage, planned as Fit's
-/// is at the view's bounds: the first tick drawn from the boundary the view's own job derived from
-/// the source, reduced to that proxy, or one the tick derives, held only for a reason that passes,
-/// with nothing said of the zoom; the boundary held the whole proxy stage at the view's bounds;
-/// the later ticks drawn on the GPU from a whole
-/// frame's plan with no preview job and nothing derived again, each frame's boundary, revision,
-/// budget figures and label its state's, the same settings drawn twice to the same bytes; the
-/// release's committed proxy frame dissolving in from the last GPU frame, whose pixels are the CPU
-/// frame's of the same settings within the pointwise limits; and the boundary kept as the
+/// The drags below 100%, each over the whole stage at its displayed size, planned as Fit's is at
+/// the view's bounds: the first tick drawn from the boundary the view's own job derived from the
+/// source, reduced to that size, or one the tick derives, held only for a reason that passes, with
+/// nothing said of the zoom; the boundary held the whole stage at the view's bounds; the later
+/// ticks drawn on the GPU from a whole frame's plan with no preview job and nothing derived again,
+/// each frame's boundary, revision, budget figures and label its state's, the same settings drawn
+/// twice to the same bytes; the release's picture at rest dissolving in over the last GPU frame,
+/// whose pixels are the release frame's within the pointwise limits; and the boundary kept as the
 /// resident one, the view's.
 fn drawn_on_the_gpu_below_100(launch: &Checked, checks: &mut Checks) -> Result {
     for Below { zoom, names, .. } in BELOW {
@@ -615,7 +614,9 @@ fn drawn_on_the_gpu_below_100(launch: &Checked, checks: &mut Checks) -> Result {
         )?;
         checks.note(
             again,
-            &format!("the drag at {zoom}% drawn on the GPU from the displayed-size proxy"),
+            &format!(
+                "the drag at {zoom}% drawn on the GPU over the whole stage at its displayed size"
+            ),
             json!({"first": {"derived": derived, "reasons": reasons}, "boundary": boundary,
                 "view_bounds": bounds, "cpu_frame": raster, "drawn": drawn,
                 "same_bytes": repeated, "settled": dissolved, "against_release": compared,
@@ -812,7 +813,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     ] {
         presence_drag_checks(launch, &mut checks, name, &[lights], gain_only, false)?;
     }
-    // Below 100%: drawn on the GPU from the displayed-size proxy, as at Fit.
+    // Below 100%: drawn on the GPU over the whole stage at its displayed size, as at Fit.
     drawn_on_the_gpu_below_100(below, &mut checks)?;
 
     checks.write(&launch.evidence, run.scenario(), json!({}))
