@@ -2,6 +2,8 @@
 
 Status: implemented and verified on the M4 Mac; the reference export measured in the [performance plan](../specs/performance.md#jpeg-export). The GPU export (stage 4 of [GPU-first](gpu-first.md)) is within the display limit of the reference export on every corpus stack ([the contract](gpu-first.md#the-contract)); measured on the M4 on 2026-10-07, the heavy stack takes 275 ms at 24 MP against the reference's 784 ms and 629 ms at 60 MP against 2,016 ms, the Air 2S masked export stack 457 ms against 1,177 ms, and Basic exposure alone 101 against 85 ms at 24 MP and 190 against 175 ms at 60 MP ([performance](../specs/performance.md#export)). This design implements the accepted export contract in [decisions](../decisions.md#editing-and-storage) and [crop and export](../specs/single-image.md#export): quality 90, a native destination picker suggesting `-edited.jpg`, never overwriting an existing file or a source alias, and optional metadata stripped by default with a Keep metadata option. What this design chose beyond that contract, the encoder included, was accepted by the owner on 2026-09-27 and is listed under [decisions](#decisions).
 
+Planned: [export settings](export-settings.md) extend this export with presets, WebP and TIFF, resizing, optimisation and metadata levels. Nothing of that is implemented; this document describes the current export.
+
 Export writes one saved entry's render to a new JPEG file: the GPU's where it can draw the stack, held to the reference renderer's within the display limit, and otherwise the reference renderer's exact render. It never touches the original, the catalog's history or any existing file.
 
 ## Behavior

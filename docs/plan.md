@@ -35,6 +35,7 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 | [Lightroom import](../tasks/lightroom/lightroom-import.json) ([design](design/lightroom-import.md)) | TASK-001 confirm the catalog format against a copy of the owner's catalog | Needs no code; needs the owner's catalog copy | High tier |
 | [Lightroom alignment](../tasks/lightroom/lightroom-alignment.json) ([design](design/lightroom-alignment.md)) | TASK-001 the rig's generator and synthetic targets | Its rounds need the owner to import and export in Lightroom | High tier |
 | [Live-session Rust CLI](../tasks/project/live-cli.json) ([design](design/live-cli.md)) | TASK-001 shared catalog targeting and authenticated session client | The command contract and defaults are decided; implementation awaits owner authorization | High tier |
+| [Export settings](../tasks/rendering/export-settings.json) ([design](design/export-settings.md)) | TASK-001 settings, presets and API; TASK-002 JPEG options and limit search; TASK-003 WebP and TIFF encoders; TASK-004 resized and 16-bit output | Formats, direct-writing sheet and sharpening-after-core chosen; other defaults recorded in the design. Planning only; implementation awaits authorization | High tier |
 | [High-zoom minimap](../tasks/interface/minimap.json) ([design](design/minimap.md)) | TASK-001 shared viewport projection; TASK-002 bounded overview rendering | Inclusive 200% threshold and click/drag navigation chosen; layout remains a proposed default. Planning only; implementation awaits authorization | High tier |
 
 ### In progress
@@ -72,7 +73,13 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 ## Output
 
 **JPEG export follow-ups.** JPEG export is delivered ([design](design/export.md)).
-- Presets, resizing, output sharpening and other formats, each only by its own decision; resize, 16-bit and wide-gamut features declare and qualify their GPU-versus-reference tolerance when designed (owner, 2026-10-07)
+- **Export settings** ([design](design/export-settings.md), [tasks](../tasks/rendering/export-settings.json)) are planned:
+  - an Export sheet with Web, Print and Master presets and the person's own
+  - JPEG, lossy WebP and 8/16-bit TIFF, with resizing, optimised encoding, file-size limits and metadata levels
+  - output sharpening as a second delivery
+
+  The resized, 16-bit and sharpened tolerances are declared in the design. Settings, encoders and render paths can start independently before integration and the desktop. The request authorizes planning only.
+- Wide-gamut output still needs its own decision and tolerance (owner, 2026-10-07)
 
 ## Library
 
