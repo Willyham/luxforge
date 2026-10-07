@@ -121,7 +121,8 @@ fn plan<'a>(root: &Path, p: &'a Value, s: &Value) -> Result<BTreeMap<&'a str, &'
             let target = link["target"].as_str().unwrap();
             match link["kind"].as_str() {
                 Some("file") => {
-                    let linked = root.join(target.split('#').next().unwrap());
+                    let linked = in_repository(root, root, target.split('#').next().unwrap())
+                        .map_err(|why| format!("{id}: {target} {why}"))?;
                     ensure(linked.is_file(), format!("{id}: missing {target}"))?;
                     if linked
                         .extension()
@@ -166,6 +167,70 @@ fn plan<'a>(root: &Path, p: &'a Value, s: &Value) -> Result<BTreeMap<&'a str, &'
         "Stale execution waves",
     )?;
     Ok(tasks)
+}
+/// Where a task plan's or document's link to `target` leads, resolved against `base` (the
+/// repository root for a task plan, the document's folder for a document), or why it may not be
+/// linked: an absolute path, or one whose `..` climbs out of `root`, is outside the repository. The
+/// refusal is lexical, so a link is refused on every host whether or not its target exists there;
+/// a target that exists must also stay in the repository once symbolic links are followed.
+fn in_repository(root: &Path, base: &Path, target: &str) -> std::result::Result<PathBuf, String> {
+    use std::path::Component;
+    let outside = || "is outside the repository".to_owned();
+    let mut within = PathBuf::new();
+    let relative = base.strip_prefix(root).map_err(|_| outside())?;
+    for component in relative.components().chain(Path::new(target).components()) {
+        match component {
+            Component::Prefix(_) | Component::RootDir => return Err(outside()),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !within.pop() {
+                    return Err(outside());
+                }
+            }
+            Component::Normal(part) => within.push(part),
+        }
+    }
+    let linked = root.join(within);
+    if let Ok(resolved) = linked.canonicalize() {
+        let root = root.canonicalize().map_err(|error| error.to_string())?;
+        if !resolved.starts_with(root) {
+            return Err(outside());
+        }
+    }
+    Ok(linked)
+}
+/// Check every local link in the Markdown file at `path`, each resolved against its folder:
+/// it stays in the repository and something is there. Fenced code and links with a scheme are
+/// skipped. Answers how many local links it checked.
+fn markdown_links(root: &Path, path: &Path) -> Result<usize> {
+    static FENCED: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"(?s)```.*?```").unwrap());
+    static LINKS: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r#"\[[^\]\n]*\]\(([^)]+)\)"#).unwrap());
+    static SCHEME: std::sync::LazyLock<Regex> =
+        std::sync::LazyLock::new(|| Regex::new(r"^[A-Za-z][A-Za-z0-9+.-]*:").unwrap());
+    let raw = fs::read_to_string(path)?;
+    let text = FENCED.replace_all(&raw, "");
+    let mut count = 0;
+    for c in LINKS.captures_iter(&text) {
+        let target = c[1].split(" \"").next().unwrap().trim_matches(['<', '>']);
+        if SCHEME.is_match(target) {
+            continue;
+        }
+        let local = target.split(['#', '?']).next().unwrap();
+        if local.is_empty() {
+            continue;
+        }
+        let decoded = percent_encoding::percent_decode_str(local).decode_utf8()?;
+        let linked = in_repository(root, path.parent().unwrap(), &decoded)
+            .map_err(|why| format!("{}: link {target} {why}", path.display()))?;
+        ensure(
+            linked.exists(),
+            format!("{}: broken link {target}", path.display()),
+        )?;
+        count += 1;
+    }
+    Ok(count)
 }
 fn active_plans(root: &Path, plans: &[Value], s: &Value) -> Result<Vec<String>> {
     ensure(!plans.is_empty(), "No active task plans")?;
@@ -2092,29 +2157,9 @@ pub fn check(root: &Path) -> Result {
                 .filter(|p| p.extension().is_some_and(|e| e == "md")),
         );
     }
-    let fenced = Regex::new(r"(?s)```.*?```")?;
-    let links = Regex::new(r#"\[[^\]\n]*\]\(([^)]+)\)"#)?;
-    let scheme = Regex::new(r"^[A-Za-z][A-Za-z0-9+.-]*:")?;
     let mut count = 0;
     for path in paths {
-        let raw = fs::read_to_string(&path)?;
-        let text = fenced.replace_all(&raw, "");
-        for c in links.captures_iter(&text) {
-            let target = c[1].split(" \"").next().unwrap().trim_matches(['<', '>']);
-            if scheme.is_match(target) {
-                continue;
-            }
-            let local = target.split(['#', '?']).next().unwrap();
-            if local.is_empty() {
-                continue;
-            }
-            let decoded = percent_encoding::percent_decode_str(local).decode_utf8()?;
-            ensure(
-                path.parent().unwrap().join(decoded.as_ref()).exists(),
-                format!("{}: broken link {target}", path.display()),
-            )?;
-            count += 1;
-        }
+        count += markdown_links(root, &path)?;
     }
     println!(
         "PASS local task schemas/DAGs/order ({}), {count} local links",
@@ -4940,5 +4985,113 @@ mod tests {
         ordered["tasks"][0]["dependencies"] = json!(["TASK-002"]);
         ordered["tasks"][1]["dependencies"] = json!([]);
         assert!(plan(tmp.path(), &ordered, &s).is_err());
+    }
+    /// A task plan's file link and a document's link must stay in the repository: an absolute path
+    /// or a `..` that climbs out of it is refused even when a file is there on this host, as on a
+    /// hosted runner where it is not; one that stays inside, through `..` too, is followed.
+    #[test]
+    fn links_outside_the_repository_are_refused_even_where_their_target_exists() {
+        let host = tempfile::tempdir().unwrap();
+        let root = host.path().join("repository");
+        fs::create_dir_all(root.join("docs/design")).unwrap();
+        fs::write(root.join("README.md"), "# Read me\n").unwrap();
+        fs::write(root.join("docs/design/plan.md"), "# Plan\n").unwrap();
+        // A working file beside the repository, as a plan once linked one in /tmp.
+        let working = host.path().join("task-012-plan.md");
+        fs::write(&working, "# Working notes\n").unwrap();
+        let working = working.to_str().unwrap();
+
+        // The resolution itself.
+        assert_eq!(
+            in_repository(&root, &root, "docs/design/plan.md"),
+            Ok(root.join("docs/design/plan.md"))
+        );
+        assert_eq!(
+            in_repository(&root, &root.join("docs/design"), "../../README.md"),
+            Ok(root.join("README.md"))
+        );
+        assert_eq!(
+            in_repository(&root, &root, "docs/./design/../../README.md"),
+            Ok(root.join("README.md"))
+        );
+        for (base, target) in [
+            (root.clone(), working),
+            (root.clone(), "../task-012-plan.md"),
+            (root.clone(), "docs/../../task-012-plan.md"),
+            (root.join("docs/design"), "../../../task-012-plan.md"),
+            (root.join("docs"), "/etc/hosts"),
+        ] {
+            assert_eq!(
+                in_repository(&root, &base, target),
+                Err("is outside the repository".to_owned()),
+                "{target} from {}",
+                base.display()
+            );
+        }
+
+        // A task plan's file link.
+        let s = task_schema();
+        let link = |target: &str| {
+            let mut linked = minimal_plan("links");
+            linked["tasks"][0]["context_links"][0] = json!({
+                "kind":"file", "label":"Design", "target":target, "relevance":"Context"
+            });
+            plan(&root, &linked, &s)
+                .map(|_| ())
+                .map_err(|e| e.to_string())
+        };
+        assert_eq!(link("docs/design/plan.md#steps"), Ok(()));
+        assert_eq!(
+            link(working),
+            Err(format!("TASK-001: {working} is outside the repository"))
+        );
+        assert_eq!(
+            link("../task-012-plan.md"),
+            Err("TASK-001: ../task-012-plan.md is outside the repository".to_owned())
+        );
+        assert_eq!(
+            link("docs/design/missing.md"),
+            Err("TASK-001: missing docs/design/missing.md".to_owned())
+        );
+
+        // A document's links.
+        let document = root.join("docs/design/links.md");
+        let links = |text: &str| {
+            fs::write(&document, text).unwrap();
+            markdown_links(&root, &document).map_err(|e| e.to_string())
+        };
+        assert_eq!(
+            links(
+                "[Plan](plan.md#steps), [Read me](../../README.md), [Web](https://example.com)\n\
+                 ```\n[Fenced](/not/checked.md)\n```\n"
+            ),
+            Ok(2)
+        );
+        for target in [working.to_owned(), "../../../task-012-plan.md".to_owned()] {
+            assert_eq!(
+                links(&format!("See [the notes]({target}).\n")),
+                Err(format!(
+                    "{}: link {target} is outside the repository",
+                    document.display()
+                ))
+            );
+        }
+        assert_eq!(
+            links("[Gone](gone.md)\n"),
+            Err(format!("{}: broken link gone.md", document.display()))
+        );
+
+        // A link that stays inside by its words but leaves through a symbolic link.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(host.path(), root.join("docs/outside")).unwrap();
+            assert_eq!(
+                links("[Notes](../outside/task-012-plan.md)\n"),
+                Err(format!(
+                    "{}: link ../outside/task-012-plan.md is outside the repository",
+                    document.display()
+                ))
+            );
+        }
     }
 }
