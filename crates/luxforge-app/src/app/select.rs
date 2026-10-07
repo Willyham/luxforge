@@ -665,7 +665,7 @@ impl Editor {
                 self.select.state.indexed_menu = None;
                 self.select.state.forget = None;
             }
-            SelectMessage::Viewed { serial, result } => self.viewed(serial, result),
+            SelectMessage::Viewed { serial, result } => return self.viewed(serial, result),
             SelectMessage::Faceted { serial, result } => {
                 if serial == self.select.serial {
                     // A failure leaves the menus saying the counts are unavailable.
@@ -1055,12 +1055,21 @@ impl Editor {
     /// Evaluate `query` into this client's one view: `browse.view` with the whole query and nothing
     /// else, then the session it left, in one owner task; and the chips' `browse.facets` beside it.
     pub(crate) fn evaluate(&mut self, query: ViewQuery) -> Task<Message> {
-        let state = &mut self.select.state;
-        if state
+        let changed_source = self
+            .select
+            .state
             .query
             .as_ref()
-            .is_none_or(|held| held.source != query.source)
-        {
+            .is_none_or(|held| held.source != query.source);
+        // A source change can clear the owner's active frame. Show the new grid rather than leaving
+        // an empty loupe over the frames the person needs to choose from.
+        let grid = if changed_source {
+            self.loupe_close()
+        } else {
+            Task::none()
+        };
+        let state = &mut self.select.state;
+        if changed_source {
             state.facets = None;
         }
         self.select.serial += 1;
@@ -1083,15 +1092,19 @@ impl Editor {
             move || facets_now(&owner, client, &counted_query),
             move |result| Message::Select(SelectMessage::Faceted { serial, result }),
         );
-        Task::batch([evaluated, counted])
+        Task::batch([grid, evaluated, counted])
     }
 
     /// Adopt an evaluation that is still the newest: its summary, the session it left, the grid laid
     /// out from its group layout, and a scroll that stays near the active item for the same source
     /// and starts at the top for a new one.
-    fn viewed(&mut self, serial: u64, result: Result<Box<(ViewSummary, ClientSession)>, String>) {
+    fn viewed(
+        &mut self,
+        serial: u64,
+        result: Result<Box<(ViewSummary, ClientSession)>, String>,
+    ) -> Task<Message> {
         if serial != self.select.serial {
-            return;
+            return Task::none();
         }
         self.select.state.loading = false;
         match result {
@@ -1199,6 +1212,18 @@ impl Editor {
                 self.select.anchor = None;
             }
         }
+        // A same-source filter or refresh can remove the active frame too. Wait for the answer
+        // before deciding, so an in-flight refresh never closes a loupe that still has its frame.
+        if self.select.state.loupe.open
+            && crate::state::loupe::subject(
+                self.select.state.summary.as_ref(),
+                &self.session.browse,
+            )
+            .is_none()
+        {
+            return self.loupe_close();
+        }
+        Task::none()
     }
 
     /// Make the grid's blocks from the summary and lay them out at the width the widget reported.
