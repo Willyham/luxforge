@@ -364,7 +364,7 @@ fn ended(owner: &mut Owner, origin: Origin, job_id: &JobId, revision: Option<u64
 /// runs, as cards mounted then would be ([`queries::lane_started`]). A catalog without indexed
 /// folders starts nothing.
 pub(super) fn opened(owner: &mut Owner) {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-holds"))]
     opening_mounts(owner);
     let Ok(folders) = indexed_folders(owner) else {
         return;
@@ -390,12 +390,12 @@ pub(super) fn opened(owner: &mut Owner) {
 
 /// Mount tables tests stand in with from a catalog's opening, by the catalog's path: the lane of a
 /// catalog with indexed folders starts as it opens, before a test's message can reach the owner.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-holds"))]
 pub(super) static OPENING_MOUNTS: std::sync::Mutex<Vec<(PathBuf, MountSource)>> =
     std::sync::Mutex::new(Vec::new());
 
 /// Stand in with the mount table a test gave for this catalog's opening, if it gave one.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-holds"))]
 fn opening_mounts(owner: &mut Owner) {
     let Some(catalog) = owner.service.connection.path().map(PathBuf::from) else {
         return;
@@ -700,5 +700,25 @@ impl super::OwnerHandle {
                 super::catalog::CatalogMessage::Files(FilesMessage::Hold(gate, folder)),
             ))
             .expect("the owner is running");
+    }
+
+    /// Have every owner later opened over `catalog` read an empty mount table in place of the
+    /// host's, from its opening on. The host's mounts are every test's: a card another process
+    /// mounts meanwhile (the core's own disk-image tests attach one with a `DCIM` folder of two
+    /// photographs) is listed by any catalog that opens while it is there, as the desktop lists a
+    /// connected card, and its event is listed beside the test's own. With no table, every path's
+    /// volume is found by its device. For a test, through the `test-holds` feature, which only
+    /// `[dev-dependencies]` turn on.
+    pub fn read_no_host_mounts(catalog: &std::path::Path) {
+        OPENING_MOUNTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push((
+                // The owner names its catalog by its canonical path.
+                catalog
+                    .canonicalize()
+                    .unwrap_or_else(|_| catalog.to_path_buf()),
+                MountSource::Fixed(Arc::new(std::sync::Mutex::new(Vec::new()))),
+            ));
     }
 }

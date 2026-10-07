@@ -573,7 +573,11 @@ fn filmstrip_a_warm_opens_gpu_picture_replaces_the_cached_preview() {
         editor.develop.state.preview.is_some(),
         "until a picture of the entry is on screen"
     );
-    // The GPU presents the open photograph's content over the preview, as a warm open does.
+    // The GPU presents the open photograph's content over the preview, as a warm open does. The
+    // test's open was queued on the reference, which has no GPU stage here; a warm open queues no
+    // render, and presenting on the GPU raises the floor over anything planned before
+    // (`Editor::present_on_gpu`), so that render never lands over the GPU's picture either.
+    let _ = editor.presentation.cancel();
     editor.presentation.gpu_presented = Some(editor.presentation.presented_content);
     // Any message's hooks then see it.
     let _ = editor.update(Message::Preview(PreviewMessage::Poll));
