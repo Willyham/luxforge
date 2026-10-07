@@ -49,6 +49,7 @@ Owner decisions and repository upkeep.
 | Plan | Purpose |
 | --- | --- |
 | [Dependency advisories](project/dependency-advisories.json) | Remove or re-review the two expiring advisory exceptions the dependency audit enforces |
+| [Live-session Rust CLI](project/live-cli.json) ([design](../docs/design/live-cli.md)) | Specified thin client for the authenticated API of an already-open desktop session; implementation awaits owner authorization |
 | [Product decisions](project/product-decisions.json) | Open product questions |
 
 The post-consolidation programme, the Tone curve, Detail and Lens and perspective are complete and their plans are deleted; their outcome lives in the specs, their designs and [feature status](../docs/features.md).
