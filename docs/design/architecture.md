@@ -37,7 +37,7 @@ A rule marked *(enforced)* is a rule `cargo xtask check-repository` applies.
 - `crates/luxforge-gpu`: the shared wgpu executor, shader/compiler cache, physical resources, source uploads, chains, staged/light sweeps, histogram reduction, tile readback and device-scoped retirement. It uses `luxforge-gpu-types` and pinned GPU dependencies, never Iced, core or catalog code *(enforced)*. The caller supplies its device and graphics request policy; the backend opens no extra presentation device. Qualification/read-only inspection helpers are enabled only by test dependencies *(enforced)*.
 - `crates/luxforge-ui`: widgets, runtime themes and the photograph's Iced presentation adapter. It calls the shared GPU executor on Iced's existing device, retaining photo admission/charges, sampled bindings, placement, crop/overlay, dissolve and redraw policy. It depends on Iced and the GPU crates, never core *(enforced)*, so widgets hold no editing logic.
 - `crates/luxforge-jpeg`: the one JPEG codec, libjpeg-turbo through `mozjpeg`, and the JPEG container around it; described [below](#the-jpeg-codec). It depends on no workspace crate, and only `luxforge-core` depends on it *(enforced)*.
-- `crates/luxforge-raw`: the private RAW adapter over the pinned native LibRaw and librtprocess source, with a safe API ([its README](../../crates/luxforge-raw/README.md)) that develops a qualified RAW and, for any RAW LibRaw identifies, lists and extracts its embedded previews by positional reads without unpacking it; its `limits.rs` holds the RAW admission limits and the parallel thresholds in the [limits](#limits) table.
+- `crates/luxforge-raw`: the private RAW adapter over the pinned native LibRaw and librtprocess source, with a safe API ([its README](../../crates/luxforge-raw/README.md)) that develops a qualified RAW and, for any RAW LibRaw identifies, lists and extracts its embedded previews by positional reads without unpacking it; its `limits.rs` holds RAW admission and the shared non-rendering parallel threshold. Renderer-only pass/frame/tile policy lives in core’s `render/limits.rs` ([limits](#limits)).
 - `crates/luxforge-process`: the counters the operating system keeps for this process (CPU time, memory, GPU time and GPU allocations), behind a safe API.
 - `crates/luxforge-watch`: the platform's change notifications for watched folders and mounted volumes, and the mounted file systems with their names, UUIDs and whether each is removable (`mounts.rs`, which the catalog's index reads), behind a safe API. A `Watcher` sends into its caller's bounded channel and never waits on it: what a full channel refuses becomes one rescan owed to the root, retried while owed (`delivery.rs`). On macOS each root is an FSEvents stream relative to its device, which replays from a persisted cursor (`macos/fsevents.rs`), and a Disk Arbitration session reports mounts (`macos/disks.rs`), all on one serial dispatch queue and no thread of its own; on Linux one thread blocks in `poll` on inotify, one watch per folder (`inotify.rs`, `linux.rs`), and `/proc/self/mountinfo`; on Windows one thread blocks on a completion port for each root's `ReadDirectoryChangesW` and the configuration manager's volume notifications (`windows.rs`), compiled but not yet run natively. It depends on no workspace crate outside its tests *(enforced)*.
 - `crates/luxforge-input`: native input omitted by the window framework, behind a safe numerical callback. Its macOS AppKit monitor reports magnification and content-view pointer coordinates for the editor's own window; only this boundary may dereference its borrowed native handle and callback argument. It owns no image, recipe or catalog state and is linked only by the desktop.
@@ -49,6 +49,8 @@ A rule marked *(enforced)* is a rule `cargo xtask check-repository` applies.
 - `crates/luxforge-testkit`: the core-typed helpers the tests and `xtask` share, never compiled into a shipped binary; described [below](#the-test-kit). Only `[dev-dependencies]` and `xtask` name it, and never `luxforge-core`'s.
 - `xtask/cli` (`xtask-cli`): the lightweight `cargo xtask` entry point and the shared repository, dependency-policy and parallel test runner. It depends on no workspace crate or image/native/GUI tooling *(enforced)*, so checks and audits start independently of the photo core ([startup contract](xtask-startup.md)).
 - `xtask`: photo, evidence, acceptance, verification and packaging tools, built when requested by the lightweight entry point or explicitly through `cargo run --package xtask`. It uses the same check/policy library, and workspace verification includes both packages and their tests.
+
+The [code structure consolidation](code-structure.md) is qualified on the native M4: full available authentic corpus and background UI/API journeys pass, with matched timing and charge scope in [performance](../specs/performance.md#code-structure-consolidation). Current Linux no-adapter and software Vulkan journeys pass functionally; native Windows/Linux GPU and complete memory scope remain open.
 
 ### The core's files
 
@@ -251,7 +253,7 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 
 | Limit | Figure | Enforced by |
 | --- | --- | --- |
-| Evaluated RGBA8 frame (a narrow JPEG frame, a proxy, a linear-to-byte conversion), per buffer | 512 MiB | `MAX_FRAME_BYTES`, `crates/luxforge-raw/src/limits.rs` |
+| Evaluated RGBA8 frame (a narrow JPEG frame, a proxy, a linear-to-byte conversion), per buffer | 512 MiB | `MAX_FRAME_BYTES`, `crates/luxforge-core/src/render/limits.rs` |
 | Evaluated RGB16 JPEG spatial frame, per buffer | 512 MiB, checked as width × height × 6 bytes | `ByteFrame::new`, `crates/luxforge-core/src/render/byte.rs` |
 | RAW encoded source | 512 MiB | `MAX_SOURCE_BYTES`, `crates/luxforge-raw/src/limits.rs` |
 | RAW retained u16 samples, per buffer | 512 MiB, including all three channels for linear RGB | Checked sample count × 2 against `MAX_SOURCE_BYTES`, `crates/luxforge-raw/src/lib.rs` |
@@ -275,9 +277,9 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | Spatial tile working sets, aggregate (*target*) | 256 MiB | `SPATIAL_BUDGET_BYTES`, `crates/luxforge-core/src/modules/spatial.rs` |
 | Spatial units per spatial operation | 4 | `MAX_SPATIAL_UNITS`, `crates/luxforge-core/src/modules/spatial.rs` |
 | Summed halo per spatial operation | 512 px | `MAX_SPATIAL_HALO`, `crates/luxforge-core/src/modules/spatial.rs` |
-| Spatial tile side | 512 px up to a 128 px summed halo, 1024 px past it | `SPATIAL_TILE`, `SPATIAL_WIDE_TILE` and `SPATIAL_WIDE_HALO`, read through `spatial_tile`, `crates/luxforge-raw/src/limits.rs` |
+| Spatial tile side | 512 px up to a 128 px summed halo, 1024 px past it | `SPATIAL_TILE`, `SPATIAL_WIDE_TILE` and `SPATIAL_WIDE_HALO`, read through `spatial_tile`, `crates/luxforge-core/src/render/limits.rs` |
 | Global estimate | 4 KiB each | `MAX_GLOBAL_BYTES`, `crates/luxforge-core/src/modules/spatial.rs` |
-| Parallel threshold: a segment's geometry | 0.5 MP | `PARALLEL_TRANSFORM_PIXELS`, read through `parallel_pixels`, `crates/luxforge-raw/src/limits.rs` |
+| Parallel threshold: a segment's geometry | 0.5 MP | `PARALLEL_TRANSFORM_PIXELS`, read through `parallel_pixels`, `crates/luxforge-core/src/render/limits.rs` |
 | Parallel threshold: one or two colour units | 0.1 MP | `PARALLEL_COLOUR_PIXELS`, as above |
 | Parallel threshold: three or more colour units, or a mask | 25,000 pixels | `PARALLEL_HEAVY_COLOUR_PIXELS`, as above |
 | Parallel threshold: a resample | 0.1 MP of output | `PARALLEL_RESAMPLE_PIXELS`, as above |
@@ -439,7 +441,7 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | --- | --- | --- |
 | The export lane | One running and four queued jobs | One thread per lane (`Lane::Export`) and `LANE_QUEUE`, `crates/luxforge-core/src/jobs.rs` |
 | Retained finished export jobs | 32 | `FINISHED_RECORDS`, `crates/luxforge-core/src/jobs.rs` |
-| One export's pixels | The GPU's: at most four bands of the stage's width and one tile side — two waiting for the encoder, the one it reads and the one being assembled; the reference's: one exact frame inside the evaluated-frame limit. Either way its encoded bytes stream to a temporary file | `EXPORT_BANDS_IN_FLIGHT`, `crates/luxforge-core/src/tiles.rs`; `MAX_FRAME_BYTES`, `crates/luxforge-raw/src/limits.rs` |
+| One export's pixels | The GPU's: at most four bands of the stage's width and one tile side — two waiting for the encoder, the one it reads and the one being assembled; the reference's: one exact frame inside the evaluated-frame limit. Either way its encoded bytes stream to a temporary file | `EXPORT_BANDS_IN_FLIGHT`, `crates/luxforge-core/src/tiles.rs`; `MAX_FRAME_BYTES`, `crates/luxforge-core/src/render/limits.rs` |
 | One GPU export's tiles | The longest of 2048, 1024 and 512 pixels a side whose every tile, over its band's window of the source, fits `GPU_TILE_BUDGET` (2 GiB) less a 256 MiB read reserve, fixed per export; at most two tiles in flight (`TILES_IN_FLIGHT`), what they hold charged beside the next; past all three sides the export is the reference's (`tiles-budget`) | `STREAM_TILE_SIDES`, `crates/luxforge-core/src/render/gpu/tiles.rs`; `GPU_TILE_BUDGET`, `crates/luxforge-gpu/src/execution/tiles.rs`; `STREAM_READ_RESERVE`, `crates/luxforge-app/src/app/gpu_tiles.rs` |
 | Names read when suggesting a destination | 64 | `MAX_PROBES` in `suggest`, `crates/luxforge-core/src/export/publish.rs` |
 
