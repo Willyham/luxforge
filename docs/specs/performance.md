@@ -5057,8 +5057,8 @@ All on the 24 MP JPEG at Fit; the cells are p50 over four runs a side.
   rose 14–26% from the stroke's first 100 positions to its last 100; now it is flat. With the
   preview off, the stroke's p95 falls from 11.2–16.6 to 9.5–9.8 ms.
 - **The GPU stroke.** It is one frame a position on both builds.
-- **Recording limit.** `editor-latency` records at most 400 positions, because a 1000-position
-  stroke passes the evidence log's 4,096 events.
+- **Recording limit.** `editor-latency` records 400 positions unless `--samples` says otherwise
+  (`PAINT_POSITIONS`).
 
 ### Verification
 
