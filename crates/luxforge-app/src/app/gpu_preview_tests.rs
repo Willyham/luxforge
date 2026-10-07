@@ -10,8 +10,8 @@ use super::{
     testing::{attach_log, events, finish, let_go, logged, real_photo, run_commit, slide},
     *,
 };
+use luxforge_gpu::GpuFallback as SurfaceFallback;
 use luxforge_testbase::wait_until;
-use luxforge_ui::photo_surface::GpuFallback as SurfaceFallback;
 
 const ACTION: &str = "set-basic";
 const PRESENCE: &str = "set-presence";
@@ -665,7 +665,7 @@ fn gpu_drag(
     field: &str,
     values: &[f64],
     lights: &[&str],
-) -> luxforge_ui::photo_surface::GpuPlan {
+) -> luxforge_gpu::GpuPlan {
     editor.gpu.surface = Some(SurfaceReport::default());
     let log = attach_log(editor);
     let _ = slide(editor, action, field, values[0]);
@@ -699,7 +699,7 @@ fn gpu_drag(
     assert!(
         plan.steps
             .iter()
-            .any(|step| matches!(step, luxforge_ui::photo_surface::GpuStep::Spatial(_))),
+            .any(|step| matches!(step, luxforge_gpu::GpuStep::Spatial(_))),
         "{field}: Presence is in the plan"
     );
     let computed: Vec<Value> = editor.gpu.summary()["drag"]["lights"]
@@ -726,7 +726,7 @@ fn gpu_drag(
 /// thresholds; the marks follow the overlay's classes, and its warm sequences carry them.
 #[test]
 fn gpu_preview_a_drag_with_clipping_shown_draws_its_own_marks() {
-    use luxforge_ui::photo_surface::GpuStep;
+    use luxforge_gpu::GpuStep;
     let catalog = catalog("clipping");
     let (mut editor, _, _) = real_photo(&catalog);
     editor.session.workspace.clip_highlights = true;
@@ -930,7 +930,7 @@ fn gpu_preview_spatial_compile_cost_on_a_cold_cache() {
         DETAIL_EFFECT, GpuPlanRequest, Layer, ModuleRegistry, PRESENCE_EFFECT, Recipe, Stage,
         gpu_plan,
     };
-    use luxforge_ui::photo_surface::GpuStep;
+    use luxforge_gpu::GpuStep;
     let test = "gpu_preview_spatial_compile_cost_on_a_cold_cache";
     let Some(qualifier) = super::gpu_qualification::headless(test) else {
         return;
@@ -1283,9 +1283,7 @@ fn gpu_preview_a_percentage_spatial_drag_draws_the_shape_the_budget_holds() {
     let applies = |editor: &Editor| {
         editor.surfaces().gpu.and_then(|plan| {
             plan.steps.iter().find_map(|step| match step {
-                luxforge_ui::photo_surface::GpuStep::Spatial(spatial) => {
-                    Some(spatial.applies.len())
-                }
+                luxforge_gpu::GpuStep::Spatial(spatial) => Some(spatial.applies.len()),
                 _ => None,
             })
         })
@@ -1421,8 +1419,8 @@ fn gpu_preview_a_colour_drag_between_detail_and_a_resample_draws_on_the_gpu() {
         .steps
         .iter()
         .map(|step| match step {
-            luxforge_ui::photo_surface::GpuStep::Spatial(_) => "spatial",
-            luxforge_ui::photo_surface::GpuStep::Geometry(_) => "geometry",
+            luxforge_gpu::GpuStep::Spatial(_) => "spatial",
+            luxforge_gpu::GpuStep::Geometry(_) => "geometry",
             _ => "colour",
         })
         .collect();
@@ -1453,7 +1451,7 @@ fn gpu_preview_a_detail_drag_under_presence_draws_on_the_gpu() {
     let spatial = plan
         .steps
         .iter()
-        .filter(|step| matches!(step, luxforge_ui::photo_surface::GpuStep::Spatial(_)))
+        .filter(|step| matches!(step, luxforge_gpu::GpuStep::Spatial(_)))
         .count();
     assert_eq!(spatial, 2, "Detail's operation, then Presence's");
     finish(editor, catalog);
@@ -1539,11 +1537,11 @@ fn gpu_preview_dehaze_behind_detail_draws_its_region_on_the_gpu() {
     zoomed(&mut editor);
     commit(&mut editor, PRESENCE, "dehaze", 40.0);
     let wanted = zoomed(&mut editor);
-    let region = |plan: &luxforge_ui::photo_surface::GpuPlan| plan.region.map(|region| region.rect);
-    let spatial = |plan: &luxforge_ui::photo_surface::GpuPlan| {
+    let region = |plan: &luxforge_gpu::GpuPlan| plan.region.map(|region| region.rect);
+    let spatial = |plan: &luxforge_gpu::GpuPlan| {
         plan.steps
             .iter()
-            .filter(|step| matches!(step, luxforge_ui::photo_surface::GpuStep::Spatial(_)))
+            .filter(|step| matches!(step, luxforge_gpu::GpuStep::Spatial(_)))
             .count()
     };
     let corners = Some([wanted.x0, wanted.y0, wanted.x1(), wanted.y1()]);
@@ -1574,9 +1572,9 @@ fn gpu_preview_dehaze_behind_detail_draws_its_region_on_the_gpu() {
 }
 
 /// What the surface reports of the source the desktop hands it: `version`, every row uploaded.
-fn source_held(editor: &Editor) -> luxforge_ui::photo_surface::SourceFigures {
+fn source_held(editor: &Editor) -> luxforge_gpu::SourceFigures {
     let source = editor.gpu.source().expect("a source");
-    luxforge_ui::photo_surface::SourceFigures {
+    luxforge_gpu::SourceFigures {
         version: source.version(),
         bytes: source.bytes(),
         uploaded: source.bytes(),
@@ -1676,7 +1674,7 @@ fn gpu_preview_a_tick_during_the_sources_upload_names_it() {
         editor
             .surfaces()
             .gpu_source
-            .is_some_and(luxforge_ui::photo_surface::GpuSource::holds_pixels),
+            .is_some_and(luxforge_gpu::GpuSource::holds_pixels),
         "the frames still upload its pixels"
     );
     surface_ready(&mut editor);
@@ -1883,7 +1881,7 @@ fn gpu_preview_a_lens_warps_grid_is_computed_once_off_the_interface_thread() {
     assert!(
         plan.steps
             .iter()
-            .any(|step| matches!(step, luxforge_ui::photo_surface::GpuStep::Geometry(_))),
+            .any(|step| matches!(step, luxforge_gpu::GpuStep::Geometry(_))),
         "the warp's tail, drawn through the grid"
     );
     finish(editor, catalog);

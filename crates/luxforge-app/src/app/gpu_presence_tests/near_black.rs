@@ -17,11 +17,8 @@ use luxforge_core::{
     LinearSettings, ModuleRegistry, PreviewRequest, PreviewSource, Processing, Recipe,
     RenderContext, RenderOptions, RenderSource, SnapshotId, Stage, gpu_plan, render,
 };
+use luxforge_gpu::{GpuPlan, GpuStep, qualification::Qualifier, qualification::boundary};
 use luxforge_reference::preview_error::{self, Rgb8, Statistics};
-use luxforge_ui::photo_surface::{
-    GpuPlan, GpuStep,
-    gpu_preview::qualification::{Qualifier, boundary},
-};
 use serde_json::{Value, json};
 use std::{borrow::Cow, sync::Arc};
 
@@ -737,7 +734,7 @@ fn gpu_presence_near_black_pixels() {
     );
     for &index in worst.iter().take(24) {
         let texel = frame.texels[index];
-        let held = texel.map(luxforge_ui::photo_surface::gpu_preview::qualification::held);
+        let held = texel.map(luxforge_gpu::qualification::held);
         let (half, float) = (half_dehazed[index], float_dehazed[index]);
         eprintln!(
             "  ({}, {}): boundary {texel:?} held {held:?}\n    \

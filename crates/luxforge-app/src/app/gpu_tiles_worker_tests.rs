@@ -35,6 +35,7 @@ use super::{
     tasks::call as owner_call,
     testing::{entry, fresh_stack, import_and_adopt},
 };
+use crate::adapters;
 use luxforge_core::{
     AssetId, BASIC_EFFECT, BoundaryFormat, Cancel, ClientId, DETAIL_EFFECT, EffectStage, Error,
     Evaluation, GpuFallback, HostConfig, Layer, ModuleRegistry, OwnerHandle, PRESENCE_EFFECT,
@@ -45,18 +46,12 @@ use luxforge_core::{
         TileUnavailable,
     },
 };
+use luxforge_gpu::{
+    Derivation, GpuBoundary, GpuPlan, GpuSource, headless::HeadlessSurface, tiles::GPU_TILE_BUDGET,
+    tiles::TileEnd, tiles::TilePixels,
+};
 use luxforge_reference::preview_error::{Class, ciede2000, lab_from_srgb8, statistics_of};
 use luxforge_testbase::{Gate, HANG, paths, wait_until};
-use luxforge_ui::{
-    adapters,
-    photo_surface::{
-        Derivation, GpuBoundary, GpuPlan, GpuSource,
-        gpu_preview::{
-            headless::HeadlessSurface,
-            tiles::{GPU_TILE_BUDGET, TileEnd, TilePixels, TileRunner},
-        },
-    },
-};
 use serde_json::{Value, json};
 use std::sync::{Arc, mpsc};
 
@@ -313,7 +308,7 @@ fn a_read_through_the_worker_equals_the_headless_surfaces_tile_bit_for_bit() {
     let window = adapters::open(&backend, &name)
         .unwrap_or_else(|unopened| panic!("{test}: the surface's device: {unopened:?}"));
     let mut surface = HeadlessSurface::new(&window.device, &window.queue);
-    let mut runner = TileRunner::open(&backend, &name)
+    let mut runner = crate::adapters::tile_runner(&backend, &name)
         .unwrap_or_else(|refusal| panic!("{test}: the runner: {refusal:?}"));
     let service = GpuTiles::new(Some((backend, name)), false);
     service.poison(true);

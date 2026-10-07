@@ -12,10 +12,8 @@ use crate::app::{
     tasks::call,
     testing::{attach_log, events, finish, let_go, logged, real_photo, run_commit, slide},
 };
-use luxforge_ui::photo_surface::{
-    GpuStageState, SurfaceCounts, TickCounts,
-    gpu_preview::histogram::{Counts, HistogramError},
-};
+use luxforge_gpu::{GpuStageState, TickCounts, histogram::Counts, histogram::HistogramError};
+use luxforge_ui::photo_surface::SurfaceCounts;
 
 const ACTION: &str = "set-basic";
 const FIELD: &str = "exposure";
@@ -149,7 +147,7 @@ fn a_commit_the_gpu_draws_renders_no_cpu_frame_and_its_tiles_counts_are_its_repo
     editor.gpu.counts_report = Some(SurfaceCounts {
         rest: Some((
             tiles.version,
-            luxforge_ui::photo_surface::CountsOutcome::Ready(Box::new(uniform(128, size))),
+            luxforge_gpu::CountsOutcome::Ready(Box::new(uniform(128, size))),
         )),
         tick: None,
     });
@@ -203,7 +201,7 @@ fn counts_that_fail_send_the_content_to_the_reference_renderer() {
     editor.gpu.counts_report = Some(SurfaceCounts {
         rest: Some((
             target.versions[0],
-            luxforge_ui::photo_surface::CountsOutcome::Failed(HistogramError::ReadbackFailed),
+            luxforge_gpu::CountsOutcome::Failed(HistogramError::ReadbackFailed),
         )),
         tick: None,
     });
@@ -261,10 +259,7 @@ fn a_gestures_ticks_plot_the_counts_of_the_frame_on_screen_as_updating() {
             boundary,
             revision,
             size: (240, 160),
-            counts: luxforge_ui::photo_surface::CountsOutcome::Ready(Box::new(uniform(
-                255,
-                (240, 160),
-            ))),
+            counts: luxforge_gpu::CountsOutcome::Ready(Box::new(uniform(255, (240, 160)))),
         }),
     });
     let before = editor.presentation.analysis.clone();
@@ -477,7 +472,7 @@ fn a_presented_stack_whose_compile_ends_within_the_threshold_stays_the_gpus() {
     });
     let content = editor.presentation.content_serial;
     let compiling = crate::app::gpu_preview::SurfaceReport {
-        fallback: Some(luxforge_ui::photo_surface::GpuFallback::Compiling),
+        fallback: Some(luxforge_gpu::GpuFallback::Compiling),
         ..crate::app::gpu_preview::SurfaceReport::default()
     };
     editor.gpu.surface = Some(compiling);
@@ -528,7 +523,7 @@ fn a_presented_stack_whose_compile_outlasts_the_threshold_is_the_references() {
     });
     let content = editor.presentation.content_serial;
     editor.gpu.surface = Some(crate::app::gpu_preview::SurfaceReport {
-        fallback: Some(luxforge_ui::photo_surface::GpuFallback::Compiling),
+        fallback: Some(luxforge_gpu::GpuFallback::Compiling),
         ..crate::app::gpu_preview::SurfaceReport::default()
     });
     drop(editor.update(Message::Preview(PreviewMessage::Poll)));

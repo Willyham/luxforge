@@ -483,7 +483,7 @@ pub struct SurfaceDiagnostics {
     /// what its plane holds changed, so a tick that moves only an apply's word dispatches none.
     pub gpu_preview_spatial_passes: u64,
     /// Bytes of boundary texels the GPU stage has written into wgpu's staging, over every frame: a
-    /// new boundary's at most [`gpu_preview::UPLOAD_PER_FRAME`] a frame.
+    /// new boundary's at most [`luxforge_gpu::UPLOAD_PER_FRAME`] a frame.
     pub gpu_preview_staged_bytes: u64,
     /// Program sequences handed to the compile thread, and how many have finished compiling.
     pub gpu_preview_compiles: u64,
@@ -3112,7 +3112,7 @@ impl shader::Pipeline for PhotoPipeline {
 impl PhotoPipeline {
     /// A pipeline that counts its texture work into `figures`, its GPU stage available wherever
     /// the device can run it, whatever the process's launch refused: a test's, or a headless
-    /// surface's ([`gpu_preview::headless`]).
+    /// surface's ([`luxforge_gpu::headless`]).
     #[cfg(test)]
     fn with_figures(
         device: &wgpu::Device,

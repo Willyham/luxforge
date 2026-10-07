@@ -1,12 +1,12 @@
 //! The graphics adapters wgpu offers this host, for diagnostics: the adapter an evidence run records
 //! as the one that drew it, and the list `--gpu-adapters` prints; and a device of its own on the
-//! adapter that drew, for the tile runner ([`open`]).
+//! adapter that drew, for the tile runner ([`tile_runner`]).
 //!
 //! Iced hands the photo surface a device and a queue but not the adapter they came from, and its
 //! system information names only the adapter and its backend. So the editor learns the rest the
 //! one way it can without Iced's own handle: an instance of its own enumerates the adapters of that
 //! backend, and the one whose backend and name match what the renderer reported is the adapter that
-//! drew ([`matching`]). Nothing here draws, compiles or allocates on an adapter but [`open`], which
+//! drew ([`matching`]). Nothing here draws, compiles or allocates on an adapter but [`tile_runner`], which
 //! requests a device on the adapter of a backend and name, as Iced's renderer requests its own.
 //!
 //! Before the window opens, a launch also asks what the renderer's backends offer ([`probe`]) and
@@ -23,7 +23,9 @@
 //! backend `Metal`, `Vulkan`, `Dx12` or `Gl`, and the device type `DiscreteGpu`, `IntegratedGpu`,
 //! `VirtualGpu`, `Cpu` (a software rasterizer, such as Mesa's lavapipe or llvmpipe) or `Other`.
 
-pub use luxforge_gpu::adapters::{Adapter, Opened, Unopened, backends_named, enumerate, matching};
+pub use luxforge_gpu::adapters::{Adapter, backends_named, enumerate, matching};
+#[cfg(test)]
+use luxforge_gpu::adapters::{Opened, Unopened};
 /// The backend set selected by the renderer's environment.
 pub fn renderer_backends() -> wgpu::Backends {
     wgpu::Backends::from_env().unwrap_or(wgpu::Backends::all())
@@ -148,8 +150,23 @@ pub fn choose(refused: bool, asked: bool, adopted: bool, offered: &Offered) -> L
 }
 
 /// Open the separate tile-worker device with the renderer's current backend/limit policy.
+#[cfg(test)]
 pub fn open(backend: &str, name: &str) -> Result<Opened, Unopened> {
     luxforge_gpu::adapters::open(backend, name, renderer_backends(), &renderer_limits())
+}
+
+/// The desktop owns refusal, backend and device-limit policy for its separate worker device.
+pub fn tile_runner(
+    backend: &str,
+    name: &str,
+) -> Result<luxforge_gpu::tiles::TileRunner, luxforge_gpu::tiles::TileRefusal> {
+    luxforge_gpu::tiles::TileRunner::open_with(
+        luxforge_gpu::gpu_stage_refused(),
+        backend,
+        name,
+        renderer_backends(),
+        &renderer_limits(),
+    )
 }
 
 #[cfg(test)]

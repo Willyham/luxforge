@@ -31,7 +31,7 @@ fn empty_editor_capture_needs_no_photo_texture() {
     let (mut editor, catalog) = boot();
     editor.document.state = None;
     editor.session.workspace.clip_highlights = true;
-    editor.renderer.stage = Some(luxforge_ui::photo_surface::GpuStageState::Available);
+    editor.renderer.stage = Some(luxforge_gpu::GpuStageState::Available);
     editor.session.preview.view.zoom = Zoom::Fit;
     assert!(editor.gpu_at_rest() && editor.proxy_bounds().is_some());
     assert!(editor.capture_photo_ready());

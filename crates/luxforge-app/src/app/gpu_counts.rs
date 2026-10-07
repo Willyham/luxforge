@@ -46,7 +46,7 @@ use iced::Task;
 use luxforge_core::{
     DraftStamp, PreviewIntent, PreviewJob, analysis::AnalysisIdentity, analysis::Report,
 };
-use luxforge_ui::photo_surface::{CountsOutcome, GpuStageState, gpu_preview::histogram::Counts};
+use luxforge_gpu::{CountsOutcome, GpuStageState, histogram::Counts};
 use serde_json::json;
 
 /// The content the GPU presents with no CPU render, whose report its tiles' counts are: the job's
@@ -412,7 +412,7 @@ impl Editor {
 
     /// The counts of a gesture's newest tick the GPU drew, the frame on screen in motion: plotted
     /// in place of the report, marked updating, while that gesture's draft is open.
-    fn follow_motion(&mut self, tick: Option<luxforge_ui::photo_surface::TickCounts>) {
+    fn follow_motion(&mut self, tick: Option<luxforge_gpu::TickCounts>) {
         let (Some(tick), Some(draft)) = (tick, self.session.draft.as_ref()) else {
             return;
         };

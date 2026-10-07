@@ -414,6 +414,21 @@ const SOURCE_RULES: &[SourceRule] = &[
         once: false,
         reason: "the GPU backend executes device data independently of core and presentation",
     },
+    SourceRule {
+        name: "gpu-host-policy",
+        tokens: &[
+            "SOFTWARE_ADAPTER_ADOPTED",
+            "LaunchRenderer",
+            "renderer_limits",
+        ],
+        scope: &["crates/luxforge-gpu", "crates/luxforge-ui"],
+        types: &["rs"],
+        allowed: &[],
+        mode: Match::Whole,
+        tests: true,
+        once: false,
+        reason: "desktop adapter adoption, renderer selection and device limits belong to app hosting",
+    },
     // The desktop keeps no stack between messages. An evaluation holds its source, and a RAW
     // source's developed planes hold the source worker's memory gate, so one kept in the desktop's
     // state keeps the next development — a white-balance change, a history selection, another
@@ -1521,23 +1536,7 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         reason: "only a [dev-dependencies] table may turn on luxforge-core's test-holds, so no \
                  build of a binary holds its work at a test's gate or links luxforge-testbase",
     },
-    // Reading a plan's frame back outside the stage is for qualification: only a
-    // `[dev-dependencies]` table turns the photo surface's `qualification` feature on, so the
-    // desktop's one production readback is the tile runner's, on its GPU tile worker's own device,
-    // and the interface thread never waits on the GPU.
-    DependencyRule {
-        name: "gpu-qualification-only-in-tests",
-        refuses: Depends::Feature {
-            dependency: "luxforge-ui",
-            feature: "qualification",
-        },
-        manifests: &["", "crates/*", "xtask"],
-        tables: &[Table::Normal, Table::Build, Table::Workspace],
-        allowed: &[],
-        reason: "only a [dev-dependencies] table may turn on luxforge-ui's qualification feature, \
-                 so no build of the desktop reads a GPU pixel back but through the tile runner its \
-                 GPU tile worker owns",
-    },
+    // Qualification readback is test-only; production readback belongs to the bounded worker.
     DependencyRule {
         name: "gpu-backend-qualification-only-in-tests",
         refuses: Depends::Feature {
@@ -3731,47 +3730,36 @@ fn frame() {}
     }
 
     #[test]
-    fn only_tests_turn_on_the_photo_surfaces_gpu_qualification() {
+    fn desktop_gpu_policy_is_not_owned_by_widgets_or_execution() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        // A dev-dependency may turn it on; a dependency without it is the desktop's own.
         write_all(
             root,
             &[(
-                "crates/luxforge-app/Cargo.toml",
-                "[dependencies]\nluxforge-ui = { path = \"../luxforge-ui\" }\n\n\
-                 [dev-dependencies]\nluxforge-ui = { path = \"../luxforge-ui\", \
-                 features = [\"qualification\"] }\n",
+                "crates/luxforge-app/src/adapters.rs",
+                "const SOFTWARE_ADAPTER_ADOPTED: bool = false;\nenum LaunchRenderer { Gpu }\nfn renderer_limits() {}\n",
             )],
         );
-        let rules = ["gpu-qualification-only-in-tests"];
-        assert!(read(root, &rules).is_ok());
-        // A normal, build or workspace dependency that turns it on is refused.
-        for (path, text) in [
-            (
-                "crates/luxforge-cli/Cargo.toml",
-                "[dependencies]\nluxforge-ui = { path = \"../luxforge-ui\", \
-                 features = [\"qualification\"] }\n",
-            ),
-            (
-                "xtask/Cargo.toml",
-                "[build-dependencies.luxforge-ui]\npath = \"../crates/luxforge-ui\"\n\
-                 features = [\"qualification\"]\n",
-            ),
-            (
-                "Cargo.toml",
-                "[workspace.dependencies]\nluxforge-ui = { path = \"crates/luxforge-ui\", \
-                 features = [\"qualification\"] }\n",
-            ),
-        ] {
-            write_all(root, &[(path, text)]);
-            let error = refusal(root, &rules, path);
-            assert!(
-                error.contains(path) && error.contains("[dev-dependencies] table"),
-                "{path}: {error}"
-            );
-            fs::remove_file(root.join(path)).unwrap();
-        }
+        assert!(read(root, &["gpu-host-policy"]).is_ok());
+        refuses_each(
+            root,
+            "gpu-host-policy",
+            &[
+                (
+                    "crates/luxforge-ui/src/adapters.rs",
+                    "enum LaunchRenderer { Gpu }\n",
+                ),
+                (
+                    "crates/luxforge-gpu/src/adapters.rs",
+                    "fn renderer_limits() {}\n",
+                ),
+                (
+                    "crates/luxforge-gpu/src/execution.rs",
+                    "const SOFTWARE_ADAPTER_ADOPTED: bool = false;\n",
+                ),
+            ],
+            "desktop adapter adoption",
+        );
     }
 
     #[test]

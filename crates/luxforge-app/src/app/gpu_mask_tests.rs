@@ -24,13 +24,12 @@ use luxforge_core::{
     path::StrokeTable,
     render,
 };
-use luxforge_reference::preview_error::{self, Class, Rgb8, Statistics};
-use luxforge_ui::photo_surface::{
+use luxforge_gpu::{
     Coverage, CoverageComponent, CoverageMode, GpuPlan, GpuProgram, GpuStep, MaskedColour,
-    PositionMap, TexelMap,
-    gpu_preview::qualification::{Qualifier, boundary, held},
+    PositionMap, TexelMap, qualification::Qualifier, qualification::boundary, qualification::held,
     validate_step,
 };
+use luxforge_reference::preview_error::{self, Class, Rgb8, Statistics};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -1233,10 +1232,10 @@ fn gpu_mask_a_painted_stroke_is_evaluated_where_each_tick_changes_it() {
                 });
                 let converted = surface_plan(plan, held_boundary.clone()).expect("a runnable plan");
                 assert!(
-                    converted.steps.iter().any(|step| matches!(
-                        step,
-                        luxforge_ui::photo_surface::GpuStep::Geometry(_)
-                    )),
+                    converted
+                        .steps
+                        .iter()
+                        .any(|step| matches!(step, luxforge_gpu::GpuStep::Geometry(_))),
                     "the plan draws through its tail"
                 );
                 (converted, inside)

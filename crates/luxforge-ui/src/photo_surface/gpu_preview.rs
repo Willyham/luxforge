@@ -2,7 +2,21 @@
 use super::{PhotoPipeline, Picture, SurfaceSlots, Tile, TileLayout};
 #[cfg(test)]
 use luxforge_gpu::qualification::{BLOCK_CHUNK, MIN_BUFFER, OUTPUT_FORMAT, assemble, validate};
-pub use luxforge_gpu::*;
+#[cfg(test)]
+use luxforge_gpu::*;
+pub use luxforge_gpu::{
+    AxisCoverage, BoundaryFormat, ClipMarks, CountsOutcome, Coverage, CoverageComponent,
+    CoverageMode, Derivation, DrawingPath, EvaluationFigures, GPU_PREVIEW_BUDGET, GpuBoundary,
+    GpuChange, GpuFallback, GpuPlan, GpuProgram, GpuRegion, GpuRest, GpuSource, GpuStageState,
+    GpuStep, GpuTail, GpuWarm, MaskedColour, OutputEncoding, PIPELINE_CACHE, PRELUDE, PositionMap,
+    REST_TILES_PER_FRAME, REST_VIEW_PIXELS, Reduction, RestFigures, RestLightSweep, RestReduction,
+    RestStages, RestSweep, SourceFigures, SourceKind, TexelMap, TickCounts, WarmUpFigures,
+    install_output_encoding, output_encoding, refuse_gpu_stage, validate_step,
+};
+use luxforge_gpu::{CountedFrame, Output};
+pub(crate) use luxforge_gpu::{
+    GpuOptions, GpuSlot, PassClock, RestCounts, TickCounted, gpu_stage_refused,
+};
 #[cfg(test)]
 use luxforge_gpu_types::{MAP_WORDS, STEP_WORDS};
 use std::sync::Mutex;
@@ -31,11 +45,6 @@ mod rest {
 mod dissolve;
 pub use dissolve::{DISSOLVE_DURATION, Dissolve, DrawnDissolve};
 pub(crate) use dissolve::{DissolveFrame, dissolving, photo_uniform};
-#[cfg(any(test, feature = "qualification"))]
-pub mod headless;
-#[cfg(any(test, feature = "qualification"))]
-pub mod qualification;
-pub mod tiles;
 
 impl PhotoPipeline {
     #[cfg(test)]

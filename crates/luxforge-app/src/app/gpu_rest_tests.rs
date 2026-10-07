@@ -20,7 +20,7 @@ use luxforge_core::{
     PreviewSource, Recipe, Region, RenderContext, RenderOptions, Snapshot, SnapshotId, SourceImage,
     Stage, anchored, gpu_plan, render,
 };
-use luxforge_ui::photo_surface::gpu_preview::qualification::boundary_as;
+use luxforge_gpu::qualification::boundary_as;
 use serde_json::json;
 use std::sync::Arc;
 
@@ -410,7 +410,7 @@ fn charged_stacks() -> Vec<(&'static str, PreviewSource, Recipe)> {
 /// its size bucket with its uniform, and the chain's charge.
 fn surface_charge(tiles: &luxforge_core::RestTiles, tile: &luxforge_core::RestTile) -> u64 {
     let (plan, window, rect) = (&tiles.plan, tile.window, tile.rect);
-    luxforge_ui::photo_surface::gpu_preview::texture_charge(
+    luxforge_gpu::texture_charge(
         (window.width, window.height),
         tiles.format,
         (rect.width, rect.height),
@@ -430,7 +430,7 @@ fn surface_charge(tiles: &luxforge_core::RestTiles, tile: &luxforge_core::RestTi
 fn gpu_rest_a_tiles_charge_is_what_its_slot_allocates() {
     assert_eq!(
         luxforge_core::GPU_PREVIEW_BYTES,
-        luxforge_ui::photo_surface::GPU_PREVIEW_BUDGET,
+        luxforge_gpu::GPU_PREVIEW_BUDGET,
         "the core plans within the surface's budget"
     );
     for (name, source, recipe) in charged_stacks() {
@@ -499,7 +499,7 @@ fn gpu_rest_a_tiles_charge_is_the_slots_own_on_a_device() {
         let window = tile.window;
         let format = tiles.format;
         let texels = vec![0u8; window.pixels() as usize * format.texel_bytes()];
-        let boundary = luxforge_ui::photo_surface::GpuBoundary::new(
+        let boundary = luxforge_gpu::GpuBoundary::new(
             Arc::new(texels),
             window.width,
             window.height,
@@ -738,12 +738,9 @@ fn gpu_rest_the_picture_at_rest_is_the_same_at_every_side_and_order() {
         super::gpu_plan::install_output_encoding(),
         "the surface holds the core's output encoding"
     );
-    let window = luxforge_ui::adapters::open(&backend, &name)
+    let window = crate::adapters::open(&backend, &name)
         .unwrap_or_else(|unopened| panic!("{test}: the surface's device: {unopened:?}"));
-    let mut surface = luxforge_ui::photo_surface::gpu_preview::headless::HeadlessSurface::new(
-        &window.device,
-        &window.queue,
-    );
+    let mut surface = luxforge_gpu::headless::HeadlessSurface::new(&window.device, &window.queue);
     let bounds = luxforge_core::ProxyBounds {
         width: 160,
         height: 120,
@@ -866,8 +863,8 @@ fn evaluation_grid(evaluation: &Evaluation) -> Option<luxforge_core::CoordinateG
 /// The output stage of `tiles` drawn tile by tile by `surface`, each tile as a picture at rest
 /// draws it, laid at its place: RGBA codes row by row.
 fn stage_codes(
-    surface: &mut luxforge_ui::photo_surface::gpu_preview::headless::HeadlessSurface,
-    gpu: &luxforge_ui::photo_surface::GpuSource,
+    surface: &mut luxforge_gpu::headless::HeadlessSurface,
+    gpu: &luxforge_gpu::GpuSource,
     tiles: &luxforge_core::RestTiles,
     version: u64,
 ) -> Vec<[u8; 4]> {
@@ -904,11 +901,8 @@ fn gpu_rest_raw_tiles_are_the_same_at_every_side() {
         return;
     };
     assert!(super::gpu_plan::install_output_encoding());
-    let window = luxforge_ui::adapters::open(&backend, &name).unwrap();
-    let mut surface = luxforge_ui::photo_surface::gpu_preview::headless::HeadlessSurface::new(
-        &window.device,
-        &window.queue,
-    );
+    let window = crate::adapters::open(&backend, &name).unwrap();
+    let mut surface = luxforge_gpu::headless::HeadlessSurface::new(&window.device, &window.queue);
     let read = |path: std::path::PathBuf| -> serde_json::Value {
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
     };
@@ -1293,11 +1287,9 @@ fn gpu_rest_a_stream_is_planned_in_staged_sweeps_within_its_budget() {
 /// `tiles` reduced to the output stage's own size: every view pixel one output pixel at weight
 /// one, so the rest output is the stage's codes, which the reduction decodes and quantizes again
 /// to the same code. The full-resolution codes a picture at rest draws, through its own drawing.
-pub(super) fn at_full_size(
-    tiles: &luxforge_core::RestTiles,
-) -> luxforge_ui::photo_surface::RestReduction {
+pub(super) fn at_full_size(tiles: &luxforge_core::RestTiles) -> luxforge_gpu::RestReduction {
     let output = tiles.output;
-    luxforge_ui::photo_surface::RestReduction {
+    luxforge_gpu::RestReduction {
         view: (output.width, output.height),
         across: super::gpu_preview::axis(luxforge_core::area_coverage(output.width, output.width)),
         down: super::gpu_preview::axis(luxforge_core::area_coverage(output.height, output.height)),
@@ -1389,12 +1381,9 @@ fn gpu_rest_staged_sweeps_draw_the_chained_tiles_codes() {
         return;
     };
     assert!(super::gpu_plan::install_output_encoding());
-    let window = luxforge_ui::adapters::open(&backend, &name)
+    let window = crate::adapters::open(&backend, &name)
         .unwrap_or_else(|unopened| panic!("{test}: the surface's device: {unopened:?}"));
-    let mut surface = luxforge_ui::photo_surface::gpu_preview::headless::HeadlessSurface::new(
-        &window.device,
-        &window.queue,
-    );
+    let mut surface = luxforge_gpu::headless::HeadlessSurface::new(&window.device, &window.queue);
     let bounds = luxforge_core::ProxyBounds {
         width: 160,
         height: 120,
@@ -1422,7 +1411,7 @@ fn gpu_rest_staged_sweeps_draw_the_chained_tiles_codes() {
                     let mut drawn = Vec::new();
                     for stages in [staged.stages.clone(), None] {
                         version += 1;
-                        let rest = luxforge_ui::photo_surface::GpuRest {
+                        let rest = luxforge_gpu::GpuRest {
                             version,
                             stages,
                             reduction: reduction.clone(),
@@ -1475,8 +1464,8 @@ fn gpu_rest_staged_sweeps_draw_the_chained_tiles_codes() {
 /// the stack is chained. Prints what each drawing's tiles did.
 fn staged_against_chained(
     what: &str,
-    surface: &mut luxforge_ui::photo_surface::gpu_preview::headless::HeadlessSurface,
-    gpu: &luxforge_ui::photo_surface::GpuSource,
+    surface: &mut luxforge_gpu::headless::HeadlessSurface,
+    gpu: &luxforge_gpu::GpuSource,
     evaluation: &Evaluation,
     version: &mut u64,
 ) -> Option<String> {
@@ -1526,7 +1515,7 @@ fn staged_against_chained(
     let mut drawn = Vec::new();
     for stages in [staged.stages.clone(), None] {
         *version += 1;
-        let rest = luxforge_ui::photo_surface::GpuRest {
+        let rest = luxforge_gpu::GpuRest {
             version: *version,
             stages,
             ..staged.clone()
@@ -1592,11 +1581,8 @@ fn gpu_rest_the_air_2s_masked_stack_staged_is_chained() {
         return;
     };
     assert!(super::gpu_plan::install_output_encoding());
-    let window = luxforge_ui::adapters::open(&backend, &name).unwrap();
-    let mut surface = luxforge_ui::photo_surface::gpu_preview::headless::HeadlessSurface::new(
-        &window.device,
-        &window.queue,
-    );
+    let window = crate::adapters::open(&backend, &name).unwrap();
+    let mut surface = luxforge_gpu::headless::HeadlessSurface::new(&window.device, &window.queue);
     let read = |path: std::path::PathBuf| -> serde_json::Value {
         serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
     };
@@ -1665,7 +1651,7 @@ fn gpu_rest_the_60_mp_raw_drag_stacks_light_indication() {
         return;
     };
     assert!(super::gpu_plan::install_output_encoding());
-    let window = luxforge_ui::adapters::open(&backend, &name)
+    let window = crate::adapters::open(&backend, &name)
         .unwrap_or_else(|unopened| panic!("{test}: the surface's device: {unopened:?}"));
     let (_, _, recipe) = measured_stacks().swap_remove(0);
     let (width, height) = (9_504u32, 6_336u32);
@@ -1696,10 +1682,8 @@ fn gpu_rest_the_60_mp_raw_drag_stacks_light_indication() {
         ("staged at 1024 px", staged),
     ] {
         let rest = super::gpu_preview::rest_now(&gpu, &tiles, 7).unwrap();
-        let mut surface = luxforge_ui::photo_surface::gpu_preview::headless::HeadlessSurface::new(
-            &window.device,
-            &window.queue,
-        );
+        let mut surface =
+            luxforge_gpu::headless::HeadlessSurface::new(&window.device, &window.queue);
         // Warm: compiles and the source's upload; then the timed draw on the same surface, every
         // kept light let go so it is computed again.
         let _ = surface.rest(&gpu, &rest);

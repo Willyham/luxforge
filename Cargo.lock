@@ -2068,6 +2068,7 @@ dependencies = [
  "luxforge-cli",
  "luxforge-core",
  "luxforge-evidence",
+ "luxforge-gpu",
  "luxforge-input",
  "luxforge-net",
  "luxforge-reference",
@@ -2078,6 +2079,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "wgpu",
 ]
 
 [[package]]

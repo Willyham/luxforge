@@ -18,7 +18,7 @@ use super::{
 };
 use crate::state::status::renderer_notice;
 use luxforge_core::Renderer;
-use luxforge_ui::photo_surface::GpuStageState;
+use luxforge_gpu::GpuStageState;
 
 const ACTION: &str = "set-basic";
 const FIELD: &str = "exposure";
@@ -160,7 +160,7 @@ fn fallback_a_forced_no_gpu_launch_is_the_reference_in_the_session_and_every_tic
 /// answers, every session names the GPU with `software`, which no agent can claim.
 #[test]
 fn fallback_a_software_only_host_draws_the_reference_until_its_adapter_is_asked_for() {
-    use luxforge_ui::adapters::{LaunchRenderer, Refusal};
+    use crate::adapters::{LaunchRenderer, Refusal};
     let refused = catalog("fallback-software-refused");
     let config = crate::Config {
         launch_renderer: Some(LaunchRenderer::Reference(Refusal::SoftwareNotAdopted)),
