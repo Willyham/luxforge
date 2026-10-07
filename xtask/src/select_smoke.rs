@@ -9,8 +9,8 @@
 //! desktop first shows it and grouped by Day, the rows of both, and the folder of real images read
 //! and viewed. The editor then opens that catalog with nothing
 //! open. Its frames, in [`plan`] order: Develop with nothing open; `G` showing Select, its events
-//! listed; `D` returning to Develop before browsing and `G` showing Select again; the event opened
-//! from the sources panel (the grouped grid, the Info panel, the status line); the first cell
+//! listed; `D` explaining that a folder or development set is needed before browsing; the event
+//! opened from the sources panel (the grouped grid, the Info panel, the status line); the first cell
 //! made active with `→`, then the next, then the selection extended with
 //! Shift+`→`; the Group chip set to Day; an agent's `pick.set` through a second client, which the
 //! desktop reads through its own event sync and answers by evaluating its view again; the grouping
@@ -23,8 +23,8 @@
 //! scratch folder of six of those JPEGs copied into the run's output (`add-folder/`) added to the
 //! indexed folders as Add a folder… adds it, its listing followed to its end and the folder then
 //! listed under On disk beside the generated catalog's own indexed folders, each row checked against
-//! the owner's `index.folders`, and the add undone with `Cmd+Z`; and back to Develop through the
-//! switch. Between the agent's pick and that folder, long-running work:
+//! the owner's `index.folders`, and the add undone with `Cmd+Z`; and `D` still asking for a folder
+//! or development set. Between the agent's pick and that folder, long-running work:
 //! a first look at a folder of 16,000 one-byte `.jpg` files the run writes beside `generated/`
 //! (`first-look/`), captured while the index lane still reads it with the view's progress sheet;
 //! Continue in background, captured with the sheet gone and the job in the status bar and the
@@ -55,7 +55,9 @@ use crate::{
     *,
 };
 use luxforge_core::{ApiRequest, ClientId, OwnerHandle};
-use luxforge_evidence::{self as script, ArrowKey, LibraryKey, SelectMenu, SelectStep};
+use luxforge_evidence::{
+    self as script, ArrowKey, LibraryKey, SelectMenu, SelectStep, SelectWorkspace,
+};
 
 pub const SCENARIO: &str = "select";
 /// What `reproduce.md` says the run does before it launches.
@@ -84,6 +86,7 @@ const IMAGES: u32 = 120;
 /// label it.
 const EVENT: &str = "Konstanz \u{b7} 12\u{2013}13 Sep";
 const EVENT_LABEL: &str = "Konstanz";
+const DEVELOP_GUIDANCE: &str = "Pick a catalog folder or choose images to develop from the grid";
 /// The actor the evidence driver's second client picks as.
 const AGENT: &str = "evidence-agent";
 /// The folder whose first look is long-running work, written into the run's output directory.
@@ -132,15 +135,15 @@ pub fn plan(
         [
             Step::opened("opened"),
             Step::new("select-empty", script::Step::key("g")),
-            Step::new("develop-empty", script::Step::key("d")),
-            Step::new("select", script::Step::key("g")),
+            Step::new("develop-empty", script::Step::key("d")).status(DEVELOP_GUIDANCE),
+            select("select", SelectStep::Switch(SelectWorkspace::Select)),
             select("event", SelectStep::Source(EVENT.into()))
                 .status(format!("{EVENT_LABEL} \u{b7} {count} in view")),
             select("right", arrow(ArrowKey::Right, false)),
             select("right-again", arrow(ArrowKey::Right, false)),
             select("extended", arrow(ArrowKey::Right, true)),
-            Step::new("develop-active", script::Step::key("d")),
-            Step::new("select-again", script::Step::key("g")),
+            Step::new("develop-active", script::Step::key("d")).status(DEVELOP_GUIDANCE),
+            select("select-again", SelectStep::Switch(SelectWorkspace::Select)),
             select(
                 "grouped",
                 SelectStep::Choose {
@@ -205,7 +208,7 @@ pub fn plan(
         .into_iter()
         // The catalog: browsed and organized (`select_catalog_smoke`).
         .chain(catalog)
-        .chain([Step::new("develop", script::Step::key("d"))])
+        .chain([Step::new("develop", script::Step::key("d")).status(DEVELOP_GUIDANCE)])
         .collect(),
     )
 }
@@ -860,34 +863,37 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let empty_select = launch.at("select-empty")?;
     let empty_develop = launch.at("develop-empty")?;
     ensure(
-        select(empty_select)["shown"] == "select" && select(empty_develop)["shown"] == "develop",
-        "G and D did not switch workspaces before browsing",
+        select(empty_select)["shown"] == "select"
+            && select(empty_develop)["shown"] == "select"
+            && empty_develop.state()["status"] == DEVELOP_GUIDANCE,
+        "D did not explain the missing folder or development set before browsing",
     )?;
     checks.note(
         empty_develop,
-        "G shows Select and D returns to Develop with no browsing view or active frame",
+        "G shows Select and D explains the missing folder or development set",
         json!({"select": select(empty_select), "develop": select(empty_develop)}),
     );
 
     let active_develop = launch.at("develop-active")?;
     let selected = select(launch.at("extended")?);
     ensure(
-        select(active_develop)["shown"] == "develop",
-        "D did not switch to Develop with an active frame",
+        select(active_develop)["shown"] == "select"
+            && active_develop.state()["status"] == DEVELOP_GUIDANCE,
+        "D opened Develop from an event without a catalog folder or development set",
     )?;
     for key in ["selection", "picked", "library"] {
         ensure(
             select(active_develop)[key] == selected[key],
-            format!("D changed Select's {key} instead of only switching workspaces"),
+            format!("D changed Select's {key} while explaining the missing development set"),
         )?;
     }
     ensure(
         select(launch.at("select-again")?)["shown"] == "select",
-        "G did not return to Select after D with an active frame",
+        "Select was not preserved after D with an active event frame",
     )?;
     checks.note(
         active_develop,
-        "D switches to Develop with an active frame without picking or developing it",
+        "D preserves the active event frame and asks for a catalog folder or grid development",
         json!({"selection": selected["selection"], "picked": selected["picked"]}),
     );
 
@@ -1375,23 +1381,23 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
 
     select_catalog_smoke::verify(&mut checks, launch, &expected, &generated)?;
 
-    // Back to Develop: Select keeps its view for when it is shown again.
+    // No catalog folder is selected and no set has been loaded: D preserves the current grid.
     let develop = launch.at("develop")?;
     let last = launch.at(select_catalog_smoke::LAST)?;
     let block = select(develop);
     ensure(
-        block["shown"] == "develop",
-        "The switch did not return to Develop",
+        block["shown"] == "select" && develop.state()["status"] == DEVELOP_GUIDANCE,
+        "D did not explain the missing development set after leaving the catalog folder",
     )?;
     for key in ["revision", "count", "picked", "selection", "grouping"] {
         ensure(
             block[key] == select(last)[key],
-            format!("Switching to Develop changed Select's {key}"),
+            format!("D changed Select's {key} without a development set"),
         )?;
     }
     checks.note(
         develop,
-        "Develop again, Select's view kept",
+        "D requests a development set and keeps Select's view",
         json!({"select": block}),
     );
     checks.write(&launch.evidence, "select", json!({"expected": expected}))
