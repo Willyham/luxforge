@@ -229,7 +229,7 @@
         {
           "kind": "file",
           "label": "Backend spatial types",
-          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview/spatial.rs",
+          "target": "crates/luxforge-gpu/src/execution/spatial.rs",
           "relevance": "Repeated primitives and device-only references."
         },
         {
@@ -339,14 +339,16 @@
     {
       "id": "TASK-006",
       "description": "Extract shader compilation, execution and allocation into the decided Iced-free GPU backend.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-005"
       ],
       "extra_context": [
         "R4, first extraction. Move the existing implementation rather than writing a second executor. The UI keeps its thin Iced/device-sharing presentation adapter.",
         "Keep source-independent execution, shader/program caching, binding/allocation and retirement in the backend; semantic recipe state and adapter policy do not move there.",
-        "Move dependency/source rules and relevant tests with the implementation, keeping qualification/testbase dependencies out of production."
+        "Move dependency/source rules and relevant tests with the implementation, keeping qualification/testbase dependencies out of production.",
+        "Re-reviewed current main a20cf0b8 and approved boundary after TASK-005 and TASK-008 acceptance. PhotoPipeline/Picture/SurfaceSlots/SurfaceFigures and wake_surface are presentation couplings. The window-free runner also accesses private shader, source, scratch, chain and compiler internals directly, so lift it with those internals rather than exporting that private implementation across crates. UI keeps its current public tile/qualification entry points during this extraction; TASK-007 then adopts the backend directly in desktop lowering/worker and removes those UI entry points and host adapter policy. One device-scoped retirement worker, existing budgets/caches and the separate worker device remain.",
+        "Accepted: luxforge-gpu production dependency tree has no Iced/core/testbase/reference dependency. Existing executor, compiler/cache, source/spatial/light/staged/counts kernels, neutral tile mechanics and one retirement worker moved; UI binds the same output handles on Iced’s device and retains presentation and photo charges. 48 backend tests passed on Apple M4 Pro/Metal without skips; 89 affected UI GPU and 205 desktop GPU tests passed (timing ignored). Quick passed all 36 binaries at artifacts/code-structure-backend-quick-verified/summary.json; Fit, zoom and histogram rendered scenarios passed with correlated states/logs/captures and macos-background-bundle launches at artifacts/code-structure-backend-{gpu-preview,gpu-preview-zoom,histogram}/result.json. Source/dependency/qualification ownership rules pass. No original read/decode, physical full-frame allocation, owner frame work, message/job, budget/cache key/bound or timer change; bounded UI binding wrappers share existing textures/uniforms. Integrated timing/native corpus acceptance remains separate."
       ],
       "context_links": [
         {
@@ -364,13 +366,13 @@
         {
           "kind": "file",
           "label": "Compilation service",
-          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview/compile.rs",
+          "target": "crates/luxforge-gpu/src/execution/compile.rs",
           "relevance": "Shared compile/cache behavior."
         },
         {
           "kind": "file",
           "label": "Spatial executor",
-          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview/spatial.rs",
+          "target": "crates/luxforge-gpu/src/execution/spatial.rs",
           "relevance": "Device programs and scratch pool."
         },
         {
@@ -398,10 +400,13 @@
           "Run surface and desktop GPU regressions plus rendered integration using the production pipeline."
         ],
         "commands": [
+          "tools/cargo-cached test --locked -p luxforge-gpu execution",
           "tools/cargo-cached test --locked -p luxforge-ui photo_surface",
           "tools/cargo-cached test --locked -p luxforge-app gpu",
           "tools/cargo-cached xtask verify --tier quick --output NEW_DIR",
-          "tools/cargo-cached xtask verify --tier rendered --output NEW_DIR"
+          "tools/cargo-cached xtask smoke --scenario gpu-preview --output NEW_DIR --binary PATH",
+          "tools/cargo-cached xtask smoke --scenario gpu-preview-zoom --output NEW_DIR --binary PATH",
+          "tools/cargo-cached xtask smoke --scenario histogram --output NEW_DIR --binary PATH"
         ],
         "expected_results": [
           "Display still draws through the same kernels and resource policy, with a reusable Iced-free execution boundary."
@@ -410,13 +415,13 @@
     },
     {
       "id": "TASK-007",
-      "description": "Move the window-free GPU tile runner onto the backend and keep one display/read/export lowering path.",
-      "status": "pending",
+      "description": "Adopt the extracted GPU tile runner directly in desktop hosting and keep one display/read/export lowering path.",
+      "status": "ready",
       "dependencies": [
         "TASK-006"
       ],
       "extra_context": [
-        "R4, second extraction. Core keeps TileService; desktop keeps evaluation/source lifetimes and core-aware host composition. Backend-neutral tile/readback/stream execution belongs with the shared executor.",
+        "R4, second extraction. Core keeps TileService; desktop keeps evaluation/source lifetimes and core-aware host composition. The tightly coupled neutral runner moves with executor internals in TASK-006; this task removes UI tile/qualification forwarding, adopts the backend directly and separates graphics enumeration/device opening from desktop renderer/software/refusal policy.",
         "Preserve nonblocking presentation versus bounded worker waiting, adapter matching, two-band pipelining and complete reference export restart.",
         "Do not add an unused generic host crate or GPU support to the CLI; eliminate duplicate conversion/execution paths introduced by the move."
       ],

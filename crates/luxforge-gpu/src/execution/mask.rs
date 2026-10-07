@@ -61,7 +61,7 @@ const COMPONENT_WORDS: usize = 4;
 const UNIT_WORDS: usize = 2;
 
 /// The prefix of every name the surface generates for a masked step. No entry may start with it.
-pub(super) const GENERATED: &str = "lf_surface";
+pub const GENERATED: &str = "lf_surface";
 
 /// How a component folds into the coverage composed so far, as the CPU's mask composes it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -124,7 +124,7 @@ pub struct MaskedColour {
 
 /// Which function a program of a step is, and so its signature.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Role {
+pub enum Role {
     /// `fn(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32>`.
     Colour,
     /// `fn(pos: vec2<f32>, rgb: vec3<f32>, words: u32, block: u32) -> f32`.
@@ -136,7 +136,7 @@ pub(super) enum Role {
 
 impl MaskedColour {
     /// Every program, components first, with its role.
-    pub(super) fn programs(&self) -> impl Iterator<Item = (Role, &GpuProgram)> {
+    pub fn programs(&self) -> impl Iterator<Item = (Role, &GpuProgram)> {
         self.mask
             .components
             .iter()
@@ -145,7 +145,7 @@ impl MaskedColour {
     }
 
     /// The words this step packs after its header.
-    pub(super) fn word_count(&self) -> usize {
+    pub fn word_count(&self) -> usize {
         HEADER_WORDS
             + COMPONENT_WORDS * self.mask.components.len()
             + UNIT_WORDS * self.units.len()
@@ -156,7 +156,7 @@ impl MaskedColour {
     }
 
     /// The block words this step packs.
-    pub(super) fn block_count(&self) -> usize {
+    pub fn block_count(&self) -> usize {
         self.programs()
             .map(|(_, program)| program.block.len())
             .sum()
@@ -165,7 +165,7 @@ impl MaskedColour {
     /// Append this step's words at the base `words.len()` the header recorded for it, its programs'
     /// blocks counted from `block`, the step's own blocks base: exactly [`Self::word_count`] of
     /// them. Its blocks are its programs', in [`Self::programs`]' order.
-    pub(super) fn pack_words(&self, words: &mut Vec<u32>, mut block: usize) {
+    pub fn pack_words(&self, words: &mut Vec<u32>, mut block: usize) {
         let mask = &self.mask;
         let base = words.len();
         words.extend(mask.position.words());
@@ -203,7 +203,7 @@ impl MaskedColour {
     /// The WGSL this step adds: a module-scope function composing its coverage, named after its
     /// step `index`, and the fragment's statements that blend its units by it. `base` is the step's
     /// header in `lf_words`.
-    pub(super) fn assemble(&self, index: usize, base: usize) -> (String, String) {
+    pub fn assemble(&self, index: usize, base: usize) -> (String, String) {
         let mask = &self.mask;
         let w = |offset: usize| format!("lf_surface_words + {offset}u");
         let mut function = format!(
@@ -306,7 +306,7 @@ fn lf_surface_mask_{index}(lf_surface_stage: vec2<f32>, lf_surface_rgb: vec3<f32
 
 /// The one fold of a component's coverage into the mask composed so far, which every masked step's
 /// function calls, declared once in a shader that has a masked step.
-pub(super) const COMPOSE: &str = "
+pub const COMPOSE: &str = "
 fn lf_surface_compose(lf_surface_m: f32, lf_surface_c: f32, lf_surface_mode: u32,
     lf_surface_invert: u32) -> f32 {
     let lf_surface_own = select(lf_surface_c, 1.0 - lf_surface_c, lf_surface_invert != 0u);
@@ -327,12 +327,8 @@ fn lf_surface_compose(lf_surface_m: f32, lf_surface_c: f32, lf_surface_mode: u32
 /// tick writes those and not the strokes' segments it already holds; an unchanged block writes
 /// nothing. Words of `old` past the end of `new` are not written: nothing reads past a block's own
 /// length.
-#[cfg(test)]
-pub(super) fn changed_ranges(
-    old: &[u32],
-    new: &[u32],
-    chunk: usize,
-) -> Vec<std::ops::Range<usize>> {
+#[cfg(any(test, feature = "qualification"))]
+pub fn changed_ranges(old: &[u32], new: &[u32], chunk: usize) -> Vec<std::ops::Range<usize>> {
     let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
     let mut start = 0;
     while start < new.len() {

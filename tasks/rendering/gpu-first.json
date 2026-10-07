@@ -861,7 +861,7 @@
         {
           "kind": "symbol",
           "label": "Picture at rest on the surface",
-          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview/rest.rs",
+          "target": "crates/luxforge-gpu/src/execution/rest.rs",
           "locator": "draw_rest, REST_TILES_PER_FRAME",
           "relevance": "Tile scheduling, retirement waits and the reduction."
         },
@@ -875,7 +875,7 @@
         {
           "kind": "symbol",
           "label": "Light link",
-          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview/light.rs",
+          "target": "crates/luxforge-gpu/src/execution/light.rs",
           "locator": "evaluate_lit, encode_light",
           "relevance": "The light keyed in the pool and recomputed on every refit."
         },

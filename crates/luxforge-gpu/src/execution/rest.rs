@@ -45,7 +45,7 @@
 //!   them where its stage textures fit the budget, its chained tiles otherwise: each sweep's tiles
 //!   in order, the first sweep's boundaries cut from the source, a later sweep's copied out of the
 //!   stage texture the sweep before it wrote ([`super::staged::StageHolder`]), the slot fitted for
-//!   the tile first ([`PhotoPipeline::fit`]). A sweep before the last writes its last link's output
+//!   the tile first ([`Executor::fit`]). A sweep before the last writes its last link's output
 //!   through an identity tail into the slot's intermediate, and its tile's rectangle of that is
 //!   copied into its stage texture; the last sweep's tiles are reduced and counted as chained
 //!   tiles are, and draw the same codes, since every texel a sweep writes is the whole stage's.
@@ -60,7 +60,6 @@
 //!   ([`RestFigures`]): their evaluations summed — refits, rebinds, links run, lights encoded or
 //!   restored, window texels — the frames a tile waited for a retirement, and each tile's GPU span
 //!   from its preparation to when the queue reported it done ([`TileClock`]). Counters only.
-use super::super::{PhotoPipeline, Picture, SurfaceSlots, Tile, TileLayout, UNIFORM_SIZE};
 use super::BoundaryTexture;
 use super::histogram::{
     Counts, HistogramError, HistogramReadback, HistogramRect, HistogramReduction,
@@ -70,7 +69,8 @@ use super::{
     SAMPLED_FORMAT, answered, buffer_capacity, staged::StageHolder, storage_buffer, tail::encoding,
     validate,
 };
-use std::sync::{Arc, Mutex};
+use crate::{Executor, Output, State, UNIFORM_SIZE};
+use std::sync::Arc;
 
 /// How many tiles a surface draws a frame: one, a 2048-pixel tile's chain at most, so a frame
 /// that draws one stays a frame.
@@ -284,7 +284,7 @@ fn reach(coverage: &AxisCoverage, from: u32, to: u32) -> (u32, u32) {
     reached.unwrap_or((0, 0))
 }
 
-/// What one frame's evaluation of a surface's slot did ([`PhotoPipeline::evaluate_lit`]): the
+/// What one frame's evaluation of a surface's slot did ([`Executor::evaluate_lit`]): the
 /// figures a measurement attributes a slow tick or tile by. Plain counters, added as the slot
 /// works, so they cost nothing per texel and allocate nothing.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -402,7 +402,7 @@ pub struct RestFigures {
 /// the surface holds them: still being counted, on their way back from the GPU, or why there are
 /// none. Its clones answer alike.
 #[derive(Clone, Debug)]
-pub(in super::super) enum RestCounts {
+pub enum RestCounts {
     /// Tiles remain to be counted.
     Counting,
     /// The last tile is counted and the counts are read back ([`HistogramReadback`]).
@@ -413,7 +413,7 @@ pub(in super::super) enum RestCounts {
 
 impl RestCounts {
     /// What a caller is told now, read without waiting.
-    pub(in super::super) fn outcome(&self) -> CountsOutcome {
+    pub fn outcome(&self) -> CountsOutcome {
         match self {
             Self::Counting => CountsOutcome::Counting,
             Self::Reading(readback) => match readback.poll() {
@@ -426,7 +426,7 @@ impl RestCounts {
     }
 
     /// Whether counts are still on their way.
-    pub(in super::super) fn pending(&self) -> bool {
+    pub fn pending(&self) -> bool {
         matches!(self.outcome(), CountsOutcome::Counting)
     }
 }
@@ -434,16 +434,16 @@ impl RestCounts {
 /// A gesture's tick counted: the boundary and the revision of the frame it drew, that frame's
 /// size, and its counts.
 #[derive(Clone, Debug)]
-pub(in super::super) struct TickCounted {
-    pub(in super::super) boundary: u64,
-    pub(in super::super) revision: u64,
-    pub(in super::super) size: (u32, u32),
-    pub(in super::super) counts: RestCounts,
+pub struct TickCounted {
+    pub boundary: u64,
+    pub revision: u64,
+    pub size: (u32, u32),
+    pub counts: RestCounts,
 }
 
 impl TickCounted {
     /// As the desktop reads it, without a wait.
-    pub(in super::super) fn read(&self) -> TickCounts {
+    pub fn read(&self) -> TickCounts {
         TickCounts {
             boundary: self.boundary,
             revision: self.revision,
@@ -454,7 +454,7 @@ impl TickCounted {
 }
 
 /// The counts of the frame a gesture's tick drew, the frame on screen in motion, as the desktop
-/// reads them ([`crate::photo_surface::surface_counts`]).
+/// reads them (`TickCounted::read`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TickCounts {
     /// The boundary the tick's plan was drawn over, and the draft revision it was drawn for.
@@ -466,7 +466,7 @@ pub struct TickCounts {
     pub counts: CountsOutcome,
 }
 
-/// Counts as the desktop reads them ([`crate::photo_surface::surface_counts`]).
+/// Counts as the desktop reads them (`TickCounted::read`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CountsOutcome {
     /// Not counted yet, or on their way back from the GPU.
@@ -479,7 +479,7 @@ pub enum CountsOutcome {
 
 /// The reduction's and the quantization's passes, made once, the first time a surface of the
 /// pipeline is handed a picture at rest.
-pub(in super::super) struct RestPasses {
+pub struct RestPasses {
     reduce_layout: wgpu::BindGroupLayout,
     reduce: wgpu::ComputePipeline,
     quantize_layout: wgpu::BindGroupLayout,
@@ -489,7 +489,7 @@ pub(in super::super) struct RestPasses {
 impl RestPasses {
     /// The passes on `device`, or why there are none: no output encoding installed yet, whose
     /// table and thresholds they decode and quantize through, or a shader the device refused.
-    pub(super) fn new(device: &wgpu::Device) -> Result<Self, String> {
+    pub fn new(device: &wgpu::Device) -> Result<Self, String> {
         let source = shader(encoding()?);
         validate(&source)?;
         let entry = |binding: u32, ty: wgpu::BindingType| wgpu::BindGroupLayoutEntry {
@@ -655,11 +655,11 @@ fn lf_rest_quantize(@builtin(global_invocation_id) id: vec3<u32>) {{
 }
 
 /// What a picture at rest's reduction to the view holds besides its tile slot, which retires as one.
-pub(super) struct RestParts {
+pub struct RestParts {
     sums: Charged,
     tables: Charged,
     params: Charged,
-    output: Picture,
+    output: Output,
 }
 
 /// A picture at rest's reduction to the view: its coverage, its parts and the rest output's
@@ -676,7 +676,7 @@ struct Reduce {
 
 /// A surface's picture at rest: its tiles, the slot they are drawn through, how far it has got,
 /// the reduction to the view with its accumulator and rest output, and the counts.
-pub(in super::super) struct RestSlot {
+pub struct RestSlot {
     version: u64,
     /// Every tile it draws, in order: the chained tiles, or each sweep's in turn.
     tiles: Arc<[GpuPlan]>,
@@ -700,7 +700,7 @@ pub(in super::super) struct RestSlot {
     fallback: Option<GpuFallback>,
     /// The slot every tile is drawn through, apart from the surface's own GPU slot, which a
     /// gesture's plan keeps.
-    tile: Box<SurfaceSlots>,
+    tile: Box<State>,
     /// The reduction to the view's size; `None` for the counts' tiles alone.
     reduce: Option<Reduce>,
     /// The bytes of the reduction's parts, charged.
@@ -732,14 +732,14 @@ struct Place {
 
 impl RestSlot {
     /// The rest output, once its last tile is in it; none for the counts' tiles alone.
-    pub(in super::super) fn output(&self) -> Option<&Picture> {
+    pub fn output(&self) -> Option<&Output> {
         self.reduce
             .as_ref()
             .filter(|_| self.done)
             .map(|reduce| &reduce.parts.output)
     }
 
-    pub(in super::super) fn figures(&self) -> RestFigures {
+    pub fn figures(&self) -> RestFigures {
         let (gpu_tiles, gpu_us, gpu_max_us) = self.clock.read();
         RestFigures {
             evaluation: self.evaluation,
@@ -761,12 +761,12 @@ impl RestSlot {
     }
 
     /// Its version, and its counts as they stand.
-    pub(in super::super) fn counts(&self) -> (u64, RestCounts) {
+    pub fn counts(&self) -> (u64, RestCounts) {
         (self.version, self.counts.clone())
     }
 
     /// Whether tiles remain to draw, which the widget asks the next frame for.
-    pub(in super::super) fn pending(&self) -> bool {
+    pub fn pending(&self) -> bool {
         !self.done && self.fallback.is_none()
     }
 }
@@ -897,7 +897,7 @@ fn le_bytes(words: &[u32]) -> Vec<u8> {
 /// The surface's histogram reduction, made the first time it counts and kept for its life: the
 /// kernel compiled once, its counts buffer cleared for each picture at rest. Why there is none.
 fn reduction<'a>(
-    pipeline: &PhotoPipeline,
+    pipeline: &Executor,
     device: &wgpu::Device,
     held: &'a mut Option<HistogramReduction>,
 ) -> Result<&'a mut HistogramReduction, HistogramError> {
@@ -907,15 +907,15 @@ fn reduction<'a>(
     Ok(held.as_mut().expect("made above"))
 }
 
-impl PhotoPipeline {
+impl Executor {
     /// Draw `surface`'s picture at rest, `rest`: another version than the one it holds starts over,
     /// none lets it go. At most [`REST_TILES_PER_FRAME`] tiles are drawn a frame, each counted, and
     /// the last quantizes the rest output and reads the counts back. A tile the stage cannot draw
     /// yet — its sequence compiling, its source uploading — waits for a later frame; any other
     /// fallback stops the picture at rest, naming why.
-    pub(in super::super) fn prepare_rest(
+    pub fn prepare_rest(
         &mut self,
-        surface: &mut SurfaceSlots,
+        surface: &mut State,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         rest: Option<&GpuRest>,
@@ -1187,7 +1187,7 @@ impl PhotoPipeline {
         self.release_gpu(&mut slot.tile);
         // Nothing reads the stage textures again.
         self.release_stages(slot);
-        super::super::wake_surface();
+        self.figures.wake();
     }
 
     /// Fit `slot`'s tile slot for `plan`, a later sweep's tile, and copy its boundary, the window
@@ -1334,7 +1334,7 @@ impl PhotoPipeline {
     }
 
     /// Retire `surface`'s picture at rest, if it holds one: its tile slot and its own parts.
-    pub(in super::super) fn release_rest(&self, surface: &mut SurfaceSlots) {
+    pub fn release_rest(&self, surface: &mut State) {
         let Some(mut slot) = surface.rest.take() else {
             return;
         };
@@ -1524,11 +1524,6 @@ impl PhotoPipeline {
         });
         let storage = texture.create_view(&wgpu::TextureViewDescriptor::default());
         // Sampled only: an sRGB view cannot be a storage one.
-        let sampled = texture.create_view(&wgpu::TextureViewDescriptor {
-            format: Some(SAMPLED_FORMAT),
-            usage: Some(wgpu::TextureUsages::TEXTURE_BINDING),
-            ..wgpu::TextureViewDescriptor::default()
-        });
         let uniform = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("luxforge.gpu_rest.uniform"),
             size: UNIFORM_SIZE as u64,
@@ -1536,49 +1531,13 @@ impl PhotoPipeline {
             mapped_at_creation: false,
         });
         // Drawn as a photograph tile is drawn: the same layout, uniform and linear sampler.
-        let photo_bindings = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("luxforge.gpu_rest.photo_bindings"),
-            layout: &self.layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&sampled),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&self.linear),
-                },
-            ],
-        });
-        let layout = TileLayout {
-            content: [0, 0, width, height],
-            texels: [0, 0, width, height],
-        };
-        let output = Picture {
-            tiles: vec![Tile {
-                layout,
-                capacity: (width, height),
-                texture,
-                uniform,
-                written_uniform: Mutex::new(None),
-                bindings: photo_bindings,
-            }],
+        let output = Output {
+            tiles: vec![crate::OutputTile { texture, uniform }],
             width,
             height,
             capacity: (width, height),
-            grid: (1, 1),
-            limit: device.limits().max_texture_dimension_2d,
             version: 0,
-            content_id: None,
             region_key: None,
-            allocated_bytes: output_bytes,
-            mip_levels: 1,
-            mip_bytes: 0,
-            mips_current: false,
         };
         Ok((
             Reduce {
@@ -1603,15 +1562,18 @@ impl PhotoPipeline {
     /// above — once for each tick, and read the counts back, tagged with the tick's boundary and
     /// revision: when the slot evaluated the plan this frame, its output carries no clipping marks
     /// and the surface's last tick's counts are not still on their way.
-    pub(in super::super) fn count_tick(
+    pub fn count_tick(
         &mut self,
-        surface: &mut SurfaceSlots,
+        surface: &mut State,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        plan: Option<&GpuPlan>,
+        frame: Option<crate::CountedFrame<'_>>,
     ) {
-        let (Some(plan), Some(Ok(boundary)), Some(tag)) =
-            (plan, surface.gpu_outcome, surface.gpu_tag)
+        let Some(crate::CountedFrame {
+            plan,
+            boundary,
+            tag,
+        }) = frame
         else {
             return;
         };

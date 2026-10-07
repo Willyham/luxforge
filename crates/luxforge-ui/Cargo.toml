@@ -11,32 +11,22 @@ name = "luxforge_ui"
 path = "src/lib.rs"
 
 [dependencies]
+luxforge-gpu = { path = "../luxforge-gpu" }
 luxforge-gpu-types = { path = "../luxforge-gpu-types" }
 iced.workspace = true
 iced_wgpu.workspace = true
 wgpu.workspace = true
-# Half floats for the GPU stage's rgba16float boundary. Already in the build through Iced and naga,
-# pinned to that version, so it adds no package. `std` lets x86_64 detect F16C at run time, as in
-# `luxforge-core`; Iced's graphics crate turns it on too, and this keeps it on whatever Iced does.
-half = { version = "=2.7.1", default-features = false, features = ["std"] }
-# The bytes of a RAW's f32 planes, which the GPU source uploads straight from the core's shared
-# allocation with no copy. Already in the build through wgpu, pinned to that version, so it adds no
-# package; the workspace forbids the unsafe a cast would otherwise take.
-bytemuck = { version = "=1.25.2", default-features = false }
-# The one hang-bounded wait, for the headless surface the qualification feature builds
-# (`photo_surface::gpu_preview::headless`), which waits for the compile thread as a test does.
-# Core-free, so the widget crate still never reaches the core.
-luxforge-testbase = { path = "../luxforge-testbase", optional = true }
-
 [features]
 # Qualification only: `photo_surface::gpu_preview::qualification`, which evaluates a GPU plan on a
 # headless device and reads its output back, for the desktop's per-program readback tests and the
 # GPU preview corpus harness. Only a `[dev-dependencies]` table may turn it on (`cargo xtask
 # check-repository`'s `gpu-qualification-only-in-tests` rule), so no build of the desktop reads a
 # GPU pixel back but through the tile runner (`gpu_preview::tiles`) its GPU tile worker owns.
-qualification = ["dep:luxforge-testbase"]
+qualification = ["luxforge-gpu/qualification"]
 
 [dev-dependencies]
+half = { version = "=2.7.1", default-features = false, features = ["std"] }
+luxforge-gpu = { path = "../luxforge-gpu", features = ["qualification"] }
 # The one gate and wait. Core-free, so the widget crate, which may not reach the core, can use it.
 luxforge-testbase = { path = "../luxforge-testbase" }
 # The one independent sRGB transfer function, which the tokens' linear-light composites and the

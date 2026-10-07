@@ -198,7 +198,7 @@ fn a_light_links_steps_name_its_light() {
     assert_eq!(
         light_charge(
             &reader,
-            crate::photo_surface::BoundaryFormat::Half,
+            crate::execution::BoundaryFormat::Half,
             8192,
             1 << 27
         ),
@@ -208,7 +208,7 @@ fn a_light_links_steps_name_its_light() {
     // buffers at their capacities: the words, the blocks, the parameters and one cut's words.
     let charge = light_charge(
         &light,
-        crate::photo_surface::BoundaryFormat::Half,
+        crate::execution::BoundaryFormat::Half,
         8192,
         1 << 27,
     )
@@ -218,7 +218,7 @@ fn a_light_links_steps_name_its_light() {
     // words, and the tile texture is 160 square: the five parameter slices take 2 KiB.
     let tiled = light_charge(
         &light,
-        crate::photo_surface::BoundaryFormat::Float,
+        crate::execution::BoundaryFormat::Float,
         160,
         1 << 27,
     )
@@ -230,7 +230,7 @@ fn a_light_links_steps_name_its_light() {
     // A light whose blocks grow — a stroke on a mask before it — keeps its link, whose blocks
     // buffer grows in place; another stage does not.
     let shape = |light: &GpuLight| {
-        super::Shape::of(light, crate::photo_surface::BoundaryFormat::Half, 8192).expect("a shape")
+        super::Shape::of(light, crate::execution::BoundaryFormat::Half, 8192).expect("a shape")
     };
     let mut grown = light.clone();
     if let GpuStep::Spatial(spatial) = &mut grown.steps[0] {

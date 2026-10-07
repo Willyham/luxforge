@@ -1,0 +1,25 @@
+[package]
+name = "luxforge-gpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+luxforge-gpu-types = { path = "../luxforge-gpu-types" }
+wgpu = { workspace = true, features = ["std", "parking_lot", "dx12", "metal", "gles", "vulkan"] }
+half = { version = "=2.7.1", default-features = false, features = ["std"] }
+bytemuck = { version = "=1.25.2", default-features = false }
+luxforge-testbase = { path = "../luxforge-testbase", optional = true }
+luxforge-reference = { path = "../luxforge-reference", optional = true }
+
+[features]
+qualification = ["dep:luxforge-testbase", "dep:luxforge-reference"]
+
+[dev-dependencies]
+luxforge-testbase = { path = "../luxforge-testbase" }
+luxforge-reference = { path = "../luxforge-reference" }
+
+[lints]
+workspace = true

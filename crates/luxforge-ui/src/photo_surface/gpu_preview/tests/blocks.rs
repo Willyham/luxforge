@@ -66,9 +66,9 @@ fn tail(nodes: &Arc<[u32]>) -> GpuStep {
 fn counts(pipeline: &PhotoPipeline) -> [u64; 3] {
     let figures = &pipeline.figures.preview;
     [
-        figures.block_compared.load(Ordering::Acquire),
-        figures.block_copied.load(Ordering::Acquire),
-        figures.block_words.load(Ordering::Acquire),
+        figures.block_counters().0,
+        figures.block_counters().1,
+        figures.block_counters().2,
     ]
 }
 
@@ -107,7 +107,11 @@ fn written_whole(old: &GpuPlan, new: &GpuPlan) -> u64 {
 
 /// What the slot's and each link's buffer holds, the last's last.
 fn held(pipeline: &PhotoPipeline) -> Vec<Vec<u32>> {
-    let slot = pipeline.surfaces[&ID].gpu.as_ref().expect("a slot");
+    let slot = pipeline.surfaces[&ID]
+        .gpu
+        .as_ref()
+        .expect("a slot")
+        .inspection();
     slot.chain
         .iter()
         .map(|link| link.written_blocks().words().to_vec())
@@ -305,7 +309,11 @@ fn a_chains_links_write_only_the_blocks_a_tick_changes() {
         factor: 0.5,
     };
     let link_passes = |pipeline: &PhotoPipeline| {
-        let slot = pipeline.surfaces[&ID].gpu.as_ref().expect("a slot");
+        let slot = pipeline.surfaces[&ID]
+            .gpu
+            .as_ref()
+            .expect("a slot")
+            .inspection();
         slot.chain[1]
             .spatial
             .as_ref()

@@ -1,0 +1,1324 @@
+//! Qualification only: a [`GpuPlan`] evaluated on a headless device and read back, for the readback
+//! tests that qualify each program against its CPU unit and for the corpus harness that measures a
+//! stack's GPU frame against the CPU frame it previews (`docs/design/gpu-preview.md`).
+//!
+//! It runs the stage's own shader: each step checked by [`validate_step`], the plan assembled and
+//! its words packed exactly as `prepare` assembles and packs them, each link's kept planes and the
+//! pool of scratch textures the links share created as the slot creates them, a spatial step's
+//! passes encoded before the frame's as the slot encodes them, a geometry tail's second
+//! pass over the content pass's intermediate, and the boundary uploaded in its own format as the
+//! slot uploads it. Only the target differs. [`Qualifier::evaluate`] writes `rgba32float`, so a
+//! program's `f32` output is read before any encoding, which is where a non-finite value would be
+//! hidden; [`Qualifier::evaluate_codes`] writes the stage's own output format and reads the codes
+//! its last pass computes as the CPU's quantizer does. A plan reading a light
+//! ([`GpuPlan::lights`]) reads the one [`Qualifier::set_lights`] gives it in its light plane: the
+//! light the slot's own light link computes on this device ([`Qualifier::light_bench`]), read back.
+//!
+//! Built only with the crate's `qualification` feature, which only a `[dev-dependencies]` table
+//! may turn on (`cargo xtask check-repository`), so no build of the desktop has it: the surface
+//! itself never reads a pixel back or waits on the GPU. Everything here blocks the calling test.
+use super::BoundaryTexture;
+use super::{
+    BoundaryFormat, Compiled, GpuBoundary, GpuFallback, GpuPlan, GpuSource, GpuStep, GpuTail,
+    SourceLayouts, SourceSlot, SpatialSlot, Support, assemble_passes, chain, compile,
+    encode_pass_over, le_bytes, slot_buffers, slot_charge, spatial, upload_rows, validate_step,
+};
+use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
+
+/// A headless device, and the stage's layouts on it.
+pub struct Qualifier {
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    adapter: wgpu::AdapterInfo,
+    support: Support,
+    /// Each link's passes start from a sentinel in every pool texture ([`Qualifier::set_poison`]).
+    poison: AtomicBool,
+    /// The lights a plan's light planes hold, light `k` the `k`-th ([`Qualifier::set_lights`]).
+    lights: std::sync::Mutex<Vec<[f32; 4]>>,
+}
+
+impl Qualifier {
+    /// A device of this host's default adapter, or `None` after printing that `test` was skipped:
+    /// a test without one ran nothing and is not GPU evidence.
+    pub fn headless(test: &str) -> Option<Self> {
+        let (device, queue, adapter) = super::headless::device(test, wgpu::Limits::default())?;
+        let support = Support::new(&device);
+        Some(Self {
+            device,
+            queue,
+            adapter,
+            support,
+            poison: AtomicBool::new(false),
+            lights: std::sync::Mutex::default(),
+        })
+    }
+
+    /// A light link bench on this qualifier's device ([`super::light::LightBench`]): what computes,
+    /// as the slot's own light links do, the lights a plan reads ([`Qualifier::set_lights`]).
+    pub fn light_bench(&self) -> super::light::LightBench {
+        super::light::LightBench::new(&self.device, &self.queue)
+    }
+
+    /// Every later evaluation's light planes hold `lights`, light `k` the `k`-th, each `[r, g, b,
+    /// 1]` as a light link writes it: a plan that reads a light it was not given is refused.
+    pub fn set_lights(&self, lights: Vec<[f32; 4]>) {
+        *self
+            .lights
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = lights;
+    }
+
+    /// The editor's own surface on this qualifier's device ([`super::headless::HeadlessSurface`]):
+    /// a picture at rest, or one of its tiles, drawn as the desktop draws it.
+    pub fn surface(&self) -> super::headless::HeadlessSurface {
+        super::headless::HeadlessSurface::new(&self.device, &self.queue)
+    }
+
+    /// While `poisoned`, every later evaluation starts each link's passes from NaN bits in every
+    /// texture of its pool, every record of what they hold forgotten, as a slot does in a test
+    /// that asks for it (`spatial::Pool::poison`): a frame still equal to the whole evaluation's
+    /// shows that no pass read scratch beyond the cone its unit's reach bounds, which it writes
+    /// itself, whoever wrote the rest.
+    pub fn set_poison(&self, poisoned: bool) {
+        self.poison.store(poisoned, Ordering::Release);
+    }
+
+    /// The adapter, its backend and its driver, for a report.
+    pub fn adapter(&self) -> String {
+        let info = &self.adapter;
+        format!(
+            "{} ({:?}, {:?}, driver {:?} {:?})",
+            info.name, info.backend, info.device_type, info.driver, info.driver_info
+        )
+    }
+
+    /// How long the stage's own compile of `steps` takes on this device, from the programs' `naga`
+    /// checks to the backend's pipelines, as the compile thread runs it
+    /// ([`super::compile`](mod@super::compile)): wall-clock time on the calling thread.
+    pub fn compile_time(&self, steps: &[GpuStep]) -> Result<std::time::Duration, String> {
+        let started = std::time::Instant::now();
+        let chain = chain::chain(steps);
+        for link in &chain.links {
+            compile(
+                &self.device,
+                &self.support,
+                link,
+                BoundaryFormat::Half.texture(),
+            )?;
+        }
+        compile(&self.device, &self.support, chain.last, OUTPUT_FORMAT)?;
+        Ok(started.elapsed())
+    }
+
+    /// How many spatial pass pipelines this qualifier has created: a pass whose module another
+    /// pass or an earlier plan already compiled reuses that pipeline and adds nothing.
+    pub fn pass_pipelines_created(&self) -> u64 {
+        self.support.passes.created()
+    }
+
+    /// What the photo surface's slot holding `plan` charges the GPU-preview budget on this device:
+    /// the boundary, the output in its size bucket and its uniform, every link's words and blocks
+    /// buffers and the chain's charge — each earlier link's intermediate, every link's kept planes
+    /// and the scratch pool they share, once ([`super::chain_charge`]).
+    pub fn charged_bytes(&self, plan: &GpuPlan) -> Result<u64, GpuFallback> {
+        slot_charge(&self.device, plan)
+    }
+
+    /// The part of [`Qualifier::charged_bytes`] that is each link's words and blocks buffers
+    /// together, at the capacities this device gives them, in chain order, the last link's last:
+    /// what a report adds to the chain's charge and the slot's textures
+    /// ([`super::texture_charge`]) to compose the slot's figure.
+    pub fn buffer_bytes(&self, plan: &GpuPlan) -> Result<Vec<u64>, GpuFallback> {
+        slot_buffers(&self.device, plan)
+    }
+
+    /// Every texel of `plan`'s output, as the `f32` values its last step returned: row by row, the
+    /// boundary's size, or its region's or tail's output, alpha one.
+    pub fn evaluate(&self, plan: &GpuPlan) -> Result<Vec<[f32; 4]>, String> {
+        let (bytes, _) = self.run(&[], plan, None, wgpu::TextureFormat::Rgba32Float, 16)?;
+        Ok(floats(&bytes))
+    }
+
+    /// `then`'s output as [`Qualifier::evaluate`] reads it, drawn as a slot that drew `first` draws
+    /// its next tick: over the planes `first`'s passes wrote, running only the passes of `then` the
+    /// slot's schedule runs; with how many those were. The two plans hold the same planes.
+    pub fn evaluate_after(
+        &self,
+        first: &GpuPlan,
+        then: &GpuPlan,
+    ) -> Result<(Vec<[f32; 4]>, u64), String> {
+        self.evaluate_ticks(&[first, then])
+    }
+
+    /// The last of `ticks`' outputs as [`Qualifier::evaluate`] reads it, drawn as a slot that drew
+    /// every plan before it in turn draws its next tick: over the planes their passes left, running
+    /// only the passes of the last that the slot's schedule runs; with how many those were. Every
+    /// plan holds the same planes.
+    pub fn evaluate_ticks(&self, ticks: &[&GpuPlan]) -> Result<(Vec<[f32; 4]>, u64), String> {
+        let (last, before) = ticks.split_last().ok_or("a tick to draw")?;
+        let (bytes, ran) = self.run(before, last, None, wgpu::TextureFormat::Rgba32Float, 16)?;
+        Ok((floats(&bytes), ran))
+    }
+
+    /// `then`'s output as [`Qualifier::evaluate`] reads it, drawn as a slot that drew `first`
+    /// draws its next tick when `then` changes only `inside`, `[x0, y0, x1, y1)` of its boundary's
+    /// stage ([`super::GpuChange`]): each link evaluated again only where that change reaches, the
+    /// rest of what it holds kept. The two plans hold the same planes.
+    pub fn evaluate_changed(
+        &self,
+        first: &GpuPlan,
+        then: &GpuPlan,
+        inside: [u32; 4],
+    ) -> Result<Vec<[f32; 4]>, String> {
+        let (bytes, _) =
+            self.run_changed(first, then, inside, wgpu::TextureFormat::Rgba32Float, 16)?;
+        Ok(floats(&bytes))
+    }
+
+    /// Every texel of `plan`'s output as the 8-bit sRGB codes the stage's output texture holds:
+    /// the codes its last pass computes as the CPU's quantizer does, row by row, RGBA.
+    pub fn evaluate_codes(&self, plan: &GpuPlan) -> Result<Vec<[u8; 4]>, String> {
+        let (bytes, _) = self.run(&[], plan, None, OUTPUT_FORMAT, 4)?;
+        Ok(codes(&bytes))
+    }
+
+    /// [`Qualifier::evaluate`] over an `rgba32float` boundary holding `pixels`, row by row the
+    /// boundary's size, as they are, in place of the plan's half floats: a measurement of what the
+    /// boundary's format costs a program, which no slot draws.
+    pub fn evaluate_over(
+        &self,
+        plan: &GpuPlan,
+        pixels: &[[f32; 3]],
+    ) -> Result<Vec<[f32; 4]>, String> {
+        let float = Some(pixels);
+        let (bytes, _) = self.run(&[], plan, float, wgpu::TextureFormat::Rgba32Float, 16)?;
+        Ok(floats(&bytes))
+    }
+
+    /// [`Qualifier::evaluate_codes`] over an `rgba32float` boundary holding `pixels`, as
+    /// [`Qualifier::evaluate_over`] reads it.
+    pub fn evaluate_codes_over(
+        &self,
+        plan: &GpuPlan,
+        pixels: &[[f32; 3]],
+    ) -> Result<Vec<[u8; 4]>, String> {
+        let (bytes, _) = self.run(&[], plan, Some(pixels), OUTPUT_FORMAT, 4)?;
+        Ok(codes(&bytes))
+    }
+
+    /// `boundary`'s texels as a slot derives them from `source` ([`GpuBoundary::derived`]): the
+    /// source held as the pipeline holds it, tile by tile, and uploaded whole; the derivation's own
+    /// pass run into a texture of the boundary's format; its bytes read back row by row, eight a
+    /// texel of half floats from a JPEG's codes, sixteen of `f32` from a RAW's planes, exactly as
+    /// the CPU's `BoundaryFrame` holds them.
+    pub fn derive(&self, source: &GpuSource, boundary: &GpuBoundary) -> Result<Vec<u8>, String> {
+        let device = &self.device;
+        let layouts = SourceLayouts::new(device)?;
+        let mut held = SourceSlot::new(device, source, &layouts, |_| Ok(()))
+            .map_err(|fallback| format!("the source is not held: {}", fallback.as_str()))?;
+        while !held.ready() {
+            if held.upload(&self.queue, source, u64::MAX) == 0 {
+                return Err("the source's pixels were let go".into());
+            }
+        }
+        let (_, derivation) = boundary
+            .derivation()
+            .ok_or("a boundary of texels, not a derived one")?;
+        let size = boundary.size();
+        let words = held
+            .words(derivation, size)
+            .ok_or("the derivation does not fit the source")?;
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("luxforge.qualification.derivation"),
+            size: (words.len() * 4) as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        self.queue.write_buffer(&buffer, 0, &le_bytes(&words));
+        let target = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("luxforge.qualification.derived"),
+            size: wgpu::Extent3d {
+                width: size.0,
+                height: size.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: boundary.format().texture(),
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("luxforge.qualification.derive"),
+        });
+        held.encode(
+            device,
+            &mut encoder,
+            &layouts,
+            derivation,
+            &buffer,
+            &view,
+            size,
+        );
+        self.read_texture(
+            &target,
+            size,
+            boundary.format().texel_bytes() as u32,
+            encoder,
+        )
+    }
+
+    /// `texture`'s `size` texels after `encoder`'s passes, read back unpadded, `texel_bytes` a
+    /// texel: the encoder is submitted with the copy and waited for.
+    fn read_texture(
+        &self,
+        texture: &wgpu::Texture,
+        (width, height): (u32, u32),
+        texel_bytes: u32,
+        mut encoder: wgpu::CommandEncoder,
+    ) -> Result<Vec<u8>, String> {
+        let device = &self.device;
+        let row = width * texel_bytes;
+        let padded =
+            row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("luxforge.qualification.readback"),
+            size: u64::from(padded) * u64::from(height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let index = self.queue.submit([encoder.finish()]);
+        let (sender, receiver) = mpsc::channel();
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let _ = sender.send(result);
+            });
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(index),
+                timeout: None,
+            })
+            .map_err(|error| format!("waiting for the readback: {error}"))?;
+        receiver
+            .try_recv()
+            .map_err(|_| "the readback was not mapped once its submission finished".to_owned())?
+            .map_err(|error| format!("mapping the readback: {error}"))?;
+        let mapped = readback.slice(..).get_mapped_range();
+        let mut bytes = Vec::with_capacity((row * height) as usize);
+        for line in mapped.chunks_exact(padded as usize) {
+            bytes.extend_from_slice(&line[..row as usize]);
+        }
+        drop(mapped);
+        readback.unmap();
+        Ok(bytes)
+    }
+
+    /// `plan` checked as `prepare` checks it: every step and every pass of its chain validated,
+    /// a spatial step only over the boundary's own texels on a device that can run one, and a
+    /// region inside what it draws.
+    fn checked(&self, plan: &GpuPlan) -> Result<(), String> {
+        for step in &plan.steps {
+            validate_step(step)?;
+        }
+        for source in assemble_passes(&plan.steps, super::End::Codes)? {
+            validate(&source)?;
+        }
+        let spatial_steps = plan
+            .steps
+            .iter()
+            .any(|step| matches!(step, GpuStep::Spatial(_)));
+        if spatial_steps && !spatial::supported(&self.device.limits()) {
+            return Err("the device cannot run a spatial step".into());
+        }
+        if spatial_steps && plan.texels.step != [1.0, 1.0] {
+            return Err("a spatial step runs over the boundary's own texels".into());
+        }
+        if !super::region_drawable(plan) {
+            return Err("the plan's region is not inside what it draws".into());
+        }
+        Ok(())
+    }
+
+    /// `plan` drawn into a target of `format`, `texel_bytes` a texel, read back unpadded, after
+    /// the passes of each plan `before` it in turn and over `float`'s boundary when that is given;
+    /// with how many of `plan`'s passes ran. A plan with a geometry tail draws its output stage;
+    /// one without, the boundary's size, or its region's.
+    fn run(
+        &self,
+        before: &[&GpuPlan],
+        plan: &GpuPlan,
+        float: Option<&[[f32; 3]]>,
+        format: wgpu::TextureFormat,
+        texel_bytes: u32,
+    ) -> Result<(Vec<u8>, u64), String> {
+        self.run_inner(before, plan, float, format, texel_bytes, None)
+    }
+
+    /// [`Qualifier::run`] of `then` after `first`, as an incremental tick that changes `inside`.
+    fn run_changed(
+        &self,
+        first: &GpuPlan,
+        then: &GpuPlan,
+        inside: [u32; 4],
+        format: wgpu::TextureFormat,
+        texel_bytes: u32,
+    ) -> Result<(Vec<u8>, u64), String> {
+        self.run_inner(&[first], then, None, format, texel_bytes, Some(inside))
+    }
+
+    fn run_inner(
+        &self,
+        before: &[&GpuPlan],
+        plan: &GpuPlan,
+        float: Option<&[[f32; 3]]>,
+        format: wgpu::TextureFormat,
+        texel_bytes: u32,
+        inside: Option<[u32; 4]>,
+    ) -> Result<(Vec<u8>, u64), String> {
+        let device = &self.device;
+        let mut session = Session::new(self, plan, float, format)?;
+        // The slot's schedule, which the plans drawn first leave knowing what the planes hold.
+        for first in before {
+            session.same_planes(first)?;
+            let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("luxforge.qualification.first"),
+            });
+            session.encode(self, first, &mut encoder)?;
+            self.queue.submit([encoder.finish()]);
+        }
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("luxforge.qualification.encoder"),
+        });
+        let ran = session
+            .encode_changed(self, plan, &mut encoder, inside)?
+            .iter()
+            .sum();
+        let bytes = self.read_target(&session, encoder, texel_bytes)?;
+        Ok((bytes, ran))
+    }
+
+    /// The session's target after `encoder`'s passes, read back unpadded, `texel_bytes` a texel:
+    /// the encoder is submitted with the copy and waited for.
+    fn read_target(
+        &self,
+        session: &Session,
+        mut encoder: wgpu::CommandEncoder,
+        texel_bytes: u32,
+    ) -> Result<Vec<u8>, String> {
+        let device = &self.device;
+        let (width, height) = session.output;
+        let row = width * texel_bytes;
+        let padded =
+            row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("luxforge.qualification.readback"),
+            size: u64::from(padded) * u64::from(height),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        encoder.copy_texture_to_buffer(
+            session.target.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &readback,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(height),
+                },
+            },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let index = self.queue.submit([encoder.finish()]);
+        let (sender, receiver) = mpsc::channel();
+        readback
+            .slice(..)
+            .map_async(wgpu::MapMode::Read, move |result| {
+                let _ = sender.send(result);
+            });
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(index),
+                timeout: None,
+            })
+            .map_err(|error| format!("waiting for the qualification pass: {error}"))?;
+        receiver
+            .try_recv()
+            .map_err(|_| "the readback was not mapped once its submission finished".to_owned())?
+            .map_err(|error| format!("mapping the readback: {error}"))?;
+        let mapped = readback.slice(..).get_mapped_range();
+        let mut bytes = Vec::with_capacity((row * height) as usize);
+        for line in mapped.chunks_exact(padded as usize) {
+            bytes.extend_from_slice(&line[..row as usize]);
+        }
+        drop(mapped);
+        readback.unmap();
+        Ok(bytes)
+    }
+
+    /// Each plan of `ticks` drawn as one slot draws a gesture's ticks, one after another over the
+    /// same planes, pool and intermediates, each tick after the first an incremental one that
+    /// changes its rectangle of the boundary's stage when it names one ([`super::GpuChange`]); and
+    /// every tick's output as [`Qualifier::evaluate`] reads it, with how many spatial passes each
+    /// link ran in it. The plans hold the same planes.
+    pub fn evaluate_sequence(
+        &self,
+        ticks: &[(GpuPlan, Option<[u32; 4]>)],
+    ) -> Result<Vec<Tick>, String> {
+        let (first, _) = ticks.first().ok_or("no plans to evaluate")?;
+        let mut session = Session::new(self, first, None, wgpu::TextureFormat::Rgba32Float)?;
+        let mut outputs = Vec::with_capacity(ticks.len());
+        for (tick, (plan, inside)) in ticks.iter().enumerate() {
+            session.same_planes(plan)?;
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("luxforge.qualification.sequence"),
+                });
+            let passes =
+                session.encode_changed(self, plan, &mut encoder, inside.filter(|_| tick > 0))?;
+            outputs.push(Tick {
+                output: floats(&self.read_target(&session, encoder, 16)?),
+                passes,
+            });
+        }
+        Ok(outputs)
+    }
+
+    /// The GPU's throughput over `ticks`, all of one sequence over one boundary, each an
+    /// incremental tick that changes its rectangle of the boundary's stage after the first, which
+    /// runs whole: the first is run and waited for, then every later tick is encoded and submitted
+    /// without waiting, as a slot's ticks are, and the last is waited for. Answers the CPU time
+    /// encoding took a tick and the wall time from the first later submission to the last one's
+    /// completion, a tick. Measurement only.
+    pub fn time_throughput(
+        &self,
+        ticks: &[(GpuPlan, Option<[u32; 4]>)],
+    ) -> Result<(std::time::Duration, std::time::Duration), String> {
+        let (first, _) = ticks.first().ok_or("no plans to time")?;
+        let mut session = Session::new(self, first, None, OUTPUT_FORMAT)?;
+        let mut encoding = std::time::Duration::ZERO;
+        let mut last = None;
+        let mut started = std::time::Instant::now();
+        for (tick, (plan, inside)) in ticks.iter().enumerate() {
+            let encode = std::time::Instant::now();
+            let mut encoder = self
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("luxforge.qualification.throughput"),
+                });
+            session.encode_changed(self, plan, &mut encoder, *inside)?;
+            if tick > 0 {
+                encoding += encode.elapsed();
+            }
+            let index = self.queue.submit([encoder.finish()]);
+            if tick == 0 {
+                self.device
+                    .poll(wgpu::PollType::Wait {
+                        submission_index: Some(index.clone()),
+                        timeout: None,
+                    })
+                    .map_err(|error| format!("waiting for the first tick: {error}"))?;
+                started = std::time::Instant::now();
+            }
+            last = Some(index);
+        }
+        self.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: last,
+                timeout: None,
+            })
+            .map_err(|error| format!("waiting for the last tick: {error}"))?;
+        let count = (ticks.len().max(2) - 1) as u32;
+        Ok((encoding / count, started.elapsed() / count))
+    }
+}
+
+/// One tick of [`Qualifier::evaluate_sequence`]: its output, and how many spatial passes each link
+/// of its chain ran, in chain order, a link without a spatial step or that did not run none.
+#[derive(Clone, Debug)]
+pub struct Tick {
+    pub output: Vec<[f32; 4]>,
+    pub passes: Vec<u64>,
+}
+
+impl Tick {
+    /// The passes every link ran.
+    pub fn ran(&self) -> u64 {
+        self.passes.iter().sum()
+    }
+}
+
+/// One link of a [`Session`]'s chain: its steps' pipeline, buffers and group 0, its planes and
+/// schedule, and for every link but the last the intermediate it writes and what that holds.
+struct Link {
+    compiled: Compiled,
+    id: u64,
+    words: wgpu::Buffer,
+    blocks: wgpu::Buffer,
+    bindings: wgpu::BindGroup,
+    spatial: Option<SpatialSlot>,
+    intermediate: Option<(wgpu::Texture, wgpu::TextureView)>,
+    key: Option<u64>,
+}
+
+/// A plan's chain on the qualifier's device, as a slot holds it: the boundary, every link, the
+/// pool of scratch textures the links take in turn, a geometry tail's intermediate and the target,
+/// kept across the plans of one sequence it encodes, so a later one runs only the links and passes
+/// that changed.
+struct Session {
+    /// Held for the bindings that read it.
+    _boundary: wgpu::Texture,
+    boundary_version: u64,
+    links: Vec<Link>,
+    /// Fitted and bound as the slot's is, with a holder counter of its own.
+    pool: spatial::Pool,
+    /// A geometry tail's intermediate and the tail's group 0 over it.
+    tail: Option<(wgpu::Texture, wgpu::BindGroup)>,
+    target: wgpu::Texture,
+    view: wgpu::TextureView,
+    output: (u32, u32),
+    origin: (u32, u32),
+}
+
+/// A buffer of `words`, at least one, with room to spare for a later tick's.
+fn words_buffer(device: &wgpu::Device, label: &str, words: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some(label),
+        size: ((words.max(1) * 4) as u64).next_power_of_two().max(1024) * 2,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+impl Session {
+    /// `plan`'s chain created, its boundary uploaded in its own format or as `float`'s pixels in
+    /// `rgba32float`, its last link writing a target of `format`.
+    fn new(
+        qualifier: &Qualifier,
+        plan: &GpuPlan,
+        float: Option<&[[f32; 3]]>,
+        format: wgpu::TextureFormat,
+    ) -> Result<Self, String> {
+        qualifier.checked(plan)?;
+        let device = &qualifier.device;
+        let (width, height) = plan.boundary.size();
+        let boundary_format = match float {
+            Some(pixels) if pixels.len() != width as usize * height as usize => {
+                return Err("an rgba32float boundary holds the boundary's pixels".into());
+            }
+            Some(_) => BoundaryFormat::Float,
+            None => plan.boundary.format(),
+        };
+        let texture = |label, (width, height), format, usage| {
+            device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format,
+                usage,
+                view_formats: &[],
+            })
+        };
+        let boundary = texture(
+            "luxforge.qualification.boundary",
+            (width, height),
+            boundary_format.texture(),
+            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        );
+        match float {
+            Some(pixels) => {
+                // Row by row, so no staging copy is larger than a row.
+                for (y, row) in pixels.chunks_exact(width as usize).enumerate() {
+                    let texels: Vec<u8> = row
+                        .iter()
+                        .flat_map(|[r, g, b]| [*r, *g, *b, 1.0])
+                        .flat_map(f32::to_le_bytes)
+                        .collect();
+                    qualifier.queue.write_texture(
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &boundary,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d {
+                                x: 0,
+                                y: y as u32,
+                                z: 0,
+                            },
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        &texels,
+                        wgpu::TexelCopyBufferLayout {
+                            offset: 0,
+                            bytes_per_row: Some(width * 16),
+                            rows_per_image: Some(1),
+                        },
+                        wgpu::Extent3d {
+                            width,
+                            height: 1,
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                }
+            }
+            // The slot's own chunked upload, every row at once: a slot spreads the same chunks over
+            // frames, which only changes when they are written.
+            None => {
+                let (row, _) =
+                    upload_rows(&qualifier.queue, &boundary, &plan.boundary, 0, u64::MAX);
+                debug_assert!(
+                    !plan.boundary.holds_texels() || row == plan.boundary.size().1,
+                    "every row is written"
+                );
+            }
+        }
+        let origin = (
+            plan.texels.origin[0].max(0.0) as u32,
+            plan.texels.origin[1].max(0.0) as u32,
+        );
+        let chain = chain::chain(&plan.steps);
+        let intermediate_format = boundary_format.texture();
+        let count = chain.links.len() + 1;
+        let mut links: Vec<Link> = Vec::with_capacity(count);
+        let (mut words, mut blocks) = (Vec::new(), Vec::new());
+        // The pool, fitted to every link before any link's planes, as the slot fits its own.
+        let mut pool = spatial::Pool::default();
+        let every = chain
+            .links
+            .iter()
+            .copied()
+            .chain(std::iter::once(chain.last));
+        pool.fit(
+            device,
+            &spatial::PoolKey::of(every, (width, height), origin),
+            &mut |_| Ok::<(), GpuFallback>(()),
+            &mut |_, _| {},
+        )
+        .map_err(|fallback| fallback.as_str().to_owned())?;
+        pool.set_poisoned(qualifier.poison.load(Ordering::Acquire));
+        // The light planes, holding the lights the qualifier was given, as a light link writes them.
+        let lights = qualifier
+            .lights
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        let read = plan
+            .steps
+            .iter()
+            .filter_map(|step| match step {
+                GpuStep::Spatial(spatial) => Some(spatial),
+                _ => None,
+            })
+            .flat_map(|spatial| spatial.lights())
+            .collect::<Vec<_>>();
+        if let Some(k) = read.iter().find(|k| **k as usize >= lights.len()) {
+            return Err(format!(
+                "the plan reads light {k}, which the qualifier was not given"
+            ));
+        }
+        for (k, light) in (0u32..).zip(&lights) {
+            if let Some(texture) = pool.light_texture(k) {
+                let bytes: Vec<u8> = light.iter().flat_map(|value| value.to_le_bytes()).collect();
+                qualifier.queue.write_texture(
+                    texture.as_image_copy(),
+                    &bytes,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(16),
+                        rows_per_image: Some(1),
+                    },
+                    wgpu::Extent3d {
+                        width: 1,
+                        height: 1,
+                        depth_or_array_layers: 1,
+                    },
+                );
+                let key = {
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = std::hash::DefaultHasher::new();
+                    (k, light.map(f32::to_bits)).hash(&mut hasher);
+                    hasher.finish()
+                };
+                pool.set_light_key(k, key);
+            }
+        }
+        for (index, steps) in chain
+            .links
+            .iter()
+            .copied()
+            .chain(std::iter::once(chain.last))
+            .enumerate()
+        {
+            let last = index + 1 == count;
+            let link_format = if last { format } else { intermediate_format };
+            let compiled = compile(device, &qualifier.support, steps, link_format)?;
+            let offset = if last {
+                super::output_offset(plan)
+            } else {
+                (0, 0)
+            };
+            chain::pack_steps(plan.texels, offset, steps, &mut words, &mut blocks);
+            let words_held = words_buffer(device, "luxforge.qualification.words", words.len());
+            let blocks_held = words_buffer(device, "luxforge.qualification.blocks", blocks.len());
+            let input = links
+                .last()
+                .and_then(|link| link.intermediate.as_ref())
+                .map_or(&boundary, |(texture, _)| texture);
+            let bindings = qualifier.bindings(input, &words_held, &blocks_held);
+            let spatial = spatial::PlanesKey::of(steps, (width, height), origin)
+                .map(|key| SpatialSlot::new(spatial::Planes::create(device, key), &mut pool));
+            let intermediate = (!last).then(|| {
+                let texture = texture(
+                    "luxforge.qualification.link",
+                    (width, height),
+                    intermediate_format,
+                    wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                );
+                let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                (texture, view)
+            });
+            links.push(Link {
+                compiled,
+                id: index as u64,
+                words: words_held,
+                blocks: blocks_held,
+                bindings,
+                spatial,
+                intermediate,
+                key: None,
+            });
+        }
+        let tail = chain.last.iter().find_map(|step| match step {
+            GpuStep::Geometry(tail) => Some(tail),
+            _ => None,
+        });
+        // The output is the tail's output stage when the plan has a tail.
+        let output = tail.map_or_else(
+            || plan.region.map_or((width, height), |region| region.size()),
+            GpuTail::output,
+        );
+        // A tail's content pass writes the intermediate the boundary's size, which the tail reads
+        // through bindings of its own over the same words and blocks.
+        let last = links.last().expect("a chain has a last link");
+        let tail = tail.map(|tail| {
+            let texture = texture(
+                "luxforge.qualification.intermediate",
+                (width, height),
+                tail.intermediate(),
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            );
+            let bindings = qualifier.bindings(&texture, &last.words, &last.blocks);
+            (texture, bindings)
+        });
+        let target = texture(
+            "luxforge.qualification.target",
+            output,
+            format,
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        );
+        let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+        Ok(Self {
+            _boundary: boundary,
+            boundary_version: plan.boundary.version(),
+            links,
+            pool,
+            tail,
+            target,
+            view,
+            output,
+            origin,
+        })
+    }
+
+    /// Whether `other`'s chain holds the planes this one's does, link for link, and the same pool,
+    /// as a plan drawn after another in one slot must.
+    fn same_planes(&self, other: &GpuPlan) -> Result<(), String> {
+        let chain = chain::chain(&other.steps);
+        let steps = chain
+            .links
+            .iter()
+            .copied()
+            .chain(std::iter::once(chain.last));
+        let size = other.boundary.size();
+        if steps.clone().count() != self.links.len() {
+            return Err("a plan drawn after another holds the same planes".into());
+        }
+        for (link, steps) in self.links.iter().zip(steps.clone()) {
+            let key = spatial::PlanesKey::of(steps, size, self.origin);
+            if link.spatial.as_ref().map(|spatial| &spatial.planes.key) != key.as_ref() {
+                return Err("a plan drawn after another holds the same planes".into());
+            }
+        }
+        if spatial::PoolKey::of(steps, size, self.origin) != self.pool.key() {
+            return Err("a plan drawn after another holds the same pool".into());
+        }
+        Ok(())
+    }
+
+    /// Encode `plan`, of the sequence the session was made for, as the slot's next tick: each link
+    /// whose content changed into its intermediate, then the last into the target. Answers how
+    /// many spatial passes each link ran, in chain order.
+    fn encode(
+        &mut self,
+        qualifier: &Qualifier,
+        plan: &GpuPlan,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> Result<Vec<u64>, String> {
+        self.encode_changed(qualifier, plan, encoder, None)
+    }
+
+    /// [`Session::encode`] as an incremental tick when `inside` is given: the rectangle of the
+    /// plan's boundary stage it changes in since the plan the session last encoded, as the slot runs
+    /// it ([`super::GpuChange`]).
+    fn encode_changed(
+        &mut self,
+        qualifier: &Qualifier,
+        plan: &GpuPlan,
+        encoder: &mut wgpu::CommandEncoder,
+        inside: Option<[u32; 4]>,
+    ) -> Result<Vec<u64>, String> {
+        if plan.boundary.version() != self.boundary_version {
+            return Err("a session draws over the boundary it was made with".into());
+        }
+        let chain = chain::chain(&plan.steps);
+        let count = self.links.len();
+        let mut input = chain::boundary_key(self.boundary_version);
+        let mut ran = vec![0; count];
+        let (mut words, mut blocks) = (Vec::new(), Vec::new());
+        let size = plan.boundary.size();
+        let incremental = inside.map(|[x0, y0, x1, y1]| {
+            let texel = |at: u32, origin: u32, limit: u32| at.saturating_sub(origin).min(limit);
+            spatial::Rect {
+                x0: texel(x0, self.origin.0, size.0),
+                y0: texel(y0, self.origin.1, size.1),
+                x1: texel(x1, self.origin.0, size.0),
+                y1: texel(y1, self.origin.1, size.1),
+            }
+        });
+        let mut dirty = incremental;
+        for (index, steps) in chain
+            .links
+            .iter()
+            .copied()
+            .chain(std::iter::once(chain.last))
+            .enumerate()
+        {
+            let last = index + 1 == count;
+            let link = &mut self.links[index];
+            let offset = if last {
+                super::output_offset(plan)
+            } else {
+                (0, 0)
+            };
+            chain::pack_steps(plan.texels, offset, steps, &mut words, &mut blocks);
+            if (words.len() * 4) as u64 > link.words.size()
+                || (blocks.len() * 4) as u64 > link.blocks.size()
+            {
+                return Err("a later tick outgrows the session's buffers".into());
+            }
+            qualifier
+                .queue
+                .write_buffer(&link.words, 0, &le_bytes(&words));
+            qualifier
+                .queue
+                .write_buffer(&link.blocks, 0, &le_bytes(&blocks));
+            let key = chain::link_key(input, &words, &blocks, link.id);
+            if !last && link.key == Some(key) {
+                input = key;
+                dirty = incremental;
+                continue;
+            }
+            let link_dirty = dirty.filter(|_| link.key.is_some());
+            let mut reached = link_dirty;
+            if let Some(spatial) = link.spatial.as_mut() {
+                let (passes, over) = spatial.tick(
+                    &qualifier.device,
+                    &qualifier.queue,
+                    encoder,
+                    (&link.compiled.spatial, link.id),
+                    &link.bindings,
+                    &mut self.pool,
+                    steps,
+                    (&words, &blocks),
+                    input,
+                    (plan.texels, size),
+                    link_dirty,
+                );
+                ran[index] = passes;
+                reached = link_dirty.zip(over).map(|(dirty, over)| dirty.union(&over));
+            }
+            dirty = incremental
+                .zip(reached)
+                .map(|(changed, reached)| changed.union(&reached));
+            let planes_group = link
+                .spatial
+                .as_ref()
+                .and_then(|spatial| spatial.groups())
+                .and_then(|groups| groups.fragment.as_ref());
+            let as_size = |(width, height): (u32, u32)| (width as f32, height as f32);
+            match (&link.intermediate, &self.tail, &link.compiled.tail) {
+                (Some((_, view)), _, _) => encode_pass_over(
+                    encoder,
+                    view,
+                    &link.compiled.render,
+                    (&link.bindings, planes_group),
+                    as_size(size),
+                    reached,
+                ),
+                (None, Some((texture, tail_bindings)), Some(tail)) => {
+                    let content = texture.create_view(&wgpu::TextureViewDescriptor::default());
+                    // As the slot draws an identity tail on an incremental tick: both passes only
+                    // where the changes reached.
+                    let identity = steps
+                        .iter()
+                        .any(|step| matches!(step, GpuStep::Geometry(tail) if tail.identity()));
+                    let scissors = reached.filter(|_| identity).map(|reached| {
+                        let grown = reached.grown(1, size);
+                        let (dx, dy) = super::output_offset(plan);
+                        let origin = plan.texels.origin.map(|value| value.max(0.0) as u32);
+                        let to = |at: u32, origin: u32, offset: u32, limit: u32| {
+                            (at + origin).saturating_sub(offset).min(limit)
+                        };
+                        let output = spatial::Rect {
+                            x0: to(grown.x0, origin[0], dx, self.output.0),
+                            y0: to(grown.y0, origin[1], dy, self.output.1),
+                            x1: to(grown.x1, origin[0], dx, self.output.0),
+                            y1: to(grown.y1, origin[1], dy, self.output.1),
+                        };
+                        (grown, output)
+                    });
+                    encode_pass_over(
+                        encoder,
+                        &content,
+                        &link.compiled.render,
+                        (&link.bindings, planes_group),
+                        as_size(size),
+                        scissors.map(|(content, _)| content),
+                    );
+                    encode_pass_over(
+                        encoder,
+                        &self.view,
+                        tail,
+                        (tail_bindings, None),
+                        as_size(self.output),
+                        scissors.map(|(_, output)| output),
+                    );
+                }
+                (None, None, None) => {
+                    let (dx, dy) = super::output_offset(plan);
+                    let scissor = reached.map(|reached| {
+                        let grown = reached.grown(1, size);
+                        spatial::Rect {
+                            x0: grown.x0.saturating_sub(dx).min(self.output.0),
+                            y0: grown.y0.saturating_sub(dy).min(self.output.1),
+                            x1: grown.x1.saturating_sub(dx).min(self.output.0),
+                            y1: grown.y1.saturating_sub(dy).min(self.output.1),
+                        }
+                    });
+                    encode_pass_over(
+                        encoder,
+                        &self.view,
+                        &link.compiled.render,
+                        (&link.bindings, planes_group),
+                        as_size(self.output),
+                        scissor,
+                    )
+                }
+                _ => return Err("a plan's passes do not match its tail".into()),
+            }
+            link.key = Some(key);
+            input = key;
+        }
+        Ok(ran)
+    }
+}
+
+impl Qualifier {
+    /// Group 0 over `input`: the words, the blocks and the texture a link reads as its boundary.
+    fn bindings(
+        &self,
+        input: &wgpu::Texture,
+        words: &wgpu::Buffer,
+        blocks: &wgpu::Buffer,
+    ) -> wgpu::BindGroup {
+        let view = input.create_view(&wgpu::TextureViewDescriptor::default());
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("luxforge.qualification.bindings"),
+            layout: &self.support.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: words.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: blocks.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+            ],
+        })
+    }
+}
+
+/// `rgba8` texels as codes.
+fn codes(bytes: &[u8]) -> Vec<[u8; 4]> {
+    bytes
+        .chunks_exact(4)
+        .map(|texel| [texel[0], texel[1], texel[2], texel[3]])
+        .collect()
+}
+
+/// Little-endian `rgba32float` texels as values.
+fn floats(bytes: &[u8]) -> Vec<[f32; 4]> {
+    bytes
+        .chunks_exact(16)
+        .map(|texel| {
+            std::array::from_fn(|channel| {
+                let at = channel * 4;
+                f32::from_le_bytes([texel[at], texel[at + 1], texel[at + 2], texel[at + 3]])
+            })
+        })
+        .collect()
+}
+
+/// A boundary of `width` × `height` texels from `f32` values in row order, each held as the nearest
+/// half float, alpha one: what a qualification test hands [`Qualifier::evaluate`], and the values a
+/// CPU reference must then read, which [`held`] gives.
+pub fn boundary(width: u32, height: u32, version: u64, pixels: &[[f32; 3]]) -> Option<GpuBoundary> {
+    boundary_as(BoundaryFormat::Half, width, height, version, pixels)
+}
+
+/// [`boundary`] in `format`: an `rgba32float` one holds each value as it is, as a RAW's does.
+pub fn boundary_as(
+    format: BoundaryFormat,
+    width: u32,
+    height: u32,
+    version: u64,
+    pixels: &[[f32; 3]],
+) -> Option<GpuBoundary> {
+    GpuBoundary::from_linear(
+        format,
+        width,
+        height,
+        version,
+        pixels.iter().map(|[r, g, b]| [*r, *g, *b, 1.0]),
+    )
+}
+
+/// `value` as the boundary holds it: the nearest half float, widened.
+pub fn held(value: f32) -> f32 {
+    half::f16::from_f32(value).to_f32()
+}
+
+/// The half float of `bits`, little-endian as a boundary holds it, widened: how a derived JPEG
+/// boundary's texel reads back ([`Qualifier::derive`]).
+pub fn half_value(bits: [u8; 2]) -> f32 {
+    half::f16::from_bits(u16::from_le_bytes(bits)).to_f32()
+}
+
+/// The links of `plan`'s chain, by their place in it, whose sequence no plan of `warm` holds: what
+/// the compile thread has yet to compile when a gesture that draws `plan` begins over a cache that
+/// holds the warm list. Each link is keyed as the compile cache keys it, its program sequence and
+/// the format its last pass writes ([`super::link_sequences`]). Empty when every link is warmed.
+pub fn unwarmed_links(warm: &super::GpuWarm, plan: &GpuPlan) -> Vec<usize> {
+    let warmed: Vec<_> = warm
+        .sequences()
+        .iter()
+        .flat_map(|(steps, format)| {
+            super::link_sequences(steps, *format)
+                .map(|(link, written)| (super::compile::signature(link), written))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    super::link_sequences(&plan.steps, plan.boundary.format())
+        .enumerate()
+        .filter(|(_, (link, written))| {
+            !warmed.contains(&(super::compile::signature(link), *written))
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// Independent reference tables for a presentation test; ordinary hosts install their own tables.
+pub fn install_reference_encoding() {
+    assert!(super::install_output_encoding(
+        super::tail::reference_encoding()
+    ));
+}
+
+// Read-only resource views for cross-crate rendered integration tests. They expose no mutation
+// or allocation path, and are absent from ordinary editor builds.
+pub use super::{
+    blocks::block_len,
+    chain::{chain, pack_steps},
+    mask::changed_ranges,
+    rest::RestPasses,
+};
+pub const MIN_BUFFER: u64 = super::MIN_BUFFER;
+pub const BLOCK_CHUNK: usize = super::BLOCK_CHUNK;
+pub const OUTPUT_FORMAT: wgpu::TextureFormat = super::OUTPUT_FORMAT;
+pub struct BufferView<'a> {
+    pub buffer: &'a wgpu::Buffer,
+}
+pub struct SpatialView<'a> {
+    pub planes: &'a super::spatial::Planes,
+    pub schedule: &'a super::spatial::Schedule,
+    pub dispatched: u64,
+    pub groups: Option<(u64, u64, ())>,
+}
+impl<'a> From<&'a super::SpatialSlot> for SpatialView<'a> {
+    fn from(slot: &'a super::SpatialSlot) -> Self {
+        Self {
+            planes: &slot.planes,
+            schedule: &slot.schedule,
+            dispatched: slot.dispatched,
+            groups: slot
+                .groups
+                .as_ref()
+                .map(|(pipeline, generation, _)| (*pipeline, *generation, ())),
+        }
+    }
+}
+pub struct LinkView<'a> {
+    pub texture: &'a wgpu::Texture,
+    pub words: BufferView<'a>,
+    pub blocks: BufferView<'a>,
+    pub spatial: Option<Box<SpatialView<'a>>>,
+    written_blocks: &'a super::blocks::WrittenBlocks,
+}
+impl LinkView<'_> {
+    pub fn written_blocks(&self) -> &super::blocks::WrittenBlocks {
+        self.written_blocks
+    }
+}
+pub struct SlotView<'a> {
+    pub boundary: &'a wgpu::Texture,
+    pub output: &'a crate::Output,
+    pub words: BufferView<'a>,
+    pub blocks: BufferView<'a>,
+    pub chain: Vec<LinkView<'a>>,
+    pub spatial: Option<Box<SpatialView<'a>>>,
+    pub pool: &'a super::spatial::Pool,
+    pub written_blocks: &'a super::blocks::WrittenBlocks,
+    pub passes: u64,
+}
+impl super::GpuSlot {
+    pub fn inspection(&self) -> SlotView<'_> {
+        SlotView {
+            boundary: &self.boundary,
+            output: &self.output,
+            words: BufferView {
+                buffer: &self.words.buffer,
+            },
+            blocks: BufferView {
+                buffer: &self.blocks.buffer,
+            },
+            chain: self
+                .chain
+                .iter()
+                .map(|link| LinkView {
+                    texture: &link.texture,
+                    words: BufferView {
+                        buffer: &link.words.buffer,
+                    },
+                    blocks: BufferView {
+                        buffer: &link.blocks.buffer,
+                    },
+                    spatial: link
+                        .spatial
+                        .as_deref()
+                        .map(|slot| Box::new(SpatialView::from(slot))),
+                    written_blocks: link.written_blocks(),
+                })
+                .collect(),
+            spatial: self
+                .spatial
+                .as_deref()
+                .map(|slot| Box::new(SpatialView::from(slot))),
+            pool: &self.pool,
+            written_blocks: &self.written_blocks,
+            passes: self.passes,
+        }
+    }
+    pub fn spatial_dispatched(&self) -> Option<u64> {
+        self.spatial.as_ref().map(|slot| slot.dispatched)
+    }
+}
+pub struct SupportView<'a> {
+    pub passes: &'a super::spatial::PassCache,
+}
+pub struct StageView<'a> {
+    pub support: Option<SupportView<'a>>,
+    pub pipelines: &'a super::compile::Pipelines,
+    pub lost: &'a std::sync::atomic::AtomicBool,
+}
+impl super::GpuStage {
+    pub fn inspection(&self) -> StageView<'_> {
+        StageView {
+            support: self.support.as_ref().map(|support| SupportView {
+                passes: &support.passes,
+            }),
+            pipelines: &self.pipelines,
+            lost: &self.lost,
+        }
+    }
+    pub fn failure_message(&self, steps: &[GpuStep]) -> Option<Arc<str>> {
+        self.failure(steps)
+    }
+}
+impl super::Figures {
+    pub fn block_counters(&self) -> (u64, u64, u64) {
+        use std::sync::atomic::Ordering;
+        (
+            self.block_compared.load(Ordering::Acquire),
+            self.block_copied.load(Ordering::Acquire),
+            self.block_words.load(Ordering::Acquire),
+        )
+    }
+}
+impl super::GpuBoundary {
+    pub fn texel_owners(&self) -> Option<usize> {
+        self.texels.as_ref().map(Arc::strong_count)
+    }
+}
+
+pub fn assemble(steps: &[GpuStep]) -> Result<String, String> {
+    super::assemble(steps)
+}
+pub fn validate(source: &str) -> Result<wgpu::naga::Module, String> {
+    super::validate(source)
+}

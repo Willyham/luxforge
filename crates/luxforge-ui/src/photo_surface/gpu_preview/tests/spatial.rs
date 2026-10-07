@@ -798,6 +798,7 @@ fn pass_pipelines_depend_on_their_kernel_and_shape_alone() {
     let created = |pipeline: &PhotoPipeline| {
         pipeline
             .gpu
+            .inspection()
             .support
             .as_ref()
             .expect("a supported stage")
@@ -836,9 +837,16 @@ fn pass_pipelines_depend_on_their_kernel_and_shape_alone() {
     }
     // Each plan is a chain of two links: the colour steps', one sequence for each list of them, and
     // the spatial step's, one frame pipeline for each offset of its words over the shared passes.
-    assert_eq!(pipeline.figures.preview.compiles.load(Ordering::Relaxed), 5);
+    assert_eq!(pipeline.figures.preview.compiles(), 5);
     assert_eq!(
-        pipeline.gpu.support.as_ref().unwrap().passes.len(),
+        pipeline
+            .gpu
+            .inspection()
+            .support
+            .as_ref()
+            .unwrap()
+            .passes
+            .len(),
         3,
         "the stage keeps each module once"
     );
@@ -874,9 +882,8 @@ fn a_change_to_an_apply_alone_runs_no_pass() {
         pipeline.surfaces[&ID]
             .gpu
             .as_ref()
-            .and_then(|slot| slot.spatial.as_ref())
+            .and_then(GpuSlot::spatial_dispatched)
             .expect("a spatial slot")
-            .dispatched
     };
     let other = GpuBoundary::from_linear(
         crate::photo_surface::BoundaryFormat::Half,
@@ -1061,7 +1068,11 @@ fn chained_plan(boundary: &GpuBoundary, chained: Chained) -> GpuPlan {
 
 /// How many passes each spatial link of a chained plan's slot has dispatched, in chain order.
 fn link_passes(pipeline: &PhotoPipeline) -> [u64; 3] {
-    let slot = pipeline.surfaces[&ID].gpu.as_ref().expect("a slot");
+    let slot = pipeline.surfaces[&ID]
+        .gpu
+        .as_ref()
+        .expect("a slot")
+        .inspection();
     let link = |index: usize| {
         slot.chain[index]
             .spatial
@@ -1229,7 +1240,11 @@ fn chained_links_take_their_scratch_from_one_pool_and_draw_what_a_fresh_slot_dra
             continue;
         }
         // What each link's applies read, and what its passes write, by texture.
-        let slot = pipeline.surfaces[&ID].gpu.as_ref().expect("a slot");
+        let slot = pipeline.surfaces[&ID]
+            .gpu
+            .as_ref()
+            .expect("a slot")
+            .inspection();
         let (_, last_plan, _) = ticks.last().expect("ticks");
         let split = super::super::chain::chain(&last_plan.steps);
         let links = [
@@ -1342,7 +1357,11 @@ fn the_pools_generation_rebinds_a_link_once_a_texture_goes() {
         }
     };
     let first_link = |pipeline: &PhotoPipeline| {
-        let slot = pipeline.surfaces[&ID].gpu.as_ref().expect("a slot");
+        let slot = pipeline.surfaces[&ID]
+            .gpu
+            .as_ref()
+            .expect("a slot")
+            .inspection();
         let spatial = slot.chain[1].spatial.as_ref().expect("planes");
         let built = spatial
             .groups
@@ -1525,12 +1544,13 @@ fn a_chain_of_more_than_sixteen_sequences_compiles_once_then_draws_every_tick() 
             "tick {number}: nothing compiles again"
         );
     }
-    assert_eq!(pipeline.gpu.pipelines.len(), LONG_CHAIN);
+    assert_eq!(pipeline.gpu.inspection().pipelines.len(), LONG_CHAIN);
     eprintln!(
         "{test}: {LONG_CHAIN} sequences compiled once, {} ticks on the GPU, {} pass pipelines",
         ticks.len(),
         pipeline
             .gpu
+            .inspection()
             .support
             .as_ref()
             .map_or(0, |support| support.passes.created())
