@@ -63,6 +63,40 @@ fn answer_preferences_read(editor: &mut Editor) {
     let _ = editor.update(Message::Preferences(PreferenceMessage::Read(answer)));
 }
 
+/// The Starting look row, after the lens row, shows Standard by default, writes `raw_look` through
+/// `preferences.set` and shows what `preferences.read` answers afterwards.
+#[test]
+fn the_raw_look_row_reads_and_writes_the_core_preference() {
+    let (mut editor, root) = launch();
+    let _ = editor.update(Message::Settings(SettingsMessage::Open(
+        SettingsTab::General,
+    )));
+    answer_read(&mut editor);
+    let row = |editor: &Editor| editor.workspace.settings.general[2].clone();
+    assert_eq!(row(&editor).preference, GeneralPreference::RawLook);
+    assert_eq!(row(&editor).control.value(), json!("standard"));
+    assert_eq!(read(&editor)["raw_look"], "standard");
+
+    general(
+        &mut editor,
+        GeneralPreference::RawLook,
+        GeneralValue::Choice(1),
+    );
+    assert_eq!(
+        editor.preferences.writing().unwrap().params(),
+        json!({"raw_look": "neutral"})
+    );
+    assert_eq!(
+        row(&editor).control.value(),
+        json!("neutral"),
+        "shown at once"
+    );
+    answer_preference(&mut editor);
+    assert_eq!(read(&editor)["raw_look"], "neutral");
+    assert_eq!(row(&editor).control.value(), json!("neutral"));
+    finish(editor, root);
+}
+
 /// The Performance disclosure and the General rows all write through the one writer: one call in
 /// flight, every later change merged into one waiting change with the newer value of a field
 /// replacing the older, each shown at once, and the desktop's own announced writes skipped by the
@@ -239,7 +273,7 @@ fn the_masks_panel_colour_and_the_general_row_set_the_session_and_store_the_pref
         SettingsTab::General,
     )));
     answer_read(&mut editor);
-    let row = editor.workspace.settings.general[2].clone();
+    let row = editor.workspace.settings.general[3].clone();
     assert_eq!(row.preference, GeneralPreference::MaskOverlayColour);
     assert!(matches!(
         row.control,

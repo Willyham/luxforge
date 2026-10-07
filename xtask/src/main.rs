@@ -37,6 +37,7 @@ mod lens_performance;
 mod lens_qualification;
 mod lens_smoke;
 mod lensfun_import;
+mod look_smoke;
 mod loupe_smoke;
 mod mask_acceptance;
 mod mask_brush_smoke;

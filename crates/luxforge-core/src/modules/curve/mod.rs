@@ -21,7 +21,9 @@ use super::{
 use crate::Error;
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
-use unit::{Interpolant, ToneCurve};
+use unit::ToneCurve;
+/// The interpolant the RAW look's tone unit builds its knots from, with the look's tails.
+pub(super) use unit::{Interpolant, Tails, saturating_f32};
 
 /// The Tone curve's one pointwise unit: a monotone point curve over encoded luminance, declared
 /// order 5 so a curve layer follows the Basic layer and precedes the colour mixer's.

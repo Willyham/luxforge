@@ -61,7 +61,7 @@ Luxforge is pre-release. Everything is v0, formats change without migrations, an
   <sub>Masking in the app: a radial gradient, subtracting brush and luminance intersection shape a local adjustment. The green overlay shows coverage.</sub>
 </p>
 
-RAW qualification, relinking moved originals, an MCP adapter and a multi-photo library are the next big pieces. Clone, Heal and AI Remove remain proposals. [Feature status](docs/features.md) has the full, current picture, including what hasn't been verified yet.
+Relinking moved originals, an MCP adapter and a multi-photo library are the next big pieces. Clone, Heal and AI Remove remain proposals. [Feature status](docs/features.md) has the full, current picture, including what hasn't been verified yet.
 
 ## Getting started
 

@@ -19,9 +19,10 @@ use super::gpu_plan::{program, surface_plan};
 use super::gpu_qualification::{Stream, codes, figures, grid, worst};
 use luxforge_core::{
     BASIC_EFFECT, CURVE_EFFECT, CompileStage, EFFECT_FORMAT, GPU_PROGRAMS, GpuAnswer,
-    GpuPlanRequest, GpuProgramKind, Layer, MIXER_EFFECT, ModuleRegistry, PointwiseColor,
-    Processing, Recipe, Stage, VIGNETTE_EFFECT, gpu_plan,
+    GpuPlanRequest, GpuProgramKind, LOOK_EFFECT, Layer, MIXER_EFFECT, ModuleRegistry,
+    PointwiseColor, Processing, Recipe, Stage, VIGNETTE_EFFECT, gpu_plan,
 };
+use luxforge_reference::look::{STANDARD, standard_knots};
 use luxforge_reference::preview_error::{self, Class, Rgb8, Statistics};
 use luxforge_ui::photo_surface::{
     GpuBoundary, GpuPlan, GpuProgram, GpuStep, PositionMap, TexelMap,
@@ -235,7 +236,10 @@ fn flat_boundary(width: u32, height: u32) -> GpuBoundary {
 #[test]
 fn gpu_colour_plans_convert_to_one_step_per_unit_or_name_what_the_surface_lacks() {
     let registry = registry();
-    let stack = recipe(colour_stack());
+    // The colour stack with a RAW look between Basic and the Tone curve, where its order places it.
+    let mut layers = colour_stack();
+    layers.insert(1, look(&standard_knots(&STANDARD), 1.2, 0.8, 100.0));
+    let stack = recipe(layers);
     let plan = planned(
         &registry,
         &stack,
@@ -260,6 +264,7 @@ fn gpu_colour_plans_convert_to_one_step_per_unit_or_name_what_the_surface_lacks(
             "lf_basic_exposure",
             "lf_basic_tone",
             "lf_basic_colour_adjust",
+            "lf_look_look",
             "lf_curve_tone_curve",
             "lf_mixer_mixer",
             "lf_vignette_vignette",
@@ -691,6 +696,47 @@ fn gpu_colour_tone_curve_meets_the_pointwise_limits() {
     qualify(
         "gpu_colour_tone_curve_meets_the_pointwise_limits",
         "lf_curve_tone_curve",
+        cases,
+        GRID,
+    );
+}
+
+/// A RAW look layer holding `knots`, `chroma`, `knee` and `amount`, written as the module stores
+/// it. The look applies to RAW photos only; the qualification compiles and plans the layer
+/// directly, as the renderer does, with no source kind to refuse it.
+fn look(knots: &[[f64; 2]], chroma: f64, knee: f64, amount: f64) -> Layer {
+    Layer::new(
+        LOOK_EFFECT,
+        json!({
+            "look": "standard", "amount": amount, "tone": knots, "chroma": chroma, "knee": knee,
+            "fit": null
+        }),
+    )
+}
+
+#[test]
+fn gpu_colour_look_meets_the_pointwise_limits() {
+    let standard = standard_knots(&STANDARD);
+    let lifted = [[0.0, 0.08], [0.2, 0.3], [0.7, 0.8], [1.3, 0.95]];
+    let cases = [
+        ("Standard at 100", look(&standard, 1.2, 0.8, 100.0)),
+        ("Standard at 35", look(&standard, 1.2, 0.8, 35.0)),
+        ("Standard at 180", look(&standard, 1.2, 0.8, 180.0)),
+        (
+            "a lifted black, desaturated",
+            look(&lifted, 0.75, 0.9, 100.0),
+        ),
+        (
+            "two knots",
+            look(&[[0.0, 0.0], [1.2, 1.0]], 1.1, 0.8, 100.0),
+        ),
+        ("a knee at 0.95", look(&standard, 1.2, 0.95, 100.0)),
+    ]
+    .map(|(name, layer)| (name.to_owned(), layer))
+    .to_vec();
+    qualify(
+        "gpu_colour_look_meets_the_pointwise_limits",
+        "lf_look_look",
         cases,
         GRID,
     );
