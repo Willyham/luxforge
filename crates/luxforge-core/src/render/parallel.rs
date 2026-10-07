@@ -1,13 +1,13 @@
 //! The one parallel gate every rendering pass asks: whether a pass of a given kind over a given
 //! number of pixels runs on the shared Rayon pool, from that kind's measured threshold in
-//! `luxforge_raw`'s limits module ([`luxforge_raw::parallel_pixels`]).
+//! core rendering's limits module ([`crate::render::limits::parallel_pixels`]).
 //!
 //! Which way a pass runs changes how its rows or tiles are scheduled, never its arithmetic: every
 //! pass writes the same bytes serially and pooled. A test build can force either way on the thread
 //! that asks ([`force`]), which is how the exactness tests compare the two at one size and how the
 //! break-even measurement times them.
 
-pub(crate) use luxforge_raw::RenderPass;
+pub(crate) use crate::render::limits::RenderPass;
 
 /// The kind of an interpolating resample's pass: a warp's when its map holds a nonlinear step,
 /// and otherwise a resample's. Whichever pass evaluates a resample, the byte path's frame or the
@@ -23,7 +23,7 @@ pub(crate) fn resample_pass(resample: &crate::modules::Resample) -> RenderPass {
 /// Whether a `pass` over `pixels` runs on the shared Rayon pool: at and past its kind's threshold.
 #[cfg(not(test))]
 pub(crate) fn pooled(pass: RenderPass, pixels: u64) -> bool {
-    pixels >= luxforge_raw::parallel_pixels(pass)
+    pixels >= crate::render::limits::parallel_pixels(pass)
 }
 
 /// Whether a `pass` over `pixels` runs on the shared Rayon pool: at and past its kind's threshold,
@@ -32,7 +32,7 @@ pub(crate) fn pooled(pass: RenderPass, pixels: u64) -> bool {
 pub(crate) fn pooled(pass: RenderPass, pixels: u64) -> bool {
     let pooled = FORCED
         .get()
-        .unwrap_or_else(|| pixels >= luxforge_raw::parallel_pixels(pass));
+        .unwrap_or_else(|| pixels >= crate::render::limits::parallel_pixels(pass));
     if pooled {
         WATCHED.with_borrow_mut(|watched| {
             if let Some(watched) = watched {

@@ -134,7 +134,9 @@ impl Entry {
 /// and the descriptor the registry publishes for it, whose availability is the registry's. A module
 /// registered unavailable reports that here whatever its own descriptor declares, so a caller that
 /// checks `Provider::descriptor`'s availability before calling the module reads the registry's
-/// answer.
+/// answer. `Deref` exposes the raw implementation's hooks; it does not enforce availability.
+/// Explicitly dereferencing to `ToolModule` reads that implementation's own descriptor instead
+/// of the registered descriptor. Normal `provider.descriptor()` always reads the registry's.
 #[derive(Clone, Copy)]
 pub struct Provider<'r> {
     module: &'r dyn ToolModule,
@@ -143,8 +145,9 @@ pub struct Provider<'r> {
 
 impl<'r> Provider<'r> {
     /// The descriptor the registry publishes for this module, with the availability it was
-    /// registered with.
-    pub(crate) fn descriptor(&self) -> &'r ModuleDescriptor {
+    /// registered with. Use this descriptor for availability checks, including before calling
+    /// any hooks exposed through `Deref`.
+    pub fn descriptor(&self) -> &'r ModuleDescriptor {
         self.descriptor
     }
 

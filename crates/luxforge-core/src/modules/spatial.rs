@@ -752,7 +752,7 @@ impl std::fmt::Debug for SpatialOperation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use luxforge_raw::SPATIAL_TILE;
+    use crate::render::limits::SPATIAL_TILE;
 
     const STAGE: Stage = Stage {
         width: 1000,

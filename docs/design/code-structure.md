@@ -1,6 +1,6 @@
 # Code structure consolidation
 
-Status: implementation authorized by the owner on 2026-10-07, in progress. The [task plan](../../tasks/project/code-structure.json) tracks acceptance. The GPU crate split below remains a proposal awaiting explicit owner approval at TASK-003; independent tasks can proceed.
+Status: implementation authorized by the owner on 2026-10-07, in progress. The [task plan](../../tasks/project/code-structure.json) tracks acceptance. The owner approved the static `luxforge-gpu-types` plus `luxforge-gpu` split on 2026-10-07; TASK-003 is accepted; the checked boundary governs extraction.
 
 ## Objective
 
@@ -16,7 +16,7 @@ The current GPU path is core compilation/planning, desktop lowering, and executi
 
 | Finding | Current issue | Outcome | Tasks |
 | --- | --- | --- | --- |
-| R1 | `Provider::descriptor` is crate-private while public `Deref` exposes the module's descriptor; an external caller can read the module's available status instead of the registry override | One registry-aware availability answer through the public lookup surface | TASK-001 |
+| R1 | Delivered: public `Provider::descriptor` reads registry availability; explicitly dereferenced module hooks retain raw metadata | One registry-aware availability answer through the public lookup surface | TASK-001 |
 | R2 | Core and UI separately declare GPU formats, plane extents, pass shapes and shader constants; desktop lowering maps the corresponding families | One shared primitive contract; semantic planning and device lowering keep their distinct responsibilities | TASK-003, 004 |
 | R3 | Core admission and backend allocation separately calculate common resource-layout rules; tests compare the two implementations | Shared layout rules consumed by prediction and allocation, with explicit device inputs | TASK-005 |
 | R4 | Window-free GPU execution is reusable but lives in the widget subsystem | One core-free, Iced-free executor with a thin presentation adapter | TASK-006, 007 |
@@ -24,19 +24,19 @@ The current GPU path is core compilation/planning, desktop lowering, and executi
 | R6 | Stream strategy and tile-size selection repeatedly prepare the same GPU stack, and staged selection discards a newly generated tile list | One preparation per equivalent worker-scoped request; derive alternatives and reuse sweep tiles | TASK-008 |
 | R7 | Colour and spatial operation equality uses diagnostic description strings | Explicit exact semantic identity independent of diagnostic wording | TASK-010 |
 | R8 | Preview requests and resource phases use loose flags/options and repeated eligibility checks | Valid request intent and small resource-phase types; one presentation/counts eligibility decision | TASK-011, 012 |
-| R9 | Grid and loupe repeat preview-read parsing and bounded decode/handle-cache mechanics | Shared mechanisms with separate grid/loupe policies and budgets | TASK-013, 014 |
-| R10 | RAW exports renderer-only thresholds, frame bounds and tile rules unused by its implementation | Renderer-only policy owned by core rendering; shared adapter admission stays with its actual owner | TASK-015 |
-| R11 | Indexing and Locate duplicate hidden-file platform metadata checks | One hidden-status helper, separate traversal policies | TASK-016 |
-| R12 | Comments and broad dead-code expectations still describe the earlier gesture-only GPU stage | Current GPU-first contracts and accurate proof-only boundaries | TASK-002 |
+| R9 | Delivered: one typed preview-read seam. Bounded decode/handle-cache mechanics still repeat | Shared mechanisms with separate grid/loupe policies and budgets | TASK-013, 014 |
+| R10 | Delivered: renderer-only thresholds, frame bounds and tile rules live in core rendering | Renderer-only policy owned by core rendering; shared adapter admission stays with its actual owner | TASK-015 |
+| R11 | Delivered: indexing and Locate share one hidden-file predicate and retain separate traversal policies | One hidden-status helper, separate traversal policies | TASK-016 |
+| R12 | Delivered: comments describe current GPU-first paths and whole-boundary proof helpers are test-only | Current GPU-first contracts and accurate proof-only boundaries | TASK-002 |
 
-R1 is a public API defect: Rust skips the inaccessible inherent method outside core and resolves through `Deref`. Internal core checks read the override; the review did not establish that the editor executes disabled providers. R6 is confirmed redundant construction, not a measured speedup. R7 and R8 are interface risks; no wrong delivered equality or rendering failure was established. R3 is duplicated ownership, not evidence of a budget overrun. The relevant source entry points are linked in each task.
+Registry-aware provider access is verified from outside core, including disabled built-ins and all lookup paths. R6 is confirmed redundant construction, not a measured speedup. R7 and R8 are interface risks; no wrong delivered equality or rendering failure was established. R3 is duplicated ownership, not evidence of a budget overrun. The relevant source entry points are linked in each task.
 
-## GPU contract and ownership proposal
+## GPU types and ownership
 
-Propose two small static workspace boundaries, with names settled by TASK-003:
+The owner approved two small static workspace boundaries:
 
-- A pure internal GPU contract, tentatively `luxforge-gpu-contract`, for common formats, plane-size/extent rules, pass shapes, shader conventions and resource-layout data/functions. It imports neither core, Iced nor wgpu. Core planning, the backend and desktop lowering can consume it.
-- A wgpu backend, tentatively `luxforge-gpu`, for shader composition/compilation, execution, common allocation and retirement, and the window-free tile runner. It imports the contract and pinned GPU dependencies, never core or Iced.
+- A pure internal GPU contract, `luxforge-gpu-types`, for common formats, plane-size/extent rules, pass shapes, shader conventions and resource-layout data/functions. It imports neither core, Iced nor wgpu. Core planning, the backend and desktop lowering can consume it.
+- A wgpu backend, `luxforge-gpu`, for shader composition/compilation, execution, common allocation and retirement, and the window-free tile runner. It imports the contract and pinned GPU dependencies, never core or Iced.
 
 The core retains semantic recipe compilation, stage/window planning and the `TileService` contract. The desktop retains host composition, core-to-device lowering, source/evaluation ownership, adapter policy and client/worker scheduling that depends on core requests. Lowering has one owner and is shared by display and tile work. The UI retains Iced device integration, presentation, frame pacing and display-specific scheduling. Share the device supplied by Iced rather than introducing a second device merely to separate crates.
 
@@ -44,20 +44,20 @@ Semantic core plans and executable device plans are not identical: lowering reso
 
 Each extraction moves implementation and updates its callers in the same task. Do not keep a parallel old executor or compatibility layer. A thin current presentation adapter is a supported boundary, not a historical interface. Repository source/dependency checks move with ownership and continue to refuse forbidden dependencies. Qualification must exercise the same production kernels after the move.
 
-### Concrete boundary proposal (TASK-003, awaiting approval)
+### Approved boundary (TASK-003)
 
-Use `luxforge-gpu-contract` and `luxforge-gpu` as static workspace crates. Neither exposes an external plugin ABI. This proposal is based on current `main` (`3ac13023`); there is one existing execution family, not an executor to replace.
+Use `luxforge-gpu-types` and `luxforge-gpu` as static workspace crates. Neither exposes an external plugin ABI. This boundary is based on current `main` (`3ac13023`); there is one existing execution family, not an executor to replace.
 
 | Owner | Current implementation and resulting responsibility |
 | --- | --- |
-| `luxforge-gpu-contract` | Common `BoundaryFormat`, `PlaneFormat`, reduced/fixed plane extents, precision/channel compatibility, `PassShape`, words/block headers, pass parameter indices/stride, binding indices, workgroup dimensions and shared WGSL prelude/stubs. Pure resource-layout functions describe scratch grouping, kept/intermediate/output extents, size buckets and parameter slices. No recipe, executable whole plan, device, shader compiler or policy budgets. |
+| `luxforge-gpu-types` | Common `BoundaryFormat`, `PlaneFormat`, reduced/fixed plane extents, precision/channel compatibility, `PassShape`, words/block headers, pass parameter indices/stride, binding indices, workgroup dimensions and shared WGSL prelude/stubs. Pure resource-layout functions describe scratch grouping, kept/intermediate/output extents, size buckets and parameter slices. No recipe, executable whole plan, device, shader compiler or policy budgets. |
 | `luxforge-core` | Module-owned WGSL and semantic descriptions (`render/gpu/program.rs`, `spatial.rs`), recipe compilation, mask sampling, stage/window walk, chained/staged/light-sweep planning, conservative admission and `tiles::TileService`. Semantic planes retain their scratch declarations; a semantic fixed one-texel light is resolved by lowering rather than conflated with a runtime resource reference. |
 | `luxforge-gpu` | Existing `gpu_preview` shader assembly, `compile`, `chain`, `spatial`, `source`, `light`, `staged`, `rest` and `histogram` execution/allocation; executable plans, sources, buffers and resource slots; bounded compile/pass caches; GPU availability/loss and resource charge/retirement mechanisms; existing `tiles::TileRunner` and worker readback. Backend plane sizing uses the common reduced/fixed extent plus an explicit resolved `Light(index)` reference. |
 | `luxforge-app` | The sole semantic-to-executable lowering in `app/gpu_plan.rs`, shared by display, tile reads, export and catalog tiers; core-aware evaluation/source lifetimes, stream strategy selection, client cancellation, worker/band scheduling, output encoding installation, adapter selection/refusal policy and complete reference restart. |
 | `luxforge-ui` | `PhotoSurface` and Iced `shader::Pipeline` implementation, texture placement/bindings for presentation, crop/overlay/photo presentation and its separate photo-texture charges, redraw/dissolve pacing and UI diagnostics projection. It hands the backend the device/queue supplied by Iced and borrows the backend output view; it does no recipe lowering. |
 | Qualification | Backend headless execution/readback helpers and kernel tests move with the executor, behind test-only `qualification`. Core WGSL tests use the common convention. App tests/corpus harness compare the production backend against core/reference and exercise host cancellation/fallback. The independent numerical oracle remains workspace-independent. |
 
-Production dependencies are exactly these workspace edges: `core -> gpu-contract`; `gpu -> gpu-contract`; `ui -> gpu`; `app -> core + ui + gpu`. The UI may import the pure contract directly only where its presentation needs a common format. The contract uses `std` only. The backend uses the already pinned `wgpu = 27.0.1` (`wgsl`, `naga-ir`), `half = 2.7.1` (`std`) and `bytemuck = 1.25.2`, moving the existing pins rather than adding another stack. `iced` and `iced_wgpu` stay in UI/app. Test-only dependencies (`luxforge-testbase`, `luxforge-reference`, `luxforge-process`) remain test-only; backend `qualification` enables only its existing bounded headless wait helper. The CLI still reaches core and the pure contract, with no GPU/GUI dependency. Repository rules enforce these transitive boundaries and move qualification/source ownership checks with the implementation.
+Production dependencies are exactly these workspace edges: `core -> gpu-types`; `gpu -> gpu-types`; `ui -> gpu`; `app -> core + ui + gpu`. The UI may import the pure contract directly only where its presentation needs a common format. The contract uses `std` only. The backend uses the already pinned `wgpu = 27.0.1` (`wgsl`, `naga-ir`), `half = 2.7.1` (`std`) and `bytemuck = 1.25.2`, moving the existing pins rather than adding another stack. `iced` and `iced_wgpu` stay in UI/app. Test-only dependencies (`luxforge-testbase`, `luxforge-reference`, `luxforge-process`) remain test-only; backend `qualification` enables only its existing bounded headless wait helper. The CLI still reaches core and the pure contract, with no GPU/GUI dependency. Repository rules enforce these transitive boundaries and move qualification/source ownership checks with the implementation.
 
 The concrete presentation seam is an executor constructed from borrowed/cloned `wgpu::Device`/`Queue`, a neutral wake callback, and explicit device limits/target format. Its per-surface execution state groups the existing slot, lights, rest accumulator and histogram resources; preparation returns output view/size, readiness/failure and figures. Iced's adapter keeps surface IDs, presentation uniforms, dissolve and redraw decisions. The current coupling to `PhotoPipeline`, `Picture`, `SurfaceSlots`, `SurfaceFigures` and `wake_surface` is replaced at this seam, not carried into the backend. Neutral wake callbacks replace imports from `photo_surface` in `compile`.
 
@@ -67,7 +67,7 @@ Device sharing means display uses Iced's existing device. The **existing** tile 
 
 Layout takes boundary origin/size, format, plane roles, link/tail/output requirements and buffer lengths; actual storage offset alignment and texture/binding limits are explicit device inputs. The current 256-byte pass stride is retained and checked against supported device alignment. Logical core estimates, actual resident allocation and retiring allocation remain separate. Keep the existing conservative light allowance explicit; the desktop's unconverted estimate is not an admission upper bound. Preserve today's 2 GiB preview budget, 2 GiB tile-worker budget, 256 MiB boundary cap, 256 MiB read reserve, two tiles/two export bands in flight and all cache caps. Crop/overlay/backend staging remain outside the existing accounting scope; this proposal claims no total-memory guarantee.
 
-Approval authorizes TASK-004 through TASK-007 and TASK-008 according to their existing dependency graph. Until approval, TASK-003 stays open and those tasks stay pending. Rejecting or changing the split requires updating and validating the design/DAG first.
+The owner approved this boundary and the `-types` name on 2026-10-07. TASK-004 through TASK-007 and TASK-008 start according to their existing dependency graph after TASK-003 checks pass. A consequential boundary change still requires owner review and a validated design/DAG.
 
 ### Resource layout
 
@@ -113,9 +113,13 @@ Source files, recipes, immutable history, command schemas, declared output toler
 
 ## Open decisions
 
-1. **GPU crate boundary:** adopt the proposed pure-contract plus Iced-free backend split, including actual names and the minimal surface for Iced's device integration. TASK-003 produces the dependency map and exact ownership table, and records the owner's decision before extraction proceeds. If the owner rejects new crates, revise the design and task DAG before implementation; duplicated contract/layout rules still need a single owner.
+1. **GPU crate boundary:** the owner approved the pure `luxforge-gpu-types` plus Iced-free `luxforge-gpu` split on 2026-10-07, with the device-sharing seam and ownership above. Implementation must stay within that boundary.
 2. **Current Rust authoring surface:** default to supported current consumers and keep built-in-only machinery internal. TASK-009 inventories usage. If this exposes an actual requirement for new external authors, take that scope change to the owner rather than silently turning a visibility cleanup into a plugin framework.
 3. **Native qualification prerequisites:** the authentic-source manifest and native hosts must be available for the corresponding TASK-017 checks. Missing scope stays open; timing starts only after implementation is integrated.
+
+## Performance review of the contained cleanups
+
+Provider lookup, current-contract comments, typed preview reads, renderer policy ownership and hidden metadata sharing add no original read/hash/decode path, frame allocation, render in a query/validation/no-op check, owner-thread frame work, desktop refresh/upload, timer, poll, subscription or cache. Existing source verification, worker limits, JSON request data and traversal policies are retained. The moved policy values are unchanged. Exact rendering/admission regressions and protocol/traversal tests cover these changes; no image algorithm changes. Photo-sized timing and allocation comparisons remain TASK-017 work on the integrated branch, so these cleanups make no speed or memory claim.
 
 ## Acceptance and verification
 

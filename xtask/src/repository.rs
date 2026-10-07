@@ -829,24 +829,44 @@ const SOURCE_RULES: &[SourceRule] = &[
                  (crates/luxforge-app/src/app/evidence.rs and its modules) names a step's wait and \
                  settles, arms or refuses it",
     },
-    // The one-megapixel parallel threshold and the 512 MiB frame limit every per-pixel pass picks
-    // its path against are declared once, in luxforge-raw's limits module: luxforge-core depends on
-    // luxforge-raw, not the reverse, so that module is the one home both crates can import from.
-    // The assignment is matched rather than the bare number, so an unrelated literal (a float
-    // tolerance, a loop bound, a sample count) is not mistaken for a duplicate declaration; a
-    // coincidental match outside these two crates (luxforge-ui's own texture budget, for one) is a
-    // different concept and out of this rule's scope.
+    // Renderer-only policy belongs to core; adapter admission and the shared non-rendering
+    // parallel threshold remain in RAW.
     SourceRule {
         name: "render-limits-home",
-        tokens: &["= 1_000_000;", "= 512 * 1024 * 1024;"],
+        tokens: &[
+            "enum RenderPass",
+            "fn parallel_pixels(",
+            "fn spatial_tile(",
+            "const MAX_FRAME_BYTES:",
+            "const PARALLEL_TRANSFORM_PIXELS:",
+            "const PARALLEL_COLOUR_PIXELS:",
+            "const PARALLEL_HEAVY_COLOUR_PIXELS:",
+            "const PARALLEL_RESAMPLE_PIXELS:",
+            "const PARALLEL_WARP_PIXELS:",
+            "const PARALLEL_SPATIAL_PIXELS:",
+            "const PARALLEL_PROXY_PIXELS:",
+            "const SPATIAL_TILE:",
+            "const SPATIAL_WIDE_TILE:",
+            "const SPATIAL_WIDE_HALO:",
+        ],
+        scope: &["crates/luxforge-core/src", "crates/luxforge-raw/src"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-core/src/render/limits.rs"],
+        mode: Match::Whole,
+        tests: false,
+        once: false,
+        reason: "renderer-only policy may be declared only in crates/luxforge-core/src/render/limits.rs; import it from there instead",
+    },
+    SourceRule {
+        name: "parallel-limit-home",
+        tokens: &["= 1_000_000;"],
         scope: &["crates/luxforge-core/src", "crates/luxforge-raw/src"],
         types: &["rs"],
         allowed: &["crates/luxforge-raw/src/limits.rs"],
         mode: Match::Whole,
         tests: false,
         once: false,
-        reason: "the one-megapixel parallel threshold and the 512 MiB frame limit may be declared \
-                 only in crates/luxforge-raw/src/limits.rs; import it from there instead",
+        reason: "the shared non-rendering parallel threshold may be declared only in crates/luxforge-raw/src/limits.rs",
     },
     // One evaluation rule: the drafted preview's mode, the one evaluation that may approximate a
     // RAW white balance the developed planes do not hold, is decided by the one evaluation builder
@@ -4348,7 +4368,7 @@ mod tests {
     }
 
     #[test]
-    fn only_the_limits_module_declares_the_shared_thresholds() {
+    fn renderer_policy_and_adapter_threshold_have_their_own_homes() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         // The module itself, a pass-through elsewhere in either crate, a test file, and an
@@ -4358,8 +4378,11 @@ mod tests {
             &[
                 (
                     "crates/luxforge-raw/src/limits.rs",
-                    "pub const PARALLEL_PIXELS: u64 = 1_000_000;\n\
-                     pub const MAX_FRAME_BYTES: u64 = 512 * 1024 * 1024;\n",
+                    "pub const PARALLEL_PIXELS: u64 = 1_000_000;\n",
+                ),
+                (
+                    "crates/luxforge-core/src/render/limits.rs",
+                    "pub(crate) const MAX_FRAME_BYTES: u64 = 512 * 1024 * 1024;\n",
                 ),
                 (
                     "crates/luxforge-core/src/render.rs",
@@ -4379,7 +4402,8 @@ mod tests {
                 ),
             ],
         );
-        assert_eq!(read(root, &["render-limits-home"]).unwrap(), (2, 0));
+        assert_eq!(read(root, &["render-limits-home"]).unwrap(), (3, 0));
+        assert_eq!(read(root, &["parallel-limit-home"]).unwrap(), (3, 0));
         // A second literal declaration in either covered crate, outside the module, is refused.
         refuses_each(
             root,
@@ -4387,11 +4411,31 @@ mod tests {
             &[
                 (
                     "crates/luxforge-core/src/proxy.rs",
-                    "const FRAME_LIMIT_BYTES: u64 = 512 * 1024 * 1024;\n",
+                    "const MAX_FRAME_BYTES: u64 = 512 * 1024 * 1024;\n",
                 ),
                 (
                     "crates/luxforge-raw/src/dng.rs",
-                    "const PARALLEL_CORRECTION_PIXELS: u64 = 1_000_000;\n",
+                    "const SPATIAL_TILE: u32 = 512;\n",
+                ),
+            ],
+            "may be declared",
+        );
+    }
+
+    #[test]
+    fn the_adapter_parallel_threshold_cannot_be_redeclared() {
+        let tmp = tempfile::tempdir().unwrap();
+        refuses_each(
+            tmp.path(),
+            "parallel-limit-home",
+            &[
+                (
+                    "crates/luxforge-core/src/render/limits.rs",
+                    "const PARALLEL_PIXELS: u64 = 1_000_000;\n",
+                ),
+                (
+                    "crates/luxforge-raw/src/dng.rs",
+                    "const PARALLEL_PIXELS: u64 = 1_000_000;\n",
                 ),
             ],
             "may be declared",

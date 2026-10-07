@@ -40,6 +40,7 @@ mod cpu_proxy_tests;
 pub(crate) mod crop;
 pub(crate) mod develop;
 pub(crate) mod draft;
+mod drawn_frames;
 pub(crate) mod evidence;
 #[cfg(test)]
 mod evidence_tests;
@@ -88,16 +89,7 @@ pub(crate) mod gpu_warm;
 mod gpu_white_balance_tests;
 #[cfg(test)]
 mod gpu_window_tests;
-// The one conversion Fit drags will hand the photo surface its GPU plan through; the desktop does
-// not draw a gesture on the GPU yet, so only its tests reach it.
-mod drawn_frames;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "Fit drags convert their GPU plans here once the desktop draws them on the GPU"
-    )
-)]
+// The shared lowering from core semantic plans to executable display and tile-worker plans.
 pub(crate) mod gpu_plan;
 pub(crate) mod gpu_settle;
 #[cfg(test)]
@@ -148,6 +140,7 @@ mod presets_tests;
 pub(crate) mod preview;
 #[cfg(test)]
 mod preview_failure_tests;
+mod preview_read;
 #[cfg(test)]
 mod preview_tests;
 #[cfg(test)]
@@ -454,7 +447,7 @@ pub(crate) struct Editor {
     /// Developing picks and the development set: Develop N's confirmation, the set and its
     /// filmstrip, and the large previews a move draws first.
     pub(crate) develop: develop::Develop,
-    /// The open gesture's GPU preview — its plan, its held boundary and its path — and the warm
+    /// GPU display/analysis resources for committed and drafted content, and the warm
     /// list of the committed stack.
     pub(crate) gpu: gpu_preview::GpuPreviews,
     /// The settle's hand-off from the GPU frame on screen to the CPU frame that replaces it.

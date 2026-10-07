@@ -123,12 +123,12 @@ pub trait PointwiseColor: Send + Sync {
     /// write every coefficient exactly, with the shortest round-trip form (`{}`), and never rounded
     /// to a display precision.
     fn describe(&self) -> String;
-    /// This unit's GPU program and the uniform words it reads, for a preview during a gesture
-    /// (`docs/design/gpu-preview.md`). The program is WGSL text the module keeps beside this unit;
-    /// the words are a pure function of the coefficients `describe` writes, so two units that
-    /// describe themselves identically answer identical descriptions. `None`, the default, sends
-    /// every stack holding this unit down the CPU path. Settled frames, samples, analysis and
-    /// export never read a GPU pixel, so a program changes no CPU byte.
+    /// This unit's GPU program and the uniform words it reads for display, histogram analysis,
+    /// samples, catalog tiers and export (`docs/design/gpu-first.md`). The module keeps the WGSL
+    /// beside this unit; its words follow the unit's exact processing state. `None`, the default,
+    /// sends a stack needing this unit to the whole-frame reference renderer, also used on a
+    /// host without a usable GPU. GPU outputs meet the declared tolerance against that reference;
+    /// the independent CPU implementation remains the exact-buffer reference.
     fn gpu(&self) -> Option<GpuDescription> {
         None
     }

@@ -16,6 +16,8 @@ Module code never writes catalog tables, never keeps an undo stack and never ren
 
 ## Descriptor
 
+Registered lookups return `Provider`: its public `descriptor()` reports registry availability, including a module disabled for this run. `descriptors()`, `module()`, `action()` and `effect()` agree. `Provider` retains `Deref` for raw implementation hooks; callers check the registered descriptor before using them. Explicitly dereferencing to `ToolModule` accesses the implementation's own descriptor, which does not carry registry overrides.
+
 Every module returns one `ModuleDescriptor` from `descriptor()`. It is plain data, cheap to build and serializable, and it is the single source of API discovery, GUI controls and validation limits. A module builds it in Rust with the typed constructors — `EffectDescriptor::new(id, stage)`, `ActionDescriptor::new(id, title, notes)`, the `ParameterDescriptor` kinds and one struct per control kind (`Control::number(…)` returns a `NumberControl`, `Control::choice(…)` a `ChoiceControl`, and so on, each with only its own kind's setters, so a setter of another kind does not compile) — and registration validates it. There is no reader for descriptors arriving as JSON: `module.list` serializes them, and a client deserializes that listing. The code lives in `modules/descriptor/`: the shapes and the control variants' resolution in `types.rs`, the registration rules in `validate.rs`, the checks a request's values meet (the settings check among them) in `values.rs` and how a label names a value in `labels.rs`.
 
 | Field | Meaning |
