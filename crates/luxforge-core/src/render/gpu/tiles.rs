@@ -985,4 +985,65 @@ mod tests {
             "unplannable"
         );
     }
+    /// Integrated qualification only: warmed exact evaluation, no source preparation or GPU.
+    /// Exercise all candidate sides plus strategy/light choices, retaining every timing sample.
+    #[test]
+    #[ignore = "integrated before/after measurement on a quiet host, 24/60 MP allocations"]
+    fn code_structure_stream_setup_measurement() {
+        use luxforge_testbase::Distribution;
+        use std::{hint::black_box, time::Instant};
+        for (width, height) in [(6_000, 4_000), (9_504, 6_336)] {
+            for (domain, source) in sources(width, height) {
+                let recipe = recipe_of(vec![
+                    Layer::new(DETAIL_EFFECT, json!({"sharpening": 40.0})),
+                    basic(),
+                    Layer::new(
+                        PRESENCE_EFFECT,
+                        json!({"texture": 30.0, "clarity": 35.0, "dehaze": 30.0}),
+                    ),
+                ]);
+                let evaluation = stored(&source, &recipe);
+                evaluation.compiled().unwrap();
+                let setup = || {
+                    let prepared = PreparedStream::of(&evaluation).unwrap();
+                    for side in STREAM_TILE_SIDES {
+                        black_box(prepared.stream(side).unwrap());
+                    }
+                    black_box(
+                        prepared
+                            .strategy((2 << 30) - (256 << 20), &STREAM_TILE_SIDES)
+                            .unwrap(),
+                    );
+                    black_box(
+                        prepared
+                            .light_sweeps((2 << 30) - (256 << 20), &STREAM_TILE_SIDES)
+                            .unwrap(),
+                    );
+                };
+                setup(); // Warm planner/library allocation paths; source is already developed.
+                let mut times = Vec::new();
+                let mut plans = Vec::new();
+                let mut compiles = Vec::new();
+                for _ in 0..30 {
+                    preparation_count::take();
+                    crate::modules::stack_compiles::take();
+                    let started = Instant::now();
+                    setup();
+                    times.push(started.elapsed().as_secs_f64() * 1e3);
+                    plans.push(preparation_count::take());
+                    compiles.push(crate::modules::stack_compiles::take());
+                }
+                let wall = Distribution::of(times).unwrap();
+                println!(
+                    "STRUCTURE_SETUP {}",
+                    json!({
+                        "domain":domain,"dimensions":[width,height],"samples":wall.count,
+                        "wall_ms":{"p50":wall.p50,"p95":wall.p95,"all":wall.samples},
+                        "plan_preparations":plans,"stack_compiles":compiles,
+                        "scope":"all three candidate grids plus strategy and light selection; prepared exact evaluation; no pixels read or GPU work"
+                    })
+                );
+            }
+        }
+    }
 }

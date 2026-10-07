@@ -40,6 +40,43 @@ Engineering hypotheses until measured and accepted on the recorded M4 configurat
 
 A single float32 RGBA buffer for 60 MP is about 916 MiB, so unrestricted full-resolution float processing needs tiling before it is promised.
 
+## Code structure consolidation
+
+The static `luxforge-gpu-types` / `luxforge-gpu` split and worker-scoped stream preparation are implemented ([design](../design/code-structure.md)). Native Apple M4 Pro / Metal, release, 2026-10-07: full verification passes all 77 components, including the complete available authentic-source corpus of 277 recipe/source pairs, with originals unchanged and existing tolerances retained. The four standard timing components are reliable, at one-minute starting load 3.69–4.67.
+
+Matched measurements use separate release targets for pre-refactor `3ac13023` and integrated `d62f4aa0`, 30 samples per workload. Binary SHA-256 is `b3b913ddbd585015ebe32ea7077490513d08af0dc1c22fa70638aa1ee5eb9ea0` before and `c449fa464bf5466c0ced27a44184af566d76f8102ec24322d7c9a263239544df` after; the latter is also the full tier’s binary. Filesystem and system shader caches are not purged. Desktop drag preconditions warm for 1,000 ms, commit preconditions settle, and the export worker discards one warmup. Background invisible windows measure the editor’s texture, excluding scanout/compositing. High-load export observations are retained as unreliable; the accepted matched export trace is 3.18–3.60.
+
+The controlled setup workload builds all three candidate grids plus staged/light selection from an already compiled evaluation, with no pixel reads or GPU work. Across JPEG and synthetic developed RAW at both sizes, plan preparations fall from five to one and stack compiles from five to zero. These are counts for the complete candidate workload; a production request may stop at an earlier strategy. Scoped worker tests independently prove one preparation and no recompile for the selected request.
+
+| Setup domain/size | Setup ms p50 before → after | Setup ms p95 before → after |
+| --- | ---: | ---: |
+| JPEG 6000×4000 | 0.0615 → 0.0209 | 0.0664 → 0.0264 |
+| RAW 6000×4000 | 0.0543 → 0.0180 | 0.0714 → 0.0182 |
+| JPEG 9504×6336 | 0.0644 → 0.0265 | 0.0704 → 0.0295 |
+| RAW 9504×6336 | 0.0665 → 0.0275 | 0.0693 → 0.0297 |
+
+The editor stack holds Detail, a full non-neutral Basic layer and all three Presence fields. JPEGs are generated 24/60 MP fixtures; RAW is the authentic Nikon Z6 source. Each paired run preserves its original hash. Commit-to-frame can show the current processed motion frame before exact counts settle; those are separate costs.
+
+| Source | Drag to frame ms p95 before → after | Commit to frame ms p95 before → after | Commit to exact histogram ms p95 before → after |
+| --- | ---: | ---: | ---: |
+| jpeg24 | 10.12 → 9.18 | 10.15 → 9.93 | 242.73 → 242.64 |
+| jpeg60 | 10.55 → 9.54 | 16.67 → 16.59 | 643.74 → 649.69 |
+| nikon-z6 | 9.47 → 9.34 | 10.49 → 10.48 | 309.74 → 310.10 |
+
+The production export band stream is consumed in order with source development, JPEG encoding and durable publication outside its timer. The 20 MP masked RAW stream uses synthetic developed linear planes. Complete JPEG publication and source preservation are separately checked by the native corpus and rendered export journeys.
+
+| Export-stream workload | ms p50/p95 before | ms p50/p95 after | Charged worker peak MiB, unchanged |
+| --- | ---: | ---: | ---: |
+| the 60 MP drag stack | 433.97/440.49 | 432.70/440.55 | 1212.43 |
+| the Air 2S masked stack | 341.57/357.32 | 340.61/346.67 | 2023.05 |
+| Detail alone at 24 MP | 91.29/93.92 | 92.95/98.86 | 622.29 |
+
+All warmed stream samples compile zero GPU programs. Matched commit preview charge peaks are unchanged: 1242.41 MiB at 24 MP JPEG, 1953.81 MiB at 60 MP JPEG and 1963.08 MiB on Nikon RAW. These are existing charges, excluding crop/overlay, backend staging and driver/pipeline overhead; CPU scratch, sampled RSS and native GPU observations retain their separate scope. The measured editing, commit and export-stream costs remain similar; no generalized speedup or total-memory guarantee is claimed.
+
+Linux aarch64 container headless checks with every graphics driver hidden pass, including slow tests and doctests, as does release owner acceptance. GPU tests skip explicitly there. Remaining Linux editor/software functional checks are in progress. Native Windows/Linux GPU evidence and authentic 60 MP RAW desktop/export timings remain unavailable; Windows CI is disabled. Those scopes and complete memory accounting remain open.
+
+Evidence is in `artifacts/code-structure-integrated-full-corrected/summary.json` and `artifacts/code-structure-comparison/report.{md,json}`. The comparison retains every sample, matched workload/recipe, source/binary/lockfile identity, adapter, command, cache scope and host-load trace. Reproduce using the ignored `code_structure_stream_setup_measurement` and `code_structure_export_measurement` tests in release, plus `editor-latency --samples 30 --basic --detail --presence` in drag/commit modes on the same three sources. Use a quiet native host and fresh output directories.
+
 ## Window visibility and event-driven monitoring
 
 The [visibility contract](../design/visibility-and-monitoring.md) pauses presentation sampling only
