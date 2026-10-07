@@ -791,17 +791,19 @@ fn develop_picks_links_identical_files_and_relinks_a_missing_original_only_on_a_
     );
     assert_eq!(harness.photographs(), 2);
 
-    // b's original goes missing: copied to another folder, and the file it was removed.
+    // b's original goes missing: copied to another folder, and the file it was removed. A file of
+    // its name and length with other bytes (another second) is its own photograph. Both are written
+    // before b's file is removed: Linux filesystems hand a freed inode to the next file, and a
+    // lookalike holding b's recorded file identity would be b's original with other bytes.
     let moved = harness.dir.join("moved").join("b.jpg");
     fs::create_dir_all(moved.parent().unwrap()).unwrap();
     fs::copy(&b, &moved).unwrap();
-    fs::remove_file(&b).unwrap();
-    let moved = moved.canonicalize().unwrap();
-    // A file of its name and length with other bytes (another second) is its own photograph.
     let lookalike = photo(
         &harness.dir.join("other").join("b.jpg"),
         &Shot::at("2026:09:12 11:00:01"),
     );
+    fs::remove_file(&b).unwrap();
+    let moved = moved.canonicalize().unwrap();
     assert_eq!(
         lookalike.metadata().unwrap().len(),
         moved.metadata().unwrap().len()
