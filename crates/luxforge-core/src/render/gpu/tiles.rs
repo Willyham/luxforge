@@ -245,7 +245,48 @@ pub fn plan_stream_sweeps_at(
     sides: &[u32],
 ) -> Result<super::GpuStaging, TileFallback> {
     let planned = Planned::of(evaluation, ReadStage::Output)?;
-    let staging = super::sweeps::plan_sweeps(&super::sweeps::SweepRequest {
+    let staging = super::sweeps::plan_sweeps(&request(&planned, budget, sides));
+    // A light behind a spatial layer is computed from a staged sweep's stage texture, or, where
+    // those do not fit, by light sweeps that hold none ([`plan_stream_light_sweeps`]); a stack
+    // neither fits is the reference's.
+    if let super::GpuStaging::Chained(_) = &staging
+        && planned.plan.lights.iter().any(super::GpuLight::staged)
+        && let Err(chained) = super::sweeps::plan_light_sweeps(&request(&planned, budget, sides))
+    {
+        let fallback =
+            super::preview::staged_light_fallback(&planned.plan, &chained).expect("a staged light");
+        return Err(TileFallback::Plan(fallback));
+    }
+    Ok(staging)
+}
+
+/// The light sweeps of `evaluation`'s output stage within `budget`, each at the longest of `sides`
+/// that fits ([`super::GpuLightSweep`]): what an export or a read draws before its chained tiles
+/// where its stage textures do not fit, computing each light behind a spatial layer with no stage
+/// texture, the chained tiles then reading it kept. Empty for a stack reading none; the reference's
+/// where a sweep fits no side. `O(layers + lights × sides × segments + tiles × segments)`, no pixel
+/// read.
+pub fn plan_stream_light_sweeps(
+    evaluation: &Evaluation,
+    budget: u64,
+    sides: &[u32],
+) -> Result<Vec<super::GpuLightSweep>, TileFallback> {
+    let planned = Planned::of(evaluation, ReadStage::Output)?;
+    super::sweeps::plan_light_sweeps(&request(&planned, budget, sides)).map_err(|chained| {
+        TileFallback::Plan(
+            super::preview::staged_light_fallback(&planned.plan, &chained)
+                .unwrap_or_else(|| GpuFallback::Unplannable("no staged light".into())),
+        )
+    })
+}
+
+/// The sweep request of `planned`'s output stage within `budget` at `sides`, row by row.
+fn request<'a>(
+    planned: &'a Planned<'_>,
+    budget: u64,
+    sides: &'a [u32],
+) -> super::sweeps::SweepRequest<'a> {
+    super::sweeps::SweepRequest {
         compiled: &planned.compiled,
         source: (planned.full.width, planned.full.height),
         plan: &planned.plan,
@@ -253,14 +294,7 @@ pub fn plan_stream_sweeps_at(
         sides,
         budget: Some(budget),
         order: super::sweeps::TileOrder::Rows,
-    });
-    // A light behind a spatial layer is computed from a staged sweep's stage texture alone.
-    if let super::GpuStaging::Chained(chained) = &staging
-        && let Some(fallback) = super::preview::staged_light_fallback(&planned.plan, chained)
-    {
-        return Err(TileFallback::Plan(fallback));
     }
-    Ok(staging)
 }
 
 /// A stage of an evaluation planned for the GPU: its compilation, the plan of it from the source,
