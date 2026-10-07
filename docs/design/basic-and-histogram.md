@@ -298,7 +298,7 @@ draft}` in the acceptance chapter, which the reference renderer answers.
 
 ## Later scope
 
-Tone curve, Detail, Texture, Clarity, Dehaze, the eight-range colour mixer, presets and masks are delivered. Their remaining scope and qualification are recorded in their designs and the [roadmap](../plan.md). A dedicated B&W mixer, Auto Tone, HDR, red-eye, histogram dragging and additional metadata presentation remain unselected proposals; saturation −100 is not a B&W mixer. Clone/Heal and AI editing have separate plans. JPEG export and Locate are delivered; MCP remains outstanding. No disabled placeholders represent later work.
+Tone curve, Detail, Texture, Clarity, Dehaze, the eight-range colour mixer, presets and masks are delivered. Their remaining scope and qualification are recorded in their designs and the [roadmap](../plan.md). [Auto tone](auto-tone.md) is planned and not yet authorized. A dedicated B&W mixer, Auto white balance, HDR, red-eye, histogram dragging and additional metadata presentation remain unselected proposals; saturation −100 is not a B&W mixer. Clone/Heal and AI editing have separate plans. JPEG export and Locate are delivered; MCP remains outstanding. No disabled placeholders represent later work.
 
 ## Decisions
 
