@@ -35,6 +35,7 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 | [Lightroom import](../tasks/lightroom/lightroom-import.json) ([design](design/lightroom-import.md)) | TASK-001 confirm the catalog format against a copy of the owner's catalog | Needs no code; needs the owner's catalog copy | High tier |
 | [Lightroom alignment](../tasks/lightroom/lightroom-alignment.json) ([design](design/lightroom-alignment.md)) | TASK-001 the rig's generator and synthetic targets | Its rounds need the owner to import and export in Lightroom | High tier |
 | [Live-session Rust CLI](../tasks/project/live-cli.json) ([design](design/live-cli.md)) | TASK-001 shared catalog targeting and authenticated session client | The command contract and defaults are decided; implementation awaits owner authorization | High tier |
+| [Auto tone](../tasks/editing/auto-tone.json) ([design](design/auto-tone.md)) | TASK-001 the auto-tone/1 solver; TASK-002 the bounded analysis sample | Lightroom's eight sliders, no white balance, Auto in presets and import, and a later fit to Lightroom's Auto chosen; the owner's Lightroom export is needed only by the final fit. Planning only; implementation awaits authorization | High tier |
 | [High-zoom minimap](../tasks/interface/minimap.json) ([design](design/minimap.md)) | TASK-001 shared viewport projection; TASK-002 bounded overview rendering | Inclusive 200% threshold and click/drag navigation chosen; layout remains a proposed default. Planning only; implementation awaits authorization | High tier |
 
 ### In progress
@@ -144,6 +145,8 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 - GPU painting over three masks holding masked exposure, Texture and Clarity is within a display frame at Fit (p95 8.5–9.0 ms in the recorded qualification). Misses remain over 10–16 masks at Fit and the Air 2S masked stack at 100% (p95 22.5–24.0 ms after the throughput changes); earlier CPU boundary-wait figures do not describe the current GPU-source path ([performance](specs/performance.md#painting-over-masked-spatial-layers))
 - The range selections have no photographic corpus: every figure in the [range study](design/range-study.md) is over flat synthetic patches
 - Density, edge-aware refinement, copying masks between photographs and mask presets are out of scope with their reasons recorded; model-based selections are the [AI editing](design/ai-editing.md) proposal's Select
+
+**Auto tone** ([design](design/auto-tone.md), [tasks](../tasks/editing/auto-tone.json)). Planned: an Auto button and `edit.auto-tone` that set Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Vibrance and Saturation on the global Basic layer as one entry, from deterministic statistics and clipping searches over a bounded sample of the stage Basic receives, solved through Basic and the Look. Presets can carry Auto, recomputed per photo, and the Lightroom importer maps `AutoTone`. The solver and the sample can proceed independently; the fit to Lightroom's Auto on the owner's photos follows delivery. The request authorizes planning only.
 
 **Tuning delivered tools.** Refine the recorded defaults of Presence, the colour mixer and the vignette (decision pending).
 

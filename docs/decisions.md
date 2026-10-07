@@ -497,6 +497,17 @@ Masking phases A–D are delivered. The owner's 2026-09-23 stroke-storage decisi
 
 The Basic and histogram product choices were decided on 2026-09-21 and implementation was authorised the same day; see [Basic adjustments and histogram](#basic-adjustments-and-histogram).
 
+## Auto tone planning
+
+The owner requested a plan for an Auto tone feature that sets the Basic values automatically, and decided on 2026-10-07 ([design](design/auto-tone.md#decided)):
+
+- Auto sets **Lightroom's eight**: Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Vibrance and Saturation.
+- **No white balance**, as in Lightroom; Auto white balance remains a separate later proposal.
+- **Auto in presets**, recomputed for each photo, and the Lightroom importer maps `AutoTone` instead of refusing it. Per-slider Auto and a desktop Auto on a selection are not in scope.
+- **Tuning by fitting** the targets to Lightroom's Auto on the owner's photos, after the working feature is delivered, followed by owner review.
+
+The deterministic algorithm, analysis before Basic with a forward model through Basic and the Look, the starting targets, caps, button placement and Cmd+U are recorded defaults in the design. This request authorizes planning only.
+
 ## High-zoom minimap planning
 
 The owner requested a plan for a minimap at zoom levels of **200% or more**. The inclusive percentage threshold is the requirement, and the owner chose **click to jump and drag the viewport rectangle**. The [design](design/minimap.md) records this interaction; lower-right placement and other layout/engineering defaults remain recommendations. This request authorizes planning only; implementation and native qualification remain outstanding.
