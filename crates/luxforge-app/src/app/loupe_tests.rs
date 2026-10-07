@@ -6,9 +6,9 @@
 //! reads and draws each photograph's grid tier, while a file's strip frame is the grid's preview.
 use super::*;
 use crate::app::select_owner_tests::{evaluate, finish, read_rows, selecting};
-use crate::state::select::SourcePress;
+use crate::state::select::{Shown, SourcePress};
 use iced::{Size, event::Status, keyboard::Event as KeyEvent, keyboard::key::Physical};
-use luxforge_core::catalog_types::MomentKind;
+use luxforge_core::catalog_types::{MomentKind, ViewSource};
 use std::path::PathBuf;
 
 /// The editor with the seeded event viewed, every row read.
@@ -35,6 +35,129 @@ fn send(editor: &mut Editor, message: LoupeMessage) {
 
 fn active(editor: &Editor) -> Option<u32> {
     editor.session.browse.selection.active
+}
+
+/// Returning from Develop keeps the loupe for its source, but browsing a different folder must
+/// expose the grid even though the new view clears the active frame.
+#[test]
+fn changing_sources_after_returning_from_develop_shows_the_grid() {
+    let (mut editor, catalog) = viewing();
+    let event = editor.select.state.query.as_ref().unwrap().source.clone();
+    send(&mut editor, LoupeMessage::Open);
+    send(&mut editor, LoupeMessage::ToggleFocus);
+    for shown in [Shown::Develop, Shown::Select] {
+        let _ = editor.update(Message::Select(SelectMessage::Switch(shown)));
+    }
+    assert!(
+        editor.loupe_open(),
+        "returning keeps the same source's loupe"
+    );
+
+    let _ = editor.update(Message::Select(SelectMessage::Source(
+        ViewSource::AllPhotographs,
+    )));
+    evaluate(&mut editor);
+    assert_eq!(
+        active(&editor),
+        None,
+        "the other source has no selected frame"
+    );
+    assert!(
+        !editor.workspace.select.loupe.open,
+        "an empty source shows its grid"
+    );
+
+    let folder = ViewSource::Folder {
+        path: "/Volumes/SSD/Pictures/2026-09-12 Lake".into(),
+        subfolders: true,
+    };
+    let _ = editor.update(Message::Select(SelectMessage::Source(folder)));
+    evaluate(&mut editor);
+    read_rows(&mut editor);
+    assert_eq!(active(&editor), None, "a new source clears selection");
+    assert_eq!(editor.select.state.summary.as_ref().unwrap().count, 12);
+    assert!(
+        !editor.workspace.select.loupe.open,
+        "the folder's grid is visible"
+    );
+    assert!(!editor.select.state.loupe.focus);
+    assert!(
+        !editor
+            .select
+            .layout
+            .visible_cells(0.0, 700.0, 0.0)
+            .is_empty()
+    );
+
+    // A same-source refresh still preserves a loupe opened on the new grid.
+    send(&mut editor, LoupeMessage::Open);
+    let query = editor.select.state.query.clone().unwrap();
+    let _ = editor.evaluate(query);
+    evaluate(&mut editor);
+    assert!(editor.loupe_open());
+    assert_eq!(active(&editor), Some(0));
+    let _ = editor.update(Message::Select(SelectMessage::Source(event)));
+    evaluate(&mut editor);
+    assert!(
+        !editor.loupe_open(),
+        "an overlapping source also opens its grid"
+    );
+    assert_eq!(
+        active(&editor),
+        Some(0),
+        "the owner's carried selection is preserved"
+    );
+    finish(editor, catalog);
+}
+
+/// If a same-source filter loses its active frame, the empty loupe must not hide the grid.
+#[test]
+fn a_loupe_without_an_active_frame_returns_to_the_grid() {
+    let (mut editor, catalog) = viewing();
+    send(&mut editor, LoupeMessage::Open);
+    let query = crate::state::select::changed(
+        editor.select.state.query.as_ref().unwrap(),
+        &crate::state::select::QueryChange::Pick(crate::state::select::PickFilter::Picked),
+    );
+    let _ = editor.evaluate(query);
+    assert!(
+        editor.loupe_open(),
+        "a same-source refresh keeps the loupe while loading"
+    );
+    evaluate(&mut editor);
+    assert_eq!(active(&editor), None);
+    assert!(!editor.workspace.select.loupe.open);
+    send(&mut editor, LoupeMessage::Open);
+    assert!(!editor.loupe_open(), "an empty grid cannot open the loupe");
+    finish(editor, catalog);
+}
+
+/// Both shortcuts toggle the loupe without losing its active frame or toggling on key repeat.
+#[test]
+fn e_and_space_toggle_the_loupe_on_the_active_frame() {
+    let (mut editor, catalog) = viewing();
+    for pressed in [Key::Character("e".into()), Key::Named(Named::Space)] {
+        for open in [true, false] {
+            let event = iced::Event::Keyboard(KeyEvent::KeyPressed {
+                key: pressed.clone(),
+                modified_key: pressed.clone(),
+                physical_key: Physical::Unidentified(iced::keyboard::key::NativeCode::Unidentified),
+                location: iced::keyboard::Location::Standard,
+                modifiers: Modifiers::empty(),
+                text: None,
+                repeat: false,
+            });
+            let _ = editor.update(Message::Key(event, Status::Ignored));
+            assert_eq!(editor.loupe_open(), open);
+            assert_eq!(active(&editor), Some(0));
+            assert_eq!(
+                key(&editor, pressed.clone(), true),
+                None,
+                "held keys do not toggle"
+            );
+        }
+    }
+    finish(editor, catalog);
 }
 
 /// The first frame of the view's moment of `kind`, and its length.
