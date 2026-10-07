@@ -1,0 +1,847 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "hdr-merge",
+  "title": "HDR exposure merges in Select",
+  "objective": "Create durable editable HDR assets from selected brackets, show result-led reversible stacks, keep originals individually pickable, and make Pick merged append to the development set by default through the shared command service.",
+  "context_summary": "Planning requested and RAW-only/automatic alignment/deghosting selected on 2026-10-07; implementation is not authorized. Grid/persistence/original access/undo/development-set intent and numerical scope are settled. TASK-001 storage, TASK-002 RAW radiance and TASK-003 registration/deghosting are independently ready; remaining dependencies represent required outputs. Routine algorithms, thresholds/backends and layout are implementer choices within the design. Deliver ordinary correctness and a working background-verified feature in TASK-009 before extensive natural-scene quality and quiet-host timing in TASK-010. No JPEG bracket inputs, panorama work, placeholder controls, generated-input graph, automatic regeneration, compatibility shims or approval/research task is included. Use roadmap high-tier models and re-review current main.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Implement durable chunked derived-image sources and reference-aware retention.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Planning does not authorize implementation. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
+        "Independent of the HDR numerical/registration implementation. Add current-shape derived-linear source interpretation, versioned f32 source manifest, bounded content-addressed chunks and asset-source/manifest-child references under the existing catalog artifact root.",
+        "Keep individual artifact objects and the generic prepared-artifact cache at their current 256 MiB bounds. Do not route a photo-sized source through recipe-layer artifact binding. Use at most 256 chunks, each no more than 16 MiB, within the current 128 MP/1.5 GiB decoded-linear source limit.",
+        "Increment the single current catalog marker coherently; refuse unsupported shapes without rewrites or migrations. Coordinate consumers against the final merged marker rather than adding sequential compatibility formats.",
+        "Publication is worker-side durable objects followed by owner-side metadata/reference transaction. Source roots are retained for hidden/Removed generated assets and their immutable histories; explicit purge is the only permanent boundary."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "HDR merge contract",
+          "target": "docs/design/hdr-merge.md",
+          "relevance": "Workflow, scope, persistence, lifecycle, bounded jobs and observable acceptance."
+        },
+        {
+          "kind": "file",
+          "label": "Project invariants",
+          "target": "AGENTS.md",
+          "relevance": "Planning authorization, sacred originals, current shapes, command parity and verification rules."
+        },
+        {
+          "kind": "file",
+          "label": "Source kinds",
+          "target": "crates/luxforge-core/src/editor.rs",
+          "relevance": "Current JPEG/RAW interpretation and applicability tags.",
+          "locator": "SourceKind; SourceTag"
+        },
+        {
+          "kind": "file",
+          "label": "Artifact bounds",
+          "target": "crates/luxforge-core/src/artifacts/mod.rs",
+          "relevance": "Existing object/cache/layer limits to preserve."
+        },
+        {
+          "kind": "file",
+          "label": "Durable artifact storage",
+          "target": "crates/luxforge-core/src/artifacts/store.rs",
+          "relevance": "Atomic publication, verification and collection machinery."
+        },
+        {
+          "kind": "file",
+          "label": "Catalog artifact references",
+          "target": "crates/luxforge-core/src/editor/artifact_store.rs",
+          "relevance": "Extend source retention without changing layer binding."
+        },
+        {
+          "kind": "file",
+          "label": "Current catalog",
+          "target": "crates/luxforge-core/src/editor/catalog.rs",
+          "relevance": "Current format and schema guards."
+        }
+      ],
+      "acceptance_criteria": [
+        "A synthetic signed/headroom linear image larger than 256 MiB can be durably written and reopened through bounded objects with exact f32 bits and explicit colour/layout interpretation.",
+        "Manifest bounds, chunk count/coordinates/length/hash, finite samples and foreign catalog roots are validated on workers; owner requests perform metadata work only.",
+        "Failure at each object/manifest/transaction boundary publishes either a complete source or no visible source; collection never deletes anything reachable from a retained asset/history/live publication.",
+        "Index deletion and cache collection preserve sources; unsupported markers, missing/corrupt chunks and path escapes fail explicitly without altering stored data."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add deterministic chunk-layout, exact round-trip, corruption/bounds and reference-closure tests under the derived_source filter.",
+          "Inject temporary write, rename, manifest and catalog failures; compare roots and references against an independent closure calculation.",
+          "Verify a photo-sized result exceeding the one-object limit without making a performance claim."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core derived_source"
+        ],
+        "expected_results": [
+          "Exact round trips and failure/collection invariants pass; the generic artifact cache bounds are unchanged."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Implement deterministic HDR exposure resolution and linear radiance fusion with independent fixtures.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Planning does not authorize implementation. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
+        "The owner selected RAW brackets only on 2026-10-07; no further product input is required. Refuse JPEG or mixed bracket requests with the RAW-only reason, while preserving current JPEG browse/edit/export behavior.",
+        "Implement the HDR module numerical helpers directly from the design once scope is settled; no algorithm bake-off, Lightroom export or private corpus is a prerequisite. Use original pixels, common reference RAW WB, required embedded corrections and sensor clipping evidence; never fuse current recipes or camera previews.",
+        "Use typed linear exposure inputs and resolved EV/reference/provenance outputs which TASK-003 can consume independently. Resolve metadata versus bias without double counting; measured image offsets require robust fit/confidence and explicit overrides.",
+        "Use qualified linear RAW development directly; there is no camera-response calibration or JPEG fusion path. Preserve signs/headroom and reference-scale brightness; do not replace HDR storage with display exposure fusion."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "HDR merge contract",
+          "target": "docs/design/hdr-merge.md",
+          "relevance": "Workflow, scope, persistence, lifecycle, bounded jobs and observable acceptance."
+        },
+        {
+          "kind": "file",
+          "label": "Project invariants",
+          "target": "AGENTS.md",
+          "relevance": "Planning authorization, sacred originals, current shapes, command parity and verification rules."
+        },
+        {
+          "kind": "file",
+          "label": "RAW pixel contract",
+          "target": "docs/design/initial-raw.md",
+          "relevance": "Current linear domain, common-gain development and Bayer clipping limitations.",
+          "locator": "Pixel and color contract"
+        },
+        {
+          "kind": "file",
+          "label": "Prepared original sources",
+          "target": "crates/luxforge-core/src/source.rs",
+          "relevance": "Shared verified preparation and RAW gains."
+        },
+        {
+          "kind": "file",
+          "label": "RAW development",
+          "target": "crates/luxforge-raw/src/develop.rs",
+          "relevance": "Qualified demosaic/calibration output; avoid changing shared RAW behavior."
+        },
+        {
+          "kind": "file",
+          "label": "Bracket grouping",
+          "target": "crates/luxforge-core/src/organize/moments.rs",
+          "relevance": "Suggestions and exposure metadata are not authoritative calibrated HDR inputs."
+        },
+        {
+          "kind": "file",
+          "label": "Independent numerical references",
+          "target": "crates/luxforge-reference/src/lib.rs",
+          "relevance": "Home for independently structured analytical/f64 fixtures."
+        }
+      ],
+      "acceptance_criteria": [
+        "The RAW-only input contract is enforced; unsupported JPEG/mixed source requests are explicitly refused and current JPEG behavior remains valid.",
+        "Deterministic reference/EV selection, metadata/override origins, duplicate exposure detection and unsuitable camera/mode/aperture/ISO/focal-length refusals match the design.",
+        "Independent analytical fixtures prove normalized fusion, reference brightness, clipping/noise weights, finite negative/above-one values and deterministic all-invalid fallbacks over complete result buffers.",
+        "RAW fixtures recover expected radiance within a declared numerical tolerance, with sensor clipping/required correction provenance and explicit limitations.",
+        "Source files and input recipes are unchanged; Bayer clip handling uses current behavior without a hidden demosaic change."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Create independent f64/analytical scene exposures and RAW-style clipping/noise fixtures; assert complete buffers and limitation flags.",
+          "Exercise missing/contradictory EV metadata, unsaturated sampling, overrides, duplicate RAW+JPEG frames and all-clipped regions.",
+          "Record the chosen equations, tolerances and bounded sample/weight contracts in the design."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core hdr_merge_fusion"
+        ],
+        "expected_results": [
+          "Every stated acceptance check passes with recorded scope; skipped checks are not passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Implement bracket registration, valid output coverage and the selected motion policy.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Planning does not authorize implementation. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
+        "The owner selected automatic alignment and deghosting on 2026-10-07; both are enabled by default with Auto/Off options. No additional scope approval is required.",
+        "Implement from the typed exposure/coordinate contract in the design independently of TASK-002: synthetic linear exposures suffice. Use bounded exposure-robust global registration and coherent motion-region selection; keep exact identity/framing validation for alignment Off.",
+        "Prefer one resample into reference coordinates, deterministic valid common rectangular crop and saved transforms/coverage. No filled borders, panorama projection, manual ghost painting or promise of severe-parallax correction.",
+        "Thresholds/features/backend are implementer choices. Ordinary correctness tests and independent coordinate references stay here; broad natural-scene tuning belongs to TASK-010 after working delivery."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "HDR merge contract",
+          "target": "docs/design/hdr-merge.md",
+          "relevance": "Workflow, scope, persistence, lifecycle, bounded jobs and observable acceptance."
+        },
+        {
+          "kind": "file",
+          "label": "Project invariants",
+          "target": "AGENTS.md",
+          "relevance": "Planning authorization, sacred originals, current shapes, command parity and verification rules."
+        },
+        {
+          "kind": "file",
+          "label": "Shared linear geometry",
+          "target": "crates/luxforge-core/src/source/linear.rs",
+          "relevance": "Upright coordinate mapping and immutable plane views."
+        },
+        {
+          "kind": "file",
+          "label": "Existing processing limits",
+          "target": "crates/luxforge-core/src/render/limits.rs",
+          "relevance": "Coordinate/frame admission and bounded work conventions."
+        },
+        {
+          "kind": "file",
+          "label": "Independent reference fixtures",
+          "target": "crates/luxforge-reference/src/lib.rs",
+          "relevance": "Coordinate and scene references without production helper reuse."
+        }
+      ],
+      "acceptance_criteria": [
+        "Automatic alignment and deghosting are implemented with the decided defaults and schema-described Auto/Off controls.",
+        "Fixtures with exact reference transforms, rotation/translation, exposure changes and edge coverage produce the independently expected mapping/crop and no invented border pixels.",
+        "Moving regions select one coherent exposure with recorded fallbacks; insufficient overlap/ambiguous support and severe misalignment are explicitly refused. Turning alignment Off still validates framing.",
+        "Feature/pyramid/sample/scratch limits and cancellable pass boundaries are explicit and tested; image processing stays outside owner/UI threads."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Build known-coordinate and moving-object exposures from independent generators; compare coverage and complete aligned/fused-region buffers.",
+          "Probe low texture, clipping, exposure jumps, parallax, no overlap and cancellation at stage boundaries.",
+          "Inspect provider diagnostics against actual selected transforms and motion regions."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core hdr_merge_alignment"
+        ],
+        "expected_results": [
+          "Every stated acceptance check passes with recorded scope; skipped checks are not passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Implement persistent merge provenance, stacks and reversible generated-asset lifecycle.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Planning does not authorize implementation. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
+        "Consume TASK-001 source/reference retention. Store input fingerprints/locators/interpretations independent of disposable index rows; original inputs need not be developed into catalog assets.",
+        "Use immutable provenance plus journaled active-stack/result-visibility item kinds. Undo creation retains edited results internally/Removed instead of deleting their histories. Removal, Put back, redo and purge preserve original files and follow per-actor conflict rules.",
+        "Enforce one active stack per original input, exact matching-result reuse and explicit restoration for a removed match. No nested/generated merge inputs or general grouping manager.",
+        "Coordinate the result-set membership portion with TASK-007 at integration; this task owns lifecycle item semantics and leaves the membership interface defined by the design."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "HDR merge contract",
+          "target": "docs/design/hdr-merge.md",
+          "relevance": "Workflow, scope, persistence, lifecycle, bounded jobs and observable acceptance."
+        },
+        {
+          "kind": "file",
+          "label": "Project invariants",
+          "target": "AGENTS.md",
+          "relevance": "Planning authorization, sacred originals, current shapes, command parity and verification rules."
+        },
+        {
+          "kind": "file",
+          "label": "Library item inverse writer",
+          "target": "crates/luxforge-core/src/library/items.rs",
+          "relevance": "Add stack/lifecycle values using the existing shared journal path."
+        },
+        {
+          "kind": "file",
+          "label": "Per-actor journal",
+          "target": "crates/luxforge-core/src/library/journal.rs",
+          "relevance": "Idempotency, inverse order and named conflict rules."
+        },
+        {
+          "kind": "file",
+          "label": "Journal contract",
+          "target": "crates/luxforge-core/src/catalog_types/library.rs",
+          "relevance": "New item shapes and provenance identifiers."
+        },
+        {
+          "kind": "file",
+          "label": "Catalog removal",
+          "target": "crates/luxforge-core/src/library/remove.rs",
+          "relevance": "Unify generated Remove/Restore and explicit permanent purge semantics."
+        }
+      ],
+      "acceptance_criteria": [
+        "Merge publication/lifecycle rows retain exact inputs, source identity, diagnostics and a stable result-led stack across index rebuild and catalog reopen.",
+        "Creation undo after result edits, redo, remove and restore preserve exact source identity/history and never rerun or modify originals; ordinary source picks/assets stay independent.",
+        "Active overlap, another actor mutation and restoration collisions produce all-or-nothing named conflicts using the existing journal rules.",
+        "Permanent purge requires existing authority, leaves original files unchanged, releases only unreferenced source data and makes stale inverses conflict."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Exercise lifecycle/journal operations against a real catalog and compare independent before/after values including source references.",
+          "Edit a generated result before creation undo; reopen and redo with original inputs offline.",
+          "Test overlap, actor concurrency, removed matches, retries, explicit purge and independent developed original removal."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core hdr_merge_lifecycle"
+        ],
+        "expected_results": [
+          "Every stated acceptance check passes with recorded scope; skipped checks are not passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Integrate derived linear sources with preparation, editing, GPU rendering, samples, tiers and JPEG export.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Planning does not authorize implementation. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
+        "This uses synthetic stored sources from TASK-001 and does not depend on exposure fusion/registration. Add PreparedSource derived handling without a sensor mosaic and stream verified chunks into one accounted immutable LinearImage.",
+        "Declare module applicability by source capability: relative RGB WB, Basic/headroom, curves/mixer, spatial Detail/Presence, masks and geometry. Never expose sensor WB, camera matching or duplicate baked optical corrections.",
+        "Preserve GPU renderer-of-record paths and existing budgets for uploads, Fit/100%, tile/window reads, histogram, samples, previews and export; use explicit reference fallback where required.",
+        "Qualify only affected source/output/view families during this task; the integrated full corpus gate runs once in TASK-009. Additive source support must preserve current JPEG/RAW buffers."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "HDR merge contract",
+          "target": "docs/design/hdr-merge.md",
+          "relevance": "Workflow, scope, persistence, lifecycle, bounded jobs and observable acceptance."
+        },
+        {
+          "kind": "file",
+          "label": "Project invariants",
+          "target": "AGENTS.md",
+          "relevance": "Planning authorization, sacred originals, current shapes, command parity and verification rules."
+        },
+        {
+          "kind": "file",
+          "label": "LinearImage",
+          "target": "crates/luxforge-core/src/source/linear.rs",
+          "relevance": "Shared signed/headroom planes and current dimension/allocation bounds."
+        },
+        {
+          "kind": "file",
+          "label": "Prepared-source ownership",
+          "target": "crates/luxforge-core/src/editor/source.rs",
+          "relevance": "Off-owner jobs, source cache and source-signature handling."
+        },
+        {
+          "kind": "file",
+          "label": "Basic applicability",
+          "target": "crates/luxforge-core/src/modules/basic/mod.rs",
+          "relevance": "Relative RGB WB and linear exposure/tone behavior."
+        },
+        {
+          "kind": "file",
+          "label": "GPU rendering",
+          "target": "crates/luxforge-core/src/render/gpu.rs",
+          "relevance": "Source upload/evaluation and declared reference comparisons."
+        },
+        {
+          "kind": "file",
+          "label": "Shared pixel/tile service",
+          "target": "crates/luxforge-core/src/tiles.rs",
+          "relevance": "Samples, histogram and export use the same evaluated source."
+        },
+        {
+          "kind": "file",
+          "label": "GPU qualification",
+          "target": "xtask/src/gpu_qualification.rs",
+          "relevance": "Register derived source/output/view families in the existing gate."
+        }
+      ],
+      "acceptance_criteria": [
+        "Saved derived sources open, edit, render, sample and export without reading bracket inputs, including offline inputs and provider absence.",
+        "Signed/headroom data remains linear until the SDR boundary; source buffers are shared and current frame/source/GPU resource gates are observed.",
+        "Reference whole-buffer fixtures and affected GPU comparisons at Fit/100%, masked/spatial/geometry stacks, tiers, histogram and export meet their declared tolerances.",
+        "Corrupt/missing source data is a named preparation/render/export failure with history/provenance readable; no cached preview silently becomes the authoritative source.",
+        "Current JPEG/RAW source semantics remain valid, and unsupported source/effect providers are reported instead of omitted."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add exact synthetic derived-source editing and current-source regression fixtures, covering negative RGB and values well above one.",
+          "Exercise the shared no-adapter/reference service and compare affected GPU output families to independent reference buffers.",
+          "Count payload reads/decode/hash/upload/allocation operations on cold and signature-cache paths; test preparation cancellation and corruption."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core derived_source",
+          "tools/cargo-cached test -p luxforge-app derived_source"
+        ],
+        "expected_results": [
+          "Every stated acceptance check passes with recorded scope; skipped checks are not passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Deliver the bounded HDR worker, shared merge commands and atomic publication.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003",
+        "TASK-004"
+      ],
+      "extra_context": [
+        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Planning does not authorize implementation. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
+        "Compose RAW-only fusion with automatic alignment/deghosting with durable source and lifecycle outputs. The HDR module owns image validation/processing; the core owns admission, identities, jobs/resources and one publication transaction.",
+        "Register proposed merge.plan/create/inspect/rerun/remove/restore contracts in the current command service, with exact target inputs, exposure/options/folder, add_to_development_set intent and mutation identity. Pixel-dependent planning is worker work.",
+        "Use one running plus one pending merge, 2-9 inputs, sequential shared verified source development, bounded chunk spooling/fusion and accounted 256 MiB scratch. Preflight the 16 GiB temporary-disk ceiling and release/spill before requesting another plane lease.",
+        "Capture input signatures/identities and target set identity/revision; recheck before atomic publication. Lifecycle publication may be implemented without membership initially; TASK-007 supplies the final membership integration before UI delivery.",
+        "Durable retries return the existing committed result; restart of an unfinished request reports interruption without a partial asset, permits an explicit new request and cleans only orphan job data. Late cancellation cannot misreport an already committed result as cancelled."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "HDR merge contract",
+          "target": "docs/design/hdr-merge.md",
+          "relevance": "Workflow, scope, persistence, lifecycle, bounded jobs and observable acceptance."
+        },
+        {
+          "kind": "file",
+          "label": "Project invariants",
+          "target": "AGENTS.md",
+          "relevance": "Planning authorization, sacred originals, current shapes, command parity and verification rules."
+        },
+        {
+          "kind": "file",
+          "label": "Bounded library worker",
+          "target": "crates/luxforge-core/src/library/worker.rs",
+          "relevance": "Reuse admission/cancellation patterns without putting payload work on the owner."
+        },
+        {
+          "kind": "file",
+          "label": "Module task host",
+          "target": "crates/luxforge-core/src/capabilities/host.rs",
+          "relevance": "Existing task/progress/publication machinery; extend only what multi-input merge needs."
+        },
+        {
+          "kind": "file",
+          "label": "Owner job publication",
+          "target": "crates/luxforge-core/src/api/owner/library/develop.rs",
+          "relevance": "Off-owner file work and revision-checked catalog completion patterns."
+        },
+        {
+          "kind": "file",
+          "label": "Resource attribution",
+          "target": "crates/luxforge-core/src/resources.rs",
+          "relevance": "Expose merge phases/scratch/temp source usage to existing resource/activity services."
+        }
+      ],
+      "acceptance_criteria": [
+        "The shared schemas describe input support, every option, results/errors, source diagnostics and cancellation; there is no desktop-only merge logic or unused panorama method.",
+        "Real-owner jobs publish one complete asset/source/provenance/stack change or nothing; retries and crashes do not duplicate assets or lose originals/picks.",
+        "Progress/cancellation and worker accounting remain bounded, run independently of window visibility and selection changes, and allow another photograph to be edited.",
+        "Missing/changed inputs, unavailable provider/version, ambiguous exposure/alignment, storage limits and commit conflicts name their cause; rerun explicitly creates another source without overwriting edits.",
+        "A stored healthy result remains usable when inputs disappear; corrupt result data never triggers an automatic remerge."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Use real-owner multi-client tests to create, cancel, inspect, reuse, rerun and retry through the registry, comparing state to the recorded journal/provenance.",
+          "Inject queue pressure, slow reads, input/set changes, disconnect, restart, disk full, corrupt chunks and publication failure at each boundary.",
+          "Assert original hashes/recipes, job accounting, orphan cleanup, terminal result identity and no plane-gate deadlock."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core hdr_merge_job"
+        ],
+        "expected_results": [
+          "Every stated acceptance check passes with recorded scope; skipped checks are not passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Implement filter-aware stack browsing and authoritative development-set membership with API parity.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "extra_context": [
+        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Planning does not authorize implementation. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
+        "Consume stable stack/provenance/lifecycle rows. Implement mixed file/catalog/generated/provenance browsing, without developing every source or tying durable input identity to index FileId.",
+        "Collapse only matching present inputs; surface originals whose filters match when their leader does not. Explicit Show all originals may reveal labelled out-of-filter children. Selection never implicitly includes hidden children.",
+        "Move set identity/ordered membership into the command service, reconciling current Develop N, direct-open and view-set construction. Keep active display/layout/scroll/preview windows in presentation state. Merge-created membership uses item-level journal inverses.",
+        "Default Pick appends once to the captured current set, or creates a one-result set if absent. Import leaves it alone. Expose read/add/remove and stack inspection/expansion without requiring the desktop.",
+        "Bind TASK-006 completion to the same publication transaction after both outputs exist; keep this task independent of fusion/registration work by using seeded merges."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "HDR merge contract",
+          "target": "docs/design/hdr-merge.md",
+          "relevance": "Workflow, scope, persistence, lifecycle, bounded jobs and observable acceptance."
+        },
+        {
+          "kind": "file",
+          "label": "Project invariants",
+          "target": "AGENTS.md",
+          "relevance": "Planning authorization, sacred originals, current shapes, command parity and verification rules."
+        },
+        {
+          "kind": "file",
+          "label": "View construction",
+          "target": "crates/luxforge-core/src/browse/view.rs",
+          "relevance": "Mixed results and filter-aware stack representation."
+        },
+        {
+          "kind": "file",
+          "label": "Paged rows",
+          "target": "crates/luxforge-core/src/browse/rows.rs",
+          "relevance": "Bounded result/provenance member windows."
+        },
+        {
+          "kind": "file",
+          "label": "Browse schemas",
+          "target": "crates/luxforge-core/src/catalog_types/browse.rs",
+          "relevance": "Queries/counts/selection and explicit expanded-member interpretation."
+        },
+        {
+          "kind": "file",
+          "label": "View identities",
+          "target": "crates/luxforge-core/src/catalog_types/identity.rs",
+          "relevance": "Current compact view items and disposable file IDs."
+        },
+        {
+          "kind": "file",
+          "label": "Existing filmstrip state",
+          "target": "crates/luxforge-app/src/state/develop.rs",
+          "relevance": "Replace private membership authority while retaining display/window logic.",
+          "locator": "DevelopSet"
+        },
+        {
+          "kind": "file",
+          "label": "Current set creation",
+          "target": "crates/luxforge-app/src/app/develop.rs",
+          "relevance": "Reconcile pick.develop, direct open and catalog-view sets with the shared API."
+        }
+      ],
+      "acceptance_criteria": [
+        "Seeded results appear once in relevant folder/event/card/catalog views, remain linked after index rebuild and expose undeveloped/offline originals through bounded member rows.",
+        "Picked/search/kind filters cannot hide matching source rows behind a nonmatching leader; results in the current set appear in Picked, mark their bracket decided and carry an In Development set check, while Develop N counts only pending file picks. Counts and leader-only selection are correct.",
+        "Command clients can inspect/expand stacks and append/remove set members; desktop and agent operations share authority and live event refresh.",
+        "Import, Pick, reuse, undo/redo and Remove preserve unrelated set members and ordinary picks; replacing a target set during merge completion gives a named atomic conflict.",
+        "Develop N, direct-open and view-derived filmstrip navigation retain current behavior and bounded paging with no redundant desktop-only set."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Compare real-owner browse queries and set membership against independent seeded expected rows for mixed sources and filters.",
+          "Run multi-client journal/set revision tests, including unrelated-member changes and membership conflicts.",
+          "Check existing filmstrip flows with the authority change and tie merge publication to membership in one transaction."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core hdr_merge_browse",
+          "tools/cargo-cached test -p luxforge-app filmstrip"
+        ],
+        "expected_results": [
+          "Every stated acceptance check passes with recorded scope; skipped checks are not passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Deliver Select merge actions, progress, result tiles, stack disclosure and original picking.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-005",
+        "TASK-006",
+        "TASK-007"
+      ],
+      "extra_context": [
+        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Planning does not authorize implementation. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
+        "Use core answers/schemas only. Pick merged is the primary bracket/selection action, Import merged secondary; both stay in Select and make the completed result active. Pick appends by default without pressing Develop N.",
+        "Provide compact optional Merge options with the decided alignment/deghosting/reference/EV controls and folder selection. Retain original Pick all and source picks; do not hide originals until atomic success.",
+        "Draw one pending work row plus existing activity-board progress/Cancel, HDR/N exposure badge, inline stack disclosure, offline-source reasons and Remove/Put back semantics. Expansion is view state with API parity.",
+        "Use existing theme/density/focus/draft rules and authoritative job.wait/event refresh, with no timer, window activation or foreground routine launch."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "HDR merge contract",
+          "target": "docs/design/hdr-merge.md",
+          "relevance": "Workflow, scope, persistence, lifecycle, bounded jobs and observable acceptance."
+        },
+        {
+          "kind": "file",
+          "label": "Project invariants",
+          "target": "AGENTS.md",
+          "relevance": "Planning authorization, sacred originals, current shapes, command parity and verification rules."
+        },
+        {
+          "kind": "file",
+          "label": "Select command dispatch",
+          "target": "crates/luxforge-app/src/app/select.rs",
+          "relevance": "Grid actions through shared owner command requests."
+        },
+        {
+          "kind": "file",
+          "label": "Select state",
+          "target": "crates/luxforge-app/src/state/select.rs",
+          "relevance": "Active result, selection and core-derived stack display."
+        },
+        {
+          "kind": "file",
+          "label": "Select grid",
+          "target": "crates/luxforge-app/src/view/select.rs",
+          "relevance": "Bracket actions, pending row and result/child rendering."
+        },
+        {
+          "kind": "file",
+          "label": "Grid preview work",
+          "target": "crates/luxforge-app/src/app/select_previews.rs",
+          "relevance": "Use bounded shared previews for generated results and sources."
+        },
+        {
+          "kind": "file",
+          "label": "Select conventions",
+          "target": "docs/design/catalog.md",
+          "relevance": "Current selection, filters, progress, keyboard and undo contracts."
+        }
+      ],
+      "acceptance_criteria": [
+        "A bracket header and valid manual selection invoke both creation modes through exactly the schema-described requests; unsuitable selections show core reasons.",
+        "The completed result leads a default-collapsed stack; expansion and picking any original work without clearing other picks or developing hidden inputs.",
+        "Progress/cancel/failure/reuse/Removed restoration are legible, keep browse/editor work responsive and accurately reflect the atomic owner state.",
+        "The filmstrip contains Pick results once alongside existing members, with an In Development set check/facet in the grid; Import leaves it unchanged; removal/undo/redo use library semantics even for edited results.",
+        "Owner/API parity tests and a targeted background rendered capture correlate requests, state and screenshots; no routine test takes focus."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add real-owner desktop tests comparing each gesture and resulting state to a second JSON client.",
+          "Capture the targeted merge workflow using the background evidence machinery once the new HDR scenario is registered; do not invent a currently available scenario.",
+          "Inspect compact/narrow layouts, focus handling, badges, filtered children, pending work and failure wording."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app hdr_merge"
+        ],
+        "expected_results": [
+          "Every stated acceptance check passes with recorded scope; skipped checks are not passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Hand off the working HDR workflow with recovery, rendered correctness and current documentation.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-008"
+      ],
+      "extra_context": [
+        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Planning does not authorize implementation. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
+        "This is working-feature delivery, not an owner-review gate. All ordinary source preservation, recovery, CPU/GPU correctness and background rendered integration evidence must ship now; final natural-scene refinement/timing is TASK-010 with no dependency back here.",
+        "Extend existing smoke/scenario/verify and GPU qualification tooling with an HDR journey/derived source families; register the new scenario before listing or running it. Keep automated app launches background-only and use isolated evidence/catalogs.",
+        "Run quick once for the finished change and rendered at this integration. Full is required only when making an explicit milestone claim with the applicable corpus manifest. Report unrun/unsupported native platforms or private real-bracket inputs honestly.",
+        "Update design/catalog/features/user guide/schema examples to current implemented behavior; keep panorama outside scope and no historical compatibility checks."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "HDR merge contract",
+          "target": "docs/design/hdr-merge.md",
+          "relevance": "Workflow, scope, persistence, lifecycle, bounded jobs and observable acceptance."
+        },
+        {
+          "kind": "file",
+          "label": "Project invariants",
+          "target": "AGENTS.md",
+          "relevance": "Planning authorization, sacred originals, current shapes, command parity and verification rules."
+        },
+        {
+          "kind": "file",
+          "label": "Select rendered journey",
+          "target": "xtask/src/select_smoke.rs",
+          "relevance": "Existing background interaction/evidence structure to extend."
+        },
+        {
+          "kind": "file",
+          "label": "Develop rendered journey",
+          "target": "xtask/src/develop_picks_smoke.rs",
+          "relevance": "Set/source/preview correlation patterns."
+        },
+        {
+          "kind": "file",
+          "label": "Scenario registry",
+          "target": "xtask/src/scenario/plan.rs",
+          "relevance": "Register only implemented HDR steps/scenario."
+        },
+        {
+          "kind": "file",
+          "label": "Integrated GPU gate",
+          "target": "xtask/src/gpu_qualification.rs",
+          "relevance": "Current corpus and added derived-source qualification."
+        },
+        {
+          "kind": "file",
+          "label": "Verification tiers",
+          "target": "docs/engineering/development.md",
+          "relevance": "Existing commands, background evidence and when to verify."
+        },
+        {
+          "kind": "file",
+          "label": "Feature status",
+          "target": "docs/features.md",
+          "relevance": "Replace planned status only with delivered evidence."
+        },
+        {
+          "kind": "file",
+          "label": "User guide",
+          "target": "docs/user-guide.md",
+          "relevance": "Describe actual actions and supported inputs, not proposed interfaces."
+        }
+      ],
+      "acceptance_criteria": [
+        "The background HDR journey proves Pick and Import, default collapse/expansion, original picks/development, saved-source editing, edited merge removal/undo/redo and reopen with inputs offline, using correlated captures/state/logs.",
+        "Crash/retry/conflict/corruption/collection tests prove one atomic visible result, exact retained edits/source identity and unchanged originals; redo/reopen issue no merge job.",
+        "Current source/UI/API checks, quick and required rendered/GPU integration checks pass within declared scope; no skipped run is a pass or broad portability claim.",
+        "Documentation, descriptors/examples and feature status agree with delivered behavior, pending real-corpus quality and measured/unmeasured resource scope.",
+        "The working feature can be used independently of TASK-010 and any unavailable natural-scene/owner reference inputs."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Register and run a background HDR smoke journey against deterministic photographic fixtures and correlate every key frame with owner state and logs.",
+          "Run failure/source preservation and real-owner API parity checks, then quick and the integrated rendered tier with the applicable manifest.",
+          "Inspect updated docs and source/GPU qualification results, distinguishing synthetic correctness, supplied native runs and missing broader evidence."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask verify --tier quick --output NEW_DIR",
+          "tools/cargo-cached xtask verify --tier rendered --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Every stated acceptance check passes with recorded scope; skipped checks are not passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-010",
+      "description": "Qualify natural-bracket quality and measure photo-sized merge/editor resource costs after delivery.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-009"
+      ],
+      "extra_context": [
+        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Planning does not authorize implementation. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
+        "Final refinement only: no dependency back into TASK-009. Real RAW brackets with handheld motion, clipping, shadows and difficult alignment improve quality evidence; absent owner files leave those cases unmeasured and do not delay fixture/tooling or the working feature.",
+        "Use a quiet native M4 and host-wide timing lock after feature work. Add any HDR-specific Rust xtask measurement command before documenting it as available; reuse existing resources.read/activity attribution and editor-latency where suitable.",
+        "Measure three/nine frames at 24/60 MP, cold/warm reads/preparation/registration/fusion/save, cancellation, temporary disk, process/source/scratch/GPU memory and editor/browse work beside a merge. Distinguish scratch budgets from total native memory.",
+        "Tune implementation thresholds within the accepted scope using evidence; changes that affect pixels repeat the affected correctness/GPU/rendered checks only. Do not require Lightroom matching, an owner approval task or native Windows/Linux evidence to finish the M4 working result."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "HDR merge contract",
+          "target": "docs/design/hdr-merge.md",
+          "relevance": "Workflow, scope, persistence, lifecycle, bounded jobs and observable acceptance."
+        },
+        {
+          "kind": "file",
+          "label": "Project invariants",
+          "target": "AGENTS.md",
+          "relevance": "Planning authorization, sacred originals, current shapes, command parity and verification rules."
+        },
+        {
+          "kind": "file",
+          "label": "Current measurement conventions",
+          "target": "docs/specs/performance.md",
+          "relevance": "Record exact scope, hardware, distributions and resource attribution."
+        },
+        {
+          "kind": "file",
+          "label": "Performance review",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Decode counts, allocations, owner work, queues, pixels and visibility."
+        },
+        {
+          "kind": "file",
+          "label": "Timing orchestration",
+          "target": "xtask/src/verify.rs",
+          "relevance": "Reuse serial/timing-lock policy, not ad hoc mid-feature timing."
+        },
+        {
+          "kind": "file",
+          "label": "Final qualification scope",
+          "target": "docs/design/hdr-merge.md",
+          "relevance": "Photo-sized acceptance and explicit natural-scene limitations.",
+          "locator": "Evidence and acceptance"
+        }
+      ],
+      "acceptance_criteria": [
+        "An implemented repeatable harness covers declared 24/60 MP three/nine exposure workloads and reports actual stage distributions, resource peaks, cancellation and merge/editor contention.",
+        "Reopen/redo of a healthy saved source performs zero input reads and zero fusion work; disk/object accounting covers retained and temporary data.",
+        "Available natural-bracket cases have named expectations and recorded output/failure diagnostics; absent/unrun cases remain explicitly unqualified.",
+        "Any quality/resource fix has focused correctness/rendered evidence; performance/design/features docs report current figures and remaining limits without a broad unmeasured memory or portability claim."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Prepare deterministic photo-sized scene/exposure workloads and natural-scene case manifests without blocking on private inputs.",
+          "Measure once on the completed feature behind the host lock; correlate resources, stage logs and editor/browse latency with input/result sizes.",
+          "Inspect motion, seams, colour, highlights, shadows and crop losses for available real brackets; record exact scope and address measured failures."
+        ],
+        "commands": [],
+        "expected_results": [
+          "Every stated acceptance check passes with recorded scope; skipped checks are not passes."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-004",
+        "TASK-005"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-006",
+        "TASK-007"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-008"
+      ]
+    },
+    {
+      "wave": 5,
+      "task_ids": [
+        "TASK-009"
+      ]
+    },
+    {
+      "wave": 6,
+      "task_ids": [
+        "TASK-010"
+      ]
+    }
+  ]
+}
