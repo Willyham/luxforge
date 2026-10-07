@@ -128,8 +128,8 @@ The owner edits local files and syncs them to an external drive, so moved-origin
 | Speed and unused-tool bloat | Measure startup, loading, idle and first-use costs; keep the core small and initialize lazily |
 | Filtering, tagging and collections | Design one retrieval model from concrete workflows |
 | Full catalog with lazy shoot subsets | Keep catalog scale independent of decoded pixels; scope views to the working set |
-| Multi-selection and stacking | Define selection ranges, stack identity and batch semantics in later library work |
-| Bracket and panorama identification | Research detection separately; merging is not selected |
+| Multi-selection and stacking | Multi-selection is delivered; result-led merge stacks are [planned](design/hdr-merge.md) |
+| Bracket and panorama identification | Brackets are detected; [HDR merging](#hdr-exposure-merges) is requested for planning; panorama stitching remains outside that plan |
 | Confusing export controls | One clear JPEG export path with explicit metadata behavior |
 
 ## Presets
@@ -221,6 +221,17 @@ Accepted on 2026-09-27 for the delivered [JPEG export](design/export.md#decision
 - The methods are `export.plan`, `export.jpeg`, `export.read` and `export.cancel`; the export lane is its own instance of the lane runner until one job table exists.
 - The earlier state-panel export proposal (presets, resizing, unique names by default, durable export records) is not adopted.
 - The desktop's export records 72 pixels per inch for each physical pixel of a point on the window's display, 144 on Retina, on macOS only (owner, 2026-10-05), so Preview's Actual Size matches the editor's 100%; `export.jpeg` takes the density as an optional parameter and the core never reads a display.
+
+## Export settings planning
+
+The owner asked on 2026-10-07 for more comprehensive export with settings: JPEG, WebP and a lossless hand-off format, optimised for the web by default, with a separate print setting. After reviewing the [design's](design/export-settings.md) boards, the owner chose:
+
+- **JPEG, WebP and TIFF.** DNG is not exported. The lossless hand-off is an 8- or 16-bit TIFF with the edits baked in.
+- **Lossy WebP** through libwebp.
+- **An Export sheet that writes directly** into the folder its settings name, with an editable suffix and no second save dialog. The same sheet serves batch export, Export again and Export with preset.
+- **Output sharpening in this plan, delivered after the core:** formats, resizing, optimisation and presets first.
+
+This request supersedes "quality fixed at 90, metadata chosen per export, no export preference" for the planned work. The never-replace, never-a-draft and displayed-entry rules stand. On 2026-10-08 the owner removed any memory cap from optimisation: optimised JPEG and file-size limits use the memory the image needs at any size. The sheet warns about large images, and long exports show a progress bar. The design records the other choices as proposals with defaults: the preset values, where presets are stored, the resampling filter, the quantisation tables, the warning threshold, when the progress bar appears, the metadata levels and the shortcuts. It also declares the resized, 16-bit and sharpened export tolerances. The request authorizes planning only; implementation awaits authorization.
 
 ## Source-kind controls
 
@@ -463,6 +474,18 @@ Decided by the owner on 2026-10-07 for [colour grading in the mixer](design/colo
 
 The final refinement task may build the grading-only slice of the alignment tooling without waiting on the separate alignment programme. Actual Lightroom exports are measurement inputs; missing exports leave response figures unmeasured and do not delay the working feature or reference/tooling delivery. This decision does not authorize unrelated alignment work or change its policy on private-catalog validation.
 
+## HDR exposure merges
+
+Requested for planning by the owner on 2026-10-07 ([design](design/hdr-merge.md)):
+
+- Select's grid offers **Import merged** and **Pick merged** for exposure brackets, creates one HDR result shown as a virtual photograph and collapses the original frames into a stack.
+- Keep the merged pixels durably on disk so ordinary reopening needs no repeated merge; source files stay unchanged and each bracket frame can still be picked independently.
+- A merge can be removed or undone without losing the originals. The planned lifecycle retains the generated result and edits for restoration through library undo/redo.
+- **Pick merged adds the result to the development set by default.** The design distinguishes Import's catalog-only result from Pick's appended set member and keeps Select open; ordinary file picks remain the existing workflow.
+- Be aware of other merge kinds, particularly panoramas, at the source/provenance/stack boundary. Do not implement or plan panorama stitching now.
+
+The owner selected **RAW brackets only** and **automatic alignment and deghosting** for the first implementation. JPEG bracket inputs are outside this plan; the existing SDR JPEG export remains available for merged results. Numerical/backend/layout details are delegated within the contract, so the storage, radiance and alignment tasks can start independently once implementation is authorized. This planning request does not authorize implementation.
+
 ## Open product questions
 
 [Product decisions](../tasks/project/product-decisions.json) carries the storage, external-module, workload, Presence, GPU reconciliation, themes and Lightroom-authorization tasks. The other recorded defaults remain proposals in their designs; they acquire no additional decision task.
@@ -496,6 +519,17 @@ Masking phases A–D are delivered. The owner's 2026-09-23 stroke-storage decisi
 - **Hosted GPU checks.** Keep the current portability dependency. The recommended lavapipe lane uses small functional journeys, omits `large24` and `large60`, and runs every retained scenario before failing at the end. This is a documentation and planning decision; no CI or engineering fix is authorised by this review, and lavapipe remains unadopted as the production renderer.
 
 The Basic and histogram product choices were decided on 2026-09-21 and implementation was authorised the same day; see [Basic adjustments and histogram](#basic-adjustments-and-histogram).
+
+## Auto tone planning
+
+The owner requested a plan for an Auto tone feature that sets the Basic values automatically, and decided on 2026-10-07 ([design](design/auto-tone.md#decided)):
+
+- Auto sets **Lightroom's eight**: Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Vibrance and Saturation.
+- **No white balance**, as in Lightroom; Auto white balance remains a separate later proposal.
+- **Auto in presets**, recomputed for each photo, and the Lightroom importer maps `AutoTone` instead of refusing it. Per-slider Auto and a desktop Auto on a selection are not in scope.
+- **Tuning by fitting** the targets to Lightroom's Auto on the owner's photos, after the working feature is delivered, followed by owner review.
+
+The deterministic algorithm, analysis before Basic with a forward model through Basic and the Look, the starting targets, caps, button placement and Cmd+U are recorded defaults in the design. This request authorizes planning only.
 
 ## High-zoom minimap planning
 
