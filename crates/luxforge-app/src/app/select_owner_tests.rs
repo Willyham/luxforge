@@ -183,6 +183,17 @@ pub(super) fn selecting() -> (Editor, PathBuf) {
 /// the seeded one (`OwnerHandle::read_no_host_mounts`).
 pub(super) fn selecting_over(catalog: PathBuf) -> (Editor, PathBuf) {
     OwnerHandle::read_no_host_mounts(&catalog);
+    opened(catalog)
+}
+
+/// The editor over the seeded catalog, as [`selecting`] opens it but reading the host's mount
+/// table: for a test of what the host has mounted, which is checked against what it read.
+fn selecting_on_the_host() -> (Editor, PathBuf) {
+    opened(seeded())
+}
+
+/// The editor over `catalog` with Select shown, what showing it reads answered.
+fn opened(catalog: PathBuf) -> (Editor, PathBuf) {
     let (owner, join) = OwnerHandle::start(&catalog).unwrap();
     let (mut editor, _) = Editor::new(Boot {
         owner,
@@ -1173,7 +1184,7 @@ fn select_picks_undoes_and_redoes_through_the_journal_on_a_real_owner() {
 /// before it is viewed; and the Catalog rows carry `catalog.info`'s counts.
 #[test]
 fn select_sources_list_volumes_folders_and_counts_on_a_real_owner() {
-    let (mut editor, catalog) = selecting();
+    let (mut editor, catalog) = selecting_on_the_host();
     // The rows are checked against the one `card.list` and `volume.list` the desktop read: other
     // tests attach and detach disk images, so the host's mounts may differ at a second read.
     let cards = serde_json::to_value(editor.select.state.cards.as_ref().unwrap()).unwrap();
