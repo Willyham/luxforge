@@ -2,6 +2,18 @@
 
 Each JSON file is an independent plan. IDs start at `TASK-001` inside every file, dependencies point only at earlier tasks in the same file, and execution waves are derived from those dependencies. Milestone order is expressed in the [roadmap](../docs/plan.md) by named outcome, never by cross-file task references.
 
+## Planning for execution
+
+A plan handed off for implementation is executable work. Resolve material product questions while creating or revising it; the task list must not send the implementer back to ask what to build.
+
+- Reuse existing context, decisions and authorization. Ask only questions whose answers materially change the product or scope, bundle them where possible, and resolve them before handing off the affected implementation. Routine numerical, layout and engineering choices belong to the implementer within the recorded contract; state that delegation instead of adding a review task.
+- Give every task a concrete output, sufficient context and observable acceptance. Do not add tasks to ask the owner, obtain implementation approval, confirm scope or freeze a contract through another decision round. Record decisions in the design and [decisions](../docs/decisions.md), not as future implementation work. A genuine discovery task produces an artifact or capability consumed downstream, with a reason it must come first.
+- Maximise work that can finish autonomously. Build a useful working feature first where possible. Put owner review, Lightroom/reference matching, calibration, extensive qualification and other refinement after that delivery unless their output is genuinely needed to build it correctly. Ordinary correctness, source-preservation and rendered integration checks stay with the code they prove; moving perfection later does not make an unrun check a pass.
+- Dependencies are required outputs, not ceremonial phase gates. Independent work can run together; late review or refinement has no dependency back into the working-feature handoff. Name any unavoidable prerequisite and its concrete effect on the consuming task.
+- Identify external inputs while planning. Split data/tooling preparation and independent implementation from the part that needs those inputs; do not make a whole feature wait for a manual export, private data or final approval. Use honest measured/unmeasured status where inputs are absent. If a final consequential action needs approval, prepare its concrete reviewable result first.
+
+A planning request still does not authorize executing the implementation or unrelated external actions. Preserve actual authorization boundaries, settle needed authorization during planning rather than adding an approval task, and distinguish an unfinished proposal from an implementation-ready plan. When revising existing plans, preserve IDs, truthful statuses and completed work; apply these conventions to the remaining work without silently changing scope or prior decisions.
+
 ## Layout
 
 Plans live in one folder per area. A plan moves only when its area changes; its status lives in its tasks, not in its location. Plans that are validated and have tasks ready to implement are listed in the roadmap's [ready to implement](../docs/plan.md#ready-to-implement) section, with the minimum model and the re-review every task needs before it starts.
@@ -32,6 +44,7 @@ One plan per tool module.
 | --- | --- |
 | [AI editing](editing/ai-editing.json) | Proposed Remove, Select, generative fill and Replace, and optional sky replacement on local, user-downloaded models: the inference port and runtime, the model manager, the analysis cache and picker, the model-selection mask kind, the fill tiers, the remote-provider shape, portability, qualification and documentation |
 | [Corrections](editing/corrections.json) | Proposed offline Clone/Heal, the repair stage, the shared brush and the repair layer's frozen-patch operation; its AI Remove is planned under AI editing |
+| [Colour grading](editing/colour-grading.json) | Decided, implementation-ready mixer extension: tonal/Global wheels, masks, presets and direct Lightroom mappings delivered first; independent reference analysis and Lightroom response refinement last, with no approval/research gates |
 
 ### Lightroom (`lightroom/`)
 
@@ -50,6 +63,7 @@ Owner decisions and repository upkeep.
 | --- | --- |
 | [Code structure consolidation](project/code-structure.json) | Implementation authorized 2026-10-07; GPU split approved; TASK-003 accepted: shared GPU primitives/layout and reusable backend, coherent module/preview interfaces, one stream preparation, shared grid/loupe mechanics and contained ownership cleanup; [design](../docs/design/code-structure.md) |
 | [Dependency advisories](project/dependency-advisories.json) | Remove or re-review the two expiring advisory exceptions the dependency audit enforces |
+| [Live-session Rust CLI](project/live-cli.json) ([design](../docs/design/live-cli.md)) | Specified thin client for the authenticated API of an already-open desktop session; implementation awaits owner authorization |
 | [Product decisions](project/product-decisions.json) | Open product questions |
 
 The post-consolidation programme, the Tone curve, Detail and Lens and perspective are complete and their plans are deleted; their outcome lives in the specs, their designs and [feature status](../docs/features.md).

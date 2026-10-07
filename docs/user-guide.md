@@ -1,6 +1,6 @@
 # Luxforge user guide
 
-The Develop workspace opens JPEG and the camera recording modes listed in the bundled RAW catalog, with exact transforms, crop/straighten, persistent history and the JSON API. On a RAW photo the same Basic section sets the white balance on the sensor data, in kelvin. [Exporting](#exporting) writes the photograph on screen to a new JPEG. Locate and MCP are planned; see [feature status](features.md).
+The Develop workspace opens JPEG and the camera recording modes listed in the bundled RAW catalog, with exact transforms, crop/straighten, persistent history and the JSON API. On a RAW photo the same Basic section sets the white balance on the sensor data, in kelvin. [Exporting](#exporting) writes the photograph on screen to a new JPEG. Locate and MCP are planned; a Rust CLI for the live editor session is specified and awaits implementation authorization ([feature status](features.md)).
 
 JPEG Basic exposure, tone, white balance and colour controls are built, with the neutral picker, and so are the histogram and clipping inspector that share their [design](design/basic-and-histogram.md), and the Presence, Colour mixer and Vignette sections of their own [design](design/presence-mixer-vignette.md). [Presets](design/presets.md) save and apply those settings, and import Lightroom Classic presets.
 
@@ -188,6 +188,8 @@ Toggles commit on click or Space. Choices use segments, chips or a menu and comm
 Slider, stepper, colour picker and curve gestures whose field is a whole request (a patch action's field or an action's only parameter) open one draft, preview each new value as soon as the previous one has answered, and commit once on release. Escape cancels the gesture. Fields commit on Enter; toggles, choices and action buttons commit once. Tab follows the generated control order. Right-click any generated control to inspect its action/parameter and copy the JSON request with the current revision.
 
 The Controls proof in developer mode demonstrates this vocabulary without changing photo pixels. Its edits still create normal history entries; `edit.set-controls` changes one field and `edit.reset-controls` restores the defaults. Text and 2D pad controls are deferred.
+
+Colour grading is [planned for the Colour mixer](design/colour-grading.md), alongside its existing eight-range HSL controls. Tonal/Global wheels, Blending and Balance are not available yet.
 
 ### Settings and experiments
 
