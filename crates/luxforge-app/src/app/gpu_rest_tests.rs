@@ -654,8 +654,39 @@ fn gpu_rest_the_measured_stacks_are_tiled_within_the_rests_share() {
         "the 60 MP drag stack"
     );
     // On a 60 MP RAW the surface holds 723 MB of source: the share is what the budget leaves
-    // beside it, the view plan and the accumulator, and the tile's slot fits that.
+    // beside it, the view plan and the accumulator. Dehaze's light behind Detail needs Detail's
+    // output over the whole stage, a stage texture of 963 MB in `f32`, which with a sweep's slot
+    // passes the share: a light sweep computes it with no stage texture, Detail's tiles reduced
+    // into it, and the stack's tiles are drawn chained, within the share. Without Dehaze the stack
+    // is one sweep, chained, and its tile's slot fits the share.
     let (width, height) = (9_504, 6_336);
+    let rest = luxforge_core::qualification::rest_plan(
+        &committed(raw_of(width, height), recipe.clone()),
+        GpuView::Fit(super::gpu_qualification::fit_bounds()),
+    )
+    .expect("a rest plan");
+    match rest.tiles {
+        Some(Ok(tiles)) => {
+            let share = tiles.share.expect("a share");
+            assert!(tiles.staging.sweeps().is_none(), "no stage texture fits");
+            let [sweep] = &tiles.light_sweeps[..] else {
+                panic!("one light sweep: {:?}", tiles.light_sweeps.len());
+            };
+            eprintln!(
+                "the 60 MP RAW drag stack: a light sweep of Detail in {} tiles of {} px, its slot \
+                 {:.1} MB within the share's {:.1} MB, then {} chained tiles",
+                sweep.tiles.len(),
+                sweep.side,
+                sweep.slot_bytes as f64 / 1e6,
+                share as f64 / 1e6,
+                tiles.tiles.len()
+            );
+            assert!(sweep.slot_bytes <= share && sweep.side % 16 == 0);
+        }
+        other => panic!("the 60 MP RAW drag stack: {other:?}"),
+    }
+    let mut recipe = recipe;
+    recipe.layers[2].payload = json!({"texture": 100.0, "clarity": 100.0});
     let evaluation = committed(raw_of(width, height), recipe);
     let tiles = planned_tiles(&evaluation);
     let share = tiles.share.expect("a share");
@@ -674,8 +705,8 @@ fn gpu_rest_the_measured_stacks_are_tiled_within_the_rests_share() {
         true,
     ) + luxforge_core::rest_light_bytes(&tiles.plan, tiles.format);
     eprintln!(
-        "the 60 MP RAW drag stack: {} tiles of {} px; source {:.1} MB, share {:.1} MB, the centre \
-         tile's slot {:.1} MB",
+        "the 60 MP RAW drag stack without Dehaze: {} tiles of {} px; source {:.1} MB, share {:.1} \
+         MB, the centre tile's slot {:.1} MB",
         tiles.tiles.len(),
         tiles.tiles[0].rect.width,
         source as f64 / 1e6,
@@ -1156,10 +1187,13 @@ fn print_sweeps(what: &str, sweeps: &GpuSweeps) {
     }
 }
 
-/// Staged sweeps for the measured stacks, planned, not yet drawn: the 60 MP drag stack and Detail
-/// alone are one sweep each, drawn chained; the Air 2S's masked stack is four sweeps — Detail with
-/// the global Presence, then each masked Presence layer alone — in two stage textures, and the
-/// three-segment stack two sweeps in one, its lens tail in the last. Every sweep's slot, light
+/// Staged sweeps for the measured stacks, planned, not yet drawn: Detail alone is one sweep, drawn
+/// chained; the 60 MP drag stack is two in one stage texture, Detail then the Presence whose
+/// Dehaze reads Detail's output, its light reduced from that texture; the Air 2S's masked stack is
+/// four sweeps — Detail with the global Presence, which reads no light, then each masked Presence
+/// layer alone — in two stage textures; and the three-segment stack three sweeps in two, Detail,
+/// then the Presence whose Dehaze reads Detail's output, then the masked Presence, its lens tail
+/// in the last. Every sweep's slot, light
 /// links and the stage textures fit the rest's share, and each sweep's window carries about the
 /// work a tile may at most; a sweep's reach is its own links' halos and leads alone.
 #[test]
@@ -1168,7 +1202,7 @@ fn gpu_rest_the_measured_stacks_are_planned_in_staged_sweeps() {
         let evaluation = committed(source, recipe);
         let tiles = planned_tiles(&evaluation);
         match (name, &tiles.staging) {
-            ("the 60 MP drag stack" | "Detail alone at 24 MP", staging) => assert_eq!(
+            ("Detail alone at 24 MP", staging) => assert_eq!(
                 staging,
                 &GpuStaging::Chained(luxforge_core::Chained::OneSweep),
                 "{name}"
@@ -1189,14 +1223,23 @@ fn gpu_rest_the_measured_stacks_are_planned_in_staged_sweeps() {
                     .iter()
                     .map(|sweep| sweep.spatial.clone())
                     .collect();
+                let lit: Vec<_> = sweeps
+                    .sweeps
+                    .iter()
+                    .map(|sweep| sweep.lights.len())
+                    .collect();
                 match name {
+                    "the 60 MP drag stack" => {
+                        assert_eq!(ranges, [0..1, 1..2], "{name}");
+                        assert_eq!((sweeps.textures, lit), (1, vec![0, 1]), "{name}");
+                    }
                     "the Air 2S masked stack" => {
                         assert_eq!(ranges, [0..2, 2..3, 3..4, 4..5], "{name}");
                         assert_eq!(sweeps.textures, 2, "{name}");
                     }
                     "the Air 2S three-segment stack" => {
-                        assert_eq!(ranges, [0..2, 2..3], "{name}");
-                        assert_eq!(sweeps.textures, 1, "{name}");
+                        assert_eq!(ranges, [0..1, 1..2, 2..3], "{name}");
+                        assert_eq!((sweeps.textures, lit), (2, vec![0, 1, 0]), "{name}");
                         assert!(tiles.warp().is_some(), "{name}: the lens tail in the last");
                     }
                     _ => panic!("{name}: an unexpected stack"),
@@ -1250,7 +1293,9 @@ fn gpu_rest_a_stream_is_planned_in_staged_sweeps_within_its_budget() {
 /// `tiles` reduced to the output stage's own size: every view pixel one output pixel at weight
 /// one, so the rest output is the stage's codes, which the reduction decodes and quantizes again
 /// to the same code. The full-resolution codes a picture at rest draws, through its own drawing.
-fn at_full_size(tiles: &luxforge_core::RestTiles) -> luxforge_ui::photo_surface::RestReduction {
+pub(super) fn at_full_size(
+    tiles: &luxforge_core::RestTiles,
+) -> luxforge_ui::photo_surface::RestReduction {
     let output = tiles.output;
     luxforge_ui::photo_surface::RestReduction {
         view: (output.width, output.height),
@@ -1604,4 +1649,103 @@ fn gpu_rest_the_air_2s_masked_stack_staged_is_chained() {
         &mut version,
     );
     assert!(failure.is_none(), "{failure:?}");
+}
+
+/// An indication, not a timing claim: the 60 MP RAW drag stack's picture at rest drawn by the
+/// photo surface's own drawing on this host's device as the editor plans it — a light sweep of
+/// Detail with no stage texture, then the chained tiles — and, with the side named so the stage
+/// texture is planned, in staged sweeps where the surface's budget holds them; beside the reference
+/// renderer's whole frame. Prints each one's wall time and its tiles' summed GPU spans
+/// (`RestFigures::gpu_us`), one run each on a possibly shared host.
+#[test]
+#[ignore = "an indication on this host's device; run on demand"]
+fn gpu_rest_the_60_mp_raw_drag_stacks_light_indication() {
+    let test = "gpu_rest_the_60_mp_raw_drag_stacks_light_indication";
+    let Some((backend, name)) = super::gpu_tiles_tests::host_adapter(test) else {
+        return;
+    };
+    assert!(super::gpu_plan::install_output_encoding());
+    let window = luxforge_ui::adapters::open(&backend, &name)
+        .unwrap_or_else(|unopened| panic!("{test}: the surface's device: {unopened:?}"));
+    let (_, _, recipe) = measured_stacks().swap_remove(0);
+    let (width, height) = (9_504u32, 6_336u32);
+    let mut planes = Vec::with_capacity(3 * (width * height) as usize);
+    for channel in 0..3u32 {
+        for y in 0..height {
+            for x in 0..width {
+                let wave = ((x as f32) * 0.013 + (y as f32) * 0.007 + channel as f32).sin();
+                planes.push(0.2 + 0.15 * wave + ((x * 7 + y * 3) % 11) as f32 / 120.0);
+            }
+        }
+    }
+    let source = PreviewSource::Raw {
+        image: LinearImage::new(width, height, planes).expect("finite planes"),
+        settings: LinearSettings::default(),
+    };
+    let evaluation = committed(source.clone(), recipe.clone());
+    let gpu = super::gpu_tiles_tests::gpu_source(1, &source);
+    let editor = planned_tiles(&evaluation);
+    let staged = luxforge_core::qualification::rest_tiles(
+        &evaluation,
+        super::gpu_qualification::fit_bounds(),
+        1024,
+    )
+    .expect("tiles");
+    for (what, tiles) in [
+        ("as the editor plans it", editor),
+        ("staged at 1024 px", staged),
+    ] {
+        let rest = super::gpu_preview::rest_now(&gpu, &tiles, 7).unwrap();
+        let mut surface = luxforge_ui::photo_surface::gpu_preview::headless::HeadlessSurface::new(
+            &window.device,
+            &window.queue,
+        );
+        // Warm: compiles and the source's upload; then the timed draw on the same surface, every
+        // kept light let go so it is computed again.
+        let _ = surface.rest(&gpu, &rest);
+        surface.forget_lights();
+        let rest = super::gpu_preview::rest_now(&gpu, &tiles, 8).unwrap();
+        let started = std::time::Instant::now();
+        let drawn = surface.rest(&gpu, &rest);
+        let wall = started.elapsed();
+        match drawn {
+            Ok(drawn) => eprintln!(
+                "{test}: {what}: {} light sweep tile(s) and {} chained, {} staged sweeps, {} \
+                 tiles; wall {:.2} s over {} frames, tiles' GPU spans {:.2} s",
+                tiles
+                    .light_sweeps
+                    .iter()
+                    .map(|sweep| sweep.tiles.len())
+                    .sum::<usize>(),
+                tiles.tiles.len(),
+                drawn.figures.sweeps,
+                drawn.figures.tiles,
+                wall.as_secs_f64(),
+                drawn.frames,
+                drawn.figures.gpu_us as f64 / 1e6
+            ),
+            Err(fallback) => eprintln!("{test}: {what}: not drawn on the surface: {fallback:?}"),
+        }
+    }
+    let registry = ModuleRegistry::builtin();
+    let PreviewSource::Raw { image, settings } = &source else {
+        unreachable!()
+    };
+    let started = std::time::Instant::now();
+    render(
+        &registry,
+        luxforge_core::RenderSource::Linear {
+            image,
+            settings: *settings,
+        },
+        &recipe,
+        RenderOptions::exact(&Cancel::never()),
+        &RenderContext::new(),
+    )
+    .and_then(|rendered| rendered.frame(SnapshotId::new()))
+    .expect("the reference frame");
+    eprintln!(
+        "{test}: the reference renderer's whole frame: {:.2} s",
+        started.elapsed().as_secs_f64()
+    );
 }

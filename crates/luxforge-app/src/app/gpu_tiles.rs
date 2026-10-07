@@ -72,9 +72,10 @@
 //!   and where its tiles' time went.
 use super::gpu_plan::{self, WarpGrid, surface_plan_over, sweep_plan_over};
 use luxforge_core::{
-    Cancel, ClientId, CoordinateGrid, Error, GpuFallback, GpuGeometry, GpuPlan, GpuStaging,
-    GpuSweep, GpuSweeps, LinearImage, PreviewSource, Region, RestTile, STREAM_TILE_SIDES,
-    StreamPlan, TilePlan, plan_read, plan_stream, plan_stream_sweeps, plan_stream_sweeps_at,
+    Cancel, ClientId, CoordinateGrid, Error, GpuFallback, GpuGeometry, GpuLightSweep, GpuPlan,
+    GpuStaging, GpuSweep, GpuSweeps, LinearImage, PreviewSource, Region, RestTile,
+    STREAM_TILE_SIDES, StreamPlan, TilePlan, plan_read, plan_stream, plan_stream_light_sweeps,
+    plan_stream_sweeps, plan_stream_sweeps_at,
     tiles::{
         Answered, Band, BandSender, BandStream, EXPORT_BANDS_IN_FLIGHT, ReadAnswer, ReadPixels,
         ReadStage, ReadValues, ReferenceReads, TILE_QUEUE_CAPACITY, TileCall, TileFallback,
@@ -682,6 +683,8 @@ struct Drawing {
     pending: VecDeque<(Ticket, usize)>,
     /// A stream drawn in staged sweeps: its sweeps, `plan.tiles` the last's.
     staged: Option<Staged>,
+    /// Its light sweeps, drawn first, for a chained stream reading a light behind a spatial layer.
+    lit: Option<LightSweeps>,
     /// The runner it began on ([`Worker::runners`]): its tiles in flight and its window are that
     /// runner's, so it ends if the worker opens another.
     runner: u64,
@@ -736,6 +739,36 @@ struct Assembling {
     left: usize,
 }
 
+/// A chained stream's light sweeps (`docs/design/gpu-preview.md`, "The global estimate"): each
+/// light behind a spatial layer whose stage texture does not fit computed first, its sweep's tiles
+/// drawing the layers before it over their windows, two in flight, each tile's rectangle reduced
+/// into the light the runner keeps; the stream's tiles then read it kept.
+struct LightSweeps {
+    sweeps: Vec<GpuLightSweep>,
+    /// The sweep being drawn, its next tile, whether its light was begun, and its tiles in flight.
+    sweep: usize,
+    next: usize,
+    begun: bool,
+    pending: VecDeque<Ticket>,
+}
+
+impl LightSweeps {
+    fn new(sweeps: Vec<GpuLightSweep>) -> Self {
+        Self {
+            sweeps,
+            sweep: 0,
+            next: 0,
+            begun: false,
+            pending: VecDeque::new(),
+        }
+    }
+
+    /// Whether a light sweep remains to be drawn.
+    fn drawing(&self) -> bool {
+        self.sweep < self.sweeps.len()
+    }
+}
+
 impl Drawing {
     /// `plan` drawn over `source`, its tiles grouped in bands by their row.
     fn new(plan: StreamPlan, source: GpuSource, grid: Option<CoordinateGrid>, runner: u64) -> Self {
@@ -748,13 +781,16 @@ impl Drawing {
             band_of,
             pending: VecDeque::new(),
             staged: None,
+            lit: None,
             runner,
         }
     }
 
-    /// Whether a sweep before the last remains to be drawn into the stage textures.
+    /// Whether a sweep before the last remains to be drawn into the stage textures, or a light
+    /// sweep before the stream's tiles.
     fn drawing_stages(&self) -> bool {
         self.staged.as_ref().is_some_and(Staged::drawing_stages)
+            || self.lit.as_ref().is_some_and(LightSweeps::drawing)
     }
 }
 
@@ -1043,6 +1079,185 @@ impl Worker {
         fallback
     }
 
+    /// The lights behind a spatial layer that `plan`, a read's plan of a stage of `stack`, reads
+    /// ([`luxforge_core::GpuLightInput::Stage`]), which a read's one tile cannot compute: kept by
+    /// the runner already, or computed now by drawing `stack`'s staged sweeps before them into stage
+    /// textures, every tile of each into its stage texture, each light reduced from the texture its
+    /// reading sweep reads before that sweep's first tile, and kept under its input's key, the stage
+    /// textures released after; or, where those do not fit or a staged export holds the runner's,
+    /// by light sweeps that hold none. The read's tile then reads them kept. Refused, naming
+    /// `light-stage`, while an export's light sweep is drawn, or where no light sweep fits. Blocks
+    /// the worker for those sweeps, once a stack and source.
+    fn stage_lights(
+        &self,
+        stack: &Stack,
+        plan: &GpuPlan,
+        converted: &SurfacePlan,
+        source: &GpuSource,
+    ) -> Result<(), TileFallback> {
+        let Some(light) = plan.lights.iter().find(|light| light.staged()) else {
+            return Ok(());
+        };
+        let refused = |why: &str| {
+            TileFallback::Plan(GpuFallback::LightStage {
+                layer: light.layer,
+                why: why.to_owned(),
+            })
+        };
+        let held;
+        {
+            let mut runner = self.runner()?;
+            if runner.keeps_lights(converted, source) {
+                return Ok(());
+            }
+            if runner.light_sweeping() {
+                return Err(refused("an export's light sweep holds the light reducer"));
+            }
+            held = runner.stages().0 > 0;
+        }
+        let budget = GPU_TILE_BUDGET - STREAM_READ_RESERVE;
+        // A staged export holds the stage textures: the light by light sweeps, which hold none.
+        if held {
+            return self.read_light_sweeps(stack, source, budget);
+        }
+        let staging = match self.chains_streams() {
+            true => GpuStaging::Chained(luxforge_core::Chained::OneSweep),
+            false => plan_stream_sweeps(stack, budget)?,
+        };
+        let GpuStaging::Staged(sweeps) = staging else {
+            // The stage textures do not fit: each light by a light sweep that holds none.
+            return self.read_light_sweeps(stack, source, budget);
+        };
+        let Some(last) = sweeps
+            .sweeps
+            .iter()
+            .rposition(|sweep| !sweep.lights.is_empty())
+        else {
+            return Err(refused("no sweep reads it"));
+        };
+        let whole = plan_stream(stack, sweeps.sweeps[0].side)?;
+        // A reading sweep may be the last, whose tiles draw through a lens warp's grid.
+        let grid = match whole.warp() {
+            Some(warp) => Some(stage_grid(warp)?),
+            None => None,
+        };
+        {
+            let mut runner = self.runner()?;
+            let held = runner.hold_stages(
+                (sweeps.stage.width, sweeps.stage.height),
+                gpu_plan::boundary_format(sweeps.format),
+                sweeps.textures,
+            );
+            self.figures.borrow_mut().runner = runner.figures();
+            drop(runner);
+            held.map_err(|failure| self.failed(failure))?;
+        }
+        let drawn = (|| {
+            for index in 0..last {
+                let sweep = &sweeps.sweeps[index];
+                let writes = sweep
+                    .writes
+                    .ok_or_else(|| unplannable("a sweep writes nothing"))?;
+                let mut pending = VecDeque::new();
+                for tile in &sweep.tiles {
+                    let input = sweep.reads.map_or(TileInput::Source, TileInput::Stage);
+                    let output = TileOutput::Stage {
+                        writes,
+                        rect: [tile.rect.x0, tile.rect.y0, tile.rect.x1(), tile.rect.y1()],
+                    };
+                    let converted = self.convert_sweep(&whole.plan, sweep, source, None, *tile)?;
+                    let ticket = self.submit(&converted, source, tile.window, (input, output))?;
+                    pending.push_back(ticket);
+                    if pending.len() >= TILES_IN_FLIGHT {
+                        self.finish_stage(pending.pop_front().expect("a tile in flight"))?;
+                    }
+                }
+                while let Some(ticket) = pending.pop_front() {
+                    self.finish_stage(ticket)?;
+                }
+                let next = &sweeps.sweeps[index + 1];
+                if !next.lights.is_empty() {
+                    let tile = *next
+                        .tiles
+                        .first()
+                        .ok_or_else(|| unplannable("a sweep of no tiles"))?;
+                    let converted =
+                        self.convert_sweep(&whole.plan, next, source, grid.as_ref(), tile)?;
+                    let mut runner = self.runner()?;
+                    let computed = runner.compute_lights(&converted, source);
+                    self.figures.borrow_mut().runner = runner.figures();
+                    drop(runner);
+                    computed.map_err(|failure| self.failed(failure))?;
+                }
+            }
+            Ok(())
+        })();
+        if let Some(runner) = self.runner.borrow_mut().as_mut() {
+            runner.release();
+            runner.release_stages();
+            self.figures.borrow_mut().runner = runner.figures();
+        }
+        drawn
+    }
+
+    /// The lights behind a spatial layer a read of `stack` reads, computed by light sweeps with no
+    /// stage texture ([`plan_stream_light_sweeps`]), each tile drawing the layers before a light
+    /// over its window and reducing its rectangle into it, two tiles in flight, and kept by the
+    /// runner under its input's key. The reference's where no sweep fits.
+    fn read_light_sweeps(
+        &self,
+        stack: &Stack,
+        source: &GpuSource,
+        budget: u64,
+    ) -> Result<(), TileFallback> {
+        let sweeps = plan_stream_light_sweeps(stack, budget, &luxforge_core::STREAM_TILE_SIDES)?;
+        let whole = plan_stream(stack, luxforge_core::STREAM_TILE_SIDES[0])?;
+        let drawn = (|| {
+            for planned in &sweeps {
+                let light = gpu_plan::light_sweep_light(&whole.plan, planned)
+                    .map_err(|unrunnable| TileFallback::Stage(unrunnable.code()))?;
+                {
+                    let mut runner = self.runner()?;
+                    let begun = runner.begin_light(source, &light, planned.side);
+                    self.figures.borrow_mut().runner = runner.figures();
+                    drop(runner);
+                    if !begun.map_err(|failure| self.failed(failure))? {
+                        continue;
+                    }
+                }
+                let sweep = gpu_plan::light_sweep_as_sweep(&whole.plan, planned);
+                let mut pending = VecDeque::new();
+                for tile in &planned.tiles {
+                    let converted = self.convert_sweep(&whole.plan, &sweep, source, None, *tile)?;
+                    let output = TileOutput::Light {
+                        rect: [tile.rect.x0, tile.rect.y0, tile.rect.x1(), tile.rect.y1()],
+                    };
+                    let ticket =
+                        self.submit(&converted, source, tile.window, (TileInput::Source, output))?;
+                    pending.push_back(ticket);
+                    if pending.len() >= TILES_IN_FLIGHT {
+                        self.finish_stage(pending.pop_front().expect("a tile in flight"))?;
+                    }
+                }
+                while let Some(ticket) = pending.pop_front() {
+                    self.finish_stage(ticket)?;
+                }
+                let mut runner = self.runner()?;
+                let finished = runner.finish_light();
+                self.figures.borrow_mut().runner = runner.figures();
+                drop(runner);
+                finished.map_err(|failure| self.failed(failure))?;
+            }
+            Ok(())
+        })();
+        if let Some(runner) = self.runner.borrow_mut().as_mut() {
+            runner.abandon_light();
+            runner.release();
+            self.figures.borrow_mut().runner = runner.figures();
+        }
+        drawn
+    }
+
     /// Let go of the window of the source and the slot the runner keeps between runs.
     fn release(&self) {
         if let Some(runner) = self.runner.borrow_mut().as_mut() {
@@ -1058,6 +1273,7 @@ impl Worker {
             runner.abandon();
             runner.release();
             runner.release_stages();
+            runner.abandon_light();
             self.figures.borrow_mut().runner = runner.figures();
         }
     }
@@ -1194,6 +1410,64 @@ impl Worker {
         Ok(())
     }
 
+    /// One step of a chained stream's light sweeps: its light begun at a sweep's first, skipped
+    /// where the runner keeps it; its next tile submitted, reducing its rectangle into the light;
+    /// its oldest tile in flight waited for once two are or none more can be; and at a sweep's last
+    /// tile done, the light selected and kept, and the next sweep. Why the GPU cannot go on.
+    fn light_step(&self, drawing: &mut Drawing) -> Result<(), TileFallback> {
+        let lit = drawing.lit.as_mut().expect("light sweeps");
+        let planned = &lit.sweeps[lit.sweep];
+        if !lit.begun {
+            let light = gpu_plan::light_sweep_light(&drawing.plan.plan, planned)
+                .map_err(|unrunnable| TileFallback::Stage(unrunnable.code()))?;
+            let mut runner = self.runner()?;
+            let begun = runner.begin_light(&drawing.source, &light, planned.side);
+            self.figures.borrow_mut().runner = runner.figures();
+            drop(runner);
+            if !begun.map_err(|failure| self.failed(failure))? {
+                lit.sweep += 1;
+                return Ok(());
+            }
+            lit.begun = true;
+        }
+        let tiles = planned.tiles.len();
+        let submitted = lit.next < tiles && lit.pending.len() < TILES_IN_FLIGHT;
+        if submitted {
+            let tile = planned.tiles[lit.next];
+            let sweep = gpu_plan::light_sweep_as_sweep(&drawing.plan.plan, planned);
+            let plan =
+                self.convert_sweep(&drawing.plan.plan, &sweep, &drawing.source, None, tile)?;
+            let output = TileOutput::Light {
+                rect: [tile.rect.x0, tile.rect.y0, tile.rect.x1(), tile.rect.y1()],
+            };
+            let ticket = self.submit(
+                &plan,
+                &drawing.source,
+                tile.window,
+                (TileInput::Source, output),
+            )?;
+            lit.pending.push_back(ticket);
+            lit.next += 1;
+        }
+        let finish = lit.pending.len() >= TILES_IN_FLIGHT
+            || ((!submitted || lit.next == tiles) && !lit.pending.is_empty());
+        if finish {
+            let ticket = lit.pending.pop_front().expect("a tile in flight");
+            self.finish_stage(ticket)?;
+        }
+        if lit.next == tiles && lit.pending.is_empty() {
+            let mut runner = self.runner()?;
+            let finished = runner.finish_light();
+            self.figures.borrow_mut().runner = runner.figures();
+            drop(runner);
+            finished.map_err(|failure| self.failed(failure))?;
+            lit.sweep += 1;
+            lit.next = 0;
+            lit.begun = false;
+        }
+        Ok(())
+    }
+
     /// Copy what the worker has done and holds into the shared state, for the figures.
     fn publish(&self, state: &mut State) {
         let mut figures = self.figures.borrow_mut();
@@ -1255,7 +1529,11 @@ impl Worker {
         // A staged stream draws its sweeps before the last into the stage textures first.
         if stream.drawing.as_ref().is_some_and(Drawing::drawing_stages) {
             let drawing = stream.drawing.as_mut().expect("drawing");
-            return match self.stage_step(drawing) {
+            let step = match drawing.lit.as_ref().is_some_and(LightSweeps::drawing) {
+                true => self.light_step(drawing),
+                false => self.stage_step(drawing),
+            };
+            return match step {
                 Ok(()) => true,
                 Err(fallback) => self.end(stream, End::Fallback(fallback)),
             };
@@ -1425,6 +1703,24 @@ impl Worker {
             drawing.staged = Some(Staged::new(sweeps));
             return Ok(drawing);
         }
+        // A light behind a spatial layer whose stage textures do not fit is computed by light
+        // sweeps first, which hold none; the stream's chained tiles read it kept. A stack no light
+        // sweep fits is the reference's, never drawn with a stand-in.
+        let lit = match first
+            .plan
+            .lights
+            .iter()
+            .any(luxforge_core::GpuLight::staged)
+        {
+            false => None,
+            true => {
+                let sides = stream
+                    .sweep_sides
+                    .clone()
+                    .unwrap_or_else(|| luxforge_core::STREAM_TILE_SIDES.to_vec());
+                Some(plan_stream_light_sweeps(&stream.stack, budget, &sides)?)
+            }
+        };
         let mut requested = 0;
         for &side in &stream.sides {
             let plan = if side == first.side {
@@ -1434,7 +1730,9 @@ impl Worker {
             };
             let charge = self.largest_charge(&plan, &source, grid.as_ref())?;
             if charge <= budget {
-                return Ok(Drawing::new(plan, source, grid, self.runners.get()));
+                let mut drawing = Drawing::new(plan, source, grid, self.runners.get());
+                drawing.lit = lit.map(LightSweeps::new);
+                return Ok(drawing);
             }
             requested = charge;
         }
@@ -1610,6 +1908,9 @@ impl Session<'_> {
         let converted = self
             .worker
             .convert(&plan.plan, &source, grid.as_deref(), plan.tile)?;
+        // A light behind a spatial layer, computed by the stack's staged sweeps and kept.
+        self.worker
+            .stage_lights(self.stack, &plan.plan, &converted, &source)?;
         let end = if plan.reads_codes(values) {
             TileEnd::Codes
         } else {

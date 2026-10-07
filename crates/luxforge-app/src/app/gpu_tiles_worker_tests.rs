@@ -1998,3 +1998,193 @@ fn a_measured_export_staged_is_chained() {
         );
     }
 }
+
+/// A stack whose Dehaze reads the output of a spatial layer before it — the owner's masked Dehaze
+/// behind Clarity, Dehaze behind Detail, and the first before a lens warp — streamed in staged
+/// sweeps, the runner reducing the light from the stage texture the sweep before it wrote, is bit
+/// for bit the photo surface's own staged picture at rest drawn at full size on another device of
+/// the same adapter, whose sweep reduces the same light from its own stage texture, on both
+/// paths. A read through such a light
+/// draws its one tile on the GPU, reading the light the worker's staged sweeps of the stack
+/// computed first and kept: the stream's bytes, its stage textures let go after. With no stage
+/// texture, a worker drawing the stream chained after light sweeps, and reading through them, draws
+/// the same bytes.
+#[test]
+fn a_staged_stream_reads_the_light_behind_a_spatial_layer_from_its_stage() {
+    let test = "a_staged_stream_reads_the_light_behind_a_spatial_layer_from_its_stage";
+    let Some((backend, name)) = host_adapter(test) else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let window = adapters::open(&backend, &name)
+        .unwrap_or_else(|unopened| panic!("{test}: the surface's device: {unopened:?}"));
+    let mut surface = HeadlessSurface::new(&window.device, &window.queue);
+    let service = GpuTiles::new(Some((backend.clone(), name.clone())), false);
+    service.poison(true);
+    service.draw_streams_at(vec![STAGED_SIDE]);
+    let client = clients(1)[0];
+    let budget = GPU_TILE_BUDGET - super::gpu_tiles::STREAM_READ_RESERVE;
+    use super::gpu_tiles_tests::{radial, recipe};
+    let families = [
+        (
+            "a masked Dehaze behind Clarity",
+            recipe(
+                vec![
+                    Layer::new(PRESENCE_EFFECT, json!({"clarity": 60.0})),
+                    Layer::new(PRESENCE_EFFECT, json!({"dehaze": 60.0})),
+                ],
+                vec![(1, radial())],
+            ),
+        ),
+        (
+            "Dehaze behind Detail",
+            recipe(
+                vec![
+                    Layer::new(DETAIL_EFFECT, json!({"sharpening": 80.0, "radius": 1.0})),
+                    Layer::new(PRESENCE_EFFECT, json!({"dehaze": -60.0})),
+                ],
+                Vec::new(),
+            ),
+        ),
+        (
+            "Dehaze behind Clarity before a lens warp",
+            recipe(
+                vec![
+                    Layer::new(PRESENCE_EFFECT, json!({"clarity": 60.0})),
+                    Layer::new(PRESENCE_EFFECT, json!({"dehaze": 60.0})),
+                    luxforge_core::qualification::lens_layer(-0.06, STAGED),
+                ],
+                vec![(1, radial())],
+            ),
+        ),
+    ];
+    let bounds = luxforge_core::ProxyBounds {
+        width: 400,
+        height: 250,
+    };
+    let mut versions = 300;
+    for (format, path) in [
+        (BoundaryFormat::Half, "the byte path"),
+        (BoundaryFormat::Float, "the linear path"),
+    ] {
+        let source = staged_source(format);
+        versions += 1;
+        let gpu = gpu_source(versions, &source);
+        for (family, recipe) in &families {
+            let what = format!("{family} on {path}");
+            let stack = stack(&source, recipe);
+            let staging = plan_stream_sweeps_at(&stack, budget, &[STAGED_SIDE])
+                .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"));
+            let Some(sweeps) = staging.sweeps() else {
+                panic!("{what}: planned chained, {staging:?}");
+            };
+            assert!(
+                sweeps.sweeps.iter().any(|sweep| sweep.lights == [0]),
+                "{what}: a sweep reduces the light from its stage"
+            );
+            // The surface's staged picture at rest at full size.
+            let tiles = luxforge_core::qualification::rest_tiles(&stack, bounds, STAGED_SIDE)
+                .unwrap_or_else(|reason| panic!("{what}: {reason}"));
+            versions += 1;
+            let mut rest = super::gpu_preview::rest_now(&gpu, &tiles, versions).unwrap();
+            rest.reduction = Some(super::gpu_rest_tests::at_full_size(&tiles));
+            let drawn = surface
+                .rest(&gpu, &rest)
+                .unwrap_or_else(|fallback| panic!("{what}: the surface: {fallback:?}"));
+            assert!(drawn.figures.sweeps >= 2, "{what}: drawn in sweeps");
+            settle(&service, client);
+            let bands = service
+                .stream(&stack, &Cancel::new())
+                .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"));
+            assert_eq!(bands.answered(), &Answered::gpu(), "{what}");
+            let rgba = stitched(bands, STAGED_SIDE);
+            let width = tiles.output.width;
+            assert_eq!(rgba.len(), drawn.codes.len() * 4, "{what}: the whole stage");
+            if let Some(difference) = first_difference(width, &rgba, &drawn.codes.concat()) {
+                panic!(
+                    "{what}: the staged stream against the surface's picture at rest: {difference}"
+                );
+            }
+            settle(&service, client);
+            let figures = service.figures();
+            assert_eq!(
+                (figures.stage_bytes, figures.in_use, figures.in_flight),
+                (0, 0, 0),
+                "{what}: nothing held once it ends"
+            );
+            // A read through the light draws one tile, which reads the light the worker's staged
+            // sweeps of the stack computed and kept: the stream's codes at every point.
+            let points: Vec<Read> = [(17, 23), (800, 500), (1599, 999), (1201, 77)]
+                .into_iter()
+                .map(|(x, y)| point(ReadStage::Output, x, y, ReadValues::Codes))
+                .collect();
+            let (answers, _) = call(&service, client, &stack, &points);
+            for (answer, (_, rect, _)) in answers.iter().zip(&points) {
+                assert_eq!(answer.answered, Answered::gpu(), "{what}: {rect:?}");
+                let ReadPixels::Codes(codes) = &answer.pixels else {
+                    panic!("{what}: codes");
+                };
+                let at = ((rect.y0 * width + rect.x0) * 4) as usize;
+                assert_eq!(
+                    codes[0][..3],
+                    rgba[at..at + 3],
+                    "{what}: the read at {rect:?} is the stream's byte"
+                );
+            }
+            settle(&service, client);
+            assert_eq!(
+                service.figures().stage_bytes,
+                0,
+                "{what}: the read's sweeps let their stage textures go"
+            );
+            // With no stage texture: a worker of its own, which keeps no light, draws the stream
+            // chained after a light sweep that reduces each tile's rectangle into the light, and
+            // its reads likewise: the staged stream's bytes, the light the same bits.
+            let stage_free = GpuTiles::new(Some((backend.clone(), name.clone())), false);
+            stage_free.poison(true);
+            stage_free.draw_streams_at(vec![STAGED_SIDE]);
+            stage_free.chain_streams(true);
+            let (answers, _) = call(&stage_free, client, &stack, &points);
+            for (answer, (_, rect, _)) in answers.iter().zip(&points) {
+                assert_eq!(
+                    answer.answered,
+                    Answered::gpu(),
+                    "{what}: stage-free {rect:?}"
+                );
+                let ReadPixels::Codes(codes) = &answer.pixels else {
+                    panic!("{what}: codes");
+                };
+                let at = ((rect.y0 * width + rect.x0) * 4) as usize;
+                assert_eq!(
+                    codes[0][..3],
+                    rgba[at..at + 3],
+                    "{what}: stage-free {rect:?}"
+                );
+            }
+            let bands = stage_free
+                .stream(&stack, &Cancel::new())
+                .unwrap_or_else(|fallback| panic!("{what}: stage-free: {fallback:?}"));
+            assert_eq!(bands.answered(), &Answered::gpu(), "{what}: stage-free");
+            let free = stitched(bands, STAGED_SIDE);
+            if let Some(difference) = first_difference(width, &free, &rgba) {
+                panic!("{what}: the stage-free stream against the staged one: {difference}");
+            }
+            settle(&stage_free, client);
+            let figures = stage_free.figures();
+            assert_eq!(
+                (
+                    figures.stage_bytes,
+                    figures.in_use,
+                    figures.in_flight,
+                    figures.staged
+                ),
+                (0, 0, 0, 0),
+                "{what}: no stage texture, nothing held once it ends"
+            );
+            eprintln!(
+                "{test}: {what}: {} sweeps, bit for bit the surface's staged picture at rest, and so with no stage texture",
+                sweeps.sweeps.len()
+            );
+        }
+    }
+}

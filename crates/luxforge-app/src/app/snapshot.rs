@@ -583,6 +583,7 @@ fn gpu_fallback(fallback: luxforge_ui::photo_surface::GpuFallback) -> Value {
         | GpuFallback::DeviceLost
         | GpuFallback::PipelineFailed
         | GpuFallback::Compiling
-        | GpuFallback::SourceMissing => json!({"reason":fallback.as_str()}),
+        | GpuFallback::SourceMissing
+        | GpuFallback::LightPending => json!({"reason":fallback.as_str()}),
     }
 }
