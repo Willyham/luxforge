@@ -11,10 +11,6 @@ use serde_json::Value;
 pub(crate) enum DevelopMessage {
     /// Develop N, or `Cmd+Return`: open the confirmation over the picks in view.
     Open,
-    /// `D` in Select: over files, pick the active frame when it is not picked and open the
-    /// confirmation; over the catalog, open Develop on the active photograph with the view's
-    /// photographs as the set.
-    Key,
     /// A double-click on a photograph of a catalog view, by its position: Develop on it, with the
     /// view's photographs as the set.
     OpenAt(u32),

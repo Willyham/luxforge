@@ -15,7 +15,7 @@
 //!
 //! The editor then opens that catalog with nothing open. Its frames, in [`plan`] order: `G` showing
 //! Select; the card's `DCIM` folder browsed; its first file clicked and picked with `P`; its second
-//! the same; its third clicked and `D`, which picks it and opens Develop N's confirmation;
+//! the same; its third clicked and picked with `P`, then Develop N's confirmation opened;
 //! Or add to an existing folder choosing "Portfolio picks"; a name typed over it, back to a new
 //! folder; Escape, which changes nothing; Develop N again; the name typed again; Develop, captured
 //! once the Develop has ended and Develop shows the first photograph it developed; the
@@ -99,7 +99,8 @@ pub fn plan(expected: &Value) -> Result<Plan> {
         click("second", 1),
         key("pick-2", "p").status_starts("Picked "),
         click("third", 2),
-        develop("active", DevelopStep::Active),
+        key("pick-3", "p").status_starts("Picked "),
+        develop("active", DevelopStep::Picks),
         develop(
             "existing",
             DevelopStep::Existing {
@@ -579,7 +580,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         card.state()["select"]["count"] == expected["count"],
         format!("The card shows {}", card.state()["select"]["count"]),
     )?;
-    for (name, position) in [("pick-1", 0usize), ("pick-2", 1)] {
+    for (name, position) in [("pick-1", 0usize), ("pick-2", 1), ("pick-3", 2)] {
         let library = &launch.at(name)?.state()["select"]["library"];
         ensure(
             library["method"] == "pick.set"
@@ -597,18 +598,8 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         );
     }
 
-    // D picks the third and opens the confirmation on the core's plan.
+    // Develop N opens the confirmation on the core's plan after the three picks.
     let active = launch.at("active")?;
-    let library = &active.state()["select"]["library"];
-    ensure(
-        library["method"] == "pick.set"
-            && library["params"]["targets"]["file_ids"]
-                .as_array()
-                .map(Vec::len)
-                == Some(1)
-            && library["error"].is_null(),
-        format!("active: D picked with {library}"),
-    )?;
     confirmation(
         active,
         "active",
@@ -863,7 +854,7 @@ mod tests {
         let expected = json!({"card": "/Volumes/NIKON Z 8/DCIM", "count": 20});
         let plan = plan(&expected).unwrap();
         plan.validate().unwrap();
-        assert_eq!(plan.len(), 18);
+        assert_eq!(plan.len(), 19);
         assert!(plan.scripted());
     }
 }

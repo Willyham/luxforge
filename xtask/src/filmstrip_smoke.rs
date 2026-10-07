@@ -10,7 +10,7 @@
 //! the RAW photograph's steps are not run, and the run records them pending, never passed.
 //!
 //! The editor opens that catalog with nothing open. Its frames, in [`plan`] order: `G` showing
-//! Select; All photographs; the first photograph clicked and `D`, which opens Develop on it with the
+//! Select; All photographs; the first photograph double-clicked, which opens Develop on it with the
 //! view's photographs as the development set; then for each next photograph, the neighbours' large
 //! previews decoded, `→` captured in the frame after the key, and the photograph's exact render;
 //! `←` the same; a press on the filmstrip's first cell; and the filmstrip collapsed and expanded

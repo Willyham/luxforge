@@ -24,7 +24,7 @@ pub(crate) enum Step {
 /// selection gesture sends `browse.select`.
 #[derive(Clone, Debug)]
 pub(crate) enum SelectMessage {
-    /// Show a workspace: the title bar's switch, or `G` in Develop.
+    /// Show a workspace: the title bar's switch, `G` or `D`.
     Switch(Shown),
     /// The sources panel's search text, which `event.list` answers.
     Search(String),

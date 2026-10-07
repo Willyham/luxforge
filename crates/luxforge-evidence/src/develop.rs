@@ -1,16 +1,16 @@
 //! Evidence steps on developing picks and Develop's development set: Develop N's confirmation in
-//! Select, `D`, and moving through the filmstrip in Develop. Each gesture is sent through the
-//! message its control or key sends.
+//! Select, opening a catalog photograph, and moving through the filmstrip in Develop. Each
+//! gesture is sent through the message its control or key sends.
 use super::text;
 use serde::{Deserialize, Serialize};
 
 /// One gesture on developing picks or the development set.
 ///
 /// `"picks"` presses Select's Develop N, and is captured once the confirmation shows what
-/// `pick.plan` answered. `"active"` is `D` in Select: over files it picks the active frame when it
-/// is not picked and opens the same confirmation; over the catalog it opens Develop on the active
-/// photograph with the view's photographs as the development set, captured once that photograph's
-/// exact render is on screen. `{"name": {"event": 0, "text": "Lake trip"}}` types `text` over the
+/// `pick.plan` answered. `"active"` double-clicks the active photograph in a catalog view in Select:
+/// it opens Develop on that photograph with the view's photographs as the development set,
+/// captured once that photograph's exact render is on screen.
+/// `{"name": {"event": 0, "text": "Lake trip"}}` types `text` over the
 /// selected name of the confirmation's event at that index, as typing does. `{"existing":
 /// {"event": 0, "folder": "Konstanz · Sep 2026"}}` opens that event's Or add to an existing folder
 /// and chooses the folder listed so. `{"copies": false}` sets whether a card's picks use their

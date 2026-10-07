@@ -12,10 +12,8 @@
 //!   jobs too), never a timer, and its record read with `job.read`. Then Develop opens on the first
 //!   photograph it developed, with the photographs it answered as the development set. A failed or
 //!   cancelled Develop says so; what it committed stays in the catalog, as the core keeps it.
-//! - **`D`** in Select picks the active frame when it is not picked (the grid's own `pick.set`
-//!   through `Editor::select_pick`) and opens the same confirmation. Over the catalog, `D` or a
-//!   double-click opens Develop on the photograph with the view's photographs as the set, read
-//!   into it a window of `browse.rows` at a time.
+//! - **Opening a catalog photograph.** A double-click opens Develop on the photograph with the
+//!   view's photographs as the set, read into it a window of `browse.rows` at a time.
 //! - **Moving through the set.** `←`, `→`, the filmstrip's buttons and a press on its cell replace
 //!   the one document through the open path every open shares ([`tasks::open_photograph`]:
 //!   `source.prepare`, then `job.adopt`), refused with the one start refusal's reason while a draft
@@ -286,8 +284,7 @@ impl Editor {
     /// One message of developing picks or the development set.
     pub(crate) fn develop_update(&mut self, message: DevelopMessage) -> Task<Message> {
         match message {
-            DevelopMessage::Open => return self.develop_open(false),
-            DevelopMessage::Key => return self.develop_key(),
+            DevelopMessage::Open => return self.develop_open(),
             DevelopMessage::OpenAt(position) => return self.open_view_set(position),
             DevelopMessage::Planned { serial, result } => return self.planned(serial, result),
             DevelopMessage::Name { event, text } => {
@@ -376,9 +373,8 @@ impl Editor {
 
     // -- Develop N and its confirmation --------------------------------------------------------
 
-    /// Develop N or `Cmd+Return`: read the plan of the picks in view for the confirmation. `picked`
-    /// says a pick was just made, which the summary on screen does not count yet.
-    fn develop_open(&mut self, picked: bool) -> Task<Message> {
+    /// Develop N or `Cmd+Return`: read the plan of the picks in view for the confirmation.
+    fn develop_open(&mut self) -> Task<Message> {
         if !self.select_shown() {
             return Task::none();
         }
@@ -397,7 +393,7 @@ impl Editor {
             .summary
             .as_ref()
             .map_or(0, |summary| summary.picked);
-        if picks == 0 && !picked {
+        if picks == 0 {
             self.status.text = "Pick the photographs to develop first".into();
             return Task::none();
         }
@@ -416,38 +412,6 @@ impl Editor {
             move || plan_now(&owner, client),
             move |result| Message::Develop(DevelopMessage::Planned { serial, result }),
         )
-    }
-
-    /// `D` in Select: over the catalog, Develop on the active photograph with the view's set; over
-    /// files, pick the active frame when it is not picked, then Develop N's confirmation.
-    fn develop_key(&mut self) -> Task<Message> {
-        if !self.select_shown() || self.select.state.summary.is_none() {
-            return Task::none();
-        }
-        let Some(active) = self.session.browse.selection.active else {
-            self.status.text = "Select a photograph to develop".into();
-            return Task::none();
-        };
-        if self.select.state.over_catalog() {
-            return self.open_view_set(active);
-        }
-        let Some(picked) = self.select.state.rows.read(active).map(|row| row.picked) else {
-            self.status.text = "Reading the frame\u{2026}".into();
-            return Task::none();
-        };
-        if picked {
-            return self.develop_open(false);
-        }
-        let pick = self.select_pick(&[active], true);
-        let succeeded = self
-            .select
-            .library
-            .as_ref()
-            .is_some_and(|last| last["error"].is_null());
-        if !succeeded {
-            return pick;
-        }
-        Task::batch([pick, self.develop_open(true)])
     }
 
     /// `pick.plan` answered: the confirmation opens on it, the first new folder's name selected for
@@ -617,7 +581,7 @@ impl Editor {
 
     // -- The development set --------------------------------------------------------------------
 
-    /// `D` or a double-click on the photograph at `position` of a catalog view: Develop opens on
+    /// A double-click on the photograph at `position` of a catalog view: Develop opens on
     /// it with the view's photographs as the set, read into it a window of rows at a time.
     fn open_view_set(&mut self, position: u32) -> Task<Message> {
         let Some(summary) = &self.select.state.summary else {

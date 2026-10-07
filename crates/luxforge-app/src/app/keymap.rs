@@ -347,6 +347,9 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     if status != Status::Ignored {
         return None;
     }
+    if !*repeat && character(key, "d") && plain(modifiers) {
+        return Some(Message::Select(SelectMessage::Switch(Shown::Develop)));
+    }
     // `G` shows the Select workspace. The switch answers the one start refusal, so an open draft
     // refuses it with its reason.
     if !*repeat && character(key, "g") && plain(modifiers) {
@@ -523,8 +526,7 @@ fn plain(modifiers: &iced::keyboard::Modifiers) -> bool {
 /// catalog's over the catalog, the sources panel's otherwise); `Tab` toggles the side panels, and
 /// `Cmd+Option+[` and `]` one each, as in Develop; `Cmd+O` adds a folder to the indexed folders;
 /// `S` collapses or expands the active burst; `P`
-/// picks or clears the selection; `D` develops the active frame, picking it when it is not picked
-/// (over the catalog it opens Develop on the active photograph with the view as its set), and
+/// picks or clears the selection; `D` switches to the existing Develop workspace, and
 /// `Cmd+Return` the picks in view, through Develop N's confirmation, which Escape cancels and
 /// Return confirms; the loupe's keys are the loupe's.
 fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<Message> {
@@ -629,15 +631,17 @@ fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<
     if *repeat || !plain(modifiers) {
         return None;
     }
+    // `G` returns the loupe to Select's grid, as the strip's Grid action does.
+    if context.loupe_open && character(key, "g") {
+        return Some(Message::Select(SelectMessage::Loupe(LoupeMessage::Close)));
+    }
     // Return develops once the confirmation is open.
     if context.develop_confirm && matches!(key, Key::Named(Named::Enter)) {
         return Some(Message::Develop(DevelopMessage::Confirm));
     }
-    // `D`, over the grid or in the loupe: develop the active frame, picking it when it is not
-    // picked; over the catalog, Develop on the active photograph with the view's photographs as the
-    // set.
+    // `D` is the title-bar workspace switch, whatever is selected in the grid or loupe.
     if character(key, "d") {
-        return Some(Message::Develop(DevelopMessage::Key));
+        return Some(Message::Select(SelectMessage::Switch(Shown::Develop)));
     }
     if matches!(key, Key::Named(Named::Tab)) {
         return Some(Message::Select(SelectMessage::TogglePanels));
