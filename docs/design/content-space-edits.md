@@ -21,7 +21,7 @@ The invariant that a layer's coordinates are its input stage is unchanged. Placi
 
 ### Planning against the content stage
 
-`plan` for a pixel-stage action validates coordinates against the stage at the insertion index, not the output stage, and its no-op check samples that stage. `StageContext` answers where a commit of the effect would land (`insertion_index_for`) and samples the stack prefix before it (`sample_before`); `stage_before(i)` answers the stage. The point sampler is the existing per-segment evaluation, so planning still allocates no frame.
+`plan` for a pixel-stage action validates coordinates against the stage at the insertion index, not the output stage, and its no-op check samples that stage. `StageContext` answers where a commit of the effect would land (`insertion_index_for`) and samples the stack prefix before it (`sample_before`); `stage_before(i)` answers the stage. Pixel reads are planned on the owner and answered off it through the tile service: GPU tiles on the desktop, the whole-frame reference in headless sessions or on fallback. Planning does not rasterize on the owner.
 
 ### Mapping a view point to content coordinates
 
@@ -35,11 +35,11 @@ A pixel edit before a transform moves with the image: unchanged. A pixel edit th
 
 ## Performance
 
-Crop-last does not cost more here. A crop at angle zero composes into the exact geometry pass, so it is not a second pass. A rotated crop is a resample that reads only the input pixels its output needs. A point replacement is a point write. The pre-crop frame is only materialized when a pixel-stage layer precedes the crop, which is already the case today whenever an edit precedes a crop, and peak memory stays at two frames. For future brushes the cost of a stroke is proportional to the stroke's own area, and pulling the crop's region of interest back through the tail lets a full-frame stage evaluate only the visible pixels. Crop-first would only save work while the crop is small, and would have to re-render everything the moment the crop changed. Changes under `crates/` answer the performance checklist and are measured on photo-sized inputs.
+Crop-last does not cost more here. A crop at angle zero composes into the exact geometry pass, so it is not a second pass. A rotated crop is a resample that reads only the input pixels its output needs. A point replacement is a point write. The CPU reference materialises segment boundaries required by resampling and spatial operations; its byte driver retains at most two frames at once. GPU residency is separately bounded by the preview and tile-worker budgets; that reference bound is not a whole-editor memory claim. Brush work declares its affected regions and all source reads; incremental GPU links rerun where those changes reach, and pulling the crop's region of interest back through the tail lets a full-frame stage evaluate only the visible pixels. Crop-first would only save work while the crop is small, and would have to re-render everything the moment the crop changed. Changes under `crates/` answer the performance checklist and are measured on photo-sized inputs.
 
 ## Consequences for other designs
 
-- The Basic proposal states that its layer "stays at its saved position among pixel and geometry effects" and is never hoisted ahead of a crop. Under this decision a color-stage layer also belongs before the geometry tail, since it is pointwise and its coordinates are not geometry-dependent. That proposal is updated to say so when it is implemented; nothing in it is implemented here.
+- The delivered Basic module inserts new colour-stage layers before the geometry tail and keeps existing layers at their saved positions. Its coordinates are not geometry-dependent.
 - Repeated exact transforms collapse into one [orientation layer](orientation-layer.md); that layer is part of the geometry tail like any other geometry layer.
 
 ## Acceptance

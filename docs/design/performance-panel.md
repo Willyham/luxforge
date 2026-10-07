@@ -184,3 +184,10 @@ Decided by the owner on 2026-09-23, after reviewing the built section:
 
 - **Default state.** The section starts open on first use and remembers the last disclosure choice (the owner's Performance panel polish request of 2026-10-02). Its one-second sampler counts in the ordinary session's [idle figure](../specs/performance.md#performance-section-activity-board-and-resource-counters) when expanded and visible; collapsing it or hiding the state panel stops it.
 - **Units.** Binary sizes with Activity Monitor's MB and GB labels, and CPU as a percentage of one core, so it passes 100% whenever more than one core is busy.
+
+## Outstanding inspection work
+
+- **GPU memory attribution** (owner, 2026-10-07): add attribution to both `resources.read` and the Performance panel. This extension is not implemented. Today the API reports process counters and the reference renderer's colour-scratch and spatial targets. The owner holds prepared sources and RAW developments, and the CPU proxy in a session without a GPU. The desktop holds the GPU source, each slot's chain, intermediates and scratch pool, picture-at-rest tiles and photo slots under the 1 GiB ceiling, plus the tile worker's separate 2 GiB budget; the preview budget is also 2 GiB. The gpu-free core needs explicit host-reported charges, with unavailable reasons for a host that supplies none. [GPU memory accounting](../../tasks/rendering/gpu-memory.json) still has to qualify resources outside these budgets, including staging, crop/overlay textures and device/pipeline overhead; do not sum GPU allocations and unified-memory footprint as separate resident memory.
+- GPU time and allocations on Linux and Windows, with native counter checks. The current unavailable reasons remain truthful.
+- Reduce the expanded section's whole-window redraw cost. Idle model updates and unchanged surface writes cost less, but the recorded whole-window CPU observations do not establish an aggregate improvement.
+- A correlated rendered frame of RAW development while it runs. Running reference export is already captured; it is a different workload.

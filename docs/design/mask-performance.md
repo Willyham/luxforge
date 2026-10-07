@@ -28,7 +28,7 @@ let a person cancel a listed job through the same `job.cancel` operation an API 
 - Continue sampling at one-second resolution only while expanded and visible. Do not add an
   idle poll, change the metric units, relax numerical tolerances or hide slow/missing samples.
 
-Density, mask presets, new selection kinds, GPU-evaluated editing, total-editor memory
+Density, mask presets, new selection kinds, total-editor memory
 qualification and other platforms' GPU counters remain separate work.
 
 ## Acceptance

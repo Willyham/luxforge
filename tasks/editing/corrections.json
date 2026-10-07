@@ -3,7 +3,7 @@
   "plan_id": "corrections",
   "title": "Corrections module: Clone, Heal, the repair stage and frozen patches",
   "objective": "Deliver and independently qualify offline, non-destructive Clone/Heal through the current module, catalog and shared brush contracts, with GPU rendering within the declared CPU-reference tolerance and UI/API parity; separately provide the same repair layer's frozen-patch and bounded candidate foundation for AI editing.",
-  "context_summary": "Planning review only, not implementation authorization. The owner decided on 2026-10-05: repair after source development and before colour in content coordinates, deletion of PointReplace, stale patches kept rendering with an explicit export acknowledgement, and remote consent remembered per provider profile/data class. Clone/Heal remain an independently deliverable offline slice; the relative order of repair and Detail restoration is still an explicit proposal. Reuse the delivered generic path grid, typed stroke store, StrokeCarrier and DraftTarget, centralized compiled render boundaries, module capabilities/artifacts, catalog format 13, Develop/prepare/adopt flow, Locate and single/batch JPEG exporter. What remains is Corrections' production brush descriptor and operation identities, repair-layer stroke discovery/admission/hydration and cleanup, bounded arbitrary source reads and Heal solves, the actual module/workflow, and frozen patches with an intra-layer input-prefix identity and bounded candidate jobs. Renderer integration targets the merged GPU-first interfaces and comparison harness beside AI editing; contract/numerical work can start independently. Current per-asset remote grants are changed by AI editing's remote tier, not this offline work. Model/provider tasks remain cancelled here and owned by AI editing; no cross-file task IDs are used.",
+  "context_summary": "Planning review only, not implementation authorization. The owner decided on 2026-10-05: repair after source development and before colour in content coordinates, deletion of PointReplace, stale patches kept rendering with an explicit export acknowledgement, and remote consent remembered per provider profile/data class. Clone/Heal remain an independently deliverable offline slice; the owner decided repair before Detail, the spatial GPU qualification class and exclusion of correction operations from presets on 2026-10-07. Reuse the delivered generic path grid, typed stroke store, StrokeCarrier and DraftTarget, centralized compiled render boundaries, module capabilities/artifacts, catalog format 13, Develop/prepare/adopt flow, Locate and single/batch JPEG exporter. What remains is Corrections' production brush descriptor and operation identities, repair-layer stroke discovery/admission/hydration and cleanup, bounded arbitrary source reads and Heal solves, the actual module/workflow, and frozen patches with an intra-layer input-prefix identity and bounded candidate jobs. Renderer integration targets the GPU renderer of record, its tile service, window and staged-sweep planners, incremental chains, warm-up and gpu-qualification beside AI editing; contract/numerical work can start independently. Current per-asset remote grants are changed by AI editing's remote tier, not this offline work. Model/provider tasks remain cancelled here and owned by AI editing; no cross-file task IDs are used.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -12,12 +12,13 @@
       "dependencies": [],
       "extra_context": [
         "The owner has already decided the repair stage relative to source/colour, deletion of PointReplace, stale patches kept rendering and provider-profile consent. Do not reopen these or restore the old fail-on-stale, licence gate or two-provider rollout.",
-        "EffectStage currently includes restoration between pixel and color; Detail owns it. The relative order of repair and restoration is not specified by the owner decision. The design proposes repair before restoration so Detail treats repaired and original regions together; settle or explicitly retain this consequential choice as open before dependent implementation.",
+        "The owner decided repair before Detail restoration on 2026-10-07: Detail treats repaired and original regions together, its changes do not stale patches, and a repair tick reruns its downstream link. Measure that rerun cost, GPU chain/staged-sweep costs and the reference mask-input grid prefix; preserve the decided placement in the operation and patch-input contract.",
         "Freeze a single repair effect with ordered stable operation IDs, action and draft bindings, one-entry history labels, content-space geometry and source-handle behaviour. Existing module identity parameters are host-only and draft.begin accepts mask/component only; the production extension is assigned to the shared-brush task.",
         "The frozen-patch identity includes verified source fingerprint/interpretation/development, dimensions, upstream relevant layers/masks and earlier operations inside the same repair layer. spatial::prefix_hash alone hashes only layers/masks; same-byte Locate, later operations, unrelated masks and downstream adjustments must not invalidate a patch.",
         "Freeze the bounded candidate/read/accept seam and stale acknowledgements for export.plan, export.jpeg and batch.export. These are proposed extensions of shipped APIs, not existing commands. Keep Clone/Heal qualification independent of frozen patches and all model/provider delivery.",
-        "Contract/numerical work can start now. Renderer code integrates against the merged GPU-first renderer-of-record interfaces and comparison harness; do not make CPU proxy/caching infrastructure scheduled for retirement a new dependency.",
-        "ActionDescriptor::preset is already an eligibility gate independent of patch syntax. The design proposes preset: false for photograph-bound correction operations; freeze that policy, preserving ordinary adjustment preset application over existing repairs and leaving retouch-preset/Lightroom spot conversion outside scope."
+        "Contract/numerical work can start now. Renderer code integrates with the GPU renderer of record and its release gate, cargo xtask gpu-qualification. The CPU production paths are retired; the CPU proxy remains only the drag path of a session without a GPU, and is not a Corrections dependency.",
+        "ActionDescriptor::preset is already an eligibility gate independent of patch syntax. The owner decided preset: false for photograph-bound correction operations on 2026-10-07. Preserve ordinary adjustment preset application over existing repairs; retouch-preset and Lightroom spot conversion remain outside scope.",
+        "The owner accepted the existing spatial GPU qualification class for Clone, Heal and the frozen-patch composite on 2026-10-07. Reduced-stage repair drags follow the accepted GPU-first motion contract: report motion differences separately and retain the strict at-rest gate; do not widen a limit or claim measured motion misses pass it."
       ],
       "context_links": [
         {
@@ -60,7 +61,7 @@
       ],
       "acceptance_criteria": [
         "The design clearly separates settled decisions, current implementation and remaining proposals; no fail-on-stale or undecided PointReplace/provider-consent policy remains.",
-        "Resolve repair versus restoration placement and correction preset eligibility with owner input, and freeze operation ordering, geometry, draft bindings, history labels and resource limits; unanswered consequential choices remain explicit and prevent dependent implementation.",
+        "Record the accepted repair-before-Detail placement, preset exclusion and spatial GPU qualification class, and freeze operation ordering, geometry, draft bindings, history labels and resource limits; unanswered consequential choices remain explicit and prevent dependent implementation.",
         "Specify source plus intra-layer prefix invalidation, bounded candidate ownership/publication/acceptance and entry-specific single/batch stale-export acknowledgement, including cancellation and revision races.",
         "The plan reuses the current catalog/import/preparation, module, stroke, geometry and GPU contracts, with an independently qualified offline handoff and no migrations or second stores."
       ],
@@ -68,7 +69,7 @@
         "approach": "inspection",
         "steps": [
           "Compare each contract with current code declarations and the recorded owner decisions.",
-          "Review the proposed repair/restoration choice and freeze only decisions the owner accepts.",
+          "Check the accepted repair-before-Detail placement and measure its downstream rerun consequences; freeze other product choices only with owner input.",
           "Validate plan schema, local dependencies, derived waves and file links."
         ],
         "commands": [],
@@ -84,8 +85,9 @@
       "dependencies": [],
       "extra_context": [
         "Clone/Heal are useful offline even if AI delivery is delayed. Study the exact CPU reference in the current byte/linear domains and a solver that the GPU implementation can reproduce within the declared tolerance.",
-        "Reuse path::capture_grid and typed StrokeKind storage; Corrections owns radius, feather/opacity, source offset and edge handling, not the mask brush's flow/colour limits. Study repair/restoration placement consequences without selecting an unanswered product choice.",
-        "Numerical study and solver-cost bounds are this task's subject and can be measured here. Whole-editor timing waits until the delivered feature is finished."
+        "Reuse path::capture_grid and typed StrokeKind storage; Corrections owns radius, feather/opacity, source offset and edge handling, not the mask brush's flow/colour limits. Study the accepted repair-before-Detail placement and measure downstream rerun cost.",
+        "Numerical study and solver-cost bounds are this task's subject and can be measured here. Whole-editor timing waits until the delivered feature is finished.",
+        "The GPU is the renderer of record. The frozen solver must have a bounded window/tile/staged-sweep GPU form within the declared CPU-reference tolerance and a measured photo-sized per-tick cost suitable for drawing strokes on the GPU. The current spatial convention permits four inputs per pass, eleven apply planes per operation and 1,024 shared workgroup values (render/gpu/spatial.rs); arbitrary source regions require a declared extension, not assumed edge-clamped lf_plane reads. Record GPU tick and CPU solve bounds without choosing an unanswered product policy."
       ],
       "context_links": [
         {
@@ -122,7 +124,7 @@
       "acceptance_criteria": [
         "Freeze brush rasterization, subpixel interpolation, feather/opacity, source offset, edge handling, overlap order, linear/byte-domain interpretation and a Heal solver with bounded convergence/scratch.",
         "Independent fixtures cover flat/gradient/texture inputs, high-contrast boundaries, repeated/tiny/large strokes, far-offset and out-of-frame sources, overlap and continuous RAW values; later operations never feed earlier ones.",
-        "The equations and solver are independently checkable and suitable for GPU qualification; naturalness and numerical correctness have separate evidence, with visual failures and photo-sized solve bounds recorded."
+        "The equations and solver are independently checkable and suitable for GPU qualification; naturalness and numerical correctness have separate evidence, with visual failures and photo-sized solve bounds recorded. Record the GPU form, declared reads and resource bounds for windows, tiles and staged sweeps, and photo-sized GPU stroke-tick cost, including the accepted placement before Detail and its downstream rerun cost."
       ],
       "test_strategy": {
         "approach": "mixed",
@@ -145,11 +147,12 @@
         "TASK-002"
       ],
       "extra_context": [
-        "Integrate against the merged GPU-first renderer-of-record interfaces and comparison harness. Current settled previews/samples/export still use CPU paths in this checkout; the accepted target is GPU output against a whole-frame CPU reference, not a new CPU production proxy/point cache.",
-        "The stage-boundary dispatch is already centralized in render/compiled.rs and the shared pipeline. Extend it; no other group must first refactor thirty render matches. Delete the developer-only pixel proof/PointReplace with the repair stage, and explicitly refuse unsupported data without rewriting it.",
-        "Current spatial work reads an output rectangle plus a bounded halo. Clone may read a distant source rectangle, and Heal needs per-patch scratch/iterations; declare and reserve all input regions and GPU resources rather than inflating MAX_SPATIAL_HALO or allocating unbounded intermediates.",
-        "Reuse rendering limits, shared pool and reserve-before-allocate rules. The present spatial scratch target is 256 MiB and GPU preview budget 2 GiB; any new budget or reduced-resolution approximation is frozen in the contract and measured, not assumed.",
-        "New CPU reference passes use their own luxforge_raw::RenderPass and measured parallel gate; RAW development scheduling is not a render executor. Answer the performance-rules checklist at the finished handoff."
+        "The GPU renders the picture at every zoom, the histogram and clipping counts, pixel reads and export; the CPU is the whole-frame reference, held to exact fixtures, and the fallback. Add a CPU reference unit and module-owned WGSL, Clone/Heal corpus families for gpu-qualification, reads through the tile service and export through the GPU tile worker with the reference fallback. Add no CPU production proxy, cache or point path.",
+        "The stage-boundary dispatch is already centralized in render/compiled.rs and the shared pipeline. Extend it; no other group must first refactor thirty render matches. Delete the developer-only pixel proof/PointReplace with the repair stage, and explicitly refuse unsupported data without rewriting it. Remove the obsolete PixelStage and PointReplacement fallback branches with PointReplace, while retaining truthful fallback/refusal for unsupported work.",
+        "Current spatial work reads an output rectangle plus a bounded halo. Clone may read a distant source rectangle, and Heal needs per-patch scratch/iterations; declare and reserve all input regions and GPU resources rather than inflating MAX_SPATIAL_HALO or allocating unbounded intermediates. Entry::plan_gpu_window and SpatialEntry::halo_reads currently return one halo-grown rectangle; staged sweeps split by accumulated reach and staged-light dependencies, and GpuChange recognises mask-local changes while other operation-word changes become Anywhere. Extend these contracts for distant reads, source-to-destination change propagation and a Heal solve changing its whole patch; a brush tip rectangle alone cannot describe them. Extend the reference mask-input prefix in render/input_grid.rs to include repair in the chosen placement and key, rather than falling back to per-cell spatial evaluation.",
+        "Reuse rendering limits, shared pool and reserve-before-allocate rules. The reference renderer's 256 MiB spatial budget paces its tiles; the GPU-preview budget is 2 GiB, the tile worker has its own separate 2 GiB budget and a held boundary is bounded to 256 MiB. Declare and charge repair reads, stage textures and solves on both devices. Any new budget or reduced-stage approximation needs the frozen contract and measurement, not an assumption.",
+        "New CPU reference passes use their own luxforge_raw::RenderPass and measured parallel gate; RAW development scheduling is not a render executor. Answer the performance-rules checklist at the finished handoff.",
+        "Extend GPU stage classification and plan_warm_list for repair and operation actions: current warm-up enumerates Color/Finish and Restoration/Spatial drags, and first-use layers only for field-patch actions. Warm repair strokes and source-handle edits at open and after commits; merely adding WGSL does not cover the first tick."
       ],
       "context_links": [
         {
@@ -192,30 +195,68 @@
           "kind": "file",
           "label": "GPU program and plan",
           "target": "crates/luxforge-core/src/render/gpu/plan.rs",
-          "relevance": "The current GPU compile/plan seam to reconcile with merged GPU-first interfaces."
+          "relevance": "GpuPlan, its fallback reasons and the chain of links a repair link joins."
         },
         {
           "kind": "file",
           "label": "Spatial bounds",
           "target": "crates/luxforge-core/src/modules/spatial.rs",
           "relevance": "Existing halo and region contracts; distant sources require a separate declaration."
+        },
+        {
+          "kind": "file",
+          "label": "GPU sweeps and windows",
+          "target": "crates/luxforge-core/src/render/gpu/sweeps.rs",
+          "relevance": "Bounded full-resolution rest/export sweeps and stage textures; extend distant-read planning."
+        },
+        {
+          "kind": "file",
+          "label": "GPU incremental changes",
+          "target": "crates/luxforge-core/src/render/gpu/changes.rs",
+          "relevance": "Current mask change rectangles; repair and source-to-destination changes need declarations."
+        },
+        {
+          "kind": "file",
+          "label": "GPU warm-up",
+          "target": "crates/luxforge-core/src/render/gpu/preview.rs",
+          "locator": "plan_warm_list",
+          "relevance": "Stage classification and first-use operation-action coverage."
+        },
+        {
+          "kind": "file",
+          "label": "GPU corpus families",
+          "target": "xtask/src/preview_error/corpus.rs",
+          "relevance": "Family/class validation and required-family coverage paired with fixtures/preview/corpus.json."
+        },
+        {
+          "kind": "file",
+          "label": "Pixel tile service",
+          "target": "crates/luxforge-core/src/tiles.rs",
+          "relevance": "Off-owner pixel reads, renderer reporting and streamed GPU export with the reference fallback."
+        },
+        {
+          "kind": "file",
+          "label": "Mask input grids",
+          "target": "crates/luxforge-core/src/render/input_grid.rs",
+          "relevance": "Reference whole-frame prefix and input-key changes for the chosen repair placement."
         }
       ],
       "acceptance_criteria": [
         "Repair insertion follows the frozen source/repair/restoration/colour contract and stage/order placement without moving stored layers; the developer pixel proof/PointReplace is deleted and unsupported stacks fail explicitly.",
         "Clone/Heal read only their exact operation prefix, with bounded destination/source regions, patch solve scratch, iterations and cancellation; far offsets, edges, multiple operations and RAW precision are independently verified.",
         "Every allocation/read is admitted before use; over-budget inputs fail with named resource-limit and preserve the recipe/original rather than silently changing geometry or quality.",
-        "The primitive has GPU programs within the declared CPU-reference tolerance for display, full-resolution histogram, samples and export; a no-GPU fallback names its reason, with no silent omissions.",
-        "Focused reference fixtures and native GPU comparison cover overlap, boundaries, orientation/crop/warp, cancellation and limits; timing of the finished offline workflow is left to its qualification task."
+        "Module-owned GPU programs meet the owner-frozen qualification class on Clone/Heal corpus families through gpu-qualification: at-rest and motion frames, histogram/clipping, samples and export, with current GPU-first motion reporting/gating stated explicitly. Reads go through the tile service and exports through the GPU tile worker, warm-up covers repair gestures, and fallback names its reason without silent omission.",
+        "Focused exact reference fixtures and native GPU qualification cover overlap, distant sources, boundaries, orientation/crop/warp, 100% windows, reduced-stage drags, staged sweeps, cancellation and limits. Incremental ticks match whole evaluations and downstream mask input grids include repair correctly; finished-workflow timing remains its qualification task."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Add focused repair CPU-reference, region/budget and GPU-comparison tests; run only the affected binaries/filters during editing.",
+          "Add focused exact repair-reference, region/budget and GPU-comparison tests and required Clone/Heal corpus families in the corpus manifest/validator and descriptor fixtures; run only affected binaries/filters while editing.",
           "Run quick at the finished handoff and native rendered/reference comparisons at integration, with the performance checklist answered."
         ],
         "commands": [
-          "cargo test --locked --package luxforge-core --lib render::"
+          "cargo test --locked --package luxforge-core --lib render::",
+          "cargo run --release --locked --package xtask -- gpu-qualification --manifest RAW_MANIFEST --output NEW_DIR"
         ],
         "expected_results": [
           "One bounded repair primitive through the shared GPU/CPU-reference seams, with no new obsolete production render path."
@@ -235,7 +276,8 @@
         "What is missing: a production brush-mask CanvasInteraction, an operation identity admitted on the relevant module actions, public draft.begin support for that identity, and descriptor-directed desktop brush/source-handle capture. Keep unrelated host-only json/text/identity restrictions intact.",
         "Generalize mask_draft/brush.rs plumbing instead of creating a second brush, store or draft system. Corrections owns its radius/opacity/feather/source parameters; the mask brush keeps its flow/colour-limit behaviour.",
         "Use the shared core geometry map and warped-path drawing for capture, source handles and overlays through Lens/Perspective/crop/straighten/orientation. Correlate mapping to the displayed entry/draft, and refuse invalid or stale mappings.",
-        "This task can prove the generic descriptor/capture with a test consumer before the module exists. The actual production section, operation selection and smoke journey are the offline workflow task; expose no placeholder feature."
+        "This task can prove the generic descriptor/capture with a test consumer before the module exists. The actual production section, operation selection and smoke journey are the offline workflow task; expose no placeholder feature.",
+        "Existing mask strokes draw on GPU chains through incremental change rectangles; preserve that consumer while adding repair declarations. Its measured paint cost is not a Corrections result. Correlate overlay, drafted action, GPU frame and fallback reason; test-consumer capture alone does not qualify production repair pixels."
       ],
       "context_links": [
         {
@@ -418,7 +460,7 @@
       "extra_context": [
         "This is the first usable offline handoff; it depends on neither frozen patches nor settings/credentials/models. Use the generated section and current start/release refusal, draft and event-refresh contracts.",
         "Add a dedicated background-only Corrections smoke scenario, independent pixel/state checks and rendered-tier registration before running the tier. Existing scenarios alone cannot prove a tool that is new.",
-        "Include Select rendered previews, filmstrip, history preview, Locate and library Remove/Put back in the production journey. Reuse entry-keyed preview planning/preparation and never touch the editor source cache from the preview lane.",
+        "Include Select rendered previews, filmstrip, history preview, Locate and library Remove/Put back in the production journey. Reuse entry-keyed preview planning and off-editor-cache preparation. Developed grid/large tiers stream full-resolution tiles through the same GPU tile service as export and reduce its bands, recording the renderer and falling back to a fresh reference render with a named reason.",
         "Extend the current mask-only editor-latency paint mode or add a declared Corrections mode, and register its brush/commit/source-handle measurements in the timing/full verification plan. No timing tier or editor-wide distribution runs in this implementation task."
       ],
       "context_links": [
@@ -475,7 +517,7 @@
         "The generated Corrections section selects Clone/Heal, paints and selects/edits/removes/reorders operations and moves source handles; immediate overlays and previews retain usable input without UI-thread frame work.",
         "Apply/release, Cancel, Discard/Reapply, switching photos/workspaces and external edits follow the one draft/refusal lifecycle and commit the same semantic actions as API clients.",
         "Native hidden-window M4 captures correlate mode, selected operation/source, geometry, rendered pixels, history and logs; direct API reproduces the same journey, undo/redo/restore/reopen and real JPEG export.",
-        "Select rendered previews and filmstrip reflect committed correction/history states and source recovery; library removal/recovery leaves editing history intact.",
+        "Select rendered previews and filmstrip reflect committed correction/history states and source recovery; library removal/recovery leaves editing history intact. Correlate tier entry/renderer identity and check GPU-reference agreement, including refusal and a reference fallback that never mixes renderer pixels.",
         "Register and run the new rendered scenario and independent checks, update delivered workflow documentation and feature status, and run quick once at handoff; leave measured qualification to the offline acceptance task."
       ],
       "test_strategy": {
@@ -544,7 +586,8 @@
         "Publish accepted bytes on a worker and recheck asset existence/revision and exact input-prefix identity at the ordinary commit. Cancellation, stale/late results or Empty Removed cannot partially mutate or resurrect an asset. Publication before a refused commit can leave only an unreferenced object.",
         "spatial::prefix_hash does not include source interpretation/development identity or earlier operations inside the same repair layer. Extend identity as frozen by the contract; later operations, unrelated masks, downstream colour/geometry and same-byte Locate do not stale a patch.",
         "Stale patches keep rendering, with row/status/recipe.describe reasons. Extend existing export.plan/export.jpeg and batch.export with entry/operation-specific acknowledgement; missing/corrupt artifacts still fail source-unavailable. Only job.read/job.cancel read and cancel export jobs; export.read/export.cancel do not exist.",
-        "This foundation needs neither a real model nor remote consent/runtime activation. Test bounded publication/acceptance, offline evaluation and catalog movement through a test producer. Full AI model/provider journeys stay in AI editing."
+        "This foundation needs neither a real model nor remote consent/runtime activation. Test bounded publication/acceptance, offline evaluation and catalog movement through a test producer. Full AI model/provider journeys stay in AI editing.",
+        "Frozen patch bytes and coverage must reach both the photo surface and the separate GPU tile worker device through prepared bindings, with admitted upload/texture/scratch residency and no producer call during rendering. Add the patch composite to required corpus families and descriptor fixtures; qualify rest/motion, samples, histogram, export and catalog tiers at the owner-frozen class, and cover warm-up after acceptance/reopen. GpuDescription currently carries program, words and block, with no arbitrary artifact texture binding; choose a bounded representation through that contract or extend the binding contract and both consumers explicitly."
       ],
       "context_links": [
         {
@@ -612,7 +655,7 @@
       "acceptance_criteria": [
         "A test producer publishes candidates through bounded host storage, with declared address/read/accept schemas, accurate release reporting and safe ownership during concurrent reads/accept/cancel/disconnect; no candidate pixels enter JSON or durable artifacts before acceptance.",
         "Validated accepted bytes/coverage/transform/provenance and the exact input-prefix identity are referenced by one ordinary atomic repair/history commit after worker publication and revision checks; crash/failure creates no partial edit.",
-        "The patch CPU reference preserves outside-coverage pixels exactly and continuous RAW precision elsewhere; its GPU program meets the declared reference tolerance for display, histogram, samples and export.",
+        "The patch CPU reference preserves outside-coverage pixels exactly and continuous RAW precision elsewhere. Its module-owned WGSL meets the owner-frozen reference tolerance through gpu-qualification on a required patch corpus family for display, histogram/clipping, samples and export; prepared patch/coverage bytes are available and charged on both GPU devices, and catalog tiers and warm-up include accepted/reopened patches.",
         "RAW source-development and earlier intra-layer/layer input changes mark patches stale while rendering them; later operations, downstream edits, unrelated masks and same-byte source relocation do not. recipe.describe, operation rows and status explain the condition.",
         "Single and batch export disclose stale operation identities and require the frozen-entry acknowledgement; a race invalidates an old acknowledgement rather than silently exporting a different stale result.",
         "Offline/model-absent reopen, history/versions/restore, typed preparation, missing/corrupt artifacts, prepared-byte limits, catalog-with-artifacts relocation and Remove/Put back/Empty Removed retain or collect resources correctly.",
@@ -767,7 +810,7 @@
         "This is the offline milestone and does not wait for frozen patches or AI; frozen-patch/candidate/stale-export conformance is proved by its own foundation task.",
         "Run timing only after the offline module, brush, workflow and harness are finished, serially on a quiet host. Use 24/60 MP JPEG and the current supported RAW manifest, report scope/sample counts and keep skipped checks incomplete.",
         "JPEG export and batch.export are shipped; acceptance exports actual files through export.plan/export.jpeg and job.read/job.cancel, compares pixels against the reference within declared GPU tolerances and proves originals are unchanged.",
-        "Naturalness, exact CPU numerics and GPU correctness are distinct evidence. Headless/VM functional evidence does not establish native GPU output or platform performance. Answer the crates performance checklist for the integrated change."
+        "Naturalness, exact CPU numerics and GPU correctness are distinct evidence. Headless/VM functional evidence does not establish native GPU output or platform performance. Answer the crates performance checklist for the integrated change. gpu-qualification runs in rendered/full; ensure the new required Clone/Heal families and Corrections timing components are registered before the milestone run. Current mask-paint distributions are comparison evidence, not a repair latency guarantee."
       ],
       "context_links": [
         {
@@ -814,7 +857,7 @@
         }
       ],
       "acceptance_criteria": [
-        "Independent exact CPU fixtures and native GPU-reference comparisons cover Clone/Heal, linear/byte domains, overlap, far source reads, edges, nonlinear geometry and display/sample/histogram/export consistency.",
+        "Independent exact CPU fixtures and native gpu-qualification corpus comparisons cover Clone/Heal, linear/byte domains, overlap, far source reads, edges, nonlinear geometry and display/sample/histogram/export consistency.",
         "Native API/desktop history, versions, undo/redo/restore/reopen, source hashes, preparation/refusal/recovery, Locate, Remove/Put back/Empty Removed and Select preview journeys pass on JPEG and qualified RAW.",
         "Record blinded visual results/failures plus M4 24/60 MP JPEG and supported RAW overlay/commit/source-handle/view/render/sample/export latency, peak CPU/GPU memory, bounded work/storage and idle cost with setup and sample counts.",
         "Run full verification with the supplied supported RAW manifest before the offline milestone claim, and state every skipped/unsupported case; no patch/model/provider prerequisite is introduced."

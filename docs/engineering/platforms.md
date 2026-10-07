@@ -6,7 +6,7 @@ Accepted target scope with provisional engineering baselines. These are intended
 | --- | --- | --- | --- | --- |
 | `aarch64-apple-darwin` | macOS 14 or later | `.app` in an unsigned ZIP | Metal, AppKit | Verified natively on the owner's M4 Pro (macOS 26.5.2); macOS 14 floor unverified |
 | `x86_64-pc-windows-msvc` | Windows 11 24H2 or later | Executable and notices in a ZIP | wgpu DX12, native Win32 picker | CI disabled; Windows support will come later; native desktop check deferred, no machine available |
-| `x86_64-unknown-linux-gnu` | Ubuntu 24.04 LTS, glibc 2.39 | Directory in a `.tar.gz` | Vulkan; GNOME Wayland primary, X11 required | Hosted build and package, the reference and owner checks with no graphics adapter, and rendered journeys under Xvfb through the software Vulkan adapter (lavapipe), each run naming its adapter ([CI](development.md#ci)); native desktop and GPU checks deferred |
+| `x86_64-unknown-linux-gnu` | Ubuntu 24.04 LTS, glibc 2.39 | Directory in a `.tar.gz` | Vulkan; GNOME Wayland primary, X11 required | Hosted build/package and prior no-adapter reference/owner checks; current refresh blocked by an index-watcher failure and the software Vulkan rendered lane's photo-sized deadline ([CI](development.md#ci)); native desktop and GPU checks deferred |
 
 Module secrets use the macOS Keychain, verified natively by an opt-in test on the M4. Windows Credential Manager and Linux Secret Service are not implemented: there, every secret method answers `not-ready` and nothing is stored in plain text, so a module that needs a secret cannot be configured yet. The module transport verifies TLS with the operating system's verifier on macOS and Windows and native roots on Linux; only macOS has been exercised.
 

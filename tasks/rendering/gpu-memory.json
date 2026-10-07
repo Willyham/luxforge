@@ -1,20 +1,23 @@
 {
   "schema_version": "1.0",
   "plan_id": "gpu-memory",
-  "title": "Rendering, preview and analysis",
-  "objective": "Measure and bound the GPU resources outside the provisional photo-texture ceiling before any total-memory guarantee.",
-  "context_summary": "Rendering has one entry point (luxforge_core::render) with an injected RenderContext, one latest-job worker, one tile function and one point pipeline generic over the byte and linear pixel domains, so a sample equals the rendered byte by construction; one table test proves it over every stack shape and both domains. Limits have one home, frames are opaque, render.rs is split by concept, the compiled entry answers every stage-boundary question through its own methods, and the byte-identical speedups are recorded in docs/specs/performance.md. The 1088 MiB temporary photo-texture overlap ceiling is provisionally accepted for those slots only (2026-09-27); crop GPU textures, overlays and backend staging remain outside it and are not measured or bounded, so no total-memory guarantee is made. Decisions: docs/decisions.md.",
+  "title": "GPU memory accounting",
+  "objective": "Measure and bound GPU resources outside the enforced photo-slot and rendering budgets before any total-memory guarantee.",
+  "context_summary": "The GPU is the renderer of record for display, counts, samples, export and developed catalog tiers. Full-photo slots share one 1 GiB aggregate (FULL_CEILING), with at most 512 MiB per allocation; the former region sets no longer exist. The surface's GPU-preview allocations share a separate 2 GiB budget; the desktop's tile worker uses its own device and a separate 2 GiB GPU_TILE_BUDGET. These are application charges, not a total GPU or process bound. Crop-stage raster textures, clipping and coverage overlays, backend staging and device/pipeline overhead need accounting and native measurement. The owner's provisional 1088 MiB ceiling described the former full-photo and region slots; it is not the current allocation shape. Decisions: docs/decisions.md.",
   "tasks": [
     {
       "id": "TASK-001",
-      "description": "Measure and bound GPU resources excluded from the provisional 1088 MiB photo-texture ceiling before making a total-memory guarantee.",
+      "description": "Measure and bound GPU resources outside the current photo-slot, GPU-preview and tile-worker budgets before making a total-memory guarantee.",
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "Not in a programme wave, by the owner's decision of 2026-09-28 (docs/decisions.md, \"Plan refresh\"): a standalone follow-up that the provisional acceptance of the photo-texture ceiling (2026-09-27) requires before any total-memory claim. It depends on no other rendering task.",
-        "The owner provisionally accepted the 1088 MiB temporary-overlap ceiling on 2026-09-27 for the photo surface slots alone: one current and one retiring full-photo allocation up to 512 MiB each, and two region sets up to 32 MiB each. This is an engineering ceiling, not a total editor or GPU budget. The ceiling is one photo-texture budget shared by every photo surface (decided 2026-09-28), so a second surface draws from it rather than doubling it.",
-        "Crop GPU textures and tiles, overlays and backend-owned upload staging are outside that accounting. Since the crop's proxy stage landed, a crop draft's input-stage texture is reserved at exactly its frame's size: the display-size proxy at Fit (6.7 MiB on the generated 60 MP JPEG and 7.5 MiB on the X100VI, about 11 MiB of GPU allocation per open draft; docs/specs/performance.md, 'A crop draft's input stage at Fit'), and a full-size exact stage only at a percentage zoom that needs one, tiled past the 8192 px texture limit and capped only by the core's 512 MiB frame limit (229 MiB for a 60 MP stage). The clipping and mask overlays have textures of their own, and backend staging is still unmeasured. editor-latency's crop-start mode reads memory at Fit only; the exact stage at a percentage zoom needs a measured path. Use representative 24 MP and 60 MP workflows and native M4 GPU evidence, including temporary overlap and retirement, before proposing a total bound.",
-        "Noted 2026-10-04: with the GPU as the renderer of record (docs/design/gpu-first.md) the GPU resources this task bounds carry the whole picture, the histogram tiles, samples and export; the bound is a prerequisite of any total-memory claim that plan makes."
+        "A standalone follow-up under the owner's provisional residency acceptance, required before any total-memory claim. No other rendering task is a prerequisite.",
+        "Photo slots (photo_surface.rs): FULL_BUDGET is 512 MiB per allocation and FULL_CEILING is 1 GiB shared by all surfaces' resident and retiring full allocations. Mips count in that allocation. No separate region sets remain; REGION_BUCKET_BUDGET is a 32 MiB output-reservation bucket limit, not an additional residency allowance. The historical provisional 1088 MiB acceptance is not an enforced total GPU ceiling.",
+        "GPU-preview budget (gpu_preview.rs), 2 GiB shared by surfaces: held source pixels; derived boundaries; view and rest-tile slots, output, link intermediates, kept planes, program buffers and the shared scratch pool; the rest's accumulator and stage textures; histogram buffers and readbacks; light reducers and the bounded cache of eight one-texel lights. Retirement keeps the relevant charges until GPU completion. A boundary is separately limited to 256 MiB. A rest tile's share is derived from what the source, view plan, accumulator and stages leave, capped at 1.25 GiB (REST_SHARE_MAX).",
+        "Tile worker (gpu_preview/tiles.rs and app/gpu_tiles.rs), GPU_TILE_BUDGET 2 GiB apart from the preview budget: source window, slot, chain and scratch, light-sweep reducer, staged-stream textures, output/readback copies, in-flight and spare copies, and still-pinned resources. At most two tiles are in flight; streams reserve 256 MiB for reads and hold at most two output bands for the encoder. The worker keeps at most 64 compiled sequences and eight lights; audit their retained allocations and its separate device's overhead rather than treating the runner's charge as native GPU residency.",
+        "Outside those byte charges: crop-stage raster textures and their aprons, clipping and mask-coverage raster overlays, small drawing uniforms, backend upload/readback staging, compiled pipelines and device/driver allocations. Compare's retained CPU frames and full-photo textures, including mips, must be distinguished from genuinely excluded allocations. Crop input stages are now rendered on the GPU where supported, with reference raster textures only where required; the old CPU proxy/exact crop figures are evidence for the previous path, not the current peak.",
+        "Inventory every allocation and retirement path before proposing caps or a total bound. Measure representative 24 MP and 60 MP JPEG/RAW workflows on the native M4, including Fit and percentage views, crop, clipping, masks, Compare, commits, export and catalog tiers alongside reads. Correlate application charges, process counters and native GPU allocations; account for overlap across the window device and the tile worker's device. Windows/Linux remain separately qualified.",
+        "Owner, 2026-10-07: GPU attribution must be available through resources.read and the Performance panel. The desktop supplies its surface and tile-device charges to the core through a bounded host reporting seam; this is an API extension to build, not existing resources.read output. Distinguish application charges, native counters, retirement and unmeasured overhead, and avoid double-counting shared unified-memory residency."
       ],
       "context_links": [
         {
@@ -28,8 +31,8 @@
           "kind": "file",
           "label": "Viewport texture design",
           "target": "docs/design/instant-preview.md",
-          "locator": "Region textures and stale pixels",
-          "relevance": "Slot limits, upload behavior and currently excluded resources."
+          "locator": "What is preserved",
+          "relevance": "Current display resources, no-GPU proxy and GPU budgets."
         },
         {
           "kind": "file",
@@ -46,21 +49,33 @@
         },
         {
           "kind": "file",
-          "label": "Crop stage residency",
-          "target": "docs/specs/performance.md",
-          "locator": "A crop draft's input stage at Fit",
-          "relevance": "The crop stage texture and GPU allocation at Fit after the crop's proxy stage."
+          "label": "GPU-preview allocation",
+          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview.rs",
+          "relevance": "Shared preview charges and retirement."
+        },
+        {
+          "kind": "file",
+          "label": "Tile-runner accounting",
+          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview/tiles.rs",
+          "relevance": "Separate device, budget, stage textures and pinned tiles."
+        },
+        {
+          "kind": "file",
+          "label": "Editor latency modes",
+          "target": "xtask/src/editor_latency.rs",
+          "relevance": "Existing crop-start is Fit-only; drag accepts a percentage zoom."
         }
       ],
       "acceptance_criteria": [
-        "Native M4 evidence accounts separately for photo slots, crop GPU textures and tiles, overlays, and backend upload staging on representative 24 MP and 60 MP workloads, including temporary overlap and resource retirement.",
-        "Each excluded allocation path has an enforced byte cap or a derived peak-byte bound from bounded allocation sizes and maximum simultaneous overlap, including retirement; resource-limit behavior is explicit where a cap refuses work.",
-        "The measured scope and any resulting total editor/GPU bound are documented without treating the 1088 MiB photo ceiling as a process-wide guarantee; Windows/Linux remain separately qualified."
+        "Native M4 evidence accounts separately for full-photo slots, GPU-preview resources, tile-worker resources, crop and overlay textures, compiled/device overhead and backend staging on representative 24 MP and 60 MP workloads, including temporary overlap and retirement.",
+        "Each excluded allocation path has an enforced byte cap or a derived peak-byte bound from bounded allocation sizes and maximum simultaneous overlap, including retirement; resource-limit behaviour is explicit where a cap refuses work.",
+        "The measured scope and any resulting total editor/GPU bound are documented without treating either 2 GiB rendering budget or the 1 GiB full-photo ceiling as a process-wide guarantee; Windows/Linux remain separately qualified.",
+        "resources.read and the Performance panel expose the same host-supplied GPU attribution, with explicit unavailable or unmeasured values where no provider supplies evidence, bounded reporting and tests for retirement and unified-memory double-counting."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Inventory crop, overlay and backend GPU allocation and retirement paths; capture native GPU allocations during representative Fit and 100% crop, edit and pan transitions at 24 MP and 60 MP, extending editor-latency's crop-start mode to a percentage zoom where the exact stage needs it.",
+          "Inventory current surface, crop, overlay, light, histogram, Compare, tile-runner and backend allocation and retirement paths. Capture native allocations during representative Fit and 100% crop, edit, pan, export and read transitions at 24 MP and 60 MP. The existing crop-start mode is Fit-only and rejects --zoom; add a measured percentage-crop path if needed, without documenting it as an existing command.",
           "Add the smallest enforceable accounting or limits for omitted resources and verify overlap, retirement and refusal behavior in focused surface tests.",
           "Repeat native measurement on the bounded implementation, correlate GPU and process counters with application slot logs, and update the design, performance evidence and feature status."
         ],
