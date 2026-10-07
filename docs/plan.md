@@ -35,7 +35,10 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 | [Lightroom import](../tasks/lightroom/lightroom-import.json) ([design](design/lightroom-import.md)) | TASK-001 confirm the catalog format against a copy of the owner's catalog | Needs no code; needs the owner's catalog copy | High tier |
 | [Lightroom alignment](../tasks/lightroom/lightroom-alignment.json) ([design](design/lightroom-alignment.md)) | TASK-001 the rig's generator and synthetic targets | Its rounds need the owner to import and export in Lightroom | High tier |
 | [Live-session Rust CLI](../tasks/project/live-cli.json) ([design](design/live-cli.md)) | TASK-001 shared catalog targeting and authenticated session client | The command contract and defaults are decided; implementation awaits owner authorization | High tier |
+| [Auto tone](../tasks/editing/auto-tone.json) ([design](design/auto-tone.md)) | TASK-001 the auto-tone/1 solver; TASK-002 the bounded analysis sample | Lightroom's eight sliders, no white balance, Auto in presets and import, and a later fit to Lightroom's Auto chosen; the owner's Lightroom export is needed only by the final fit. Planning only; implementation awaits authorization | High tier |
+| [Copy and paste settings](../tasks/interface/copy-settings.json) ([design](design/copy-settings.md)) | TASK-001 paste-settings action and batch method; TASK-002 settings clipboard and copy; TASK-003 filmstrip multi-selection | Scope, default groups, filmstrip multi-selection and Paste from previous chosen; the rest are recorded defaults. Planning only; implementation awaits authorization | High tier |
 | [HDR exposure merges](../tasks/library/hdr-merge.json) ([design](design/hdr-merge.md)) | TASK-001 durable chunked derived sources; TASK-002 RAW exposure resolution/fusion; TASK-003 alignment/deghosting | RAW-only scope and automatic alignment/deghosting are decided; independent foundations, working feature before final quality/timing; implementation awaits authorization | High tier |
+| [Export settings](../tasks/rendering/export-settings.json) ([design](design/export-settings.md)) | TASK-001 settings, presets and API; TASK-002 JPEG options and limit search; TASK-003 WebP and TIFF encoders; TASK-004 resized and 16-bit output | Formats, direct-writing sheet, sharpening after the core and uncapped optimisation with a large-image warning and progress bar chosen; other defaults recorded in the design. Planning only; implementation awaits authorization | High tier |
 | [High-zoom minimap](../tasks/interface/minimap.json) ([design](design/minimap.md)) | TASK-001 shared viewport projection; TASK-002 bounded overview rendering | Inclusive 200% threshold and click/drag navigation chosen; layout remains a proposed default. Planning only; implementation awaits authorization | High tier |
 
 ### In progress
@@ -73,7 +76,13 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 ## Output
 
 **JPEG export follow-ups.** JPEG export is delivered ([design](design/export.md)).
-- Presets, resizing, output sharpening and other formats, each only by its own decision; resize, 16-bit and wide-gamut features declare and qualify their GPU-versus-reference tolerance when designed (owner, 2026-10-07)
+- **Export settings** ([design](design/export-settings.md), [tasks](../tasks/rendering/export-settings.json)) are planned:
+  - an Export sheet with Web, Print and Master presets and the person's own
+  - JPEG, lossy WebP and 8/16-bit TIFF, with resizing, optimised encoding, file-size limits and metadata levels
+  - output sharpening as a second delivery
+
+  The resized, 16-bit and sharpened tolerances are declared in the design. Settings, encoders and render paths can start independently before integration and the desktop. The request authorizes planning only.
+- Wide-gamut output still needs its own decision and tolerance (owner, 2026-10-07)
 
 ## Library
 
@@ -129,7 +138,7 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 - Owner review of the recorded defaults
 - An Amount slider and a hover preview
 - Calibrated RAW white balance preset import in the Lightroom alignment RAW white-balance round; the existing conversion matches white chromaticity, not a measured rendered response
-- Copy and Paste Settings over the same composite action
+- Copy and Paste Settings: planned under [Interface](#interface)
 
 **Lightroom import** (decided 2026-10-06, planned, not authorized; [design](design/lightroom-import.md), [plan](../tasks/lightroom/lightroom-import.json)). Bring a Lightroom Classic catalog or a folder of XMP sidecars across, read-only.
 - Phase 1: the photographs worked on, catalog folders by event, collections, ratings and labels as collections, virtual copies and snapshots as versions, global settings, crop, orientation, lens and the look, the report and re-mapping, Lightroom's previews as first grid tiles only; no import undo, with the current catalog removal rule
@@ -146,9 +155,13 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 - The range selections have no photographic corpus: every figure in the [range study](design/range-study.md) is over flat synthetic patches
 - Density, edge-aware refinement, copying masks between photographs and mask presets are out of scope with their reasons recorded; model-based selections are the [AI editing](design/ai-editing.md) proposal's Select
 
+**Auto tone** ([design](design/auto-tone.md), [tasks](../tasks/editing/auto-tone.json)). Planned: an Auto button and `edit.auto-tone` that set Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Vibrance and Saturation on the global Basic layer as one entry, from deterministic statistics and clipping searches over a bounded sample of the stage Basic receives, solved through Basic and the Look. Presets can carry Auto, recomputed per photo, and the Lightroom importer maps `AutoTone`. The solver and the sample can proceed independently; the fit to Lightroom's Auto on the owner's photos follows delivery. The request authorizes planning only.
+
 **Tuning delivered tools.** Refine the recorded defaults of Presence, the colour mixer and the vignette (decision pending).
 
 ## Interface
+
+**Copy and paste settings** ([design](design/copy-settings.md), [tasks](../tasks/interface/copy-settings.json)). Planned: copy chosen adjustment groups from one photograph into a per-window clipboard and paste them onto the open photograph, a Develop filmstrip selection (new multi-selection) or a Select selection, or from the previous photograph, one history entry per photograph through a new `paste-settings` action and `batch.paste-settings` method. Core, copy and the filmstrip selection proceed independently before paste is wired in each workspace; geometry, masks, Sync and a system clipboard document are later. The request authorizes planning only.
 
 **High-zoom minimap** ([design](design/minimap.md), [tasks](../tasks/interface/minimap.json)). Planned for Develop at percentage zoom ≥200: whole-image overview, visible-region rectangle and owner-chosen click/drag navigation through the existing `view.set` path. Shared geometry and bounded overview rendering can proceed independently before UI integration; final native qualification and photo-sized measurements follow working delivery. The request authorizes planning only.
 

@@ -222,6 +222,17 @@ Accepted on 2026-09-27 for the delivered [JPEG export](design/export.md#decision
 - The earlier state-panel export proposal (presets, resizing, unique names by default, durable export records) is not adopted.
 - The desktop's export records 72 pixels per inch for each physical pixel of a point on the window's display, 144 on Retina, on macOS only (owner, 2026-10-05), so Preview's Actual Size matches the editor's 100%; `export.jpeg` takes the density as an optional parameter and the core never reads a display.
 
+## Export settings planning
+
+The owner asked on 2026-10-07 for more comprehensive export with settings: JPEG, WebP and a lossless hand-off format, optimised for the web by default, with a separate print setting. After reviewing the [design's](design/export-settings.md) boards, the owner chose:
+
+- **JPEG, WebP and TIFF.** DNG is not exported. The lossless hand-off is an 8- or 16-bit TIFF with the edits baked in.
+- **Lossy WebP** through libwebp.
+- **An Export sheet that writes directly** into the folder its settings name, with an editable suffix and no second save dialog. The same sheet serves batch export, Export again and Export with preset.
+- **Output sharpening in this plan, delivered after the core:** formats, resizing, optimisation and presets first.
+
+This request supersedes "quality fixed at 90, metadata chosen per export, no export preference" for the planned work. The never-replace, never-a-draft and displayed-entry rules stand. On 2026-10-08 the owner removed any memory cap from optimisation: optimised JPEG and file-size limits use the memory the image needs at any size. The sheet warns about large images, and long exports show a progress bar. The design records the other choices as proposals with defaults: the preset values, where presets are stored, the resampling filter, the quantisation tables, the warning threshold, when the progress bar appears, the metadata levels and the shortcuts. It also declares the resized, 16-bit and sharpened export tolerances. The request authorizes planning only; implementation awaits authorization.
+
 ## Source-kind controls
 
 Decided by the owner on 2026-09-27, who took every recommended default of the [source controls](design/source-controls.md#decisions) design:
@@ -509,9 +520,24 @@ Masking phases A–D are delivered. The owner's 2026-09-23 stroke-storage decisi
 
 The Basic and histogram product choices were decided on 2026-09-21 and implementation was authorised the same day; see [Basic adjustments and histogram](#basic-adjustments-and-histogram).
 
+## Auto tone planning
+
+The owner requested a plan for an Auto tone feature that sets the Basic values automatically, and decided on 2026-10-07 ([design](design/auto-tone.md#decided)):
+
+- Auto sets **Lightroom's eight**: Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Vibrance and Saturation.
+- **No white balance**, as in Lightroom; Auto white balance remains a separate later proposal.
+- **Auto in presets**, recomputed for each photo, and the Lightroom importer maps `AutoTone` instead of refusing it. Per-slider Auto and a desktop Auto on a selection are not in scope.
+- **Tuning by fitting** the targets to Lightroom's Auto on the owner's photos, after the working feature is delivered, followed by owner review.
+
+The deterministic algorithm, analysis before Basic with a forward model through Basic and the Look, the starting targets, caps, button placement and Cmd+U are recorded defaults in the design. This request authorizes planning only.
+
 ## High-zoom minimap planning
 
 The owner requested a plan for a minimap at zoom levels of **200% or more**. The inclusive percentage threshold is the requirement, and the owner chose **click to jump and drag the viewport rectangle**. The [design](design/minimap.md) records this interaction; lower-right placement and other layout/engineering defaults remain recommendations. This request authorizes planning only; implementation and native qualification remain outstanding.
+
+## Copy and paste settings planning
+
+The owner requested a plan for copying settings between photographs and on 2026-10-07 chose: **adjustments only** in the first delivery (the presettable groups; crop, orientation, lens correction, perspective, the RAW look and masks later), **every group except White balance** checked by default with neutral groups included and the last confirmed choice remembered for a quick `⌘C`, **multi-selection in Develop's filmstrip** with `⌘V` pasting to it, and **Paste from previous** (`⌥⌘V`). The [design](design/copy-settings.md) records the remaining defaults. This request authorizes planning only.
 
 ## Code structure consolidation
 
