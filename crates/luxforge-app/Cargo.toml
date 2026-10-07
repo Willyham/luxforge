@@ -13,11 +13,13 @@ path = "src/main.rs"
 [dependencies]
 luxforge-cli = { path = "../luxforge-cli" }
 luxforge-core = { path = "../luxforge-core" }
+luxforge-gpu = { path = "../luxforge-gpu" }
 luxforge-evidence = { path = "../luxforge-evidence" }
 luxforge-net = { path = "../luxforge-net" }
 luxforge-ui = { path = "../luxforge-ui" }
 luxforge-input = { path = "../luxforge-input" }
 iced.workspace = true
+wgpu.workspace = true
 image.workspace = true
 rfd.workspace = true
 serde.workspace = true
@@ -32,9 +34,8 @@ tokio = { workspace = true, features = ["rt"] }
 image = { workspace = true, features = ["jpeg"] }
 # The independent sRGB reference and preview-difference measure the GPU programs are qualified by.
 luxforge-reference = { path = "../luxforge-reference" }
-# The photo surface with its qualification readback, for the GPU programs' readback tests and the
-# corpus harness only (luxforge-ui's `qualification`).
-luxforge-ui = { path = "../luxforge-ui", features = ["qualification"] }
+# The executor with qualification readback, for GPU tests and the corpus harness only.
+luxforge-gpu = { path = "../luxforge-gpu", features = ["qualification"] }
 luxforge-testbase = { path = "../luxforge-testbase" }
 luxforge-testkit = { path = "../luxforge-testkit" }
 # The core with the disk flush skipped, its index listings held at a test's gate and its Presence

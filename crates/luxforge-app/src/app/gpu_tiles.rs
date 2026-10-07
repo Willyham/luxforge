@@ -23,7 +23,7 @@
 //! - **One thread.** `luxforge-gpu-tiles`, started by the first call or stream and asleep on its
 //!   condition variable while nothing waits (performance rule 8). It owns the runner, which the
 //!   first call or stream that needs it opens on the adapter the window's renderer reports drawing
-//!   with, never another ([`TileRunner::open`]): a host without that adapter answers
+//!   with, never another ([`crate::adapters::tile_runner`]): a host without that adapter answers
 //!   `tiles-unavailable adapter-mismatch`, a launch with `--no-gpu-render` `refused`, a desktop
 //!   that named no adapter, or a launch that refused the GPU stage on a host whose only adapter is
 //!   a software one not adopted, `no-adapter`, and a lost device `device-lost` from then on. A
@@ -52,7 +52,7 @@
 //!   reference renderer's reads ([`ReferenceReads`]), its answer naming why ([`Answered::reason`]),
 //!   and so is every later read of that call, so what remains of a call has one renderer. Never
 //!   silently.
-//! - **A stream.** [`GpuTiles::stream`] plans the export on its caller's thread ([`plan_stream`]),
+//! - **A stream.** [`GpuTiles::stream`] plans the export on its caller's thread ([`PreparedStream`]),
 //!   so a stack the GPU cannot draw is answered at once and the export lane renders its reference
 //!   frame. The worker then draws the output stage at the longest of [`STREAM_TILE_SIDES`] whose
 //!   every tile the runner's own charge holds within [`GPU_TILE_BUDGET`] less
@@ -71,26 +71,23 @@
 //!   slots created, the bytes the runner holds and has held, its compiles, the lights it computed
 //!   and where its tiles' time went.
 use super::gpu_plan::{self, WarpGrid, surface_plan_over, sweep_plan_over};
+use crate::adapters::Adapter;
 use luxforge_core::{
     Cancel, ClientId, CoordinateGrid, Error, GpuFallback, GpuGeometry, GpuLightSweep, GpuPlan,
-    GpuStaging, GpuSweep, GpuSweeps, LinearImage, PreviewSource, Region, RestTile,
+    GpuStaging, GpuSweep, GpuSweeps, LinearImage, PreparedStream, PreviewSource, Region, RestTile,
     STREAM_TILE_SIDES, StreamPlan, TilePlan, plan_read, plan_stream, plan_stream_light_sweeps,
-    plan_stream_sweeps, plan_stream_sweeps_at,
+    plan_stream_sweeps,
     tiles::{
         Answered, Band, BandSender, BandStream, EXPORT_BANDS_IN_FLIGHT, ReadAnswer, ReadPixels,
         ReadStage, ReadValues, ReferenceReads, TILE_QUEUE_CAPACITY, TileCall, TileFallback,
         TileReads, TileService, TileSession, TileStatus, TileUnavailable, clipped,
     },
 };
-use luxforge_ui::{
-    adapters::Adapter,
-    photo_surface::{
-        Derivation, GpuBoundary, GpuSource,
-        gpu_preview::tiles::{
-            GPU_TILE_BUDGET, TILES_IN_FLIGHT, Ticket, TileEnd, TileFailure, TileFigures, TileInput,
-            TileOutput, TilePixels, TileRunner, TileTimes, TileUnavailable as RunnerUnavailable,
-        },
-    },
+use luxforge_gpu::{
+    Derivation, GpuBoundary, GpuSource, tiles::GPU_TILE_BUDGET, tiles::TILES_IN_FLIGHT,
+    tiles::Ticket, tiles::TileEnd, tiles::TileFailure, tiles::TileFigures, tiles::TileInput,
+    tiles::TileOutput, tiles::TilePixels, tiles::TileRunner, tiles::TileTimes,
+    tiles::TileUnavailable as RunnerUnavailable,
 };
 use serde_json::{Value, json};
 use std::{
@@ -113,8 +110,8 @@ static LAUNCHED: OnceLock<Arc<GpuTiles>> = OnceLock::new();
 /// host whose only adapter is a software one, not adopted, or with no adapter, answering the
 /// reference as `no-adapter` ([`GpuTiles::unavailable`]). Made once; a second call answers the
 /// first's.
-pub(crate) fn launch(launch: luxforge_ui::adapters::LaunchRenderer) -> Arc<GpuTiles> {
-    use luxforge_ui::adapters::{LaunchRenderer, Refusal};
+pub(crate) fn launch(launch: crate::adapters::LaunchRenderer) -> Arc<GpuTiles> {
+    use crate::adapters::{LaunchRenderer, Refusal};
     Arc::clone(LAUNCHED.get_or_init(|| {
         Arc::new(match launch {
             LaunchRenderer::Gpu { .. } => GpuTiles::pending(false),
@@ -137,7 +134,7 @@ pub(crate) fn launched() -> Option<Arc<GpuTiles>> {
 type Stack = luxforge_core::Evaluation;
 
 /// The photo surface's plan, beside the core's of the same name.
-type SurfacePlan = luxforge_ui::photo_surface::GpuPlan;
+type SurfacePlan = luxforge_gpu::GpuPlan;
 
 /// How far a read's tile reaches past the rectangle read, on every side: a point's tile is 17 × 17
 /// pixels, so the 5 × 5 patch of a neutral pick, read a point at a time from its corner, lies
@@ -532,7 +529,8 @@ impl TileService for GpuTiles {
             return Err(reason);
         }
         let (sides, sweep_sides) = (self.sides(), self.sweep_sides());
-        let plan = plan_stream(evaluation, sides[0])?;
+        let prepared = PreparedStream::of(evaluation)?;
+        let plan = prepared.stream(sides[0])?;
         let taken = Arc::new(AtomicUsize::new(0));
         let wake = {
             let (shared, taken) = (Arc::clone(&self.shared), Arc::clone(&taken));
@@ -575,6 +573,7 @@ impl TileService for GpuTiles {
             sides,
             sweep_sides,
             first: Some(plan),
+            prepared: Some(prepared),
             drawing: None,
             next: 0,
             open: VecDeque::new(),
@@ -638,6 +637,8 @@ struct Stream {
     /// those.
     sweep_sides: Option<Vec<u32>>,
     first: Option<StreamPlan>,
+    /// Source-derived preparation only until strategy and side selection have finished.
+    prepared: Option<PreparedStream>,
     /// What the worker draws it with, once it has begun.
     drawing: Option<Drawing>,
     /// The next tile to submit, and the bands its tiles in flight and read back are assembled in,
@@ -986,7 +987,7 @@ impl Worker {
             };
             // A JPEG's cut reads the core's decode table, which the surface holds once handed it.
             gpu_plan::install_output_encoding();
-            match TileRunner::open(&backend, &name) {
+            match crate::adapters::tile_runner(&backend, &name) {
                 Ok(opened) => {
                     self.figures.borrow_mut().adapter = Some(opened.adapter().clone());
                     *runner = Some(opened);
@@ -1145,7 +1146,7 @@ impl Worker {
             let mut runner = self.runner()?;
             let held = runner.hold_stages(
                 (sweeps.stage.width, sweeps.stage.height),
-                gpu_plan::boundary_format(sweeps.format),
+                sweeps.format,
                 sweeps.textures,
             );
             self.figures.borrow_mut().runner = runner.figures();
@@ -1405,7 +1406,9 @@ impl Worker {
         if staged.next == tiles && staged.pending.is_empty() {
             staged.sweep += 1;
             staged.next = 0;
-            (staged.windows, staged.band_of) = bands(&staged.sweeps.sweeps[staged.sweep].tiles);
+            if staged.drawing_stages() {
+                (staged.windows, staged.band_of) = bands(&staged.sweeps.sweeps[staged.sweep].tiles);
+            }
         }
         Ok(())
     }
@@ -1668,6 +1671,10 @@ impl Worker {
             .first
             .take()
             .ok_or_else(|| unplannable("the stream was begun twice"))?;
+        let prepared = stream
+            .prepared
+            .take()
+            .ok_or_else(|| unplannable("the stream was begun twice"))?;
         let source = gpu_source(self.version(), stream.stack.source())?;
         let grid = match first.warp() {
             Some(warp) => Some(stage_grid(warp)?),
@@ -1677,21 +1684,25 @@ impl Worker {
         // A stack whose layers together reach far is drawn in staged sweeps, the runner holding
         // their stage textures, charged before they are created, for as long as the stream is
         // drawn; any other is drawn chained.
-        let staging = match &stream.sweep_sides {
-            _ if self.chains_streams() => None,
-            Some(sides) => Some(plan_stream_sweeps_at(&stream.stack, budget, sides)?),
-            None => Some(plan_stream_sweeps(&stream.stack, budget)?),
+        let sides = stream.sweep_sides.as_deref().unwrap_or(&STREAM_TILE_SIDES);
+        let (staging, lit) = if self.chains_streams() {
+            (None, prepared.light_sweeps(budget, sides)?)
+        } else {
+            let (staging, lit) = prepared.strategy(budget, sides)?;
+            (Some(staging), lit)
         };
-        if let Some(GpuStaging::Staged(sweeps)) = staging {
-            let last = sweeps.sweeps.last().expect("at least two sweeps");
-            let mut plan = plan_stream(&stream.stack, last.side)?;
-            plan.tiles = last.tiles.clone();
+        if let Some(GpuStaging::Staged(mut sweeps)) = staging {
+            let last = sweeps.sweeps.last_mut().expect("at least two sweeps");
+            // The selected sweep already owns exactly the final windows/order. Only its
+            // metadata is needed by Staged; Drawing owns this tile list from here on.
+            let mut plan = first;
+            plan.tiles = std::mem::take(&mut last.tiles);
             plan.side = last.side;
             {
                 let mut runner = self.runner()?;
                 let held = runner.hold_stages(
                     (sweeps.stage.width, sweeps.stage.height),
-                    gpu_plan::boundary_format(sweeps.format),
+                    sweeps.format,
                     sweeps.textures,
                 );
                 self.figures.borrow_mut().runner = runner.figures();
@@ -1706,32 +1717,17 @@ impl Worker {
         // A light behind a spatial layer whose stage textures do not fit is computed by light
         // sweeps first, which hold none; the stream's chained tiles read it kept. A stack no light
         // sweep fits is the reference's, never drawn with a stand-in.
-        let lit = match first
-            .plan
-            .lights
-            .iter()
-            .any(luxforge_core::GpuLight::staged)
-        {
-            false => None,
-            true => {
-                let sides = stream
-                    .sweep_sides
-                    .clone()
-                    .unwrap_or_else(|| luxforge_core::STREAM_TILE_SIDES.to_vec());
-                Some(plan_stream_light_sweeps(&stream.stack, budget, &sides)?)
-            }
-        };
         let mut requested = 0;
         for &side in &stream.sides {
             let plan = if side == first.side {
                 first.clone()
             } else {
-                plan_stream(&stream.stack, side)?
+                prepared.stream(side)?
             };
             let charge = self.largest_charge(&plan, &source, grid.as_ref())?;
             if charge <= budget {
                 let mut drawing = Drawing::new(plan, source, grid, self.runners.get());
-                drawing.lit = lit.map(LightSweeps::new);
+                drawing.lit = (!lit.is_empty()).then(|| LightSweeps::new(lit));
                 return Ok(drawing);
             }
             requested = charge;

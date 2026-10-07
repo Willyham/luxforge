@@ -4,8 +4,9 @@
 //! links of a chain taking their scratch planes from the slot's one pool in turn. Last, a chain's
 //! planes laid out as each link's kept textures and one pool of scratch textures, and the chain's
 //! charge, without a device.
-use super::super::spatial::{Slots, fragment_declarations, pass_module};
+use super::super::spatial::{PlaneTextureFormat, Slots, fragment_declarations, pass_module};
 use super::*;
+use luxforge_gpu_types::PlaneSize as PlaneExtent;
 
 /// A hand-supplied spatial program under the convention: a pass that copies its unit's input into
 /// a plane, a horizontal and a vertical box mean of a plane of the radius its word holds, a
@@ -72,18 +73,18 @@ pub(super) fn test_spatial() -> GpuSpatial {
         planes: vec![
             GpuPlane {
                 format: PlaneFormat::Colour,
-                size: PlaneSize::Reduced(1),
+                size: PlaneSize::Extent(PlaneExtent::Reduced(1)),
             },
             GpuPlane {
                 format: PlaneFormat::Quad,
-                size: PlaneSize::Reduced(1),
+                size: PlaneSize::Extent(PlaneExtent::Reduced(1)),
             },
             GpuPlane {
                 format: PlaneFormat::Quad,
-                size: PlaneSize::Fixed {
+                size: PlaneSize::Extent(PlaneExtent::Fixed {
                     width: 1,
                     height: 1,
-                },
+                }),
             },
         ],
         passes: vec![
@@ -296,7 +297,7 @@ fn the_frame_and_every_pass_assemble_into_modules_that_validate() {
 fn a_reduced_plane_holds_the_stage_blocks_its_boundary_reaches() {
     let plane = |s| GpuPlane {
         format: PlaneFormat::Scalar,
-        size: PlaneSize::Reduced(s),
+        size: PlaneSize::Extent(PlaneExtent::Reduced(s)),
     };
     assert_eq!(plane(1).extent((0, 0), (37, 21)), (37, 21));
     assert_eq!(plane(4).extent((0, 0), (37, 21)), (10, 6));
@@ -306,10 +307,10 @@ fn a_reduced_plane_holds_the_stage_blocks_its_boundary_reaches() {
     assert_eq!(plane(16).extent((0, 0), (37, 21)), (3, 2));
     let fixed = GpuPlane {
         format: PlaneFormat::Quad,
-        size: PlaneSize::Fixed {
+        size: PlaneSize::Extent(PlaneExtent::Fixed {
             width: 1,
             height: 1,
-        },
+        }),
     };
     assert_eq!(
         (
@@ -736,7 +737,7 @@ fn pass_pipelines_depend_on_their_kernel_and_shape_alone() {
             2,
             GpuPlane {
                 format: PlaneFormat::Quad,
-                size: PlaneSize::Reduced(1),
+                size: PlaneSize::Extent(PlaneExtent::Reduced(1)),
             },
         );
         let lead = lead as u32;
@@ -797,6 +798,7 @@ fn pass_pipelines_depend_on_their_kernel_and_shape_alone() {
     let created = |pipeline: &PhotoPipeline| {
         pipeline
             .gpu
+            .inspection()
             .support
             .as_ref()
             .expect("a supported stage")
@@ -835,9 +837,16 @@ fn pass_pipelines_depend_on_their_kernel_and_shape_alone() {
     }
     // Each plan is a chain of two links: the colour steps', one sequence for each list of them, and
     // the spatial step's, one frame pipeline for each offset of its words over the shared passes.
-    assert_eq!(pipeline.figures.preview.compiles.load(Ordering::Relaxed), 5);
+    assert_eq!(pipeline.figures.preview.compiles(), 5);
     assert_eq!(
-        pipeline.gpu.support.as_ref().unwrap().passes.len(),
+        pipeline
+            .gpu
+            .inspection()
+            .support
+            .as_ref()
+            .unwrap()
+            .passes
+            .len(),
         3,
         "the stage keeps each module once"
     );
@@ -873,9 +882,8 @@ fn a_change_to_an_apply_alone_runs_no_pass() {
         pipeline.surfaces[&ID]
             .gpu
             .as_ref()
-            .and_then(|slot| slot.spatial.as_ref())
+            .and_then(GpuSlot::spatial_dispatched)
             .expect("a spatial slot")
-            .dispatched
     };
     let other = GpuBoundary::from_linear(
         crate::photo_surface::BoundaryFormat::Half,
@@ -973,7 +981,7 @@ fn ramp() -> GpuProgram {
 fn blurred(radius_x: u32, radius_y: u32, amount: f32) -> GpuSpatial {
     let plane = |format| GpuPlane {
         format,
-        size: PlaneSize::Reduced(1),
+        size: PlaneSize::Extent(PlaneExtent::Reduced(1)),
     };
     let pass = |kernel: &'static str, inputs: Vec<u32>, output: u32, words: u32| GpuPass {
         kernel: Cow::Borrowed(kernel),
@@ -1060,7 +1068,11 @@ fn chained_plan(boundary: &GpuBoundary, chained: Chained) -> GpuPlan {
 
 /// How many passes each spatial link of a chained plan's slot has dispatched, in chain order.
 fn link_passes(pipeline: &PhotoPipeline) -> [u64; 3] {
-    let slot = pipeline.surfaces[&ID].gpu.as_ref().expect("a slot");
+    let slot = pipeline.surfaces[&ID]
+        .gpu
+        .as_ref()
+        .expect("a slot")
+        .inspection();
     let link = |index: usize| {
         slot.chain[index]
             .spatial
@@ -1228,7 +1240,11 @@ fn chained_links_take_their_scratch_from_one_pool_and_draw_what_a_fresh_slot_dra
             continue;
         }
         // What each link's applies read, and what its passes write, by texture.
-        let slot = pipeline.surfaces[&ID].gpu.as_ref().expect("a slot");
+        let slot = pipeline.surfaces[&ID]
+            .gpu
+            .as_ref()
+            .expect("a slot")
+            .inspection();
         let (_, last_plan, _) = ticks.last().expect("ticks");
         let split = super::super::chain::chain(&last_plan.steps);
         let links = [
@@ -1341,7 +1357,11 @@ fn the_pools_generation_rebinds_a_link_once_a_texture_goes() {
         }
     };
     let first_link = |pipeline: &PhotoPipeline| {
-        let slot = pipeline.surfaces[&ID].gpu.as_ref().expect("a slot");
+        let slot = pipeline.surfaces[&ID]
+            .gpu
+            .as_ref()
+            .expect("a slot")
+            .inspection();
         let spatial = slot.chain[1].spatial.as_ref().expect("planes");
         let built = spatial
             .groups
@@ -1524,12 +1544,13 @@ fn a_chain_of_more_than_sixteen_sequences_compiles_once_then_draws_every_tick() 
             "tick {number}: nothing compiles again"
         );
     }
-    assert_eq!(pipeline.gpu.pipelines.len(), LONG_CHAIN);
+    assert_eq!(pipeline.gpu.inspection().pipelines.len(), LONG_CHAIN);
     eprintln!(
         "{test}: {LONG_CHAIN} sequences compiled once, {} ticks on the GPU, {} pass pipelines",
         ticks.len(),
         pipeline
             .gpu
+            .inspection()
             .support
             .as_ref()
             .map_or(0, |support| support.passes.created())
@@ -1550,12 +1571,12 @@ fn plane(format: PlaneFormat, size: PlaneSize) -> GpuPlane {
     GpuPlane { format, size }
 }
 
-const R1: PlaneSize = PlaneSize::Reduced(1);
-const R4: PlaneSize = PlaneSize::Reduced(4);
-const ONE: PlaneSize = PlaneSize::Fixed {
+const R1: PlaneSize = PlaneSize::Extent(PlaneExtent::Reduced(1));
+const R4: PlaneSize = PlaneSize::Extent(PlaneExtent::Reduced(4));
+const ONE: PlaneSize = PlaneSize::Extent(PlaneExtent::Fixed {
     width: 1,
     height: 1,
-};
+});
 
 /// A spatial step for the layout alone: `planes`, each with whether an apply reads it, a pass
 /// writing each, and one apply reading every plane marked. Nothing runs it.
@@ -1610,7 +1631,13 @@ fn shape_b() -> GpuStep {
 }
 
 fn class(format: PlaneFormat, size: PlaneSize) -> super::super::spatial::Class {
-    super::super::spatial::Class { format, size }
+    super::super::spatial::Class::new(
+        format,
+        match size {
+            PlaneSize::Extent(extent) => extent,
+            PlaneSize::Light(_) => panic!("a light is not a scratch class"),
+        },
+    )
 }
 
 /// Each shape's kept textures and parameter slices: seven passes each.
@@ -1625,7 +1652,7 @@ const SCRATCH_A: u64 = 8 * FULL + 2 * 4 * FULL + 16 * QUARTER + 16;
 /// distinct pool textures numbered from zero in plane order, and the pool holds, for each class,
 /// exactly the most any one link needs. Answers the pool.
 fn assert_served(steps: &[GpuStep]) -> super::super::spatial::PoolKey {
-    use super::super::spatial::{Class, PlaneTexture, PlanesKey, PoolKey};
+    use super::super::spatial::{PlaneTexture, PlanesKey, PoolKey};
     let chain = super::super::chain::chain(steps);
     let links: Vec<&[GpuStep]> = chain
         .links
@@ -1634,13 +1661,13 @@ fn assert_served(steps: &[GpuStep]) -> super::super::spatial::PoolKey {
         .chain(std::iter::once(chain.last))
         .collect();
     let pool = PoolKey::of(links.iter().copied(), LAID, LAID_AT);
-    let mut most: Vec<(Class, usize)> = Vec::new();
+    let mut most: Vec<(super::super::spatial::Class, usize)> = Vec::new();
     for link in &links {
         let Some(key) = PlanesKey::of(link, LAID, LAID_AT) else {
             continue;
         };
         let mut kept = 0;
-        let mut taken: Vec<(Class, usize)> = Vec::new();
+        let mut taken: Vec<(super::super::spatial::Class, usize)> = Vec::new();
         for (index, step) in link.iter().enumerate() {
             let GpuStep::Spatial(spatial) = step else {
                 continue;
@@ -1661,7 +1688,11 @@ fn assert_served(steps: &[GpuStep]) -> super::super::spatial::PoolKey {
                     }
                     PlaneTexture::Pool(held, at) => {
                         assert!(!read, "plane {number}: no plane an apply reads is pooled");
-                        assert_eq!(held, Class::of(*declared), "plane {number}: its own class");
+                        assert_eq!(
+                            held,
+                            class(declared.format, declared.size),
+                            "plane {number}: its own class"
+                        );
                         let before = taken.iter().filter(|(other, _)| *other == held).count();
                         assert_eq!(at, before, "plane {number}: numbered in plane order");
                         assert!(!taken.contains(&(held, at)), "plane {number}: distinct");
@@ -1676,7 +1707,7 @@ fn assert_served(steps: &[GpuStep]) -> super::super::spatial::PoolKey {
                 }
             }
         }
-        for &(held, count) in key.scratch() {
+        for (held, count) in key.scratch() {
             match most.iter_mut().find(|(other, _)| *other == held) {
                 Some((_, most)) => *most = (*most).max(count),
                 None => most.push((held, count)),

@@ -21,6 +21,7 @@ use crate::{
     AssetId, Error, ErrorKind,
     catalog_types::{FindReport, FindResult, FindRow, Volume},
     editor::{now_ms, source_signature},
+    file_metadata::hidden,
     index::volume_of,
     jobs::JobControl,
     library::locate::{self, Phase},
@@ -407,33 +408,6 @@ fn skipped(name: &OsStr) -> bool {
                     .iter()
                     .any(|skipped| extension.eq_ignore_ascii_case(skipped))
             })
-}
-
-/// Whether an entry is hidden: its name starts with a dot, or the platform marks it hidden (the
-/// `UF_HIDDEN` flag on macOS, as `~/Library` carries; the hidden attribute on Windows).
-fn hidden(name: &OsStr, metadata: &Metadata) -> bool {
-    name.as_encoded_bytes().first() == Some(&b'.') || platform_hidden(metadata)
-}
-
-#[cfg(target_os = "macos")]
-fn platform_hidden(metadata: &Metadata) -> bool {
-    use std::os::macos::fs::MetadataExt;
-    /// `UF_HIDDEN` (`sys/stat.h`).
-    const UF_HIDDEN: u32 = 0x0000_8000;
-    metadata.st_flags() & UF_HIDDEN != 0
-}
-
-#[cfg(windows)]
-fn platform_hidden(metadata: &Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    /// `FILE_ATTRIBUTE_HIDDEN`.
-    const HIDDEN: u32 = 0x2;
-    metadata.file_attributes() & HIDDEN != 0
-}
-
-#[cfg(not(any(target_os = "macos", windows)))]
-fn platform_hidden(_: &Metadata) -> bool {
-    false
 }
 
 /// The device a folder or file is on, where the platform says; a walk enters no other.

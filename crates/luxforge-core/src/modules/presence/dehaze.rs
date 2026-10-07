@@ -388,6 +388,20 @@ struct Rects {
 }
 
 impl SpatialUnit for Dehaze {
+    fn identity(&self) -> crate::OperationIdentity {
+        crate::OperationIdentity::new(
+            "presence.dehaze",
+            [
+                self.amount.to_bits(),
+                u64::from(self.long_side),
+                u64::from(self.omega.to_bits()),
+                u64::from(self.veil.to_bits()),
+                self.r_dark as u64,
+                self.r_guide as u64,
+            ],
+        )
+    }
+
     fn halo(&self, _: Stage) -> u32 {
         halo(self.long_side) as u32
     }

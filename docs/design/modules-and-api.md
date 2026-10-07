@@ -16,6 +16,8 @@ Module code never writes catalog tables, never keeps an undo stack and never ren
 
 ## Descriptor
 
+Registered lookups return `Provider`: its public `descriptor()` reports registry availability, including a module disabled for this run. `descriptors()`, `module()`, `action()` and `effect()` agree. `Provider` retains `Deref` for raw implementation hooks; callers check the registered descriptor before using them. Explicitly dereferencing to `ToolModule` accesses the implementation's own descriptor, which does not carry registry overrides.
+
 Every module returns one `ModuleDescriptor` from `descriptor()`. It is plain data, cheap to build and serializable, and it is the single source of API discovery, GUI controls and validation limits. A module builds it in Rust with the typed constructors — `EffectDescriptor::new(id, stage)`, `ActionDescriptor::new(id, title, notes)`, the `ParameterDescriptor` kinds and one struct per control kind (`Control::number(…)` returns a `NumberControl`, `Control::choice(…)` a `ChoiceControl`, and so on, each with only its own kind's setters, so a setter of another kind does not compile) — and registration validates it. There is no reader for descriptors arriving as JSON: `module.list` serializes them, and a client deserializes that listing. The code lives in `modules/descriptor/`: the shapes and the control variants' resolution in `types.rs`, the registration rules in `validate.rs`, the checks a request's values meet (the settings check among them) in `values.rs` and how a label names a value in `labels.rs`.
 
 | Field | Meaning |
@@ -57,6 +59,12 @@ One control can behave as each source kind requires. A `number`, `action` or `pi
 - **Module reset.** A field-patch module's reset on the global target of a photo whose controls have variants there is one `Compose`: the patch of every field that is not superseded to its default, then each group reset's variant for that kind, recorded as one entry with the module reset's label. On a RAW photo, Reset Basic therefore also returns the development to As shot, and is a no-op when both already are.
 
 ## Module trait
+
+Pointwise units supply an `OperationIdentity` with the unit kind and exact coefficient/stage bits. Colour and spatial operation equality uses those identities in unit order, with conservative compiled-mask allocation identity; `describe` remains diagnostics only. Variable identity sections include lengths, and comparison uses no digest.
+
+The supported current cross-crate authoring interface is `ToolModule` plus the descriptor, action, context and processing types it uses. `EffectDescriptor::new`, `NewLayer::new` and `LayerUpdate::new` construct current effects/plans; artifact builders are available when an effect declares artifacts. Planning uses `StageContext::own_layer` and `insertion_index_for` for target ownership and placement, and its lazy stage, point-sample, input and sensor helpers for questions. A plan need not reconstruct mask ordering or sample a frame. The developer control proof is constructed through the opaque `controls_module()` factory. The built-in field-patch table (`FieldPatch`, `FieldPatchModule`, `Spec`, `Values`) is internal. `SpatialOperation` remains an opaque processing output constructed by built-in spatial units; there is no external spatial authoring or loading framework.
+
+External author compile/tests prove this supported surface and registry-aware provider availability. The integrated [structural qualification](../specs/performance.md#code-structure-consolidation) preserves current command schemas, recipe/history semantics and unavailable-provider refusals.
 
 ```text
 descriptor()                             -> &ModuleDescriptor

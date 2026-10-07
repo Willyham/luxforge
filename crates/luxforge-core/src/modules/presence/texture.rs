@@ -111,6 +111,19 @@ impl Texture {
 }
 
 impl SpatialUnit for Texture {
+    fn identity(&self) -> crate::OperationIdentity {
+        crate::OperationIdentity::new(
+            "presence.texture",
+            [
+                self.amount.to_bits(),
+                u64::from(self.long_side),
+                u64::from(self.gain.to_bits()),
+                self.r_fine as u64,
+                self.r_coarse as u64,
+            ],
+        )
+    }
+
     /// The halo is the stage's, fixed when the unit was compiled; the host evaluates the operation
     /// at that same stage.
     fn halo(&self, _: Stage) -> u32 {

@@ -331,6 +331,25 @@ impl Mixer {
 }
 
 impl PointwiseColor for Mixer {
+    fn identity(&self) -> crate::OperationIdentity {
+        crate::OperationIdentity::new(
+            "mixer",
+            self.hue
+                .iter()
+                .chain(&self.saturation)
+                .chain(&self.luminance)
+                .map(|v| v.to_bits()),
+        )
+        .with_words(
+            self.hue_warp
+                .iter()
+                .flatten()
+                .chain(&self.chroma_gain)
+                .chain(&self.luminance_amount)
+                .map(|v| u64::from(v.to_bits())),
+        )
+    }
+
     /// One Oklab round trip per pixel, with the row coordinates ignored: the mixer is pointwise in
     /// the strict sense.
     ///

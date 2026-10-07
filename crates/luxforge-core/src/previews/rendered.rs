@@ -81,7 +81,7 @@
 //!
 //! One render holds one preparation. At its peak, by the sizes of its buffers (not measured), a
 //! JPEG holds its file's bytes (within `MAX_JPEG_BYTES`, 128 MiB) while they decode into the RGBA8
-//! frame (within the 512 MiB evaluated-frame limit, `luxforge_raw::MAX_FRAME_BYTES`): about 230 MiB
+//! frame (within the 512 MiB evaluated-frame limit, `crate::render::limits::MAX_FRAME_BYTES`): about 230 MiB
 //! of decoded source for a 60 MP JPEG. A RAW holds its file's bytes (within
 //! `luxforge_raw::MAX_SOURCE_BYTES`) and the mosaic while it decodes, then the mosaic and the float
 //! planes (within `luxforge_raw::MAX_RGB_BYTES`) while it develops, then the planes alone — the

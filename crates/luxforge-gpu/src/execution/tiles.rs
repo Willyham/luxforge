@@ -73,13 +73,14 @@
 //!   `refused`, `device-lost`, `adapter-mismatch`), the budget (`tiles-budget`), or the plan's own
 //!   reason the stage cannot run it — `pipeline-failed`, `texture-limit`, `buffer-limit` or
 //!   `source-missing` for a window whose pixels were let go — exactly as the surface names them.
+use super::BoundaryTexture;
 use super::staged::StageHolder;
 use super::{
     BLOCK_CHUNK, BoundaryFormat, Charged, Compiled, Derivation, GpuFallback, GpuPlan, GpuSource,
     GpuStep, MIN_BUFFER, OUTPUT_FORMAT, SAMPLED_FORMAT, Shape, SourceLayouts, SourceSlot,
     SpatialSlot, Support, answered, blocks, buffer_capacity, chain, chain_charge, compile,
-    encode_pass_over, gpu_stage_refused, intermediate_bytes, intermediate_format, le_bytes, light,
-    output_offset, region_drawable, spatial, storage_buffer, supported,
+    encode_pass_over, intermediate_bytes, intermediate_format, le_bytes, light, output_offset,
+    region_drawable, spatial, storage_buffer, supported,
 };
 use crate::adapters::{self, Adapter, Unopened};
 use std::sync::{
@@ -573,12 +574,25 @@ impl TileRunner {
     /// checked as the stage checks its own device. Refused, having opened nothing, when the launch
     /// refused the GPU stage; refused by name when the host offers no such adapter. Blocking: it
     /// creates a graphics instance and a device, so never on the interface thread.
+    #[cfg(any(test, feature = "qualification"))]
     pub fn open(backend: &str, name: &str) -> Result<Self, TileRefusal> {
-        Self::open_with(gpu_stage_refused(), backend, name)
+        Self::open_with(
+            super::gpu_stage_refused(),
+            backend,
+            name,
+            wgpu::Backends::from_env().unwrap_or(wgpu::Backends::all()),
+            &test_limits(),
+        )
     }
 
     /// [`TileRunner::open`] for a launch that `refused` the GPU stage or not.
-    fn open_with(refused: bool, backend: &str, name: &str) -> Result<Self, TileRefusal> {
+    pub fn open_with(
+        refused: bool,
+        backend: &str,
+        name: &str,
+        backends: wgpu::Backends,
+        limits: &[wgpu::Limits],
+    ) -> Result<Self, TileRefusal> {
         let asked = format!("{backend} {name:?}");
         if refused {
             return Err(TileRefusal {
@@ -586,30 +600,31 @@ impl TileRunner {
                 detail: format!("the launch refused the GPU stage; {asked} was not opened"),
             });
         }
-        let opened = adapters::open(backend, name).map_err(|unopened| match unopened {
-            Unopened::NoAdapter => TileRefusal {
-                reason: TileUnavailable::NoAdapter,
-                detail: format!("the host offers no adapter; {asked} was asked for"),
-            },
-            Unopened::Mismatch { offered } => TileRefusal {
-                reason: TileUnavailable::AdapterMismatch,
-                detail: format!(
-                    "{asked} is not among the adapters the host offers: {}",
-                    offered
-                        .iter()
-                        .map(|adapter| format!(
-                            "{} {:?} ({})",
-                            adapter.backend, adapter.name, adapter.device_type
-                        ))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ),
-            },
-            Unopened::NoDevice(refusals) => TileRefusal {
-                reason: TileUnavailable::NoAdapter,
-                detail: format!("{asked} granted no device: {}", refusals.join("; ")),
-            },
-        })?;
+        let opened =
+            adapters::open(backend, name, backends, limits).map_err(|unopened| match unopened {
+                Unopened::NoAdapter => TileRefusal {
+                    reason: TileUnavailable::NoAdapter,
+                    detail: format!("the host offers no adapter; {asked} was asked for"),
+                },
+                Unopened::Mismatch { offered } => TileRefusal {
+                    reason: TileUnavailable::AdapterMismatch,
+                    detail: format!(
+                        "{asked} is not among the adapters the host offers: {}",
+                        offered
+                            .iter()
+                            .map(|adapter| format!(
+                                "{} {:?} ({})",
+                                adapter.backend, adapter.name, adapter.device_type
+                            ))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ),
+                },
+                Unopened::NoDevice(refusals) => TileRefusal {
+                    reason: TileUnavailable::NoAdapter,
+                    detail: format!("{asked} granted no device: {}", refusals.join("; ")),
+                },
+            })?;
         let adapters::Opened {
             adapter,
             device,
@@ -2087,3 +2102,12 @@ impl<K, V> Lru<K, V> {
 #[cfg(test)]
 #[path = "tiles_tests.rs"]
 mod tests;
+
+#[cfg(any(test, feature = "qualification"))]
+fn test_limits() -> [wgpu::Limits; 2] {
+    [wgpu::Limits::default(), wgpu::Limits::downlevel_defaults()].map(|limits| wgpu::Limits {
+        max_bind_groups: 2,
+        max_non_sampler_bindings: 2048,
+        ..limits
+    })
+}

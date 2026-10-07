@@ -3667,7 +3667,7 @@ fn race_e_a_slider_discard_presents_no_queued_drafted_frame() {
     let mut masking = Masking::opened();
     drain_queue(&mut masking);
     // The reference renderer draws the drafted frame, which the discard holds back.
-    masking.editor.renderer.stage = Some(luxforge_ui::photo_surface::GpuStageState::DeviceLost);
+    masking.editor.renderer.stage = Some(luxforge_gpu::GpuStageState::DeviceLost);
     let presented = masking.editor.presentation.presented_generation;
     let _ = testing::slide(&mut masking.editor, "set-basic", "exposure", 0.3);
     assert!(
@@ -3710,7 +3710,7 @@ fn cancelled_masked_adjustments_restore_committed_pixels_history_and_coverage() 
     ] {
         let mut masking = Masking::opened();
         // The reference renderer draws every frame, a drafted one included.
-        masking.editor.renderer.stage = Some(luxforge_ui::photo_surface::GpuStageState::DeviceLost);
+        masking.editor.renderer.stage = Some(luxforge_gpu::GpuStageState::DeviceLost);
         masking.enter_mask_mode();
         masking.draw_mask();
         let mask = masking.listing().masks[0].id.clone();

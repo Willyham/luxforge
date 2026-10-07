@@ -594,6 +594,10 @@ fn warp_render_cancels_between_tap_blocks() {
         calls: Arc<AtomicUsize>,
     }
     impl crate::modules::PointwiseColor for CancelOnRead {
+        fn identity(&self) -> crate::OperationIdentity {
+            crate::OperationIdentity::new("test.render/warp_tests.rs.CancelOnRead", [])
+        }
+
         fn apply_row(&self, _: u32, _: u32, _: &mut [[f32; 3]]) {
             self.calls.fetch_add(1, Ordering::Relaxed);
             self.cancel.cancel();

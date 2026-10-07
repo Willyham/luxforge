@@ -12,7 +12,7 @@ use super::{
     testing::{finish, let_go, real_photo, run_commit, slide},
     *,
 };
-use luxforge_ui::photo_surface::GpuFallback as SurfaceFallback;
+use luxforge_gpu::GpuFallback as SurfaceFallback;
 use std::time::Duration;
 
 const ACTION: &str = "set-basic";
@@ -376,7 +376,7 @@ fn gpu_preview_the_notice_says_compiling_once_it_has_lasted_half_a_second() {
 fn gpu_preview_the_notice_says_the_reference_renderer_from_the_session_at_rest_and_in_a_drag() {
     use super::renderer_tests::report;
     use luxforge_core::{Renderer, RendererReason};
-    use luxforge_ui::photo_surface::GpuStageState;
+    use luxforge_gpu::GpuStageState;
     let catalog = catalog("notice-reference");
     let (mut editor, _, _) = real_photo(&catalog);
     deliver_until(&mut editor, "the first frame", |editor| {
@@ -489,7 +489,7 @@ fn gpu_preview_the_picture_at_rest_is_labelled_the_reference_while_its_programs_
 #[test]
 fn gpu_preview_a_warm_up_is_listed_while_it_runs_and_recorded_once_it_ends() {
     use super::gpu_warm::{WARM_UP_KIND, WARM_UP_LABEL};
-    use luxforge_ui::photo_surface::WarmUpFigures;
+    use luxforge_gpu::WarmUpFigures;
     let catalog = catalog("warm-up");
     let (mut editor, _, _) = real_photo(&catalog);
     let log = super::testing::attach_log(&mut editor);

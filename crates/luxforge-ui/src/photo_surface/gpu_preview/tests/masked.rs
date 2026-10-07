@@ -589,8 +589,7 @@ fn a_growing_block_writes_its_new_chunks_and_draws_them() {
             assert_eq!(pixel[..3], [code; 3], "pixel {index}");
         }
     };
-    let written =
-        |pipeline: &PhotoPipeline| pipeline.figures.preview.block_words.load(Ordering::Acquire);
+    let written = |pipeline: &PhotoPipeline| pipeline.figures.preview.block_counters().2;
     let mut values: Vec<f32> = (0..40)
         .map(|column| (column % 3 == 0) as u8 as f32)
         .collect();

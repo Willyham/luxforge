@@ -18,7 +18,7 @@ impl Raster {
             .checked_mul(u64::from(height))
             .and_then(|n| n.checked_mul(4))
             .ok_or_else(|| Error::resource_limit("image dimensions overflow"))?;
-        if pixels > luxforge_raw::MAX_FRAME_BYTES {
+        if pixels > crate::render::limits::MAX_FRAME_BYTES {
             return Err(Error::resource_limit("evaluated image exceeds 512 MiB"));
         }
         usize::try_from(pixels)

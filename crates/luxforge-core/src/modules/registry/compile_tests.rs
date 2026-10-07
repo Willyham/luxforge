@@ -809,6 +809,10 @@ const BOUND_EFFECT: &str = "test.bound.effect";
 struct Named(String);
 
 impl crate::PointwiseColor for Named {
+    fn identity(&self) -> crate::OperationIdentity {
+        crate::OperationIdentity::new("test.modules/registry/compile_tests.rs.Named", [])
+    }
+
     fn apply_row(&self, _: u32, _: u32, _: &mut [[f32; 3]]) {}
     fn is_finite(&self) -> bool {
         true

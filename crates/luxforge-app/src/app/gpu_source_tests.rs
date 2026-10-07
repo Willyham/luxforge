@@ -18,9 +18,8 @@ use luxforge_core::{
     ProxyBounds, ProxyCoverage, ProxyPlan, Recipe, RenderContext, RenderOptions, RenderSource,
     SourceImage, gpu_fit_plan, qualification, render,
 };
-use luxforge_ui::photo_surface::{
-    AxisCoverage, Derivation, GpuBoundary, GpuSource, Reduction,
-    gpu_preview::qualification as qualification_ui,
+use luxforge_gpu::{
+    AxisCoverage, Derivation, GpuBoundary, GpuSource, Reduction, qualification as qualification_gpu,
 };
 use std::sync::Arc;
 
@@ -274,7 +273,7 @@ fn a_reduced_boundary_is_the_cpu_box_downscale_within_a_code() {
     let table = luxforge_core::colour::srgb::decode_table();
     let code_of = |value: f32| {
         (0..=255u8).find(|code| {
-            qualification_ui::held(table[usize::from(*code)]).to_bits() == value.to_bits()
+            qualification_gpu::held(table[usize::from(*code)]).to_bits() == value.to_bits()
         })
     };
     for recipe in [
@@ -307,7 +306,7 @@ fn a_reduced_boundary_is_the_cpu_box_downscale_within_a_code() {
         for (index, (texel, pixel)) in gpu.chunks_exact(8).zip(&reference).enumerate() {
             for channel in 0..3 {
                 let value =
-                    qualification_ui::half_value([texel[2 * channel], texel[2 * channel + 1]]);
+                    qualification_gpu::half_value([texel[2 * channel], texel[2 * channel + 1]]);
                 let code = code_of(value).unwrap_or_else(|| {
                     panic!("texel {index}, channel {channel}: {value} is no code's value")
                 });
@@ -320,7 +319,7 @@ fn a_reduced_boundary_is_the_cpu_box_downscale_within_a_code() {
                 texels += 1;
             }
             assert_eq!(
-                qualification_ui::half_value([texel[6], texel[7]]),
+                qualification_gpu::half_value([texel[6], texel[7]]),
                 1.0,
                 "opaque"
             );

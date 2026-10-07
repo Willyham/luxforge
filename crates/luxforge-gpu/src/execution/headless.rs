@@ -16,8 +16,8 @@
 //! Built only with the crate's `qualification` feature, as [`super::qualification`] is: everything
 //! here blocks the calling thread on the GPU, which no surface of the desktop does, and waits for
 //! the compile thread through the test base's one hang-bounded wait, which the feature brings in.
-use super::super::{PhotoPipeline, SurfaceSlots};
 use super::{GpuFallback, GpuPlan, GpuRest, GpuSource, answered};
+use crate::{Executor, State};
 use std::sync::{Arc, mpsc};
 
 /// A device of this host's default adapter at `limits`, its queue and the adapter's description,
@@ -83,15 +83,15 @@ pub struct Drawn {
 pub struct HeadlessSurface {
     device: wgpu::Device,
     queue: wgpu::Queue,
-    pipeline: PhotoPipeline,
-    surface: SurfaceSlots,
+    pipeline: Executor,
+    surface: State,
 }
 
 impl HeadlessSurface {
     /// A surface on `device`, its pipeline drawing to an sRGB target as the desktop's does and
     /// counting into figures of its own.
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
-        let pipeline = PhotoPipeline::with_figures(
+        let pipeline = Executor::with_figures(
             device,
             queue,
             wgpu::TextureFormat::Bgra8UnormSrgb,
@@ -285,7 +285,7 @@ impl HeadlessSurface {
     /// [`Self::ticks`] through `slots`, which the caller releases.
     fn ticks_through(
         &mut self,
-        slots: &mut SurfaceSlots,
+        slots: &mut State,
         source: &GpuSource,
         plans: &[(GpuPlan, Option<super::GpuChange>)],
     ) -> Result<Vec<std::time::Duration>, GpuFallback> {

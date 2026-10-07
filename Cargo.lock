@@ -2068,6 +2068,7 @@ dependencies = [
  "luxforge-cli",
  "luxforge-core",
  "luxforge-evidence",
+ "luxforge-gpu",
  "luxforge-input",
  "luxforge-net",
  "luxforge-reference",
@@ -2078,6 +2079,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "wgpu",
 ]
 
 [[package]]
@@ -2101,6 +2103,7 @@ dependencies = [
  "image",
  "kamadak-exif",
  "luxforge-core",
+ "luxforge-gpu-types",
  "luxforge-jpeg",
  "luxforge-process",
  "luxforge-raw",
@@ -2130,6 +2133,22 @@ dependencies = [
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "luxforge-gpu"
+version = "0.0.0"
+dependencies = [
+ "bytemuck",
+ "half",
+ "luxforge-gpu-types",
+ "luxforge-reference",
+ "luxforge-testbase",
+ "wgpu",
+]
+
+[[package]]
+name = "luxforge-gpu-types"
+version = "0.0.0"
 
 [[package]]
 name = "luxforge-input"
@@ -2227,10 +2246,11 @@ dependencies = [
 name = "luxforge-ui"
 version = "0.0.0"
 dependencies = [
- "bytemuck",
  "half",
  "iced",
  "iced_wgpu",
+ "luxforge-gpu",
+ "luxforge-gpu-types",
  "luxforge-process",
  "luxforge-reference",
  "luxforge-testbase",

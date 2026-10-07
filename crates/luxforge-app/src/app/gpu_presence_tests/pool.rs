@@ -10,7 +10,7 @@ use luxforge_core::{
     BASIC_EFFECT, Component, ComponentMode, GpuAnswer, GpuPlanRequest, Layer, LinearImage,
     LinearSettings, Mask, ModuleRegistry, PRESENCE_EFFECT, PreviewSource, Recipe, gpu_plan,
 };
-use luxforge_ui::photo_surface::{GpuPlan, gpu_preview::qualification::boundary};
+use luxforge_gpu::{GpuPlan, qualification::boundary};
 use serde_json::{Value, json};
 
 /// A mask named `name` of one feathered radial centred at `(x, y)` of the stage.

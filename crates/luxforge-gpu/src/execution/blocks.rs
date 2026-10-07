@@ -31,7 +31,7 @@ use std::{
 
 /// A blocks buffer's words as last packed, and the blocks they were packed from.
 #[derive(Default)]
-pub(super) struct WrittenBlocks {
+pub struct WrittenBlocks {
     /// Every block of the last update, in packing order, at least one word: what the buffer holds
     /// once that update's ranges are written. Empty before the first.
     words: Vec<u32>,
@@ -53,29 +53,29 @@ struct Source {
 
 /// What one update makes the buffer write, and in tests what it compared and copied.
 #[derive(Debug, Default)]
-pub(super) struct Update {
+pub struct Update {
     /// The chunks that changed, in order, adjacent ones merged: what the tick writes.
-    pub(super) ranges: Vec<Range<usize>>,
+    pub ranges: Vec<Range<usize>>,
     /// Whether the buffer's contents changed: a chunk, or its length.
-    pub(super) changed: bool,
+    pub changed: bool,
     /// Words of the tick's blocks compared with what the buffer held at their place.
-    #[cfg(test)]
-    pub(super) compared: u64,
+    #[cfg(any(test, feature = "qualification"))]
+    pub compared: u64,
     /// Words copied into what the buffer holds.
-    #[cfg(test)]
-    pub(super) copied: u64,
+    #[cfg(any(test, feature = "qualification"))]
+    pub copied: u64,
 }
 
 impl Update {
     /// The words the tick writes.
-    pub(super) fn written(&self) -> u64 {
+    pub fn written(&self) -> u64 {
         self.ranges.iter().map(|range| range.len() as u64).sum()
     }
 }
 
 /// The words a buffer of `steps`' blocks holds: every block's, at least one, as a buffer of no
 /// block words still holds one.
-pub(super) fn block_len(steps: &[GpuStep]) -> usize {
+pub fn block_len(steps: &[GpuStep]) -> usize {
     let mut len = 0;
     for step in steps {
         step.each_block(&mut |block| len += block.len());
@@ -91,13 +91,13 @@ fn hash_of(parts: impl Hash) -> u64 {
 
 impl WrittenBlocks {
     /// The words the buffer holds: every block of the last update's steps, in packing order.
-    pub(super) fn words(&self) -> &[u32] {
+    pub fn words(&self) -> &[u32] {
         &self.words
     }
 
     /// The buffer no longer holds what was written — new buffers, or a link's new input: the next
     /// update writes every chunk. The words stay readable until then.
-    pub(super) fn forget(&mut self) {
+    pub fn forget(&mut self) {
         self.forgotten = true;
     }
 
@@ -105,7 +105,7 @@ impl WrittenBlocks {
     /// are not the ones held at the same start; answers the chunks of `chunk` words that changed —
     /// `changed_ranges` of the old packing and the new, or every chunk once forgotten — and
     /// whether anything did.
-    pub(super) fn update(&mut self, steps: &[GpuStep], chunk: usize) -> Update {
+    pub fn update(&mut self, steps: &[GpuStep], chunk: usize) -> Update {
         let held = self.words.len();
         let len = block_len(steps);
         self.words.resize(len, 0);
@@ -157,7 +157,7 @@ impl WrittenBlocks {
     }
 
     /// [`Self::update`], then the chunks that changed written into `buffer`.
-    pub(super) fn write(
+    pub fn write(
         &mut self,
         queue: &wgpu::Queue,
         buffer: &wgpu::Buffer,
@@ -178,7 +178,7 @@ impl WrittenBlocks {
     /// The key of the blocks' contents: each non-empty block's length and the hash of its words, in
     /// packing order. Blocks of other contents give another key, and the same contents the same
     /// one, whichever allocations hold them; a block's words are hashed once.
-    pub(super) fn key(&mut self) -> u64 {
+    pub fn key(&mut self) -> u64 {
         if let Some(key) = self.key {
             return key;
         }
@@ -215,7 +215,7 @@ fn copy_over(
         let next = ((at / chunk + 1) * chunk).min(end);
         let new = &block[at - start..next - start];
         let differs = next > held || {
-            #[cfg(test)]
+            #[cfg(any(test, feature = "qualification"))]
             {
                 update.compared += new.len() as u64;
             }
@@ -223,7 +223,7 @@ fn copy_over(
         };
         if differs {
             words[at..next].copy_from_slice(new);
-            #[cfg(test)]
+            #[cfg(any(test, feature = "qualification"))]
             {
                 update.copied += new.len() as u64;
             }

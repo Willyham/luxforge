@@ -13,8 +13,9 @@ use super::{
     testing::{attach_log, events, finish, let_go, logged, real_photo, run_commit, slide},
     *,
 };
+use luxforge_gpu::GpuFallback as SurfaceFallback;
 use luxforge_testbase::wait_until;
-use luxforge_ui::photo_surface::{DISSOLVE_DURATION, GpuFallback as SurfaceFallback};
+use luxforge_ui::photo_surface::DISSOLVE_DURATION;
 
 const ACTION: &str = "set-basic";
 const FIELD: &str = "exposure";

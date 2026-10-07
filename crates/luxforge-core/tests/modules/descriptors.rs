@@ -12,11 +12,50 @@
 //! cargo test -p luxforge-core --test modules -- --ignored generate_builtin_descriptor_snapshot
 //! ```
 
-use luxforge_core::{ModuleRegistry, capabilities::host::TASK_PREFIX};
+use luxforge_core::{
+    Availability, ModuleRegistry, RegistryOptions, capabilities::host::TASK_PREFIX,
+};
 use luxforge_testbase::paths;
 use luxforge_testkit::client::Owner;
 use serde_json::{Map, Value, json};
 use std::path::PathBuf;
+
+/// Exercise method resolution outside core: an inaccessible Provider method used to resolve
+/// through Deref and read the raw module's available descriptor.
+#[test]
+fn registry_availability_is_consistent_through_public_lookups() {
+    let disabled = ["luxforge.basic".to_owned()];
+    let registry = ModuleRegistry::assemble(&RegistryOptions {
+        disabled: &disabled,
+        ..RegistryOptions::default()
+    })
+    .unwrap();
+    let listed = registry
+        .descriptors()
+        .into_iter()
+        .find(|descriptor| descriptor.id == disabled[0])
+        .unwrap();
+    assert_eq!(
+        listed.availability,
+        Availability::Unavailable {
+            reason: "disabled by --disable-module".into(),
+        }
+    );
+    let module = registry.module(&disabled[0]).unwrap();
+    assert_eq!(module.descriptor(), listed);
+    for action in &listed.actions {
+        let (provider, declared) = registry.action(&action.id).unwrap();
+        assert_eq!(provider.descriptor(), listed);
+        assert_eq!(declared, action);
+    }
+    for effect in &listed.effects {
+        let (provider, declared) = registry.effect(&effect.id).unwrap();
+        assert_eq!(provider.descriptor(), listed);
+        assert_eq!(declared, effect);
+    }
+    // Raw hooks remain accessible deliberately; their descriptor is not the registry answer.
+    assert!((*module).descriptor().is_available());
+}
 
 fn snapshot_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))

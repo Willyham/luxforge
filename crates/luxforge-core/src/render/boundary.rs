@@ -38,30 +38,7 @@ use crate::modules::{ExactGeometry, Processing, Region};
 use std::borrow::Cow;
 use std::sync::Arc;
 
-/// How a boundary's texels are held: four little-endian half floats (`rgba16float`), or four
-/// little-endian `f32` (`rgba32float`), red, green, blue and an opaque alpha.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum BoundaryFormat {
-    /// A JPEG's byte path.
-    Half,
-    /// A developed RAW's linear path.
-    Float,
-}
-
-impl BoundaryFormat {
-    /// The format of the boundary a plan of the linear path, or of the byte path, holds.
-    pub fn of(linear: bool) -> Self {
-        if linear { Self::Float } else { Self::Half }
-    }
-
-    /// Bytes per texel.
-    pub const fn texel_bytes(self) -> usize {
-        match self {
-            Self::Half => 8,
-            Self::Float => 16,
-        }
-    }
-}
+pub use luxforge_gpu_types::BoundaryFormat;
 
 /// The most bytes one boundary may hold: 32 MP of half-float texels, 16 MP of `f32` ones (owner,
 /// 2026-10-02). A Fit stage is at most 8 MP, and a cropped stage's or a percentage zoom's window

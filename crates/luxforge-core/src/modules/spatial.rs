@@ -534,7 +534,7 @@ pub(crate) trait SpatialUnit: Send + Sync {
     /// the operation's input stage once and prepares each key once, so two units of the operation
     /// that declare the same key share one estimate, whatever their position and whatever else they
     /// describe; nothing is kept between frames. A coefficient that only [`Self::apply`] reads — an
-    /// amount, for most units — belongs in [`Self::describe`] and not here, so units that differ
+    /// amount, for most units — belongs in [`Self::identity`] and not here, so units that differ
     /// only in it still share their estimate.
     fn estimate_key(&self) -> Option<Cow<'static, str>> {
         None
@@ -603,10 +603,9 @@ pub(crate) trait SpatialUnit: Send + Sync {
     /// a non-finite parameter fails before a frame is touched.
     fn is_finite(&self) -> bool;
 
-    /// A short, stable description of this unit and its coefficients. The host compares compiled
-    /// operations by it, so two units that describe themselves identically must process
-    /// identically: write every coefficient exactly, with the shortest round-trip form (`{}`), and
-    /// never rounded to a display precision.
+    /// Exact unit kind, coefficients and relevant stage state, without doing image work.
+    fn identity(&self) -> super::OperationIdentity;
+    /// A diagnostic description, independent of operation equality.
     fn describe(&self) -> String;
 }
 
@@ -709,11 +708,8 @@ impl SpatialOperation {
     }
 }
 
-/// Two operations are the same when their units describe themselves the same way in the same order
-/// and they are modulated by the same compiled mask: a trait object carries no structural identity,
-/// so the description is the comparison. A compiled mask is compared by allocation, exactly as
-/// [`ColorOperation`](crate::modules::ColorOperation) compares its own — conservative, because the
-/// coverage field has no cheaper identity and nothing in the host depends on the other answer.
+/// Equality compares exact unit identities in order and conservative compiled-mask allocation,
+/// as [`ColorOperation`](crate::modules::ColorOperation) does.
 impl PartialEq for SpatialOperation {
     fn eq(&self, other: &Self) -> bool {
         let masks = match (&self.mask, &other.mask) {
@@ -724,7 +720,7 @@ impl PartialEq for SpatialOperation {
         masks
             && self.units.len() == other.units.len()
             && std::iter::zip(&self.units, &other.units)
-                .all(|(left, right)| left.describe() == right.describe())
+                .all(|(left, right)| left.identity() == right.identity())
     }
 }
 
@@ -752,7 +748,7 @@ impl std::fmt::Debug for SpatialOperation {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use luxforge_raw::SPATIAL_TILE;
+    use crate::render::limits::SPATIAL_TILE;
 
     const STAGE: Stage = Stage {
         width: 1000,

@@ -1914,8 +1914,7 @@ fn a_crop_drafts_input_stage_is_planned_as_its_prefixs_picture_at_rest() {
             &owner,
             PreviewRequest::new(client, asset.clone())
                 .layers(count)
-                .proxy(bounds)
-                .gpu(),
+                .gpu_fit(bounds),
         )
         .expect("the input stage's job")
     };

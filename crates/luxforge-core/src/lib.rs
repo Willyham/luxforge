@@ -20,6 +20,7 @@ mod editor;
 mod error;
 /// JPEG export: capture metadata, the encoder and a publish that never replaces a file.
 mod export;
+mod file_metadata;
 pub mod flags;
 /// The index of the files Luxforge browses, beside the catalog.
 mod index;
@@ -65,8 +66,9 @@ pub use activity::ActivitySnapshot;
 pub use api::{
     ApiEvent, ApiFailure, ApiRequest, ApiResponse, ClientAuthority, ClientId, ClientSession,
     EventWake, EventsResult, JobMonitorStats, LocalServer, MASK_MODE, MaskOverlayColour,
-    MaskOverlayMode, OwnerHandle, PIXEL_READ_REQUIRED, POINTER_MODE, PreviewRequest, Renderer,
-    RendererReason, RendererRecord, WorkspaceState, schemas, serve_json_lines_with,
+    MaskOverlayMode, OwnerHandle, PIXEL_READ_REQUIRED, POINTER_MODE, PreviewRenderIntent,
+    PreviewRequest, PreviewSelection, PreviewStack, Renderer, RendererReason, RendererRecord,
+    WorkspaceState, schemas, serve_json_lines_with,
 };
 pub use artifacts::{ArtifactId, ArtifactTable, PreparedArtifact};
 pub use cancel::{Cancel, ProgressCounts};
@@ -94,20 +96,19 @@ pub use modules::{
     ActionControl, ActionDescriptor, ActionInput, ActionPlan, ActionRef, ActionStyle, Availability,
     BASIC_EFFECT, BoxRect, CONTROLS_EFFECT, CROP_EFFECT, CURVE_EFFECT, CanvasInteraction,
     CapabilityModule, ChoiceControl, ChoiceStyle, ColorControl, ColorOperation, ColorStyle,
-    CompileStage, Control, ControlVariant, Controls, ControlsModule, CropAspect, CropPayload,
-    CropStage, CurveBackground, CurveChannel, CurveControl, DETAIL_EFFECT, Edge, EffectDescriptor,
-    EffectStage, ExactGeometry, FieldPatch, FieldPatchModule, GPU_PROGRAMS, GroupControl,
-    IdentityKind, LENS_EFFECT, LOOK_EFFECT, LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE,
-    MAX_MASKED_SPATIAL_LAYERS, MIN_ANGLE, MIXER_EFFECT, ModuleDescriptor, ModuleLayout,
-    ModuleRegistry, NewLayer, NumberControl, NumberStyle, ORIENTATION_EFFECT, OutputRect,
-    PERSPECTIVE_EFFECT, PIXEL_EFFECT, PRESENCE_EFFECT, PROOF_GENERATE_PATH, PROOF_PALETTE,
-    PROOF_PALETTE_PATH, ParameterDescriptor, ParameterKind, PickerControl, PointwiseColor,
-    PresetsControl, Processing, Provider, QueryChoiceControl, QueryRef, RailDecoration,
-    RangeControl, RawModule, RawPayload, Region, RegistryOptions, Resample, ResetAction,
-    ResolvedControl, ResolvedReset, SamplingScale, SpatialOperation, Spec, Stage, StageContext,
-    StageQuestions, TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT, Values,
-    WhiteBalanceMode, check_parameters, check_value, gains_from_temperature_tint, guide_angle,
-    insertion_index_among, largest_with_ratio_inside, palette_bytes, resolve_control,
+    CompileStage, Control, ControlVariant, CropAspect, CropPayload, CropStage, CurveBackground,
+    CurveChannel, CurveControl, DETAIL_EFFECT, Edge, EffectDescriptor, EffectStage, ExactGeometry,
+    GPU_PROGRAMS, GroupControl, IdentityKind, LENS_EFFECT, LOOK_EFFECT, LayerEdit, LayerReport,
+    LayerUpdate, MAX_ANGLE, MAX_MASKED_SPATIAL_LAYERS, MIN_ANGLE, MIXER_EFFECT, ModuleDescriptor,
+    ModuleLayout, ModuleRegistry, NewLayer, NumberControl, NumberStyle, ORIENTATION_EFFECT,
+    OperationIdentity, OutputRect, PERSPECTIVE_EFFECT, PIXEL_EFFECT, PRESENCE_EFFECT,
+    PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH, ParameterDescriptor, ParameterKind,
+    PickerControl, PointwiseColor, PresetsControl, Processing, Provider, QueryChoiceControl,
+    QueryRef, RailDecoration, RangeControl, RawModule, RawPayload, Region, RegistryOptions,
+    Resample, ResetAction, ResolvedControl, ResolvedReset, SamplingScale, SpatialOperation, Stage,
+    StageContext, StageQuestions, TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT,
+    WhiteBalanceMode, check_parameters, check_value, controls_module, gains_from_temperature_tint,
+    guide_angle, insertion_index_among, largest_with_ratio_inside, palette_bytes, resolve_control,
     resolve_group_reset, temperature_tint_from_gains,
 };
 pub use modules::{OriginalContext, OriginalLayer, OriginalPreferences};
@@ -130,11 +131,12 @@ pub use render::gpu::{
     GpuLightInput, GpuLightPasses, GpuLightRestoration, GpuLightSweep, GpuMask, GpuOperation,
     GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest, GpuPlane, GpuPlaneFormat, GpuPlaneSize,
     GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuRest, GpuSpatial, GpuSpatialUnit,
-    GpuStaging, GpuSweep, GpuSweeps, GpuView, GpuWarmList, REDUCED_AFTER_BYTES, REST_SHARE_MAX,
-    REST_TILE_SIDES, REST_TILE_WORK, RestReduction, RestTile, RestTiles, STREAM_TILE_SIDES,
-    SWEEP_SPLIT_REACH, SWEEP_STAGE_TEXTURES, SourceBoundary, StreamPlan, TilePlan, anchored,
-    gpu_fit_plan, gpu_lights, gpu_plan, plan_read, plan_stream, plan_stream_light_sweeps,
-    plan_stream_sweeps, plan_stream_sweeps_at, rest_light_bytes, rest_slot_bytes,
+    GpuStaging, GpuSweep, GpuSweeps, GpuView, GpuWarmList, PreparedStream, REDUCED_AFTER_BYTES,
+    REST_SHARE_MAX, REST_TILE_SIDES, REST_TILE_WORK, RestReduction, RestTile, RestTiles,
+    STREAM_TILE_SIDES, SWEEP_SPLIT_REACH, SWEEP_STAGE_TEXTURES, SourceBoundary, StreamPlan,
+    TilePlan, anchored, gpu_fit_plan, gpu_lights, gpu_plan, plan_read, plan_stream,
+    plan_stream_light_sweeps, plan_stream_sweeps, plan_stream_sweeps_at, rest_light_bytes,
+    rest_slot_bytes,
 };
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{

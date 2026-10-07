@@ -4,8 +4,10 @@
 //! output codes the CPU's quantizer gives every value.
 use super::qualification::{Qualifier, boundary, held};
 use super::*;
+use luxforge_gpu_types::PlaneSize as PlaneExtent;
 
 fn encoding() -> &'static OutputEncoding {
+    luxforge_gpu::qualification::install_reference_encoding();
     output_encoding().expect("the test reference's tables")
 }
 
@@ -693,7 +695,7 @@ fn lf_test_show(rgb: vec3<f32>, at: vec2<i32>, words: u32, block: u32, planes: u
         program: GpuProgram::new("lf_test", program),
         planes: vec![GpuPlane {
             format: PlaneFormat::Colour,
-            size: PlaneSize::Reduced(1),
+            size: PlaneSize::Extent(PlaneExtent::Reduced(1)),
         }],
         passes: vec![GpuPass {
             kernel: std::borrow::Cow::Borrowed("lf_test_copy"),

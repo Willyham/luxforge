@@ -1,5 +1,5 @@
-//! The one conversion from the core's GPU plan (`luxforge_core::GpuPlan`) to the photo surface's
-//! plain data (`luxforge_ui::photo_surface::GpuPlan`), which the surface evaluates over a held
+//! The one conversion from the core's GPU plan (`luxforge_core::GpuPlan`) to the GPU backend's
+//! device data (`luxforge_gpu::GpuPlan`), which the surface evaluates over a held
 //! boundary (`docs/design/gpu-preview.md`).
 //!
 //! The core plans whole stages and names every program by its static WGSL text; the surface takes
@@ -34,20 +34,18 @@
 //! [`install_output_encoding`] hands them over once at start.
 use luxforge_core::{
     ComponentMode, CoordinateGrid, GpuDescription, GpuGeometry, GpuLightInput, GpuMask,
-    GpuOperation, GpuPassShape, GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuSpatial, Region,
-    Stage,
+    GpuOperation, GpuPosition, GpuSpatial, Region, Stage,
 };
-use luxforge_ui::photo_surface::{
+use luxforge_gpu::{
     Coverage, CoverageComponent, CoverageMode, GpuBoundary, GpuPlan, GpuProgram, GpuRegion,
-    GpuStep, GpuTail, MaskedColour, PositionMap, TexelMap,
-    gpu_preview::{self, PassShape, PlaneFormat, PlaneSize, light::LightInput},
+    GpuStep, GpuTail, MaskedColour, PlaneSize, PositionMap, TexelMap, light::LightInput,
 };
 use std::{borrow::Cow, sync::Arc};
 
 /// The core's output quantizer and decode table, which the surface encodes its output and
 /// quantizes a JPEG's segment boundaries with.
-pub(crate) fn output_encoding() -> luxforge_ui::photo_surface::OutputEncoding {
-    luxforge_ui::photo_surface::OutputEncoding {
+pub(crate) fn output_encoding() -> luxforge_gpu::OutputEncoding {
+    luxforge_gpu::OutputEncoding {
         thresholds: *luxforge_core::colour::srgb::output_thresholds(),
         decoded: *luxforge_core::colour::srgb::decode_table(),
     }
@@ -56,17 +54,7 @@ pub(crate) fn output_encoding() -> luxforge_ui::photo_surface::OutputEncoding {
 /// Hand the surface [`output_encoding`], once for the process; until it has, no GPU preview pass
 /// compiles. Whether the surface holds the core's tables.
 pub(crate) fn install_output_encoding() -> bool {
-    luxforge_ui::photo_surface::install_output_encoding(output_encoding())
-}
-
-/// The core's boundary format as the surface's: half floats on the byte path, `f32` on the linear.
-pub(crate) fn boundary_format(
-    format: luxforge_core::BoundaryFormat,
-) -> luxforge_ui::photo_surface::BoundaryFormat {
-    match format {
-        luxforge_core::BoundaryFormat::Half => luxforge_ui::photo_surface::BoundaryFormat::Half,
-        luxforge_core::BoundaryFormat::Float => luxforge_ui::photo_surface::BoundaryFormat::Float,
-    }
+    luxforge_gpu::install_output_encoding(output_encoding())
 }
 
 /// Why the surface cannot run a plan the core answered. Each is a stage the surface does not
@@ -106,8 +94,8 @@ impl Unrunnable {
 /// The largest coordinate an `f32` holds exactly, and with it every integer a position map adds.
 const EXACT_F32: i64 = 1 << 24;
 
-/// `plan` as the surface's plain data over `boundary`, which holds the plan's whole boundary
-/// stage: [`surface_plan_at`] at the stage's origin.
+/// Qualification's CPU-held boundary through the same lowering production uses for a derived one.
+#[cfg(test)]
 pub(crate) fn surface_plan(
     plan: &luxforge_core::GpuPlan,
     boundary: GpuBoundary,
@@ -122,6 +110,7 @@ pub(crate) fn surface_plan(
 /// (`plan.boundary.continues_run`) must hold that run's unclamped value; the half floats of a
 /// [`GpuBoundary`] do. A warp's tail is drawn through `grid`, the coordinate grid the boundary's
 /// job computed for the plan's geometry, converted once ([`WarpGrid`]).
+#[cfg(test)]
 pub(crate) fn surface_plan_at(
     plan: &luxforge_core::GpuPlan,
     boundary: GpuBoundary,
@@ -131,7 +120,7 @@ pub(crate) fn surface_plan_at(
     surface_plan_over(plan, boundary, origin, grid, None)
 }
 
-/// [`surface_plan_at`], at a percentage zoom drawing only `region` of the plan's output stage at
+/// Lower a plan over `boundary`, at a percentage zoom drawing only `region` of its output stage at
 /// full scale: the tail's output is the rectangle, whose first pixel the surface offsets each pixel
 /// by, and with no tail the held window must hold the rectangle, which the content pass reads at
 /// one texel a pixel. `None` draws the whole output stage.
@@ -264,7 +253,7 @@ pub(crate) fn sweep_plan_over(
             match (&light.input, sweep.reads) {
                 (GpuLightInput::Source, _) => surface_light(light, k),
                 (GpuLightInput::Stage { key }, Some(texture)) if sweep.lights.contains(held) => {
-                    Ok(gpu_preview::light::GpuLight {
+                    Ok(luxforge_gpu::light::GpuLight {
                         stage: (light.stage.width, light.stage.height),
                         steps: vec![light_step(light, k)?],
                         input: LightInput::Stage {
@@ -275,7 +264,7 @@ pub(crate) fn sweep_plan_over(
                 }
                 // A first sweep reads no stage texture: a light sweep's, which reads the earlier
                 // lights its steps read kept, computed by the light sweeps before it.
-                (GpuLightInput::Stage { key }, None) => Ok(gpu_preview::light::GpuLight {
+                (GpuLightInput::Stage { key }, None) => Ok(luxforge_gpu::light::GpuLight {
                     stage: (light.stage.width, light.stage.height),
                     steps: vec![light_step(light, k)?],
                     input: LightInput::Kept {
@@ -458,11 +447,11 @@ fn light_of(plan: &luxforge_core::GpuPlan, spatial: &GpuSpatial) -> Option<u32> 
         .map(|k| u32::try_from(k).expect("a light index"))
 }
 
-/// The light links of `plan` as the surface runs them before its steps ([`gpu_preview::light`]),
+/// The light links of `plan` as the surface runs them before its steps ([`luxforge_gpu::light`]),
 /// light `k` the `k`-th ([`surface_light`]).
 pub(crate) fn surface_lights(
     plan: &luxforge_core::GpuPlan,
-) -> Result<Vec<gpu_preview::light::GpuLight>, Unrunnable> {
+) -> Result<Vec<luxforge_gpu::light::GpuLight>, Unrunnable> {
     plan.lights
         .iter()
         .enumerate()
@@ -481,13 +470,13 @@ pub(crate) fn surface_lights(
 pub(crate) fn surface_light(
     light: &luxforge_core::GpuLight,
     k: u32,
-) -> Result<gpu_preview::light::GpuLight, Unrunnable> {
+) -> Result<luxforge_gpu::light::GpuLight, Unrunnable> {
     if let GpuLightInput::Stage { key } = &light.input {
         let stand_in = match light.stand_in.as_deref() {
             Some(stand_in) => Some(Box::new(surface_light(stand_in, k)?)),
             None => None,
         };
-        return Ok(gpu_preview::light::GpuLight {
+        return Ok(luxforge_gpu::light::GpuLight {
             stage: (light.stage.width, light.stage.height),
             steps: vec![light_step(light, k)?],
             input: LightInput::Kept {
@@ -504,7 +493,7 @@ pub(crate) fn surface_light(
         operation_steps(operation, &mut steps)?;
     }
     steps.push(light_step(light, k)?);
-    Ok(gpu_preview::light::GpuLight {
+    Ok(luxforge_gpu::light::GpuLight {
         stage: (light.stage.width, light.stage.height),
         steps,
         input: LightInput::Source,
@@ -544,7 +533,7 @@ pub(crate) fn light_sweep_as_sweep(
 pub(crate) fn light_sweep_light(
     plan: &luxforge_core::GpuPlan,
     sweep: &luxforge_core::GpuLightSweep,
-) -> Result<gpu_preview::light::GpuLight, Unrunnable> {
+) -> Result<luxforge_gpu::light::GpuLight, Unrunnable> {
     let light = plan
         .lights
         .get(sweep.light)
@@ -552,7 +541,7 @@ pub(crate) fn light_sweep_light(
     let GpuLightInput::Stage { key } = &light.input else {
         return Err(Unrunnable::Light { layer: light.layer });
     };
-    Ok(gpu_preview::light::GpuLight {
+    Ok(luxforge_gpu::light::GpuLight {
         stage: (light.stage.width, light.stage.height),
         steps: vec![light_step(light, 0)?],
         input: LightInput::Kept {
@@ -610,7 +599,7 @@ pub(crate) fn spatial_step(
         })?),
     };
     let index = |value: usize| u32::try_from(value).expect("a plane, word or apply index");
-    Ok(GpuStep::Spatial(Box::new(gpu_preview::GpuSpatial {
+    Ok(GpuStep::Spatial(Box::new(luxforge_gpu::GpuSpatial {
         program: GpuProgram {
             entry: Cow::Borrowed(spatial.program.entry),
             source: Cow::Borrowed(spatial.program.source),
@@ -621,45 +610,32 @@ pub(crate) fn spatial_step(
             .planes
             .iter()
             .enumerate()
-            .map(|(index, plane)| gpu_preview::GpuPlane {
-                format: match plane.format {
-                    GpuPlaneFormat::Colour => PlaneFormat::Colour,
-                    GpuPlaneFormat::Scalar => PlaneFormat::Scalar,
-                    GpuPlaneFormat::Pair => PlaneFormat::Pair,
-                    GpuPlaneFormat::Quad => PlaneFormat::Quad,
-                    GpuPlaneFormat::HalfScalar => PlaneFormat::HalfScalar,
-                    GpuPlaneFormat::HalfPair => PlaneFormat::HalfPair,
-                },
-                size: match (plane.size, light) {
-                    (_, Some((read, k))) if read == index => PlaneSize::Light(k),
-                    (GpuPlaneSize::Reduced(s), _) => PlaneSize::Reduced(s),
-                    (GpuPlaneSize::Fixed { width, height }, _) => {
-                        PlaneSize::Fixed { width, height }
-                    }
+            .map(|(index, plane)| luxforge_gpu::GpuPlane {
+                format: plane.format,
+                size: match light {
+                    Some((read, k)) if read == index => PlaneSize::Light(k),
+                    _ => PlaneSize::Extent(plane.size),
                 },
             })
             .collect(),
         passes: spatial
             .passes
             .iter()
-            .map(|pass| gpu_preview::GpuPass {
+            .map(|pass| luxforge_gpu::GpuPass {
                 kernel: Cow::Borrowed(pass.kernel),
                 inputs: pass.inputs.iter().map(|&plane| index(plane)).collect(),
                 output: index(pass.output),
                 words: index(pass.words),
                 source: index(pass.source),
                 reads_source: pass.reads_source,
-                shape: match pass.shape {
-                    GpuPassShape::Texels { span } => PassShape::Texels { span },
-                    GpuPassShape::Workgroup => PassShape::Workgroup,
-                },
+                shape: pass.shape,
                 unit: index(pass.unit),
             })
             .collect(),
         applies: spatial
             .applies
             .iter()
-            .map(|apply| gpu_preview::GpuApply {
+            .map(|apply| luxforge_gpu::GpuApply {
                 function: Cow::Borrowed(apply.function),
                 planes: apply.planes.iter().map(|&plane| index(plane)).collect(),
                 words: index(apply.words),
@@ -892,7 +868,7 @@ mod tests {
         let stage = plans[0].boundary.stage;
         let boundary = || {
             let texels = Arc::new(vec![0u8; (stage.width * stage.height * 8) as usize]);
-            let format = luxforge_ui::photo_surface::BoundaryFormat::Half;
+            let format = luxforge_gpu::BoundaryFormat::Half;
             GpuBoundary::new(texels, stage.width, stage.height, 1, format).expect("a boundary")
         };
         let tails: Vec<GpuTail> = plans

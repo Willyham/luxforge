@@ -6,7 +6,7 @@ use super::{
     testing::{attach_log, events, finish, let_go, logged, real_photo, run_commit, slide},
     *,
 };
-use luxforge_ui::photo_surface::GpuStageState;
+use luxforge_gpu::GpuStageState;
 
 const ACTION: &str = "set-basic";
 const FIELD: &str = "exposure";

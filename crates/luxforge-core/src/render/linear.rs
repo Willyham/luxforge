@@ -45,7 +45,7 @@ pub(super) fn output_len(width: u32, height: u32) -> Result<usize, Error> {
     let bytes = pixels
         .checked_mul(4)
         .ok_or_else(|| Error::resource_limit("linear output byte length overflow"))?;
-    if bytes > luxforge_raw::MAX_FRAME_BYTES {
+    if bytes > crate::render::limits::MAX_FRAME_BYTES {
         return Err(Error::resource_limit("linear output exceeds 512 MiB"));
     }
     usize::try_from(bytes).map_err(|_| Error::resource_limit("linear output is not addressable"))
@@ -1132,6 +1132,7 @@ pub(super) fn boundary_pass(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::limits::SPATIAL_TILE;
     use crate::render::{
         SpatialMode, parallel,
         spatial::Tiling,
@@ -1145,7 +1146,6 @@ mod tests {
         Layer, Recipe, RenderContext, RenderOptions, SnapshotId,
         modules::{CropPayload, ModuleRegistry},
     };
-    use luxforge_raw::SPATIAL_TILE;
     use luxforge_reference::srgb as srgb_ref;
     use luxforge_testbase::Distribution;
 

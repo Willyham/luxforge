@@ -2,7 +2,7 @@
 //! the supported files by extension, and never macOS packages, other applications' caches and
 //! previews, hidden entries, system folders or Luxforge's own directories. The walk, `disk.folders`
 //! and `index.add-folder` share these rules, so what can be added is what can be listed.
-use crate::SourceTag;
+use crate::{SourceTag, file_metadata::hidden};
 use std::{
     ffi::OsStr,
     fs::Metadata,
@@ -159,33 +159,6 @@ pub(crate) fn kind_of(name: &OsStr) -> Option<SourceTag> {
         .iter()
         .find(|(supported, _)| extension.eq_ignore_ascii_case(supported))
         .map(|(_, kind)| *kind)
-}
-
-/// Whether an entry is hidden: its name starts with a dot, or the platform marks it hidden (the
-/// `UF_HIDDEN` flag on macOS, as `~/Library` carries; the hidden attribute on Windows).
-pub(crate) fn hidden(name: &OsStr, metadata: &Metadata) -> bool {
-    name.as_encoded_bytes().first() == Some(&b'.') || platform_hidden(metadata)
-}
-
-#[cfg(target_os = "macos")]
-fn platform_hidden(metadata: &Metadata) -> bool {
-    use std::os::macos::fs::MetadataExt;
-    /// `UF_HIDDEN` (`sys/stat.h`).
-    const UF_HIDDEN: u32 = 0x0000_8000;
-    metadata.st_flags() & UF_HIDDEN != 0
-}
-
-#[cfg(windows)]
-fn platform_hidden(metadata: &Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    /// `FILE_ATTRIBUTE_HIDDEN`.
-    const HIDDEN: u32 = 0x2;
-    metadata.file_attributes() & HIDDEN != 0
-}
-
-#[cfg(not(any(target_os = "macos", windows)))]
-fn platform_hidden(_: &Metadata) -> bool {
-    false
 }
 
 fn has_extension(name: &OsStr, extensions: &[&str]) -> bool {

@@ -41,8 +41,8 @@ use luxforge_core::{
     Cancel, GpuAnswer, GpuPreview, GpuView, PreviewRequest, ProxyBounds, Region, RenderOptions,
     tiles::TileService,
 };
+use luxforge_gpu::{GpuChange, GpuPlan};
 use luxforge_testkit::client::call;
-use luxforge_ui::photo_surface::{GpuChange, GpuPlan};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -235,8 +235,7 @@ fn tick_plan(
     let (bounds, region) = view;
     let mut request = PreviewRequest::new(opened.client, opened.asset.clone())
         .draft(draft_id)
-        .proxy(bounds)
-        .gpu();
+        .gpu_fit(bounds);
     if let Some(rect) = region {
         request = request.gpu_region(rect, 1.0);
     }
@@ -273,12 +272,12 @@ fn cancel(opened: &Opened, draft: &Value) {
 /// The drag's ticks at `view`: `count + 1` plans, the first drawn untimed.
 #[allow(clippy::too_many_arguments)]
 fn ticks(
-    qualifier: &luxforge_ui::photo_surface::gpu_preview::qualification::Qualifier,
-    surface: &mut luxforge_ui::photo_surface::gpu_preview::headless::HeadlessSurface,
+    qualifier: &luxforge_gpu::qualification::Qualifier,
+    surface: &mut luxforge_gpu::headless::HeadlessSurface,
     opened: &Opened,
     stack: &Stack,
     recipe: &luxforge_core::Recipe,
-    gpu: &luxforge_ui::photo_surface::GpuSource,
+    gpu: &luxforge_gpu::GpuSource,
     stage: (u32, u32),
     view: View,
     count: usize,
@@ -349,7 +348,7 @@ fn ticks(
     let charged = qualifier
         .charged_bytes(&converted[0].0)
         .map_err(|reason| format!("{reason:?}"))?;
-    let budget = luxforge_ui::photo_surface::gpu_preview::GPU_PREVIEW_BUDGET;
+    let budget = luxforge_gpu::GPU_PREVIEW_BUDGET;
     let size = converted[0]
         .0
         .region
@@ -378,9 +377,9 @@ fn ticks(
 
 /// The picture at rest at Fit: an untimed draw, then `runs` timed.
 fn rest(
-    surface: &mut luxforge_ui::photo_surface::gpu_preview::headless::HeadlessSurface,
+    surface: &mut luxforge_gpu::headless::HeadlessSurface,
     evaluation: &luxforge_core::Evaluation,
-    gpu: &luxforge_ui::photo_surface::GpuSource,
+    gpu: &luxforge_gpu::GpuSource,
     runs: usize,
 ) -> Result<Value, String> {
     let rest = luxforge_core::qualification::rest_plan(evaluation, GpuView::Fit(fit_bounds()))
@@ -481,7 +480,7 @@ fn reference_ticks(
 /// What one stack measured, every part a gap naming why where it could not be.
 #[allow(clippy::too_many_arguments)]
 fn measure(
-    qualifier: &luxforge_ui::photo_surface::gpu_preview::qualification::Qualifier,
+    qualifier: &luxforge_gpu::qualification::Qualifier,
     exporter: Option<&GpuTiles>,
     stack: &Stack,
     source: &CorpusSource,

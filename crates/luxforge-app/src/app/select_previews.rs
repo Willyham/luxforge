@@ -25,12 +25,12 @@
 //! - **Decoding.** One [`Latest`] worker, started with the first decode and blocked while idle,
 //!   takes the newest plan — every wanted file whose answer names a preview not held at the size
 //!   the cell needs, cells on screen first, at most [`MAX_PLAN`] — and decodes them one by one
-//!   through [`decode_preview`], handing each over as it lands, at most [`DECODED_WAITING`] waiting.
+//!   through [`decoded_handles::decode`], handing each over as it lands, at most [`DECODED_WAITING`] waiting.
 //!   A plan with a decode the running one lacks supersedes it after the decode it is making, so
 //!   the cells scrolled away are never decoded; a plan that only shrank lets the running one go on.
 //! - **Handles.** A decoded preview becomes its handle here, once, on the update loop, while it is
-//!   still the preview the item's newest answer names (its `key`): the one `Handle::from_rgba` in
-//!   the desktop. The handle keeps its id while it is held, so its texture is uploaded once; the
+//!   still the preview the item's newest answer names (its `key`), through
+//!   [`decoded_handles::image_handle`]. The handle keeps its id while it is held, so its texture is uploaded once; the
 //!   grid borrows it ([`GridImages`]), which also says when a photograph's held preview is
 //!   `approximate` (a rendered tier made through an approximate proxy), for the cell's footer to
 //!   say so, as the loupe does. A better stage — the embedded preview after the thumbnail —
@@ -43,19 +43,19 @@
 //!   when Select is left and the worker blocks idle; dropping the cache (the catalog closing with
 //!   the window) ends the worker. A view's new revision drops nothing it holds: its previews stay,
 //!   the least recently wanted evicted first.
-use crate::app::{
-    tasks::{call_detailed, owner_work},
-    waker::Signal,
-};
+use super::decoded_handles::{self, Adoption, Limits, Usage};
+use super::preview_read::{self, Refusal};
+use crate::app::{tasks::owner_work, waker::Signal};
 use crate::state::select::RowCache;
 use iced::{Subscription, Task, widget::image::Handle};
+#[cfg(test)]
+use luxforge_core::DecodedPreview;
 use luxforge_core::{
-    AssetId, ClientId, DecodedPreview, ErrorKind, OwnerHandle,
+    AssetId, ClientId, OwnerHandle,
     catalog_types::{
         FileId, PreviewAnswer, PreviewInfo, PreviewItem, PreviewPriority, PreviewState,
         PreviewTier, RowItem,
     },
-    decode_preview,
     latest::{Latest, Running},
 };
 use luxforge_ui::GridLayout;
@@ -159,13 +159,6 @@ pub(crate) struct ReadAnswers {
     pub(crate) serial: u64,
     pub(crate) revision: u64,
     pub(crate) answers: Vec<(Item, Result<PreviewAnswer, Refusal>)>,
-}
-
-/// Why the owner refused a file's preview: its error code and message.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Refusal {
-    pub(crate) code: String,
-    pub(crate) message: String,
 }
 
 /// What the grid wants now: the cells on screen before those near it.
@@ -277,14 +270,8 @@ impl From<PreviewInfo> for Source {
     }
 }
 
-/// A decoded preview's image handle, made once.
-struct Held {
-    key: String,
-    handle: Handle,
-    /// The side it was decoded to fit.
-    side: u32,
-    bytes: usize,
-}
+/// A decoded preview's shared handle, whose source key is its metadata.
+type Held = decoded_handles::Held<String>;
 
 /// One item's reads, its preview and its handle.
 struct Entry {
@@ -330,11 +317,8 @@ pub(crate) struct Decode {
     pub(crate) side: u32,
 }
 
-/// One decode's pixels, or why it failed.
-pub(crate) struct Decoded {
-    pub(crate) decode: Decode,
-    pub(crate) result: Result<DecodedPreview, String>,
-}
+/// One decode's pixels, or why it failed, using the shared bounded handoff.
+pub(crate) type Decoded = decoded_handles::Decoded<Decode>;
 
 /// The decodes wanted now, cells on screen first.
 struct Plan(Vec<Decode>);
@@ -354,16 +338,11 @@ impl DecodeWorker {
             move |plan: Plan, running: &Running<'_, Plan, ()>| {
                 for decode in plan.0 {
                     let result =
-                        match decode_preview(&decode.path, decode.side, running.superseded()) {
-                            // A newer plan wants other cells first, or nobody wants any: it runs next.
-                            Err(error) if error.kind == ErrorKind::Cancelled => return None,
-                            result => result.map_err(|error| error.to_string()),
-                        };
+                        decoded_handles::decode(&decode.path, decode.side, running.superseded())?;
                     // Waits while `DECODED_WAITING` wait; fails once the cache is gone.
-                    if sender.send(Decoded { decode, result }).is_err() {
+                    if !(Decoded { decode, result }).handoff(&sender, wake) {
                         return None;
                     }
-                    wake();
                 }
                 None
             },
@@ -383,8 +362,7 @@ pub(crate) struct SelectPreviews {
     /// Raised by every change of what is wanted; an entry wanted now was stamped with it.
     tick: u64,
     budget: usize,
-    bytes: usize,
-    handles: usize,
+    usage: Usage,
     /// The read batch in flight: one owner task at a time.
     reading: Option<u64>,
     serial: u64,
@@ -419,8 +397,8 @@ impl fmt::Debug for SelectPreviews {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SelectPreviews")
             .field("entries", &self.entries.len())
-            .field("handles", &self.handles)
-            .field("bytes", &self.bytes)
+            .field("handles", &self.usage.handles)
+            .field("bytes", &self.usage.bytes)
             .field("reading", &self.reading)
             .finish_non_exhaustive()
     }
@@ -445,22 +423,8 @@ pub(crate) fn read(owner: &OwnerHandle, client: ClientId, batch: ReadBatch) -> R
         .reads
         .into_iter()
         .map(|(file, priority)| {
-            let params = json!({
-                "item": file.preview(),
-                "tier": PreviewTier::Grid,
-                "priority": priority,
-            });
-            let answer = call_detailed(owner, client, "preview.read", params)
-                .map_err(|error| Refusal {
-                    code: error.code,
-                    message: error.message,
-                })
-                .and_then(|answer| {
-                    serde_json::from_value::<PreviewAnswer>(answer).map_err(|error| Refusal {
-                        code: "protocol".into(),
-                        message: error.to_string(),
-                    })
-                });
+            let answer =
+                preview_read::read(owner, client, &file.preview(), PreviewTier::Grid, priority);
             (file, answer)
         })
         .collect();
@@ -490,8 +454,7 @@ impl SelectPreviews {
             on_screen: HashSet::new(),
             tick: 0,
             budget,
-            bytes: 0,
-            handles: 0,
+            usage: Usage::default(),
             reading: None,
             serial: 0,
             woken: Arc::new(AtomicBool::new(false)),
@@ -546,8 +509,7 @@ impl SelectPreviews {
         self.wanted = Wanted::default();
         self.on_screen.clear();
         self.tick += 1;
-        self.bytes = 0;
-        self.handles = 0;
+        self.usage = Usage::default();
         self.planned.clear();
         self.woken.store(false, Ordering::Relaxed);
         self.woken_while_reading = false;
@@ -576,7 +538,7 @@ impl SelectPreviews {
                     && entry
                         .held
                         .as_ref()
-                        .is_some_and(|held| held.key == source.key)
+                        .is_some_and(|held| held.key() == source.key)
             })
         })
     }
@@ -645,8 +607,8 @@ impl SelectPreviews {
                 .count()
         };
         json!({
-            "handles": self.handles,
-            "bytes": self.bytes,
+            "handles": self.usage.handles,
+            "bytes": self.usage.bytes,
             "budget": self.budget,
             "side": self.wanted.side,
             "visible": self.wanted.visible.len(),
@@ -783,8 +745,7 @@ impl SelectPreviews {
                 None => {
                     entry.source = None;
                     if let Some(held) = entry.held.take() {
-                        self.bytes -= held.bytes;
-                        self.handles -= 1;
+                        self.usage.remove(held.bytes);
                     }
                 }
             }
@@ -826,28 +787,20 @@ impl SelectPreviews {
         let Some(entry) = self.entries.get_mut(&decode.file) else {
             return;
         };
-        // An older stage, or the preview of a file that changed since: a newer answer replaced it.
-        if entry
-            .source
-            .as_ref()
-            .is_none_or(|source| source.key != decode.key)
-        {
-            return;
-        }
-        let preview = match result {
-            Ok(preview) => preview,
-            Err(_) => {
+        let preview = match decoded_handles::accept(
+            entry.source.as_ref().map(|source| source.key.as_str()),
+            entry.held.as_ref(),
+            &decode.key,
+            decode.side,
+            result,
+        ) {
+            Adoption::Stale | Adoption::Reused => return,
+            Adoption::Failed => {
                 entry.failed = Some(decode.key);
                 return;
             }
+            Adoption::Ready(preview) => preview,
         };
-        if entry
-            .held
-            .as_ref()
-            .is_some_and(|held| held.key == decode.key && held.side >= decode.side)
-        {
-            return;
-        }
         let replaced = entry.held.as_ref().map(|held| held.bytes);
         let bytes = preview.rgba.len();
         if !self.make_room(&decode.file, bytes, replaced) {
@@ -860,22 +813,9 @@ impl SelectPreviews {
         let Some(entry) = self.entries.get_mut(&decode.file) else {
             return;
         };
-        let DecodedPreview {
-            width,
-            height,
-            rgba,
-        } = preview;
-        let held = Held {
-            key: decode.key,
-            handle: Handle::from_rgba(width, height, rgba),
-            side: decode.side,
-            bytes,
-        };
-        match entry.held.replace(held) {
-            Some(old) => self.bytes -= old.bytes,
-            None => self.handles += 1,
-        }
-        self.bytes += bytes;
+        let held = Held::new(decode.key, decode.side, preview);
+        let old = entry.held.replace(held).map(|held| held.bytes);
+        self.usage.replace(old, bytes);
     }
 
     /// Evict until `incoming` bytes fit — replacing `replaced` bytes of `file`'s own — within the
@@ -883,42 +823,37 @@ impl SelectPreviews {
     /// margin cell only for a cell on screen. Evicts nothing and answers `false` when they cannot
     /// fit so.
     fn make_room(&mut self, file: &Item, incoming: usize, replaced: Option<usize>) -> bool {
-        let mut bytes = self.bytes - replaced.unwrap_or(0) + incoming;
-        let mut handles = self.handles + usize::from(replaced.is_none());
-        let over = |bytes: usize, handles: usize| bytes > self.budget || handles > MAX_HANDLES;
-        if !over(bytes, handles) {
+        let limits = Limits {
+            bytes: self.budget,
+            handles: MAX_HANDLES,
+        };
+        if self.usage.fits_replacing(incoming, replaced, limits) {
             return true;
         }
         let for_screen = self.on_screen.contains(file);
         let mut candidates: Vec<(u64, &Item, usize)> = self
             .entries
             .iter()
-            .filter(|(held_file, entry)| {
-                *held_file != file
-                    && !self.on_screen.contains(*held_file)
-                    && (for_screen || entry.wanted_at != self.tick)
+            .filter(|(held, entry)| {
+                decoded_handles::may_evict(
+                    *held,
+                    file,
+                    self.on_screen.contains(*held),
+                    entry.wanted_at == self.tick,
+                    for_screen,
+                )
             })
-            .filter_map(|(held_file, entry)| {
-                Some((entry.wanted_at, held_file, entry.held.as_ref()?.bytes))
-            })
+            .filter_map(|(held, entry)| Some((entry.wanted_at, held, entry.held.as_ref()?.bytes)))
             .collect();
         candidates.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| item_order(a.1, b.1)));
-        let mut evict = 0;
-        for (_, _, held) in &candidates {
-            if !over(bytes, handles) {
-                break;
-            }
-            bytes -= held;
-            handles -= 1;
-            evict += 1;
-        }
-        if over(bytes, handles) {
+        let Some(evicted) = self.usage.evictions(
+            incoming,
+            replaced,
+            limits,
+            candidates.iter().map(|(_, key, bytes)| (*key, *bytes)),
+        ) else {
             return false;
-        }
-        let evicted: Vec<Item> = candidates[..evict]
-            .iter()
-            .map(|(_, item, _)| (*item).clone())
-            .collect();
+        };
         for evicted in &evicted {
             self.evict(evicted);
         }
@@ -931,8 +866,7 @@ impl SelectPreviews {
             return;
         };
         if let Some(held) = entry.held.take() {
-            self.bytes -= held.bytes;
-            self.handles -= 1;
+            self.usage.remove(held.bytes);
         }
         if entry.wanted_at != self.tick {
             self.entries.remove(file);
@@ -1032,7 +966,7 @@ impl SelectPreviews {
             if entry
                 .held
                 .as_ref()
-                .is_some_and(|held| held.key == source.key && held.side >= side)
+                .is_some_and(|held| held.matches(&source.key, side))
             {
                 continue;
             }

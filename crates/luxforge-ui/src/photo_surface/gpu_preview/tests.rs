@@ -70,391 +70,6 @@ pub(super) fn plan(boundary: &GpuBoundary, programs: Vec<GpuProgram>) -> GpuPlan
     }
 }
 
-// ---- Without a device -------------------------------------------------------------------------
-
-/// What a caller's tests check of every program it hands over: the program alone, against the
-/// prelude and the convention. The stage checks each program the same way before it compiles.
-#[test]
-fn a_step_is_checked_against_the_convention_on_its_own() {
-    // The core names its entries lf_<module>_<unit>, as the Basic exposure program does, with its
-    // helpers and constants after the entry.
-    let core_named = GpuProgram::new(
-        "lf_basic_exposure",
-        "const lf_basic_exposure_floor: f32 = 0.0;\n\
-         fn lf_basic_exposure_gain(words: u32) -> f32 { return lf_f32(words); }\n\
-         fn lf_basic_exposure(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) \
-         -> vec3<f32> {\n    return rgb * lf_basic_exposure_gain(words) + \
-         lf_basic_exposure_floor;\n}\n",
-    );
-    for program in [
-        identity(),
-        scale(0.5),
-        swap(true),
-        stripe(0.5, 4),
-        core_named,
-    ] {
-        validate_step(&GpuStep::colour(program.clone()))
-            .unwrap_or_else(|error| panic!("{}: {error}", program.entry));
-    }
-    let colour = |entry: &'static str, source: &'static str| {
-        validate_step(&GpuStep::colour(GpuProgram::new(entry, source))).unwrap_err()
-    };
-    let signature = "fn bad(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32)";
-    for (what, error, expected) in [
-        (
-            "a binding of its own",
-            colour(
-                "bad",
-                "@group(0) @binding(3) var<storage, read> bad_more: array<u32>;\n\
-                 fn bad(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> {\n\
-                 return rgb * f32(bad_more[0]);\n}\n",
-            ),
-            "binding, global variable",
-        ),
-        (
-            "a private global",
-            colour(
-                "bad",
-                "var<private> bad_state: f32;\n\
-                 fn bad(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> {\n\
-                 return rgb;\n}\n",
-            ),
-            "binding, global variable",
-        ),
-        (
-            "an entry point",
-            colour(
-                "bad",
-                "fn bad(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> {\n\
-                 return rgb;\n}\n\
-                 @compute @workgroup_size(1) fn bad_main() {}\n",
-            ),
-            "entry point",
-        ),
-        (
-            "a coverage signature for a colour step",
-            colour(
-                "bad",
-                "fn bad(pos: vec2<f32>, rgb: vec3<f32>, words: u32, block: u32) -> f32 {\n\
-                 return 1.0;\n}\n",
-            ),
-            signature,
-        ),
-        (
-            "no entry function",
-            colour("bad", "fn bad_helper(x: f32) -> f32 { return x; }\n"),
-            "names no function",
-        ),
-        (
-            "a parse error",
-            colour(
-                "bad",
-                "fn bad(rgb: vec3<f32>) -> vec3<f32> { return rgb }\n",
-            ),
-            "expected",
-        ),
-        (
-            "a helper not named after its entry",
-            colour(
-                "bad",
-                "fn helper(x: f32) -> f32 { return x; }\n\
-                 fn bad(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> {\n\
-                 return rgb * helper(1.0);\n}\n",
-            ),
-            "does not start with its entry's name",
-        ),
-        (
-            "a constant not named after its entry",
-            colour(
-                "bad",
-                "const half_gain: f32 = 0.5;\n\
-                 fn bad(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> {\n\
-                 return rgb * half_gain;\n}\n",
-            ),
-            "does not start with its entry's name",
-        ),
-        (
-            "a named type",
-            colour(
-                "bad",
-                "struct bad_pair { a: f32, b: f32 }\n\
-                 fn bad(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> {\n\
-                 let p = bad_pair(1.0, 2.0);\n    return rgb * p.a;\n}\n",
-            ),
-            "declares the type",
-        ),
-        (
-            "an override",
-            colour(
-                "bad",
-                "override bad_gain: f32 = 1.0;\n\
-                 fn bad(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> {\n\
-                 return rgb * bad_gain;\n}\n",
-            ),
-            "override",
-        ),
-        (
-            "one of the surface's names",
-            colour("lf_fragment", ""),
-            "surface's own",
-        ),
-    ] {
-        assert!(error.contains(expected), "{what}: {error}");
-    }
-}
-
-#[test]
-fn assembly_includes_a_shared_program_once_and_refuses_what_cannot_be_chained() {
-    // Two layers of one unit: one source, two calls, each with its own base indices and its own
-    // position map.
-    let steps: Vec<GpuStep> = [scale(0.5), swap(true), scale(2.0)]
-        .into_iter()
-        .map(GpuStep::colour)
-        .collect();
-    let source = assemble(&steps).expect("an assembled shader");
-    assert_eq!(source.matches("fn scale(").count(), 1);
-    let call = |entry: &str, base: usize| {
-        let word = |k: usize| format!("lf_f32({}u)", base + 2 + k);
-        format!(
-            "rgb = {entry}(rgb, vec2<f32>({} * stage.x + {} * stage.y + {}, \
-             {} * stage.x + {} * stage.y + {}), lf_words[{base}u], lf_words[{}u]);",
-            word(0),
-            word(1),
-            word(2),
-            word(3),
-            word(4),
-            word(5),
-            base + 1
-        )
-    };
-    for (entry, base) in [("scale", 6), ("swap", 14), ("scale", 22)] {
-        assert!(
-            source.contains(&call(entry, base)),
-            "{entry} at {base}:\n{source}"
-        );
-    }
-    validate(&source).expect("the chain validates");
-    validate(&assemble(&[]).expect("no steps")).expect("an empty chain is the identity");
-
-    let refused = |program: GpuProgram| assemble(&[GpuStep::colour(program)]);
-    for (entry, why) in [
-        ("lf_boundary", "surface's own"),
-        ("lf_word", "surface's own"),
-        ("", "needs a name"),
-        ("9lives", "identifier"),
-        ("__hidden", "identifier"),
-        ("two words", "identifier"),
-    ] {
-        let error = refused(GpuProgram::new(entry.to_owned(), "")).unwrap_err();
-        assert!(error.contains(why), "{entry:?}: {error}");
-    }
-    let mut other = scale(0.5);
-    other.source = Cow::Borrowed("fn scale(rgb: vec3<f32>) -> vec3<f32> { return rgb; }\n");
-    let error = assemble(&[GpuStep::colour(scale(0.5)), GpuStep::colour(other)]).unwrap_err();
-    assert!(error.contains("different sources"), "{error}");
-}
-
-#[test]
-fn the_words_are_the_map_then_each_steps_bases_and_position_then_their_words() {
-    let boundary = GpuBoundary::from_linear(
-        crate::photo_surface::BoundaryFormat::Half,
-        1,
-        1,
-        1,
-        [[0.0; 4]],
-    )
-    .unwrap();
-    let mut chain = plan(&boundary, vec![scale(0.5), stripe(0.25, 3), swap(true)]);
-    chain.texels = TexelMap {
-        origin: [2.0, 5.0],
-        step: [1.0, 0.5],
-    };
-    // The stripe's pos is the stage turned a quarter, 40 rows down.
-    let turned = PositionMap {
-        a: 0,
-        b: -1,
-        tx: 40,
-        c: 1,
-        d: 0,
-        ty: 0,
-    };
-    chain.steps[1] = GpuStep::Colour {
-        program: stripe(0.25, 3),
-        position: turned,
-    };
-    let (mut words, mut blocks) = (Vec::new(), Vec::new());
-    pack(&chain, &mut words, &mut blocks);
-    let header = (MAP_WORDS + STEP_WORDS * 3) as u32;
-    let unmoved = [1f32, 0.0, 0.0, 0.0, 1.0, 0.0].map(f32::to_bits);
-    let mut expected = vec![
-        2f32.to_bits(),
-        5f32.to_bits(),
-        1f32.to_bits(),
-        0.5f32.to_bits(),
-        // A whole frame's output starts at the stage's first pixel.
-        0,
-        0,
-    ];
-    // scale: its word after the header, no block.
-    expected.extend([header, 0]);
-    expected.extend(unmoved);
-    // stripe: no words, the first two block words, its own map.
-    expected.extend([header + 1, 0]);
-    expected.extend([0f32, -1.0, 40.0, 1.0, 0.0, 0.0].map(f32::to_bits));
-    // swap: one word, after the stripe's block.
-    expected.extend([header + 1, 2]);
-    expected.extend(unmoved);
-    expected.extend([0.5f32.to_bits(), 1]);
-    assert_eq!(words, expected);
-    assert_eq!(blocks, [0.25f32.to_bits(), 3]);
-    // Every block empty still binds one word.
-    pack(&plan(&boundary, vec![identity()]), &mut words, &mut blocks);
-    assert_eq!(blocks, [0]);
-    // A region's output starts at its rectangle: in the boundary's texels with no tail, in the
-    // stage with one.
-    let mut region = plan(&boundary, vec![identity()]);
-    region.texels.origin = [3.0, 4.0];
-    region.region = Some(GpuRegion {
-        rect: [10, 20, 30, 40],
-        stage: (64, 64),
-        full_stage: (64, 64),
-    });
-    pack(&region, &mut words, &mut blocks);
-    assert_eq!(words[4..MAP_WORDS], [7, 16]);
-    region.steps.insert(
-        0,
-        GpuStep::Geometry(GpuTail::affine(
-            (20, 20),
-            [0, 0, 1, 1],
-            false,
-            [1.0, 0.0, 0.0, 0.0, 1.0, 0.0],
-        )),
-    );
-    pack(&region, &mut words, &mut blocks);
-    assert_eq!(words[4..MAP_WORDS], [10, 20]);
-}
-
-#[test]
-fn a_boundary_holds_exactly_its_half_float_texels() {
-    let boundary = GpuBoundary::from_linear(
-        crate::photo_surface::BoundaryFormat::Half,
-        2,
-        1,
-        9,
-        [[0.5, -2.0, 1.0e5, 1.0], [0.0, 1.0, 0.1, 1.0]],
-    )
-    .expect("two texels");
-    assert_eq!((boundary.size(), boundary.version()), ((2, 1), 9));
-    let halves: Vec<f32> = (**boundary.texels.as_ref().expect("its texels"))
-        .as_ref()
-        .chunks_exact(2)
-        .map(|bytes| half::f16::from_bits(u16::from_le_bytes([bytes[0], bytes[1]])).to_f32())
-        .collect();
-    assert_eq!(
-        halves,
-        [
-            0.5,
-            -2.0,
-            f32::INFINITY,
-            1.0,
-            0.0,
-            1.0,
-            half::f16::from_f32(0.1).to_f32(),
-            1.0
-        ]
-    );
-    assert!(
-        GpuBoundary::from_linear(
-            crate::photo_surface::BoundaryFormat::Half,
-            2,
-            1,
-            1,
-            [[0.0; 4]]
-        )
-        .is_none(),
-        "too few"
-    );
-    assert!(
-        GpuBoundary::from_linear(
-            crate::photo_surface::BoundaryFormat::Half,
-            1,
-            1,
-            1,
-            [[0.0; 4]; 2]
-        )
-        .is_none(),
-        "too many"
-    );
-    let half = crate::photo_surface::BoundaryFormat::Half;
-    let float = crate::photo_surface::BoundaryFormat::Float;
-    assert!(GpuBoundary::new(Arc::new(vec![0u8; 15]), 2, 1, 1, half).is_none());
-    assert!(GpuBoundary::new(Arc::new(vec![0u8; 16]), 2, 1, 1, half).is_some());
-    assert!(GpuBoundary::new(Arc::new(vec![0u8; 16]), 2, 1, 1, float).is_none());
-    assert!(GpuBoundary::new(Arc::new(vec![0u8; 32]), 2, 1, 1, float).is_some());
-    assert!(GpuBoundary::new(Arc::new(Vec::<u8>::new()), 0, 0, 1, half).is_none());
-}
-
-/// An `rgba32float` boundary holds every value as the `f32` it is, a near-black one's sign and a
-/// value past the half range included, sixteen bytes a texel.
-#[test]
-fn a_float_boundary_holds_its_values_exactly() {
-    let values = [[-3.0e-8, 1.0e5, 0.1, 1.0], [2.5e-9, -0.0, 7.0, 1.0]];
-    let boundary =
-        GpuBoundary::from_linear(crate::photo_surface::BoundaryFormat::Float, 2, 1, 4, values)
-            .expect("two texels");
-    assert_eq!(boundary.bytes(), 32);
-    let held: Vec<u32> = (**boundary.texels.as_ref().expect("its texels"))
-        .as_ref()
-        .chunks_exact(4)
-        .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-        .collect();
-    let expected: Vec<u32> = values
-        .iter()
-        .flatten()
-        .map(|value| value.to_bits())
-        .collect();
-    assert_eq!(held, expected);
-}
-
-#[test]
-fn the_budget_refuses_an_allocation_past_it_and_names_itself() {
-    let figures = Figures::default();
-    figures.budget.store(100, Ordering::Release);
-    figures.charge(60).expect("within the budget");
-    assert_eq!(
-        figures.charge(41),
-        Err(GpuFallback::BudgetExceeded {
-            requested: 41,
-            in_use: 60,
-            budget: 100
-        })
-    );
-    assert_eq!(figures.in_use(), 60, "a refusal charges nothing");
-    figures.charge(40).expect("exactly the budget");
-    figures.discharge(100);
-    assert_eq!((figures.in_use(), figures.peak()), (0, 100));
-    assert_eq!(
-        GpuFallback::BudgetExceeded {
-            requested: 0,
-            in_use: 0,
-            budget: 0
-        }
-        .as_str(),
-        "budget-exceeded"
-    );
-}
-
-#[test]
-fn a_device_without_fragment_storage_or_an_srgb_target_has_no_stage() {
-    let srgb = wgpu::TextureFormat::Bgra8UnormSrgb;
-    assert!(supported(&wgpu::Limits::default(), srgb));
-    assert!(!supported(&wgpu::Limits::downlevel_webgl2_defaults(), srgb));
-    assert!(!supported(
-        &wgpu::Limits::default(),
-        wgpu::TextureFormat::Bgra8Unorm
-    ));
-}
-
 // ---- On a headless device ---------------------------------------------------------------------
 
 /// A device of this host's default adapter, or `None` after printing the skip.
@@ -1016,14 +631,14 @@ fn texture_bytes(texture: &wgpu::Texture) -> u64 {
 /// What `slot` holds, measured from its resources themselves: its boundary, output, placement
 /// uniform, words and blocks; each earlier link's intermediate, words, blocks, kept planes and
 /// parameters; the last link's kept planes and parameters; and the pool's textures, once.
-fn held_bytes(slot: &GpuSlot) -> u64 {
-    let planes = |spatial: Option<&SpatialSlot>| {
+fn held_bytes(slot: &luxforge_gpu::qualification::SlotView<'_>) -> u64 {
+    let planes = |spatial: Option<&luxforge_gpu::qualification::SpatialView<'_>>| {
         spatial.map_or(0, |spatial| {
             let (kept, parameters) = spatial.planes.resources();
             kept.into_iter().map(texture_bytes).sum::<u64>() + parameters.size()
         })
     };
-    texture_bytes(&slot.boundary)
+    texture_bytes(slot.boundary)
         + texture_bytes(&slot.output.tiles[0].texture)
         + slot.output.tiles[0].uniform.size()
         + slot.words.buffer.size()
@@ -1032,7 +647,7 @@ fn held_bytes(slot: &GpuSlot) -> u64 {
             .chain
             .iter()
             .map(|link| {
-                texture_bytes(&link.texture)
+                texture_bytes(link.texture)
                     + link.words.buffer.size()
                     + link.blocks.buffer.size()
                     + planes(link.spatial.as_deref())
@@ -1067,7 +682,13 @@ fn every_allocation_is_charged_and_a_released_slot_returns_the_budget_to_zero() 
         &primitive(ID, Some(identity_plan.clone())),
     );
     // What the slot holds, measured from the resources themselves.
-    let held = held_bytes(pipeline.surfaces[&ID].gpu.as_ref().expect("a slot"));
+    let held = held_bytes(
+        &pipeline.surfaces[&ID]
+            .gpu
+            .as_ref()
+            .expect("a slot")
+            .inspection(),
+    );
     assert_eq!(held, SLOT_BYTES);
     assert_eq!(diagnostics(&pipeline, ID).gpu_preview_in_use_bytes, held);
     assert_eq!(diagnostics(&pipeline, ID).gpu_preview_scratch_bytes, 0);
@@ -1122,8 +743,12 @@ fn every_allocation_is_charged_and_a_released_slot_returns_the_budget_to_zero() 
             &mut pipeline,
             &primitive(ID, Some(chained.clone())),
         );
-        let slot = pipeline.surfaces[&ID].gpu.as_ref().expect("a slot");
-        let held = held_bytes(slot);
+        let slot = pipeline.surfaces[&ID]
+            .gpu
+            .as_ref()
+            .expect("a slot")
+            .inspection();
+        let held = held_bytes(&slot);
         let seen = diagnostics(&pipeline, ID);
         assert_eq!(seen.drawn_path, Some(DrawingPath::Gpu));
         assert_eq!(seen.gpu_preview_in_use_bytes, held);
@@ -1188,7 +813,7 @@ fn an_unchanged_plan_encodes_nothing_and_new_words_encode_one_pass() {
     );
     assert_codes(&drawn, &next_codes);
     assert_eq!(passes(&pipeline), 3);
-    assert_eq!(pipeline.figures.preview.compiles.load(Ordering::Relaxed), 1);
+    assert_eq!(pipeline.figures.preview.compiles(), 1);
 }
 
 /// No adapter able to run the stage: the frame is the CPU's, named, and nothing is charged.
@@ -1214,7 +839,7 @@ fn without_an_adapter_for_the_stage_the_frame_is_the_cpus_and_says_so() {
         assert_eq!(seen.drawn_full_version, Some(1));
         assert_eq!(seen.gpu_preview_in_use_bytes, 0);
     }
-    assert_eq!(pipeline.figures.preview.compiles.load(Ordering::Relaxed), 0);
+    assert_eq!(pipeline.figures.preview.compiles(), 0);
 }
 
 /// A launch that refused the stage (`--no-gpu-render`): the capability check answers unavailable
@@ -1230,7 +855,10 @@ fn a_refused_stage_answers_unavailable_and_every_frame_is_the_cpus() {
     };
     let target = wgpu::TextureFormat::Bgra8UnormSrgb;
     let mut refused = PhotoPipeline::with_stage(&device, &queue, target, Arc::default(), true);
-    assert!(refused.gpu.support.is_none(), "nothing of the stage exists");
+    assert!(
+        refused.gpu.inspection().support.is_none(),
+        "nothing of the stage exists"
+    );
     let (boundary, codes) = boundary_with_codes(1);
     let gesture = primitive(ID, Some(plan(&boundary, vec![identity()])));
     for _ in 0..2 {
@@ -1242,7 +870,7 @@ fn a_refused_stage_answers_unavailable_and_every_frame_is_the_cpus() {
         assert_eq!(seen.drawn_full_version, Some(1));
         assert_eq!(seen.gpu_preview_in_use_bytes, 0);
     }
-    assert_eq!(refused.figures.preview.compiles.load(Ordering::Relaxed), 0);
+    assert_eq!(refused.figures.preview.compiles(), 0);
     let mut allowed = own_pipeline(&device, &queue);
     assert_eq!(
         allowed.figures.preview.stage_state(),
@@ -1298,7 +926,7 @@ fn a_destroyed_devices_callback_names_the_loss() {
     device.destroy();
     wait_until("the lost callback", || {
         let _ = device.poll(wgpu::PollType::Poll);
-        pipeline.gpu.lost.load(Ordering::Acquire)
+        pipeline.gpu.inspection().lost.load(Ordering::Acquire)
     });
     let (boundary, _) = boundary_with_codes(1);
     let mut surface = pipeline.new_surface();
@@ -1313,7 +941,7 @@ fn a_destroyed_devices_callback_names_the_loss() {
     assert_eq!(surface.gpu_outcome, Some(Err(GpuFallback::DeviceLost)));
     assert!(surface.gpu.is_none());
     assert_eq!(pipeline.figures.preview.in_use(), 0);
-    assert_eq!(pipeline.figures.preview.compiles.load(Ordering::Relaxed), 0);
+    assert_eq!(pipeline.figures.preview.compiles(), 0);
 }
 
 /// A program that does not compile, an entry name the surface keeps, or two programs claiming
@@ -1370,11 +998,14 @@ fn a_failed_pipeline_makes_the_frame_the_cpus_and_is_not_compiled_again() {
             assert_eq!(seen.gpu_preview_in_use_bytes, 0, "{what}");
         }
         assert_eq!(
-            pipeline.figures.preview.compiles.load(Ordering::Relaxed),
+            pipeline.figures.preview.compiles(),
             index as u64 + 1,
             "{what} is compiled once"
         );
-        let message = pipeline.gpu.failure(&failed.steps).expect("a kept failure");
+        let message = pipeline
+            .gpu
+            .failure_message(&failed.steps)
+            .expect("a kept failure");
         eprintln!("{test}: {what}: {message}");
     }
     assert_codes(
@@ -1898,7 +1529,7 @@ fn a_boundary_arrival_measured() {
     }
     // The caller lets its copy go once the surface holds the boundary, which its slot keeps.
     assert_eq!(
-        boundary.texels.as_ref().map(Arc::strong_count),
+        boundary.texel_owners(),
         Some(1),
         "nothing but the caller's copy holds the texels"
     );
