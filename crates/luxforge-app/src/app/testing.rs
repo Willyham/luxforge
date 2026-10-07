@@ -86,6 +86,9 @@ pub(crate) fn boot_with(config: Config) -> (Editor, iced::Task<Message>, PathBuf
         std::process::id(),
         REQUEST_NUMBER.fetch_add(1, Ordering::Relaxed)
     ));
+    // Off the host's mount table: a card another process mounts meanwhile, such as the core's
+    // disk-image tests attach, would be listed by this catalog, its listing running on the board.
+    luxforge_core::OwnerHandle::read_no_host_mounts(&catalog);
     let (owner, join) = start_owner(&catalog, &config);
     let (editor, startup) = Editor::new(Boot {
         owner,
