@@ -134,6 +134,7 @@ impl Held {
 
 /// The prepared source of the photograph on screen as the photo surface holds it on the GPU
 /// (`docs/design/gpu-preview.md`, "The GPU source"), and what the desktop knows of it.
+#[derive(Clone)]
 struct HeldSource {
     identity: ProxyIdentity,
     /// The content stage it fills, which a cut addresses and a reduction covers.
@@ -1006,6 +1007,7 @@ struct AtRest {
 /// drawn as its After side, and handed back to the photograph when Compare ends, so that stack is
 /// drawn again at once, before its own job plans it.
 struct Retained {
+    source: Option<HeldSource>,
     at_rest: Option<AtRest>,
     rest: Option<HeldRest>,
 }
@@ -2475,13 +2477,63 @@ impl Editor {
     /// Compare begins: the GPU picture of the stack on screen — its view plan and its picture at
     /// rest in tiles — is retained, to be drawn as Compare's After side, and the photograph's
     /// surface waits for the Before's own committed job to plan its own.
+    /// The retained GPU picture covers the complete After view without a reference frame.
+    pub(crate) fn gpu_compare_can_retain(&self) -> bool {
+        let whole = match self.session.preview.view.zoom {
+            luxforge_core::Zoom::Fit => true,
+            luxforge_core::Zoom::Percent { value } => value < 100.0,
+        };
+        // Comparison owns another picture slot and Before may need another RAW development.
+        // Reserve two more copies of the current charge plus staging headroom. A stack near
+        // the shared budget keeps the reference After frame for allocation fallback.
+        let figures = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
+        let headroom = figures
+            .gpu_preview_in_use_bytes
+            .saturating_mul(3)
+            .saturating_add(64 << 20)
+            <= self.gpu_budget();
+        // The executor holds one prepared source. Before uses as-shot RAW gains; a changed
+        // development needs the exact After raster, since its planes cannot stay resident
+        // alongside Before's. Historical selections also keep the reference fallback.
+        let shared_source = self.at_current()
+            && self.document.state.as_ref().is_some_and(|state| {
+                state
+                    .asset
+                    .source
+                    .uses_original_development(&state.current_entry.snapshot.recipe)
+                    .unwrap_or(false)
+            });
+        whole
+            && headroom
+            && shared_source
+            && self.gpu_preview_allowed().is_ok()
+            && super::gpu_settle::clip_flags(&self.session.workspace).is_none()
+            && (self
+                .gpu_rest_plan()
+                .is_some_and(|(plan, _)| plan.region.is_none())
+                || self.gpu_rest_handed().is_some())
+    }
+
     pub(crate) fn gpu_compare_begin(&mut self) {
         if self.gpu.compare.is_some() {
             return;
         }
+        // Only a shared source survives Before's preparation. Other comparisons already own
+        // an exact After raster; drop their old GPU plans so exit prepares fresh resources.
+        let shared_source = matches!(
+            self.document.compare_return,
+            Some(luxforge_core::HistorySelection::Current)
+        ) && self.document.state.as_ref().is_some_and(|state| {
+            state
+                .asset
+                .source
+                .uses_original_development(&state.current_entry.snapshot.recipe)
+                .unwrap_or(false)
+        });
         let retained = Retained {
-            at_rest: self.gpu.at_rest.take(),
-            rest: self.gpu.rest.take(),
+            source: self.gpu.source.clone().filter(|_| shared_source),
+            at_rest: self.gpu.at_rest.take().filter(|_| shared_source),
+            rest: self.gpu.rest.take().filter(|_| shared_source),
         };
         let detail = json!({
             "view_boundary": retained.at_rest.as_ref().map(|at_rest| at_rest.boundary.version()),
@@ -2503,7 +2555,18 @@ impl Editor {
         });
         self.gpu.at_rest = retained.at_rest;
         self.gpu.rest = retained.rest;
+        self.gpu.source = retained.source;
         self.event("gpu_compare_restored", || detail);
+    }
+
+    pub(crate) fn gpu_compare_source(&self) -> Option<&GpuSource> {
+        self.gpu_preview_allowed().ok()?;
+        self.gpu
+            .compare
+            .as_ref()?
+            .source
+            .as_ref()
+            .map(|source| &source.gpu)
     }
 
     /// Compare's After side on the GPU: the retained view plan, with its serial, where the view
@@ -2524,10 +2587,15 @@ impl Editor {
         else {
             return (None, None);
         };
-        let whole = match self.session.preview.view.zoom {
-            luxforge_core::Zoom::Fit => true,
-            luxforge_core::Zoom::Percent { value } => value < 100.0,
-        };
+        let whole = self
+            .presentation
+            .compare_after
+            .as_ref()
+            .is_some_and(|after| after.gpu_only)
+            || match self.session.preview.view.zoom {
+                luxforge_core::Zoom::Fit => true,
+                luxforge_core::Zoom::Percent { value } => value < 100.0,
+            };
         let plan = retained
             .at_rest
             .as_ref()

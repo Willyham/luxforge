@@ -163,6 +163,24 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         commit("rotated-100-radial-apply", MaskStep::Release)
             .masks(4)
             .percent(100.0),
+        quiet("handles-fit", ViewStep::Fit).fit(),
+        quiet("handles-hidden", script::Step::Key { key: "h".into() }),
+        quiet("handles-shown", script::Step::Key { key: "h".into() }),
+        quiet(
+            "adjustment-held",
+            script::SliderStep::new("set-basic", "exposure", [0.6]),
+        ),
+        quiet(
+            "adjustment-cancelled",
+            script::Step::Key {
+                key: script::KEY_ESCAPE.into(),
+            },
+        )
+        .no_draft(),
+        commit(
+            "adjustment-released",
+            script::SliderStep::new("set-basic", "exposure", [0.6]).release(),
+        ),
     ])
 }
 
@@ -311,6 +329,40 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         launch.at("rotated-100-radial-apply")?.state()["masks"]["selected"]
             != launch.at("rotated-100-radial-new")?.state()["masks"]["selected"],
         "Apply did not select the transformed newly created mask",
+    )?;
+    let hidden = launch.at("handles-hidden")?;
+    let shown = launch.at("handles-shown")?;
+    ensure(
+        hidden.state()["workspace"]["mask_handles"] == json!(false)
+            && shown.state()["workspace"]["mask_handles"] == json!(true),
+        "H did not toggle handles",
+    )?;
+    ensure(
+        hidden.state()["mask_overlay"]["effective"] == shown.state()["mask_overlay"]["effective"],
+        "H changed coverage visibility",
+    )?;
+    let a = hidden.image()?;
+    let b = shown.image()?;
+    let rect = shown.visible_photo()?;
+    let mut changed = 0_u64;
+    for y in rect[1]..rect[3] {
+        for x in rect[0]..rect[2] {
+            changed += u64::from(a.get_pixel(x, y) != b.get_pixel(x, y));
+        }
+    }
+    ensure(
+        changed > 4,
+        "H did not change the rendered gradient handles",
+    )?;
+    for name in ["adjustment-cancelled", "adjustment-released"] {
+        ensure(
+            launch.at(name)?.state()["mask_overlay"]["effective"] != json!("off"),
+            format!("{name} did not restore coverage"),
+        )?;
+    }
+    ensure(
+        launch.at("adjustment-held")?.state()["mask_overlay"]["effective"] == json!("off"),
+        "Held adjustment did not hide coverage",
     )?;
     checks.write(run.out(), SCENARIO, json!({"scope":"Native background Metal renderer readbacks and correlated target/history state; no scanout claim"}))
 }

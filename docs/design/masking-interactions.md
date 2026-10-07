@@ -121,6 +121,15 @@ armed brushes and held strokes. Both extra black presentations remain UI choices
 mode, `O` toggles thirds. Text capture and repeat/modifier rules remain those of the common keymap;
 Cmd/Ctrl+O is Open when creation allows it. No auxiliary modifier binding is added.
 
+`H` independently toggles gradient handles through `workspace.set {mask_handles}` (on by
+ default). Hidden handles are not hit targets; an unplaced or already-held gesture can finish.
+ Coverage, mask eyes and editing history are unaffected. Mapped outlines discard wholly
+ off-output arcs before subdivision so they cannot consume the visible arcs' bounded budget.
+
+While an adjustment control is held in Mask mode, effective coverage is Off. The stored mode
+stays unchanged; release and cancellation restore it, including the black presentations. Mask
+shape and brush gestures retain coverage. Both whole-photo and region overlays are suppressed.
+
 ## Capture bounds and the pointer
 
 The grid capture retains at most 16,384 distinct positions, the existing posted-input bound;
@@ -149,9 +158,9 @@ selection/disarming, O overrides, capture failures, exact candidate IDs/coverage
 completion fencing, pixel reuse and bound rerendering. Independent reference/exact-buffer tests
 remain the mask equation and source/history authority.
 
-`mask-interactions` is the dedicated 44-frame native regression: disjoint A/B selection, an old
+`mask-interactions` is the dedicated 49-frame native regression: disjoint A/B selection, an old
 armed brush put down on selection, live linear/radial/feathered retracing brush coverage versus
-commit, manual hiding during a new gradient, and placement under an 8° crop at Fit and 100%.
+commit, manual hiding during a new gradient, placement under an 8° crop at Fit and 100%, H handle visibility independent of coverage, and coverage suppression/restoration during adjustment hold, cancellation and release.
 Existing mask, viewport, clipping and history scenarios check the surrounding editor integration.
 The final quick and rendered tiers pass, including all 36 native scenarios. Dedicated masked
 Basic/Presence cancellation tests restore exact committed bytes, public sample answers, history
@@ -180,7 +189,7 @@ repair.
 | Creation owns unrelated controls; recovery stays available | Controller/state tests for masks, keys, history, presets, controls and Performance; correlated native draft/control state |
 | Selected mask/component, armed brush and visible coverage agree | Selection and delayed-result tests; disjoint native A/B pixels and subsequent stroke target |
 | Actual flow, feather, retracing, composition and commit coverage | Frozen independent mask-reference tests, exact candidate grids and native live/committed probes; no separate painted-path layer |
-| O/manual visibility, extra UI modes and hidden eyes | Key/controller tests, stored/effective state and native renderer captures |
+| O/manual visibility, H handles, adjustment hold/release/cancel, extra UI modes and hidden eyes | Key/controller tests, stored/effective state and native renderer captures |
 | Crop/rotation and percentage zoom | Content-map tests, transformed live-gradient captures and native viewport scenarios |
 | Cancellation, conflict, invalid capture and resource refusal | Actual-owner/worker tests and brush/range recovery scenarios; source/hash/history checks |
 | RAW development can continue after coverage work | Dedicated background native RAW coverage/redevelopment checks |

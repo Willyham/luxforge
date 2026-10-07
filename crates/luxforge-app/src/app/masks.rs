@@ -733,6 +733,14 @@ impl Editor {
                 Some(colour) => self.choose_mask_overlay_colour(colour),
                 None => Task::none(),
             },
+            MaskMessage::ToggleHandles => {
+                self.session.workspace.mask_handles = !self.session.workspace.mask_handles;
+                crate::app::tasks::workspace_task(
+                    self.owner.clone(),
+                    self.client,
+                    json!({"mask_handles": self.session.workspace.mask_handles}),
+                )
+            }
             MaskMessage::ToggleOverlay => {
                 let next = match self.effective_mask_overlay() {
                     MaskOverlayMode::Off => MaskOverlayMode::Tint,
@@ -1112,7 +1120,17 @@ impl Editor {
 
     /// Tool starts make coverage visible over an Off setting until an explicit visibility choice.
     /// This is local view state; choosing Off while drawing remains authoritative.
+    pub(crate) fn mask_adjustment_held(&self) -> bool {
+        self.mask_mode_active()
+            && self
+                .core_gesture()
+                .is_some_and(|gesture| gesture.slider().is_some() && !gesture.draft.released())
+    }
+
     pub(crate) fn effective_mask_overlay(&self) -> MaskOverlayMode {
+        if self.mask_adjustment_held() {
+            return MaskOverlayMode::Off;
+        }
         crate::state::masks::effective_overlay(
             self.mask_shape(),
             &self.mask_panel,

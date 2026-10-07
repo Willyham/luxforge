@@ -686,6 +686,9 @@ impl Editor {
         // change of drawing path wakes the desktop, whose next update derives the label again.
         let label_current = self.workspace.status.gpu_us == self.gpu_frame_us();
         let surfaces = self.surfaces();
+        if surfaces.comparison_waiting {
+            return false;
+        }
         let compare_ready = surfaces.comparison.is_none_or(|(after, _)| {
             // Compare's After side: the retained GPU picture once drawn — its picture at
             // rest in tiles, else its view plan's frame once evaluated — or the retained frame.
@@ -4082,7 +4085,9 @@ impl Editor {
             // wait for and is captured with its reason.
             Some(Message::Select(_)) => {
                 let task = self.dispatch(Message::Key(event, status));
-                if self.select_shown() {
+                if self.develop.state.folder_loading {
+                    self.await_develop();
+                } else if self.select_shown() {
                     self.await_step(Settle::Select);
                 } else {
                     self.capture_next_frame();

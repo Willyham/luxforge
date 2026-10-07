@@ -518,6 +518,9 @@ pub(crate) struct DevelopState {
     pub(crate) developing: Option<Developing>,
     /// The development set, while Develop has one.
     pub(crate) set: Option<DevelopSet>,
+    /// Selected catalog folder; disk/event browsing leaves it available for Develop.
+    pub(crate) folder_query: Option<luxforge_core::catalog_types::ViewQuery>,
+    pub(crate) folder_loading: bool,
     /// The filmstrip is collapsed (`Cmd+Option+F`).
     pub(crate) collapsed: bool,
     /// The photograph being switched to, until its exact render is on screen: its name, for the
@@ -555,6 +558,7 @@ pub(crate) struct StripModel {
 /// What the confirmation, Develop N, the filmstrip and the status bar draw.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct DevelopModel {
+    pub(crate) can_enter: bool,
     pub(crate) confirm: Option<ConfirmModel>,
     /// Develop N reads busy with the Develop's progress, `(done, total)`.
     pub(crate) busy: Option<(usize, usize)>,
@@ -586,6 +590,8 @@ pub(crate) fn derive(state: &DevelopState, progress: Option<f64>) -> DevelopMode
         }
     });
     DevelopModel {
+        can_enter: state.folder_query.is_some()
+            || state.set.as_ref().is_some_and(|set| !set.photos.is_empty()),
         confirm: state.confirm.as_ref().map(confirm_model),
         busy: state.developing.as_ref().map(|developing| {
             let total = developing.total as usize;
