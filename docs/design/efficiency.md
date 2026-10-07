@@ -1,6 +1,6 @@
 # CPU and memory efficiency
 
-Status: done, except the `dist` build profile, which the owner deferred. The owner accepted the scope and the decisions below on 2026-10-03. Every change is measured in [performance](../specs/performance.md#cpu-and-memory-efficiency-measured-on-the-m4) against the code before it, on the M4 in `release`, within the three hours the owner allotted on 2026-10-04; each paid for itself where measured, so none was reverted. The workloads that were not measured are listed there. The task plan is [efficiency](../../tasks/efficiency.json).
+Status: done, except the `dist` build profile, which the owner deferred. The owner accepted the scope and the decisions below on 2026-10-03. Every change is measured in [performance](../specs/performance.md#cpu-and-memory-efficiency-measured-on-the-m4) against the code before it, on the M4 in `release`, within the three hours the owner allotted on 2026-10-04; each paid for itself where measured, so none was reverted. The workloads that were not measured are listed there. The task plan is [efficiency](../../tasks/rendering/efficiency.json).
 
 ## Outcome
 

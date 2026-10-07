@@ -788,6 +788,8 @@ mod tests {
                 "set-detail.sharpen-detail",
                 "set-detail.sharpen-masking",
                 "set-detail.sharpening",
+                "set-look.amount",
+                "set-look.look",
                 "set-mixer.aqua-hue",
                 "set-mixer.aqua-luminance",
                 "set-mixer.aqua-saturation",

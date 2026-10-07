@@ -1,6 +1,6 @@
 # Lightroom import
 
-Status: decided, planned (2026-10-06); nothing is built. The owner decided all eleven questions on 2026-10-06 ([decided](#decided)) and asked for a task plan without authorizing implementation ([task plan](../../tasks/lightroom-import.json)). How close an imported photograph *looks* to Lightroom's rendering is the separate [Lightroom alignment](lightroom-alignment.md) design; this one needs it only to raise fidelity, never to function.
+Status: decided, planned (2026-10-06); nothing is built. The owner decided all eleven questions on 2026-10-06 ([decided](#decided)) and asked for a task plan without authorizing implementation ([task plan](../../tasks/lightroom/lightroom-import.json)). How close an imported photograph *looks* to Lightroom's rendering is the separate [Lightroom alignment](lightroom-alignment.md) design; this one needs it only to raise fidelity, never to function.
 
 ## Why
 

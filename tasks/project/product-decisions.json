@@ -3,7 +3,7 @@
   "plan_id": "product-decisions",
   "title": "Open product decisions",
   "objective": "Resolve the product questions that gate later roadmap phases, recording each answer in docs/decisions.md and the affected specification.",
-  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks are the open questions: storage/backup workflow, RAW recording-mode and quality priorities, the first external module use case, accepted performance workloads and budgets, the Presence, colour mixer and vignette defaults, and interactive-preview quality levels beyond the authorized baseline, and the GPU-first rendering questions left open by the owner's decision of 2026-10-04, and the UI themes questions left as recorded defaults by the owner's decisions of 2026-10-05, and the AI editing decisions of the 2026-10-04 proposal, taken on 2026-10-05, and the Lightroom import and Lightroom alignment proposals of 2026-10-06.",
+  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks are the open questions: storage/backup workflow, the first external module use case, accepted performance workloads and budgets, the Presence, colour mixer and vignette defaults, the GPU-first rendering questions left open by the owner's decisions of 2026-10-04 to 2026-10-06, the UI themes questions left as recorded defaults by the owner's decisions of 2026-10-05, and whether the Lightroom import and Lightroom alignment plans are authorized.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -59,68 +59,6 @@
     },
     {
       "id": "TASK-002",
-      "description": "Prioritize RAW work and define camera-specific quality expectations.",
-      "status": "ready",
-      "dependencies": [],
-      "extra_context": [
-        "RAW editing is implemented for the Nikon Z6, the Fujifilm X100VI and the supplied DJI Air 2S DNG, with neutral development as the initial direction; camera-look or Adobe matching is not selected (docs/decisions.md, Product and platform). Whether RAW precedes the tonal suite is settled by delivery, and the owner's private RAW manifest already feeds `raw-corpus`, `verify --manifest` and the `raw-editor` scenario.",
-        "Still open: which recording modes, firmware and controlled quality scenes to prioritise, how much camera JPEG or film-simulation matching matters beyond neutral, and whether lens correction, denoise or sharpening are essential (docs/decisions.md, Open product questions; docs/design/initial-raw.md, Remaining qualification and decisions). Bayer highlight latitude and the RAW memory budget have their own tasks in this plan.",
-        "The owner accepted this narrowing on 2026-09-28 (docs/decisions.md, \"Plan refresh\").",
-        "Decided 2026-10-05 (docs/decisions.md, RAW looks): new RAW photos start from a Luxforge Standard look on the neutral development, and matching the camera's embedded preview (tone and a global chroma gain, not film-simulation colour) is a setting. Film-simulation and Picture Control reproduction stays out of scope."
-      ],
-      "context_links": [
-        {
-          "kind": "file",
-          "label": "Owner decisions",
-          "target": "docs/decisions.md",
-          "relevance": "Distinguishes accepted scope from open questions."
-        },
-        {
-          "kind": "file",
-          "label": "Planning and gate rules",
-          "target": "tasks/README.md",
-          "relevance": "Defines local task plans, milestone boundaries and named outcome prerequisites."
-        },
-        {
-          "kind": "file",
-          "label": "Technical options",
-          "target": "docs/research/technical-options.md",
-          "relevance": "Records provisional stack alternatives and primary sources."
-        },
-        {
-          "kind": "file",
-          "label": "RAW qualification boundary",
-          "target": "docs/design/initial-raw.md",
-          "locator": "Remaining qualification and decisions",
-          "relevance": "The controlled-quality, DJI and resource items still open."
-        },
-        {
-          "kind": "file",
-          "label": "RAW coverage gaps",
-          "target": "fixtures/raw-coverage.json",
-          "relevance": "The recorded controlled-scene, detail, high-ISO, highlight and shadow gaps."
-        }
-      ],
-      "acceptance_criteria": [
-        "Record the real Nikon Z6 and Fujifilm X100VI recording modes, firmware and controlled scenes to prioritise, in the private RAW manifest and the coverage gaps in fixtures/raw-coverage.json.",
-        "Decide how important camera JPEG/film-simulation matching is beyond the neutral development direction.",
-        "Define baseline appearance/detail requirements and clarify whether lens correction, denoise or sharpening are essential to the first RAW slice.",
-        "Keep library reuse as the default and require measured support/performance evidence before a custom decoder proposal."
-      ],
-      "test_strategy": {
-        "approach": "manual",
-        "steps": [
-          "Discuss representative camera outputs and day-to-day use rather than infer modes from the model names.",
-          "Update milestone priority and fixture requirements without claiming any decoder benchmark has run."
-        ],
-        "commands": [],
-        "expected_results": [
-          "Keep library reuse as the default and require measured support/performance evidence before a custom decoder proposal."
-        ]
-      }
-    },
-    {
-      "id": "TASK-003",
       "description": "Choose the first external module use case and user-visible enablement/recovery behavior.",
       "status": "ready",
       "dependencies": [],
@@ -178,14 +116,14 @@
       }
     },
     {
-      "id": "TASK-004",
+      "id": "TASK-003",
       "description": "Prioritize performance workloads and settle user-visible responsiveness goals.",
       "status": "ready",
       "dependencies": [],
       "extra_context": [
         "Record workload priorities and measured native M4 conditions; proposed performance budgets require evidence and owner acceptance.",
         "Speed and lazy subsection editing within a full catalog are owner priorities. Avoid assuming binary splitting saves memory or latency.",
-        "Already accepted, and not reopened here: the slider-to-presented-frame target of 16 ms p95 with 32 ms acceptable (docs/decisions.md, Basic adjustments and histogram), shared working-memory budgets as targets that pace work rather than limits (Rendering memory), and the owner's 150 ms bound for the hold-`\\` compare that chose the second RAW development (Post-consolidation review). The RAW process memory budget has its own task in this plan."
+        "Already accepted, and not reopened here: the slider-to-presented-frame target of 16 ms p95 with 32 ms acceptable (docs/decisions.md, Basic adjustments and histogram), shared working-memory budgets as targets that pace work rather than limits (Rendering memory), and the owner's 150 ms bound for the hold-`\\` compare that chose the second RAW development (Post-consolidation review)."
       ],
       "context_links": [
         {
@@ -239,14 +177,14 @@
       }
     },
     {
-      "id": "TASK-005",
+      "id": "TASK-004",
       "description": "Refine the recorded defaults of the Presence, colour mixer and vignette proposals after reviewing the delivered work.",
       "status": "ready",
       "dependencies": [],
       "extra_context": [
         "The design records a default for every proposal so the plan can run without further input: Presence as the section name for Texture, Clarity and Dehaze; colour before spatial before geometry before finish with the mixer after Basic; three property groups for the mixer; one luminance-neutral vignette style; full-resolution drafts for spatial sliders with misses reported; the declared point-sample cost through a spatial layer.",
         "Implementation was authorized on 2026-09-22 on the recorded defaults. A proposal is not a decision until the owner records it; until then the delivered behaviour follows the default and the design keeps calling it a proposal.",
-        "JPEG spatial precision was decided on 2026-09-30: 16-bit encoded hand-off between spatial frames and the next colour run or spatial unit, delivered with the Detail plan (docs/design/presence-mixer-vignette.md)."
+        "JPEG spatial precision was decided on 2026-09-30: 16-bit encoded hand-off between spatial frames and the next colour run or spatial unit, delivered with Detail (docs/design/presence-mixer-vignette.md)."
       ],
       "context_links": [
         {
@@ -281,117 +219,8 @@
       }
     },
     {
-      "id": "TASK-006",
-      "description": "Record the delegated Detail processing-order and Fit-preview decisions.",
-      "status": "completed",
-      "dependencies": [],
-      "extra_context": [
-        "The owner delegated sensible Detail choices in the 2026-09-30 planning request and explicitly excluded implementation and owner review.",
-        "Selected: restoration before Basic/Presence; denoise then capture sharpening; approximate moving previews and an exact-derived settled Fit image. These are design decisions, not delivered behaviour or measured quality."
-      ],
-      "context_links": [
-        {
-          "kind": "file",
-          "label": "Detail decisions",
-          "target": "docs/decisions.md",
-          "relevance": "Delegated choices and rationale.",
-          "locator": "Detail"
-        },
-        {
-          "kind": "file",
-          "label": "Detail design",
-          "target": "docs/design/detail.md",
-          "relevance": "Placement, preview and acceptance contracts."
-        }
-      ],
-      "acceptance_criteria": [
-        "Processing order and Fit behaviour are selected with rationale in docs/decisions.md and docs/design/detail.md under explicit owner delegation.",
-        "The design distinguishes planning from implementation and capture sharpening from output sharpening; no owner-review prerequisite remains."
-      ],
-      "test_strategy": {
-        "approach": "inspection",
-        "steps": [
-          "Check the design and decision record against the delegated planning request and current host contracts."
-        ],
-        "commands": [
-          "cargo xtask check-repository"
-        ],
-        "expected_results": [
-          "The Detail design has recorded decisions without claiming implementation or photographic qualification."
-        ]
-      }
-    },
-    {
-      "id": "TASK-007",
-      "description": "Choose measured quality levels and approximation-error limits for interactive viewport previews beyond the authorized baseline.",
-      "status": "ready",
-      "dependencies": [],
-      "extra_context": [
-        "Temporary softness at 100% during motion, full detail restored on pause/release, an updating full-image histogram, and the documented viewport-bounded clipping behavior are accepted and must not be reopened.",
-        "The documented implementation baseline uses a viewport window on a half-scale proxy while moving, then exact visible-region refinement and whole-frame exact analysis under the shared quiet policy. Further quality levels, GPU preview arithmetic and numerical error limits need representative measurements before acceptance; the sampled global guide is rejected due to severe periodic aliasing and no approximate-global mode ships.",
-        "Exact settled pixels, full-image reports and export retain their current contracts; product research does not imply an implementation latency result.",
-        "Reframed by the owner's GPU-first decision of 2026-10-04: correctness is a declared tolerance against the CPU reference for every output kind, at rest as well as in motion, so the remaining question is the numeric limit per output kind, which the GPU-first plan measures on the corpus before each stage lands (docs/design/gpu-first.md, The contract).",
-        "Since GPU-first (2026-10-06, docs/decisions.md, GPU-first rendering) the half-scale CPU region, the quiet policy and the display-bounded proxy described above are retired on a machine with a GPU: every view draws on the GPU, a drag the GPU refuses holds its frame or has the reference draw whole frames, and only a session without a GPU drags on the CPU proxy. The question stands for the GPU's own approximations: the drag frame below 100% (tasks TASK-008) and the softer reduced-stage frame of a 100% drag past the budget."
-      ],
-      "context_links": [
-        {
-          "kind": "file",
-          "label": "Accepted owner tradeoff",
-          "target": "docs/decisions.md",
-          "locator": "Interactive previews at 100%",
-          "relevance": "Records what is already accepted and identifies the remaining questions."
-        },
-        {
-          "kind": "file",
-          "label": "Viewport clipping behavior",
-          "target": "docs/design/instant-preview.md",
-          "locator": "Histogram and clipping",
-          "relevance": "Concrete clipping recommendation and the supporting phase, coordinate and stale-texel contracts."
-        },
-        {
-          "kind": "file",
-          "label": "Preview research and measurements",
-          "target": "docs/research/interactive-adjustments.md",
-          "relevance": "Proposed quality levels, guide/GPU error questions and evidence required to qualify them."
-        },
-        {
-          "kind": "file",
-          "label": "Existing displayed-frame clipping",
-          "target": "crates/luxforge-app/src/app/overlay.rs",
-          "locator": "overlay_source",
-          "relevance": "Current approximate-to-exact overlay behavior the recommendation extends."
-        },
-        {
-          "kind": "file",
-          "label": "Proposed GPU preview limits",
-          "target": "docs/design/gpu-preview.md",
-          "locator": "The preview error limit",
-          "relevance": "The owner chose speed first for GPU previews on 2026-10-01; the CIEDE2000 limits there are proposals awaiting acceptance."
-        }
-      ],
-      "acceptance_criteria": [
-        "Measured comparisons cover representative edges, thin and range masks, saturated highlights, and multiple spatial layers; preview error is distinct from exact settled equality.",
-        "Any accepted additional quality level or error limit is recorded in docs/decisions.md and its specification; unresolved choices remain explicit and do not block the authorized baseline.",
-        "Exact settled pixels, full-image analysis and export retain their current contracts."
-      ],
-      "test_strategy": {
-        "approach": "manual",
-        "steps": [
-          "Review measured preview/refinement comparisons when available for the representative cases named in the research.",
-          "Record an owner decision for any additional quality level or error limit, or retain the specific choice as open.",
-          "Check consistency among decisions, viewport design and research."
-        ],
-        "commands": [
-          "cargo xtask check-repository"
-        ],
-        "expected_results": [
-          "No hypothetical error bound becomes a passed check, and unresolved numerical choices do not reopen accepted clipping or the authorized implementation baseline."
-        ]
-      }
-    },
-    {
-      "id": "TASK-008",
-      "description": "Decide the remaining GPU-first questions: the tolerance per output kind once measured, the fallback for a machine without a usable GPU, the export device policy, the counts' cadence during motion, and the owner-task hop.",
+      "id": "TASK-005",
+      "description": "Decide the remaining GPU-first questions: the tolerance per output kind once measured, what a drag's frame is held to below 100% and past the budget at 100%, the export device policy, the counts' cadence during motion, and the owner-task hop.",
       "status": "ready",
       "dependencies": [],
       "extra_context": [
@@ -401,7 +230,8 @@
         "Measured 2026-10-05 for stage 3 (docs/specs/performance.md, The per-frame light's reduction factor): no Dehaze light from a stage reduced by 16, 8, 4 or 2 per side meets the spatial limits on every corpus cell (a factor of 2 misses 4 of 231 at −3 EV with Whites and Blacks −100 under Dehaze −100), a full-resolution light passes all 231, and a prefix holding Detail needs Detail's exact output. Recorded default the plan runs on (docs/design/gpu-first.md, Proposals with recorded defaults): the at-rest light reduced from the exact full-resolution prefix; in motion the at-rest light where the drag leaves its input unchanged, a per-tick full-resolution light on the GPU where it changes, and for a colour drag between Detail and Presence a per-tick light with Detail left out, which misses 5 sharpen-stress cells under Dehaze −100 in motion. Question for the owner: accept those 5 recorded misses in motion, pay a per-tick Detail pass for that drag, a coarser light with its misses, or a stack-class fallback.",
         "Reopened 2026-10-05 once the picture at rest became process-first (stage 2): the drag's frame, processed over a source reduced to the view's size for speed, misses the existing limit against the GPU picture it now settles to on the same cells it misses the reference on (65 of 120 view cells on a first selection at Fit, 33% and 50%; none at 100%, where motion is the at-rest frame), so no reduced-source drag frame can be held to its settle target below 100%. Default the plan runs on: the at-rest picture is gated against the reference; the picture in motion is reported, not gated, with its jump to the at-rest frame and its distance from the reference beside each cell, and the owner can gate either reading on demand. The owner's question: accept the settle jump (softened by the 150 ms dissolve), draw process-first drag frames where the GPU can within a frame budget and reduced-source ones otherwise, or draw a reduced-source picture at rest with a widened at-rest tolerance.",
         "Decided 2026-10-05 (docs/decisions.md, GPU-first rendering): the histogram is held to the reference by the earth mover's distance, at most 0.25 code per channel and luminance, with each clipping count within 0.1% of the output pixel count, after the summed bin difference failed 89 of 250 corpus stacks whose histograms moved by at most 0.13 code; and the stand-in light behind Detail or an earlier Presence layer stands for now, revisited if the final measurement or real photographs show a visible difference. The other questions here remain open.",
-        "Decided 2026-10-05 for stage 5 (docs/decisions.md, GPU-first rendering): the raw-panel gates on GPU frames by the picture's limits, the gpu_preview preference retired, and the CPU estimate and reduced-grid stores with budgets.reduced_planes deleted. A drag the GPU refuses gets a GPU path for RAW white balance, geometry-only stacks and 100% past the budget, then holds its frame for a passing reason and otherwise renders one reference frame per tick, latest wins."
+        "Decided 2026-10-05 for stage 5 (docs/decisions.md, GPU-first rendering): the raw-panel gates on GPU frames by the picture's limits, the gpu_preview preference retired, and the CPU estimate and reduced-grid stores with budgets.reduced_planes deleted. A drag the GPU refuses gets a GPU path for RAW white balance, geometry-only stacks and 100% past the budget, then holds its frame for a passing reason and otherwise renders one reference frame per tick, latest wins.",
+        "Decided 2026-10-06 (docs/decisions.md, GPU-first rendering): a machine without a usable GPU gets the reference renderer and keeps the CPU display-sized proxy for drags; the software adapter is built behind --software-adapter and off by default, since lavapipe misses the drag thresholds. The interactive-preview quality question this plan carried separately is folded in here: the GPU's own approximations are the drag frame below 100% and the softer reduced-stage frame of a 100% drag past the budget."
       ],
       "context_links": [
         {
@@ -443,7 +273,7 @@
       }
     },
     {
-      "id": "TASK-009",
+      "id": "TASK-006",
       "description": "Decide the remaining UI themes questions: which Omarchy themes are bundled, the contrast floors and moving an imported theme's own ink, the Omarchy forms read, a Theme choice for the canvas background as its default, the Appearance tab, and whether following Omarchy's current theme or the system appearance is built next.",
       "status": "ready",
       "dependencies": [],
@@ -484,100 +314,7 @@
       }
     },
     {
-      "id": "TASK-010",
-      "description": "Decide the AI editing questions: scope, the weights licence policy and training-data provenance, the inference runtime, the segmenter, Fast fill and generative models, the effect region, stale patches, budgets, the generative hardware minimum, sky replacement and remote consent.",
-      "status": "completed",
-      "dependencies": [],
-      "extra_context": [
-        "Completed on 2026-10-05: every question is recorded in docs/decisions.md under AI editing, with the open questions that remain named there (the first hosted provider, a removal fine-tune, a macOS 27 Swift shim, what a CPU-only machine is offered).",
-        "The AI editing design of 2026-10-04 proposed Remove, Select, generative fill and Replace, and optional sky replacement on local, user-downloaded models, with a recommendation for each of its twelve decisions; the owner chose quality-first model selection with no licence or provenance gate beyond a one-line use restriction, stale patches kept rendering, budgets raised for quality, consent remembered per provider, and sky replacement in scope."
-      ],
-      "context_links": [
-        {
-          "kind": "file",
-          "label": "AI editing design",
-          "target": "docs/design/ai-editing.md",
-          "locator": "Decisions",
-          "relevance": "The questions and their outcomes."
-        },
-        {
-          "kind": "file",
-          "label": "Corrections proposal",
-          "target": "docs/design/corrections.md",
-          "relevance": "The repair-stage and stale-patch decisions taken with these."
-        },
-        {
-          "kind": "file",
-          "label": "Owner decisions",
-          "target": "docs/decisions.md",
-          "locator": "AI editing",
-          "relevance": "Where each answer is recorded."
-        }
-      ],
-      "acceptance_criteria": [
-        "Each question is accepted as its recommendation, changed with the design updated to match, or explicitly left as a recorded default the plan runs on, and docs/decisions.md records the outcome with its date.",
-        "The roadmap's exclusion of generative editing is lifted and the Corrections design agrees with the stale-patch decision."
-      ],
-      "test_strategy": {
-        "approach": "manual",
-        "steps": [
-          "Review the design's Decisions table with the owner.",
-          "Record the outcomes in the decisions document and adjust the designs where a default changed."
-        ],
-        "commands": [],
-        "expected_results": [
-          "No proposal is silently treated as accepted."
-        ]
-      }
-    },
-    {
-      "id": "TASK-011",
-      "description": "Decide the Lightroom import proposals L1 to L11 and whether implementation is authorized.",
-      "status": "completed",
-      "dependencies": [],
-      "extra_context": [
-        "Completed on 2026-10-06: every question is recorded in docs/decisions.md under Lightroom import and in the design's Decided table. L4 (catalog folders by event) and L7 (Lightroom's previews as first tiles, not in Compare) differ from the recommendation. The owner asked for a task plan and did not authorize implementation."
-      ],
-      "context_links": [
-        {
-          "kind": "file",
-          "label": "Lightroom import design",
-          "target": "docs/design/lightroom-import.md",
-          "locator": "Proposals",
-          "relevance": "The questions and their recommendations."
-        },
-        {
-          "kind": "file",
-          "label": "Catalog design",
-          "target": "docs/design/catalog.md",
-          "relevance": "The catalog principles the scope and ratings questions bear on."
-        },
-        {
-          "kind": "file",
-          "label": "Owner decisions",
-          "target": "docs/decisions.md",
-          "locator": "Open product questions",
-          "relevance": "Where each answer is recorded."
-        }
-      ],
-      "acceptance_criteria": [
-        "Each question is accepted as its recommendation or changed with the design updated to match, and docs/decisions.md records the outcome with its date.",
-        "A validated task plan for the import exists."
-      ],
-      "test_strategy": {
-        "approach": "manual",
-        "steps": [
-          "Review the design's Proposals table with the owner.",
-          "Record the outcomes in the decisions document and adjust the design where a recommendation changed."
-        ],
-        "commands": [],
-        "expected_results": [
-          "No proposal is silently treated as accepted."
-        ]
-      }
-    },
-    {
-      "id": "TASK-012",
+      "id": "TASK-007",
       "description": "Decide whether the Lightroom import and Lightroom alignment task plans are authorized for implementation; every design question of both is decided.",
       "status": "ready",
       "dependencies": [],
@@ -633,12 +370,7 @@
         "TASK-004",
         "TASK-005",
         "TASK-006",
-        "TASK-007",
-        "TASK-008",
-        "TASK-009",
-        "TASK-010",
-        "TASK-011",
-        "TASK-012"
+        "TASK-007"
       ]
     }
   ]

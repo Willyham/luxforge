@@ -989,23 +989,32 @@ impl EditorService {
         }
     }
 
-    /// A new photograph of `asset`, not yet written: its Original entry at `now_ms`, which for a
-    /// RAW holds its source development at the camera's as-shot white balance, admitted exactly as
-    /// a commit admits the stack it writes. What a Develop brings in, and nothing else makes;
-    /// [`insert_photograph`] writes it. `O(layers)`: nothing is read or decoded.
+    /// A new photograph of `asset`, whose file's header is `header`, not yet written: its
+    /// Original entry at `now_ms`, holding the stack [`original_recipe`] builds — for a RAW its
+    /// source development at the camera's as-shot white balance, and every layer a module
+    /// contributes from the photograph's metadata and the person's preferences
+    /// ([`crate::ToolModule::original`]) — admitted exactly as a commit admits the stack it writes.
+    /// What a Develop brings in, and nothing else makes; [`insert_photograph`] writes it.
+    /// `O(modules + layers)`: nothing is read or decoded. A module's refusal refuses the photograph.
     pub(crate) fn new_photograph(
         &self,
         asset: AssetRecord,
+        header: &HeaderMetadata,
         now_ms: i64,
     ) -> Result<NewPhotograph, Error> {
-        let mut snapshot = Snapshot::original(asset.id.clone());
-        if let SourceKind::Raw { metadata } = &asset.source {
-            snapshot = snapshot.with_layer_inserted(
-                0,
-                crate::RawPayload::for_as_shot(metadata.as_shot_gains, metadata.cam_xyz)?
-                    .layer(LayerId::new()),
-            )?;
-        }
+        let recipe = original_recipe(
+            &self.registry,
+            &asset.source,
+            header,
+            crate::OriginalPreferences {
+                raw_look: self.raw_look,
+            },
+            || Ok(LayerId::new()),
+        )?;
+        let snapshot = Snapshot {
+            recipe,
+            ..Snapshot::original(asset.id.clone())
+        };
         let mut original = HistoryEntry {
             id: EntryId::new(),
             asset_id: asset.id.clone(),
@@ -1041,6 +1050,91 @@ impl EditorService {
 pub(crate) struct NewPhotograph {
     pub(crate) asset: AssetRecord,
     pub(crate) original: HistoryEntry,
+}
+
+/// The stack a new photograph of `source` starts from, its Original's: for a RAW its source
+/// development at the camera's as-shot white balance at index 0, then each layer a module
+/// contributes ([`crate::ToolModule::original`]). Every available module that applies to the
+/// source kind is asked in registry order, from the kind, the interpretation, the file's `header`
+/// and `preferences`; its layer must be one of its own effects and pass its own
+/// [`crate::ToolModule::validate_payload`], and is inserted where its effect's declared stage and
+/// order place it among the layers already there. A module's error, or a layer it may not give,
+/// refuses the whole Original by the module's name, keeping the refusal's kind: no layer is ever
+/// dropped. `layer_id` names each layer in stack-building order, so a seeded catalog derives its
+/// identities and a Develop mints them. `O(modules + layers)` descriptor lookups and bounded
+/// payload checks; it reads no file and no pixel. The caller admits the result.
+pub(crate) fn original_recipe(
+    registry: &crate::ModuleRegistry,
+    source: &SourceKind,
+    header: &HeaderMetadata,
+    preferences: crate::OriginalPreferences,
+    mut layer_id: impl FnMut() -> Result<LayerId, Error>,
+) -> Result<crate::Recipe, Error> {
+    let mut recipe = crate::Recipe::default();
+    let raw = match source {
+        SourceKind::Raw { metadata } => {
+            recipe = recipe.with_layer_inserted(
+                0,
+                crate::RawPayload::for_as_shot(metadata.as_shot_gains, metadata.cam_xyz)?
+                    .layer(layer_id()?),
+            )?;
+            Some(metadata)
+        }
+        SourceKind::Jpeg => None,
+    };
+    let context = crate::OriginalContext {
+        source: source.tag(),
+        raw,
+        header,
+        preferences,
+    };
+    for module in registry.providers() {
+        let descriptor = module.descriptor();
+        if descriptor.check_available().is_err()
+            || descriptor.check_applies_to(context.source).is_err()
+        {
+            continue;
+        }
+        let refused = |error: Error| Error {
+            detail: format!(
+                "module {} refused the new photograph's Original: {}",
+                descriptor.id, error.detail
+            ),
+            ..error
+        };
+        let Some(layer) = module.original(&context).map_err(refused)? else {
+            continue;
+        };
+        let format = descriptor
+            .effects
+            .iter()
+            .find(|effect| effect.id == layer.effect_id)
+            .map(|effect| effect.format)
+            .ok_or_else(|| {
+                refused(Error::internal(format!(
+                    "it gave a layer of {}, which is not one of its effects",
+                    layer.effect_id
+                )))
+            })?;
+        module
+            .validate_payload(&layer.effect_id, format, &layer.payload)
+            .map_err(refused)?;
+        let index = registry.insertion_index_for(&recipe.layers, &layer.effect_id);
+        recipe = recipe
+            .with_layer_inserted(
+                index,
+                crate::Layer {
+                    id: layer_id()?,
+                    effect_id: layer.effect_id,
+                    effect_format: format,
+                    payload: layer.payload,
+                    mask: None,
+                    artifacts: Vec::new(),
+                },
+            )
+            .map_err(refused)?;
+    }
+    Ok(recipe)
 }
 
 /// Write a new photograph's rows in the caller's transaction: its asset row (`row`, whose record is

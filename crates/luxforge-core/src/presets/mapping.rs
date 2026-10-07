@@ -1078,7 +1078,7 @@ pub(super) const PREFIXES: &[Row] = &[
     ),
 ];
 
-/// Lightroom's default profiles, which Luxforge's own neutral rendering stands in for.
+/// Lightroom's default profiles, which map to neutral because Luxforge's looks are its own.
 const DEFAULT_PROFILES: [&str; 2] = ["Adobe Standard", "Adobe Color"];
 
 /// Whether a setting holds a tone curve, so a template's flat array is read as its points.
