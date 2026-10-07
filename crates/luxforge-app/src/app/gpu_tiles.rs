@@ -1088,6 +1088,11 @@ impl Worker {
             return Err(refused("no sweep reads it"));
         };
         let whole = plan_stream(stack, sweeps.sweeps[0].side)?;
+        // A reading sweep may be the last, whose tiles draw through a lens warp's grid.
+        let grid = match whole.warp() {
+            Some(warp) => Some(stage_grid(warp)?),
+            None => None,
+        };
         {
             let mut runner = self.runner()?;
             let held = runner.hold_stages(
@@ -1128,7 +1133,8 @@ impl Worker {
                         .tiles
                         .first()
                         .ok_or_else(|| unplannable("a sweep of no tiles"))?;
-                    let converted = self.convert_sweep(&whole.plan, next, source, None, tile)?;
+                    let converted =
+                        self.convert_sweep(&whole.plan, next, source, grid.as_ref(), tile)?;
                     let mut runner = self.runner()?;
                     let computed = runner.compute_lights(&converted, source);
                     self.figures.borrow_mut().runner = runner.figures();
