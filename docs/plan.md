@@ -20,7 +20,7 @@ A persistent list of the work that can start now: each plan below has a validate
 
 | Plan | Ready tasks | Notes | Minimum model |
 | --- | --- | --- | --- |
-| [Code structure consolidation](../tasks/project/code-structure.json) ([design](design/code-structure.md)) | TASK-005 GPU resource layout; TASK-011 preview intent; TASK-014 decoded cache | Implementation authorized 2026-10-07; GPU split approved; TASK-003 accepted; image, budget and scheduling behavior stay current | High tier |
+| [Code structure consolidation](../tasks/project/code-structure.json) ([design](design/code-structure.md)) | TASK-012 resource phases; TASK-014 decoded cache | Implementation authorized 2026-10-07; GPU split approved; TASK-003 accepted; image, budget and scheduling behavior stay current | High tier |
 | [GPU memory accounting](../tasks/rendering/gpu-memory.json) | TASK-001 measure and bound GPU resources outside the photo-texture ceiling | A measurement: run after feature work, on a quiet host | High tier |
 | [RAW looks](../tasks/raw/raw-looks.json) ([design](design/raw-looks.md)) | TASK-006 freeze the camera fit (phase 2) | Phase 1 is built; its TASK-005 waits on the native `look` scenario and the rendered tier | High tier |
 | [Corrections](../tasks/editing/corrections.json) ([design](design/corrections.md)) | TASK-001 freeze the remaining contract; TASK-002 Clone and Heal numerics | Renderer integration targets the merged GPU-first interfaces; the repair-versus-Detail placement is still open | High tier |
@@ -38,7 +38,7 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 
 ### In progress
 
-Continue these rather than starting them again: [GPU-first rendering](../tasks/rendering/gpu-first.json) TASK-008, portability without a native GPU, which TASK-010 and 011 wait on. The [Efficiency](../tasks/rendering/efficiency.json) `dist` profile is blocked by the owner's deferral, and the [product decisions](../tasks/project/product-decisions.json) are the owner's to make.
+Continue these rather than starting them again: [Code structure consolidation](../tasks/project/code-structure.json) TASK-005, shared GPU resource layout; [GPU-first rendering](../tasks/rendering/gpu-first.json) TASK-008, portability without a native GPU, which TASK-010 and 011 wait on. The [Efficiency](../tasks/rendering/efficiency.json) `dist` profile is blocked by the owner's deferral, and the [product decisions](../tasks/project/product-decisions.json) are the owner's to make.
 
 ## Engineering
 

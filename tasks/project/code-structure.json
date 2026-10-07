@@ -271,14 +271,16 @@
     {
       "id": "TASK-005",
       "description": "Use shared resource-layout rules for GPU prediction, admission and allocation.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [
         "TASK-004"
       ],
       "extra_context": [
         "R3. Share scratch grouping, intermediates/kept planes/output buckets and common parameter layout; actual device caps/alignment are explicit inputs.",
         "Logical estimates, allocation, resident/retiring resources, light-buffer allowances and process RSS remain distinct. The unconverted fallback estimate is not an upper bound.",
-        "No budget number, quality threshold or total-memory accounting scope changes in this task."
+        "No budget number, quality threshold or total-memory accounting scope changes in this task.",
+        "Re-reviewed current main 3ac13023 and TASK-004: runtime light references remain distinct from semantic fixed extents. Share pure plane roles, placement/counting and pool maxima, parameter sizing/alignment, output buckets and buffer capacities. Keep existing device admission and logical light allowances; photo presentation apron allocation remains a caller input.",
+        "Implemented shared layout; gpu-types 5 passed, UI GPU 137 passed/2 ignored, app gpu_rest 8 passed/3 ignored including device allocation and staged/chained equality. Quick passed at artifacts/code-structure-preview-layout-quick/summary.json; rendered handoff pending. Current main a20cf0b8 re-reviewed: documentation/owner decisions only, no implementation changes; accepted current tolerances, counts, fallback and budgets reinforce this scope."
       ],
       "context_links": [
         {
@@ -672,12 +674,14 @@
     {
       "id": "TASK-011",
       "description": "Represent preview selection and render/view intent with valid current types.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "R8 request half. PreviewRequest combines prefix, draft, analysis, proxy, GPU flag, region and threshold; owner tuple checks reconstruct valid intent.",
         "Keep committed/draft/prefix behavior and existing validation errors. GPU intent must carry its view; CPU/proxy settings belong only to relevant intent.",
-        "Do not change the command registry, quality/tolerance policy, budgets or no-GPU notice. This is an internal request-surface refactor."
+        "Do not change the command registry, quality/tolerance policy, budgets or no-GPU notice. This is an internal request-surface refactor.",
+        "Re-reviewed current main 3ac13023 and integrated tasks on 2026-10-07: draft reference prefixes remain valid; GPU draft prefixes and Fit without bounds must refuse explicitly. Preserve draft ownership and existing prefix-analysis validation precedence.",
+        "Acceptance: explicit PreviewSelection/PreviewRenderIntent; mandatory Fit bounds and region-local threshold; GPU draft-prefix refusal after ownership and prefix-analysis validation. Core preview 205 passed/12 ignored; app preview 108 passed/2 ignored; artifacts/code-structure-preview-layout-quick/summary.json passed on aarch64-apple-darwin. All existing source work, proxy/reduction and fallback paths retained."
       ],
       "context_links": [
         {
@@ -729,7 +733,7 @@
     {
       "id": "TASK-012",
       "description": "Group GPU preview resources by identity/readiness and centralize settled-picture/counts eligibility.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-011"
       ],

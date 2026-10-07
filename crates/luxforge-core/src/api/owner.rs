@@ -306,104 +306,205 @@ impl Owed {
     }
 }
 
-/// What one preview job should render. The client identity travels with it because a draft belongs
-/// to that client's session, which only the owner holds: a client can never ask for another's.
+/// The stack to evaluate. A draft belongs to the requesting client's session. Naming an entry
+/// with a draft guards that it is still current; it never selects a historical draft.
+#[derive(Clone, Debug)]
+pub enum PreviewStack {
+    Committed {
+        entry: Option<EntryId>,
+    },
+    Draft {
+        draft: DraftId,
+        entry: Option<EntryId>,
+    },
+}
+
+/// Whole-stack identity, or the input stage of the layer at `layers`.
+#[derive(Clone, Debug)]
+pub enum PreviewSelection {
+    Whole(PreviewStack),
+    Prefix { stack: PreviewStack, layers: usize },
+}
+
+impl PreviewSelection {
+    fn stack_mut(&mut self) -> &mut PreviewStack {
+        match self {
+            Self::Whole(stack) | Self::Prefix { stack, .. } => stack,
+        }
+    }
+
+    fn parts(&self) -> (&Option<EntryId>, Option<&DraftId>, Option<usize>) {
+        let (stack, layers) = match self {
+            Self::Whole(stack) => (stack, None),
+            Self::Prefix { stack, layers } => (stack, Some(*layers)),
+        };
+        match stack {
+            PreviewStack::Committed { entry } => (entry, None, layers),
+            PreviewStack::Draft { draft, entry } => (entry, Some(draft), layers),
+        }
+    }
+}
+
+/// Work requested beside the reference job. A GPU request always carries a view; only a region
+/// carries a reduction threshold. The proxy remains the worker's optional reference fallback.
+#[derive(Clone, Copy, Debug)]
+pub enum PreviewRenderIntent {
+    Reference {
+        proxy: Option<ProxyBounds>,
+        analyse: bool,
+    },
+    GpuFit {
+        bounds: ProxyBounds,
+        analyse: bool,
+    },
+    GpuRegion {
+        rect: crate::modules::Region,
+        magnification: f64,
+        reduce_after: u64,
+        proxy: Option<ProxyBounds>,
+        analyse: bool,
+    },
+}
+
+impl PreviewRenderIntent {
+    fn analyse_mut(&mut self) -> &mut bool {
+        match self {
+            Self::Reference { analyse, .. }
+            | Self::GpuFit { analyse, .. }
+            | Self::GpuRegion { analyse, .. } => analyse,
+        }
+    }
+
+    fn reference(&self) -> (Option<ProxyBounds>, bool) {
+        match *self {
+            Self::Reference { proxy, analyse } | Self::GpuRegion { proxy, analyse, .. } => {
+                (proxy, analyse)
+            }
+            Self::GpuFit { bounds, analyse } => (Some(bounds), analyse),
+        }
+    }
+
+    fn gpu(&self) -> Option<(crate::GpuView, u64)> {
+        match *self {
+            Self::Reference { .. } => None,
+            Self::GpuFit { bounds, .. } => {
+                Some((crate::GpuView::Fit(bounds), crate::REDUCED_AFTER_BYTES))
+            }
+            Self::GpuRegion {
+                rect,
+                magnification,
+                reduce_after,
+                ..
+            } => Some((
+                crate::GpuView::Region {
+                    rect,
+                    magnification,
+                },
+                reduce_after,
+            )),
+        }
+    }
+}
+
+/// What one preview job should render. The owner validates session ownership and refuses analysis
+/// of a prefix, whose identity describes the whole stack, and GPU planning of a draft prefix.
 #[derive(Clone, Debug)]
 pub struct PreviewRequest {
     pub client: ClientId,
     pub asset_id: AssetId,
-    /// The entry to show; `None` is the current one.
-    pub entry_id: Option<EntryId>,
-    /// `Some(n)` renders the first `n` layers of the resulting stack only.
-    pub layer_count: Option<usize>,
-    /// Render this client's open draft instead of the stored stack.
-    pub draft: Option<DraftId>,
-    /// Also reduce the rendered frame into a histogram report, which the worker returns beside the
-    /// raster. Refused together with `layer_count`: a truncated job renders a layer prefix its
-    /// identity does not describe.
-    pub analyse: bool,
-    /// The physical pixels the photo area can show this frame in, when the caller wants the job to
-    /// have a proxy phase. `None` asks for the exact path alone. The owner only copies it into the
-    /// job; the preview queue decides whether a proxy is worthwhile and builds it on its worker.
-    pub proxy: Option<ProxyBounds>,
-    /// Plan the draft's GPU preview with the job ([`PreviewJob::gpu`]): the plan a gesture's tick
-    /// is drawn from at these bounds, and the boundary it starts from; or, for a committed stack,
-    /// the plans its gestures are likely to draw ([`PreviewJob::gpu_warm`]). Only a job with bounds
-    /// has either; planning is `O(layers)` here and reads no pixel.
-    pub gpu: bool,
-    /// At a percentage zoom of 100% or more, the region of the output stage a draft's GPU preview
-    /// is drawn over at full scale, and the physical pixels an output pixel takes there
-    /// ([`crate::GpuView::Region`]); `None` for a whole frame, where the bounds decide: at Fit, and
-    /// at a percentage zoom below 100%, whose bounds are the displayed size of the whole stage
-    /// ([`crate::GpuView::Fit`]).
-    pub gpu_region: Option<(crate::modules::Region, f64)>,
-    /// Over a region, the figure its plan's own bytes pass before the draft is planned at the
-    /// reduced stage of the view's area too ([`crate::GpuPreview::reduced`]):
-    /// [`crate::REDUCED_AFTER_BYTES`] unless a caller names another, as a test of a small
-    /// photograph held to a small budget does.
-    pub gpu_reduce_after: u64,
+    pub selection: PreviewSelection,
+    pub intent: PreviewRenderIntent,
 }
 
 impl PreviewRequest {
-    /// The current entry of one asset, whole.
+    /// The current entry of one asset, whole, through the reference path.
     pub fn new(client: ClientId, asset_id: AssetId) -> Self {
         Self {
             client,
             asset_id,
-            entry_id: None,
-            layer_count: None,
-            draft: None,
-            analyse: false,
-            proxy: None,
-            gpu: false,
-            gpu_region: None,
-            gpu_reduce_after: crate::REDUCED_AFTER_BYTES,
+            selection: PreviewSelection::Whole(PreviewStack::Committed { entry: None }),
+            intent: PreviewRenderIntent::Reference {
+                proxy: None,
+                analyse: false,
+            },
         }
     }
-    /// Show this entry instead of the current one.
+
+    /// Show this entry instead of the current one, or guard a draft's current entry.
     pub fn entry(mut self, entry_id: Option<EntryId>) -> Self {
-        self.entry_id = entry_id;
+        match self.selection.stack_mut() {
+            PreviewStack::Committed { entry } | PreviewStack::Draft { entry, .. } => {
+                *entry = entry_id
+            }
+        }
         self
     }
+
     /// Render the first `count` layers only: the input stage of the layer at that index.
     pub fn layers(mut self, count: usize) -> Self {
-        self.layer_count = Some(count);
+        let stack = match self.selection {
+            PreviewSelection::Whole(stack) | PreviewSelection::Prefix { stack, .. } => stack,
+        };
+        self.selection = PreviewSelection::Prefix {
+            stack,
+            layers: count,
+        };
         self
     }
+
     /// Render the effective recipe of this client's draft.
     pub fn draft(mut self, draft: DraftId) -> Self {
-        self.draft = Some(draft);
+        let stack = self.selection.stack_mut();
+        let entry = match stack {
+            PreviewStack::Committed { entry } | PreviewStack::Draft { entry, .. } => entry.take(),
+        };
+        *stack = PreviewStack::Draft { draft, entry };
         self
     }
-    /// Reduce the rendered frame into a histogram report as well, so the displayed target needs no
-    /// second render.
+
+    /// Reduce the rendered frame into a histogram report as well.
     pub fn analyse(mut self) -> Self {
-        self.analyse = true;
+        *self.intent.analyse_mut() = true;
         self
     }
-    /// Offer this job a proxy phase at the display bounds the frame will be shown in.
+
+    /// Offer the reference worker a proxy phase. At GPU Fit these are also the GPU view bounds.
     pub fn proxy(mut self, bounds: ProxyBounds) -> Self {
-        self.proxy = Some(bounds);
-        self
-    }
-    /// Plan the draft's GPU preview with the job ([`Self::gpu`]).
-    pub fn gpu(mut self) -> Self {
-        self.gpu = true;
-        self
-    }
-
-    /// Plan the draft's GPU preview over `rect` of the output stage at full scale, drawn at
-    /// `magnification` physical pixels an output pixel: a percentage zoom of 100% or more.
-    pub fn gpu_region(mut self, rect: crate::modules::Region, magnification: f64) -> Self {
-        self.gpu = true;
-        self.gpu_region = Some((rect, magnification));
+        match &mut self.intent {
+            PreviewRenderIntent::Reference { proxy, .. }
+            | PreviewRenderIntent::GpuRegion { proxy, .. } => *proxy = Some(bounds),
+            PreviewRenderIntent::GpuFit { bounds: view, .. } => *view = bounds,
+        }
         self
     }
 
-    /// Plan the draft at the reduced stage of the view's area beside a region whose plan's own
-    /// figures pass `bytes` ([`Self::gpu_reduce_after`]).
-    pub fn reduce_regions_after(mut self, bytes: u64) -> Self {
-        self.gpu_reduce_after = bytes;
+    /// Plan the picture and its gestures at Fit or a percentage zoom below 100%.
+    pub fn gpu_fit(mut self, bounds: ProxyBounds) -> Self {
+        let (_, analyse) = self.intent.reference();
+        self.intent = PreviewRenderIntent::GpuFit { bounds, analyse };
+        self
+    }
+
+    /// Plan the output region at full scale with the current reduction threshold.
+    pub fn gpu_region(self, rect: crate::modules::Region, magnification: f64) -> Self {
+        self.gpu_region_reducing(rect, magnification, crate::REDUCED_AFTER_BYTES)
+    }
+
+    /// Plan the output region and a reduced alternative when its own bytes pass `reduce_after`.
+    pub fn gpu_region_reducing(
+        mut self,
+        rect: crate::modules::Region,
+        magnification: f64,
+        reduce_after: u64,
+    ) -> Self {
+        let (proxy, analyse) = self.intent.reference();
+        self.intent = PreviewRenderIntent::GpuRegion {
+            rect,
+            magnification,
+            reduce_after,
+            proxy,
+            analyse,
+        };
         self
     }
 }
@@ -2307,10 +2408,13 @@ impl Owner {
     /// in that client's own session: naming another client's draft, or one that has ended, is a
     /// validation error rather than a preview of someone else's gesture.
     fn preview(&mut self, request: PreviewRequest) -> Result<PreviewJob, Error> {
+        let (entry_id, draft_id, layer_count) = request.selection.parts();
+        let (proxy, analyse) = request.intent.reference();
+        let gpu = request.intent.gpu();
         // A whole preview of the entry the session selected is rendered as the session frames it,
         // so every frame of a framed selection — its first, a zoom, a refresh after another
         // client's commit — shows the same framing without each request repeating it.
-        let framing = match (&request.entry_id, &request.draft, request.layer_count) {
+        let framing = match (entry_id, draft_id, layer_count) {
             (Some(entry_id), None, None) => self
                 .sessions
                 .get(&request.client)
@@ -2323,7 +2427,7 @@ impl Owner {
             .get(&request.client)
             .map(|s| s.pixel_memo.clone())
             .unwrap_or_default();
-        let draft = match &request.draft {
+        let draft = match draft_id {
             None => None,
             Some(draft_id) => Some(
                 self.sessions
@@ -2332,25 +2436,28 @@ impl Owner {
                     .held_draft(draft_id)?,
             ),
         };
-        if request.analyse && request.layer_count.is_some() {
+        if analyse && layer_count.is_some() {
             return Err(Error::validation(
                 "a truncated preview renders a layer prefix its identity does not describe, so it cannot be analysed",
             ));
         }
+        if gpu.is_some() && draft.is_some() && layer_count.is_some() {
+            return Err(Error::validation(
+                "a GPU draft preview must render the whole draft",
+            ));
+        }
         self.service.begin_pixel_call(draft, memo);
-        let job = match (&request.entry_id, &framing) {
-            (Some(entry_id), Some(geometry)) => self.service.framed_preview_job(
-                &request.asset_id,
-                entry_id,
-                geometry,
-                request.proxy,
-            ),
+        let job = match (entry_id, &framing) {
+            (Some(entry_id), Some(geometry)) => {
+                self.service
+                    .framed_preview_job(&request.asset_id, entry_id, geometry, proxy)
+            }
             _ => self.service.preview_job(
                 &request.asset_id,
-                request.entry_id.as_ref(),
-                request.layer_count,
+                entry_id.as_ref(),
+                layer_count,
                 draft,
-                request.proxy,
+                proxy,
             ),
         };
         let deferred = self.service.take_pixel_read();
@@ -2364,21 +2471,13 @@ impl Owner {
         // is drawn in: `O(layers)`, no pixel. A plan that cannot be made is reported, never an
         // error the job's own frame would fail with.
         let job = job.map(|mut job| {
-            job.analyse = request.analyse;
-            let view = match (request.gpu_region, request.proxy) {
-                (Some((rect, magnification)), _) => Some(crate::GpuView::Region {
-                    rect,
-                    magnification,
-                }),
-                (None, Some(bounds)) => Some(crate::GpuView::Fit(bounds)),
-                (None, None) => None,
-            };
+            job.analyse = analyse;
+            let view = gpu.map(|(view, _)| view);
             // A committed stack's job carries the plans its gestures are likely to draw at its
             // view, so the desktop warms their pipelines when the stack or the view changes rather
             // than when a drag begins; and its picture at rest on the GPU, the stack's own plan
             // from the source, which every stack has.
-            if let (true, None, Some(view), None) = (request.gpu, draft, view, request.layer_count)
-            {
+            if let (None, Some(view), None) = (draft, view, layer_count) {
                 if let Ok(warm) = crate::render::gpu::plan_warm_list(&job.evaluation, view) {
                     job.gpu_warm = Some(std::sync::Arc::new(warm));
                 }
@@ -2391,9 +2490,7 @@ impl Owner {
             // view draws the stage smaller than it is; no gesture draws over it, so no warm list.
             // A prefix the GPU cannot draw names why in the plan's tiles, and the job's own frame
             // is the reference's.
-            if let (true, None, Some(view), Some(count)) =
-                (request.gpu, draft, view, request.layer_count)
-            {
+            if let (None, Some(view), Some(count)) = (draft, view, layer_count) {
                 // The prefix's own evaluation, as the worker truncates the stack: the first
                 // `count` layers, beside the whole mask table, over the job's source and context,
                 // compiled once here. `O(layers)`, no pixel.
@@ -2414,15 +2511,13 @@ impl Owner {
                     .ok()
                     .map(Box::new);
             }
-            if let (true, Some(draft), Some(view), None) =
-                (request.gpu, draft, view, request.layer_count)
-            {
+            if let (Some(draft), Some((view, reduce_after)), None) = (draft, gpu, layer_count) {
                 job.gpu = Some(Box::new(
                     crate::render::gpu::plan_preview_reducing(
                         &job.evaluation,
                         draft,
                         view,
-                        request.gpu_reduce_after,
+                        reduce_after,
                     )
                     .unwrap_or_else(|error| crate::GpuPreview {
                         answer: crate::GpuAnswer::Fallback(crate::GpuFallback::Unplannable(
@@ -3024,6 +3119,33 @@ pub(super) fn analysis_request(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn preview_intent_carries_only_its_view_settings() {
+        let bounds = ProxyBounds {
+            width: 640,
+            height: 480,
+        };
+        let rect = crate::modules::Region {
+            x0: 0,
+            y0: 0,
+            width: 40,
+            height: 30,
+        };
+        let client = ClientId(1);
+        let asset = AssetId::new();
+        let request = PreviewRequest::new(client, asset)
+            .analyse()
+            .gpu_fit(bounds)
+            .gpu_region_reducing(rect, 2.0, 4096);
+        assert!(matches!(request.intent, PreviewRenderIntent::GpuRegion {
+            proxy: Some(p), analyse: true, reduce_after: 4096, magnification: 2.0, ..
+        } if p == bounds));
+        assert!(matches!(
+            request.intent.gpu(),
+            Some((crate::GpuView::Region { .. }, 4096))
+        ));
+    }
+
     use super::*;
     use crate::PreviewSource;
     use serde_json::{Value, json};
@@ -4549,6 +4671,59 @@ mod tests {
             )
             .expect_err("the drafted stack has one layer");
         assert_eq!(too_many.kind, ErrorKind::Validation);
+
+        let bounds = ProxyBounds {
+            width: 320,
+            height: 240,
+        };
+        let gpu_prefix = PreviewRequest::new(client, asset.clone())
+            .draft(draft.clone())
+            .layers(0)
+            .gpu_fit(bounds);
+        assert_eq!(
+            owner.preview_job(gpu_prefix.clone()).unwrap_err().detail,
+            "a GPU draft preview must render the whole draft"
+        );
+        assert_eq!(
+            owner.preview_job(gpu_prefix.analyse()).unwrap_err().detail,
+            "a truncated preview renders a layer prefix its identity does not describe, so it cannot be analysed"
+        );
+        let foreign_gpu_prefix = PreviewRequest::new(other, asset.clone())
+            .draft(draft.clone())
+            .layers(0)
+            .gpu_fit(bounds)
+            .analyse();
+        assert!(
+            owner
+                .preview_job(foreign_gpu_prefix)
+                .unwrap_err()
+                .detail
+                .contains("unknown draft")
+        );
+
+        let reference = owner
+            .preview_job(PreviewRequest::new(client, asset.clone()).proxy(bounds))
+            .unwrap();
+        assert!(
+            reference.gpu.is_none() && reference.gpu_rest.is_none() && reference.gpu_warm.is_none()
+        );
+        let fit = owner
+            .preview_job(
+                PreviewRequest::new(client, asset.clone())
+                    .gpu_fit(bounds)
+                    .analyse(),
+            )
+            .unwrap();
+        assert!(fit.gpu_rest.is_some() && fit.gpu_warm.is_some());
+        assert!(fit.analyse);
+        let prefix = owner
+            .preview_job(
+                PreviewRequest::new(client, asset.clone())
+                    .layers(0)
+                    .gpu_fit(bounds),
+            )
+            .unwrap();
+        assert!(prefix.gpu_rest.is_some() && prefix.gpu_warm.is_none());
 
         // Another client cannot preview this gesture: a draft belongs to one session.
         let foreign = owner

@@ -1611,7 +1611,13 @@ fn shape_b() -> GpuStep {
 }
 
 fn class(format: PlaneFormat, size: PlaneSize) -> super::super::spatial::Class {
-    super::super::spatial::Class { format, size }
+    super::super::spatial::Class::new(
+        format,
+        match size {
+            PlaneSize::Extent(extent) => extent,
+            PlaneSize::Light(_) => panic!("a light is not a scratch class"),
+        },
+    )
 }
 
 /// Each shape's kept textures and parameter slices: seven passes each.
@@ -1626,7 +1632,7 @@ const SCRATCH_A: u64 = 8 * FULL + 2 * 4 * FULL + 16 * QUARTER + 16;
 /// distinct pool textures numbered from zero in plane order, and the pool holds, for each class,
 /// exactly the most any one link needs. Answers the pool.
 fn assert_served(steps: &[GpuStep]) -> super::super::spatial::PoolKey {
-    use super::super::spatial::{Class, PlaneTexture, PlanesKey, PoolKey};
+    use super::super::spatial::{PlaneTexture, PlanesKey, PoolKey};
     let chain = super::super::chain::chain(steps);
     let links: Vec<&[GpuStep]> = chain
         .links
@@ -1635,13 +1641,13 @@ fn assert_served(steps: &[GpuStep]) -> super::super::spatial::PoolKey {
         .chain(std::iter::once(chain.last))
         .collect();
     let pool = PoolKey::of(links.iter().copied(), LAID, LAID_AT);
-    let mut most: Vec<(Class, usize)> = Vec::new();
+    let mut most: Vec<(super::super::spatial::Class, usize)> = Vec::new();
     for link in &links {
         let Some(key) = PlanesKey::of(link, LAID, LAID_AT) else {
             continue;
         };
         let mut kept = 0;
-        let mut taken: Vec<(Class, usize)> = Vec::new();
+        let mut taken: Vec<(super::super::spatial::Class, usize)> = Vec::new();
         for (index, step) in link.iter().enumerate() {
             let GpuStep::Spatial(spatial) = step else {
                 continue;
@@ -1662,7 +1668,11 @@ fn assert_served(steps: &[GpuStep]) -> super::super::spatial::PoolKey {
                     }
                     PlaneTexture::Pool(held, at) => {
                         assert!(!read, "plane {number}: no plane an apply reads is pooled");
-                        assert_eq!(held, Class::of(*declared), "plane {number}: its own class");
+                        assert_eq!(
+                            held,
+                            class(declared.format, declared.size),
+                            "plane {number}: its own class"
+                        );
                         let before = taken.iter().filter(|(other, _)| *other == held).count();
                         assert_eq!(at, before, "plane {number}: numbered in plane order");
                         assert!(!taken.contains(&(held, at)), "plane {number}: distinct");
@@ -1677,7 +1687,7 @@ fn assert_served(steps: &[GpuStep]) -> super::super::spatial::PoolKey {
                 }
             }
         }
-        for &(held, count) in key.scratch() {
+        for (held, count) in key.scratch() {
             match most.iter_mut().find(|(other, _)| *other == held) {
                 Some((_, most)) => *most = (*most).max(count),
                 None => most.push((held, count)),

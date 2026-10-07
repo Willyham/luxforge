@@ -235,8 +235,7 @@ fn tick_plan(
     let (bounds, region) = view;
     let mut request = PreviewRequest::new(opened.client, opened.asset.clone())
         .draft(draft_id)
-        .proxy(bounds)
-        .gpu();
+        .gpu_fit(bounds);
     if let Some(rect) = region {
         request = request.gpu_region(rect, 1.0);
     }

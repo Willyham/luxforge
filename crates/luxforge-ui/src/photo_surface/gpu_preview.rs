@@ -1610,14 +1610,8 @@ fn intermediate_format(format: BoundaryFormat) -> wgpu::TextureFormat {
 }
 
 /// The bytes one of a chain's intermediates takes over a boundary of `size` texels in `format`.
-fn intermediate_bytes((width, height): (u32, u32), format: BoundaryFormat) -> u64 {
-    u64::from(width)
-        * u64::from(height)
-        * u64::from(
-            intermediate_format(format)
-                .block_copy_size(None)
-                .unwrap_or(16),
-        )
+fn intermediate_bytes(size: (u32, u32), format: BoundaryFormat) -> u64 {
+    luxforge_gpu_types::layout::boundary_bytes(size, format)
 }
 
 /// Each link of `steps`' chain with the format its last pass writes: an intermediate for every
@@ -2310,12 +2304,12 @@ fn region_drawable(plan: &GpuPlan) -> bool {
 /// A storage buffer able to hold `bytes`, rounded up so a few more words do not each reallocate,
 /// within the device's largest storage binding, or the refusal that names that limit.
 fn buffer_capacity(device: &wgpu::Device, bytes: u64) -> Result<u64, GpuFallback> {
-    // A multiple of four, as a buffer binding must be.
-    let limit = u64::from(device.limits().max_storage_buffer_binding_size) & !3;
-    if bytes > limit {
-        return Err(GpuFallback::BufferLimit { bytes, limit });
-    }
-    Ok(bytes.max(MIN_BUFFER).next_power_of_two().min(limit))
+    luxforge_gpu_types::layout::buffer_capacity(
+        bytes,
+        MIN_BUFFER,
+        u64::from(device.limits().max_storage_buffer_binding_size),
+    )
+    .map_err(|limit| GpuFallback::BufferLimit { bytes, limit })
 }
 
 fn storage_buffer(device: &wgpu::Device, label: &str, bytes: u64) -> wgpu::Buffer {
