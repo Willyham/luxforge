@@ -95,8 +95,27 @@ What an ordinary edit paid on 2026-10-04, from the read-only audit after the fre
 | `EstimateAfterSpatial` refuses the windowed path (`render/compiled.rs`) | Detail before Dehaze, or masked Dehaze after global Presence | 100% motion as a whole-output proxy, refinement as the whole frame, a crop at Fit as the whole proxy stage | 3 | The drag stack at 100%: 9.0 / 9.3 ms in motion, its committed view plan 9.8 / 10.0 ms |
 | A colour drag under Dehaze at 100% needs an exact-stage estimate per tick (`render/gpu/preview.rs` `RegionEstimate`) | Basic or a mask drag at 100% with Dehaze | *Measured* 110 to 420 ms per unit per tick, 864 ms for the first 60 MP region | 3 | 8.7 / 9.1 ms at 24 MP and 9.0 / 9.3 ms at 60 MP, the light computed on the GPU every tick within the frame |
 | Compare exit and history return re-render the exact frame | Every toggle | One exact render, about 1 to 3 s on a heavy stack | 2 | Air 2S, Detail and Presence, 5 each: Compare off 19 to 21 ms to the frame, sharp 1.03 to 1.04 s later; a history return 9 ms, sharp 1.04 to 1.06 s. Compare on draws the reference's frames, 0.59 to 0.65 s |
-| The whole-frame exact render and reduction after every commit at Fit | Every commit | The same second or three | 2 | The committed frame at once, 9.8 / 17.1 ms. Picture at rest and counts: the drag stack 0.77 / 0.82 s at p50, a 24 MP JPEG 0.60 / 0.65 s. **Missed** at 60 MP, 5.6 / 5.7 s (6 commits) against the reference renderer's 1.7 s, and on the masked stack, 15 to 17 s against the reference's 1.3 s |
+| The whole-frame exact render and reduction after every commit at Fit | Every commit | The same second or three | 2 | The committed frame at once, 9.8 / 17.1 ms. Picture at rest and counts on 2026-10-06: the drag stack 0.77 / 0.82 s at p50, a 24 MP JPEG 0.60 / 0.65 s, missed at 60 MP (5.6 / 5.7 s) and on the masked stack (15 to 17 s). After TASK-012, 2026-10-07, counts p50 / p95 against the same build's reference renderer: the drag stack on the Air 2S 0.26 / 0.27 s against 1.14 to 1.15 / 1.19 to 1.31 s, at 24 MP 0.23 to 0.24 / 0.24 to 0.26 s against 0.64 to 0.67 / 0.68 to 0.69 s, at 60 MP 0.60 to 0.61 / 0.60 to 0.62 s against 1.76 to 2.09 / 1.95 to 2.35 s; three spatial segments 0.31 / 0.33 to 0.34 s against 0.96 to 0.98 / 1.02 to 1.05 s; the masked stroke's release 0.71 to 0.73 s against 1.30 to 1.42 s ([performance](../specs/performance.md#gpu-throughput-against-the-reference-task-012)) |
 | RAW white-balance release held the window for its redevelopment | Every release | *Measured* 0.5 to 1.6 s before owner tasks left the update loop | Done | The redeveloped picture 133.8 / 141.8 ms after the release, sharp at 255.6 / 276.9 ms; the drag 8.5 / 9.0 ms |
+
+**GPU throughput after TASK-012**, measured on the M4 on 2026-10-07 (source `2e22257d`, release, quiet host, back to back with the same build's reference renderer; [performance](../specs/performance.md#gpu-throughput-against-the-reference-task-012)):
+
+| Row | 2026-10-06 | 2026-10-07, GPU | Reference | Status |
+| --- | --- | --- | --- | --- |
+| Picture at rest and counts, 60 MP drag stack | 5.6 / 5.7 s | counts 0.60 to 0.61 / 0.60 to 0.62 s, 2 sweeps of 15 tiles of 2048 px | 1.76 to 2.09 / 1.95 to 2.35 s | Met |
+| The same after the masked stroke on the Air 2S | 15 to 17 s | 0.71 to 0.73 s (5 launches), 4 sweeps of 42 tiles | 1.30 to 1.42 s (4) | Met |
+| The same, Air 2S three-segment commit | 14.9 to 17.3 s | 0.31 / 0.33 to 0.34 s | 0.96 to 0.98 / 1.02 to 1.05 s | Met |
+| The same, 24 MP and Air 2S drag stacks | 0.65 and 0.82 s | 0.23 to 0.24 and 0.26 s | 0.64 to 0.67 and 1.14 to 1.15 s | Met |
+| The same, X100VI drag stack (40 MP) | not measured | 0.62 / 0.65 s | 2.43 / 2.56 s | Met |
+| The same, 60 MP RAW drag stack through a light sweep | 1.7 to 2.1 s, an indication | 1.63 to 1.65 s, an indication on the headless surface | 2.55 to 2.57 s | Met as an indication; no 60 MP RAW in the corpus to measure in the editor |
+| Catalog tiers, Z 6 and Air 2S, Basic and Presence | Z 6 with Presence 0.84 against 0.69 s, an indication | 0.24 to 0.55 s, an indication | 0.40 to 0.83 s | Met as an indication |
+| Heavy export, 24 / 60 MP | 0.95 / 10.4 s | 0.28 / 0.63 s | 0.78 / 2.02 s | Met |
+| Masked Air 2S export | not measured | 0.46 s | 1.18 s | Met |
+| Trivial export, 24 / 60 MP | under 0.25 s either way | 101 / 190 ms | 85 / 175 ms | **Missed** by 15 to 16 ms |
+| Drag ticks (Air 2S stack at Fit, 33%, 100%; Dehaze at 60 MP 100%; a masked Presence drag) | 9.0 / 9.2 to 9.6 ms | 8.5 to 9.1 / 8.7 to 9.4 ms | | No regression |
+| Paint at 100% over the masked stack | 8.2 / 23.7 ms | 8.1 to 8.2 / 22.5 to 24.0 ms | | **Missed**: slow ticks do the same work as fast ones, no rebinds; not attributed further |
+| Launch to an empty shell | 1,869 ms | 2,069 to 2,107 ms | `2837c344` today 1,821 to 1,883 ms (1,378 on 2026-10-02) | **Missed**: 0.45 s is the host's on both builds; this build adds 0.19 to 0.25 s, mostly copying and first-checking its larger executable |
+| Uncached 24 MP open to raster | 1,099 ms | 1,211 to 1,253 ms | `2837c344` today 1,203 to 1,224 ms (783 on 2026-10-02) | **Missed** against 2026-10-02; the same as the older build today |
 
 ## Proposals with recorded defaults
 
