@@ -629,7 +629,7 @@ impl FilesLane {
 
     /// A test's new mount source: what was learned from the old one is forgotten, and the next
     /// calls wait for a survey of the new one.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-holds"))]
     pub(super) fn new_mount_source(&mut self) {
         let surveys = &mut self.surveys;
         surveys.generation += 1;
