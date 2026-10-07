@@ -11,7 +11,7 @@
 //! says how many tests it left out. The whole run leaves out nothing.
 use crate::*;
 use std::{
-    io::{Seek, SeekFrom},
+    io::{Read, Seek, SeekFrom},
     process::Stdio,
     sync::mpsc,
     thread,

@@ -5111,7 +5111,19 @@ dependencies = [
  "tar",
  "tempfile",
  "time",
+ "xtask-cli",
  "zip",
+]
+
+[[package]]
+name = "xtask-cli"
+version = "0.0.0"
+dependencies = [
+ "percent-encoding",
+ "regex",
+ "serde_json",
+ "tempfile",
+ "time",
 ]
 
 [[package]]

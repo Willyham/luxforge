@@ -1213,6 +1213,32 @@ struct DependencyRule {
 
 const DEPENDENCY_RULES: &[DependencyRule] = &[
     DependencyRule {
+        name: "xtask-cli-no-photo-dependencies",
+        refuses: Depends::Any(&[
+            "image",
+            "cc",
+            "mozjpeg",
+            "mozjpeg-sys",
+            "libsqlite3-sys",
+            "iced",
+            "wgpu",
+            "naga",
+        ]),
+        manifests: &["xtask/cli"],
+        tables: EVERY_TABLE,
+        allowed: &[],
+        reason: "xtask-cli may not build images, native codecs, databases or GUI/GPU tooling",
+    },
+    DependencyRule {
+        name: "photo-free-xtask-cli",
+        refuses: Depends::WorkspaceCrate,
+        manifests: &["xtask/cli"],
+        tables: EVERY_TABLE,
+        allowed: &[],
+        reason: "xtask-cli may depend on no workspace crate and no path, so repository checks \
+                 and dependency audits never compile the photo core or native codecs",
+    },
+    DependencyRule {
         name: "image-jpeg-feature",
         refuses: Depends::Feature {
             dependency: "image",
@@ -2270,6 +2296,35 @@ mod tests {
         let tables: Vec<_> = dependencies(manifest).iter().map(|d| d.table).collect();
         use Table::*;
         assert!(tables == [Normal, Normal, Normal, Normal, Dev, Workspace]);
+    }
+
+    #[test]
+    fn the_cargo_entry_point_cannot_pull_in_workspace_libraries() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let path = "xtask/cli/Cargo.toml";
+        let rules = ["photo-free-xtask-cli", "xtask-cli-no-photo-dependencies"];
+        write_all(
+            root,
+            &[(path, "[dependencies]\nserde_json = \"1\"\nregex = \"1\"\n")],
+        );
+        assert!(read(root, &rules).is_ok());
+        for dependency in [
+            "[dependencies]\nluxforge-core = \"0\"\n",
+            "[dev-dependencies]\nalias = { package = \"luxforge-testkit\", version = \"0\" }\n",
+            "[build-dependencies]\nalias = { path = \"../../some-library\" }\n",
+        ] {
+            write_all(root, &[(path, dependency)]);
+            assert!(refusal(root, &rules, path).contains("no workspace crate and no path"));
+        }
+        write_all(
+            root,
+            &[(
+                path,
+                "[build-dependencies]\ncompiler = { package = \"cc\", version = \"1\" }\n",
+            )],
+        );
+        assert!(refusal(root, &rules, path).contains("may not build images"));
     }
     #[test]
     fn layer_boundaries_reject_a_forbidden_import() {

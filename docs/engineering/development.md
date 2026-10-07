@@ -2,6 +2,20 @@
 
 Build, editor and verification tooling uses Rust: `cargo xtask <command>`. Commands reject unknown arguments and pass paths to child processes without shell interpolation. `cargo xtask help` lists those commands. The optional [extended camera corpus](#extended-camera-corpus) uses Python and AWS CLI for cloud transfers.
 
+The Cargo alias starts `xtask-cli`, a small Rust package independent of image libraries, native
+codecs and the photo core. Repository checks, formatting, Clippy, tests, builds and audits run
+through it; builds and whole-workspace checks then compile the product as requested, without
+first compiling the photo/evidence tooling. Other commands build and run the full `xtask`
+package through Cargo, preserving OS-string arguments, the debug/release profile and exit
+status. Explicit `cargo run --release --locked --package xtask -- ...` commands keep their
+current behavior. Both packages share the same repository, policy and test-runner library;
+their unit tests have one owner and whole-workspace verification includes both packages.
+See the [startup contract](../design/xtask-startup.md).
+
+For focused tests, use `tools/cargo-cached test -p xtask-cli FILTER` for repository,
+policy, test-runner and command-routing changes, and `tools/cargo-cached test -p xtask FILTER`
+for photo, evidence and verification changes. Ordinary workspace tests include both.
+
 ## Setup
 
 Install Git and Rust through rustup plus the platform prerequisites in [platforms](platforms.md). Nothing here installs system tools silently.
@@ -151,6 +165,7 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 | `jpeg-codec-users`, `jpeg-codec-leaf` | A dependency on `luxforge-jpeg` from any crate but `luxforge-core`; any workspace crate or path in `luxforge-jpeg`'s manifest |
 | `independent-references` | Any workspace crate or path in `luxforge-reference`'s manifest |
 | `core-free-test-base` | Any workspace crate or path in `luxforge-testbase`'s manifest, so the core's and the widget crate's tests can use its gate, wait and distribution |
+| `photo-free-xtask-cli`, `xtask-cli-no-photo-dependencies` | A workspace/path dependency or an image, native compiler/codec/database or GUI/GPU dependency in `xtask/cli`'s manifest, in any dependency table; lightweight checks and audits must build independently of the photo tools |
 | `http-client-crates` | A dependency on `ureq` or `ureq-proto` from any crate but `luxforge-net`, whose module transport is the one HTTP client |
 | `core-links-no-network` | `rustls`, `rustls-platform-verifier`, `ring`, `ureq`, `ureq-proto` or `security-framework` in `luxforge-core`'s normal, dev or build dependencies: the transport and the Keychain store are `luxforge-net`'s, given to the host through `HostConfig`, so the core and its test binaries link neither |
 | `headless-cli` | A normal dependency of `luxforge-cli` on the GUI stack (`iced`, `iced_wgpu`, `wgpu`, `naga`, `rfd`, `luxforge-ui` or `luxforge-app`), so building the headless `luxforge-json` builds no window, renderer, shader compiler or dialog crate |

@@ -3,7 +3,6 @@ mod basic_smoke;
 mod capabilities_smoke;
 mod catalog_measure;
 mod catalog_probes;
-mod check;
 /// The field-patch conformance suite the core's own integration test runs, compiled in rather than
 /// copied, so `editor-acceptance` records the evidence of exactly the checks `cargo test` makes.
 #[path = "../../crates/luxforge-core/tests/modules/conformance/mod.rs"]
@@ -51,7 +50,6 @@ mod mixer_smoke;
 mod no_gpu_render_smoke;
 mod package;
 mod performance_smoke;
-mod policy;
 mod presence_mixer_vignette_acceptance;
 mod presence_smoke;
 mod presets_smoke;
@@ -60,7 +58,6 @@ mod raw;
 mod raw_camera;
 mod raw_editor;
 mod raw_panel_smoke;
-mod repository;
 mod resolve_missing_smoke;
 mod scenario;
 mod select_catalog_smoke;
@@ -85,17 +82,10 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, ExitCode},
 };
-type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
-fn ensure(ok: bool, message: impl Into<String>) -> Result {
-    if ok {
-        Ok(())
-    } else {
-        Err(message.into().into())
-    }
-}
-fn read_json(path: &Path) -> Result<Value> {
-    Ok(serde_json::from_slice(&fs::read(path)?)?)
-}
+use xtask_cli::{
+    Args, Result, cargo, cargo_command, check, ensure, files, output, policy, read_json,
+    repository, root,
+};
 fn write_json(path: &Path, value: &Value) -> Result {
     fs::write(path, format!("{}\n", serde_json::to_string_pretty(value)?))?;
     Ok(())
@@ -122,36 +112,6 @@ fn run(root: &Path, program: impl AsRef<OsStr>, args: &[&str]) -> Result {
         status.success(),
         format!("Command {args:?} failed: {status}"),
     )
-}
-fn output(root: &Path, program: impl AsRef<OsStr>, args: &[&str]) -> Result<String> {
-    let out = Command::new(program)
-        .args(args)
-        .current_dir(root)
-        .output()?;
-    ensure(out.status.success(), String::from_utf8_lossy(&out.stderr))?;
-    Ok(String::from_utf8(out.stdout)?)
-}
-fn files(root: &Path) -> Result<Vec<PathBuf>> {
-    let mut paths = Vec::new();
-    for item in fs::read_dir(root)? {
-        let p = item?.path();
-        if p.is_dir() {
-            paths.extend(files(&p)?)
-        } else {
-            paths.push(p)
-        }
-    }
-    paths.sort();
-    Ok(paths)
-}
-fn root() -> Result<PathBuf> {
-    let cwd = std::env::current_dir()?;
-    cwd.ancestors()
-        .find(|p| {
-            p.join("tools/task-plan.schema.json").is_file() && p.join("xtask/Cargo.toml").is_file()
-        })
-        .map(Path::to_path_buf)
-        .ok_or_else(|| "Run from a Luxforge checkout".into())
 }
 fn absolute(root: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() {
@@ -180,88 +140,7 @@ fn host(root: &Path) -> Result<String> {
         .find_map(|l| l.strip_prefix("host: ").map(str::to_owned))
         .ok_or_else(|| "Missing rustc host".into())
 }
-/// A `cargo` command without the package variables `cargo run` set for this process. `ring`'s build
-/// script declares `rerun-if-env-changed` on `CARGO_MANIFEST_DIR`, `CARGO_PKG_NAME` and the version
-/// parts, so a Cargo that inherited them from `cargo xtask` would rebuild `ring`, and every crate
-/// above it, after a build started from a shell, and the next shell build would rebuild it back.
-fn cargo_command() -> Command {
-    let mut command = Command::new("cargo");
-    for (key, _) in std::env::vars_os() {
-        if key.to_str().is_some_and(|key| {
-            key.starts_with("CARGO_PKG_")
-                || key.starts_with("CARGO_MANIFEST_")
-                || matches!(
-                    key,
-                    "CARGO_CRATE_NAME" | "CARGO_BIN_NAME" | "CARGO_PRIMARY_PACKAGE"
-                )
-        }) {
-            command.env_remove(key);
-        }
-    }
-    command
-}
-fn cargo(root: &Path, op: &str, release: bool) -> Result {
-    let mut args = match op {
-        "build" => vec![
-            "build",
-            "--locked",
-            "--package",
-            "luxforge-app",
-            "--package",
-            "luxforge-cli",
-        ],
-        "fmt" => vec!["fmt", "--all", "--", "--check"],
-        "lint" => vec![
-            "clippy",
-            "--locked",
-            "--workspace",
-            "--all-targets",
-            "--",
-            "-D",
-            "warnings",
-        ],
-        _ => return Err("Unknown Cargo operation".into()),
-    };
-    if release {
-        args.push("--release")
-    }
-    let status = cargo_command().args(&args).current_dir(root).status()?;
-    ensure(
-        status.success(),
-        format!("Command {args:?} failed: {status}"),
-    )
-}
-struct Args(Vec<OsString>);
-impl Args {
-    fn flag(&mut self, key: &str) -> bool {
-        if let Some(i) = self.0.iter().position(|x| x == key) {
-            self.0.remove(i);
-            true
-        } else {
-            false
-        }
-    }
-    fn value(&mut self, key: &str) -> Result<Option<OsString>> {
-        if let Some(i) = self.0.iter().position(|x| x == key) {
-            self.0.remove(i);
-            ensure(i < self.0.len(), format!("Missing {key} value"))?;
-            Ok(Some(self.0.remove(i)))
-        } else {
-            Ok(None)
-        }
-    }
-    fn path(&mut self, key: &str) -> Result<PathBuf> {
-        self.value(key)?
-            .map(PathBuf::from)
-            .ok_or_else(|| format!("Required: {key}").into())
-    }
-    fn done(&self) -> Result {
-        ensure(
-            self.0.is_empty(),
-            format!("Unknown arguments: {:?}", self.0),
-        )
-    }
-}
+
 fn samples(a: &mut Args, default: usize) -> Result<usize> {
     Ok(a.value("--samples")?
         .map(|s| s.to_string_lossy().parse::<usize>())
@@ -831,38 +710,8 @@ fn main_result() -> Result {
             gpu_qualification::run(&root, &options)?;
         }
         "__hang" => std::thread::sleep(std::time::Duration::from_secs(60)),
-        "help" => println!(
-            "cargo xtask doctor|check [--quick]|check-repository|fmt|lint|test [--quick]|build [--release]|develop [--debug] [--background] [app args]|fixtures|generate-fixtures [--output NEW]|generate-catalog --output NEW [--files N] [--assets M] [--images N] [--seed N]|gazetteer --source cities15000.txt --output NEW|audit|raw-camera-metadata --index FILE --ids ID[,ID...] --output NEW [--max-source-mib N]|inspect-dng --source DNG [--json NEW]|raw-authentic --manifest FILE --output NEW|editor-acceptance --output NEW|editor-performance --source JPEG --output NEW [--samples N] [--lens-only (JPEG or RAW)]|detail-performance --source JPEG --output NEW [--samples N] [--case all|render|export|points|sharing]|detail-grid-performance --source JPEG --output NEW [--samples N]|editor-latency --source JPEG_OR_RAW --output NEW [--binary PATH] [--samples N] [--mode drag|commit|burst|paint|hover|crop-start] [--mask-overlay] [--zoom PERCENT] [--moving-pan] [--control slider|curve] [--action ID --parameter NAME (a field-patch slider, or with --control curve a module curve such as set-curve luminance)] [--crop DEGREES] [--basic] [--presence] [--curve-layer] [--detail] [--lens] [--perspective] [--mask] [--idle] [--warm MS] [--contend N] [--reference-renderer]|lens-qualification --manifest FILE --edges FILE --output NEW|lensfun-import --source DIR --output DIR|inventory --output NEW|package --output NEW|smoke --list|smoke --output NEW [--scenario NAME] [--binary PATH] [--source RAW (the scenarios --list shows taking one)] [--manifest FILE (the scenarios --list shows needing one)] [--editor-software-adapter]|smoke --verify-only RUN_DIR --output NEW [--scenario NAME] [--source RAW]|verify --output NEW [--tier quick|rendered|timing|full] [--jobs N] [--binary PATH] [--manifest FILE]|check-capture --image PNG [--orientation N] [--aspect R] [--columns LEFT,RIGHT]|preview-error (--candidate PNG --reference PNG --photo-rect LEFT,TOP,RIGHT,BOTTOM | --evidence DIR --candidate-frame N --reference-frame N) [--class pointwise|spatial] [--output NEW_FILE]|preview-corpus [--manifest FILE] [--output NEW_FILE]|gpu-qualification --output NEW [--manifest FILE] [--fixtures DIR] [--zoom fit|33|50|100|all] [--kind picture-at-rest|picture-in-motion|histogram|sample|export|all] [--families F,...] [--recipes ID,...] [--sources ID,...] [--frames missed|all] [--gate-motion against-rest|against-reference]|hardening --binary PATH --output NEW|measure --binary PATH --output NEW [--samples N]|catalog-measure --output NEW [--samples N] [--scale tiny|full] [--binary PATH] [--raw-corpus DIR] [--card DIR]"
-        ),
+        "help" => println!("{}", xtask_cli::HELP),
         _ => return Err("Unknown command; use cargo xtask help".into()),
     }
     Ok(())
-}
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_spawned_cargo_inherits_none_of_the_package_variables_cargo_sets() {
-        let removed: Vec<OsString> = cargo_command()
-            .get_envs()
-            .filter(|(_, value)| value.is_none())
-            .map(|(key, _)| key.to_owned())
-            .collect();
-        // `cargo test` sets the same package variables for this process as `cargo run` sets for
-        // `xtask`, so every one of them present here must be removed.
-        for (key, _) in std::env::vars_os() {
-            let name = key.to_string_lossy();
-            if name.starts_with("CARGO_PKG_") || name.starts_with("CARGO_MANIFEST_") {
-                assert!(
-                    removed.contains(&key),
-                    "{name} would reach the spawned Cargo"
-                );
-            }
-        }
-        assert!(
-            !removed.iter().any(|key| key == "CARGO"),
-            "the path to Cargo is kept"
-        );
-    }
 }
