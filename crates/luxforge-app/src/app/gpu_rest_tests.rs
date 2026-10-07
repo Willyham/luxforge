@@ -1736,7 +1736,7 @@ fn gpu_rest_the_60_mp_raw_drag_stacks_light_indication() {
         &registry,
         luxforge_core::RenderSource::Linear {
             image,
-            settings: settings.clone(),
+            settings: *settings,
         },
         &recipe,
         RenderOptions::exact(&Cancel::never()),

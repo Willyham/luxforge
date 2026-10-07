@@ -1191,6 +1191,11 @@ impl TileRunner {
         Ok(read)
     }
 
+    /// Whether a light sweep is being drawn ([`TileRunner::begin_light`]).
+    pub fn light_sweeping(&self) -> bool {
+        self.light_sweep.is_some()
+    }
+
     /// Let a light sweep begun go unfinished: its stream ended or fell back.
     pub fn abandon_light(&mut self) {
         self.light_sweep = None;
