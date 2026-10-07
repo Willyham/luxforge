@@ -627,11 +627,11 @@ fn photo_drawn(
 ) -> bool {
     match expected {
         ExpectedPhotoDraw::Gpu { boundary } => {
-            gpu.drawn_path == Some(luxforge_ui::photo_surface::DrawingPath::Gpu)
+            gpu.drawn_path == Some(luxforge_gpu::DrawingPath::Gpu)
                 && gpu.drawn_gpu_boundary == Some(boundary)
         }
         ExpectedPhotoDraw::GpuTick { boundary, revision } => {
-            gpu.drawn_path == Some(luxforge_ui::photo_surface::DrawingPath::Gpu)
+            gpu.drawn_path == Some(luxforge_gpu::DrawingPath::Gpu)
                 && gpu.drawn_gpu_boundary == Some(boundary)
                 && gpu.drawn_gpu_tag == Some(revision)
         }
@@ -780,10 +780,10 @@ impl Editor {
             if matches!(
                 drawn.gpu_fallback,
                 Some(
-                    luxforge_ui::photo_surface::GpuFallback::Compiling
-                        | luxforge_ui::photo_surface::GpuFallback::SourceUploading { .. }
-                        | luxforge_ui::photo_surface::GpuFallback::BoundaryUploading { .. }
-                        | luxforge_ui::photo_surface::GpuFallback::LightPending
+                    luxforge_gpu::GpuFallback::Compiling
+                        | luxforge_gpu::GpuFallback::SourceUploading { .. }
+                        | luxforge_gpu::GpuFallback::BoundaryUploading { .. }
+                        | luxforge_gpu::GpuFallback::LightPending
                 )
             ) {
                 return false;
@@ -846,7 +846,7 @@ impl Editor {
         // Over a GPU frame the plan's own marks are the overlay: the CPU frame's is not drawn.
         let diagnostics = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
         if enabled
-            && diagnostics.drawn_path == Some(luxforge_ui::photo_surface::DrawingPath::Gpu)
+            && diagnostics.drawn_path == Some(luxforge_gpu::DrawingPath::Gpu)
             && diagnostics.drawn_clipping_marks
                 == super::gpu_settle::clip_flags(&self.session.workspace)
         {
@@ -3353,10 +3353,7 @@ impl Editor {
     /// taken, and nothing queued or compiling.
     fn gpu_warmed(&self) -> (bool, Value) {
         let gpu = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
-        let wanted = self
-            .gpu
-            .warm()
-            .map(luxforge_ui::photo_surface::GpuWarm::version);
+        let wanted = self.gpu.warm().map(luxforge_gpu::GpuWarm::version);
         let taken = wanted.is_none() || gpu.gpu_preview_warmed == wanted;
         let warmed = taken && gpu.gpu_preview_compile_pending == 0;
         (

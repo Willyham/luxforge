@@ -202,8 +202,7 @@ fn the_single_parameter_control_under_test_is_one_number_with_a_default() {
 fn a_single_parameter_actions_slider_drafts_previews_and_commits_once() {
     let (mut editor, catalog, log, _, _, _) = drafting();
     // The reference renderer draws the drafted frames, the session having no GPU.
-    editor.renderer.stage =
-        Some(luxforge_ui::photo_surface::GpuStageState::NoAdapter { refused: true });
+    editor.renderer.stage = Some(luxforge_gpu::GpuStageState::NoAdapter { refused: true });
     let (action, parameter) = single_parameter_control(&editor);
 
     for value in [0.25, 0.5] {

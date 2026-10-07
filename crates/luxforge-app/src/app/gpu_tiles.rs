@@ -23,7 +23,7 @@
 //! - **One thread.** `luxforge-gpu-tiles`, started by the first call or stream and asleep on its
 //!   condition variable while nothing waits (performance rule 8). It owns the runner, which the
 //!   first call or stream that needs it opens on the adapter the window's renderer reports drawing
-//!   with, never another ([`TileRunner::open`]): a host without that adapter answers
+//!   with, never another ([`crate::adapters::tile_runner`]): a host without that adapter answers
 //!   `tiles-unavailable adapter-mismatch`, a launch with `--no-gpu-render` `refused`, a desktop
 //!   that named no adapter, or a launch that refused the GPU stage on a host whose only adapter is
 //!   a software one not adopted, `no-adapter`, and a lost device `device-lost` from then on. A
@@ -71,6 +71,7 @@
 //!   slots created, the bytes the runner holds and has held, its compiles, the lights it computed
 //!   and where its tiles' time went.
 use super::gpu_plan::{self, WarpGrid, surface_plan_over, sweep_plan_over};
+use crate::adapters::Adapter;
 use luxforge_core::{
     Cancel, ClientId, CoordinateGrid, Error, GpuFallback, GpuGeometry, GpuLightSweep, GpuPlan,
     GpuStaging, GpuSweep, GpuSweeps, LinearImage, PreparedStream, PreviewSource, Region, RestTile,
@@ -82,15 +83,11 @@ use luxforge_core::{
         TileReads, TileService, TileSession, TileStatus, TileUnavailable, clipped,
     },
 };
-use luxforge_ui::{
-    adapters::Adapter,
-    photo_surface::{
-        Derivation, GpuBoundary, GpuSource,
-        gpu_preview::tiles::{
-            GPU_TILE_BUDGET, TILES_IN_FLIGHT, Ticket, TileEnd, TileFailure, TileFigures, TileInput,
-            TileOutput, TilePixels, TileRunner, TileTimes, TileUnavailable as RunnerUnavailable,
-        },
-    },
+use luxforge_gpu::{
+    Derivation, GpuBoundary, GpuSource, tiles::GPU_TILE_BUDGET, tiles::TILES_IN_FLIGHT,
+    tiles::Ticket, tiles::TileEnd, tiles::TileFailure, tiles::TileFigures, tiles::TileInput,
+    tiles::TileOutput, tiles::TilePixels, tiles::TileRunner, tiles::TileTimes,
+    tiles::TileUnavailable as RunnerUnavailable,
 };
 use serde_json::{Value, json};
 use std::{
@@ -113,8 +110,8 @@ static LAUNCHED: OnceLock<Arc<GpuTiles>> = OnceLock::new();
 /// host whose only adapter is a software one, not adopted, or with no adapter, answering the
 /// reference as `no-adapter` ([`GpuTiles::unavailable`]). Made once; a second call answers the
 /// first's.
-pub(crate) fn launch(launch: luxforge_ui::adapters::LaunchRenderer) -> Arc<GpuTiles> {
-    use luxforge_ui::adapters::{LaunchRenderer, Refusal};
+pub(crate) fn launch(launch: crate::adapters::LaunchRenderer) -> Arc<GpuTiles> {
+    use crate::adapters::{LaunchRenderer, Refusal};
     Arc::clone(LAUNCHED.get_or_init(|| {
         Arc::new(match launch {
             LaunchRenderer::Gpu { .. } => GpuTiles::pending(false),
@@ -137,7 +134,7 @@ pub(crate) fn launched() -> Option<Arc<GpuTiles>> {
 type Stack = luxforge_core::Evaluation;
 
 /// The photo surface's plan, beside the core's of the same name.
-type SurfacePlan = luxforge_ui::photo_surface::GpuPlan;
+type SurfacePlan = luxforge_gpu::GpuPlan;
 
 /// How far a read's tile reaches past the rectangle read, on every side: a point's tile is 17 × 17
 /// pixels, so the 5 × 5 patch of a neutral pick, read a point at a time from its corner, lies
@@ -990,7 +987,7 @@ impl Worker {
             };
             // A JPEG's cut reads the core's decode table, which the surface holds once handed it.
             gpu_plan::install_output_encoding();
-            match TileRunner::open(&backend, &name) {
+            match crate::adapters::tile_runner(&backend, &name) {
                 Ok(opened) => {
                     self.figures.borrow_mut().adapter = Some(opened.adapter().clone());
                     *runner = Some(opened);

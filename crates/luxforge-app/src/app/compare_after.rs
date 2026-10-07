@@ -18,7 +18,7 @@ use luxforge_ui::Frame;
 pub(crate) const DEVICE_TEXTURE_LIMIT: u32 = 8192;
 
 /// The device's largest storage binding as the desktop assumes it, wgpu's default limits' 128 MiB:
-/// what a light link's buffers are sized within ([`luxforge_ui::photo_surface::gpu_preview::light`]).
+/// what a light link's buffers are sized within ([`luxforge_gpu::light`]).
 pub(crate) const DEVICE_STORAGE_BINDING: u64 = 1 << 27;
 
 /// The display-size frame on screen when it is the exact photograph at that size: the exact

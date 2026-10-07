@@ -25,15 +25,12 @@ use luxforge_core::{
     RenderOptions, RenderSource, SnapshotId, SourceImage, Stage, gpu_plan,
     qualification::presence as cpu, render,
 };
-use luxforge_reference::preview_error::{self, Class, Rgb8, Statistics};
-use luxforge_ui::photo_surface::{
-    GpuBoundary, GpuPlan, GpuProgram, GpuStep, TexelMap,
-    gpu_preview::{
-        GpuApply, GpuPass, GpuPlane, GpuSpatial, PassShape, PlaneFormat, PlaneSize,
-        qualification::{Qualifier, boundary, held},
-    },
-    validate_step,
+use luxforge_gpu::{
+    GpuApply, GpuBoundary, GpuPass, GpuPlan, GpuPlane, GpuProgram, GpuSpatial, GpuStep, PassShape,
+    PlaneFormat, PlaneSize, TexelMap, qualification::Qualifier, qualification::boundary,
+    qualification::held, validate_step,
 };
+use luxforge_reference::preview_error::{self, Class, Rgb8, Statistics};
 use serde_json::{Value, json};
 use std::{borrow::Cow, sync::Arc};
 
@@ -103,7 +100,7 @@ fn gpu_presence_the_program_passes_the_surfaces_own_convention() {
                     6000,
                     4000,
                     1,
-                    luxforge_ui::photo_surface::BoundaryFormat::Half,
+                    luxforge_gpu::BoundaryFormat::Half,
                 )
                 .unwrap()
             };
@@ -1780,7 +1777,7 @@ fn gpu_presence_a_masked_layer_runs_its_passes_over_its_mask_alone() {
 /// holding its scratch planes as its own they charged 495.5 MB.
 #[test]
 fn gpu_presence_masked_layers_take_their_scratch_from_one_pool() {
-    use luxforge_ui::photo_surface::{BoundaryFormat, gpu_preview::chain_charge};
+    use luxforge_gpu::{BoundaryFormat, chain_charge};
     let test = "gpu_presence_masked_layers_take_their_scratch_from_one_pool";
     let registry = ModuleRegistry::builtin();
     let (width, height) = (2292u32, 1528u32);

@@ -690,7 +690,7 @@ mod tests {
                 editor
                     .gpu
                     .source()
-                    .map(|source| luxforge_ui::photo_surface::SourceFigures {
+                    .map(|source| luxforge_gpu::SourceFigures {
                         version: source.version(),
                         bytes: source.bytes(),
                         uploaded: source.bytes(),

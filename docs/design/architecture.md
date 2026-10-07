@@ -116,7 +116,7 @@ Paths are under `crates/luxforge-app/src`.
 - `coalesce.rs`: the one "one request in flight, newest waiting" slot, which the pointer sample, the pan, the curve samples, the event sync, the Performance sampler and the loupe's 100% region share.
 - `crop_draft.rs`: the crop frame's geometry, whose draft is a core draft like every other gesture's.
 - `mask_draft.rs` and `mask_draft/`: the mask draft, with one shape editor per drawn kind.
-- Native adapters and diagnostics.
+- `adapters.rs`: desktop renderer selection, software-adapter adoption/refusal and the renderer’s backend/device-limit policy. Neutral enumeration and exact backend/name device opening live in `luxforge-gpu::adapters`; the desktop supplies this policy to its separate tile-worker device. Diagnostics report both devices’ adapter identity.
 
 ### The test kit
 
@@ -440,7 +440,7 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 | The export lane | One running and four queued jobs | One thread per lane (`Lane::Export`) and `LANE_QUEUE`, `crates/luxforge-core/src/jobs.rs` |
 | Retained finished export jobs | 32 | `FINISHED_RECORDS`, `crates/luxforge-core/src/jobs.rs` |
 | One export's pixels | The GPU's: at most four bands of the stage's width and one tile side — two waiting for the encoder, the one it reads and the one being assembled; the reference's: one exact frame inside the evaluated-frame limit. Either way its encoded bytes stream to a temporary file | `EXPORT_BANDS_IN_FLIGHT`, `crates/luxforge-core/src/tiles.rs`; `MAX_FRAME_BYTES`, `crates/luxforge-raw/src/limits.rs` |
-| One GPU export's tiles | The longest of 2048, 1024 and 512 pixels a side whose every tile, over its band's window of the source, fits `GPU_TILE_BUDGET` (2 GiB) less a 256 MiB read reserve, fixed per export; at most two tiles in flight (`TILES_IN_FLIGHT`), what they hold charged beside the next; past all three sides the export is the reference's (`tiles-budget`) | `STREAM_TILE_SIDES`, `crates/luxforge-core/src/render/gpu/tiles.rs`; `GPU_TILE_BUDGET`, `crates/luxforge-ui/src/photo_surface/gpu_preview/tiles.rs`; `STREAM_READ_RESERVE`, `crates/luxforge-app/src/app/gpu_tiles.rs` |
+| One GPU export's tiles | The longest of 2048, 1024 and 512 pixels a side whose every tile, over its band's window of the source, fits `GPU_TILE_BUDGET` (2 GiB) less a 256 MiB read reserve, fixed per export; at most two tiles in flight (`TILES_IN_FLIGHT`), what they hold charged beside the next; past all three sides the export is the reference's (`tiles-budget`) | `STREAM_TILE_SIDES`, `crates/luxforge-core/src/render/gpu/tiles.rs`; `GPU_TILE_BUDGET`, `crates/luxforge-gpu/src/execution/tiles.rs`; `STREAM_READ_RESERVE`, `crates/luxforge-app/src/app/gpu_tiles.rs` |
 | Names read when suggesting a destination | 64 | `MAX_PROBES` in `suggest`, `crates/luxforge-core/src/export/publish.rs` |
 
 **Module capabilities**

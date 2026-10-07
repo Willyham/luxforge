@@ -52,13 +52,8 @@ pub(crate) enum EvidenceMessage {
     Info(iced::system::Information),
     /// The adapter that draws the window as the enumeration found it, or `None` where it found no
     /// adapter of that backend and name: recorded with every captured frame.
-    Adapter(
-        Box<(
-            iced::system::Information,
-            Option<luxforge_ui::adapters::Adapter>,
-        )>,
-    ),
+    Adapter(Box<(iced::system::Information, Option<crate::adapters::Adapter>)>),
     /// The GPU identity hook's boundary, held from the frame on screen off the UI thread, or
     /// `None` when that frame could not be held; see `app/gpu_identity.rs`.
-    GpuBoundary(Option<luxforge_ui::photo_surface::GpuBoundary>),
+    GpuBoundary(Option<luxforge_gpu::GpuBoundary>),
 }

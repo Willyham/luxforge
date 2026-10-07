@@ -105,7 +105,7 @@ fn log_drawn(editor: &mut Editor, first: Option<FirstDrawn>) {
 mod tests {
     use super::super::testing::{attach_log, events, finish, logged, real_photo};
     use super::*;
-    use luxforge_ui::photo_surface::DrawingPath;
+    use luxforge_gpu::DrawingPath;
     use std::time::Duration;
 
     /// Each frame the surface first draws is logged once, at the draw's own instant on the run's
@@ -148,7 +148,7 @@ mod tests {
             boundary: Some(3),
             tag: Some(7),
             at: at + Duration::from_millis(10),
-            evaluation: Some(luxforge_ui::photo_surface::EvaluationFigures {
+            evaluation: Some(luxforge_gpu::EvaluationFigures {
                 rebinds: 1,
                 links_run: 2,
                 ..Default::default()

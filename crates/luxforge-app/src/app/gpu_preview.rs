@@ -66,10 +66,10 @@ use luxforge_core::{
     BoundaryKey, CoordinateGrid, Draft, DraftId, GpuAnswer, GpuPreview, LinearImage, PreviewSource,
     ProxyCoverage, ProxyIdentity, Region, SourceBoundary,
 };
-use luxforge_ui::photo_surface::{
-    self as surface, AxisCoverage, Derivation, DrawingPath, GpuBoundary, GpuSource, GpuStep,
-    GpuWarm, Reduction, SurfaceDiagnostics,
+use luxforge_gpu::{
+    AxisCoverage, Derivation, DrawingPath, GpuBoundary, GpuSource, GpuStep, GpuWarm, Reduction,
 };
+use luxforge_ui::{photo_surface as surface, photo_surface::SurfaceDiagnostics};
 use serde_json::{Value, json};
 use std::{
     sync::Arc,
@@ -79,7 +79,7 @@ use std::{
 /// The core's plan, beside the surface's plain data of the same name.
 type CorePlan = luxforge_core::GpuPlan;
 /// The surface's fallback, beside the core's reason of the same name.
-type SurfaceFallback = surface::GpuFallback;
+type SurfaceFallback = luxforge_gpu::GpuFallback;
 
 /// What the surface reports of its last frame that decides a tick's path: the boundary of the
 /// plan it last evaluated, drawn or held, and why it fell back.
@@ -89,7 +89,7 @@ pub(crate) struct SurfaceReport {
     pub(crate) fallback: Option<SurfaceFallback>,
     /// The boundary and draft revision whose GPU output the last frame drew.
     pub(crate) drawn: Option<(u64, u64)>,
-    /// The serial of the plan whose values the surface's slot holds ([`surface::GpuChange`]).
+    /// The serial of the plan whose values the surface's slot holds ([`luxforge_gpu::GpuChange`]).
     pub(crate) evaluated: Option<u64>,
 }
 
@@ -177,7 +177,7 @@ impl<T> Conversion<T> {
 struct StageRest {
     tiles: Box<luxforge_core::RestTiles>,
     version: u64,
-    conversion: Conversion<surface::GpuRest>,
+    conversion: Conversion<luxforge_gpu::GpuRest>,
 }
 
 /// Where a crop draft's input stage on the GPU has got to ([`Editor::gpu_stage_state`]).
@@ -200,14 +200,14 @@ struct RestVersions {
 
 /// Converted together: the picture and its counts-only variant share tiles, source and stages.
 struct RestVariants {
-    picture: surface::GpuRest,
-    counts: surface::GpuRest,
+    picture: luxforge_gpu::GpuRest,
+    counts: luxforge_gpu::GpuRest,
 }
 
 impl RestVariants {
-    fn new(picture: surface::GpuRest, versions: &RestVersions) -> Self {
+    fn new(picture: luxforge_gpu::GpuRest, versions: &RestVersions) -> Self {
         let counts = match picture.reduction {
-            Some(_) => surface::GpuRest {
+            Some(_) => luxforge_gpu::GpuRest {
                 version: versions.counts,
                 tiles: Arc::clone(&picture.tiles),
                 stages: picture.stages.clone(),
@@ -231,8 +231,8 @@ struct HeldRest {
 
 /// One settled resource's handoff. Crop, retained Compare content and warming remain independent.
 enum RestPresentation<'a> {
-    Picture(&'a surface::GpuRest),
-    Counts(&'a surface::GpuRest),
+    Picture(&'a luxforge_gpu::GpuRest),
+    Counts(&'a luxforge_gpu::GpuRest),
 }
 
 /// `tiles` as the surfaces draw them under `version`: each tile's plan over its window cut from the
@@ -246,7 +246,7 @@ fn rest_of(
     grids: &mut Grids,
     tiles: &luxforge_core::RestTiles,
     version: u64,
-) -> Result<Option<surface::GpuRest>, &'static str> {
+) -> Result<Option<luxforge_gpu::GpuRest>, &'static str> {
     let source = source
         .filter(|source| source.identity == tiles.source)
         .ok_or("source-missing")?;
@@ -275,7 +275,7 @@ fn rest_over(
     tiles: &luxforge_core::RestTiles,
     versions: &mut u64,
     version: u64,
-) -> Result<surface::GpuRest, &'static str> {
+) -> Result<luxforge_gpu::GpuRest, &'static str> {
     let mut plans = Vec::with_capacity(tiles.tiles.len());
     for tile in &tiles.tiles {
         let window = tile.window;
@@ -353,13 +353,13 @@ fn rest_over(
                         .map_err(|unrunnable| unrunnable.code())?,
                     );
                 }
-                sweeps.push(surface::RestSweep {
+                sweeps.push(luxforge_gpu::RestSweep {
                     tiles: plans.into(),
                     reads: sweep.reads,
                     writes: sweep.writes,
                 });
             }
-            Some(surface::RestStages {
+            Some(luxforge_gpu::RestStages {
                 stage: (planned.stage.width, planned.stage.height),
                 format,
                 textures: planned.textures,
@@ -398,7 +398,7 @@ fn rest_over(
                 .map_err(|unrunnable| unrunnable.code())?,
             );
         }
-        light_sweeps.push(surface::RestLightSweep {
+        light_sweeps.push(luxforge_gpu::RestLightSweep {
             light: gpu_plan::light_sweep_light(&tiles.plan, planned)
                 .map_err(|unrunnable| unrunnable.code())?,
             side: planned.side,
@@ -406,7 +406,7 @@ fn rest_over(
             tiles: plans.into(),
         });
     }
-    Ok(surface::GpuRest {
+    Ok(luxforge_gpu::GpuRest {
         version,
         tiles: plans.into(),
         light_sweeps: light_sweeps.into(),
@@ -414,7 +414,7 @@ fn rest_over(
         reduction: tiles
             .reduction
             .as_ref()
-            .map(|reduction| surface::RestReduction {
+            .map(|reduction| luxforge_gpu::RestReduction {
                 view: reduction.view,
                 across: axis(reduction.across.clone()),
                 down: axis(reduction.down.clone()),
@@ -429,7 +429,7 @@ pub(crate) fn rest_now(
     gpu: &GpuSource,
     tiles: &luxforge_core::RestTiles,
     version: u64,
-) -> Result<surface::GpuRest, String> {
+) -> Result<luxforge_gpu::GpuRest, String> {
     let stage = tiles
         .warp()
         .map(|warp| grid_of(&GridKey::stage(warp)))
@@ -454,7 +454,7 @@ pub(crate) fn derived_now(
     request: &SourceBoundary,
     version: u64,
 ) -> Result<DerivedNow, String> {
-    let budget = surface::gpu_preview::GPU_PREVIEW_BUDGET;
+    let budget = luxforge_gpu::GPU_PREVIEW_BUDGET;
     if let Some((requested, bound)) = over_budget(plan, request, budget) {
         return Err(format!(
             "budget-exceeded: {requested} B past the {bound} B the editor holds a boundary and its \
@@ -634,7 +634,7 @@ fn light_evidence(plan: &CorePlan) -> Value {
 
 /// What one evaluation of a surface's slot did, as evidence records it: a tick's frame
 /// (`surface_frame_drawn`, the state's `gpu_evaluation`) or a picture at rest's tiles summed.
-pub(crate) fn evaluation_record(figures: &surface::EvaluationFigures) -> Value {
+pub(crate) fn evaluation_record(figures: &luxforge_gpu::EvaluationFigures) -> Value {
     json!({"refits": figures.refits, "rebinds": figures.rebinds,
         "links_run": figures.links_run, "spatial_passes": figures.spatial_passes,
         "lights_encoded": figures.lights_encoded, "lights_restored": figures.lights_restored,
@@ -645,7 +645,7 @@ pub(crate) fn evaluation_record(figures: &surface::EvaluationFigures) -> Value {
 /// evaluations summed, the frames a tile waited for a retirement, and each tile's GPU span from
 /// its preparation to when the interface learned the GPU had finished it, an upper bound reported
 /// as the queue completes each tile.
-pub(crate) fn rest_attribution(figures: &surface::RestFigures) -> Value {
+pub(crate) fn rest_attribution(figures: &luxforge_gpu::RestFigures) -> Value {
     json!({"evaluation": evaluation_record(&figures.evaluation),
         "retirement_waits": figures.retirement_waits,
         "gpu_tiles_reported": figures.gpu_tiles,
@@ -786,9 +786,9 @@ pub(crate) struct GridAnswer {
 /// with where it changes since the plan the surface held when it was converted.
 #[derive(Clone)]
 struct Handed {
-    plan: surface::GpuPlan,
+    plan: luxforge_gpu::GpuPlan,
     revision: u64,
-    change: surface::GpuChange,
+    change: luxforge_gpu::GpuChange,
 }
 
 /// How many handed plans' core plans are kept to measure a later plan's change from.
@@ -801,13 +801,13 @@ const STAMP_HISTORY: usize = 16;
 #[derive(Clone, PartialEq)]
 struct Context {
     boundary: u64,
-    texels: surface::TexelMap,
-    region: Option<surface::GpuRegion>,
-    marks: Option<surface::ClipMarks>,
+    texels: luxforge_gpu::TexelMap,
+    region: Option<luxforge_gpu::GpuRegion>,
+    marks: Option<luxforge_gpu::ClipMarks>,
 }
 
 impl Context {
-    fn of(plan: &surface::GpuPlan) -> Self {
+    fn of(plan: &luxforge_gpu::GpuPlan) -> Self {
         Self {
             boundary: plan.boundary.version(),
             texels: plan.texels,
@@ -822,7 +822,7 @@ impl Context {
 
 /// The serials of the plans handed to the surface, with the core plans they were converted from
 /// and their contexts: what a later plan's change is measured from, so the surface evaluates only
-/// where it changes ([`surface::GpuChange`]).
+/// where it changes ([`luxforge_gpu::GpuChange`]).
 #[derive(Default)]
 struct Stamps {
     serials: u64,
@@ -835,7 +835,7 @@ impl Stamps {
     /// the last few handed and drawn in the same context ([`CorePlan::changes_since`]).
     fn hand(
         &mut self,
-        plan: surface::GpuPlan,
+        plan: luxforge_gpu::GpuPlan,
         revision: u64,
         core: &CorePlan,
         evaluated: Option<u64>,
@@ -870,7 +870,7 @@ impl Stamps {
         Handed {
             plan,
             revision,
-            change: surface::GpuChange { serial, since },
+            change: luxforge_gpu::GpuChange { serial, since },
         }
     }
 }
@@ -1073,7 +1073,7 @@ pub(crate) struct GpuPreviews {
     pub(crate) reduce_after: Option<u64>,
     /// What a test reports of the source the surface holds, which no test uploads.
     #[cfg(test)]
-    pub(crate) source_figures: Option<surface::gpu_preview::SourceFigures>,
+    pub(crate) source_figures: Option<luxforge_gpu::SourceFigures>,
     /// A test's committed stacks the GPU draws nothing of at rest, as one it could not plan: the
     /// CPU's frame is then the photograph, and a gesture's frame settles into it.
     #[cfg(test)]
@@ -1106,7 +1106,7 @@ pub(crate) enum GpuAsk {
 /// it takes on the GPU, as the surface charges them: the boundary over the window its request
 /// names, at its format's bytes a texel; a geometry tail's intermediate of the same size; the frame
 /// in its size bucket, a region's or a whole frame's, with its placement uniform
-/// ([`surface::gpu_preview::texture_charge`]); and the chain's charge over the window
+/// ([`luxforge_gpu::texture_charge`]); and the chain's charge over the window
 /// ([`chain_charge`]): each link's intermediate before the last, every link's kept planes and
 /// parameters, and the pool of scratch planes the links take in turn, once; and each light link
 /// the slot runs before its chain ([`light_charge`]). The surface adds only every link's words and
@@ -1132,7 +1132,7 @@ pub(crate) fn region_charge(plan: &CorePlan, request: &SourceBoundary) -> Option
     let boundary = boundary_bytes(window, request.format);
     // A tail quantizes where the CPU clamps before its resample, and keeps `f32` values on the
     // RAW linear path, as `gpu_plan` builds it.
-    let textures = surface::gpu_preview::texture_charge(
+    let textures = luxforge_gpu::texture_charge(
         (window.width, window.height),
         request.format,
         (rect.width, rect.height),
@@ -1147,7 +1147,7 @@ pub(crate) fn region_charge(plan: &CorePlan, request: &SourceBoundary) -> Option
 }
 
 /// What the light links of `plan` take of the GPU-preview budget, as the surface charges them
-/// ([`surface::gpu_preview::light::lights_charge`]): each link's block plane of the whole stage and
+/// ([`luxforge_gpu::light::lights_charge`]): each link's block plane of the whole stage and
 /// its buffers, and the one tile texture of the source they cut into in turn, whatever window the
 /// plan draws over. Lights the surface cannot run are charged nothing; the tick that converts the
 /// plan refuses them.
@@ -1157,7 +1157,7 @@ pub(crate) fn light_charge(plan: &CorePlan, format: luxforge_core::BoundaryForma
             .into_iter()
             .filter(|light| light.index().is_some())
             .collect();
-        surface::gpu_preview::light::lights_charge(
+        luxforge_gpu::light::lights_charge(
             &runnable,
             format,
             super::compare_after::DEVICE_TEXTURE_LIMIT,
@@ -1194,7 +1194,7 @@ pub(crate) fn reduced_charge(plan: &CorePlan, request: &SourceBoundary) -> u64 {
         height,
     };
     let output = plan.geometry.output();
-    surface::gpu_preview::texture_charge(
+    luxforge_gpu::texture_charge(
         (window.width, window.height),
         request.format,
         (output.width, output.height),
@@ -1217,7 +1217,7 @@ fn boundary_bytes(window: Region, format: luxforge_core::BoundaryFormat) -> u64 
 }
 
 /// What the chain of `plan` takes over a boundary of `window` in `format`, as the surface's slot
-/// charges it ([`surface::gpu_preview::chain_charge`]): the plan's steps converted with no boundary
+/// charges it ([`luxforge_gpu::chain_charge`]): the plan's steps converted with no boundary
 /// ([`gpu_plan::plan_steps`]), split into links as the surface splits them, each link's
 /// intermediate before the last, every link's kept planes and its passes' parameters, and the pool
 /// of scratch planes every link takes in turn, once. A plan whose steps cannot be converted is
@@ -1228,7 +1228,7 @@ pub(super) fn chain_charge(
     format: luxforge_core::BoundaryFormat,
 ) -> u64 {
     match gpu_plan::plan_steps(plan) {
-        Ok(steps) => surface::gpu_preview::chain_charge(
+        Ok(steps) => luxforge_gpu::chain_charge(
             &steps,
             (window.width, window.height),
             (window.x0, window.y0),
@@ -1279,7 +1279,7 @@ fn proxy_evidence(key: &BoundaryKey) -> Value {
 /// Whether a plan's region frame holds `wanted` of the photograph's full output stage: a region at
 /// full scale whose rectangle holds it, or a reduced whole frame placed over the full stage, the
 /// softer drag frame, which holds every part of it.
-fn holds_view(region: surface::GpuRegion, wanted: Region) -> bool {
+fn holds_view(region: luxforge_gpu::GpuRegion, wanted: Region) -> bool {
     if region.stage != region.full_stage {
         return region.rect == [0, 0, region.stage.0, region.stage.1];
     }
@@ -1287,7 +1287,7 @@ fn holds_view(region: surface::GpuRegion, wanted: Region) -> bool {
 }
 
 /// A surface region's rectangle of its stage, as the core's.
-fn rect_of(region: surface::GpuRegion) -> Region {
+fn rect_of(region: luxforge_gpu::GpuRegion) -> Region {
     let [x0, y0, x1, y1] = region.rect;
     Region {
         x0,
@@ -1310,7 +1310,7 @@ impl GpuPreviews {
     /// The plan the surface is handed this frame, whether it holds it behind the CPU frame, and
     /// the draft revision it is tagged with: the open drag's, or between drafts the resident
     /// boundary's last plan, which the surface holds behind the CPU frame.
-    pub(crate) fn surface_plan(&self) -> Option<(&surface::GpuPlan, u64)> {
+    pub(crate) fn surface_plan(&self) -> Option<(&luxforge_gpu::GpuPlan, u64)> {
         self.handed().map(|handed| (&handed.plan, handed.revision))
     }
 
@@ -1327,7 +1327,7 @@ impl GpuPreviews {
 
     /// The serial of the plan handed to the surface, and where it changes since the plan the
     /// surface held when it was converted.
-    pub(crate) fn surface_change(&self) -> Option<surface::GpuChange> {
+    pub(crate) fn surface_change(&self) -> Option<luxforge_gpu::GpuChange> {
         self.handed().map(|handed| handed.change)
     }
 
@@ -1528,7 +1528,7 @@ impl Editor {
         if let Some(budget) = self.gpu.budget {
             return budget;
         }
-        surface::gpu_preview::GPU_PREVIEW_BUDGET
+        luxforge_gpu::GPU_PREVIEW_BUDGET
     }
 
     /// What the surface reports of its last frame.
@@ -1932,7 +1932,7 @@ impl Editor {
     fn surface_source(
         &self,
     ) -> (
-        Option<surface::SourceFigures>,
+        Option<luxforge_gpu::SourceFigures>,
         Option<(u64, SurfaceFallback)>,
     ) {
         #[cfg(test)]
@@ -2217,7 +2217,9 @@ impl Editor {
     /// The committed stack's view plan the surface draws at rest ([`AtRest`]), where the view
     /// shows it: its whole frame at Fit and below 100%, its region at 100% and above while that
     /// region holds the view.
-    pub(crate) fn gpu_rest_plan(&self) -> Option<(&surface::GpuPlan, surface::GpuChange)> {
+    pub(crate) fn gpu_rest_plan(
+        &self,
+    ) -> Option<(&luxforge_gpu::GpuPlan, luxforge_gpu::GpuChange)> {
         if !self.gpu_at_rest() {
             return None;
         }
@@ -2240,7 +2242,7 @@ impl Editor {
     }
 
     /// The displayed stack's picture at rest in tiles, from its job: held for the surfaces to draw
-    /// ([`surface::GpuRest`]), under a new version unless they are the tiles held. `None` lets the
+    /// ([`luxforge_gpu::GpuRest`]), under a new version unless they are the tiles held. `None` lets the
     /// one held go: a view that draws the stack at its own size or larger, or tiles the GPU cannot
     /// draw. Nothing while the GPU stage is refused.
     pub(crate) fn gpu_rest_from(&mut self, tiles: Option<Box<luxforge_core::RestTiles>>) {
@@ -2345,7 +2347,7 @@ impl Editor {
 
     /// The crop stage the surfaces are handed to draw under the frame: none while the gate refuses
     /// the GPU stage.
-    pub(crate) fn gpu_stage_handed(&self) -> Option<&surface::GpuRest> {
+    pub(crate) fn gpu_stage_handed(&self) -> Option<&luxforge_gpu::GpuRest> {
         self.gpu_preview_allowed().ok()?;
         self.gpu.stage.as_ref()?.conversion.ready()
     }
@@ -2420,7 +2422,7 @@ impl Editor {
     /// the tiles are drawn, to dissolve in over it — and no crop draft or clipping overlay is shown,
     /// the overlay's marks being the view plan's; Compare's Before side among them. None while the
     /// gate refuses the GPU stage or an evidence hook hands a plan of its own.
-    pub(crate) fn gpu_rest_handed(&self) -> Option<&surface::GpuRest> {
+    pub(crate) fn gpu_rest_handed(&self) -> Option<&luxforge_gpu::GpuRest> {
         match self.rest_presentation()? {
             RestPresentation::Picture(picture) => Some(picture),
             RestPresentation::Counts(_) => None,
@@ -2433,7 +2435,7 @@ impl Editor {
     /// where the view draws the stage at its own size, and while the clipping overlay's marks are
     /// the view plan's. None while a gesture or a crop draft is open, the gate refuses the GPU
     /// stage or an evidence hook hands a plan of its own.
-    pub(crate) fn gpu_counts_handed(&self) -> Option<&surface::GpuRest> {
+    pub(crate) fn gpu_counts_handed(&self) -> Option<&luxforge_gpu::GpuRest> {
         match self.rest_presentation()? {
             RestPresentation::Counts(counts) => Some(counts),
             RestPresentation::Picture(_) => None,
@@ -2510,8 +2512,8 @@ impl Editor {
     pub(crate) fn gpu_compare_after(
         &self,
     ) -> (
-        Option<(&surface::GpuPlan, surface::GpuChange)>,
-        Option<&surface::GpuRest>,
+        Option<(&luxforge_gpu::GpuPlan, luxforge_gpu::GpuChange)>,
+        Option<&luxforge_gpu::GpuRest>,
     ) {
         let Some(retained) = self
             .gpu
@@ -2590,7 +2592,7 @@ impl Editor {
         // While a clipping overlay is shown the gestures' plans carry its marks.
         let clip = super::gpu_settle::clip_flags(&self.session.workspace);
         let mut open_sequences = 0;
-        let mut sequences: Vec<(Vec<GpuStep>, surface::BoundaryFormat)> = Vec::new();
+        let mut sequences: Vec<(Vec<GpuStep>, luxforge_gpu::BoundaryFormat)> = Vec::new();
         for (index, plan) in plans.iter().enumerate() {
             if let Ok(steps) = gpu_plan::plan_steps(plan) {
                 sequences.push((
@@ -2688,7 +2690,7 @@ impl Editor {
     /// The open gesture's converted plan and the draft revision it draws, where the surface runs
     /// it, with no comparison on screen: a whole frame's plan at Fit and below 100%, and at 100% or
     /// more a region's while its region holds the view.
-    pub(crate) fn gesture_gpu_plan(&self) -> Option<(&surface::GpuPlan, u64)> {
+    pub(crate) fn gesture_gpu_plan(&self) -> Option<(&luxforge_gpu::GpuPlan, u64)> {
         if self.presentation.compare_after.is_some() {
             return None;
         }
@@ -2721,7 +2723,7 @@ impl Editor {
     /// shown at 100% and above while the view's region is planned — a pan's region, or the whole
     /// frame's plan a zoom from Fit leaves: it is the only picture of that stack, and the frame
     /// under it an earlier stack's.
-    fn gpu_plan_shown(&self, plan: &surface::GpuPlan) -> bool {
+    fn gpu_plan_shown(&self, plan: &luxforge_gpu::GpuPlan) -> bool {
         let presented =
             self.presentation.gpu_presented == Some(self.presentation.presented_content);
         match (&self.session.preview.view.zoom, plan.region) {
@@ -2918,7 +2920,7 @@ mod tests {
         };
         let over = |version: u64| {
             let boundary = GpuBoundary::from_linear(
-                surface::BoundaryFormat::Half,
+                luxforge_gpu::BoundaryFormat::Half,
                 64,
                 64,
                 version,

@@ -163,7 +163,7 @@
         {
           "kind": "file",
           "label": "Window-free runner",
-          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview/tiles.rs",
+          "target": "crates/luxforge-gpu/src/execution/tiles.rs",
           "relevance": "Existing shared pipeline."
         },
         {
@@ -416,14 +416,16 @@
     {
       "id": "TASK-007",
       "description": "Adopt the extracted GPU tile runner directly in desktop hosting and keep one display/read/export lowering path.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-006"
       ],
       "extra_context": [
         "R4, second extraction. Core keeps TileService; desktop keeps evaluation/source lifetimes and core-aware host composition. The tightly coupled neutral runner moves with executor internals in TASK-006; this task removes UI tile/qualification forwarding, adopts the backend directly and separates graphics enumeration/device opening from desktop renderer/software/refusal policy.",
         "Preserve nonblocking presentation versus bounded worker waiting, adapter matching, two-band pipelining and complete reference export restart.",
-        "Do not add an unused generic host crate or GPU support to the CLI; eliminate duplicate conversion/execution paths introduced by the move."
+        "Do not add an unused generic host crate or GPU support to the CLI; eliminate duplicate conversion/execution paths introduced by the move.",
+        "Re-reviewed current main a20cf0b8 and TASK-006 acceptance adcf9eb7; no competing implementation. Neutral TileRunner and graphics opening already share private backend internals. Remaining work is direct backend dependency/imports for desktop lowering, worker and qualification; move renderer/software/refusal policy from UI adapters to the desktop, retain explicit backend/name/limits request and the separate device, remove UI tile/qualification forwarders, and enforce the host boundary. Rendering algorithms, stream/source lifetimes, cancellation and complete reference restart remain unchanged.",
+        "Accepted: desktop production/test callers import luxforge-gpu directly through the one gpu_plan lowering path; UI tile/headless/qualification forwarders and feature are removed. Adapter selection/software/refusal/limit policy lives in app/adapters; neutral exact-match enumeration/opening and the runner remain backend-owned. Scoped native tests: 202 GPU tests (22 explicitly ignored), nine adapter tests and the host-policy repository rule passed. Quick artifacts/code-structure-host-quick passed; background native export and histogram checks artifacts/code-structure-host-{export,histogram} passed on Apple M4 Pro Metal, with correlated state/logs/captures. Cancellation, staged resources, loss, mismatch, source preservation and whole-reference restart regressions passed. No new image allocation, decode, job, cache, timer or budget; separate worker device, existing limits/bounds/lifetimes preserved. Integrated timing remains TASK-017."
       ],
       "context_links": [
         {
@@ -435,8 +437,8 @@
         {
           "kind": "file",
           "label": "TileRunner",
-          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview/tiles.rs",
-          "relevance": "Window-free executor to move."
+          "target": "crates/luxforge-gpu/src/execution/tiles.rs",
+          "relevance": "Extracted neutral runner; desktop must adopt it directly."
         },
         {
           "kind": "file",
@@ -465,14 +467,16 @@
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Move runner and backend-neutral readback/stream mechanics, update host callers and delete the old implementation.",
+          "Adopt the extracted neutral runner and qualification helpers directly, move device/renderer policy to the desktop and delete UI forwarding entry points.",
           "Exercise pixel reads, staged/chained/light streams, source preservation, no-GPU fallback and rendered integration."
         ],
         "commands": [
           "tools/cargo-cached test --locked -p luxforge-app gpu_tiles",
           "tools/cargo-cached test --locked -p luxforge-app gpu_rest",
+          "tools/cargo-cached test --locked -p luxforge-app adapters",
           "tools/cargo-cached xtask verify --tier quick --output NEW_DIR",
-          "tools/cargo-cached xtask verify --tier rendered --output NEW_DIR"
+          "tools/cargo-cached xtask smoke --scenario export --output NEW_DIR --binary PATH",
+          "tools/cargo-cached xtask smoke --scenario histogram --output NEW_DIR --binary PATH"
         ],
         "expected_results": [
           "Window-free output and display share one production backend with unchanged worker bounds and failure semantics."

@@ -22,13 +22,12 @@ use luxforge_core::{
     GpuPlanRequest, GpuProgramKind, LOOK_EFFECT, Layer, MIXER_EFFECT, ModuleRegistry,
     PointwiseColor, Processing, Recipe, Stage, VIGNETTE_EFFECT, gpu_plan,
 };
+use luxforge_gpu::{
+    GpuBoundary, GpuPlan, GpuProgram, GpuStep, PositionMap, TexelMap, qualification::Qualifier,
+    qualification::boundary, validate_step,
+};
 use luxforge_reference::look::{STANDARD, standard_knots};
 use luxforge_reference::preview_error::{self, Class, Rgb8, Statistics};
-use luxforge_ui::photo_surface::{
-    GpuBoundary, GpuPlan, GpuProgram, GpuStep, PositionMap, TexelMap,
-    gpu_preview::qualification::{Qualifier, boundary},
-    validate_step,
-};
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -62,7 +61,7 @@ fn gpu_colour_every_shipped_program_passes_the_surfaces_own_convention() {
 #[test]
 fn gpu_colour_the_output_encoding_is_the_cores_and_the_references() {
     assert!(super::gpu_plan::install_output_encoding());
-    let installed = luxforge_ui::photo_surface::output_encoding().expect("installed");
+    let installed = luxforge_gpu::output_encoding().expect("installed");
     assert_eq!(*installed, super::gpu_plan::output_encoding());
     for (index, threshold) in installed.thresholds.iter().enumerate() {
         let reference = luxforge_reference::srgb::decode_encoded((index as f64 + 0.5) / 255.0);
@@ -94,7 +93,7 @@ fn recipe(layers: Vec<Layer>) -> Recipe {
 /// A RAW's geometry pass preserves the range of its f32 boundary like the CPU's linear render.
 #[test]
 fn gpu_colour_raw_geometry_tail_preserves_the_float_range() {
-    use luxforge_ui::photo_surface::BoundaryFormat;
+    use luxforge_gpu::BoundaryFormat;
 
     let Some(qualifier) =
         Qualifier::headless("gpu_colour_raw_geometry_tail_preserves_the_float_range")
@@ -354,7 +353,7 @@ fn gpu_colour_a_perspective_tail_needs_no_grid() {
     let converted = surface_plan(&plan, flat_boundary(64, 48)).expect("no grid is needed");
     let output = geometry.output();
     let reads = geometry.reads;
-    let expected = luxforge_ui::photo_surface::GpuTail::projective(
+    let expected = luxforge_gpu::GpuTail::projective(
         (output.width, output.height),
         [reads.x0, reads.y0, reads.x1(), reads.y1()],
         geometry.clamps,

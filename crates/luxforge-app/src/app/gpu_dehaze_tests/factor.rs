@@ -37,13 +37,10 @@ use luxforge_core::{
     Cancel, EffectStage, Evaluation, GpuAnswer, GpuPlanRequest, ModuleRegistry, PRESENCE_EFFECT,
     PreviewRequest, Region, Render, RenderContext, RenderOptions, qualification, render,
 };
+use luxforge_gpu::{GPU_PREVIEW_BUDGET, GpuBoundary, qualification::Qualifier};
 use luxforge_reference::{
     preview_error::{self, Class, Rgb8, Statistics},
     tolerance,
-};
-use luxforge_ui::photo_surface::{
-    GpuBoundary,
-    gpu_preview::{GPU_PREVIEW_BUDGET, qualification::Qualifier},
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;

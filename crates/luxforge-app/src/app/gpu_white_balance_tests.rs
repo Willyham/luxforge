@@ -19,9 +19,9 @@ use super::{
     tasks::ready_preview_job,
 };
 use luxforge_core::{Evaluation, GpuAnswer, GpuPreview, GpuView, PreviewRequest};
+use luxforge_gpu::{GpuSource, headless::HeadlessSurface};
 use luxforge_reference::preview_error::{self, Class, Rgb8, Statistics};
 use luxforge_testkit::client::{call, mutation, request_id, revision};
-use luxforge_ui::photo_surface::{GpuSource, gpu_preview::headless::HeadlessSurface};
 use serde_json::{Value, json};
 
 /// The temperatures the `raw-panel` scenario drags to, far from any camera's as-shot white balance.

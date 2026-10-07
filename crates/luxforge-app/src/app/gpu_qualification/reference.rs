@@ -66,13 +66,13 @@ use luxforge_core::{
     analysis::Report,
     tiles::{Answered as Drawn, ReadStage, ReadValues, TileCall, TileFallback, TileService},
 };
+use luxforge_gpu::{
+    GpuPlan, GpuProgram, GpuSource, GpuStep, MaskedColour, TexelMap, headless::HeadlessSurface,
+    qualification::Qualifier,
+};
 use luxforge_reference::{
     preview_error::{self, Class, Rgb8, Statistics},
     tolerance::{self, Kind},
-};
-use luxforge_ui::photo_surface::{
-    GpuPlan, GpuProgram, GpuSource, GpuStep, MaskedColour, TexelMap,
-    gpu_preview::{headless::HeadlessSurface, qualification::Qualifier},
 };
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};

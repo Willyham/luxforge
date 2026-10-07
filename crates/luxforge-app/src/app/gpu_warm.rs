@@ -18,7 +18,7 @@
 //!   warm-up once as the `gpu_warm_up` event. No timer or poll: both wakes are the compile thread's.
 use super::Editor;
 use luxforge_core::activity::{Activity, ActivitySpec, Outcome};
-use luxforge_ui::photo_surface::{GpuFallback as SurfaceFallback, WarmUpFigures};
+use luxforge_gpu::{GpuFallback as SurfaceFallback, WarmUpFigures};
 use serde_json::{Value, json};
 
 /// The activity board's kind for a warm-up, and the label the Performance section shows.

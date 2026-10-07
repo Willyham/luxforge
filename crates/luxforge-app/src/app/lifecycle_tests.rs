@@ -126,9 +126,9 @@ fn fallback_a_forced_launch_tells_the_owner_the_reference_before_its_window_open
 /// adapter.
 #[test]
 fn fallback_a_software_only_host_tells_the_owner_its_renderer_before_its_window_opens() {
+    use crate::adapters::{LaunchRenderer, Refusal};
     use luxforge_core::tiles::{TileFallback, TileService, TileStatus, TileUnavailable};
     use luxforge_core::{Renderer, RendererReason};
-    use luxforge_ui::adapters::{LaunchRenderer, Refusal};
     let evidence = std::env::temp_dir().join("luxforge-evidence-software");
     let launch = |chosen| {
         let mut config = Config {
@@ -195,8 +195,8 @@ fn a_launch_hands_the_owner_its_tile_worker_which_waits_for_the_windows_adapter(
 }
 
 /// One adapter as wgpu describes it: `device_type` `IntegratedGpu`, `DiscreteGpu` or `Cpu`.
-fn adapter(backend: &str, name: &str, device_type: &str) -> luxforge_ui::adapters::Adapter {
-    luxforge_ui::adapters::Adapter {
+fn adapter(backend: &str, name: &str, device_type: &str) -> crate::adapters::Adapter {
+    crate::adapters::Adapter {
         name: name.into(),
         vendor: 0,
         device: 0,
@@ -215,7 +215,7 @@ fn adapter(backend: &str, name: &str, device_type: &str) -> luxforge_ui::adapter
 #[test]
 fn a_launch_names_its_tile_workers_adapter_only_when_the_host_leaves_no_doubt() {
     use super::renderer::launch_candidate;
-    use luxforge_ui::adapters::{LaunchRenderer, Refusal};
+    use crate::adapters::{LaunchRenderer, Refusal};
     let m4 = adapter("Metal", "Apple M4 Pro", "IntegratedGpu");
     let discrete = adapter("Vulkan", "NVIDIA GeForce RTX 4070", "DiscreteGpu");
     let integrated = adapter("Vulkan", "Intel(R) UHD Graphics 770", "IntegratedGpu");
@@ -223,7 +223,7 @@ fn a_launch_names_its_tile_workers_adapter_only_when_the_host_leaves_no_doubt() 
     let warp = adapter("Dx12", "Microsoft Basic Render Driver", "Cpu");
     let gpu = LaunchRenderer::Gpu { software: false };
     let software = LaunchRenderer::Gpu { software: true };
-    let named = |launch, offered: &[luxforge_ui::adapters::Adapter]| {
+    let named = |launch, offered: &[crate::adapters::Adapter]| {
         launch_candidate(launch, offered).map(|adapter| adapter.name.clone())
     };
     assert_eq!(named(gpu, std::slice::from_ref(&m4)), Some(m4.name.clone()));

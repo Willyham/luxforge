@@ -7,12 +7,12 @@
 //!   stage unavailable later ([`GpuStageState`]). The surface wakes the desktop when its answer
 //!   comes or changes, and the desktop reads it live ([`Editor::gpu_stage`]).
 //! - **A software adapter.** Before the window opens the launch chooses its renderer from what the
-//!   host offers ([`luxforge_ui::adapters::choose`]): a host whose only adapter is a software one
+//!   host offers ([`crate::adapters::choose`]): a host whose only adapter is a software one
 //!   (lavapipe, WARP), where Iced's request lands, refuses the stage as `--no-gpu-render` does
 //!   until the software adapter is adopted, unless the launch passes `--software-adapter`; a stage
 //!   drawing on it is the GPU record with `software`, which the status bar names.
 //! - **A forced launch.** `--no-gpu-render` refuses the stage before the window opens
-//!   ([`luxforge_ui::photo_surface::refuse_gpu_stage`]): its capability check answers unavailable,
+//!   ([`luxforge_gpu::refuse_gpu_stage`]): its capability check answers unavailable,
 //!   exactly as on a machine whose adapter cannot run it, and nothing of the stage is created. The
 //!   flag is read once at launch; it is neither a preference nor a session field.
 //! - **The one gate.** While the stage cannot draw, or the launch refused it, the desktop's one
@@ -51,12 +51,10 @@ use super::{
     message::renderer::RendererMessage,
     tasks,
 };
+use crate::{adapters::Adapter, adapters::LaunchRenderer};
 use iced::Task;
 use luxforge_core::{Renderer, RendererReason};
-use luxforge_ui::{
-    adapters::{Adapter, LaunchRenderer},
-    photo_surface::GpuStageState,
-};
+use luxforge_gpu::GpuStageState;
 use serde_json::{Value, json};
 use std::{
     sync::{Arc, OnceLock},
@@ -175,7 +173,7 @@ pub(crate) fn on_adapter(renderer: Renderer, software: bool) -> Renderer {
 
 /// How the launch's choice reads in its event: `gpu`, `gpu-software`, or the reference with why.
 pub(crate) fn launch_record(launch: LaunchRenderer) -> Value {
-    use luxforge_ui::adapters::Refusal;
+    use crate::adapters::Refusal;
     match launch {
         LaunchRenderer::Gpu { software: false } => json!({"renderer": "gpu"}),
         LaunchRenderer::Gpu { software: true } => json!({"renderer": "gpu-software"}),
@@ -336,10 +334,10 @@ fn report(editor: &mut Editor) -> Task<Message> {
 /// finds it; `None` when it finds no adapter of that backend and name. Blocking: it creates a
 /// graphics instance, so it runs on the blocking pool, never on the update loop.
 pub(crate) fn identify(backend: &str, name: &str) -> Option<Adapter> {
-    let found = luxforge_ui::adapters::backends_named(backend)
-        .map(luxforge_ui::adapters::enumerate)
+    let found = crate::adapters::backends_named(backend)
+        .map(crate::adapters::enumerate)
         .unwrap_or_default();
-    luxforge_ui::adapters::matching(&found, backend, name).cloned()
+    crate::adapters::matching(&found, backend, name).cloned()
 }
 
 /// An adapter as evidence and `--gpu-adapters` record it: its backend and name, and the rest of its
@@ -351,7 +349,7 @@ pub(crate) fn adapter_record(backend: &str, name: &str, adapter: Option<&Adapter
         "backend": backend,
         "adapter": name,
         "device_type": adapter.map(|adapter| &adapter.device_type),
-        "software": adapter.map(|adapter| luxforge_ui::adapters::is_software(&adapter.device_type)),
+        "software": adapter.map(|adapter| crate::adapters::is_software(&adapter.device_type)),
         "vendor": adapter.map(|adapter| adapter.vendor),
         "device": adapter.map(|adapter| adapter.device),
         "driver": adapter.map(|adapter| &adapter.driver),
@@ -388,7 +386,7 @@ mod tests {
     /// is the same whatever the adapter, and the launch's event says which it chose and why.
     #[test]
     fn a_software_adapters_gpu_is_named_and_its_reference_is_not() {
-        use luxforge_ui::adapters::Refusal;
+        use crate::adapters::Refusal;
         assert_eq!(on_adapter(Renderer::gpu(), true), Renderer::gpu_software());
         assert_eq!(on_adapter(Renderer::gpu(), false), Renderer::gpu());
         for reason in [
@@ -493,7 +491,7 @@ fn since_launch(at: Instant) -> f64 {
 /// adapter, the one adapter there is. None where the host offers several the request could land
 /// on, and for a launch that refused the GPU stage.
 pub(crate) fn launch_candidate(launch: LaunchRenderer, offered: &[Adapter]) -> Option<&Adapter> {
-    use luxforge_ui::adapters::is_software;
+    use crate::adapters::is_software;
     match launch {
         LaunchRenderer::Reference(_) => None,
         LaunchRenderer::Gpu { software: false } => {
@@ -538,7 +536,7 @@ pub(crate) fn name_once_open(
 /// window draws on ([`launch_candidate`]), if there is one: blocking, so only on the blocking pool.
 pub(crate) fn name_at_launch(launch: LaunchRenderer, tiles: &GpuTiles) -> LaunchNaming {
     let started = Instant::now();
-    let offered = luxforge_ui::adapters::enumerate(luxforge_ui::adapters::renderer_backends());
+    let offered = crate::adapters::enumerate(crate::adapters::renderer_backends());
     let enumerate_ms = started.elapsed().as_secs_f64() * 1000.0;
     let named = launch_candidate(launch, &offered).cloned();
     let adopted = named.as_ref().is_some_and(|adapter| {
