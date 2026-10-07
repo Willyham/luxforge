@@ -261,7 +261,7 @@ pub(crate) fn float_values(width: u32, height: u32, what: &str) -> Result<usize,
     let bytes = values
         .checked_mul(std::mem::size_of::<f32>() as u64)
         .ok_or_else(|| Error::resource_limit(format!("{what} byte length overflow")))?;
-    if bytes > luxforge_raw::MAX_FRAME_BYTES {
+    if bytes > crate::render::limits::MAX_FRAME_BYTES {
         return Err(Error::resource_limit(format!("{what} exceeds 512 MiB")));
     }
     usize::try_from(values).map_err(|_| Error::resource_limit(format!("{what} is not addressable")))

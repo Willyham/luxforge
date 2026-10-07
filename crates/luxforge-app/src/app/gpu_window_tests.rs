@@ -36,7 +36,7 @@ use luxforge_core::{
     LinearSettings, ModuleRegistry, PERSPECTIVE_EFFECT, PreviewSource, Recipe, Region,
     RenderContext, RenderOptions, SourceImage, Stage, gpu_plan, render,
 };
-use luxforge_ui::photo_surface::gpu_preview::qualification::{boundary_as, held};
+use luxforge_gpu::{qualification::boundary_as, qualification::held};
 
 pub(super) const WIDTH: u32 = 360;
 pub(super) const HEIGHT: u32 = 240;
@@ -288,7 +288,7 @@ fn gpu_window_a_windowed_boundary_draws_the_whole_boundarys_frame() {
                 }
                 let draw = |window: Region| {
                     let held = boundary_as(
-                        super::gpu_plan::boundary_format(format),
+                        format,
                         window.width,
                         window.height,
                         1,
@@ -416,7 +416,7 @@ fn gpu_window_a_spatial_step_over_a_window_draws_the_whole_boundarys_frame() {
             cut_windows += usize::from(window.pixels() < u64::from(WIDTH * HEIGHT));
             let draw = |window: Region| {
                 let held = boundary_as(
-                    super::gpu_plan::boundary_format(format),
+                    format,
                     window.width,
                     window.height,
                     1,
@@ -774,7 +774,7 @@ fn at_100(editor: &mut Editor) {
 /// no boundary as over those the surface is handed.
 #[test]
 fn gpu_window_a_chained_masked_plan_is_held_to_the_slots_own_charge() {
-    use luxforge_ui::photo_surface::gpu_preview::chain_charge;
+    use luxforge_gpu::chain_charge;
     let test = "gpu_window_a_chained_masked_plan_is_held_to_the_slots_own_charge";
     let Some(qualifier) = headless(test) else {
         return;
@@ -860,7 +860,7 @@ fn gpu_window_a_chained_masked_plan_is_held_to_the_slots_own_charge() {
 /// `budget-exceeded`, with the pooled figure and what the budget leaves the slot in `over_budget`.
 #[test]
 fn gpu_window_a_chained_masked_plan_derives_its_boundary_when_its_pooled_slot_fits() {
-    use luxforge_ui::photo_surface::gpu_preview::chain_charge;
+    use luxforge_gpu::chain_charge;
     let catalog = catalog("chain-budget");
     let (mut editor, asset, agent) = real_photo(&catalog);
     masked_chain(&mut editor, &asset, agent);
@@ -874,7 +874,7 @@ fn gpu_window_a_chained_masked_plan_derives_its_boundary_when_its_pooled_slot_fi
         let window = request.window.expect("the region's window");
         let (origin, size) = ((window.x0, window.y0), (window.width, window.height));
         let steps = super::gpu_plan::plan_steps(plan).expect("convertible steps");
-        let format = super::gpu_plan::boundary_format(request.format);
+        let format = request.format;
         let chain = chain_charge(&steps, size, origin, format);
         assert_eq!(chain.intermediates.len(), 4, "five links");
         // Each pass's 256-byte parameter slice, as the old figure counted them.
@@ -1058,7 +1058,7 @@ fn gpu_window_a_region_past_the_budget_draws_the_reduced_stage_scaled_to_the_vie
 /// links, less every pass's slice.
 #[test]
 fn gpu_window_an_unconverted_plan_is_charged_every_plane_apart() {
-    use luxforge_ui::photo_surface::gpu_preview::{ChainCharge, chain_charge};
+    use luxforge_gpu::{ChainCharge, chain_charge};
     let registry = ModuleRegistry::builtin();
     let (width, height) = (480u32, 320u32);
     let window = Region {
@@ -1082,7 +1082,7 @@ fn gpu_window_an_unconverted_plan_is_charged_every_plane_apart() {
             GpuAnswer::Fallback(reason) => panic!("{reason}"),
         };
         let steps = super::gpu_plan::plan_steps(&plan).expect("convertible steps");
-        let format = super::gpu_plan::boundary_format(BoundaryFormat::Half);
+        let format = BoundaryFormat::Half;
         let converted = chain_charge(&steps, (width, height), (0, 0), format);
         assert_eq!(
             super::gpu_preview::chain_charge(&plan, window, BoundaryFormat::Half),
@@ -1430,7 +1430,7 @@ fn needed(
 #[test]
 #[ignore = "the generated 24 MP JPEG: set LUXFORGE_GENERATED_FIXTURES to the generated JPEGs"]
 fn gpu_window_the_paint_harness_masks_at_100_grow_the_window_by_every_links_halo() {
-    use luxforge_ui::photo_surface::{GPU_PREVIEW_BUDGET, GpuBoundary, gpu_preview::chain_charge};
+    use luxforge_gpu::{GPU_PREVIEW_BUDGET, GpuBoundary, chain_charge};
     let test = "gpu_window_the_paint_harness_masks_at_100_grow_the_window_by_every_links_halo";
     let Some(qualifier) = headless(test) else {
         return;
@@ -1509,7 +1509,7 @@ fn gpu_window_the_paint_harness_masks_at_100_grow_the_window_by_every_links_halo
             let (boundary, slot) = editor.gpu.region_charge().expect("a region's charge");
             let steps = super::gpu_plan::plan_steps(plan);
             let converted = steps.is_ok();
-            let format = super::gpu_plan::boundary_format(request.format);
+            let format = request.format;
             let size = (window.width, window.height);
             let origin = (window.x0, window.y0);
             let chain = chain_charge(&steps.expect("convertible steps"), size, origin, format);
@@ -1616,7 +1616,7 @@ fn gpu_window_the_paint_harness_masks_at_100_grow_the_window_by_every_links_halo
 #[test]
 #[ignore = "the generated 24 MP JPEG: set LUXFORGE_GENERATED_FIXTURES to the generated JPEGs"]
 fn gpu_window_the_paint_harness_masks_at_100_fit_the_budget_up_to_a_count() {
-    use luxforge_ui::photo_surface::GPU_PREVIEW_BUDGET;
+    use luxforge_gpu::GPU_PREVIEW_BUDGET;
     let test = "gpu_window_the_paint_harness_masks_at_100_fit_the_budget_up_to_a_count";
     let generated = std::env::var("LUXFORGE_GENERATED_FIXTURES").expect("the generated JPEGs");
     let photograph = std::path::Path::new(&generated).join("24mp.jpg");
@@ -1798,7 +1798,7 @@ fn gpu_window_a_sixty_mp_raw_at_the_masked_presence_cap_fits_the_budget_beside_i
         None,
     );
     let source = u64::from(width) * u64::from(height) * 12;
-    let budget = luxforge_ui::photo_surface::gpu_preview::GPU_PREVIEW_BUDGET;
+    let budget = luxforge_gpu::GPU_PREVIEW_BUDGET;
     let megabytes = |bytes: u64| bytes as f64 / 1e6;
     let planned = |view: GpuView| {
         let rest = luxforge_core::qualification::rest_plan(&evaluation, view).expect("a rest plan");

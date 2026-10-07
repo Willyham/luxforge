@@ -334,6 +334,10 @@ pub(crate) const HELD_ACTION: &str = "hold-render";
 /// Shut it only while nothing samples a stack that holds the layer: a point sample evaluates
 /// the same unit on the calling thread, so the caller would wait with it.
 impl crate::PointwiseColor for Gate {
+    fn identity(&self) -> crate::OperationIdentity {
+        crate::OperationIdentity::new("test.modules/registry/tests.rs.Gate", [])
+    }
+
     fn apply_row(&self, _: u32, _: u32, _: &mut [[f32; 3]]) {
         self.pass();
     }

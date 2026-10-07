@@ -59,44 +59,18 @@ use super::{
     mask::{self, Coverage, MaskedColour, Role},
     validate, validate_program,
 };
+use luxforge_gpu_types::PlaneSize as PlaneExtent;
 use std::borrow::Cow;
 use wgpu::naga;
 
-/// How many inputs one pass reads, and how many planes one apply reads.
-pub const PASS_INPUTS: usize = 4;
-const APPLY_PLANES: usize = 4;
-
-/// The lanes of a workgroup pass, and the values of `lf_shared`.
-const WORKGROUP_LANES: u32 = 256;
-const SHARED_VALUES: u32 = 1024;
-
-/// One side of a texel pass's workgroup.
-pub(super) const GROUP_SIDE: u32 = 8;
-
-/// The binding of a pass's output plane in its second group, after every plane it reads.
-pub(super) const OUTPUT_BINDING: u32 = 64;
-
-/// The binding of a pass's parameters in its second group.
-pub(super) const PARAMS_BINDING: u32 = 65;
-
-/// One pass's slice of the parameter buffer, in bytes and in words: the largest storage-binding
-/// offset alignment a device may ask for.
-pub(super) const PARAMS_STRIDE: u64 = 256;
-const PARAMS_WORDS: usize = (PARAMS_STRIDE / 4) as usize;
-
-/// A pass's parameters: its step's header index, its words' offset in the step's words, its span,
-/// then the offsets of the applies its source runs, the rectangle of its output it writes,
-/// `[x0, y0, x1, y1)`, and last the texel of its output its first invocation starts at, the corner
-/// of the rectangle a tick runs it over.
-const PARAM_STEP: usize = 0;
-const PARAM_WORDS: usize = 1;
-const PARAM_SPAN: usize = 2;
-const PARAM_APPLIES: usize = 4;
-const PARAM_LIMIT: usize = PARAMS_WORDS - 6;
-const PARAM_ORIGIN: usize = PARAMS_WORDS - 2;
-
-/// A limit's far edge that no plane reaches, which a `vec2<i32>` holds.
-pub(super) const UNLIMITED: u32 = i32::MAX as u32;
+pub use luxforge_gpu_types::{
+    GROUP_SIDE, OUTPUT_BINDING, PARAMS_BINDING, PARAMS_STRIDE, UNLIMITED,
+};
+use luxforge_gpu_types::{
+    PARAM_APPLIES, PARAM_LIMIT, PARAM_ORIGIN, PARAM_SPAN, PARAM_STEP, PARAM_WORDS, PARAMS_WORDS,
+    SHARED_VALUES, UNIT_APPLY_PLANES as APPLY_PLANES, WORKGROUP_LANES,
+};
+pub use luxforge_gpu_types::{PASS_INPUTS, PassShape, PlaneFormat, SPATIAL_PRELUDE};
 
 /// How many compiled pass modules the stage keeps across sequences, the least recently used
 /// evicted first: every pass of the [`super::PIPELINE_CACHE`] sequences the pipeline keeps holds its
@@ -105,29 +79,14 @@ pub(super) const UNLIMITED: u32 = i32::MAX as u32;
 /// stack's links share most of theirs: the plan and warm list of sixteen masked Detail and Presence
 /// layers of six unit sets run 29, and a link that differs from one compiled before only in those
 /// compiles its render pipeline alone.
-pub(super) const PASS_CACHE: usize = 64;
+pub const PASS_CACHE: usize = 64;
 
-/// What a plane's texels hold — how many channels, and whether half precision holds them — and so
-/// the texture format it is kept in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum PlaneFormat {
-    /// `rgba16float`: four channels at half precision.
-    Colour,
-    /// `r32float`: one accumulator.
-    Scalar,
-    /// `rg32float`: two accumulators.
-    Pair,
-    /// `rgba32float`: four.
-    Quad,
-    /// One channel half precision holds, `r32float` of its own: `rgba16float` is the one
-    /// half-precision format every adapter stores to.
-    HalfScalar,
-    /// Two channels half precision holds, `rg32float` of its own.
-    HalfPair,
+pub trait PlaneTextureFormat {
+    fn texture(self) -> wgpu::TextureFormat;
 }
 
-impl PlaneFormat {
-    pub(super) fn texture(self) -> wgpu::TextureFormat {
+impl PlaneTextureFormat for PlaneFormat {
+    fn texture(self) -> wgpu::TextureFormat {
         match self {
             Self::Colour => wgpu::TextureFormat::Rgba16Float,
             Self::Scalar | Self::HalfScalar => wgpu::TextureFormat::R32Float,
@@ -135,44 +94,13 @@ impl PlaneFormat {
             Self::Quad => wgpu::TextureFormat::Rgba32Float,
         }
     }
-
-    fn wgsl(self) -> &'static str {
-        match self {
-            Self::Colour => "rgba16float",
-            Self::Scalar | Self::HalfScalar => "r32float",
-            Self::Pair | Self::HalfPair => "rg32float",
-            Self::Quad => "rgba32float",
-        }
-    }
-
-    /// The bytes one texel takes.
-    pub fn texel_bytes(self) -> u64 {
-        match self {
-            Self::Scalar | Self::HalfScalar => 4,
-            Self::Colour | Self::Pair | Self::HalfPair => 8,
-            Self::Quad => 16,
-        }
-    }
-
-    /// The format that names its texture's: `Scalar` for `HalfScalar`, `Pair` for `HalfPair`, and
-    /// every other its own, so two formats kept in one texture format answer one.
-    fn kept_as(self) -> Self {
-        match self {
-            Self::HalfScalar => Self::Scalar,
-            Self::HalfPair => Self::Pair,
-            other => other,
-        }
-    }
 }
 
 /// A plane's size against the boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PlaneSize {
-    /// The stage's `s × s` blocks, anchored at the stage origin, the boundary reaches: `s = 1` is
-    /// the boundary.
-    Reduced(u32),
-    /// A fixed size whatever the boundary.
-    Fixed { width: u32, height: u32 },
+    /// A shared reduced or fixed extent, resolved without a device resource.
+    Extent(luxforge_gpu_types::PlaneSize),
     /// The slot's light plane `k` (`docs/design/gpu-preview.md`, "The global estimate"): one
     /// [`PlaneFormat::Quad`] texel whose `xyz` is a global estimate, Dehaze's atmospheric light,
     /// computed from the whole stage. The slot's pool holds it for every link, whatever their
@@ -193,13 +121,8 @@ impl GpuPlane {
     /// reduction `s`, the blocks `floor(origin / s)` to `ceil((origin + size) / s)` on each axis.
     pub fn extent(&self, origin: (u32, u32), size: (u32, u32)) -> (u32, u32) {
         match self.size {
-            PlaneSize::Fixed { width, height } => (width, height),
+            PlaneSize::Extent(extent) => extent.extent(origin, size),
             PlaneSize::Light(_) => (1, 1),
-            PlaneSize::Reduced(s) => {
-                let s = s.max(1);
-                let axis = |origin: u32, length: u32| (origin + length).div_ceil(s) - origin / s;
-                (axis(origin.0, size.0), axis(origin.1, size.1))
-            }
         }
     }
 
@@ -208,15 +131,6 @@ impl GpuPlane {
         let (width, height) = self.extent(origin, size);
         u64::from(width) * u64::from(height) * self.format.texel_bytes()
     }
-}
-
-/// How a pass runs its kernel.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum PassShape {
-    /// Once for every `span` texels of the output, `at` the first.
-    Texels { span: [u32; 2] },
-    /// One workgroup of 256 lanes.
-    Workgroup,
 }
 
 /// One compute pass of a spatial step.
@@ -372,7 +286,7 @@ impl Rect {
 
 /// What decides one pass's pipeline besides its kernel's name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct PassKey {
+pub struct PassKey {
     inputs: [u32; PASS_INPUTS],
     count: usize,
     output: u32,
@@ -383,7 +297,7 @@ pub(super) struct PassKey {
 
 /// What decides one apply's place in the frame's pipeline besides its function's name.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct ApplyKey {
+pub struct ApplyKey {
     planes: [u32; APPLY_PLANES],
     count: usize,
     words: u32,
@@ -410,19 +324,19 @@ impl GpuSpatial {
     }
 
     /// The words the step packs after the header: the mask's, then the program's.
-    pub(super) fn word_count(&self) -> usize {
+    pub fn word_count(&self) -> usize {
         self.mask_words() + self.program.words.len()
     }
 
     /// The block words the step packs: the program's, then the mask's.
-    pub(super) fn block_count(&self) -> usize {
+    pub fn block_count(&self) -> usize {
         self.program.block.len() + self.coverage().map_or(0, |coverage| coverage.block_count())
     }
 
     /// Append the step's words at the base the header recorded for it, its mask's blocks counted
     /// from `block`, the step's own blocks base, after the program's. Its blocks are its programs',
     /// in [`Self::programs`]' order.
-    pub(super) fn pack_words(&self, words: &mut Vec<u32>, block: usize) {
+    pub fn pack_words(&self, words: &mut Vec<u32>, block: usize) {
         if let Some(coverage) = self.coverage() {
             coverage.pack_words(words, block + self.program.block.len());
         }
@@ -430,7 +344,7 @@ impl GpuSpatial {
     }
 
     /// The spatial program, then the mask's coverage programs.
-    pub(super) fn programs(&self) -> impl Iterator<Item = (Role, &GpuProgram)> {
+    pub fn programs(&self) -> impl Iterator<Item = (Role, &GpuProgram)> {
         std::iter::once((Role::Spatial, &self.program)).chain(
             self.mask
                 .iter()
@@ -441,7 +355,7 @@ impl GpuSpatial {
 
     /// What decides the step's pipelines besides its programs: the clamp and the mask's words,
     /// every plane, and every pass and apply with its kernel or function.
-    pub(super) fn shape(&self) -> impl Iterator<Item = (StepKind, &str, &str)> {
+    pub(crate) fn shape(&self) -> impl Iterator<Item = (StepKind, &str, &str)> {
         std::iter::once((
             StepKind::Spatial {
                 clamps: self.clamps,
@@ -502,14 +416,14 @@ impl GpuSpatial {
     /// reads a light ([`Self::lights`]), which the whole stage decides: a change to the light, which
     /// a change anywhere in the stage may make, changes its output everywhere, so a tick redraws
     /// it whole, wherever its input changed.
-    pub(super) fn global(&self) -> bool {
+    pub fn global(&self) -> bool {
         self.passes
             .iter()
             .any(|pass| matches!(pass.shape, PassShape::Workgroup))
             || self
                 .planes
                 .iter()
-                .any(|plane| matches!(plane.size, PlaneSize::Fixed { .. }))
+                .any(|plane| matches!(plane.size, PlaneSize::Extent(PlaneExtent::Fixed { .. })))
             || self.lights().next().is_some()
     }
 
@@ -518,7 +432,8 @@ impl GpuSpatial {
     pub fn lights(&self) -> impl Iterator<Item = u32> + '_ {
         self.planes.iter().filter_map(|plane| match plane.size {
             PlaneSize::Light(k) => Some(k),
-            PlaneSize::Reduced(_) | PlaneSize::Fixed { .. } => None,
+            PlaneSize::Extent(PlaneExtent::Reduced(_))
+            | PlaneSize::Extent(PlaneExtent::Fixed { .. }) => None,
         })
     }
 
@@ -529,7 +444,7 @@ impl GpuSpatial {
             .get(pass.output as usize)
             .map(|plane| plane.size)
         {
-            Some(PlaneSize::Reduced(s)) => s.max(1),
+            Some(PlaneSize::Extent(PlaneExtent::Reduced(s))) => s.max(1),
             _ => 1,
         }
     }
@@ -547,7 +462,7 @@ impl GpuSpatial {
     /// starts, which its sums read, in its plane's blocks; and two of the unit's largest blocks,
     /// which a reduced plane's texels round a rectangle out to. `u32::MAX` for a unit the operation
     /// names no halo for.
-    pub(super) fn reach(&self, unit: usize) -> u32 {
+    pub fn reach(&self, unit: usize) -> u32 {
         let Some(&halo) = self.halos.get(unit) else {
             return u32::MAX;
         };
@@ -565,7 +480,7 @@ impl GpuSpatial {
 
     /// How far around a pixel unit `unit`'s apply reads its planes, in boundary texels: two of the
     /// unit's largest blocks, which an upsample's neighbouring texel of a reduced plane reaches.
-    pub(super) fn apply_reach(&self, unit: usize) -> u32 {
+    pub fn apply_reach(&self, unit: usize) -> u32 {
         2 * self
             .unit_passes(unit)
             .map(|pass| self.block(pass))
@@ -576,7 +491,7 @@ impl GpuSpatial {
     /// How far beyond the mask's bounds unit `unit`'s apply plane must hold the operation's values:
     /// its apply's own reach ([`GpuSpatial::apply_reach`]), and for each later unit, whose input
     /// runs this apply, that unit's reach and its apply's.
-    pub(super) fn needed(&self, unit: usize) -> u32 {
+    pub fn needed(&self, unit: usize) -> u32 {
         (unit + 1..self.applies.len())
             .map(|later| self.reach(later).saturating_add(self.apply_reach(later)))
             .fold(self.apply_reach(unit), u32::saturating_add)
@@ -585,7 +500,7 @@ impl GpuSpatial {
     /// Every unit's reach and its apply's summed: how far beyond the mask's bounds every pass must
     /// run, over one rectangle, for every apply plane to hold the operation's values where it is
     /// needed ([`GpuSpatial::needed`]).
-    pub(super) fn reaches(&self) -> u32 {
+    pub fn reaches(&self) -> u32 {
         (0..self.applies.len())
             .map(|unit| self.reach(unit).saturating_add(self.apply_reach(unit)))
             .fold(0, u32::saturating_add)
@@ -677,20 +592,8 @@ impl GpuSpatial {
     }
 }
 
-/// The spatial convention's declarations as stubs, which a program alone is validated against.
-pub const SPATIAL_PRELUDE: &str = "
-// Luxforge GPU-preview spatial declarations.
-var<workgroup> lf_shared: array<f32, 1024>;
-fn lf_plane(slot: u32, at: vec2<i32>) -> vec4<f32> { return vec4<f32>(f32(slot), vec2<f32>(at), 1.0); }
-fn lf_plane_size(slot: u32) -> vec2<i32> { return vec2<i32>(i32(slot) + 1); }
-fn lf_source(at: vec2<i32>) -> vec3<f32> { return vec3<f32>(vec2<f32>(at), 0.5); }
-fn lf_origin() -> vec2<i32> { return vec2<i32>(0); }
-fn lf_size() -> vec2<i32> { return vec2<i32>(1); }
-fn lf_store(at: vec2<i32>, value: vec4<f32>) {}
-";
-
 /// The declarations' functions, which a program does not declare itself.
-pub(super) const SPATIAL_FUNCTIONS: &[&str] = &[
+pub const SPATIAL_FUNCTIONS: &[&str] = &[
     "lf_plane",
     "lf_plane_size",
     "lf_source",
@@ -702,7 +605,7 @@ pub(super) const SPATIAL_FUNCTIONS: &[&str] = &[
 /// Check a spatial step on its own: its program under the convention, every kernel and apply its
 /// passes and applies name with its signature, every plane, input, word and source in range, and
 /// no source for a pass that reads only planes.
-pub(super) fn validate_spatial(spatial: &GpuSpatial) -> Result<(), String> {
+pub fn validate_spatial(spatial: &GpuSpatial) -> Result<(), String> {
     let program = &spatial.program;
     let entry = &program.entry;
     entry_name(entry)?;
@@ -774,8 +677,8 @@ pub(super) fn validate_spatial(spatial: &GpuSpatial) -> Result<(), String> {
     let planes = spatial.planes.len() as u32;
     for (number, plane) in spatial.planes.iter().enumerate() {
         let valid = match plane.size {
-            PlaneSize::Reduced(s) => s >= 1,
-            PlaneSize::Fixed { width, height } => width >= 1 && height >= 1,
+            PlaneSize::Extent(PlaneExtent::Reduced(s)) => s >= 1,
+            PlaneSize::Extent(PlaneExtent::Fixed { width, height }) => width >= 1 && height >= 1,
             PlaneSize::Light(_) => true,
         };
         if !valid {
@@ -877,7 +780,7 @@ pub(super) fn validate_spatial(spatial: &GpuSpatial) -> Result<(), String> {
 
 /// The planes one module binds, in slot order, and where each apply's planes begin.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(super) struct Slots {
+pub struct Slots {
     /// The step and plane each slot holds.
     planes: Vec<(usize, u32)>,
     /// The first slot of each bound apply's planes, by step and apply.
@@ -885,11 +788,15 @@ pub(super) struct Slots {
 }
 
 impl Slots {
-    pub(super) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.planes.len()
     }
 
-    pub(super) fn planes(&self) -> &[(usize, u32)] {
+    pub fn is_empty(&self) -> bool {
+        self.planes.is_empty()
+    }
+
+    pub fn planes(&self) -> &[(usize, u32)] {
         &self.planes
     }
 
@@ -1012,7 +919,7 @@ fn applies(
 /// coverage first and runs its applies only where it is not exactly zero, which is all its passes
 /// fill the planes for ([`GpuSpatial::pass_rect`]); elsewhere the input is the output, as the
 /// blend would make it.
-pub(super) fn frame_statements(index: usize, spatial: &GpuSpatial, slots: &Slots) -> String {
+pub fn frame_statements(index: usize, spatial: &GpuSpatial, slots: &Slots) -> String {
     let mut text = String::from("    {\n");
     let applied = applies(
         index,
@@ -1050,10 +957,7 @@ pub(super) fn frame_statements(index: usize, spatial: &GpuSpatial, slots: &Slots
 /// The coverage functions of the masked steps of `steps[range]`, after the one fold they share,
 /// and each masked colour step's frame statements, by step index: what a module holding those
 /// steps declares and runs.
-pub(super) fn masks(
-    steps: &[GpuStep],
-    range: std::ops::Range<usize>,
-) -> (String, Vec<Option<String>>) {
+pub fn masks(steps: &[GpuStep], range: std::ops::Range<usize>) -> (String, Vec<Option<String>>) {
     let mut functions = String::new();
     let mut statements = vec![None; range.start];
     for (index, step) in steps.iter().enumerate().take(range.end).skip(range.start) {
@@ -1078,7 +982,7 @@ pub(super) fn masks(
 }
 
 /// The frame pass's statements for any step, `masked` the masked steps' own from [`masks`].
-pub(super) fn statements(
+pub fn statements(
     steps: &[GpuStep],
     index: usize,
     slots: &Slots,
@@ -1101,7 +1005,7 @@ pub(super) fn statements(
 
 /// The fragment module's spatial declarations and its slots: every apply's planes of every
 /// spatial step, with stubs for what only a pass uses.
-pub(super) fn fragment_declarations(steps: &[GpuStep]) -> (String, Slots) {
+pub fn fragment_declarations(steps: &[GpuStep]) -> (String, Slots) {
     let mut slots = Slots::default();
     slots.bind_applies(steps, steps.len().saturating_sub(1), usize::MAX);
     let mut text = declarations(&slots);
@@ -1128,7 +1032,7 @@ const SOURCE_STUB: &str = "fn lf_source(at: vec2<i32>) -> vec3<f32> {\n    \
 /// own and their statements: a pass that reads only planes holds its step's spatial program alone,
 /// beside [`SOURCE_STUB`], so the steps before its step decide neither its module, nor its layout,
 /// nor its pipeline: its output's texture takes its plane's own format ([`PlanesKey`]).
-pub(super) fn pass_module(
+pub fn pass_module(
     steps: &[GpuStep],
     index: usize,
     pass: &GpuPass,
@@ -1247,7 +1151,7 @@ pub(super) fn pass_module(
 /// Every pass's parameters in plan order, each in a slice of [`PARAMS_WORDS`] words: what the
 /// planes' parameter buffer holds for `steps`, each pass at its place of `places`, in plan order,
 /// or starting at its output's first texel and writing all of it where `places` names none.
-pub(super) fn parameters(steps: &[GpuStep], places: &[Place]) -> Vec<u32> {
+pub fn parameters(steps: &[GpuStep], places: &[Place]) -> Vec<u32> {
     let mut words = Vec::new();
     let mut number = 0;
     for (index, step) in steps.iter().enumerate() {
@@ -1294,7 +1198,7 @@ pub(super) fn parameters(steps: &[GpuStep], places: &[Place]) -> Vec<u32> {
 /// its mantissa rounded to ten bits by integer arithmetic on its bits, which carries into the
 /// exponent as the rounding does. WGSL's `quantizeToF16` would need a capability the surface's
 /// device does not have.
-pub(super) const HALF_ROUNDING: &str = "
+pub const HALF_ROUNDING: &str = "
 fn lf_surface_half(value: vec4<f32>) -> vec4<f32> {
     let bits = bitcast<vec4<u32>>(clamp(value, vec4<f32>(-65504.0), vec4<f32>(65504.0)));
     let even = (bits >> vec4<u32>(13u)) & vec4<u32>(1u);
@@ -1318,7 +1222,7 @@ fn pass_count(steps: &[GpuStep]) -> usize {
 
 /// The bind group layout of a module's second group: `planes` sampled planes and, for a pass, its
 /// output's storage format.
-pub(super) fn plane_layout(
+pub fn plane_layout(
     device: &wgpu::Device,
     planes: usize,
     output: Option<wgpu::TextureFormat>,
@@ -1366,7 +1270,7 @@ pub(super) fn plane_layout(
 
 /// One compiled pass: its pipeline, its second group's layout and the planes it binds.
 #[derive(Clone)]
-pub(super) struct CompiledPass {
+pub struct CompiledPass {
     pipeline: wgpu::ComputePipeline,
     layout: wgpu::BindGroupLayout,
     slots: Slots,
@@ -1378,31 +1282,31 @@ pub(super) struct CompiledPass {
 impl CompiledPass {
     /// What a light link binds and dispatches its passes with ([`super::light`]), whose planes are
     /// its own and the pool's light planes, never a link's.
-    pub(super) fn pipeline(&self) -> &wgpu::ComputePipeline {
+    pub fn pipeline(&self) -> &wgpu::ComputePipeline {
         &self.pipeline
     }
 
-    pub(super) fn layout(&self) -> &wgpu::BindGroupLayout {
+    pub fn layout(&self) -> &wgpu::BindGroupLayout {
         &self.layout
     }
 
     /// The step and plane each of its second group's slots binds, in slot order.
-    pub(super) fn slots(&self) -> &[(usize, u32)] {
+    pub fn slots(&self) -> &[(usize, u32)] {
         self.slots.planes()
     }
 }
 
 /// Every spatial step's compiled passes, in order, and the frame's second group's layout.
 #[derive(Clone, Default)]
-pub(super) struct CompiledSpatial {
-    pub(super) passes: Vec<CompiledPass>,
-    pub(super) fragment: Option<(wgpu::BindGroupLayout, Slots)>,
+pub struct CompiledSpatial {
+    pub passes: Vec<CompiledPass>,
+    pub fragment: Option<(wgpu::BindGroupLayout, Slots)>,
 }
 
 /// Whether a device can run spatial steps: compute shaders with a 256-lane workgroup, its shared
 /// scratch, a storage texture beside the planes a pass reads, and a pass's parameters at a
 /// 256-byte offset.
-pub(super) fn supported(limits: &wgpu::Limits) -> bool {
+pub fn supported(limits: &wgpu::Limits) -> bool {
     limits.max_compute_invocations_per_workgroup >= WORKGROUP_LANES
         && limits.max_compute_workgroup_size_x >= WORKGROUP_LANES
         && limits.max_compute_workgroup_storage_size >= SHARED_VALUES * 4
@@ -1410,7 +1314,7 @@ pub(super) fn supported(limits: &wgpu::Limits) -> bool {
         && limits.max_storage_buffers_per_shader_stage >= 3
         && limits.max_sampled_textures_per_shader_stage >= 16
         && limits.max_bindings_per_bind_group > PARAMS_BINDING
-        && u64::from(limits.min_storage_buffer_offset_alignment) <= PARAMS_STRIDE
+        && layout::parameter_alignment_supported(limits.min_storage_buffer_offset_alignment)
 }
 
 /// One compiled pass module: its text, its pipeline and its second group's layout.
@@ -1427,7 +1331,7 @@ struct CachedPass {
 /// differ, and one that differs only in the colour steps before a spatial step compiles only the
 /// passes that read their unit's input. Only a pipeline whose sequence compiled cleanly joins it.
 #[derive(Default)]
-pub(super) struct PassCache {
+pub struct PassCache {
     entries: std::sync::Mutex<(Vec<CachedPass>, u64)>,
     /// How many pass pipelines were created, for the tests that prove the reuse.
     created: std::sync::atomic::AtomicU64,
@@ -1450,7 +1354,7 @@ impl PassCache {
     }
 
     /// Keep the passes a sequence compiled cleanly.
-    pub(super) fn keep(&self, made: Vec<(String, wgpu::ComputePipeline, wgpu::BindGroupLayout)>) {
+    pub fn keep(&self, made: Vec<(String, wgpu::ComputePipeline, wgpu::BindGroupLayout)>) {
         let mut entries = self
             .entries
             .lock()
@@ -1482,24 +1386,29 @@ impl PassCache {
 
     /// How many pass pipelines have been created.
     #[cfg(any(test, feature = "qualification"))]
-    pub(super) fn created(&self) -> u64 {
+    pub fn created(&self) -> u64 {
         self.created.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// How many pass pipelines are kept.
-    #[cfg(test)]
-    pub(super) fn len(&self) -> usize {
+    #[cfg(any(test, feature = "qualification"))]
+    pub fn len(&self) -> usize {
         self.entries
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .0
             .len()
     }
+
+    #[cfg(any(test, feature = "qualification"))]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// What [`compile_passes`] made that the stage's [`PassCache`] did not hold, to keep once the
 /// sequence's error scopes report it clean.
-pub(super) type MadePasses = Vec<(String, wgpu::ComputePipeline, wgpu::BindGroupLayout)>;
+pub type MadePasses = Vec<(String, wgpu::ComputePipeline, wgpu::BindGroupLayout)>;
 
 /// Compile every spatial step's passes of `steps`, each module validated as the surface
 /// validates, inside the caller's error scopes. One module serves every pass with the same text,
@@ -1509,7 +1418,7 @@ pub(super) type MadePasses = Vec<(String, wgpu::ComputePipeline, wgpu::BindGroup
 /// naga's backends translate every function of a module with one entry point, so the driver would
 /// compile the whole spatial program, and every program before it, for every pass. Compacted, it
 /// compiles only what the pass's kernel reaches, and nothing is parsed twice.
-pub(super) fn compile_passes(
+pub(crate) fn compile_passes(
     device: &wgpu::Device,
     support: &Support,
     steps: &[GpuStep],
@@ -1585,47 +1494,8 @@ pub(super) fn compile_passes(
     Ok((compiled, modules))
 }
 
-/// A texture's class: the texture format a plane's own format gives it, and the plane's size.
-/// `Scalar` and `HalfScalar` planes are of one class format, `r32float`, and `Pair` and `HalfPair`
-/// of another, `rg32float`. Every link of a slot covers the boundary's size and origin, so a class
-/// has one extent there. Classes are ordered, so a layout compares by what it holds, not by the
-/// order its planes were seen in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub(super) struct Class {
-    /// The plane format that names the class's texture format ([`PlaneFormat::kept_as`]).
-    pub(super) format: PlaneFormat,
-    pub(super) size: PlaneSize,
-}
-
-impl Class {
-    pub(super) fn of(plane: GpuPlane) -> Self {
-        Self {
-            format: plane.format.kept_as(),
-            size: plane.size,
-        }
-    }
-
-    /// A plane of the class, whose texture format, extent and bytes are the class's.
-    pub(super) fn plane(self) -> GpuPlane {
-        GpuPlane {
-            format: self.format,
-            size: self.size,
-        }
-    }
-}
-
-/// Where one plane of a link's spatial step is held.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(super) enum PlaneTexture {
-    /// The link's kept texture at this index: a plane an apply of its step reads.
-    Kept(usize),
-    /// The pool's `k`-th texture of the class ([`PoolKey`]): a scratch plane, the link's `k`-th of
-    /// its class in its own plane order.
-    Pool(Class, usize),
-    /// The slot's light plane `k` ([`PlaneSize::Light`]), which the pool holds for every link and
-    /// the plan's `k`-th light link writes.
-    Light(u32),
-}
+use luxforge_gpu_types::layout::{self, LinkLayout, PlaneRole, PoolLayout};
+pub use luxforge_gpu_types::layout::{PlaneClass as Class, PlaneLocation as PlaneTexture};
 
 /// How a link lays out its planes, and what decides whether the planes it holds serve another
 /// plan: each spatial step's planes, where each is held, the link's kept textures, how many scratch
@@ -1648,15 +1518,15 @@ pub(super) enum PlaneTexture {
 /// compiles serve every boundary. [`Planes`] creates the link's kept textures; its scratch planes
 /// are the slot's pool's ([`Pool`]).
 #[derive(Clone, Debug, PartialEq)]
-pub(super) struct PlanesKey {
+pub struct PlanesKey {
     /// Each spatial step's index among the steps, and its planes.
     planes: Vec<(usize, Vec<GpuPlane>)>,
     /// Where each spatial step's planes are held, indexed as `planes`.
     locations: Vec<(usize, Vec<PlaneTexture>)>,
     /// The kept textures, each the plane it holds, in plane order.
     kept: Vec<GpuPlane>,
-    /// How many scratch planes of each class the link holds, in class order.
-    scratch: Vec<(Class, usize)>,
+    /// Shared physical placement and scratch counts.
+    layout: LinkLayout,
     /// How many passes the parameter buffer holds a slice for.
     passes: usize,
     size: (u32, u32),
@@ -1665,7 +1535,7 @@ pub(super) struct PlanesKey {
 
 /// The format of the texture that holds each plane of each spatial step of `steps`, indexed as
 /// the steps and their planes are: the plane's own, which a pass writing the plane stores in.
-pub(super) fn texture_formats(steps: &[GpuStep]) -> Vec<(usize, Vec<PlaneFormat>)> {
+pub fn texture_formats(steps: &[GpuStep]) -> Vec<(usize, Vec<PlaneFormat>)> {
     steps
         .iter()
         .enumerate()
@@ -1683,7 +1553,7 @@ pub(super) fn texture_formats(steps: &[GpuStep]) -> Vec<(usize, Vec<PlaneFormat>
 }
 
 /// The format a pass of step `index` writing plane `plane` stores in.
-pub(super) fn written_format(steps: &[GpuStep], index: usize, plane: u32) -> Option<PlaneFormat> {
+pub fn written_format(steps: &[GpuStep], index: usize, plane: u32) -> Option<PlaneFormat> {
     texture_formats(steps)
         .into_iter()
         .find(|(step, _)| *step == index)
@@ -1693,11 +1563,11 @@ pub(super) fn written_format(steps: &[GpuStep], index: usize, plane: u32) -> Opt
 impl PlanesKey {
     /// The layout of `steps`' spatial steps over a boundary of `size` texels whose texel `(0, 0)`
     /// is stage pixel `origin`, or `None` for steps without one.
-    pub(super) fn of(steps: &[GpuStep], size: (u32, u32), origin: (u32, u32)) -> Option<Self> {
+    pub fn of(steps: &[GpuStep], size: (u32, u32), origin: (u32, u32)) -> Option<Self> {
         let mut planes = Vec::new();
         let mut locations = Vec::new();
         let mut kept = Vec::new();
-        let mut scratch = std::collections::BTreeMap::<Class, usize>::new();
+        let mut layout = LinkLayout::default();
         for (index, step) in steps.iter().enumerate() {
             let GpuStep::Spatial(spatial) = step else {
                 continue;
@@ -1713,18 +1583,19 @@ impl PlanesKey {
                 .iter()
                 .enumerate()
                 .map(|(number, plane)| {
-                    if let PlaneSize::Light(k) = plane.size {
-                        // The slot's, whichever link reads it: never a texture of the link's.
-                        PlaneTexture::Light(k)
-                    } else if read(number) {
-                        kept.push(*plane);
-                        PlaneTexture::Kept(kept.len() - 1)
-                    } else {
-                        let class = Class::of(*plane);
-                        let count = scratch.entry(class).or_default();
-                        *count += 1;
-                        PlaneTexture::Pool(class, *count - 1)
-                    }
+                    let role = match plane.size {
+                        PlaneSize::Light(k) => PlaneRole::Light(k),
+                        PlaneSize::Extent(extent) => {
+                            let class = Class::new(plane.format, extent);
+                            if read(number) {
+                                kept.push(*plane);
+                                PlaneRole::Kept(class)
+                            } else {
+                                PlaneRole::Scratch(class)
+                            }
+                        }
+                    };
+                    layout.push(role)
                 })
                 .collect();
             planes.push((index, spatial.planes.clone()));
@@ -1737,7 +1608,7 @@ impl PlanesKey {
             planes,
             locations,
             kept,
-            scratch: scratch.into_iter().collect(),
+            layout,
             passes: pass_count(steps),
             size,
             origin,
@@ -1745,7 +1616,7 @@ impl PlanesKey {
     }
 
     /// Where plane `plane` of step `step` is held.
-    pub(super) fn location(&self, step: usize, plane: u32) -> Option<PlaneTexture> {
+    pub fn location(&self, step: usize, plane: u32) -> Option<PlaneTexture> {
         self.locations
             .iter()
             .find(|(index, _)| *index == step)
@@ -1753,41 +1624,33 @@ impl PlanesKey {
     }
 
     /// How many scratch planes of each class the link holds, in class order.
-    pub(super) fn scratch(&self) -> &[(Class, usize)] {
-        &self.scratch
+    #[cfg(any(test, feature = "qualification"))]
+    pub fn scratch(&self) -> Vec<(Class, usize)> {
+        self.layout.scratch()
     }
 
     /// Each kept texture's plane, in plane order ([`PlaneTexture::Kept`]).
-    #[cfg(test)]
-    pub(super) fn kept(&self) -> &[GpuPlane] {
+    #[cfg(any(test, feature = "qualification"))]
+    pub fn kept(&self) -> &[GpuPlane] {
         &self.kept
     }
 
     /// The bytes the kept textures take, and the passes' parameter buffer: what the link holds
     /// beside the pool.
-    pub(super) fn kept_bytes(&self) -> u64 {
-        self.kept
-            .iter()
-            .map(|plane| plane.bytes(self.origin, self.size))
-            .sum::<u64>()
-            + self.parameter_bytes()
+    pub fn kept_bytes(&self) -> u64 {
+        self.layout.kept_bytes(self.origin, self.size, self.passes)
     }
 
     /// The bytes its kept textures and the passes' parameter buffer take, with a texture of its own
     /// for each scratch plane as well: for a link alone, whose pool is its own scratch, its chain's
     /// whole charge ([`super::chain_charge`]).
-    #[cfg(test)]
-    pub(super) fn bytes(&self) -> u64 {
-        self.kept_bytes()
-            + self
-                .scratch
-                .iter()
-                .map(|&(class, count)| count as u64 * class.plane().bytes(self.origin, self.size))
-                .sum::<u64>()
+    #[cfg(any(test, feature = "qualification"))]
+    pub fn bytes(&self) -> u64 {
+        self.kept_bytes() + layout::pool_bytes(self.layout.scratch(), self.origin, self.size, 0)
     }
 
     fn parameter_bytes(&self) -> u64 {
-        PARAMS_STRIDE * self.passes.max(1) as u64
+        layout::parameter_bytes(self.passes)
     }
 }
 
@@ -1798,7 +1661,7 @@ impl PlanesKey {
 /// scratch planes of one link, alive together within its tick, take distinct textures, and no plane
 /// an apply reads is one of them.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(super) struct PoolKey {
+pub struct PoolKey {
     /// How many textures of each class it holds, in class order.
     textures: Vec<(Class, usize)>,
     size: (u32, u32),
@@ -1809,45 +1672,35 @@ pub(super) struct PoolKey {
 }
 
 /// The bytes one light plane takes: one `rgba32float` texel.
-pub(super) const LIGHT_BYTES: u64 = 16;
+pub use luxforge_gpu_types::layout::LIGHT_BYTES;
 
 impl PoolKey {
     /// The pool the spatial steps of `links` take their scratch planes from over a boundary of
     /// `size` texels whose texel `(0, 0)` is stage pixel `origin`: every link of a chain, the last
     /// one included ([`super::chain::Chain`]), and the light planes any of them declares.
-    pub(super) fn of<'a>(
+    pub fn of<'a>(
         links: impl IntoIterator<Item = &'a [GpuStep]>,
         size: (u32, u32),
         origin: (u32, u32),
     ) -> Self {
-        let mut most = std::collections::BTreeMap::<Class, usize>::new();
-        let mut lights = 0;
+        let mut layout = PoolLayout::default();
         for steps in links {
-            for step in steps {
-                if let GpuStep::Spatial(spatial) = step {
-                    lights = spatial.lights().map(|k| k + 1).fold(lights, u32::max);
-                }
-            }
-            let Some(key) = PlanesKey::of(steps, size, origin) else {
-                continue;
-            };
-            for &(class, count) in key.scratch() {
-                let held = most.entry(class).or_default();
-                *held = (*held).max(count);
+            if let Some(key) = PlanesKey::of(steps, size, origin) {
+                layout.include(&key.layout);
             }
         }
         Self {
-            textures: most.into_iter().collect(),
+            textures: layout.textures(),
             size,
             origin,
-            lights,
+            lights: layout.lights,
         }
     }
 
     /// The pool of `self`'s scratch textures holding `lights` light planes: one fitted for a light
     /// link, which declares the light it writes, beside the links of the plan whose readers do.
     #[cfg(any(test, feature = "qualification"))]
-    pub(super) fn with_lights(self, lights: u32) -> Self {
+    pub fn with_lights(self, lights: u32) -> Self {
         Self {
             lights: self.lights.max(lights),
             ..self
@@ -1855,7 +1708,7 @@ impl PoolKey {
     }
 
     /// How many textures of each class it holds, in class order.
-    pub(super) fn textures(&self) -> &[(Class, usize)] {
+    pub fn textures(&self) -> &[(Class, usize)] {
         &self.textures
     }
 
@@ -1869,27 +1722,27 @@ impl PoolKey {
 
     /// The bytes one of its textures of `class` takes.
     fn texture_bytes(&self, class: Class) -> u64 {
-        let (width, height) = self.extent(class);
-        u64::from(width) * u64::from(height) * class.format.texel_bytes()
+        class.bytes(self.origin, self.size)
     }
 
     /// The extent of each of its textures of `class`.
-    pub(super) fn extent(&self, class: Class) -> (u32, u32) {
-        class.plane().extent(self.origin, self.size)
+    pub fn extent(&self, class: Class) -> (u32, u32) {
+        class.extent(self.origin, self.size)
     }
 
     /// The bytes its textures take, its light planes' among them.
-    pub(super) fn bytes(&self) -> u64 {
-        self.textures()
-            .iter()
-            .map(|&(class, count)| count as u64 * self.texture_bytes(class))
-            .sum::<u64>()
-            + u64::from(self.lights) * LIGHT_BYTES
+    pub fn bytes(&self) -> u64 {
+        layout::pool_bytes(
+            self.textures.iter().copied(),
+            self.origin,
+            self.size,
+            self.lights,
+        )
     }
 }
 
 /// One texture of a [`Pool`], with its view.
-pub(super) struct PoolTexture {
+pub struct PoolTexture {
     /// Held with its view; only the poison and a light written into a light plane write it
     /// directly.
     texture: wgpu::Texture,
@@ -1899,17 +1752,17 @@ pub(super) struct PoolTexture {
 impl PoolTexture {
     /// `texture` with its view, for a light link's own textures to retire as a pool's do
     /// ([`super::light`]).
-    pub(super) fn new(texture: wgpu::Texture) -> Self {
+    pub fn new(texture: wgpu::Texture) -> Self {
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         Self { texture, view }
     }
 
-    pub(super) fn view(&self) -> &wgpu::TextureView {
+    pub fn view(&self) -> &wgpu::TextureView {
         &self.view
     }
 
     /// The texture, for a copy into it or a readback.
-    pub(super) fn texture(&self) -> &wgpu::Texture {
+    pub fn texture(&self) -> &wgpu::Texture {
         &self.texture
     }
 }
@@ -1917,7 +1770,7 @@ impl PoolTexture {
 /// One light plane of a [`Pool`] ([`PlaneSize::Light`]), with the content key of the light its
 /// light link last wrote into it: what a step reading it folds into its passes' keys, so a light
 /// that changes runs again everything that reads it ([`Schedule`]).
-pub(super) struct LightPlane {
+pub struct LightPlane {
     texture: PoolTexture,
     key: Option<u64>,
 }
@@ -1954,7 +1807,7 @@ const LIGHT_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
 ///   ([`Pool::set_light_key`]); every link reading it binds it and folds that key into its
 ///   passes' ([`Schedule`]) and its own ([`fold_lights`]).
 #[derive(Default)]
-pub(super) struct Pool {
+pub struct Pool {
     /// The boundary's size and stage origin its textures cover.
     size: (u32, u32),
     origin: (u32, u32),
@@ -1999,7 +1852,7 @@ impl Pool {
     /// Removing or replacing a texture bumps the generation; adding one leaves every texture where
     /// it was. A refused charge is answered at once, what was created before it held and charged,
     /// and nothing is created twice: the next fit adds only what is still missing.
-    pub(super) fn fit<E>(
+    pub fn fit<E>(
         &mut self,
         device: &wgpu::Device,
         key: &PoolKey,
@@ -2118,7 +1971,7 @@ impl Pool {
 
     /// Light plane `k`'s view, when the pool holds it: what a link reading it binds, and the light
     /// link writing it stores to.
-    pub(super) fn light_view(&self, k: u32) -> Option<&wgpu::TextureView> {
+    pub fn light_view(&self, k: u32) -> Option<&wgpu::TextureView> {
         self.lights
             .get(k as usize)
             .map(|light| light.texture.view())
@@ -2126,13 +1979,13 @@ impl Pool {
 
     /// The content key of the light light plane `k` holds: `None` before its light link has
     /// written one, or for a plane the pool does not hold.
-    pub(super) fn light_key(&self, k: u32) -> Option<u64> {
+    pub fn light_key(&self, k: u32) -> Option<u64> {
         self.lights.get(k as usize).and_then(|light| light.key)
     }
 
     /// Record that light plane `k` now holds the light of content key `key`, which its light link
     /// wrote in a submission before any that reads it.
-    pub(super) fn set_light_key(&mut self, k: u32, key: u64) {
+    pub fn set_light_key(&mut self, k: u32, key: u64) {
         if let Some(light) = self.lights.get_mut(k as usize) {
             light.key = Some(key);
         }
@@ -2142,7 +1995,7 @@ impl Pool {
     /// that reads it, and record it as the plane's content: what a tile runner, which computes a
     /// plan's lights once for every tile it draws, gives each tile's pool. Nothing for a plane the
     /// pool does not hold.
-    pub(super) fn write_light(&mut self, queue: &wgpu::Queue, k: u32, light: [f32; 4]) {
+    pub fn write_light(&mut self, queue: &wgpu::Queue, k: u32, light: [f32; 4]) {
         let Some(plane) = self.lights.get_mut(k as usize) else {
             return;
         };
@@ -2170,7 +2023,7 @@ impl Pool {
     }
 
     /// Light plane `k`'s texture, for a copy into it or out of it, or a readback.
-    pub(super) fn light_texture(&self, k: u32) -> Option<&wgpu::Texture> {
+    pub fn light_texture(&self, k: u32) -> Option<&wgpu::Texture> {
         self.lights
             .get(k as usize)
             .map(|light| light.texture.texture())
@@ -2178,7 +2031,7 @@ impl Pool {
 
     /// What the pool holds, as a layout, which a qualification session holds a later plan's to.
     #[cfg(any(test, feature = "qualification"))]
-    pub(super) fn key(&self) -> PoolKey {
+    pub fn key(&self) -> PoolKey {
         PoolKey {
             textures: self
                 .textures
@@ -2192,12 +2045,12 @@ impl Pool {
     }
 
     /// The bytes its textures take, its light planes' among them.
-    pub(super) fn bytes(&self) -> u64 {
+    pub fn bytes(&self) -> u64 {
         self.bytes + self.light_bytes
     }
 
     /// Bumped whenever a texture is removed or replaced.
-    pub(super) fn generation(&self) -> u64 {
+    pub fn generation(&self) -> u64 {
         self.generation
     }
 
@@ -2242,8 +2095,8 @@ impl Pool {
 
     /// Each texture's class and number with the holder of its record, for the tests that hold a
     /// texture to one holder.
-    #[cfg(test)]
-    pub(super) fn holders(&self) -> Vec<((Class, usize), u64)> {
+    #[cfg(any(test, feature = "qualification"))]
+    pub fn holders(&self) -> Vec<((Class, usize), u64)> {
         self.records
             .iter()
             .map(|(at, (holder, _))| (*at, *holder))
@@ -2251,8 +2104,8 @@ impl Pool {
     }
 
     /// Every texture, with its class and number, for the tests that measure what the slot holds.
-    #[cfg(test)]
-    pub(super) fn textures(&self) -> Vec<((Class, usize), &wgpu::Texture)> {
+    #[cfg(any(test, feature = "qualification"))]
+    pub fn textures(&self) -> Vec<((Class, usize), &wgpu::Texture)> {
         self.textures
             .iter()
             .flat_map(|(class, textures)| {
@@ -2266,7 +2119,7 @@ impl Pool {
 
     /// Tests only: whether each link's passes start from the sentinel ([`Pool::poison`]).
     #[cfg(any(test, feature = "qualification"))]
-    pub(super) fn set_poisoned(&mut self, poisoned: bool) {
+    pub fn set_poisoned(&mut self, poisoned: bool) {
         self.poisoned = poisoned;
     }
 
@@ -2279,7 +2132,7 @@ impl Pool {
     /// with `queue.write_texture`, whose writes land before the whole submission: the poison must
     /// fall between one link's passes and the next's.
     #[cfg(any(test, feature = "qualification"))]
-    pub(super) fn poison(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder) {
+    pub fn poison(&mut self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder) {
         if !self.poisoned {
             return;
         }
@@ -2290,7 +2143,7 @@ impl Pool {
             .iter()
             .map(|(class, _)| {
                 let format = class.format.texture();
-                let (width, height) = class.plane().extent(self.origin, self.size);
+                let (width, height) = class.extent(self.origin, self.size);
                 let texel = format.block_copy_size(None).unwrap_or(16);
                 let row = (width * texel).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
                     * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
@@ -2351,8 +2204,8 @@ impl Pool {
 /// A link's planes: its kept textures, created at their extents with their views, its passes'
 /// parameters, and where each plane is held ([`PlanesKey`]); its scratch planes are the slot's
 /// pool's ([`Pool`]).
-pub(super) struct Planes {
-    pub(super) key: PlanesKey,
+pub struct Planes {
+    pub key: PlanesKey,
     /// Each kept texture ([`PlaneTexture::Kept`]), in plane order.
     textures: Vec<(wgpu::Texture, wgpu::TextureView)>,
     /// Every pass's parameters, a [`PARAMS_STRIDE`] slice each, in plan order.
@@ -2362,13 +2215,13 @@ pub(super) struct Planes {
     /// The parameters with every pass starting at its output's first texel: what places the
     /// passes in their plan, which the rectangle a tick runs them over does not change.
     placed: Vec<u32>,
-    pub(super) bytes: u64,
+    pub bytes: u64,
 }
 
 impl Planes {
     /// The link's kept textures and parameters of `key`, created. The caller has charged
     /// [`PlanesKey::kept_bytes`].
-    pub(super) fn create(device: &wgpu::Device, key: PlanesKey) -> Self {
+    pub fn create(device: &wgpu::Device, key: PlanesKey) -> Self {
         let textures = key
             .kept
             .iter()
@@ -2412,8 +2265,8 @@ impl Planes {
 
     /// The kept textures, in plane order, and the parameter buffer, for the tests that measure what
     /// the slot holds.
-    #[cfg(test)]
-    pub(super) fn resources(&self) -> (Vec<&wgpu::Texture>, &wgpu::Buffer) {
+    #[cfg(any(test, feature = "qualification"))]
+    pub fn resources(&self) -> (Vec<&wgpu::Texture>, &wgpu::Buffer) {
         (
             self.textures.iter().map(|(texture, _)| texture).collect(),
             &self.parameters,
@@ -2422,7 +2275,7 @@ impl Planes {
 
     /// Whether the passes of `steps` take other places in their plan than the last ones did,
     /// which the planes' contents then no longer follow.
-    pub(super) fn moved(&mut self, steps: &[GpuStep]) -> bool {
+    pub fn moved(&mut self, steps: &[GpuStep]) -> bool {
         let placed = parameters(steps, &[]);
         let moved = placed != self.placed;
         self.placed = placed;
@@ -2431,12 +2284,7 @@ impl Planes {
 
     /// Write every pass's parameters for `steps`, each pass at its place of `places`, when they
     /// changed.
-    pub(super) fn write_parameters(
-        &mut self,
-        queue: &wgpu::Queue,
-        steps: &[GpuStep],
-        places: &[Place],
-    ) {
+    pub fn write_parameters(&mut self, queue: &wgpu::Queue, steps: &[GpuStep], places: &[Place]) {
         let parameters = parameters(steps, places);
         if parameters != self.written {
             queue.write_buffer(&self.parameters, 0, &super::le_bytes(&parameters));
@@ -2517,10 +2365,10 @@ impl Planes {
 /// Where one pass runs: the texel of its output its first invocation starts at, the rectangle of
 /// its output it writes, and the workgroups it dispatches.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) struct Place {
-    pub(super) origin: [u32; 2],
-    pub(super) limit: Rect,
-    pub(super) dispatch: [u32; 3],
+pub struct Place {
+    pub origin: [u32; 2],
+    pub limit: Rect,
+    pub dispatch: [u32; 3],
 }
 
 /// One pass's second group, with the plane it writes, that plane's extent and how it runs.
@@ -2534,18 +2382,18 @@ struct BoundPass {
 /// The second groups of one compiled plan over its planes: each pass's, and the frame's. They bind
 /// the link's kept textures and the pool's, so they hold for the pool's generation they were built
 /// under ([`Pool::generation`]).
-pub(super) struct Groups {
+pub struct Groups {
     passes: Vec<BoundPass>,
     /// The stage pixel of the boundary's first texel, which the reduced planes' blocks are
     /// anchored against.
     origin: (u32, u32),
-    pub(super) fragment: Option<wgpu::BindGroup>,
+    pub fragment: Option<wgpu::BindGroup>,
 }
 
 impl Groups {
     /// `compiled`'s groups over `planes`, each plane's view from the link's kept textures or from
     /// `pool` ([`PlanesKey::location`]).
-    pub(super) fn new(
+    pub fn new(
         device: &wgpu::Device,
         compiled: &CompiledSpatial,
         planes: &Planes,
@@ -2582,19 +2430,23 @@ impl Groups {
     /// Where each pass runs to fill `rect` of the boundary: its output plane's texels over it, a
     /// reduced plane's blocks the rectangle touches, and a fixed plane, or a workgroup's pass,
     /// whole.
-    pub(super) fn places(&self, rect: Rect) -> Vec<Place> {
+    pub fn places(&self, rect: Rect) -> Vec<Place> {
         self.places_each(&vec![rect; self.passes.len()])
     }
 
     /// [`Groups::places`] with each pass over its own rectangle of `rects`, in plan order.
-    pub(super) fn places_each(&self, rects: &[Rect]) -> Vec<Place> {
+    pub fn places_each(&self, rects: &[Rect]) -> Vec<Place> {
         self.passes
             .iter()
             .zip(rects)
             .map(|(pass, rect)| {
                 let covered = match pass.plane.size {
-                    PlaneSize::Reduced(s) => rect.reduced(s, self.origin, pass.extent),
-                    PlaneSize::Fixed { .. } | PlaneSize::Light(_) => Rect::whole(pass.extent),
+                    PlaneSize::Extent(PlaneExtent::Reduced(s)) => {
+                        rect.reduced(s, self.origin, pass.extent)
+                    }
+                    PlaneSize::Extent(PlaneExtent::Fixed { .. }) | PlaneSize::Light(_) => {
+                        Rect::whole(pass.extent)
+                    }
                 };
                 match pass.shape {
                     // A pass's invocations start where they would over the whole plane, every
@@ -2632,7 +2484,7 @@ impl Groups {
 
     /// Encode the passes `run` marks, in order, each at its place of `places`, group 0 the plan's
     /// words, blocks and boundary, and answer how many.
-    pub(super) fn encode(
+    pub fn encode(
         &self,
         encoder: &mut wgpu::CommandEncoder,
         compiled: &CompiledSpatial,
@@ -2694,7 +2546,7 @@ impl Groups {
 /// A light plane ([`PlaneSize::Light`]) holds the key its light link recorded in the pool, which
 /// no pass of the step changes: it is in the key of every pass that reads it and every pass after,
 /// so a light that changes runs them, and of the step's applies, so a later step's passes run too.
-pub(super) struct Schedule {
+pub struct Schedule {
     /// The key of what each of the link's kept textures holds, by its index.
     kept: Vec<(usize, u64)>,
     /// Its holder in the pool's records, drawn when the link's planes are created and again at
@@ -2714,7 +2566,7 @@ const UNLIT: u64 = u64::MAX;
 
 impl Schedule {
     /// A schedule of new planes, which hold nothing yet, with a holder drawn from `pool`.
-    pub(super) fn new(pool: &mut Pool) -> Self {
+    pub fn new(pool: &mut Pool) -> Self {
         Self {
             kept: Vec::new(),
             holder: pool.holder(),
@@ -2723,7 +2575,7 @@ impl Schedule {
 
     /// Forget every plane's content — a new sequence's groups, new planes or another pool
     /// generation — under a new holder, so every pool record this schedule wrote is foreign.
-    pub(super) fn reset(&mut self, pool: &mut Pool) {
+    pub fn reset(&mut self, pool: &mut Pool) {
         pool.release(self.holder);
         self.kept.clear();
         self.holder = pool.holder();
@@ -2731,14 +2583,14 @@ impl Schedule {
 
     /// Forget what every kept texture but `textures` holds, and every pool texture this schedule
     /// wrote: an incremental tick's passes wrote them only where they ran.
-    pub(super) fn keep_only(&mut self, textures: &[usize], pool: &mut Pool) {
+    pub fn keep_only(&mut self, textures: &[usize], pool: &mut Pool) {
         self.kept.retain(|(texture, _)| textures.contains(texture));
         pool.release(self.holder);
     }
 
     /// Its holder in the pool's records.
-    #[cfg(test)]
-    pub(super) fn holder(&self) -> u64 {
+    #[cfg(any(test, feature = "qualification"))]
+    pub fn holder(&self) -> u64 {
         self.holder
     }
 
@@ -2772,7 +2624,7 @@ impl Schedule {
     /// packed `words` and `blocks`, the boundary's `version`, the `textures` that hold the planes
     /// and the `pool` that holds their scratch; the planes they write are then taken as written,
     /// the pool's recorded as this schedule's.
-    pub(super) fn run(
+    pub fn run(
         &mut self,
         steps: &[GpuStep],
         words: &[u32],
@@ -2851,7 +2703,8 @@ impl Schedule {
             .iter()
             .map(|plane| match plane.size {
                 PlaneSize::Light(k) => pool.light_key(k).unwrap_or(UNLIT),
-                PlaneSize::Reduced(_) | PlaneSize::Fixed { .. } => 0,
+                PlaneSize::Extent(PlaneExtent::Reduced(_))
+                | PlaneSize::Extent(PlaneExtent::Fixed { .. }) => 0,
             })
             .collect();
         let holds = |held: &[u64], plane: &u32| held.get(*plane as usize).copied().unwrap_or(0);

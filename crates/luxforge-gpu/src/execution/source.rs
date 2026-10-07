@@ -24,6 +24,7 @@
 //!   build averages with, across each source row and then down; a JPEG's average is quantized
 //!   through the output thresholds and decoded again, as the CPU's proxy is. Within a code of the
 //!   CPU's proxy: its sums are `f64`, these `f32`.
+use super::BoundaryTexture;
 use super::{BoundaryFormat, GpuFallback, UPLOAD_CHUNK, spatial::HALF_ROUNDING, tail::encoding};
 use std::sync::Arc;
 
@@ -44,7 +45,7 @@ impl SourceKind {
     }
 
     /// Bytes a held pixel takes on the GPU.
-    pub(super) const fn pixel_bytes(self) -> u64 {
+    pub const fn pixel_bytes(self) -> u64 {
         match self {
             Self::Codes => 4,
             Self::Planes => 12,
@@ -350,7 +351,7 @@ pub struct SourceFigures {
 
 /// The source the pipeline holds: its textures, tile by tile, how far its upload has got, and what
 /// it is charged.
-pub(super) struct SourceSlot {
+pub struct SourceSlot {
     version: u64,
     kind: SourceKind,
     held: (u32, u32),
@@ -377,29 +378,29 @@ pub(super) struct SourceSlot {
 }
 
 impl SourceSlot {
-    pub(super) fn version(&self) -> u64 {
+    pub fn version(&self) -> u64 {
         self.version
     }
 
     /// Whether it holds `source`'s texels: its version, and the same rectangle of it.
-    pub(super) fn holds(&self, source: &GpuSource) -> bool {
+    pub fn holds(&self, source: &GpuSource) -> bool {
         self.version == source.version && self.window == source.window
     }
 
-    pub(super) fn bytes(&self) -> u64 {
+    pub fn bytes(&self) -> u64 {
         self.bytes
     }
 
-    pub(super) fn kind(&self) -> SourceKind {
+    pub fn kind(&self) -> SourceKind {
         self.kind
     }
 
     /// Every row is written.
-    pub(super) fn ready(&self) -> bool {
+    pub fn ready(&self) -> bool {
         self.rows >= self.held.1
     }
 
-    pub(super) fn figures(&self) -> SourceFigures {
+    pub fn figures(&self) -> SourceFigures {
         SourceFigures {
             version: self.version,
             bytes: self.bytes,
@@ -414,7 +415,7 @@ impl SourceSlot {
     /// empty with `layouts`' bindings; `charge` is asked for the bytes before anything is created.
     /// `None` with the fallback when the source needs more than two tiles across or down, or
     /// passes the budget.
-    pub(super) fn new(
+    pub fn new(
         device: &wgpu::Device,
         source: &GpuSource,
         layouts: &Layouts,
@@ -484,7 +485,7 @@ impl SourceSlot {
     /// Write rows of `source`, which must be this slot's, from where the last frame stopped, in
     /// chunks of about [`UPLOAD_CHUNK`] straight from its buffer, until `limit` bytes are written or
     /// every row is: the bytes written. A source whose pixels were let go writes nothing.
-    pub(super) fn upload(&mut self, queue: &wgpu::Queue, source: &GpuSource, limit: u64) -> u64 {
+    pub fn upload(&mut self, queue: &wgpu::Queue, source: &GpuSource, limit: u64) -> u64 {
         let Some(pixels) = &source.pixels else {
             return 0;
         };
@@ -569,7 +570,7 @@ impl SourceSlot {
     /// reduction the six table offsets then the tables. `None` when a cut leaves the rectangle of
     /// the content stage the slot holds, or a reduction's coverage does not cover the boundary,
     /// or the slot holds a window, which no reduction reads.
-    pub(super) fn words(&self, derivation: &Derivation, size: (u32, u32)) -> Option<Vec<u32>> {
+    pub fn words(&self, derivation: &Derivation, size: (u32, u32)) -> Option<Vec<u32>> {
         let [x, y, width, height] = self.window;
         match derivation {
             Derivation::Cut { origin } => {
@@ -610,7 +611,7 @@ impl SourceSlot {
     /// format, reading `words` (written by the caller from [`Self::words`]) through `layouts`'
     /// pipelines.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn encode(
+    pub fn encode(
         &self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
@@ -654,7 +655,7 @@ impl SourceSlot {
 
 /// The derivation passes' layouts and pipelines, made once with the stage: a cut and a reduction
 /// of codes into half floats, and of planes into `f32`.
-pub(super) struct Layouts {
+pub struct Layouts {
     words: wgpu::BindGroupLayout,
     codes: wgpu::BindGroupLayout,
     planes: wgpu::BindGroupLayout,
@@ -670,7 +671,7 @@ const TILES: usize = 4;
 impl Layouts {
     /// The passes on `device`, or why there are none: no output encoding installed yet, whose
     /// table a JPEG's codes are decoded through, or a shader the device refused.
-    pub(super) fn new(device: &wgpu::Device) -> Result<Self, String> {
+    pub fn new(device: &wgpu::Device) -> Result<Self, String> {
         let encoding = encoding()?;
         let texture = |binding: u32, sample_type| wgpu::BindGroupLayoutEntry {
             binding,

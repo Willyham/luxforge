@@ -420,7 +420,7 @@ struct ActionText {
 /// A spec is made only by `Spec::new`, which derives what every field-patch module shares and
 /// fixes what none may change: the effect's format is [`crate::EFFECT_FORMAT`], it declares no artifacts,
 /// it is `single` (the module owns one layer per target) and it applies to every source kind.
-pub struct Spec {
+pub(crate) struct Spec {
     id: &'static str,
     title: &'static str,
     hint: &'static str,
@@ -754,7 +754,7 @@ impl Shape {
 
 /// The canonical values of one payload, one per field in the table's order, with every missing
 /// key read as its field's default.
-pub struct Values<'a> {
+pub(crate) struct Values<'a> {
     fields: &'a [Field],
     values: Vec<Value>,
 }
@@ -810,7 +810,7 @@ impl Values<'_> {
 
 /// What one field-patch module provides beyond its table: turning canonical values into processing,
 /// and, when the rule differs from "every field at its default", which values change nothing.
-pub trait FieldPatch: Send + Sync + 'static {
+pub(crate) trait FieldPatch: Send + Sync + 'static {
     /// Plan a declared discrete action alongside the patch and reset. The same host transaction
     /// rules apply to its plan, including composition through this module's own patch.
     fn plan_extra(
@@ -868,7 +868,7 @@ pub trait FieldPatch: Send + Sync + 'static {
 
 /// A [`FieldPatch`] as a [`ToolModule`]: the descriptor built from its spec once, and every shared
 /// behaviour of a field-patch module implemented from the table.
-pub struct FieldPatchModule<M> {
+pub(crate) struct FieldPatchModule<M> {
     module: M,
     spec: Spec,
     descriptor: ModuleDescriptor,

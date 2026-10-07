@@ -62,7 +62,7 @@
 //!
 //! **One developed frame kept.** The slot keeps the last development, keyed by its file's path and
 //! signature, as upright RGBA8 display bytes (within the evaluated-frame limit,
-//! `luxforge_raw::MAX_FRAME_BYTES`), never as float planes, so the next region of the same frame —
+//! `crate::render::limits::MAX_FRAME_BYTES`), never as float planes, so the next region of the same frame —
 //! the pointer moving — is a copy of its rows and develops nothing. It is released before another
 //! frame is developed, so two never sit side by side, and by [`release_development`]. A frame the
 //! slot keeps answers a region before the embedded preview is listed again. The same development

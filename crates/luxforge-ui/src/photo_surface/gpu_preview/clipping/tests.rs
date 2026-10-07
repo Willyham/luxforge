@@ -19,6 +19,7 @@ const PALETTE: [[u8; 4]; 3] = [
 ];
 
 fn marks(shadows: bool, highlights: bool) -> ClipMarks {
+    luxforge_gpu::qualification::install_reference_encoding();
     let encoding = output_encoding().expect("the test's output encoding");
     ClipMarks {
         shadows,

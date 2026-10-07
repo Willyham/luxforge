@@ -4,6 +4,7 @@
 // what a frame reported.
 #![recursion_limit = "256"]
 
+mod adapters;
 mod app;
 mod browser;
 mod coalesce;
@@ -72,19 +73,19 @@ struct Config {
     no_gpu_render: bool,
     /// `--software-adapter`: on a host whose only adapter is a software one (lavapipe, WARP), draw
     /// through the GPU stage on it for this launch, before the software adapter is adopted
-    /// ([`luxforge_ui::adapters::SOFTWARE_ADAPTER_ADOPTED`]). Read once at launch.
+    /// ([`crate::adapters::SOFTWARE_ADAPTER_ADOPTED`]). Read once at launch.
     software_adapter: bool,
     /// The renderer the launch chose before its window opened, from what the host offers
     /// (`app/lifecycle.rs`); `None` until then, when [`Config::launch_renderer`] answers as for a
     /// host it did not look at.
-    launch_renderer: Option<luxforge_ui::adapters::LaunchRenderer>,
+    launch_renderer: Option<crate::adapters::LaunchRenderer>,
 }
 
 impl Config {
     /// The renderer this launch draws with: the one chosen before its window opened, or, before
     /// that, as for a host whose adapters were not looked at.
-    fn launch_renderer(&self) -> luxforge_ui::adapters::LaunchRenderer {
-        use luxforge_ui::adapters::{Offered, SOFTWARE_ADAPTER_ADOPTED, choose};
+    fn launch_renderer(&self) -> crate::adapters::LaunchRenderer {
+        use crate::adapters::{Offered, SOFTWARE_ADAPTER_ADOPTED, choose};
         self.launch_renderer.unwrap_or_else(|| {
             choose(
                 self.no_gpu_render,
@@ -212,8 +213,8 @@ fn arguments() -> Result<Config, String> {
             Some("--gpu-adapters") => {
                 // A diagnostic, before any window, catalog or log: the adapters wgpu offers the
                 // backends the renderer chooses among, one JSON object a line.
-                let backends = luxforge_ui::adapters::renderer_backends();
-                for adapter in luxforge_ui::adapters::enumerate(backends) {
+                let backends = crate::adapters::renderer_backends();
+                for adapter in crate::adapters::enumerate(backends) {
                     println!(
                         "{}",
                         app::renderer::adapter_record(

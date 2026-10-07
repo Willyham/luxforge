@@ -198,6 +198,34 @@ impl Look {
 }
 
 impl PointwiseColor for Look {
+    fn identity(&self) -> crate::OperationIdentity {
+        crate::OperationIdentity::new(
+            "look",
+            [self.chroma64, self.knee64, self.amount64].map(f64::to_bits),
+        )
+        .with_words(self.knots.iter().flatten().map(|v| v.to_bits()))
+        .with_words(self.x32.iter().map(|v| u64::from(v.to_bits())))
+        .with_words(self.inv_h.iter().map(|v| u64::from(v.to_bits())))
+        .with_words(
+            self.coefficients
+                .iter()
+                .flatten()
+                .map(|v| u64::from(v.to_bits())),
+        )
+        .with_words(
+            [
+                self.first,
+                self.last,
+                self.floor,
+                self.slope,
+                self.chroma,
+                self.knee,
+                self.amount,
+            ]
+            .map(|v| u64::from(v.to_bits())),
+        )
+    }
+
     /// The four steps on every pixel; nothing is clamped, and the row coordinates are ignored.
     fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {
         for pixel in rgb {

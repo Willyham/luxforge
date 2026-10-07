@@ -23,10 +23,8 @@
 //! names the new path.
 use super::Editor;
 use luxforge_core::{DraftId, EntryId, WorkspaceState};
-use luxforge_ui::{
-    Frame,
-    photo_surface::{ClipMarks, Dissolve, DrawingPath, GpuPlan, GpuStep},
-};
+use luxforge_gpu::{ClipMarks, DrawingPath, GpuPlan, GpuStep};
+use luxforge_ui::{Frame, photo_surface::Dissolve};
 use serde_json::{Value, json};
 
 /// The clipping overlay's classes, shadows and highlights, while this client shows one.
@@ -439,7 +437,7 @@ mod tests {
         gpu_identity::GpuIdentity,
         testing::{finish, opened, scripted_evidence},
     };
-    use luxforge_ui::photo_surface::GpuBoundary;
+    use luxforge_gpu::GpuBoundary;
     use std::sync::Arc;
 
     /// A captured frame reports the GPU-preview budget's figures as the surface counts them, the
@@ -465,7 +463,7 @@ mod tests {
         let photo = Frame::new(Arc::new(vec![0, 128, 255, 255]), 1, 1, 21).unwrap();
         let mut hook = GpuIdentity::default();
         hook.adopt(GpuBoundary::from_linear(
-            luxforge_ui::photo_surface::BoundaryFormat::Half,
+            luxforge_gpu::BoundaryFormat::Half,
             1,
             1,
             21,
@@ -480,7 +478,7 @@ mod tests {
                 .map(|plan| plan.boundary.version()),
             Some(21)
         );
-        editor.renderer.stage = Some(luxforge_ui::photo_surface::GpuStageState::DeviceLost);
+        editor.renderer.stage = Some(luxforge_gpu::GpuStageState::DeviceLost);
         assert_eq!(editor.gpu_preview_allowed(), Err("device-lost"));
         assert!(editor.gpu_plan(Some(&photo)).is_none());
         assert_eq!(
@@ -488,7 +486,7 @@ mod tests {
             None,
             "no GPU frame can be named either"
         );
-        editor.renderer.stage = Some(luxforge_ui::photo_surface::GpuStageState::Available);
+        editor.renderer.stage = Some(luxforge_gpu::GpuStageState::Available);
         assert!(editor.gpu_plan(Some(&photo)).is_some());
         editor.evidence = None;
         finish(editor, catalog);

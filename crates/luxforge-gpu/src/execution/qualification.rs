@@ -17,12 +17,13 @@
 //! Built only with the crate's `qualification` feature, which only a `[dev-dependencies]` table
 //! may turn on (`cargo xtask check-repository`), so no build of the desktop has it: the surface
 //! itself never reads a pixel back or waits on the GPU. Everything here blocks the calling test.
+use super::BoundaryTexture;
 use super::{
     BoundaryFormat, Compiled, GpuBoundary, GpuFallback, GpuPlan, GpuSource, GpuStep, GpuTail,
-    OUTPUT_FORMAT, SourceLayouts, SourceSlot, SpatialSlot, Support, assemble_passes, chain,
-    compile, encode_pass_over, le_bytes, slot_buffers, slot_charge, spatial, upload_rows, validate,
-    validate_step,
+    SourceLayouts, SourceSlot, SpatialSlot, Support, assemble_passes, chain, compile,
+    encode_pass_over, le_bytes, slot_buffers, slot_charge, spatial, upload_rows, validate_step,
 };
+use std::sync::Arc;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc,
@@ -1170,4 +1171,154 @@ pub fn unwarmed_links(warm: &super::GpuWarm, plan: &GpuPlan) -> Vec<usize> {
         })
         .map(|(index, _)| index)
         .collect()
+}
+
+/// Independent reference tables for a presentation test; ordinary hosts install their own tables.
+pub fn install_reference_encoding() {
+    assert!(super::install_output_encoding(
+        super::tail::reference_encoding()
+    ));
+}
+
+// Read-only resource views for cross-crate rendered integration tests. They expose no mutation
+// or allocation path, and are absent from ordinary editor builds.
+pub use super::{
+    blocks::block_len,
+    chain::{chain, pack_steps},
+    mask::changed_ranges,
+    rest::RestPasses,
+};
+pub const MIN_BUFFER: u64 = super::MIN_BUFFER;
+pub const BLOCK_CHUNK: usize = super::BLOCK_CHUNK;
+pub const OUTPUT_FORMAT: wgpu::TextureFormat = super::OUTPUT_FORMAT;
+pub struct BufferView<'a> {
+    pub buffer: &'a wgpu::Buffer,
+}
+pub struct SpatialView<'a> {
+    pub planes: &'a super::spatial::Planes,
+    pub schedule: &'a super::spatial::Schedule,
+    pub dispatched: u64,
+    pub groups: Option<(u64, u64, ())>,
+}
+impl<'a> From<&'a super::SpatialSlot> for SpatialView<'a> {
+    fn from(slot: &'a super::SpatialSlot) -> Self {
+        Self {
+            planes: &slot.planes,
+            schedule: &slot.schedule,
+            dispatched: slot.dispatched,
+            groups: slot
+                .groups
+                .as_ref()
+                .map(|(pipeline, generation, _)| (*pipeline, *generation, ())),
+        }
+    }
+}
+pub struct LinkView<'a> {
+    pub texture: &'a wgpu::Texture,
+    pub words: BufferView<'a>,
+    pub blocks: BufferView<'a>,
+    pub spatial: Option<Box<SpatialView<'a>>>,
+    written_blocks: &'a super::blocks::WrittenBlocks,
+}
+impl LinkView<'_> {
+    pub fn written_blocks(&self) -> &super::blocks::WrittenBlocks {
+        self.written_blocks
+    }
+}
+pub struct SlotView<'a> {
+    pub boundary: &'a wgpu::Texture,
+    pub output: &'a crate::Output,
+    pub words: BufferView<'a>,
+    pub blocks: BufferView<'a>,
+    pub chain: Vec<LinkView<'a>>,
+    pub spatial: Option<Box<SpatialView<'a>>>,
+    pub pool: &'a super::spatial::Pool,
+    pub written_blocks: &'a super::blocks::WrittenBlocks,
+    pub passes: u64,
+}
+impl super::GpuSlot {
+    pub fn inspection(&self) -> SlotView<'_> {
+        SlotView {
+            boundary: &self.boundary,
+            output: &self.output,
+            words: BufferView {
+                buffer: &self.words.buffer,
+            },
+            blocks: BufferView {
+                buffer: &self.blocks.buffer,
+            },
+            chain: self
+                .chain
+                .iter()
+                .map(|link| LinkView {
+                    texture: &link.texture,
+                    words: BufferView {
+                        buffer: &link.words.buffer,
+                    },
+                    blocks: BufferView {
+                        buffer: &link.blocks.buffer,
+                    },
+                    spatial: link
+                        .spatial
+                        .as_deref()
+                        .map(|slot| Box::new(SpatialView::from(slot))),
+                    written_blocks: link.written_blocks(),
+                })
+                .collect(),
+            spatial: self
+                .spatial
+                .as_deref()
+                .map(|slot| Box::new(SpatialView::from(slot))),
+            pool: &self.pool,
+            written_blocks: &self.written_blocks,
+            passes: self.passes,
+        }
+    }
+    pub fn spatial_dispatched(&self) -> Option<u64> {
+        self.spatial.as_ref().map(|slot| slot.dispatched)
+    }
+}
+pub struct SupportView<'a> {
+    pub passes: &'a super::spatial::PassCache,
+}
+pub struct StageView<'a> {
+    pub support: Option<SupportView<'a>>,
+    pub pipelines: &'a super::compile::Pipelines,
+    pub lost: &'a std::sync::atomic::AtomicBool,
+}
+impl super::GpuStage {
+    pub fn inspection(&self) -> StageView<'_> {
+        StageView {
+            support: self.support.as_ref().map(|support| SupportView {
+                passes: &support.passes,
+            }),
+            pipelines: &self.pipelines,
+            lost: &self.lost,
+        }
+    }
+    pub fn failure_message(&self, steps: &[GpuStep]) -> Option<Arc<str>> {
+        self.failure(steps)
+    }
+}
+impl super::Figures {
+    pub fn block_counters(&self) -> (u64, u64, u64) {
+        use std::sync::atomic::Ordering;
+        (
+            self.block_compared.load(Ordering::Acquire),
+            self.block_copied.load(Ordering::Acquire),
+            self.block_words.load(Ordering::Acquire),
+        )
+    }
+}
+impl super::GpuBoundary {
+    pub fn texel_owners(&self) -> Option<usize> {
+        self.texels.as_ref().map(Arc::strong_count)
+    }
+}
+
+pub fn assemble(steps: &[GpuStep]) -> Result<String, String> {
+    super::assemble(steps)
+}
+pub fn validate(source: &str) -> Result<wgpu::naga::Module, String> {
+    super::validate(source)
 }

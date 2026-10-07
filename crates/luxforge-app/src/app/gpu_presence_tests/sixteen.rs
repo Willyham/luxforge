@@ -12,9 +12,9 @@ use luxforge_core::{
     MAX_MASKED_SPATIAL_LAYERS, Mask, ModuleRegistry, PRESENCE_EFFECT, Recipe, gpu_plan,
     mask::Stroke, path::StrokeTable,
 };
-use luxforge_ui::photo_surface::{
+use luxforge_gpu::{
     BoundaryFormat, GPU_PREVIEW_BUDGET, GpuBoundary, GpuPlan, GpuStep, PIPELINE_CACHE,
-    gpu_preview::qualification::{boundary, unwarmed_links},
+    qualification::boundary, qualification::unwarmed_links,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;

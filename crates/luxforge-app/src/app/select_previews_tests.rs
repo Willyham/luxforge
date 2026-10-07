@@ -160,9 +160,9 @@ fn assert_accounted(previews: &SelectPreviews) {
             _ => panic!("a handle made from pixels"),
         })
         .sum();
-    assert_eq!(previews.bytes, bytes, "bytes charged");
-    assert_eq!(previews.handles, held.len(), "handles counted");
-    assert!(previews.bytes <= previews.budget, "within the budget");
+    assert_eq!(previews.usage.bytes, bytes, "bytes charged");
+    assert_eq!(previews.usage.handles, held.len(), "handles counted");
+    assert!(previews.usage.bytes <= previews.budget, "within the budget");
 }
 
 /// The files a batch reads, in order, with their priorities.
@@ -452,8 +452,8 @@ fn select_previews_a_better_stage_replaces_the_held_one() {
     previews.adopt(decoded(&sharp, 240, 160));
     assert_eq!(previews.size(&file(1)), Some((240, 160)));
     assert_ne!(previews.held(&file(1)).map(Handle::id), Some(id));
-    assert_eq!(previews.handles, 1);
-    assert_eq!(previews.bytes, 240 * 160 * 4);
+    assert_eq!(previews.usage.handles, 1);
+    assert_eq!(previews.usage.bytes, 240 * 160 * 4);
     assert_accounted(&previews);
     // The same decode again is not a second handle.
     let held = previews.held(&file(1)).map(Handle::id);
@@ -477,7 +477,7 @@ fn select_previews_a_better_stage_replaces_the_held_one() {
     previews.answered(answer(&batch, |_| queued(None)));
     assert!(previews.held(&file(1)).is_none());
     assert!(previews.loading(&file(1)));
-    assert_eq!((previews.bytes, previews.handles), (0, 0));
+    assert_eq!((previews.usage.bytes, previews.usage.handles), (0, 0));
 }
 
 /// Past the budget the least recently wanted previews go first; a cell on screen is never evicted,
@@ -514,7 +514,7 @@ fn select_previews_evict_the_least_recently_wanted_never_a_cell_on_screen() {
     };
     show(&mut previews, &[1, 2], &[3]);
     assert_eq!(held(&previews), [1, 2, 3]);
-    assert_eq!(previews.bytes, 3 * EACH);
+    assert_eq!(previews.usage.bytes, 3 * EACH);
     // Scrolled on: the three no longer wanted give way, the oldest first.
     show(&mut previews, &[4, 5], &[6]);
     assert_eq!(held(&previews), [4, 5, 6]);
@@ -566,7 +566,7 @@ fn select_previews_hold_at_most_the_handle_count() {
         }
         previews.plan_for(want.clone());
     }
-    assert_eq!(previews.handles, MAX_HANDLES);
+    assert_eq!(previews.usage.handles, MAX_HANDLES);
     previews.plan_for(Wanted {
         revision: REVISION,
         visible: cells(&[-1]),
@@ -582,7 +582,7 @@ fn select_previews_hold_at_most_the_handle_count() {
     });
     let decode = planned(&previews, -1).expect("the new cell");
     previews.adopt(decoded(&decode, 1, 1));
-    assert_eq!(previews.handles, MAX_HANDLES);
+    assert_eq!(previews.usage.handles, MAX_HANDLES);
     assert!(previews.held(&file(-1)).is_some());
     assert!(previews.held(&file(0)).is_none(), "the oldest gave way");
     assert_accounted(&previews);
@@ -597,7 +597,7 @@ fn select_previews_release_forgets_everything() {
     previews.release();
     assert!(previews.answered(answer(&batch, ready)).is_none());
     assert!(previews.entries.is_empty());
-    assert_eq!((previews.bytes, previews.handles), (0, 0));
+    assert_eq!((previews.usage.bytes, previews.usage.handles), (0, 0));
     // Showing Select again asks again.
     assert!(previews.plan_for(want).is_some());
 }
@@ -691,7 +691,7 @@ fn select_previews_the_worker_decodes_a_generated_jpeg_at_the_cell_size() {
     });
     assert_eq!(previews.size(&file(1)), Some((240, 160)));
     assert_quadrants(previews.held(&file(1)).expect("decoded"), QUADRANTS, 8);
-    assert_eq!(previews.bytes, 240 * 160 * 4);
+    assert_eq!(previews.usage.bytes, 240 * 160 * 4);
     assert!(previews.held(&file(2)).is_none());
     assert!(previews.plan_for(want).is_none());
     assert!(

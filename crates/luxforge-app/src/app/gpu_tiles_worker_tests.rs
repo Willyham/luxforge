@@ -35,6 +35,7 @@ use super::{
     tasks::call as owner_call,
     testing::{entry, fresh_stack, import_and_adopt},
 };
+use crate::adapters;
 use luxforge_core::{
     AssetId, BASIC_EFFECT, BoundaryFormat, Cancel, ClientId, DETAIL_EFFECT, EffectStage, Error,
     Evaluation, GpuFallback, HostConfig, Layer, ModuleRegistry, OwnerHandle, PRESENCE_EFFECT,
@@ -45,18 +46,12 @@ use luxforge_core::{
         TileUnavailable,
     },
 };
+use luxforge_gpu::{
+    Derivation, GpuBoundary, GpuPlan, GpuSource, headless::HeadlessSurface, tiles::GPU_TILE_BUDGET,
+    tiles::TileEnd, tiles::TilePixels,
+};
 use luxforge_reference::preview_error::{Class, ciede2000, lab_from_srgb8, statistics_of};
 use luxforge_testbase::{Gate, HANG, paths, wait_until};
-use luxforge_ui::{
-    adapters,
-    photo_surface::{
-        Derivation, GpuBoundary, GpuPlan, GpuSource,
-        gpu_preview::{
-            headless::HeadlessSurface,
-            tiles::{GPU_TILE_BUDGET, TileEnd, TilePixels, TileRunner},
-        },
-    },
-};
 use serde_json::{Value, json};
 use std::sync::{Arc, mpsc};
 
@@ -313,7 +308,7 @@ fn a_read_through_the_worker_equals_the_headless_surfaces_tile_bit_for_bit() {
     let window = adapters::open(&backend, &name)
         .unwrap_or_else(|unopened| panic!("{test}: the surface's device: {unopened:?}"));
     let mut surface = HeadlessSurface::new(&window.device, &window.queue);
-    let mut runner = TileRunner::open(&backend, &name)
+    let mut runner = crate::adapters::tile_runner(&backend, &name)
         .unwrap_or_else(|refusal| panic!("{test}: the runner: {refusal:?}"));
     let service = GpuTiles::new(Some((backend, name)), false);
     service.poison(true);
@@ -2186,5 +2181,60 @@ fn a_staged_stream_reads_the_light_behind_a_spatial_layer_from_its_stage() {
                 sweeps.sweeps.len()
             );
         }
+    }
+}
+
+/// Integrated native before/after stream measurement. Sources/stacks match the existing ledger;
+/// the consumer drops each band after counting it, so no full output buffer or JPEG encoding is timed.
+#[test]
+#[ignore = "integrated native export-stream timing on a quiet host, 30 samples per workload"]
+fn code_structure_export_measurement() {
+    use super::gpu_rest_tests::{committed, measured_stacks};
+    use luxforge_testbase::Distribution;
+    let adapter = host_adapter("code_structure_export_measurement").expect("a native adapter");
+    assert!(install_output_encoding());
+    let mut stacks = measured_stacks();
+    // Keep the representative 60 MP heavy JPEG, 20 MP developed RAW masked stack and 24 MP JPEG.
+    stacks.remove(2);
+    for (name, source, recipe) in stacks {
+        let dimensions = source.dimensions();
+        let stack = committed(source, recipe);
+        let service = GpuTiles::new(Some(adapter.clone()), false);
+        let client = clients(1)[0];
+        let mut wall = Vec::new();
+        let mut compiles = Vec::new();
+        let mut peak = Vec::new();
+        for sample in 0..31 {
+            settle(&service, client);
+            let before = service.figures();
+            let started = std::time::Instant::now();
+            let mut bytes = 0usize;
+            for band in service
+                .stream(&stack, &Cancel::new())
+                .expect("a GPU stream")
+            {
+                bytes += band.expect("a complete band").rgba.len();
+            }
+            let ms = started.elapsed().as_secs_f64() * 1e3;
+            assert_eq!(bytes, dimensions.0 as usize * dimensions.1 as usize * 4);
+            settle(&service, client);
+            let after = service.figures();
+            assert_eq!(after.stage_bytes, 0, "no stage held after completion");
+            if sample != 0 {
+                wall.push(ms);
+                compiles.push(after.compiles - before.compiles);
+                peak.push(after.peak);
+            }
+        }
+        let dist = Distribution::of(wall).unwrap();
+        println!(
+            "STRUCTURE_EXPORT {}",
+            json!({
+                "workload":name,"dimensions":dimensions,"adapter":adapter,"samples":dist.count,
+                "wall_ms":{"p50":dist.p50,"p95":dist.p95,"all":dist.samples},
+                "gpu_compiles":compiles,"runner_charged_peak_bytes":peak,
+                "scope":"production GPU export stream, warmed worker/source/shader caches after one discarded warmup; band consumption; excludes source development/JPEG encoding and GPU resources outside current charges"
+            })
+        );
     }
 }

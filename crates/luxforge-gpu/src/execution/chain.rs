@@ -39,12 +39,12 @@ use super::{
 /// `steps` split into the links the stage runs one after another: every link before the last,
 /// each written into an intermediate, and the last, which writes the output. A plan without a
 /// spatial step is one link.
-pub(super) struct Chain<'a> {
-    pub(super) links: Vec<&'a [GpuStep]>,
-    pub(super) last: &'a [GpuStep],
+pub struct Chain<'a> {
+    pub links: Vec<&'a [GpuStep]>,
+    pub last: &'a [GpuStep],
 }
 
-pub(super) fn chain(steps: &[GpuStep]) -> Chain<'_> {
+pub fn chain(steps: &[GpuStep]) -> Chain<'_> {
     let mut links = Vec::new();
     let mut start = 0;
     for (index, step) in steps.iter().enumerate() {
@@ -64,7 +64,7 @@ pub(super) fn chain(steps: &[GpuStep]) -> Chain<'_> {
 /// order ([`GpuStep::each_block`]), at least one word. A slot writes its blocks through
 /// [`WrittenBlocks`], which keeps this packing and copies only the blocks a tick changes.
 #[cfg(any(test, feature = "qualification"))]
-pub(super) fn pack_steps(
+pub fn pack_steps(
     texels: TexelMap,
     offset: (u32, u32),
     steps: &[GpuStep],
@@ -84,12 +84,7 @@ pub(super) fn pack_steps(
 /// The words of `steps` over a boundary whose texels `texels` maps to the stage, with the output's
 /// first pixel at `offset`: the header — the texel map, the offset, each step's base indices and
 /// position map — then every step's words. The bases index the blocks packed in step order.
-pub(super) fn pack_words(
-    texels: TexelMap,
-    offset: (u32, u32),
-    steps: &[GpuStep],
-    words: &mut Vec<u32>,
-) {
+pub fn pack_words(texels: TexelMap, offset: (u32, u32), steps: &[GpuStep], words: &mut Vec<u32>) {
     words.clear();
     words.extend(
         [
@@ -124,7 +119,7 @@ pub(super) fn pack_words(
 
 /// The content key of a link's output: the key of its input, its packed words and blocks and the
 /// pipeline that ran it.
-pub(super) fn link_key(input: u64, words: &[u32], blocks: &[u32], pipeline: u64) -> u64 {
+pub fn link_key(input: u64, words: &[u32], blocks: &[u32], pipeline: u64) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::hash::DefaultHasher::new();
     (input, words, blocks, pipeline).hash(&mut hasher);
@@ -134,7 +129,7 @@ pub(super) fn link_key(input: u64, words: &[u32], blocks: &[u32], pipeline: u64)
 /// [`link_key`] with the link's blocks named by the key of their contents
 /// ([`WrittenBlocks::key`]), which the link keeps with the blocks it wrote, so a tick that hands it
 /// the same blocks hashes none of their words. Blocks of other contents give another key.
-pub(super) fn written_key(input: u64, words: &[u32], blocks: u64, pipeline: u64) -> u64 {
+pub fn written_key(input: u64, words: &[u32], blocks: u64, pipeline: u64) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::hash::DefaultHasher::new();
     (input, words, blocks, pipeline).hash(&mut hasher);
@@ -142,24 +137,24 @@ pub(super) fn written_key(input: u64, words: &[u32], blocks: u64, pipeline: u64)
 }
 
 /// The key of a boundary's texels, which the first link reads.
-pub(super) fn boundary_key(version: u64) -> u64 {
+pub fn boundary_key(version: u64) -> u64 {
     link_key(version, &[], &[], u64::MAX)
 }
 
 /// One link of a slot's chain before its last: the intermediate it writes, which the next link
 /// reads as its boundary; its own words, blocks and kept spatial planes; and what the intermediate
 /// holds.
-pub(super) struct LinkSlot {
-    pub(super) texture: wgpu::Texture,
+pub struct LinkSlot {
+    pub texture: wgpu::Texture,
     target: wgpu::TextureView,
-    pub(super) words: Charged,
-    pub(super) blocks: Charged,
+    pub words: Charged,
+    pub blocks: Charged,
     /// Group 0: the link's words and blocks, and the texture it reads.
-    pub(super) bindings: wgpu::BindGroup,
+    pub bindings: wgpu::BindGroup,
     written_words: Vec<u32>,
     /// The blocks last written, by the shared block each came from.
     written_blocks: WrittenBlocks,
-    pub(super) spatial: Option<Box<super::SpatialSlot>>,
+    pub spatial: Option<Box<super::SpatialSlot>>,
     /// The content key of what `texture` holds; `None` before it is first written.
     key: Option<u64>,
     /// The pipeline that last wrote it.
@@ -168,7 +163,7 @@ pub(super) struct LinkSlot {
 }
 
 impl LinkSlot {
-    pub(super) fn new(
+    pub fn new(
         texture: wgpu::Texture,
         words: Charged,
         blocks: Charged,
@@ -192,7 +187,7 @@ impl LinkSlot {
     }
 
     /// Everything the link holds, as charged: the pool's textures are the slot's.
-    pub(super) fn bytes(&self) -> u64 {
+    pub fn bytes(&self) -> u64 {
         self.texture_bytes
             + self.words.bytes
             + self.blocks.bytes
@@ -204,7 +199,7 @@ impl LinkSlot {
 
     /// Forget what the link's buffers and intermediate hold: new buffers or a new input. Its
     /// planes' schedule takes a new holder from `pool`.
-    pub(super) fn forget(&mut self, pool: &mut Pool) {
+    pub fn forget(&mut self, pool: &mut Pool) {
         self.written_words.clear();
         self.written_blocks.forget();
         self.key = None;
@@ -216,12 +211,7 @@ impl LinkSlot {
     /// Write the tick's `words` and the chunks of `steps`' blocks that changed, comparing only the
     /// blocks it does not already hold at the same place ([`WrittenBlocks::write`]); answers what
     /// the blocks' update wrote.
-    pub(super) fn write(
-        &mut self,
-        queue: &wgpu::Queue,
-        words: &[u32],
-        steps: &[GpuStep],
-    ) -> Update {
+    pub fn write(&mut self, queue: &wgpu::Queue, words: &[u32], steps: &[GpuStep]) -> Update {
         if self.written_words != words {
             queue.write_buffer(&self.words.buffer, 0, &super::le_bytes(words));
             self.written_words.clear();
@@ -232,8 +222,8 @@ impl LinkSlot {
     }
 
     /// The blocks the link last wrote.
-    #[cfg(test)]
-    pub(super) fn written_blocks(&self) -> &WrittenBlocks {
+    #[cfg(any(test, feature = "qualification"))]
+    pub fn written_blocks(&self) -> &WrittenBlocks {
         &self.written_blocks
     }
 
@@ -246,7 +236,7 @@ impl LinkSlot {
     /// how many passes it dispatched, and on an incremental tick the rectangle its output changed
     /// in.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn encode(
+    pub fn encode(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -303,7 +293,7 @@ impl LinkSlot {
     }
 
     /// The content key of what the intermediate holds.
-    pub(super) fn key(&self) -> Option<u64> {
+    pub fn key(&self) -> Option<u64> {
         self.key
     }
 }

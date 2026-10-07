@@ -76,6 +76,6 @@ pub use sweeps::{
     SWEEP_STAGE_TEXTURES,
 };
 pub use tiles::{
-    STREAM_TILE_SIDES, StreamPlan, TilePlan, plan_read, plan_stream, plan_stream_light_sweeps,
-    plan_stream_sweeps, plan_stream_sweeps_at,
+    PreparedStream, STREAM_TILE_SIDES, StreamPlan, TilePlan, plan_read, plan_stream,
+    plan_stream_light_sweeps, plan_stream_sweeps, plan_stream_sweeps_at,
 };

@@ -17,21 +17,19 @@
 //! and `cargo test` counting it as passed does not make it GPU evidence.
 use super::gpu_plan::surface_plan;
 use super::gpu_qualification::{Stream, codes, drafted_against_cpu, figures, grid, worst};
+use luxforge_core::GpuPlaneSize as PlaneExtent;
 use luxforge_core::{
     Cancel, DETAIL_EFFECT, GPU_PROGRAMS, GpuAnswer, GpuPlanRequest, Layer, LinearImage,
     LinearSettings, ModuleRegistry, Recipe, RenderContext, RenderOptions, RenderSource, SnapshotId,
     SourceImage, Stage, gpu_plan, qualification::detail as cpu, qualification::detail::Smoothing,
     render,
 };
-use luxforge_reference::preview_error::{self, Class, Rgb8, Statistics};
-use luxforge_ui::photo_surface::{
-    GpuPlan, GpuProgram, GpuStep, TexelMap,
-    gpu_preview::{
-        GpuApply, GpuPass, GpuPlane, GpuSpatial, PassShape, PlaneFormat, PlaneSize,
-        qualification::{Qualifier, boundary, held},
-    },
+use luxforge_gpu::{
+    GpuApply, GpuPass, GpuPlan, GpuPlane, GpuProgram, GpuSpatial, GpuStep, PassShape, PlaneFormat,
+    PlaneSize, TexelMap, qualification::Qualifier, qualification::boundary, qualification::held,
     validate_step,
 };
+use luxforge_reference::preview_error::{self, Class, Rgb8, Statistics};
 use serde_json::{Value, json};
 use std::{borrow::Cow, sync::Arc};
 
@@ -182,7 +180,7 @@ fn test_program(words: Vec<u32>) -> GpuProgram {
 fn full(format: PlaneFormat) -> GpuPlane {
     GpuPlane {
         format,
-        size: PlaneSize::Reduced(1),
+        size: PlaneSize::Extent(PlaneExtent::Reduced(1)),
     }
 }
 
@@ -1191,7 +1189,7 @@ fn gpu_detail_planes_are_charged_to_the_budget() {
         return;
     };
     let registry = ModuleRegistry::builtin();
-    let budget = luxforge_ui::photo_surface::GPU_PREVIEW_BUDGET;
+    let budget = luxforge_gpu::GPU_PREVIEW_BUDGET;
     for ((width, height), full, fits) in [
         ((1716, 1030), (10000, 6000), true),
         ((1716, 1508), (4024, 3537), true),
@@ -1456,7 +1454,7 @@ fn gpu_detail_plane_precision_is_measured() {
                 continue;
             };
             for (number, plane) in spatial.planes.iter().enumerate() {
-                if plane.size != PlaneSize::Reduced(1) {
+                if plane.size != PlaneSize::Extent(PlaneExtent::Reduced(1)) {
                     continue;
                 }
                 let half = with_formats(&shipped, |at, n, format| {
@@ -1486,8 +1484,8 @@ mod drags {
         message::{preview::PreviewMessage, view::ViewMessage},
         testing::{attach_log, events, finish, let_go, logged, real_photo, run_commit, slide},
     };
+    use luxforge_gpu::GpuStep;
     use luxforge_testbase::wait_until;
-    use luxforge_ui::photo_surface::GpuStep;
     use serde_json::Value;
 
     fn catalog(name: &str) -> std::path::PathBuf {

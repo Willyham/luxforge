@@ -68,16 +68,16 @@ pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
     super::renderer::launch_began();
     // The renderer, chosen before the window opens from what the host offers: off macOS, an
     // enumeration of the renderer's backends, so a host whose only adapter is a software one is
-    // known before Iced draws on it ([`luxforge_ui::adapters::choose`]).
+    // known before Iced draws on it ([`crate::adapters::choose`]).
     let offered = if config.no_gpu_render {
-        luxforge_ui::adapters::Offered::NotProbed
+        crate::adapters::Offered::NotProbed
     } else {
-        luxforge_ui::adapters::probe()
+        crate::adapters::probe()
     };
-    let launch = luxforge_ui::adapters::choose(
+    let launch = crate::adapters::choose(
         config.no_gpu_render,
         config.software_adapter,
-        luxforge_ui::adapters::SOFTWARE_ADAPTER_ADOPTED,
+        crate::adapters::SOFTWARE_ADAPTER_ADOPTED,
         &offered,
     );
     config.launch_renderer = Some(launch);
@@ -86,7 +86,7 @@ pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
     // cannot run the GPU stage. `--no-gpu-render` refuses it, and so does a host whose only
     // adapter is a software one that is neither adopted nor asked for.
     if launch.refused() {
-        luxforge_ui::photo_surface::refuse_gpu_stage();
+        luxforge_gpu::refuse_gpu_stage();
     }
     // Evidence runs never touch a real catalog: theirs lives inside the new evidence directory.
     // Nothing here moves, copies or deletes a catalog: the one chosen is opened, or created.

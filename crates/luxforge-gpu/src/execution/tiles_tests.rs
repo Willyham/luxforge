@@ -473,7 +473,7 @@ fn an_adapter_mismatch_is_refused_by_name() {
     let Some((backend, name)) = host_adapter(test) else {
         return;
     };
-    let offered = adapters::enumerate(adapters::renderer_backends());
+    let offered = adapters::enumerate(wgpu::Backends::from_env().unwrap_or(wgpu::Backends::all()));
     let other = ["Metal", "Vulkan", "Dx12", "Gl"]
         .into_iter()
         .find(|other| adapters::matching(&offered, other, &name).is_none());
@@ -493,7 +493,14 @@ fn an_adapter_mismatch_is_refused_by_name() {
         }
         eprintln!("{test}: {}", refusal.detail);
     }
-    let refusal = TileRunner::open_with(true, &backend, &name).expect_err("a refused launch");
+    let refusal = TileRunner::open_with(
+        true,
+        &backend,
+        &name,
+        wgpu::Backends::all(),
+        &super::test_limits(),
+    )
+    .expect_err("a refused launch");
     assert_eq!(refusal.reason, TileUnavailable::Refused);
     let runner = TileRunner::open(&backend, &name).expect("the adapter asked for");
     assert_eq!(

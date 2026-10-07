@@ -39,7 +39,7 @@ use super::{
     BoundaryFormat, CompileFigures, Compiled, Figures, GpuFallback, GpuStep, StepKind, Support,
     compile,
 };
-use crate::photo_surface::wake_surface;
+
 use std::{
     collections::VecDeque,
     sync::{
@@ -130,20 +130,20 @@ impl GpuWarm {
 /// (the CPU frame of the same content has arrived, and it is the reference), the tag the plan's
 /// output is reported under, and the sequences to warm.
 #[derive(Clone, Debug, Default)]
-pub(in crate::photo_surface) struct GpuOptions {
-    pub(in crate::photo_surface) hold: bool,
-    pub(in crate::photo_surface) tag: Option<u64>,
-    pub(in crate::photo_surface) warm: Option<GpuWarm>,
+pub struct GpuOptions {
+    pub hold: bool,
+    pub tag: Option<u64>,
+    pub warm: Option<GpuWarm>,
     /// Where the plan draws other values than the one the caller last handed under another tag
     /// ([`super::GpuChange`]).
-    pub(in crate::photo_surface) change: Option<super::GpuChange>,
+    pub change: Option<super::GpuChange>,
 }
 
 /// What a cached sequence is keyed by: each step's signature in order, the shape of a masked
 /// step and each program's role, entry and source ([`GpuStep::signature`]).
-pub(super) type Signature = Vec<(StepKind, String, String)>;
+pub type Signature = Vec<(StepKind, String, String)>;
 
-pub(super) fn signature(steps: &[GpuStep]) -> Signature {
+pub fn signature(steps: &[GpuStep]) -> Signature {
     steps
         .iter()
         .flat_map(GpuStep::signature)
@@ -161,11 +161,11 @@ fn matches(signature: &Signature, steps: &[GpuStep]) -> bool {
 /// Whether a sequence is compiled and ready in a pipeline's cache, read under the cache's lock and
 /// asking for nothing: what answers the desktop's question whether an open's programs are warm
 /// ([`super::Figures::programs_ready`]).
-pub(super) type ReadyProbe = Box<dyn Fn(&[GpuStep], wgpu::TextureFormat) -> bool + Send + Sync>;
+pub type ReadyProbe = Box<dyn Fn(&[GpuStep], wgpu::TextureFormat) -> bool + Send + Sync>;
 
 /// One sequence to compile: a link's steps and the format its last pass writes, the output's codes
 /// or a chain's intermediate.
-pub(super) type Sequence = (Vec<GpuStep>, wgpu::TextureFormat);
+pub type Sequence = (Vec<GpuStep>, wgpu::TextureFormat);
 
 /// Where one known sequence is.
 enum State {
@@ -251,7 +251,7 @@ struct Shared {
     /// The warm-up running, or the last one.
     warm_up: Option<WarmUp>,
     /// Tests only: each sequence's first entry, in the order the thread took them.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "qualification"))]
     taken: Vec<String>,
     clock: u64,
     /// How many warmed sequences a frame's has taken the place of in a full queue: dropped
@@ -325,7 +325,7 @@ impl Shared {
             if let Some(entry) = entry
                 && let State::Queued(steps) = std::mem::replace(&mut entry.state, State::Compiling)
             {
-                #[cfg(test)]
+                #[cfg(any(test, feature = "qualification"))]
                 self.taken
                     .extend(entry.signature.first().map(|step| step.1.clone()));
                 self.compiling = Some(id);
@@ -517,7 +517,7 @@ impl Worker {
                         figures.warm_up(warm_up);
                     }
                     if asked || ended {
-                        wake_surface();
+                        figures.wake();
                     }
                 }
             })
@@ -549,7 +549,7 @@ fn lock_shared(lock: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
 
 /// The stage's cached pipelines and the thread that compiles them.
 #[derive(Default)]
-pub(super) struct Pipelines {
+pub struct Pipelines {
     worker: Option<Worker>,
 }
 
@@ -568,7 +568,7 @@ impl Pipelines {
     /// draw with yet: a sequence still waiting or compiling, or first seen now and queued first for
     /// the compile thread, answers [`GpuFallback::Compiling`]; a failed one
     /// [`GpuFallback::PipelineFailed`]. Never compiles.
-    pub(super) fn get(
+    pub(crate) fn get(
         &mut self,
         device: &wgpu::Device,
         support: &Arc<Support>,
@@ -621,7 +621,7 @@ impl Pipelines {
     /// it knows is wanted again: it counts as used now, so a compile that ends evicts what an
     /// older warm list named before it. Begins a warm-up, or carries on the one running, and wakes
     /// the surface when one begins or ends here.
-    pub(super) fn warm(
+    pub(crate) fn warm(
         &mut self,
         device: &wgpu::Device,
         support: &Arc<Support>,
@@ -661,20 +661,20 @@ impl Pipelines {
             worker.notify();
         }
         if began || !warm_up.running() {
-            wake_surface();
+            figures.wake();
         }
     }
 
     /// The sequences' first entries in the order the compile thread took them.
-    #[cfg(test)]
-    pub(super) fn taken(&self) -> Vec<String> {
+    #[cfg(any(test, feature = "qualification"))]
+    pub fn taken(&self) -> Vec<String> {
         self.worker
             .as_ref()
             .map_or_else(Vec::new, |worker| worker.lock().taken.clone())
     }
 
     /// The known entry for `steps` writing `format`, read under the lock.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "qualification"))]
     fn read<T>(
         &self,
         steps: &[GpuStep],
@@ -686,19 +686,15 @@ impl Pipelines {
     }
 
     /// Whether `steps` writing `format` is waiting for the compile thread or compiling.
-    #[cfg(test)]
-    pub(super) fn compiling(&self, steps: &[GpuStep], format: wgpu::TextureFormat) -> bool {
+    #[cfg(any(test, feature = "qualification"))]
+    pub fn compiling(&self, steps: &[GpuStep], format: wgpu::TextureFormat) -> bool {
         self.read(steps, format, |state| !state.compiled())
             .unwrap_or(false)
     }
 
     /// Why `steps` writing `format` failed, when it did.
-    #[cfg(test)]
-    pub(super) fn failure(
-        &self,
-        steps: &[GpuStep],
-        format: wgpu::TextureFormat,
-    ) -> Option<Arc<str>> {
+    #[cfg(any(test, feature = "qualification"))]
+    pub fn failure(&self, steps: &[GpuStep], format: wgpu::TextureFormat) -> Option<Arc<str>> {
         self.read(steps, format, |state| match state {
             State::Failed(error) => Some(error.clone()),
             _ => None,
@@ -707,8 +703,8 @@ impl Pipelines {
     }
 
     /// How many compiled sequences are kept.
-    #[cfg(test)]
-    pub(super) fn len(&self) -> usize {
+    #[cfg(any(test, feature = "qualification"))]
+    pub fn len(&self) -> usize {
         self.worker.as_ref().map_or(0, |worker| {
             worker
                 .lock()

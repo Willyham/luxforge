@@ -730,10 +730,21 @@ pub fn gpu_plan(
     request: GpuPlanRequest,
 ) -> Result<GpuAnswer, Error> {
     let (compiled, answer) = spatial::planned(registry, recipe, request)?;
+    with_lights(registry, recipe, request, &compiled, answer)
+}
+
+/// Complete a source-derived plan using the compilation that already produced it.
+pub(super) fn with_lights(
+    registry: &ModuleRegistry,
+    recipe: &Recipe,
+    request: GpuPlanRequest,
+    compiled: &Compiled,
+    answer: GpuAnswer,
+) -> Result<GpuAnswer, Error> {
     let GpuAnswer::Plan(mut plan) = answer else {
         return Ok(answer);
     };
-    match spatial::plan_lights(registry, recipe, request, &compiled, &plan)? {
+    match spatial::plan_lights(registry, recipe, request, compiled, &plan)? {
         Ok(lights) => {
             plan.lights = lights;
             Ok(GpuAnswer::Plan(plan))

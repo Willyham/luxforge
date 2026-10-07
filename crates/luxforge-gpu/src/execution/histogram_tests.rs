@@ -733,7 +733,7 @@ fn a_refused_stage_has_no_reduction() {
     let Some((device, queue)) = headless(test) else {
         return;
     };
-    let refused = PhotoPipeline::with_stage(
+    let refused = crate::Executor::with_stage(
         &device,
         &queue,
         wgpu::TextureFormat::Bgra8UnormSrgb,

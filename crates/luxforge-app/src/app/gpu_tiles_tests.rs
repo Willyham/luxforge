@@ -1,4 +1,4 @@
-//! The tile runner (`luxforge_ui::photo_surface::gpu_preview::tiles`, `docs/design/gpu-preview.md`,
+//! The tile runner (`luxforge_gpu::tiles`, `docs/design/gpu-preview.md`,
 //! "Qualifying a program") over the core's stacks: each a plan of the whole output stage at full
 //! scale from the source, drawn tile by tile as the picture at rest draws it — each tile its
 //! rectangle of the output stage over the window of the source its halos read, anchored to the
@@ -22,21 +22,16 @@ use super::{
     gpu_plan::{WarpGrid, install_output_encoding, surface_plan_over},
     gpu_window_tests::{HEIGHT, WIDTH, source},
 };
+use crate::adapters;
 use luxforge_core::{
     BASIC_EFFECT, BoundaryFormat, CURVE_EFFECT, Cancel, DETAIL_EFFECT, GpuAnswer, GpuPlanRequest,
     Layer, LinearImage, MIXER_EFFECT, ModuleRegistry, PERSPECTIVE_EFFECT, PRESENCE_EFFECT,
     PreviewSource, Recipe, Region, RenderContext, RenderOptions, Stage, VIGNETTE_EFFECT, anchored,
     gpu_plan, render,
 };
-use luxforge_ui::{
-    adapters,
-    photo_surface::{
-        Derivation, GpuBoundary, GpuPlan, GpuSource,
-        gpu_preview::{
-            headless::HeadlessSurface,
-            tiles::{GPU_TILE_BUDGET, TileEnd, TilePixels, TileRunner},
-        },
-    },
+use luxforge_gpu::{
+    Derivation, GpuBoundary, GpuPlan, GpuSource, headless::HeadlessSurface, tiles::GPU_TILE_BUDGET,
+    tiles::TileEnd, tiles::TilePixels, tiles::TileRunner,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -417,7 +412,7 @@ fn a_tile_runner_reads_what_the_headless_surface_reads_bit_for_bit() {
     let window = adapters::open(&backend, &name)
         .unwrap_or_else(|unopened| panic!("{test}: the surface's device: {unopened:?}"));
     let mut surface = HeadlessSurface::new(&window.device, &window.queue);
-    let mut runner = TileRunner::open(&backend, &name)
+    let mut runner = crate::adapters::tile_runner(&backend, &name)
         .unwrap_or_else(|refusal| panic!("{test}: the runner: {refusal:?}"));
     eprintln!(
         "{test}: the surface's adapter {:?}; the runner's adapter {:?}",
@@ -490,7 +485,7 @@ fn two_runs_are_byte_identical() {
         install_output_encoding(),
         "the surface holds the core's output encoding"
     );
-    let mut runner = TileRunner::open(&backend, &name)
+    let mut runner = crate::adapters::tile_runner(&backend, &name)
         .unwrap_or_else(|refusal| panic!("{test}: the runner: {refusal:?}"));
     eprintln!("{test}: the runner's adapter {:?}", runner.adapter());
     runner.set_poison(true);
@@ -549,7 +544,7 @@ fn a_60_megapixel_raw_through_detail_and_presence_fits_the_budget_in_2048_pixel_
     let Some((backend, name)) = host_adapter(test) else {
         return;
     };
-    let runner = TileRunner::open(&backend, &name)
+    let runner = crate::adapters::tile_runner(&backend, &name)
         .unwrap_or_else(|refusal| panic!("{test}: the runner: {refusal:?}"));
     let registry = ModuleRegistry::builtin();
     let stage = Stage {

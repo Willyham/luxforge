@@ -230,11 +230,11 @@ impl GpuTail {
         self
     }
 
-    pub(super) fn preserves_f32(&self) -> bool {
+    pub fn preserves_f32(&self) -> bool {
         self.preserve_f32
     }
 
-    pub(super) fn program(&self) -> &GpuProgram {
+    pub fn program(&self) -> &GpuProgram {
         &self.program
     }
 
@@ -249,7 +249,7 @@ impl GpuTail {
     /// pixel: an affine tail of the identity matrix, which resamples nothing — a stage boundary
     /// before the output stage's operations, quantized as the CPU's is on a JPEG. Its output
     /// changes only where the intermediate does.
-    pub(super) fn identity(&self) -> bool {
+    pub fn identity(&self) -> bool {
         // By value: a matrix of the identity may carry negative zeros.
         self.program.entry == AFFINE_ENTRY
             && self
@@ -265,7 +265,7 @@ impl GpuTail {
     }
 
     /// The format of the content pass's result, which the tail reads.
-    pub(super) fn intermediate(&self) -> wgpu::TextureFormat {
+    pub fn intermediate(&self) -> wgpu::TextureFormat {
         intermediate(self.quantize, self.preserve_f32)
     }
 }
@@ -273,13 +273,12 @@ impl GpuTail {
 /// The format of the content pass's result a tail reads: 8-bit codes for one that `quantize`s, as
 /// the CPU quantizes a JPEG's segments, `f32` for one that keeps the RAW linear path's values
 /// whole, else half floats.
-pub(super) fn intermediate(quantize: bool, preserve_f32: bool) -> wgpu::TextureFormat {
-    if quantize {
-        wgpu::TextureFormat::Rgba8Unorm
-    } else if preserve_f32 {
-        wgpu::TextureFormat::Rgba32Float
-    } else {
-        wgpu::TextureFormat::Rgba16Float
+pub fn intermediate(quantize: bool, preserve_f32: bool) -> wgpu::TextureFormat {
+    use luxforge_gpu_types::layout::TailFormat;
+    match TailFormat::of(quantize, preserve_f32) {
+        TailFormat::Codes => wgpu::TextureFormat::Rgba8Unorm,
+        TailFormat::Float => wgpu::TextureFormat::Rgba32Float,
+        TailFormat::Half => wgpu::TextureFormat::Rgba16Float,
     }
 }
 
@@ -313,18 +312,7 @@ pub fn install_output_encoding(encoding: OutputEncoding) -> bool {
 /// installs the shared test reference's tables, which the desktop's tests hold to the core's.
 pub fn output_encoding() -> Option<&'static OutputEncoding> {
     #[cfg(test)]
-    OUTPUT_ENCODING.get_or_init(|| OutputEncoding {
-        thresholds: std::array::from_fn(|index| {
-            let threshold = luxforge_reference::srgb::decode_encoded((index as f64 + 0.5) / 255.0);
-            let narrowed = threshold as f32;
-            if f64::from(narrowed) < threshold {
-                narrowed.next_up()
-            } else {
-                narrowed
-            }
-        }),
-        decoded: std::array::from_fn(|code| luxforge_reference::srgb::decode(code as u8) as f32),
-    });
+    install_output_encoding(reference_encoding());
     OUTPUT_ENCODING.get()
 }
 
@@ -335,13 +323,13 @@ fn literal(value: f32) -> String {
 
 /// The prefixes of every name the surface declares for the tail and the output encoding. No entry
 /// may start with them.
-pub(super) const GENERATED: [&str; 2] = ["lf_tail", "lf_output"];
+pub const GENERATED: [&str; 2] = ["lf_tail", "lf_output"];
 
 /// The output encoding and the decode table every pass that quantizes or encodes declares: the
 /// thresholds and codes as constant arrays, `lf_output_code` for one channel's code and
 /// `lf_output_encode` for a pixel's codes over 255, `lf_output_decode` for a code's linear value.
 /// Built once from the installed [`OutputEncoding`]; with none installed, no pass compiles.
-pub(super) fn encoding() -> Result<&'static str, String> {
+pub fn encoding() -> Result<&'static str, String> {
     static SOURCE: OnceLock<String> = OnceLock::new();
     let installed = output_encoding().ok_or_else(|| {
         String::from("no output encoding is installed: the desktop hands the surface the core's")
@@ -390,7 +378,7 @@ fn lf_output_requantize(rgb: vec3<f32>) -> vec3<f32> {{
 /// The tail's sampling: four taps of the content pass's result, each clamped to the rectangle of
 /// the boundary stage the CPU reads and offset by the window the boundary holds, blended in linear
 /// light. A quantizing tail decodes the 8-bit codes the content pass wrote.
-pub(super) fn sampling(quantize: bool) -> String {
+pub fn sampling(quantize: bool) -> String {
     let load = if quantize {
         "    let c = textureLoad(lf_boundary, texel, 0).rgb;
     return vec3<f32>(
@@ -432,7 +420,7 @@ fn lf_tail_sample(uv: vec2<f32>, words: u32) -> vec3<f32> {{
 /// pixel, its edge column and row repeated past the frame and offset by the region's origin, its coordinate in the boundary
 /// stage through the mapping, and the blend there, quantized as the CPU's resample output is when
 /// the tail quantizes. `stage` is the output pixel the steps after the tail address.
-pub(super) fn fragment(tail: &GpuTail, base: usize) -> String {
+pub fn fragment(tail: &GpuTail, base: usize) -> String {
     let requantize = if tail.quantize {
         "    rgb = lf_output_requantize(rgb);\n"
     } else {
@@ -455,4 +443,20 @@ fn lf_fragment(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32>
         block = base + 1,
         entry = tail.program.entry,
     )
+}
+
+#[cfg(any(test, feature = "qualification"))]
+pub fn reference_encoding() -> OutputEncoding {
+    OutputEncoding {
+        thresholds: std::array::from_fn(|index| {
+            let threshold = luxforge_reference::srgb::decode_encoded((index as f64 + 0.5) / 255.0);
+            let narrowed = threshold as f32;
+            if f64::from(narrowed) < threshold {
+                narrowed.next_up()
+            } else {
+                narrowed
+            }
+        }),
+        decoded: std::array::from_fn(|code| luxforge_reference::srgb::decode(code as u8) as f32),
+    }
 }

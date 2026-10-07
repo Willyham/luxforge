@@ -26,28 +26,7 @@ fn shipped() -> impl Iterator<Item = &'static &'static GpuProgram> {
     crate::GPU_PROGRAMS.iter().chain(crate::MASK_GPU_PROGRAMS)
 }
 
-/// A copy of the convention's prelude: the concatenated uniform words and storage blocks, and the
-/// four helpers a program reads them through.
-pub(super) const PRELUDE: &str = "\
-@group(0) @binding(0) var<storage, read> lf_words: array<u32>;
-@group(0) @binding(1) var<storage, read> lf_blocks: array<u32>;
-fn lf_word(i: u32) -> u32 { return lf_words[i]; }
-fn lf_f32(i: u32) -> f32 { return bitcast<f32>(lf_words[i]); }
-fn lf_block_word(i: u32) -> u32 { return lf_blocks[i]; }
-fn lf_block_f32(i: u32) -> f32 { return bitcast<f32>(lf_blocks[i]); }
-";
-
-/// A copy of the spatial convention's declarations, as stubs of the signatures the surface
-/// generates for each module that holds a spatial program.
-pub(super) const SPATIAL_PRELUDE: &str = "\
-var<workgroup> lf_shared: array<f32, 1024>;
-fn lf_plane(slot: u32, at: vec2<i32>) -> vec4<f32> { return vec4<f32>(f32(slot), vec2<f32>(at), 1.0); }
-fn lf_plane_size(slot: u32) -> vec2<i32> { return vec2<i32>(i32(slot) + 1); }
-fn lf_source(at: vec2<i32>) -> vec3<f32> { return vec3<f32>(vec2<f32>(at), 0.5); }
-fn lf_origin() -> vec2<i32> { return vec2<i32>(0); }
-fn lf_size() -> vec2<i32> { return vec2<i32>(1); }
-fn lf_store(at: vec2<i32>, value: vec4<f32>) {}
-";
+pub(super) use luxforge_gpu_types::{PRELUDE, SPATIAL_PRELUDE};
 
 /// The prelude a program of `kind` is assembled after.
 pub(super) fn prelude(kind: GpuProgramKind) -> String {

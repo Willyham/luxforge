@@ -32,18 +32,16 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 
 | Plan | Ready tasks | Notes | Minimum model |
 | --- | --- | --- | --- |
-| [Code structure consolidation](../tasks/project/code-structure.json) ([design](design/code-structure.md)) | TASK-001 provider availability; TASK-002 current comments; TASK-003 GPU boundary decision; TASK-010 operation identity; TASK-011 preview intent; TASK-013 typed preview reads; TASK-015 renderer limits; TASK-016 hidden status | Planning is authorized; implementation is not. GPU extraction follows its boundary decision; image, budget and scheduling behavior stay current | High tier |
 | [Lightroom import](../tasks/lightroom/lightroom-import.json) ([design](design/lightroom-import.md)) | TASK-001 confirm the catalog format against a copy of the owner's catalog | Needs no code; needs the owner's catalog copy | High tier |
 | [Lightroom alignment](../tasks/lightroom/lightroom-alignment.json) ([design](design/lightroom-alignment.md)) | TASK-001 the rig's generator and synthetic targets | Its rounds need the owner to import and export in Lightroom | High tier |
 | [Live-session Rust CLI](../tasks/project/live-cli.json) ([design](design/live-cli.md)) | TASK-001 shared catalog targeting and authenticated session client | The command contract and defaults are decided; implementation awaits owner authorization | High tier |
+| [High-zoom minimap](../tasks/interface/minimap.json) ([design](design/minimap.md)) | TASK-001 shared viewport projection; TASK-002 bounded overview rendering | Inclusive 200% threshold and click/drag navigation chosen; layout remains a proposed default. Planning only; implementation awaits authorization | High tier |
 
 ### In progress
 
 Continue these rather than starting them again: [GPU-first rendering](../tasks/rendering/gpu-first.json) TASK-008, portability without a native GPU: prior hosted Linux no-adapter checks pass, but lavapipe stops at `large24` before the required histogram and `gpu-preview` scenarios; the current run fails earlier in the indexed-folder watcher test. TASK-010, 011 and 012 record delivery and wait on it. [RAW looks](../tasks/raw/raw-looks.json) TASK-005 remains in progress: supplied-file journeys pass, but the rendered tier with the owner manifest and the Neutral Amount control remain outstanding. The [Efficiency](../tasks/rendering/efficiency.json) `dist` profile is blocked by the owner's deferral, and the [product decisions](../tasks/project/product-decisions.json) are the owner's to make.
 
 ## Engineering
-
-**Code structure consolidation** ([design](design/code-structure.md), [plan](../tasks/project/code-structure.json)). Planned, awaiting implementation authorization: one shared GPU primitive/layout contract and reusable executor, one preparation per equivalent stream, coherent module/preview types, shared grid/loupe mechanisms and contained ownership cleanup. The GPU crate split is a proposal; native qualification and measurement follow integration.
 
 **GPU previews** ([design](design/gpu-preview.md), [qualification](specs/performance.md#gpu-previews-qualified-on-the-m4)). Implemented and qualified on the M4; outstanding:
 - The owner accepts the current error measure and picture limits, the 150 ms dissolve and status-bar presentation (2026-10-07); motion below 100% is reported, with the picture at rest strictly gated
@@ -150,6 +148,8 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 **Tuning delivered tools.** Refine the recorded defaults of Presence, the colour mixer and the vignette (decision pending).
 
 ## Interface
+
+**High-zoom minimap** ([design](design/minimap.md), [tasks](../tasks/interface/minimap.json)). Planned for Develop at percentage zoom ≥200: whole-image overview, visible-region rectangle and owner-chosen click/drag navigation through the existing `view.set` path. Shared geometry and bounded overview rendering can proceed independently before UI integration; final native qualification and photo-sized measurements follow working delivery. The request authorizes planning only.
 
 **UI themes** ([design](design/ui-themes.md)) are implemented, with Omarchy import and six bundled Omarchy themes ([feature status](features.md)). Outstanding:
 - Owner review of the recorded defaults: which themes are bundled, the contrast floors, the Omarchy forms read, the canvas background's Theme default and the Appearance tab

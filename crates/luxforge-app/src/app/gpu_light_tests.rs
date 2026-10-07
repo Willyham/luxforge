@@ -2,7 +2,7 @@
 //! estimate"): Dehaze's atmospheric light computed by a light link — the reduction of its whole
 //! input stage at full resolution into the stage's 16-pixel block means, then the selection of the
 //! light into the slot's light plane — through the photo surface's own code
-//! (`luxforge_ui::photo_surface::gpu_preview::light::LightBench`), held to the CPU's.
+//! (`luxforge_gpu::light::LightBench`), held to the CPU's.
 //!
 //! - **The CPU's preparation.** Over a synthetic photograph and the corpus's Presence fixture, on
 //!   the byte and linear paths, a plain stack, an exposure, tone and curve prefix, a prefix masked
@@ -39,14 +39,12 @@ use luxforge_core::{
     PRESENCE_EFFECT, Recipe, RenderContext, RenderOptions, RenderSource, SourceImage, Stage,
     gpu_lights, gpu_plan, qualification, render,
 };
-use luxforge_reference::srgb;
-use luxforge_ui::photo_surface::{
+use luxforge_gpu::{
     BoundaryFormat, Derivation, GpuBoundary, GpuChange, GpuPlan, GpuRegion, GpuSource, TexelMap,
-    gpu_preview::{
-        light::{GpuLight, LIGHT_CACHE, LightBench, Lit, light_charge, lights_charge},
-        qualification::Qualifier,
-    },
+    light::GpuLight, light::LIGHT_CACHE, light::LightBench, light::Lit, light::light_charge,
+    light::lights_charge, qualification::Qualifier,
 };
+use luxforge_reference::srgb;
 use serde_json::{Value, json};
 use std::sync::Arc;
 
@@ -1210,9 +1208,8 @@ fn gpu_light_a_tile_runner_computes_the_slots_light_a_window_at_a_time() {
     let Some((backend, name)) = super::gpu_tiles_tests::host_adapter(test) else {
         return;
     };
-    let mut runner =
-        luxforge_ui::photo_surface::gpu_preview::tiles::TileRunner::open(&backend, &name)
-            .unwrap_or_else(|refusal| panic!("{test}: the runner: {refusal:?}"));
+    let mut runner = crate::adapters::tile_runner(&backend, &name)
+        .unwrap_or_else(|refusal| panic!("{test}: the runner: {refusal:?}"));
     eprintln!("{test}: adapter {adapter}");
     let registry = ModuleRegistry::builtin();
     let photo = Photo::synthetic(2300, 2200, 0x5a);
@@ -1324,10 +1321,7 @@ fn over_staged_prefix(
     for (index, texel) in values.iter().enumerate() {
         for channel in 0..3 {
             planes[channel * len + index] = match path {
-                Path::Byte => {
-                    luxforge_ui::photo_surface::gpu_preview::qualification::held(texel[channel])
-                        .clamp(0.0, 1.0)
-                }
+                Path::Byte => luxforge_gpu::qualification::held(texel[channel]).clamp(0.0, 1.0),
                 Path::Linear => texel[channel],
             };
         }
@@ -1419,7 +1413,7 @@ fn gpu_light_a_light_behind_a_spatial_layer_is_the_cpus_over_its_exact_prefix() 
                 .expect("a runnable view plan");
                 assert_eq!(
                     surface.draw(&gpu, &converted),
-                    Err(luxforge_ui::photo_surface::GpuFallback::LightPending),
+                    Err(luxforge_gpu::GpuFallback::LightPending),
                     "{what}: the view plan waits for the light"
                 );
                 version += 1;

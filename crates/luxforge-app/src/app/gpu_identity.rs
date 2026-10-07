@@ -14,10 +14,8 @@
 //! CPU's frame until their boundary is ready.
 use super::{Message, message::evidence::EvidenceMessage};
 use iced::Task;
-use luxforge_ui::{
-    Frame,
-    photo_surface::{GpuBoundary, GpuPlan, GpuProgram, GpuStep, TexelMap},
-};
+use luxforge_gpu::{GpuBoundary, GpuPlan, GpuProgram, GpuStep, TexelMap};
+use luxforge_ui::Frame;
 
 /// The identity program: a pointwise colour program that returns its input.
 const IDENTITY: &str = "fn evidence_identity(rgb: vec3<f32>, pos: vec2<f32>, words: u32, \
@@ -87,7 +85,7 @@ fn boundary(frame: &Frame) -> Option<GpuBoundary> {
     let table = luxforge_core::colour::srgb::decode_table();
     let (width, height) = frame.size();
     GpuBoundary::from_linear(
-        luxforge_ui::photo_surface::BoundaryFormat::Half,
+        luxforge_gpu::BoundaryFormat::Half,
         width,
         height,
         frame.version(),
@@ -134,7 +132,7 @@ mod tests {
             .plan_for(&shown)
             .expect("a plan for the frame on screen");
         assert_eq!(plan.boundary.size(), (2, 1));
-        luxforge_ui::photo_surface::validate_step(&plan.steps[0]).expect("the identity program");
+        luxforge_gpu::validate_step(&plan.steps[0]).expect("the identity program");
         assert!(
             hook.plan_for(&frame(4)).is_none(),
             "never over another frame"

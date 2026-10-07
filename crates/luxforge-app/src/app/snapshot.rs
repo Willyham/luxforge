@@ -289,7 +289,7 @@ impl Editor {
                 // The GPU stage, beside the photo-texture figures: which path drew the photograph,
                 // why a frame handed a GPU plan drew the CPU frame instead, the boundary the GPU
                 // output was drawn from, and the GPU-preview budget's own figures.
-                "drawing_path":gpu.drawn_path.map(luxforge_ui::photo_surface::DrawingPath::as_str),
+                "drawing_path":gpu.drawn_path.map(luxforge_gpu::DrawingPath::as_str),
                 "gpu_fallback":gpu.gpu_fallback.map(gpu_fallback),
                 // Whether the GPU stage can draw at all on the surface's device: `unchecked`
                 // before the first photograph, `available`, or the reason every frame is the
@@ -315,7 +315,7 @@ impl Editor {
                 // been handed beside the desktop's own.
                 "gpu_preview_compile_pending":gpu.gpu_preview_compile_pending,
                 "gpu_preview_warmed":gpu.gpu_preview_warmed,
-                "gpu_preview_warm":self.gpu.warm().map(luxforge_ui::photo_surface::GpuWarm::version),
+                "gpu_preview_warm":self.gpu.warm().map(luxforge_gpu::GpuWarm::version),
                 // The compile thread's warm-up running, or its last: its lists' sequences, when
                 // the open stack's part and the whole had compiled.
                 "warm_up":super::gpu_warm::evidence(self.gpu_warm_up_figures()),
@@ -352,7 +352,7 @@ impl Editor {
                     let after = luxforge_ui::surface_diagnostics(crate::view::canvas::COMPARE_SURFACE);
                     let picture = match after.drawn_path {
                         None => Value::Null,
-                        Some(luxforge_ui::photo_surface::DrawingPath::Cpu) => json!("retained"),
+                        Some(luxforge_gpu::DrawingPath::Cpu) => json!("retained"),
                         Some(_) if after.drawn_rest.is_some() => json!("rest"),
                         Some(_) => json!("view"),
                     };
@@ -398,7 +398,7 @@ impl Editor {
         &self,
         drawn: &luxforge_ui::photo_surface::SurfaceDiagnostics,
     ) -> Value {
-        use luxforge_ui::photo_surface::DrawingPath;
+        use luxforge_gpu::DrawingPath;
         match drawn.drawn_path {
             None => Value::Null,
             Some(DrawingPath::Cpu) => json!("reference"),
@@ -558,8 +558,8 @@ impl Editor {
 
 /// A GPU-stage fallback as evidence records it: its reason, and for the budget or the texture
 /// limit the figures that refused it.
-fn gpu_fallback(fallback: luxforge_ui::photo_surface::GpuFallback) -> Value {
-    use luxforge_ui::photo_surface::GpuFallback;
+fn gpu_fallback(fallback: luxforge_gpu::GpuFallback) -> Value {
+    use luxforge_gpu::GpuFallback;
     match fallback {
         GpuFallback::BudgetExceeded {
             requested,

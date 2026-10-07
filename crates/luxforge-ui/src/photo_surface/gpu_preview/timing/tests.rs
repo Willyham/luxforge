@@ -11,7 +11,10 @@ use super::*;
 use iced::widget::shader::{Primitive as _, Viewport};
 use iced::{Rectangle, Size};
 use luxforge_testbase::{Distribution, wait_until};
-use std::time::Duration;
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 /// `primitive`'s `prepare`, as Iced runs it for one frame, and nothing else: no draw, no submit of
 /// the frame's own and no poll. The plan's sequence is compiled first, as a frame after its compile
@@ -248,6 +251,7 @@ fn gpu_frame_completion_is_measured() {
                 .get(&ID)
                 .and_then(|surface| surface.gpu.as_ref())
                 .expect("a GPU-preview slot")
+                .inspection()
                 .passes;
             // The frame's own submit, straight after the draw.
             let mut encoder =

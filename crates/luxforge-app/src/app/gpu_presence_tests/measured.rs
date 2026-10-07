@@ -12,9 +12,9 @@ use luxforge_core::{
     Component, ComponentMode, GpuAnswer, GpuPlanRequest, GpuSpatial, Layer, Mask, ModuleRegistry,
     PRESENCE_EFFECT, Recipe, Region, gpu_plan,
 };
-use luxforge_ui::photo_surface::{
-    BoundaryFormat, GPU_PREVIEW_BUDGET, GpuBoundary, GpuPlan, GpuStep,
-    gpu_preview::{ChainCharge, chain_charge, qualification::Qualifier, texture_charge},
+use luxforge_gpu::{
+    BoundaryFormat, ChainCharge, GPU_PREVIEW_BUDGET, GpuBoundary, GpuPlan, GpuStep, chain_charge,
+    qualification::Qualifier, texture_charge,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -219,7 +219,7 @@ fn measure(
     };
     let surface = surface_plan_over(&plan, held.clone(), place.origin, None, place.region)
         .expect("a runnable plan");
-    let spatial: Vec<&luxforge_ui::photo_surface::gpu_preview::GpuSpatial> = surface
+    let spatial: Vec<&luxforge_gpu::GpuSpatial> = surface
         .steps
         .iter()
         .filter_map(|step| match step {

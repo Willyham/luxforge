@@ -294,6 +294,37 @@ impl Limiter<'_> {
     }
 }
 impl SpatialUnit for Sharpen {
+    fn identity(&self) -> crate::OperationIdentity {
+        crate::OperationIdentity::new(
+            "detail.sharpen",
+            [
+                self.scale.x,
+                self.scale.y,
+                self.amount,
+                self.radius,
+                self.detail,
+                self.masking,
+            ]
+            .map(f64::to_bits),
+        )
+        .with_words([
+            u64::from(self.gain.to_bits()),
+            u64::from(self.theta_squared.to_bits()),
+            u64::from(self.mask_squared.to_bits()),
+            u64::from(self.blur_is_guide),
+            u64::from(self.halo),
+        ])
+        .with_words(self.kernels.iter().chain(&self.guide).flat_map(|k| {
+            std::iter::once(u64::from(k.radius))
+                .chain(std::iter::once(k.taps.len() as u64))
+                .chain(
+                    k.taps
+                        .iter()
+                        .flat_map(|&(at, w)| [at as u64, u64::from(w.to_bits())]),
+                )
+        }))
+    }
+
     fn halo(&self, _: Stage) -> u32 {
         self.halo
     }

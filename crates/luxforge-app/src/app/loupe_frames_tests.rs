@@ -152,7 +152,7 @@ fn assert_accounted(frames: &LoupeFrames) {
         frames.held_bytes(),
         (held.iter().map(|held| held.bytes).sum(), held.len())
     );
-    assert!(frames.bytes <= frames.budget && frames.handles <= MAX_HANDLES);
+    assert!(frames.usage.bytes <= frames.budget && frames.usage.handles <= MAX_HANDLES);
 }
 
 /// The frame on screen is read first, then the look-ahead in its order, all at the look-ahead's
@@ -382,7 +382,7 @@ fn loupe_frames_evict_the_least_recently_wanted_never_a_frame_on_screen() {
         let decode = planned(&frames, active).unwrap();
         frames.adopt(decoded(&decode));
     }
-    assert_eq!(frames.handles, 2);
+    assert_eq!(frames.usage.handles, 2);
     // Frame 3 on screen, 4 ahead: 3 evicts the least recently wanted (1).
     let batch = frames.want(wanting(3, &[4])).unwrap();
     frames.answered(answer(&batch, ready));
@@ -691,7 +691,7 @@ fn loupe_frames_read_a_photographs_strip_thumbnail_at_the_grid_tier_beside_its_f
     );
     assert!(!frames.settled(&wants), "photograph 1 is still rendering");
     assert_accounted(&frames);
-    assert_eq!(frames.handles, 3);
+    assert_eq!(frames.usage.handles, 3);
     // The render lands: both of photograph 1's slots read again, each replaced in place.
     let again = frames.woken(true).expect("the owner wrote the render");
     assert_eq!(

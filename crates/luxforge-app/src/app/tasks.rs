@@ -252,15 +252,17 @@ impl From<Option<ProxyBounds>> for Drawn {
 
 impl Drawn {
     /// `request` offered these bounds and planned with its GPU picture at this view.
-    fn request(self, request: PreviewRequest) -> PreviewRequest {
+    fn request(self, request: PreviewRequest) -> Result<PreviewRequest, luxforge_core::Error> {
         let request = proxied(request, self.proxy);
-        match self.gpu {
+        Ok(match self.gpu {
             super::gpu_preview::GpuAsk::Off => request,
-            super::gpu_preview::GpuAsk::Fit => request.gpu(),
-            super::gpu_preview::GpuAsk::Region(rect, magnification, reduce_after) => request
-                .gpu_region(rect, magnification)
-                .reduce_regions_after(reduce_after),
-        }
+            super::gpu_preview::GpuAsk::Fit => request.gpu_fit(self.proxy.ok_or_else(|| {
+                luxforge_core::Error::validation("a GPU Fit preview requires display bounds")
+            })?),
+            super::gpu_preview::GpuAsk::Region(rect, magnification, reduce_after) => {
+                request.gpu_region_reducing(rect, magnification, reduce_after)
+            }
+        })
     }
 }
 
@@ -772,11 +774,13 @@ pub(crate) fn refresh(
     // ([`super::gpu_preview`]).
     let job = ready_preview_job(
         owner,
-        drawn.request(
-            PreviewRequest::new(client, asset_id.clone())
-                .entry(Some(displayed))
-                .analyse(),
-        ),
+        drawn
+            .request(
+                PreviewRequest::new(client, asset_id.clone())
+                    .entry(Some(displayed))
+                    .analyse(),
+            )
+            .map_err(|error| error.to_string())?,
     )?;
     let capture = if matches!(scope, Scope::Open) {
         parse::<Option<luxforge_core::CaptureInfo>>(
@@ -1076,11 +1080,13 @@ pub(crate) fn preview_task(
             // does.
             let job = ready_preview_job(
                 &owner,
-                proxy.request(
-                    PreviewRequest::new(client, asset_id)
-                        .entry(entry_id)
-                        .analyse(),
-                ),
+                proxy
+                    .request(
+                        PreviewRequest::new(client, asset_id)
+                            .entry(entry_id)
+                            .analyse(),
+                    )
+                    .map_err(|error| error.to_string())?,
             )?;
             Ok(PreviewPayload { job, session })
         },
@@ -1105,7 +1111,8 @@ fn comparison_preview_now(
         owner,
         proxy
             .into()
-            .request(PreviewRequest::new(client, asset_id).entry(entry).analyse()),
+            .request(PreviewRequest::new(client, asset_id).entry(entry).analyse())
+            .map_err(|error| error.to_string())?,
     )?;
     Ok(PreviewPayload { job, session })
 }
@@ -1228,8 +1235,8 @@ pub(crate) fn crop_preview(
             .layers(layer_count),
         view.bounds,
     );
-    let request = if view.gpu && view.bounds.is_some() {
-        request.gpu()
+    let request = if let (true, Some(bounds)) = (view.gpu, view.bounds) {
+        request.gpu_fit(bounds)
     } else {
         request
     };
@@ -1452,16 +1459,8 @@ fn draft_set_at(
                 let request = PreviewRequest::new(client, asset_id)
                     .draft(draft_id)
                     .analyse();
-                let request = match gpu {
-                    super::gpu_preview::GpuAsk::Off => request,
-                    super::gpu_preview::GpuAsk::Fit => request.gpu(),
-                    super::gpu_preview::GpuAsk::Region(rect, magnification, reduce_after) => {
-                        request
-                            .gpu_region(rect, magnification)
-                            .reduce_regions_after(reduce_after)
-                    }
-                };
-                plan_preview(owner, proxied(request, proxy))
+                let request = Drawn { proxy, gpu }.request(request)?;
+                plan_preview(owner, request)
             })
             .transpose()
             .map_err(|error| error.to_string())?;
@@ -1764,9 +1763,7 @@ pub(crate) fn view_preview_task(
                 request = request.draft(draft);
             }
             if let super::gpu_preview::GpuAsk::Region(rect, magnification, reduce_after) = gpu {
-                request = request
-                    .gpu_region(rect, magnification)
-                    .reduce_regions_after(reduce_after);
+                request = request.gpu_region_reducing(rect, magnification, reduce_after);
             }
             ready_preview_job(&owner, request)
         },
@@ -1790,11 +1787,13 @@ fn current_preview(
     // The displayed entry's picture at rest on the GPU, as every displayed entry's job carries it.
     let job = plan_preview(
         owner,
-        proxy.request(
-            PreviewRequest::new(client, asset_id)
-                .entry(entry_id)
-                .analyse(),
-        ),
+        proxy
+            .request(
+                PreviewRequest::new(client, asset_id)
+                    .entry(entry_id)
+                    .analyse(),
+            )
+            .map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
     let (session, _) = call(owner, client, "session.state", json!({}))?;
@@ -2398,6 +2397,21 @@ pub(crate) fn merge_current_entry(history: &mut HistoryPage, entry: HistoryRow) 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn preview_fit_without_bounds_is_an_explicit_refusal() {
+        let (opened, _) = Opened::new();
+        let request = PreviewRequest::new(opened.client, opened.asset.clone());
+        let error = Drawn {
+            proxy: None,
+            gpu: super::super::gpu_preview::GpuAsk::Fit,
+        }
+        .request(request)
+        .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert_eq!(error.detail, "a GPU Fit preview requires display bounds");
+        opened.finish();
+    }
+
     use super::*;
     use crate::app::testing::entry;
 

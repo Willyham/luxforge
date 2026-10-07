@@ -123,10 +123,8 @@ fn gpu_presence_after_detail_reruns_only_the_passes_a_tick_changes() {
         let Ok(GpuAnswer::Plan(plan)) = gpu_plan(&registry, stack, request) else {
             panic!("a plan");
         };
-        let held = luxforge_ui::photo_surface::gpu_preview::qualification::boundary(
-            width, height, 1, &pixels,
-        )
-        .expect("a boundary");
+        let held =
+            luxforge_gpu::qualification::boundary(width, height, 1, &pixels).expect("a boundary");
         let passes: Vec<usize> = plan.spatial.iter().map(|step| step.passes.len()).collect();
         let planes: u64 = plan
             .spatial

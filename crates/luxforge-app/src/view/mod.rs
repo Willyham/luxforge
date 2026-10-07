@@ -67,7 +67,7 @@ pub(crate) struct Surfaces<'a> {
     pub(crate) stage: Option<&'a luxforge_ui::Frame>,
     /// The crop stage's layer prefix drawn by the GPU, in tiles reduced to the stage's display
     /// bounds, which the stage's surface draws in place of the stand-in frame it holds.
-    pub(crate) stage_rest: Option<&'a luxforge_ui::photo_surface::GpuRest>,
+    pub(crate) stage_rest: Option<&'a luxforge_gpu::GpuRest>,
     /// The clipping overlay's bounded cell grid, present only when it belongs to the photograph on
     /// screen. The surface lays it over the photograph, never changing the photograph itself.
     pub(crate) clipping: Option<&'a luxforge_ui::Frame>,
@@ -82,32 +82,32 @@ pub(crate) struct Surfaces<'a> {
     /// fallback: a whole frame's at Fit and below 100%, a region's at 100% or more. An open
     /// gesture's ([`crate::app::gpu_preview`]), or an evidence run's GPU identity hook's. None is
     /// given while the GPU stage is refused (`Editor::gpu_plan`).
-    pub(crate) gpu: Option<&'a luxforge_ui::photo_surface::GpuPlan>,
+    pub(crate) gpu: Option<&'a luxforge_gpu::GpuPlan>,
     /// Keep the plan's slot but draw the frame: the CPU frame of the plan's revision is presented.
     pub(crate) gpu_hold: bool,
     /// The draft revision the plan's output is reported under.
     pub(crate) gpu_tag: Option<u64>,
     /// The plan's serial and where it changes since the plan the surface holds.
-    pub(crate) gpu_change: Option<luxforge_ui::photo_surface::GpuChange>,
+    pub(crate) gpu_change: Option<luxforge_gpu::GpuChange>,
     /// The program sequences the committed stack's gestures are likely to need, compiled ahead.
-    pub(crate) gpu_warm: Option<&'a luxforge_ui::photo_surface::GpuWarm>,
+    pub(crate) gpu_warm: Option<&'a luxforge_gpu::GpuWarm>,
     /// The prepared source every GPU boundary is derived from, which the pipeline holds on the GPU
     /// for every surface that hands it ([`crate::app::gpu_preview`]). None is given while the GPU
     /// stage is refused.
-    pub(crate) gpu_source: Option<&'a luxforge_ui::photo_surface::GpuSource>,
+    pub(crate) gpu_source: Option<&'a luxforge_gpu::GpuSource>,
     /// The displayed stack's picture at rest the GPU draws in tiles, which a whole-frame
     /// photograph draws in place of its frame once the last tile is in.
-    pub(crate) gpu_rest: Option<&'a luxforge_ui::photo_surface::GpuRest>,
+    pub(crate) gpu_rest: Option<&'a luxforge_gpu::GpuRest>,
     /// The same tiles drawn for their histogram and clipping counts alone, which put nothing on
     /// screen: handed to whichever surface draws the photograph, a percentage view's included,
     /// while the counts of the content the GPU presents are to come and the picture is not handed.
-    pub(crate) gpu_counts: Option<&'a luxforge_ui::photo_surface::GpuRest>,
+    pub(crate) gpu_counts: Option<&'a luxforge_gpu::GpuRest>,
     /// Compare's After side on the GPU: the GPU picture of the stack on screen when Compare
     /// began, retained while it is shown — its view plan, with its serial, and its picture at rest
     /// in tiles — drawn in place of the retained After frame, which stays the surface's fallback.
-    pub(crate) compare_gpu: Option<&'a luxforge_ui::photo_surface::GpuPlan>,
-    pub(crate) compare_change: Option<luxforge_ui::photo_surface::GpuChange>,
-    pub(crate) compare_rest: Option<&'a luxforge_ui::photo_surface::GpuRest>,
+    pub(crate) compare_gpu: Option<&'a luxforge_gpu::GpuPlan>,
+    pub(crate) compare_change: Option<luxforge_gpu::GpuChange>,
+    pub(crate) compare_rest: Option<&'a luxforge_gpu::GpuRest>,
     /// A settle's dissolve from the GPU frame on screen to the CPU frame that replaces it
     /// ([`crate::app::gpu_settle`]).
     pub(crate) dissolve: Option<luxforge_ui::photo_surface::Dissolve>,

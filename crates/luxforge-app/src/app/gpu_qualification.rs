@@ -8,11 +8,10 @@
 //! the view's size. `cargo xtask gpu-qualification --families F,... --zoom fit|33|50|100` runs a
 //! program class's families alone.
 use luxforge_core::{GpuAnswer, GpuPlanRequest, gpu_plan};
-use luxforge_reference::{preview_error::Statistics, srgb};
-use luxforge_ui::photo_surface::{
-    GpuPlan,
-    gpu_preview::qualification::{Qualifier, boundary, held},
+use luxforge_gpu::{
+    GpuPlan, qualification::Qualifier, qualification::boundary, qualification::held,
 };
+use luxforge_reference::{preview_error::Statistics, srgb};
 use serde_json::{Value, json};
 
 mod reference;
