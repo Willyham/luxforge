@@ -35,6 +35,7 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 | [Lightroom import](../tasks/lightroom/lightroom-import.json) ([design](design/lightroom-import.md)) | TASK-001 confirm the catalog format against a copy of the owner's catalog | Needs no code; needs the owner's catalog copy | High tier |
 | [Lightroom alignment](../tasks/lightroom/lightroom-alignment.json) ([design](design/lightroom-alignment.md)) | TASK-001 the rig's generator and synthetic targets | Its rounds need the owner to import and export in Lightroom | High tier |
 | [Live-session Rust CLI](../tasks/project/live-cli.json) ([design](design/live-cli.md)) | TASK-001 shared catalog targeting and authenticated session client | The command contract and defaults are decided; implementation awaits owner authorization | High tier |
+| [Copy and paste settings](../tasks/interface/copy-settings.json) ([design](design/copy-settings.md)) | TASK-001 paste-settings action and batch method; TASK-002 settings clipboard and copy; TASK-003 filmstrip multi-selection | Scope, default groups, filmstrip multi-selection and Paste from previous chosen; the rest are recorded defaults. Planning only; implementation awaits authorization | High tier |
 | [High-zoom minimap](../tasks/interface/minimap.json) ([design](design/minimap.md)) | TASK-001 shared viewport projection; TASK-002 bounded overview rendering | Inclusive 200% threshold and click/drag navigation chosen; layout remains a proposed default. Planning only; implementation awaits authorization | High tier |
 
 ### In progress
@@ -128,7 +129,7 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 - Owner review of the recorded defaults
 - An Amount slider and a hover preview
 - Calibrated RAW white balance preset import in the Lightroom alignment RAW white-balance round; the existing conversion matches white chromaticity, not a measured rendered response
-- Copy and Paste Settings over the same composite action
+- Copy and Paste Settings: planned under [Interface](#interface)
 
 **Lightroom import** (decided 2026-10-06, planned, not authorized; [design](design/lightroom-import.md), [plan](../tasks/lightroom/lightroom-import.json)). Bring a Lightroom Classic catalog or a folder of XMP sidecars across, read-only.
 - Phase 1: the photographs worked on, catalog folders by event, collections, ratings and labels as collections, virtual copies and snapshots as versions, global settings, crop, orientation, lens and the look, the report and re-mapping, Lightroom's previews as first grid tiles only; no import undo, with the current catalog removal rule
@@ -148,6 +149,8 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 **Tuning delivered tools.** Refine the recorded defaults of Presence, the colour mixer and the vignette (decision pending).
 
 ## Interface
+
+**Copy and paste settings** ([design](design/copy-settings.md), [tasks](../tasks/interface/copy-settings.json)). Planned: copy chosen adjustment groups from one photograph into a per-window clipboard and paste them onto the open photograph, a Develop filmstrip selection (new multi-selection) or a Select selection, or from the previous photograph, one history entry per photograph through a new `paste-settings` action and `batch.paste-settings` method. Core, copy and the filmstrip selection proceed independently before paste is wired in each workspace; geometry, masks, Sync and a system clipboard document are later. The request authorizes planning only.
 
 **High-zoom minimap** ([design](design/minimap.md), [tasks](../tasks/interface/minimap.json)). Planned for Develop at percentage zoom ≥200: whole-image overview, visible-region rectangle and owner-chosen click/drag navigation through the existing `view.set` path. Shared geometry and bounded overview rendering can proceed independently before UI integration; final native qualification and photo-sized measurements follow working delivery. The request authorizes planning only.
 

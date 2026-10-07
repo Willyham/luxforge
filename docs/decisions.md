@@ -501,6 +501,10 @@ The Basic and histogram product choices were decided on 2026-09-21 and implement
 
 The owner requested a plan for a minimap at zoom levels of **200% or more**. The inclusive percentage threshold is the requirement, and the owner chose **click to jump and drag the viewport rectangle**. The [design](design/minimap.md) records this interaction; lower-right placement and other layout/engineering defaults remain recommendations. This request authorizes planning only; implementation and native qualification remain outstanding.
 
+## Copy and paste settings planning
+
+The owner requested a plan for copying settings between photographs and on 2026-10-07 chose: **adjustments only** in the first delivery (the presettable groups; crop, orientation, lens correction, perspective, the RAW look and masks later), **every group except White balance** checked by default with neutral groups included and the last confirmed choice remembered for a quick `⌘C`, **multi-selection in Develop's filmstrip** with `⌘V` pasting to it, and **Paste from previous** (`⌥⌘V`). The [design](design/copy-settings.md) records the remaining defaults. This request authorizes planning only.
+
 ## Code structure consolidation
 
 The owner authorized implementation on 2026-10-07 and approved the static `luxforge-gpu-types` plus `luxforge-gpu` split in the [design](design/code-structure.md#approved-boundary-task-003). The shared crate holds std-only GPU primitives, shader conventions and pure layout rules; the backend owns the existing wgpu executor and tile runner. Core keeps semantic planning and `TileService`, the app keeps one lowering path and host source/worker policy, and UI keeps Iced presentation on its existing device. The existing separate tile-worker device, current budgets, bounded caches, retirement, cancellation and fallback behavior are preserved.
