@@ -128,8 +128,8 @@ The owner edits local files and syncs them to an external drive, so moved-origin
 | Speed and unused-tool bloat | Measure startup, loading, idle and first-use costs; keep the core small and initialize lazily |
 | Filtering, tagging and collections | Design one retrieval model from concrete workflows |
 | Full catalog with lazy shoot subsets | Keep catalog scale independent of decoded pixels; scope views to the working set |
-| Multi-selection and stacking | Define selection ranges, stack identity and batch semantics in later library work |
-| Bracket and panorama identification | Research detection separately; merging is not selected |
+| Multi-selection and stacking | Multi-selection is delivered; result-led merge stacks are [planned](design/hdr-merge.md) |
+| Bracket and panorama identification | Brackets are detected; [HDR merging](#hdr-exposure-merges) is requested for planning; panorama stitching remains outside that plan |
 | Confusing export controls | One clear JPEG export path with explicit metadata behavior |
 
 ## Presets
@@ -474,6 +474,18 @@ Decided by the owner on 2026-10-07 for [colour grading in the mixer](design/colo
 
 The final refinement task may build the grading-only slice of the alignment tooling without waiting on the separate alignment programme. Actual Lightroom exports are measurement inputs; missing exports leave response figures unmeasured and do not delay the working feature or reference/tooling delivery. This decision does not authorize unrelated alignment work or change its policy on private-catalog validation.
 
+## HDR exposure merges
+
+Requested for planning by the owner on 2026-10-07 ([design](design/hdr-merge.md)):
+
+- Select's grid offers **Import merged** and **Pick merged** for exposure brackets, creates one HDR result shown as a virtual photograph and collapses the original frames into a stack.
+- Keep the merged pixels durably on disk so ordinary reopening needs no repeated merge; source files stay unchanged and each bracket frame can still be picked independently.
+- A merge can be removed or undone without losing the originals. The planned lifecycle retains the generated result and edits for restoration through library undo/redo.
+- **Pick merged adds the result to the development set by default.** The design distinguishes Import's catalog-only result from Pick's appended set member and keeps Select open; ordinary file picks remain the existing workflow.
+- Be aware of other merge kinds, particularly panoramas, at the source/provenance/stack boundary. Do not implement or plan panorama stitching now.
+
+The owner selected **RAW brackets only** and **automatic alignment and deghosting** for the first implementation. JPEG bracket inputs are outside this plan; the existing SDR JPEG export remains available for merged results. Numerical/backend/layout details are delegated within the contract, so the storage, radiance and alignment tasks can start independently once implementation is authorized. This planning request does not authorize implementation.
+
 ## Open product questions
 
 [Product decisions](../tasks/project/product-decisions.json) carries the storage, external-module, workload, Presence, GPU reconciliation, themes and Lightroom-authorization tasks. The other recorded defaults remain proposals in their designs; they acquire no additional decision task.
@@ -507,6 +519,17 @@ Masking phases A–D are delivered. The owner's 2026-09-23 stroke-storage decisi
 - **Hosted GPU checks.** Keep the current portability dependency. The recommended lavapipe lane uses small functional journeys, omits `large24` and `large60`, and runs every retained scenario before failing at the end. This is a documentation and planning decision; no CI or engineering fix is authorised by this review, and lavapipe remains unadopted as the production renderer.
 
 The Basic and histogram product choices were decided on 2026-09-21 and implementation was authorised the same day; see [Basic adjustments and histogram](#basic-adjustments-and-histogram).
+
+## Auto tone planning
+
+The owner requested a plan for an Auto tone feature that sets the Basic values automatically, and decided on 2026-10-07 ([design](design/auto-tone.md#decided)):
+
+- Auto sets **Lightroom's eight**: Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Vibrance and Saturation.
+- **No white balance**, as in Lightroom; Auto white balance remains a separate later proposal.
+- **Auto in presets**, recomputed for each photo, and the Lightroom importer maps `AutoTone` instead of refusing it. Per-slider Auto and a desktop Auto on a selection are not in scope.
+- **Tuning by fitting** the targets to Lightroom's Auto on the owner's photos, after the working feature is delivered, followed by owner review.
+
+The deterministic algorithm, analysis before Basic with a forward model through Basic and the Look, the starting targets, caps, button placement and Cmd+U are recorded defaults in the design. This request authorizes planning only.
 
 ## High-zoom minimap planning
 

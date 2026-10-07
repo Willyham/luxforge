@@ -37,6 +37,14 @@ RAW development and looks.
 | --- | --- |
 | [RAW looks](raw/raw-looks.json) | New RAW photos start from a Luxforge look: the frozen look units and the corpus-chosen Standard look in the Original with its preference and section (phase 1), then Match camera fitted to the embedded preview off the owner (phase 2), measured once at the end |
 
+### Library (`library/`)
+
+Selection, catalog sources and library operations.
+
+| Plan | Purpose |
+| --- | --- |
+| [HDR exposure merges](library/hdr-merge.json) ([design](../docs/design/hdr-merge.md)) | Planned Import merged and Pick merged, durable float derived sources, result-led stacks, original picks and reversible removal/undo; RAW-only inputs with automatic alignment/deghosting; storage, radiance and alignment tasks are independently ready, implementation is not authorized; panoramas are outside the plan |
+
 ### Editing tools (`editing/`)
 
 One plan per tool module.
@@ -45,6 +53,7 @@ One plan per tool module.
 | --- | --- |
 | [AI editing](editing/ai-editing.json) | Proposed Remove, Select, generative fill and Replace, and optional sky replacement on local, user-downloaded models: the inference port and runtime, the model manager, the analysis cache and picker, the model-selection mask kind, the fill tiers, the remote-provider shape, portability, qualification and documentation |
 | [Corrections](editing/corrections.json) | Proposed offline Clone/Heal, the repair stage, the shared brush and the repair layer's frozen-patch operation; its AI Remove is planned under AI editing |
+| [Auto tone](editing/auto-tone.json) ([design](../docs/design/auto-tone.md)) | Planned, not authorized: deterministic Auto for Lightroom's eight Basic fields from a bounded sample of the stage Basic receives, the action, query and Tone-header button first, Auto in presets and the Lightroom importer, then a fit to Lightroom's Auto on the owner's photos last |
 | [Colour grading](editing/colour-grading.json) | Decided, implementation-ready mixer extension: tonal/Global wheels, masks, presets and direct Lightroom mappings delivered first; independent reference analysis and Lightroom response refinement last, with no approval/research gates |
 
 ### Lightroom (`lightroom/`)
