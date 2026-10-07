@@ -52,6 +52,10 @@ const HELD_EFFECT: &str = "test.held.effect";
 struct HeldUnit(Arc<Gate>);
 
 impl PointwiseColor for HeldUnit {
+    fn identity(&self) -> luxforge_core::OperationIdentity {
+        luxforge_core::OperationIdentity::new("app-test.held", [])
+    }
+
     fn apply_row(&self, _: u32, _: u32, _: &mut [[f32; 3]]) {
         self.0.pass();
     }

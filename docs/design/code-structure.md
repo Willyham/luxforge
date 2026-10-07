@@ -17,19 +17,19 @@ The current GPU path is core compilation/planning, desktop lowering, and executi
 | Finding | Current issue | Outcome | Tasks |
 | --- | --- | --- | --- |
 | R1 | Delivered: public `Provider::descriptor` reads registry availability; explicitly dereferenced module hooks retain raw metadata | One registry-aware availability answer through the public lookup surface | TASK-001 |
-| R2 | In progress: core and UI consume common formats, extents, pass shapes and shader constants from `luxforge-gpu-types`; executable light references remain in the backend | One shared primitive contract; semantic planning and device lowering keep their distinct responsibilities | TASK-003, 004 |
+| R2 | Delivered: core and UI consume common formats, extents, pass shapes and shader constants from `luxforge-gpu-types`; executable light references remain in the backend | One shared primitive contract; semantic planning and device lowering keep their distinct responsibilities | TASK-003, 004 |
 | R3 | Core admission and backend allocation separately calculate common resource-layout rules; tests compare the two implementations | Shared layout rules consumed by prediction and allocation, with explicit device inputs | TASK-005 |
 | R4 | Window-free GPU execution is reusable but lives in the widget subsystem | One core-free, Iced-free executor with a thin presentation adapter | TASK-006, 007 |
 | R5 | Delivered: supported `ToolModule` authors have context helpers and plan builders; field-patch authoring stays internal and the developer proof has an opaque factory | A coherent current cross-crate surface, with internal authoring machinery clearly internal | TASK-009 |
 | R6 | Stream strategy and tile-size selection repeatedly prepare the same GPU stack, and staged selection discards a newly generated tile list | One preparation per equivalent worker-scoped request; derive alternatives and reuse sweep tiles | TASK-008 |
-| R7 | Colour and spatial operation equality uses diagnostic description strings | Explicit exact semantic identity independent of diagnostic wording | TASK-010 |
+| R7 | Delivered: colour and spatial operation equality uses exact unit kind, coefficient and stage bits; diagnostics are independent | Explicit exact semantic identity independent of diagnostic wording | TASK-010 |
 | R8 | Preview requests and resource phases use loose flags/options and repeated eligibility checks | Valid request intent and small resource-phase types; one presentation/counts eligibility decision | TASK-011, 012 |
 | R9 | Delivered: one typed preview-read seam. Bounded decode/handle-cache mechanics still repeat | Shared mechanisms with separate grid/loupe policies and budgets | TASK-013, 014 |
 | R10 | Delivered: renderer-only thresholds, frame bounds and tile rules live in core rendering | Renderer-only policy owned by core rendering; shared adapter admission stays with its actual owner | TASK-015 |
 | R11 | Delivered: indexing and Locate share one hidden-file predicate and retain separate traversal policies | One hidden-status helper, separate traversal policies | TASK-016 |
 | R12 | Delivered: comments describe current GPU-first paths and whole-boundary proof helpers are test-only | Current GPU-first contracts and accurate proof-only boundaries | TASK-002 |
 
-Registry-aware provider access is verified from outside core, including disabled built-ins and all lookup paths. R6 is confirmed redundant construction, not a measured speedup. R7 and R8 are interface risks; no wrong delivered equality or rendering failure was established. R3 is duplicated ownership, not evidence of a budget overrun. The relevant source entry points are linked in each task.
+Registry-aware provider access is verified from outside core, including disabled built-ins and all lookup paths. R6 is confirmed redundant construction, not a measured speedup. Preview requests/resource phases still need explicit intent; no delivered rendering failure was established. R3 is duplicated ownership, not evidence of a budget overrun. The relevant source entry points are linked in each task.
 
 ## GPU types and ownership
 

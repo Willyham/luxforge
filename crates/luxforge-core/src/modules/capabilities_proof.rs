@@ -144,6 +144,13 @@ fn parse_answer(body: &[u8]) -> Result<[u8; 3], Error> {
 struct Tint([f32; 3]);
 
 impl PointwiseColor for Tint {
+    fn identity(&self) -> crate::OperationIdentity {
+        crate::OperationIdentity::new(
+            "capability-proof.tint",
+            self.0.map(|v| u64::from(v.to_bits())),
+        )
+    }
+
     fn apply_row(&self, _: u32, _: u32, rgb: &mut [[f32; 3]]) {
         for pixel in rgb {
             for (channel, gain) in pixel.iter_mut().zip(self.0) {

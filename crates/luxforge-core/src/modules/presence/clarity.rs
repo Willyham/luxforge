@@ -239,6 +239,18 @@ fn encode(input: &Planes<'_>, plane: &mut PlaneMut<'_>, parallelism: Parallelism
 }
 
 impl SpatialUnit for Clarity {
+    fn identity(&self) -> crate::OperationIdentity {
+        crate::OperationIdentity::new(
+            "presence.clarity",
+            [
+                self.amount.to_bits(),
+                u64::from(self.long_side),
+                u64::from(self.gain.to_bits()),
+                self.r_red as u64,
+            ],
+        )
+    }
+
     fn halo(&self, _: Stage) -> u32 {
         halo(self.long_side) as u32
     }

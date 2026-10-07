@@ -189,6 +189,18 @@ impl ColourAdjust {
 }
 
 impl PointwiseColor for ColourAdjust {
+    fn identity(&self) -> crate::OperationIdentity {
+        crate::OperationIdentity::new(
+            "basic.colour",
+            [
+                self.vibrance.to_bits(),
+                self.saturation.to_bits(),
+                u64::from(self.vibrance_gain.to_bits()),
+                u64::from(self.saturation_k.to_bits()),
+            ],
+        )
+    }
+
     fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {
         // Vibrance's weight needs a chroma (`hypot`) and, past the epsilon, a hue (`atan2` and a
         // `cos`) per pixel. Skip all of it whenever it cannot change the result: when vibrance is

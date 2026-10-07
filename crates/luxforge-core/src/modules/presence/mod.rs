@@ -271,3 +271,24 @@ mod tests {
         assert_eq!(operation.summed_halo(stage), 274);
     }
 }
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    fn texture(amount: f64, side: u32) -> SpatialOperation {
+        SpatialOperation::new(vec![Arc::new(texture::Texture::new(amount, side))]).unwrap()
+    }
+    #[test]
+    fn spatial_identity_tracks_kind_coefficients_and_the_compiled_stage() {
+        assert_eq!(texture(50., 6000), texture(50., 6000));
+        assert_ne!(
+            texture(50., 6000),
+            texture(f64::from_bits(50f64.to_bits() + 1), 6000)
+        );
+        assert_ne!(texture(50., 6000), texture(50., 6001));
+        assert_ne!(
+            texture(50., 6000),
+            SpatialOperation::new(vec![Arc::new(clarity::Clarity::new(50., 6000))]).unwrap()
+        );
+    }
+}

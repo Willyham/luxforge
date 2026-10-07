@@ -196,7 +196,7 @@
     {
       "id": "TASK-004",
       "description": "Centralize common GPU primitive types, shader conventions and pure extent rules.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
@@ -204,7 +204,8 @@
         "R2. Consume the boundary frozen by TASK-003. Semantic plans and executable plans retain their distinct meanings; only shared primitives/rules move.",
         "Include formats/texel sizes, reduced/fixed extents, compatible plane reuse, pass shapes and common calling-convention constants. Backend-resolved Light references stay explicit.",
         "Update check commands if unit tests move to a newly created package; do not retain old format families or compatibility mappings.",
-        "Primitive/core/surface scopes passed (three, 51 and 137 tests; two surface measurements ignored), and shared-type/dependency rule regressions passed. Quick passed in artifacts/code-structure-types-modules-quick-final. Rendered integration remains before task acceptance; final authentic qualification/timing stay in TASK-017."
+        "Primitive/core/surface scopes passed (three, 51 and 137 tests; two surface measurements ignored), and shared-type/dependency rule regressions passed. Quick passed in artifacts/code-structure-types-modules-quick-final. Rendered integration remains before task acceptance; final authentic qualification/timing stay in TASK-017.",
+        "Accepted: all 58 rendered smoke scenarios passed in artifacts/code-structure-types-rendered, plus the available-source qualification (277 stacks; no failed component). The tier is honestly incomplete: 118 cells need the omitted RAW manifest. Final authentic qualification remains TASK-017. Primitive, planner, surface and repository rule tests plus quick provide the shared-convention acceptance evidence."
       ],
       "context_links": [
         {
@@ -270,7 +271,7 @@
     {
       "id": "TASK-005",
       "description": "Use shared resource-layout rules for GPU prediction, admission and allocation.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-004"
       ],
@@ -613,12 +614,13 @@
     {
       "id": "TASK-010",
       "description": "Separate exact colour/spatial operation identity from diagnostic description strings.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "R7. Current operation equality compares describe() strings. No delivered wrong equality was demonstrated; this task removes the fragile machine/display coupling.",
         "Include unit kind and all exact processing state, including stage-dependent state; preserve conservative mask allocation identity. Do not use a lossy hash as equality.",
-        "GPU convention and numerical coefficients remain unchanged; do not replace independent reference implementations with production code."
+        "GPU convention and numerical coefficients remain unchanged; do not replace independent reference implementations with production code.",
+        "Accepted: exact identity/kind/stage and diagnostic-independence regressions passed, including denoise filter-band shape and lazy vignette readiness. Scoped modules: 397 passed/seven ignored; rendering: 281 passed/15 ignored. artifacts/code-structure-identity-quick/summary.json passed on aarch64-apple-darwin. Coefficients, WGSL and mask allocation comparison are unchanged."
       ],
       "context_links": [
         {

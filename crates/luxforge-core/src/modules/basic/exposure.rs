@@ -36,6 +36,13 @@ impl Exposure {
 }
 
 impl PointwiseColor for Exposure {
+    fn identity(&self) -> crate::OperationIdentity {
+        crate::OperationIdentity::new(
+            "basic.exposure",
+            [self.ev.to_bits(), u64::from(self.gain.to_bits())],
+        )
+    }
+
     fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {
         for pixel in rgb {
             for channel in pixel {
