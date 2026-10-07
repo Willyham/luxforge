@@ -706,18 +706,26 @@ impl super::OwnerHandle {
     /// host's, from its opening on. The host's mounts are every test's: a card another process
     /// mounts meanwhile (the core's own disk-image tests attach one with a `DCIM` folder of two
     /// photographs) is listed by any catalog that opens while it is there, as the desktop lists a
-    /// connected card, and its event is listed beside the test's own. With no table, every path's
-    /// volume is found by its device. For a test, through the `test-holds` feature, which only
-    /// `[dev-dependencies]` turn on.
+    /// connected card, and its event, and its listing on the activity board, are the test's too.
+    /// With no table, every path's volume is found by its device. `catalog` need not exist yet. For
+    /// a test, through the `test-holds` feature, which only `[dev-dependencies]` turn on.
     pub fn read_no_host_mounts(catalog: &std::path::Path) {
+        // The owner names its catalog by its canonical path, which a catalog not created yet has
+        // through its folder.
+        let canonical = catalog.canonicalize().unwrap_or_else(|_| {
+            match (
+                catalog.parent().map(std::path::Path::canonicalize),
+                catalog.file_name(),
+            ) {
+                (Some(Ok(folder)), Some(name)) => folder.join(name),
+                _ => catalog.to_path_buf(),
+            }
+        });
         OPENING_MOUNTS
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push((
-                // The owner names its catalog by its canonical path.
-                catalog
-                    .canonicalize()
-                    .unwrap_or_else(|_| catalog.to_path_buf()),
+                canonical,
                 MountSource::Fixed(Arc::new(std::sync::Mutex::new(Vec::new()))),
             ));
     }

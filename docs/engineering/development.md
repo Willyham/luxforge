@@ -358,8 +358,9 @@ the board. It also keeps a test's catalog off the host's mount table:
 `OwnerHandle::read_no_host_mounts` has every owner later opened over a catalog read an empty one,
 so a card another process mounts meanwhile is not listed into it. The core's disk-image tests
 attach a browsable image with a `DCIM` folder of two photographs, which any catalog opened while
-it is attached lists as a connected card; the desktop's Select owner and loupe tests open theirs
-this way.
+it is attached lists as a connected card, its listing running on the activity board; the desktop's
+test editors (`testing::boot`) and its Select owner and loupe tests open theirs this way, all but
+the one that checks the volumes the host has mounted.
 
 Every Cargo that `xtask` starts to build drops the package variables `cargo run` set for `xtask`
 itself. `ring`'s build script reruns when `CARGO_MANIFEST_DIR` or `CARGO_PKG_NAME` changes, so a
