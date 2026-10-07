@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Cache registry leaf libraries only. Project paths and filesystem-reading macros stay authoritative.
+set -euo pipefail
+registry_root="${CARGO_HOME:-$HOME/.cargo}/registry/src/"
+case "${CARGO_MANIFEST_DIR:-}" in
+  "$registry_root"*) ;;
+  *) exec "$@" ;;
+esac
+
+# A procedural macro, including one re-exported by an ordinary library, can read files
+# rustc's dep-info does not name. Any explicit dependency bypasses the cache, so neither
+# direct nor transitive macro consumers depend on an allowlist or filename heuristic.
+for argument in "$@"; do
+  case "$argument" in
+    --extern|--extern=*) exec "$@" ;;
+  esac
+done
+exec "${LUXFORGE_SCCACHE_BIN:?Run Cargo through tools/cargo-cached}" "$@"

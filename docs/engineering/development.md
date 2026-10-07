@@ -231,6 +231,11 @@ seconds. Building dependencies at opt-level 3 saved no test time and cost anothe
 first build. To step through code in a debugger, build that once with `--config profile.dev.opt-level=0`.
 A dev build is not a timing build; timing uses release.
 
+The RAW build enables `cc`'s `parallel` feature: LibRaw, librtprocess, RawSpeed and pugixml
+translation units compile concurrently within Cargo's jobserver budget. It changes compilation
+scheduling, not optimization flags or runtime parallelism. Set `CARGO_BUILD_JOBS` or Cargo's `-j`
+when a build needs a smaller share of a busy host; the default is Cargo's detected CPU count.
+
 Every integration-test binary links the whole of `luxforge-core`, so the core's integration tests
 are grouped into one binary per area, one module per file: `basic` (Exposure, white balance, Tone,
 Colour), `modules` (the mixer, Presence, the vignette, the controls proof, presets and the
@@ -262,6 +267,137 @@ tests need goes in the core's own test-support modules (`editor/test_support.rs`
 `capabilities/testing.rs`, `artifacts/testing.rs`). The independent references and their studies,
 the mask, brush and range studies among them, live in `luxforge-reference`, one module per study
 (`cargo test -p luxforge-reference --test studies tone::`).
+
+### Build caches and worktrees
+
+Cargo already shares downloaded sources through `CARGO_HOME`; compiled outputs normally belong to
+each worktree's `target/`. A common `CARGO_TARGET_DIR` can reuse matching dependency artifacts,
+but concurrent Cargo commands contend for its build lock, and final executable paths are shared.
+An editor or harness must not resolve a binary another branch can replace while it is verifying.
+Keep separate target directories for concurrent worktrees. The harness resolves the configured
+target directory through Cargo metadata, so an isolated `CARGO_TARGET_DIR` works.
+
+Agents on macOS and Linux use `tools/cargo-cached` in place of `cargo`. It selects the pinned
+[sccache 0.18.0](https://github.com/mozilla/sccache/releases/tag/v0.18.0) installation at
+`$HOME/.local/share/luxforge/sccache/0.18.0/bin/sccache`; it is installed on the owner's Mac.
+A new machine can bootstrap it with ordinary Cargo (or the checksum-verified prebuilt release):
+
+```sh
+cargo install --locked --version 0.18.0 --root "$HOME/.local/share/luxforge/sccache/0.18.0" sccache
+```
+
+No global Cargo configuration or shell profile is changed. Every worktree selects the same tool
+and the same local cache, while keeping its target directory. The wrapper covers both the initial
+Cargo command and the Cargo children `xtask` starts:
+
+```sh
+tools/cargo-cached test -p luxforge-core --lib FILTER
+tools/cargo-cached xtask verify --tier quick --output artifacts/quick-cached
+tools/cargo-cached --cache-stats
+```
+
+The conservative policy in `.cargo/sccache.toml` and the wrapper is deliberate:
+
+- Native compilation re-preprocesses every time (`SCCACHE_DIRECT=false`), so changed headers,
+  newly appearing optional headers, time macros and include selection enter the content key.
+- Path normalization and sloppiness settings are disabled. Checkout paths remain part of cache
+  identity; `__FILE__`, debug paths and literal path data cannot be substituted from another tree.
+- Rust caching is limited to registry leaf libraries, with no explicit `--extern` dependencies.
+  Workspace Rust always compiles normally, including release. All dependency consumers bypass
+  sccache, covering both direct procedural macros and macros re-exported through other libraries:
+  a macro can read a file that rustc's dependency information does not track.
+- Compiler choice, flags, incremental compilation and target directories are preserved. The native
+  key also incorporates the compiler versions and macOS SDK metadata. Complex custom compiler
+  commands remain uncached. A conflicting `RUSTC_WRAPPER` fails explicitly.
+- The versioned `safe-v1` cache has a 10 GiB limit at
+  `$HOME/.cache/luxforge/sccache-0.18.0-safe-v1/objects`. A dedicated Unix socket serves every
+  worktree, so agents neither restart each other's servers nor use a normalized experimental cache.
+  Inherited sccache settings are removed, and only the local disk backend is configured. The
+  wrapper checks the running server's location, normalization and preprocessing policy before
+  compiling, refusing a mismatch rather than stopping a server another build may be using.
+
+This trades some cross-worktree reuse for correctness. Registry leaf compilations can be shared;
+workspace native objects retain their path identity and are primarily reused within their own
+worktree. The earlier faster, path-normalized experiment below is **not** the default agent policy.
+The upstream [native cache limitations](https://github.com/mozilla/sccache/blob/v0.18.0/docs/Local.md)
+and [Rust restrictions](https://github.com/mozilla/sccache/blob/v0.18.0/docs/Rust.md) explain why the
+broader modes are avoided. Build scripts, linking, Clippy checks and tests still run normally;
+a cache hit never counts as verification.
+
+For diagnosis, `LUXFORGE_CACHE_OFF=1 tools/cargo-cached ...` bypasses this wrapper and invokes Cargo
+with the caller's environment. `LUXFORGE_SCCACHE_ROOT` selects a different pinned installation;
+`LUXFORGE_SCCACHE_CACHE` selects an isolated cache/server for probes. Never use those overrides to
+share one cache directory between separate servers. The cache probes use their own temporary
+namespace and stop only their own server:
+
+```sh
+python3 -m unittest discover -s tools -p 'test_compiler_cache.py' -v
+```
+
+They compile and execute fixtures to verify native hits and invalidation of changed header content
+with restored timestamps, new optional includes and changed flags; independent checkout paths and
+literal path data; Rust leaf hits and invalidation of source and `env!` values; workspace bypass;
+and a re-exported procedural macro reading a changed, untracked file. Run them when changing the
+cache wrapper or policy, followed by the finished-work quick tier. Linux uses the same wrapper
+with its own native compilers; Windows uses ordinary Cargo pending a native wrapper check.
+
+Local Apple-silicon build measurements, Rust 1.94.0, dev opt-level 1, offline dependency sources,
+fresh target directories, `cargo build --locked -p luxforge-raw --timings`:
+
+| Configuration | Build wall time | RAW native build-script time |
+| --- | ---: | ---: |
+| Serial native compilation, no compiler cache | 82.2 s | 72.1 s |
+| Parallel native compilation, no compiler cache | 18.7 s | 13.1 s |
+| Parallel compilation, initially empty sccache | 27.0 s | 17.3 s |
+| Parallel compilation, separate checkout, fully populated sccache | 9.5 s | 4.8 s |
+
+These are individual local observations on a shared host, not quiet-host distributions or
+whole-workspace/CI speed claims.
+The cache experiment used two source-identical checkout directories, their own empty `target/`
+directories, sccache 0.18.0, `SCCACHE_BASEDIRS` for both roots and native
+`-ffile-prefix-map`/`-fdebug-prefix-map` flags mapping each root to the same path. The first cross-checkout build took
+9.5 s with 176 C/C++ and 55 Rust cache hits; after fully populating the cache, a fresh rebuild in
+that second checkout hit all 176 C/C++, 61 Rust and one assembly compilations. Build scripts,
+uncacheable compilations and workspace incremental compilation still ran. Cache overhead makes
+the first cached build slower; reuse is the benefit.
+
+The build-scheduling change adds no original reads, hashes or decodes, runtime buffers, point
+renders, owner/UI work, desktop messages, timers, polls or subscriptions. Rendering code and
+arithmetic flags are unchanged; existing RAW exact-buffer tests verify the resulting build.
+No 24 MP editor runtime comparison was made or runtime speed gain claimed: the measured cost is
+compilation. The experimental compiler cache was external to the editor, keyed by compiler, inputs and
+flags with that experimental path normalization, with a 10 GiB disk bound; the fully populated
+RAW experiment retained 55 MiB, with its hit counts and rebuild cost above.
+
+### Further workflow tuning
+
+Keep rustfmt and Clippy: formatting and compiler-aware Rust diagnostics have different jobs, and
+there is no measured equivalent replacement here. During editing, invoke `tools/cargo-cached fmt --all -- --check`
+directly and narrow linting with `tools/cargo-cached clippy --locked -p CRATE --all-targets -- -D warnings`
+when that is the feedback needed; these avoid building the core-dependent `xtask` executable first.
+The finished-work quick tier still checks the whole workspace.
+
+The current runner already overlaps test binaries. A
+[nextest](https://nexte.st/docs/design/why-process-per-test/) trial must compare warm execution
+against `cargo xtask test --quick` and the full test command, retain the `slow_` selection and a
+separate doctest step, and account for its process-per-test startup and repeated initialization.
+It offers global scheduling and resource groups, but a speed gain here is unmeasured. Likewise,
+the current binaries each default to libtest's CPU-count thread budget and can have Rayon workers;
+benchmark `RUST_TEST_THREADS` limits against total wall time before changing concurrency defaults.
+Do not increase the rendered pool or parallelize timing components to improve a check's figure.
+
+An asynchronous answer may be ready on its first poll. Waiter-limit tests accept that or a pending
+answer followed by explicit owner synchronization; the error and waiter-count assertions are the
+same. Requiring the first poll to be pending caused a scheduling-dependent failure. Only a request
+deliberately held by a gate has that guarantee; sleeps and automatic retries do not prove it.
+
+The existing dev opt-level 1 and dependency debug-info removal already have measurements above;
+keep them. A workspace `profile.dev.debug="line-tables-only"` experiment can test whether less
+debug information reduces compilation, linking and target size, at the cost of debugger variable
+inspection. Compare a fresh test build and a one-function core edit before adopting it. Cargo
+`--timings` separates build-script, compiler and codegen costs; changing linkers or splitting
+crates needs that evidence first. A toolchain update needs the full current correctness checks,
+not just a build-time comparison.
 
 ### How `check` runs the tests
 
@@ -1458,6 +1594,15 @@ Rules for any UI or image check:
 `cargo xtask package` builds an unsigned host development artifact: a ZIP on macOS and Windows or a `.tar.gz` on Linux containing `Luxforge/` with the executable, notices, `build.json` (source revision, dirty state, target, profile, binary and lockfile hashes) and `checksums.txt`. Run smoke against the packaged executable with `--binary`. Packaging is repeatable, not byte-reproducible, and inventory is not a completed license audit. macOS bundles are unsigned and not notarized. No signing, stores or auto-update exist.
 
 ## CI
+
+The main workflow uses pinned `Swatinem/rust-cache` 2.8.2 for debug and release dependency artifacts
+and downloaded Cargo sources. Its keys include the compiler, manifests, lockfile and build
+environment, with native lanes separated by runner image and native compiler/SDK identity; it excludes workspace and incremental
+artifacts, so checks still build the current source. The dependency-policy lane separately caches
+the exact cargo-deny 0.20.2 installation by OS, architecture and toolchain; it still runs the audit
+and fetches current advisories. Superseded runs on the same ref are cancelled; different refs and
+the extended corpus keep their own runs. Hosted cache hit rates and wall-time savings remain
+unmeasured until the workflow runs.
 
 `.github/workflows/check.yml` runs one job per hosted platform, macOS arm64 and Ubuntu x64, each testing, building and packaging the tree with seven-day artifact retention, plus a separate dependency-policy job (`cargo xtask audit`). Windows CI is disabled; Windows support will come later. A hosted lane is compilation and functional evidence of what it ran and what it ran on, never native desktop or GPU acceptance, which only a native machine gives ([pillar 5](../../AGENTS.md#pillars), [GPU-first](../design/gpu-first.md#the-contract)). The release gate, `cargo xtask gpu-qualification`, needs a native GPU and runs on the owner's machines, never on a hosted lane. Each lane records the graphics adapters it had with the packaged editor's `--gpu-adapters` (`artifacts/gpu-adapters*.jsonl`), and every rendered run records the adapter that drew each launch in `result.json` (`launches[].adapter`, with its `device_type`).
 
