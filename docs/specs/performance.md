@@ -10,7 +10,7 @@ Status: provisional budgets, not accepted requirements. The owner's M4 MacBook P
 | Huge or invalid dimensions, truncated files, malformed profiles | Resource bounds and error recovery |
 | M4 with its actual display scale recorded; optional external SDR 4K | Preview, input, color, DPI and Metal resource measurements |
 | Linux ARM64 VM, later native Windows/Linux GPU machines | Functional portability versus native GPU behavior, measured separately |
-| 100,000 metadata rows; 1,000,000-row stress catalog | Index selection, pagination and startup independent of image bytes (later library) |
+| 100,000 metadata rows; 1,000,000-row stress catalog | Index selection, pagination and startup independent of image bytes (catalog qualification) |
 | At least 1,000 real images, then a larger owner dataset | Thumbnail decode and cache behavior synthetic rows cannot show |
 | Local SSD, later removable SSD and NAS | CPU/GPU throughput versus storage latency |
 | Nikon Z6 NEF, Fujifilm X100VI RAF and DJI Air 2S DNG in the owner's real modes | RAW decode/development, WB redevelopment, history, presentation and peak memory; see the [RAW integration contract](../design/raw-integration.md) |
@@ -35,8 +35,8 @@ Engineering hypotheses until measured and accepted on the recorded M4 configurat
 | 24 MP single-image edit working set | ≤ 600 MiB CPU-resident |
 | 60 MP import or export peak | ≤ 1 GiB process RSS, GPU memory reported separately |
 | Idle CPU | < 1% of one core over 30 s after background work settles |
-| First page of a 100,000-row indexed filter | p95 < 100 ms warm (later library) |
-| Warm adjacent-image Fit preview | p95 < 150 ms on a cache hit (later library) |
+| First page of a 100,000-row indexed filter | p95 < 100 ms warm (catalog qualification) |
+| Warm adjacent-image Fit preview | p95 < 150 ms on a cache hit (catalog qualification) |
 
 A single float32 RGBA buffer for 60 MP is about 916 MiB, so unrestricted full-resolution float processing needs tiling before it is promised.
 
@@ -724,6 +724,8 @@ at 60 MP, and a p95 more than 1.7 times its own p50 in a warm 30-sample loop is 
 host's queue, not of the render.
 
 #### A painted stroke's own latency
+
+These worker timings describe the reference preview path in this measurement. Current GPU painting and its presentation tails are measured separately in the GPU-first sections.
 
 The `editor-latency --mode paint` workload measures a brush stroke at a fixed 24 ms input pace.
 The harness pairs each `mask_draft_set` with the preview generation returned for that edit and then
@@ -4541,7 +4543,7 @@ The 24 MP drag with `--idle`: after its release had dissolved from the drag's la
 
 ### Windows and Linux
 
-Not run, so neither the fallback nor correctness within the limits is shown on another platform's adapter; a skipped check is not a pass. The repository's Linux path is CI: `.github/workflows/check.yml` runs `cargo xtask check`, `editor-acceptance` and eight renderer smoke scenarios on Ubuntu 24.04 x64 with software Vulkan under Xvfb, on a push, which this qualification does not make, and none of those eight drags on the GPU stage. No local Linux path ran for this qualification; a container on the M4 has since measured the software adapter ([software adapters](#software-adapters)), which is timing, not a correctness check. Windows has no CI and no VM path. The owner chose on 2026-10-02 not to push the branch to run CI.
+That qualification ran only on the M4. Later container software checks and actual hosted results are recorded in [development](../engineering/development.md#ci): prior no-adapter checks pass, lavapipe stops at `large24`, and latest Linux CI fails earlier in an indexed-folder watcher test. Native Windows/Linux GPU acceptance remains unrun; a configured lane is not a passing result. Windows CI is disabled.
 
 ### The performance-rules checklist
 
@@ -4749,7 +4751,7 @@ The same drag stack, `--mode commit`, from the release to the GPU's counts adopt
 | 60 MP JPEG | trivial | 2.62 | under 250; 219 to 323 by the reader | under 250; 223 to 229 by the reader | 15 | 83.9 MB |
 | 60 MP JPEG | heavy | 2.62 | 10,350, 10,165 to 10,469 | 2,156, 2,113 to 2,223 | 240 | 783.2 MB |
 
-- **The GPU export of a heavy stack misses**: at 60 MP 10.2 to 10.5 s against the reference export's 2.1 to 2.2 s, nearly five times slower, in 240 tiles under the tile worker's 1 GiB budget; at 24 MP 0.94 to 0.97 s against 0.76 to 0.81 s, a quarter slower. A trivial export is under a quarter of a second either way.
+- **The GPU export of a heavy stack misses**: at 60 MP 10.2 to 10.5 s against the reference export's 2.1 to 2.2 s, nearly five times slower, in 240 tiles under that build's 1 GiB tile-worker budget (the current budget is 2 GiB);  at 24 MP 0.94 to 0.97 s against 0.76 to 0.81 s, a quarter slower. A trivial export is under a quarter of a second either way.
 - The first runs, at loads of 5.08 and 6.36 with the owner's browser busy, agree: 10.4 to 11.5 s against 2.1 to 2.8 s at 60 MP, and 0.98 to 1.08 s against 1.00 to 1.06 s at 24 MP.
 
 ### The first picture on a cold shader cache
@@ -5238,7 +5240,7 @@ All on the 24 MP JPEG at Fit; the cells are p50 over four runs a side.
 
 ### Outstanding
 
-These are not yet measured:
+These workloads were not measured in the efficiency comparison; later GPU-first measurements cover launch, idle, 60 MP desktop work and masked stacks separately and do not establish the efficiency changes' individual contribution:
 
 - launch and idle (`measure`);
 - the desktop work at 60 MP and under contention;
@@ -5369,7 +5371,7 @@ Correctness checks use deterministic fixtures across all EXIF orientations, grad
 
 ## Module activation
 
-Logical boundaries and user enablement do not by themselves reduce memory or launch time. After the first external use case is selected, compare the built-in baseline with an activation prototype on the M4: minimal and default configurations, disabled and enabled-but-unused modules, first use, cold and warm launch, RSS, CPU/GPU allocations, idle work and first-use latency, with packaging size reported separately. Disabled modules must start no workers and allocate no processor resources. Reject any optimization that changes output or skips a recipe effect. If the benefit is immaterial, keep the simpler built-in implementation; the external-loader requirement remains regardless.
+Logical boundaries and user enablement do not by themselves reduce memory or launch time. After the first external use case is selected, compare the built-in baseline with an activation prototype on the M4: minimal and default configurations, disabled and enabled-but-unused modules, first use, cold and warm launch, RSS, CPU/GPU allocations, idle work and first-use latency, shader compilation and warm-up on both GPU devices, with packaging size reported separately. Processing-module outputs must retain exact CPU reference fixtures and pass required corpus qualification within the declared GPU tolerance. Disabled modules must start no workers and allocate no processor resources. Reject any optimization that changes output or skips a recipe effect. If the benefit is immaterial, keep the simpler built-in implementation; the external-loader requirement remains regardless.
 
 ## Growth rules
 

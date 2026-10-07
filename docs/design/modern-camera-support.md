@@ -276,18 +276,22 @@ missing or singular XYZ-to-camera calibration before publishing the source.
 
 ## Work and acceptance
 
-Luna agents research disjoint model groups and prepare evidence-backed candidate
-records. Root owns shared decoder/profile changes, selection integration and
-verification. A profile can be marked enabled only with its required processing
-implemented and authentic decode/development evidence. Track concrete blocked
-modes and missing fixtures; distinguish implementation from broad image-quality
-qualification.
+Candidate records require source-grounded mode selectors and capability choices,
+with reproducible authentic evidence. A profile can be enabled only with its
+required processing implemented and authentic decode/development evidence.
+Track concrete blocked modes and missing fixtures; distinguish implementation
+from broad image-quality qualification.
 
-The finished catalog has 100 distinct selected model identities, source-grounded
-mode rules and capability choices, reproducible qualification evidence, current
-support documentation, and passing quick/rendered/timing checks. Full verification
-is required before claiming the broad support checkpoint. Existing three-camera
-metadata, corrections, source preservation and history remain regressions.
+The catalog's 259 identities and 316 recording modes are delivered; qualification
+applies to the sampled encodings, not every setting of those cameras. Controlled
+colour/detail, unsampled modes and native Windows/Linux editor evidence remain
+outstanding. Nikon High Efficiency and High Efficiency★ remain refused until
+upstream support is pinned and qualified. Sony A7 V Compressed HQ (8846) and
+lossless compressed (8845) are delivered; other compression and crop settings
+need their own decoder and authentic qualification. Existing metadata,
+corrections, source preservation and history remain regressions. New coverage
+requires quick and rendered checks; feature completion carries the scoped timing
+and full verification before a broader support claim.
 
 ## Coverage and resource scope
 

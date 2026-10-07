@@ -3,7 +3,7 @@
   "plan_id": "product-decisions",
   "title": "Open product decisions",
   "objective": "Resolve the product questions that gate later roadmap phases, recording each answer in docs/decisions.md and the affected specification.",
-  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks are the open questions: storage/backup workflow, the first external module use case, accepted performance workloads and budgets, the Presence, colour mixer and vignette defaults, the GPU-first rendering questions left open by the owner's decisions of 2026-10-04 to 2026-10-06, the UI themes questions left as recorded defaults by the owner's decisions of 2026-10-05, and whether the Lightroom import and Lightroom alignment plans are authorized.",
+  "context_summary": "Accepted decisions live in docs/decisions.md. These tasks cover storage and backup, the first external module use case, performance workloads and provisional budgets, Presence/mixer/vignette defaults, reconciliation of the owner's GPU decisions with remaining implementation and qualification, UI themes defaults, and Lightroom implementation authorization. The catalog, presets and Tone curve defaults remain proposals in their designs; no additional decision task is introduced.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -11,7 +11,8 @@
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "Later product research on storage/backup/sidecars and broader photographer workflows. It does not gate the catalog history foundation or agreed manual Locate."
+        "Later product research on storage/backup/sidecars and broader photographer workflows. It does not gate the catalog history foundation or agreed manual Locate.",
+        "The current catalog uses WAL; a consistent backup must account for its live WAL and derived-artifact directory as well as catalog rows. Manual Locate and the delivered missing-original workflow are not a backup or sync strategy."
       ],
       "context_links": [
         {
@@ -64,7 +65,8 @@
       "dependencies": [],
       "extra_context": [
         "External module loading remains required, but the use case, runtime and user-facing lifecycle need a concrete decision.",
-        "The linked tool-module milestone is already selected and does not wait on external packaging or a marketplace."
+        "The linked tool-module milestone is already selected and does not wait on external packaging or a marketplace.",
+        "GPU-first changes the processing-tool host boundary: a new image effect needs a CPU reference unit with exact fixtures and a module-owned WGSL program held within the declared tolerance by gpu-qualification. Without a GPU program the stack uses the named no-program reference fallback, including export; missing or disabled providers must still report affected edits rather than omit them. External GPU loading remains unimplemented and is not implied by the built-in program interface."
       ],
       "context_links": [
         {
@@ -123,7 +125,9 @@
       "extra_context": [
         "Record workload priorities and measured native M4 conditions; proposed performance budgets require evidence and owner acceptance.",
         "Speed and lazy subsection editing within a full catalog are owner priorities. Avoid assuming binary splitting saves memory or latency.",
-        "Already accepted, and not reopened here: the slider-to-presented-frame target of 16 ms p95 with 32 ms acceptable (docs/decisions.md, Basic adjustments and histogram), shared working-memory budgets as targets that pace work rather than limits (Rendering memory), and the owner's 150 ms bound for the hold-`\\` compare that chose the second RAW development (Post-consolidation review)."
+        "Already accepted, and not reopened here: the slider-to-presented-frame target of 16 ms p95 with 32 ms acceptable (docs/decisions.md, Basic adjustments and histogram), shared working-memory budgets as targets that pace work rather than limits (Rendering memory), and the owner's 150 ms bound for the hold-`\\` compare that chose the second RAW development (Post-consolidation review).",
+        "Already decided: the 2 GiB GPU-preview budget and up to sixteen masked spatial layers (2026-10-03), and the tile worker's separate 2 GiB budget (2026-10-06). These application charges are not a total-memory guarantee; full-photo slots share a 1 GiB ceiling and native staging/device overhead remain unqualified. The settled-histogram workload now measures GPU counts over full-resolution tiles, held within the decided histogram tolerance of the reference.",
+        "The M4 throughput measurement of 2026-10-07 records slider, histogram, burst, memory and idle targets passing; launch (2.07 to 2.11 s) and uncached 24 MP open (1.21 to 1.25 s) miss provisional targets, about 0.45 s of each attributable to the host on both compared builds. Paint at 100% and trivial GPU export remain measured misses. The owner's 2026-10-07 attribution choice uses resources.read and the Performance section; it authorizes no new total-memory claim or unsupported performance result."
       ],
       "context_links": [
         {
@@ -182,9 +186,10 @@
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "The design records a default for every proposal so the plan can run without further input: Presence as the section name for Texture, Clarity and Dehaze; colour before spatial before geometry before finish with the mixer after Basic; three property groups for the mixer; one luminance-neutral vignette style; full-resolution drafts for spatial sliders with misses reported; the declared point-sample cost through a spatial layer.",
+        "Remaining recorded defaults: Presence as the section name for Texture, Clarity and Dehaze; colour before spatial before geometry before finish with the mixer after Basic; three property groups for the mixer; one luminance-neutral vignette style. These remain proposals after the owner's 2026-10-07 review.",
         "Implementation was authorized on 2026-09-22 on the recorded defaults. A proposal is not a decision until the owner records it; until then the delivered behaviour follows the default and the design keeps calling it a proposal.",
-        "JPEG spatial precision was decided on 2026-09-30: 16-bit encoded hand-off between spatial frames and the next colour run or spatial unit, delivered with Detail (docs/design/presence-mixer-vignette.md)."
+        "JPEG spatial precision was decided on 2026-09-30: 16-bit encoded hand-off between spatial frames and the next colour run or spatial unit, delivered with Detail (docs/design/presence-mixer-vignette.md).",
+        "The old full-resolution CPU spatial-draft and O(halo² × layers) point-sample proposals are superseded by GPU-first: spatial drags use the GPU at every zoom, with display-sized CPU proxy drags only without a usable GPU; every desktop pixel read uses a GPU tile or named reference fallback. A three-segment Air 2S sample measures 85.4 / 91.7 ms p50 / p95 warm. These renderer paths are decided, not remaining Presence product choices."
       ],
       "context_links": [
         {
@@ -220,18 +225,16 @@
     },
     {
       "id": "TASK-005",
-      "description": "Decide the remaining GPU-first questions: the tolerance per output kind once measured, what a drag's frame is held to below 100% and past the budget at 100%, the export device policy, the counts' cadence during motion, and the owner-task hop.",
+      "description": "Reconcile the accepted GPU-first and GPU-preview defaults with outstanding neutral-picker renderer provenance and explicit qualification of softer budget-reduced motion at 100%, while keeping later GPU optimisation proposals distinct from delivered behaviour.",
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "The owner decided GPU-first rendering on 2026-10-04 (docs/decisions.md, GPU-first rendering): the GPU is the renderer of record and correctness is a declared tolerance against the CPU reference. The design records a default for each remaining question so the plan can run; each is a proposal until recorded here.",
-        "Owner tasks moved to the runtime's blocking pool on 2026-10-04 because iced 0.14 otherwise ran them on the update loop, where a wait froze the window; the price is one displayed frame per task answer (about 28 against 20 ms p50 from a slider release to its committed frame when measured in 2026-09). The alternative is a hop-free path for microsecond requests, with its own measurement.",
-        "The release gate's first run (2026-10-04, docs/specs/performance.md, GPU qualification against the reference) measured the picture: at 100% every corpus cell is within its limit against the reference; at Fit, 33% and 50% the frame a drag draws, which processes a source reduced to the view's size as the CPU proxy does, passes the limit on 475 of 744 cells, while a process-first frame (the stack at full resolution in tiles, reduced to the view's size) is within every limit on all 744. Recorded default the plan runs on since 2026-10-05, a proposal: the picture at rest at Fit and below 100% is process-first and held to the reference; a drag's frame is held to the at-rest frame it settles to by the existing limit, with its difference from the reference reported beside it, not gated. The alternatives, each the owner's: hold drags to the reference (no reduced-source frame meets it), other limits below 100%, or a reduced-source picture at rest with a widened at-rest tolerance.",
-        "Measured 2026-10-05 for stage 3 (docs/specs/performance.md, The per-frame light's reduction factor): no Dehaze light from a stage reduced by 16, 8, 4 or 2 per side meets the spatial limits on every corpus cell (a factor of 2 misses 4 of 231 at −3 EV with Whites and Blacks −100 under Dehaze −100), a full-resolution light passes all 231, and a prefix holding Detail needs Detail's exact output. Recorded default the plan runs on (docs/design/gpu-first.md, Proposals with recorded defaults): the at-rest light reduced from the exact full-resolution prefix; in motion the at-rest light where the drag leaves its input unchanged, a per-tick full-resolution light on the GPU where it changes, and for a colour drag between Detail and Presence a per-tick light with Detail left out, which misses 5 sharpen-stress cells under Dehaze −100 in motion. Question for the owner: accept those 5 recorded misses in motion, pay a per-tick Detail pass for that drag, a coarser light with its misses, or a stack-class fallback.",
-        "Reopened 2026-10-05 once the picture at rest became process-first (stage 2): the drag's frame, processed over a source reduced to the view's size for speed, misses the existing limit against the GPU picture it now settles to on the same cells it misses the reference on (65 of 120 view cells on a first selection at Fit, 33% and 50%; none at 100%, where motion is the at-rest frame), so no reduced-source drag frame can be held to its settle target below 100%. Default the plan runs on: the at-rest picture is gated against the reference; the picture in motion is reported, not gated, with its jump to the at-rest frame and its distance from the reference beside each cell, and the owner can gate either reading on demand. The owner's question: accept the settle jump (softened by the 150 ms dissolve), draw process-first drag frames where the GPU can within a frame budget and reduced-source ones otherwise, or draw a reduced-source picture at rest with a widened at-rest tolerance.",
-        "Decided 2026-10-05 (docs/decisions.md, GPU-first rendering): the histogram is held to the reference by the earth mover's distance, at most 0.25 code per channel and luminance, with each clipping count within 0.1% of the output pixel count, after the summed bin difference failed 89 of 250 corpus stacks whose histograms moved by at most 0.13 code; and the stand-in light behind Detail or an earlier Presence layer stands for now, revisited if the final measurement or real photographs show a visible difference. The other questions here remain open.",
-        "Decided 2026-10-05 for stage 5 (docs/decisions.md, GPU-first rendering): the raw-panel gates on GPU frames by the picture's limits, the gpu_preview preference retired, and the CPU estimate and reduced-grid stores with budgets.reduced_planes deleted. A drag the GPU refuses gets a GPU path for RAW white balance, geometry-only stacks and 100% past the budget, then holds its frame for a passing reason and otherwise renders one reference frame per tick, latest wins.",
-        "Decided 2026-10-06 (docs/decisions.md, GPU-first rendering): a machine without a usable GPU gets the reference renderer and keeps the CPU display-sized proxy for drags; the software adapter is built behind --software-adapter and off by default, since lavapipe misses the drag thresholds. The interactive-preview quality question this plan carried separately is folded in here: the GPU's own approximations are the drag frame below 100% and the softer reduced-stage frame of a 100% drag past the budget."
+        "Owner, 2026-10-07: current picture, sample and export class tolerances are accepted. Samples use the class statistics with no block statistic over scattered points, and equal the at-rest screen byte at 100%. Fast reduced-source motion below 100% reports differences against rest and reference; the at-rest gate remains strict. Softer budget-reduced motion at 100% is accepted subject to explicit qualification, which is not supplied by this decision.",
+        "The full gate of 2026-10-06 (55c42f38) measures 261 stacks and 1,044 at-rest cells within their limits; motion below 100% misses on 462 of 783 cells. That evidence measures the view plans named there, not every budget-reduced 100% stack/view. Neither this review nor product acceptance is new native qualification evidence.",
+        "Owner, 2026-10-07: the current displayed/updating counts cadence, GPU export with explicit reference option, reference fallback and whole-export restart, and owner work on the blocking pool are accepted. Current release-compilation behaviour, first-photograph warm-up, at-most-four per-pixel replays, and the host renderer for existing stored picks are accepted. The RAW sensor neutral picker actually reads a bounded 13×13 (169-site) patch on the owner thread; the owner accepted retaining that existing bounded read on 2026-10-07.",
+        "Owner, 2026-10-07: neutral-picker answers must name their renderer. The sample and mask-input answers already do; the neutral-picker answer does not. This is outstanding additive API work, not a delivered or verified behaviour.",
+        "Owner, 2026-10-07: the 150 ms linear-light dissolve, status-bar render timing with lasting fallback/reference notices and no canvas badge, shrinking scratch pool and current qualified mixed precision are accepted. Region padding, strip-ring evaluation, mask-bounded growth, per-link plane sizes and one-channel Detail remain unimplemented optimisation proposals with their own evidence requirements.",
+        "Already decided and not reopened: histogram/clipping tolerance; reference fallback with CPU-proxy drags without a usable GPU; software adapter not adopted; separate 2 GiB tile-worker budget; warm open's first GPU picture; exact light behind spatial layers at rest/export and the recorded motion stand-in. The owner keeps the current portability dependency and recommends small lavapipe functional journeys omitting large24/large60 and running all retained scenarios before failing the lane. This review changes no CI code and claims no passing hosted lane."
       ],
       "context_links": [
         {
@@ -246,19 +249,26 @@
           "label": "Performance rules",
           "target": "docs/engineering/performance-rules.md",
           "locator": "Known remaining costs",
-          "relevance": "The owner-task hop row recorded as a proposal."
+          "relevance": "Current budgets, motion costs, source upload, warm-up and evidence limits."
         },
         {
           "kind": "file",
           "label": "Owner decisions",
           "target": "docs/decisions.md",
-          "locator": "GPU-first rendering",
-          "relevance": "The decision and where the remaining answers are recorded."
+          "locator": "Open product questions",
+          "relevance": "The dated review answers and genuinely remaining questions."
+        },
+        {
+          "kind": "file",
+          "label": "GPU-preview defaults",
+          "target": "docs/design/gpu-preview.md",
+          "locator": "Proposals with recorded defaults",
+          "relevance": "Accepted interaction, scratch and precision defaults; later optimisation proposals remain distinct."
         }
       ],
       "acceptance_criteria": [
         "Each question is accepted as its default, changed with the design updated to match, or explicitly left as a recorded default the plan runs on.",
-        "The decisions document records each outcome; the known-costs row for the owner-task hop no longer reads as a proposal."
+        "The decisions document records each owner outcome; designs distinguish accepted behaviour, remaining implementation and missing qualification without treating acceptance as a pass."
       ],
       "test_strategy": {
         "approach": "manual",
@@ -279,7 +289,7 @@
       "dependencies": [],
       "extra_context": [
         "The owner decided on 2026-10-05 (docs/decisions.md, UI themes) that themes, light ones included, replace dark only; that the surround stays neutral; that each theme keeps its own accent; and that a few popular Omarchy themes are bundled. Themes are implemented on the design's default for each remaining question, and each is a proposal until it is recorded here.",
-        "The recorded defaults: Tokyo Night, Catppuccin, Catppuccin Latte, Gruvbox, Nord and Everforest bundled; floors of 7:1 for primary text, 4.5:1 for labels and secondary text, and 3:1 for tertiary text, the accent and the error ink, with an imported theme's own text or accent moved to its floor and reported (6 of Omarchy's 22 built-in themes); Omarchy 4 and 3 palettes, light.mode and alacritty.toml read; a fourth canvas background choice, Theme, as its default, with Dark, Black and Grey kept as fixed greys; a Settings › Appearance tab for the theme list, the canvas background and interface size staying General rows; following Omarchy's current theme and the system appearance left for later."
+        "The recorded defaults: Tokyo Night, Catppuccin, Catppuccin Latte, Gruvbox, Nord and Everforest bundled; floors of 7:1 for primary text, 4.5:1 for labels, secondary text and accent ink, and 3:1 for tertiary text, the accent and the error ink, with an imported theme's own text or accent moved to its floor and reported (6 of Omarchy's 22 built-in themes); Omarchy 4 and 3 palettes, light.mode and alacritty.toml read; a fourth canvas background choice, Theme, as its default, with Dark, Black and Grey kept as fixed greys; a Settings › Appearance tab for the theme list, the canvas background and interface size staying General rows; following Omarchy's current theme and the system appearance left for later."
       ],
       "context_links": [
         {
@@ -319,15 +329,16 @@
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "Decided on 2026-10-06 and recorded in docs/decisions.md under Lightroom alignment and in AGENTS.md's seventh pillar: sliders follow Lightroom's responses (level B) for every supported setting, targeted algorithm changes (level C) past the A8 threshold, order by editing area, generated XMP with a manual round-trip, rendered outputs compared only, with no reverse engineering or Adobe code, the base rendering subtracted, earlier recipes refused, local validation with consent each run."
+        "Decided on 2026-10-06 and recorded in docs/decisions.md under Lightroom alignment and in AGENTS.md's seventh pillar: sliders follow Lightroom's responses (level B) for every supported setting, targeted algorithm changes (level C) past the A8 threshold, order by editing area, generated XMP with a manual round-trip, rendered outputs compared only, with no reverse engineering or Adobe code, the base rendering subtracted, earlier recipes refused, local validation with consent each run.",
+        "Owner, 2026-10-07: Lightroom supplies grid first tiles only, never a Develop large tile; an import is not undoable as a group. Calibrated RAW preset white-balance conversion belongs to alignment. The prohibition on Adobe-derived code and tables applies to new alignment work; the existing RAW importer isotemperature table gets a separate review. These scope answers do not authorize implementation of either plan."
       ],
       "context_links": [
         {
           "kind": "file",
           "label": "Lightroom alignment design",
           "target": "docs/design/lightroom-alignment.md",
-          "locator": "Proposals",
-          "relevance": "The questions and their recommendations."
+          "locator": "Decided",
+          "relevance": "Accepted alignment scope and mappings; implementation authorization remains separate."
         },
         {
           "kind": "file",
@@ -350,8 +361,8 @@
       "test_strategy": {
         "approach": "manual",
         "steps": [
-          "Review the design's Proposals table with the owner.",
-          "Record the outcomes in the decisions document and adjust the design where a recommendation changed."
+          "Review the decided design scope and implementation prerequisites with the owner.",
+          "Record implementation authorisation separately from accepted design choices and adjust the design where the owner changes scope."
         ],
         "commands": [],
         "expected_results": [

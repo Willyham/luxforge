@@ -1,6 +1,6 @@
 # Shared editing as a future extension
 
-Status: future extension possibility. The owner supports exploring the host-led direction described here. This is a design plan, with no task breakdown, implementation authorization or scheduled milestone. Detailed interaction and protocol choices remain proposals. Current editor priorities continue to be RAW qualification, export, Locate, MCP and full-editor verification.
+Status: future extension possibility. The owner supports exploring the host-led direction described here. This is a design plan, with no task breakdown, implementation authorization or scheduled milestone. Detailed interaction and protocol choices remain proposals. JPEG export and Locate are delivered; MCP, full-editor verification and documented RAW qualification gaps remain outstanding.
 
 ## Purpose and product value
 
@@ -77,7 +77,7 @@ Shared gesture previews need a new explicit channel because current drafts are p
 
 Every delivered frame should identify its asset, source fingerprint, recipe/snapshot, relevant draft and render generation. An older frame must not replace a newer one or be labelled as committed when it represents a draft. Participant view state, presence and draft updates should not inflate persistent edit history.
 
-Host rendering offers a common pixel source. Preview resolution, compression and network latency remain explicit quality limits, and different displays still need their own colour handling. If independent rendering on another desktop is later selected, matching original bytes, module implementations, processing parameters and profiles becomes part of the session contract. Equal recipe JSON alone is not proof of equal pixels. Unsupported providers or shapes must fail explicitly under the current-shapes policy.
+Host rendering offers a common pixel source. Preview resolution, compression and network latency remain explicit quality limits, and different displays still need their own colour handling. If independent rendering on another desktop is later selected, matching original bytes, module implementations, processing parameters and profiles becomes part of the session contract. Equal recipe JSON alone is not proof of equal pixels. Independent GPU rendering must agree with the whole-frame CPU reference within the declared tolerance; only the reference is held to exact-buffer fixtures. Unsupported providers or shapes must fail explicitly under the current-shapes policy.
 
 ## Undo, restore and alternative proposals
 

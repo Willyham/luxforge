@@ -82,10 +82,10 @@
         "TASK-001"
       ],
       "extra_context": [
-        "Blocked: the owner deferred the dist profile on 2026-10-03 until the timing runs other feature plans have outstanding are recorded. Those runs, and every baseline docs/specs/performance.md records, build release, and a dist figure is never compared with a release one. It stays blocked until the owner reopens it; this plan's measurement task does not wait for it.",
-        "The root Cargo.toml has no [profile.release], so release is lto = false and codegen-units = 16. Release is the daily develop, smoke, quick and rendered build, so slowing it would slow the edit loop.",
+        "Blocked: the owner deferred the dist profile on 2026-10-03 until the timing runs other feature plans have outstanding are recorded. Those runs, and every baseline docs/specs/performance.md records, build release, and a dist figure is never compared with a release one. It stays blocked until the owner reopens it; this plan's measurement task does not wait for it. The condition is not met: catalog-measure and GPU resource accounting remain unrecorded, and the planned RAW looks, Corrections and AI editing work retains its final qualification and timing runs. GPU-first latencies are recorded on the M4, but native Windows and Linux evidence is absent.",
+        "The root Cargo.toml has no [profile.release], so release is lto = false and codegen-units = 16. Release is the daily develop and smoke build and the rendered tier's editor build; quick uses development-profile checks, so slowing it would slow the edit loop.",
         "Add [profile.dist] with inherits = \"release\", codegen-units = 1 and lto set to \"thin\" or \"fat\". Build both once on the M4, run editor-performance on the 24 MP JPEG for each back to back, and keep the faster unless its build time makes the timing tier unreasonable; record build times and the choice in the design.",
-        "Switch `cargo xtask package` and the timing commands (editor-performance, editor-latency, measure, detail-performance, detail-grid-performance, editor-performance --lens-only and the `timing` tier's builds) to `--profile dist`, including the binary paths they resolve (target/dist/...). develop, smoke, quick and rendered keep release. Do not set panic = \"abort\": mozjpeg unwinds libjpeg errors into Rust.",
+        "Switch `cargo xtask package` and the timing commands (editor-performance, editor-latency, measure, detail-performance, detail-grid-performance, editor-performance --lens-only and the `timing` tier's builds) to `--profile dist`, including the binary paths they resolve (target/dist/...). develop and smoke keep release, rendered keeps its release editor, and quick keeps development-profile checks. Do not set panic = \"abort\": mozjpeg unwinds libjpeg errors into Rust.",
         "Timing reports already record their profile; make sure they say `dist`, and never compare a dist figure with a release baseline. Update docs/engineering/development.md's command tables and the timing-tier description."
       ],
       "context_links": [
@@ -118,7 +118,7 @@
       ],
       "acceptance_criteria": [
         "`cargo build --profile dist` builds every shipped binary; package and timing commands use it and their reports record the profile.",
-        "develop, smoke, quick and rendered still build release, with unchanged build time.",
+        "develop and smoke still build release, rendered still builds its editor in release, and quick still runs development-profile checks, with unchanged build time.",
         "The thin-versus-fat choice, both build times and the 24 MP comparison are recorded in the design with host and load."
       ],
       "test_strategy": {

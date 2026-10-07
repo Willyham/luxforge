@@ -8,7 +8,7 @@ Most photographers who would try Luxforge have years of work in Lightroom Classi
 
 ## What already exists
 
-- **The settings mapping.** [Preset import](presets.md#import) already parses Lightroom Classic XMP (including a photo's own sidecar) and legacy `.lrtemplate` files, and owns one [mapping table](presets.md#mapping) from Camera Raw settings to Luxforge actions: Basic, the Tone curve, Presence, the colour mixer, the vignette and RAW white balance, with every other setting reported as neutral, unsupported or refused, and the file's text kept. The `.lrtemplate` reader (`crates/luxforge-core/src/presets/lrtemplate.rs`) reads the Lua table subset Lightroom also uses for the develop settings it stores in its catalog.
+- **The settings mapping.** [Preset import](presets.md#import) already parses Lightroom Classic XMP (including a photo's own sidecar) and legacy `.lrtemplate` files, and owns one [mapping table](presets.md#mapping) from Camera Raw settings to Luxforge actions: Basic, the Tone curve, Presence, the colour mixer, the vignette and RAW white balance, with Detail sharpening/noise reduction and manual perspective still unsupported despite their delivered modules, and every other setting reported as neutral, unsupported or refused, and the file's text kept. The `.lrtemplate` reader (`crates/luxforge-core/src/presets/lrtemplate.rs`) reads the Lua table subset Lightroom also uses for the develop settings it stores in its catalog.
 - **Places for what is imported.** The [catalog](catalog.md): developed photographs with fingerprints, catalog folders, collections and collection groups, library changes with undo, missing originals and Locate. [Versions](versions-and-lineage.md): named references to retained history entries. Crop and orientation, [lens and perspective](lens-and-perspective.md), [masks](masking.md) (linear, radial, brush, luminance and colour range) and the [RAW looks](raw-looks.md).
 - **The research.** Lightroom's [storage and sidecars](../research/lightroom/storage-and-history.md) and the [levels of XMP interoperability](../research/lightroom/sdk-and-interoperability.md#xmp-interoperability-has-several-levels).
 
@@ -65,7 +65,7 @@ Each Lightroom photograph in scope ([L1](#decided)) becomes a catalog photograph
 
 ### The edit
 
-Each photograph's Lightroom settings become **one history entry**, `Imported from Lightroom`, by the `system` actor after the Original, built as a composite of each module's own actions (as [apply-preset](presets.md#composite-actions) is), so every value passes the module's own validation. Undo returns to the Original.
+Each photograph's Lightroom settings become **one history entry**, `Imported from Lightroom`, by the `system` actor after the Original, built transactionally from each module's own actions, so every value passes the module's own validation. It shares [composite planning](presets.md#composite-actions) invariants, but `apply-preset` accepts only presettable field patches and at most 16 steps: the importer must support its bounded per-photo actions without relaxing public preset eligibility. Undo returns to the Original.
 
 | Lightroom | Luxforge | Notes |
 | --- | --- | --- |
@@ -79,7 +79,7 @@ Each photograph's Lightroom settings become **one history entry**, `Imported fro
 | Other profiles, monochrome, colour grading, grain, calibration, B&W mix, defringe, spot removal, red eye | Unsupported, reported | Spot removal maps to Clone and Heal once [Corrections](corrections.md) exists |
 | Local corrections | [Masks](#masks) | Phase 2 |
 
-The importer applies the alignment proposal's calibrated value conversions where they exist and the preset table's value transfer where they do not; each row of the report says which.
+The importer applies the alignment's calibrated value conversions where they exist and the preset table's existing rules where they do not, including the uncalibrated RAW white-coordinate conversion; each row of the report says which. Calibrated RAW Kelvin/tint preset import is included in the alignment's RAW white-balance round (owner, 2026-10-07). An imported head has moved beyond Original, so first preparation does not append an automatic lens entry; the importer explicitly maps the Lightroom lens switch.
 
 ### Masks
 
@@ -113,7 +113,11 @@ A mask some of whose adjustments are unsupported keeps the rest. A mask with no 
 - **Keywords** are kept in the import record and not shown ([L3](#decided)).
 - **Virtual copies and snapshots** become named versions on the photograph, each its own entry branched from the Original, named by the copy's or snapshot's name; the master's edit is the current entry ([L5](#decided)).
 
-All of the organization is **one library change** ("Imported 1,240 photographs from Lightroom"), undone and redone by the journal as a Develop is. Each photograph's edit is its own history entry, as a batch preset's is.
+Organization is journalled in explicit bounded parts, as Develop commits its prepared batches, under `MAX_LIBRARY_BATCH` (50,000 library items, not photographs). Each completed photograph, its entry and import provenance are committed atomically, with retries naming the parts already applied and cancellation keeping finished photographs. Each photograph's edit is its own history entry.
+
+**There is no import undo** (owner, 2026-10-07). The current library-undo and Send back guards remain: entries beyond Original, named versions or collection memberships prevent sending a photograph back. Remove follows the existing [catalog removal rule](catalog.md#removing). Undo of a photograph's imported edit remains ordinary history navigation, without undoing its import or organization.
+
+`version.create` names an existing retained entry and changes no head; it does not create the entry. The importer must append validated entries branched from Original for virtual copies, snapshots and linked Lightroom edits, then name them, preserving the master's current entry or an existing photograph's head. It uses the shared immutable entry and version invariants.
 
 ## The report
 
@@ -125,9 +129,9 @@ In Develop, a partial photograph's `Imported from Lightroom` row has a **Partial
 
 ## Lightroom's previews
 
-Lightroom keeps a JPEG preview of each photograph in `<catalog> Previews.lrdata`, indexed by `previews.db`. The importer reads the largest preview of each photograph it imports and writes it as that photograph's **grid and large tiers**, fitted within each tier and upright, as a [camera preview](catalog.md#rendered-previews) is written: a row of the imported entry with origin `lightroom`. So a catalog of a thousand imported photographs is browsable in Select and the filmstrip at once, before Luxforge has rendered any of them ([L7](#decided)).
+Lightroom keeps a JPEG preview of each photograph in `<catalog> Previews.lrdata`, indexed by `previews.db`. The importer reads the largest preview of each photograph it imports and writes only that photograph's **grid tier**, fitted within 512 px and upright, as a [camera preview](catalog.md#rendered-previews) is written: a row of the imported current entry with the planned origin `lightroom`. This origin and its cache key are new shapes to add, not existing API values. A photograph linked to one already in the catalog receives its Lightroom edit as a named version and gets no Lightroom preview row; its current head and previews stay authoritative. So a catalog of a thousand imported photographs is browsable in Select and the filmstrip at once, before Luxforge has rendered any of them ([L7](#decided)).
 
-It is a fallback, under the rule every camera preview follows. Luxforge's render of the entry replaces it, as visible and look-ahead requests render photographs, and once a tier has been rendered the Lightroom row is never written again. The grid reports such a photograph `thumbnail`, not `ready`, and the tile's origin says it is Lightroom's preview. It is never shown in Develop or in Compare. A preview older than the photograph's last Lightroom edit, where the preview cache records enough to tell, is not used; the camera preview takes its place. Like every tier it lives in the index, a cache: deleting the index loses it, and the photograph is rendered instead.
+It is a fallback, under the rule every camera preview follows. Luxforge's grid render of the entry, through the owner's tile service (the desktop GPU tile worker or the reference fallback), replaces it and records `drawn_by` and any reference reason, as visible and look-ahead requests render photographs, and once a tier has been rendered the Lightroom row is never written again. The grid reports such a photograph `thumbnail`, not `ready`, and the tile's origin says it is Lightroom's preview. The grid appears in Select cells and filmstrip cells, never on Develop's canvas or in Compare. The independent 2048 px large tier stays a camera preview until rendered: Select's loupe and Develop's cached-preview canvas read that tier, so a Lightroom grid must not suppress its camera extraction. A preview older than the photograph's last Lightroom edit, where the preview cache records enough to tell, is not used; the camera preview takes its place. Like every tier it lives in the index, a cache: deleting the index loses it, and the photograph is rendered instead. The import job is its only writer: re-runs, later edits, renderer-generation bumps and index rebuilds never reseed it. Generation invalidation applies to rendered rows, not the source-preview row; stale-entry collection still removes it. A camera extraction or render racing the import respects its origin priority, and no Lightroom row replaces a rendered grid.
 
 The same previews, read in place and never copied, are the validation set of the [alignment](lightroom-alignment.md#validation-on-real-edits) design: Lightroom's rendering of the person's own settings, measured locally with their consent.
 
@@ -138,7 +142,7 @@ The same previews, read in place and never copied, are the validation set of the
 
 ## API
 
-Every step is a command, as the desktop's are:
+Every step has a planned command through the shared service, as the desktop's will; these methods are not implemented yet:
 
 | Method | Does |
 | --- | --- |
@@ -172,22 +176,22 @@ The importer reads files the person owns, for interoperability, with Luxforge's 
 ## Phases
 
 1. **Library and global edits.** `lightroom.inspect` and `lightroom.import` for catalogs and sidecar folders: photographs, picks, catalog folders by event, collections, ratings and labels as collections, virtual copies and snapshots as versions, the global settings through the existing mapping, crop and orientation, lens on, the look, the report, the stored source text and `lightroom.remap`, and Lightroom's previews as the imported photographs' first tiles.
-2. **Local corrections and reference.** Linear, radial, brush and range masks with their local adjustments; Camera Matching profiles to Match camera once it exists.
-3. **Follow-on tools.** Spot removal to Clone and Heal, AI masks recomputed through Select, Detail and perspective once aligned, each landing with the tool it needs, and reached by existing imports through `lightroom.remap`.
+2. **Local corrections.** Linear, radial, brush and range masks with their supported local adjustments.
+3. **Follow-on mappings.** Camera Matching profiles to Match camera, spot removal to Clone and Heal and AI masks recomputed through Select as those capabilities land; global and local Detail and manual perspective once alignment measures them. Detail and Lens and perspective are already delivered. Existing imports reach each new mapping through `lightroom.remap`.
 
 ## Verification and acceptance
 
 1. **Originals and Lightroom are untouched.** The catalog file, its previews, sidecars and originals hash the same before and after every import, cancelled and failed imports included.
 2. **Refusals.** A locked catalog, an unsupported catalog version, an earlier process version and a non-catalog file are each refused with their reason and nothing written.
 3. **Mapping.** Every mapping row has a test from a settings table to the expected actions and report rows; every setting in a test catalog appears in its photograph's report exactly once.
-4. **Previews.** A Lightroom preview becomes the imported entry's tiers with origin `lightroom`, is reported `thumbnail`, is replaced by the entry's render and never written after it, and a stale one is not used.
-5. **Catalogs.** A generated catalog with the schema subset, built by a test generator, covers folders, collections, picks, rejects, ratings, virtual copies, snapshots, missing originals, unsupported kinds and duplicates; the import is idempotent, cancellation keeps finished photographs and nothing partial, and undo of the library change returns the catalog to before.
+4. **Previews.** A Lightroom preview becomes only a new photograph's current imported entry's grid with origin `lightroom` and `thumbnail` state, replaced by its rendered grid and never reseeded. Linked photographs get no Lightroom row; a stale preview is not written. Large tiers stay independent, renderer-generation changes affect rendered rows only, and cache races preserve the priority rule. Replacing rendered tiers name their renderer; Develop's canvas, the large-tier loupe and Compare receive no Lightroom row.
+5. **Catalogs.** A generated catalog with the schema subset, built by a test generator, covers folders, collections, picks, rejects, ratings, virtual copies, snapshots, missing originals, unsupported kinds and duplicates; the import is idempotent, cancellation keeps finished photographs and nothing partial, parts respect the library item and preparation bounds, and no import undo is exposed; current removal, Send back and library-undo guards preserve retained edits, versions and collections.
 6. **The owner's catalog.** A private import of the owner's own Lightroom catalog in a background `cargo xtask develop --background` run with an isolated Luxforge catalog: the summary, the partial rate, the time and bytes read, the catalog's growth, and a rendered check of the imported photographs' Lightroom tiles in Select, their replacement by Luxforge's renders, and the photographs in Develop, with correlated state and logs. Not committed.
-7. **No fidelity claim** beyond what the alignment proposal has measured.
+7. **No fidelity claim** beyond what the alignment has measured.
 
 ## Decided
 
-The owner decided every question on 2026-10-06. Eight are the recommendation; L4 and L7 differ from it.
+The owner decided every question on 2026-10-06. Eight are the recommendation; L4 and L7 differ from it. On 2026-10-07 the owner narrowed L7 to the grid tier only and kept the current catalog removal rule with no import undo.
 
 | # | Question | Decided | Not chosen |
 | --- | --- | --- | --- |
@@ -197,7 +201,7 @@ The owner decided every question on 2026-10-06. Eight are the recommendation; L4
 | L4 | Folders | Catalog folders by event, as Develop makes them | Mirroring Lightroom's folder tree (the recommendation); one flat folder |
 | L5 | Virtual copies and snapshots | Named versions on one photograph | Separate photographs, which would need the catalog to stop linking identical bytes to one photograph |
 | L6 | History steps | Not imported; counted in the report | Each step as an entry |
-| L7 | Lightroom's previews | The imported photographs' first tiles in Select and the filmstrip, until Luxforge renders them; never in Compare | Extracted and shown in Compare (the recommendation); kept until the first Luxforge edit; not read |
+| L7 | Lightroom's previews | Only the imported photographs' grid tiles in Select and filmstrip cells, until Luxforge renders them; no Lightroom large tier, Develop canvas or Compare preview | Extracted and shown in Compare (the recommendation); kept until the first Luxforge edit; not read |
 | L8 | Source text and re-mapping | Kept per photograph, with an explicit Re-map | Automatic re-mapping; not kept |
 | L9 | Direction | One-way import; nothing written back | Two-way XMP sync |
 | L10 | Smart collections | Reported, not imported | Translating the criteria Luxforge's queries can express |
