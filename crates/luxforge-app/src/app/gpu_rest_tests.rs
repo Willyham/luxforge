@@ -656,7 +656,8 @@ fn gpu_rest_the_measured_stacks_are_tiled_within_the_rests_share() {
     // On a 60 MP RAW the surface holds 723 MB of source: the share is what the budget leaves
     // beside it, the view plan and the accumulator. Dehaze's light behind Detail needs Detail's
     // output over the whole stage, a stage texture of 963 MB in `f32`, which with a sweep's slot
-    // passes the share: the reference draws that picture at rest, named. Without Dehaze the stack
+    // passes the share: a light sweep computes it with no stage texture, Detail's tiles reduced
+    // into it, and the stack's tiles are drawn chained, within the share. Without Dehaze the stack
     // is one sweep, chained, and its tile's slot fits the share.
     let (width, height) = (9_504, 6_336);
     let rest = luxforge_core::qualification::rest_plan(
@@ -665,9 +666,22 @@ fn gpu_rest_the_measured_stacks_are_tiled_within_the_rests_share() {
     )
     .expect("a rest plan");
     match rest.tiles {
-        Some(Err(luxforge_core::GpuFallback::LightStage { layer, why })) => {
-            eprintln!("the 60 MP RAW drag stack: the reference's at rest, light-stage: {why}");
-            assert_eq!(layer, 2, "Presence's light");
+        Some(Ok(tiles)) => {
+            let share = tiles.share.expect("a share");
+            assert!(tiles.staging.sweeps().is_none(), "no stage texture fits");
+            let [sweep] = &tiles.light_sweeps[..] else {
+                panic!("one light sweep: {:?}", tiles.light_sweeps.len());
+            };
+            eprintln!(
+                "the 60 MP RAW drag stack: a light sweep of Detail in {} tiles of {} px, its slot \
+                 {:.1} MB within the share's {:.1} MB, then {} chained tiles",
+                sweep.tiles.len(),
+                sweep.side,
+                sweep.slot_bytes as f64 / 1e6,
+                share as f64 / 1e6,
+                tiles.tiles.len()
+            );
+            assert!(sweep.slot_bytes <= share && sweep.side % 16 == 0);
         }
         other => panic!("the 60 MP RAW drag stack: {other:?}"),
     }

@@ -2006,7 +2006,9 @@ fn a_measured_export_staged_is_chained() {
 /// the same adapter, whose sweep reduces the same light from its own stage texture, on both
 /// paths. A read through such a light
 /// draws its one tile on the GPU, reading the light the worker's staged sweeps of the stack
-/// computed first and kept: the stream's bytes, its stage textures let go after.
+/// computed first and kept: the stream's bytes, its stage textures let go after. With no stage
+/// texture, a worker drawing the stream chained after light sweeps, and reading through them, draws
+/// the same bytes.
 #[test]
 fn a_staged_stream_reads_the_light_behind_a_spatial_layer_from_its_stage() {
     let test = "a_staged_stream_reads_the_light_behind_a_spatial_layer_from_its_stage";
@@ -2017,7 +2019,7 @@ fn a_staged_stream_reads_the_light_behind_a_spatial_layer_from_its_stage() {
     let window = adapters::open(&backend, &name)
         .unwrap_or_else(|unopened| panic!("{test}: the surface's device: {unopened:?}"));
     let mut surface = HeadlessSurface::new(&window.device, &window.queue);
-    let service = GpuTiles::new(Some((backend, name)), false);
+    let service = GpuTiles::new(Some((backend.clone(), name.clone())), false);
     service.poison(true);
     service.draw_streams_at(vec![STAGED_SIDE]);
     let client = clients(1)[0];
@@ -2135,8 +2137,52 @@ fn a_staged_stream_reads_the_light_behind_a_spatial_layer_from_its_stage() {
                 0,
                 "{what}: the read's sweeps let their stage textures go"
             );
+            // With no stage texture: a worker of its own, which keeps no light, draws the stream
+            // chained after a light sweep that reduces each tile's rectangle into the light, and
+            // its reads likewise: the staged stream's bytes, the light the same bits.
+            let stage_free = GpuTiles::new(Some((backend.clone(), name.clone())), false);
+            stage_free.poison(true);
+            stage_free.draw_streams_at(vec![STAGED_SIDE]);
+            stage_free.chain_streams(true);
+            let (answers, _) = call(&stage_free, client, &stack, &points);
+            for (answer, (_, rect, _)) in answers.iter().zip(&points) {
+                assert_eq!(
+                    answer.answered,
+                    Answered::gpu(),
+                    "{what}: stage-free {rect:?}"
+                );
+                let ReadPixels::Codes(codes) = &answer.pixels else {
+                    panic!("{what}: codes");
+                };
+                let at = ((rect.y0 * width + rect.x0) * 4) as usize;
+                assert_eq!(
+                    codes[0][..3],
+                    rgba[at..at + 3],
+                    "{what}: stage-free {rect:?}"
+                );
+            }
+            let bands = stage_free
+                .stream(&stack, &Cancel::new())
+                .unwrap_or_else(|fallback| panic!("{what}: stage-free: {fallback:?}"));
+            assert_eq!(bands.answered(), &Answered::gpu(), "{what}: stage-free");
+            let free = stitched(bands, STAGED_SIDE);
+            if let Some(difference) = first_difference(width, &free, &rgba) {
+                panic!("{what}: the stage-free stream against the staged one: {difference}");
+            }
+            settle(&stage_free, client);
+            let figures = stage_free.figures();
+            assert_eq!(
+                (
+                    figures.stage_bytes,
+                    figures.in_use,
+                    figures.in_flight,
+                    figures.staged
+                ),
+                (0, 0, 0, 0),
+                "{what}: no stage texture, nothing held once it ends"
+            );
             eprintln!(
-                "{test}: {what}: {} sweeps, bit for bit the surface's staged picture at rest",
+                "{test}: {what}: {} sweeps, bit for bit the surface's staged picture at rest, and so with no stage texture",
                 sweeps.sweeps.len()
             );
         }

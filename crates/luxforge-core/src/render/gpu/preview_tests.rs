@@ -508,7 +508,8 @@ fn lights(preview: &GpuPreview) -> &[crate::GpuLight] {
 /// the same key, with no stand-in to draw; a drag after Dehaze or of Detail reads it too, with its
 /// stand-in for a slot that has none kept; a colour drag between them computes the stand-in over
 /// the source. A Dehaze with no spatial layer before it is over the source and chained, as before.
-/// A stack whose stage textures fit no share is the reference's at rest, named.
+/// Where the stage textures do not fit, a light sweep computes the light with no stage texture; a
+/// stack whose light sweep fits no share either is the reference's at rest, named.
 #[test]
 fn a_light_behind_a_spatial_layer_is_reduced_from_the_stage_its_sweep_reads() {
     let bounds = ProxyBounds {
@@ -601,7 +602,27 @@ fn a_light_behind_a_spatial_layer_is_reduced_from_the_stage_its_sweep_reads() {
     assert_eq!(stage_key(held), key);
     assert!(held.stand_in.is_some());
 
-    // A share no stage texture fits: the reference draws it, never a stand-in.
+    // Where the stage textures do not fit, a light sweep with none: Detail drawn over tiles of the
+    // whole content stage, each reduced into the light, the tiles chained after reading it kept.
+    let free = super::plan_rest_tiles(&rest, bounds, super::RestSizing::StageFree(64))
+        .unwrap()
+        .expect("tiles")
+        .unwrap();
+    assert!(free.staging.sweeps().is_none());
+    let [sweep] = &free.light_sweeps[..] else {
+        panic!("{:?}", free.light_sweeps);
+    };
+    assert_eq!((sweep.light, sweep.spatial.clone(), sweep.side), (0, 0..1, 64));
+    let area: u64 = sweep.tiles.iter().map(|tile| tile.rect.pixels()).sum();
+    assert_eq!(area, u64::from(WIDTH * HEIGHT), "the whole content stage once");
+    assert!(
+        sweep
+            .tiles
+            .iter()
+            .all(|tile| tile.rect.x0 % 64 == 0 && tile.rect.y0 % 64 == 0)
+    );
+    assert!(free.plan.lights[0].stand_in.is_none(), "no stand-in at rest");
+    // A share no light sweep's tile fits either: the reference draws it, never a stand-in.
     let refused = super::plan_rest_tiles(
         &rest,
         bounds,

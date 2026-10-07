@@ -288,6 +288,7 @@ fn rest_of(tiles: &[GpuPlan]) -> GpuRest {
             down: axis(&coverage(HEIGHT, SIDE)),
         }),
         stages: None,
+        light_sweeps: Arc::from([]),
     }
 }
 

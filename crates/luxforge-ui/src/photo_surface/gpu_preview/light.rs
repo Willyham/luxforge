@@ -1608,14 +1608,6 @@ fn select_and_read(
     link: &LightLink,
     cut_into: &LightTile,
 ) -> Result<[f32; 4], GpuFallback> {
-    let wait = || {
-        device
-            .poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            })
-            .map_err(|_| GpuFallback::DeviceLost)
-    };
     let texture = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("luxforge.gpu_light.read.light"),
         size: wgpu::Extent3d {
@@ -1632,6 +1624,32 @@ fn select_and_read(
             | wgpu::TextureUsages::COPY_SRC,
         view_formats: &[],
     });
+    select_into_and_read(
+        (device, queue),
+        (compiled, support),
+        link,
+        cut_into,
+        &texture,
+    )
+}
+
+/// The selection of `link`'s light from its block plane into `texture`, one `rgba32float` texel
+/// with storage binding, copied out and read back, the device waited for.
+fn select_into_and_read(
+    (device, queue): (&wgpu::Device, &wgpu::Queue),
+    (compiled, support): (&Compiled, &super::Support),
+    link: &LightLink,
+    cut_into: &LightTile,
+    texture: &wgpu::Texture,
+) -> Result<[f32; 4], GpuFallback> {
+    let wait = || {
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .map_err(|_| GpuFallback::DeviceLost)
+    };
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("luxforge.gpu_light.read.readback"),
         size: LIGHT_READBACK,
@@ -1776,16 +1794,6 @@ impl LightReducer {
         })
     }
 
-    /// What it holds, as charged.
-    pub(super) fn bytes(&self) -> u64 {
-        self.link.texture_bytes + self.link.buffer_bytes + self.tile.bytes + spatial::LIGHT_BYTES
-    }
-
-    /// The stage's tiles, `[x0, y0, x1, y1)` row by row, each of which a sweep tile reduces.
-    pub(super) fn tiles(&self) -> Vec<[u32; 4]> {
-        self.link.shape.tiles()
-    }
-
     /// Whether every tile of the stage has been reduced.
     pub(super) fn complete(&self) -> bool {
         self.reduced.iter().all(|reduced| *reduced)
@@ -1860,6 +1868,25 @@ impl LightReducer {
     /// The light texel the selection wrote.
     pub(super) fn light(&self) -> &wgpu::Texture {
         self.light.texture()
+    }
+
+    /// The light selected once every tile is reduced, and read back, `[r, g, b, 1]`: what a tile
+    /// runner keeps. Blocks its caller until the device is done.
+    pub(super) fn read(
+        &self,
+        (device, queue): (&wgpu::Device, &wgpu::Queue),
+        (compiled, support): (&Compiled, &super::Support),
+    ) -> Result<[f32; 4], GpuFallback> {
+        if !self.complete() {
+            return Err(GpuFallback::PipelineFailed);
+        }
+        select_into_and_read(
+            (device, queue),
+            (compiled, support),
+            &self.link,
+            &self.tile,
+            self.light.texture(),
+        )
     }
 }
 
