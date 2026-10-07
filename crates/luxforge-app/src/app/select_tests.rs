@@ -159,7 +159,10 @@ fn the_select_switch_is_refused_by_an_open_draft_and_keeps_each_workspace() {
     let _ = editor.update(Message::Select(SelectMessage::TogglePanel(
         SelectPanel::Info,
     )));
-    let _ = editor.update(Message::Select(SelectMessage::Switch(Shown::Develop)));
+    let _ = editor.update(Message::Key(
+        pressed(Key::Character("d".into()), Modifiers::empty()),
+        Status::Ignored,
+    ));
     assert!(!editor.select_shown());
     assert_eq!(editor.workspace.select, Default::default());
     assert_eq!(
@@ -191,8 +194,53 @@ fn held(key: Key, modifiers: Modifiers, repeat: bool) -> Event {
     })
 }
 
+/// Both title-bar hints switch workspaces before browsing and with or without a selection; neither
+/// shortcut steals a letter from a text field or acts again when held.
+#[test]
+fn workspace_keys_switch_without_developing_the_selection() {
+    for (with_view, active) in [(false, None), (true, None), (true, Some(1))] {
+        let (mut editor, catalog) = if with_view {
+            viewing(
+                summary(20),
+                if active.is_some() { &[(1, 1)] } else { &[] },
+                active,
+            )
+        } else {
+            boot()
+        };
+        let press = |letter: &str, status| {
+            Message::Key(
+                pressed(Key::Character(letter.into()), Modifiers::empty()),
+                status,
+            )
+        };
+        let _ = editor.update(press("g", Status::Ignored));
+        assert!(editor.select_shown());
+        let _ = editor.update(press("d", Status::Captured));
+        assert!(editor.select_shown(), "typing must keep Select shown");
+        let _ = editor.update(Message::Key(
+            held(Key::Character("d".into()), Modifiers::empty(), true),
+            Status::Ignored,
+        ));
+        assert!(editor.select_shown(), "holding must not repeat the action");
+        let _ = editor.update(press("d", Status::Ignored));
+        assert!(!editor.select_shown(), "D returns to Develop");
+        assert!(editor.develop.state.confirm.is_none());
+        assert!(!editor.develop.state.planning);
+        assert!(
+            editor.select.library.is_none(),
+            "D must not pick the active frame"
+        );
+        let _ = editor.update(press("g", Status::Captured));
+        assert!(!editor.select_shown(), "typing must keep Develop shown");
+        let _ = editor.update(press("g", Status::Ignored));
+        assert!(editor.select_shown(), "G returns to Select");
+        finish(editor, catalog);
+    }
+}
+
 /// Select's keys map to its own messages and none of Develop's reaches it; `G` in Develop shows
-/// Select, and `D` in Select develops the active frame.
+/// Select, and `D` in Select returns to Develop.
 #[test]
 fn the_select_keys_are_its_own() {
     let letter = |value: &str| Key::Character(value.into());
@@ -247,11 +295,53 @@ fn the_select_keys_are_its_own() {
             None,
         ),
         (
+            "g in the loupe",
+            pressed(letter("g"), Modifiers::empty()),
+            Status::Ignored,
+            &loupe,
+            Some("Select(Loupe(Close))"),
+        ),
+        (
+            "g in a loupe field",
+            pressed(letter("g"), Modifiers::empty()),
+            Status::Captured,
+            &loupe,
+            None,
+        ),
+        (
+            "g held in the loupe",
+            held(letter("g"), Modifiers::empty(), true),
+            Status::Ignored,
+            &loupe,
+            None,
+        ),
+        (
             "d in Select",
             pressed(letter("d"), Modifiers::empty()),
             Status::Ignored,
             &select,
-            Some("Develop(Key)"),
+            Some("Select(Switch(Develop))"),
+        ),
+        (
+            "d in Develop",
+            pressed(letter("d"), Modifiers::empty()),
+            Status::Ignored,
+            &develop,
+            Some("Select(Switch(Develop))"),
+        ),
+        (
+            "d in the loupe",
+            pressed(letter("d"), Modifiers::empty()),
+            Status::Ignored,
+            &loupe,
+            Some("Select(Switch(Develop))"),
+        ),
+        (
+            "shift d",
+            pressed(letter("D"), Modifiers::SHIFT),
+            Status::Ignored,
+            &select,
+            None,
         ),
         (
             "right",

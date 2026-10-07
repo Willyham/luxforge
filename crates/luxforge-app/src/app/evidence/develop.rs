@@ -33,10 +33,13 @@ impl Editor {
                 task
             }
             DevelopStep::Active => {
-                if !self.select_shown() {
-                    return self.fail_step("Select is not shown");
+                if !self.select_shown() || !self.select.state.over_catalog() {
+                    return self.fail_step("A catalog view in Select is not shown");
                 }
-                let task = self.update(develop(DevelopMessage::Key));
+                let Some(active) = self.session.browse.selection.active else {
+                    return self.fail_step("No catalog photograph is active");
+                };
+                let task = self.update(develop(DevelopMessage::OpenAt(active)));
                 self.await_develop();
                 task
             }

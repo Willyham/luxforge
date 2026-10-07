@@ -9,8 +9,9 @@
 //! desktop first shows it and grouped by Day, the rows of both, and the folder of real images read
 //! and viewed. The editor then opens that catalog with nothing
 //! open. Its frames, in [`plan`] order: Develop with nothing open; `G` showing Select, its events
-//! listed; the event opened from the sources panel (the grouped grid, the Info panel, the status
-//! line); the first cell made active with `→`, then the next, then the selection extended with
+//! listed; `D` returning to Develop before browsing and `G` showing Select again; the event opened
+//! from the sources panel (the grouped grid, the Info panel, the status line); the first cell
+//! made active with `→`, then the next, then the selection extended with
 //! Shift+`→`; the Group chip set to Day; an agent's `pick.set` through a second client, which the
 //! desktop reads through its own event sync and answers by evaluating its view again; the grouping
 //! set back to Day › Camera › Moment, its day headings and moment headers counting their picks; a
@@ -54,9 +55,7 @@ use crate::{
     *,
 };
 use luxforge_core::{ApiRequest, ClientId, OwnerHandle};
-use luxforge_evidence::{
-    self as script, ArrowKey, LibraryKey, SelectMenu, SelectStep, SelectWorkspace,
-};
+use luxforge_evidence::{self as script, ArrowKey, LibraryKey, SelectMenu, SelectStep};
 
 pub const SCENARIO: &str = "select";
 /// What `reproduce.md` says the run does before it launches.
@@ -132,12 +131,16 @@ pub fn plan(
     Plan::new(
         [
             Step::opened("opened"),
+            Step::new("select-empty", script::Step::key("g")),
+            Step::new("develop-empty", script::Step::key("d")),
             Step::new("select", script::Step::key("g")),
             select("event", SelectStep::Source(EVENT.into()))
                 .status(format!("{EVENT_LABEL} \u{b7} {count} in view")),
             select("right", arrow(ArrowKey::Right, false)),
             select("right-again", arrow(ArrowKey::Right, false)),
             select("extended", arrow(ArrowKey::Right, true)),
+            Step::new("develop-active", script::Step::key("d")),
+            Step::new("select-again", script::Step::key("g")),
             select(
                 "grouped",
                 SelectStep::Choose {
@@ -202,10 +205,7 @@ pub fn plan(
         .into_iter()
         // The catalog: browsed and organized (`select_catalog_smoke`).
         .chain(catalog)
-        .chain([select(
-            "develop",
-            SelectStep::Switch(SelectWorkspace::Develop),
-        )])
+        .chain([Step::new("develop", script::Step::key("d"))])
         .collect(),
     )
 }
@@ -856,6 +856,40 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         select(opened)["shown"] == "develop",
         "The editor did not open in Develop",
     )?;
+
+    let empty_select = launch.at("select-empty")?;
+    let empty_develop = launch.at("develop-empty")?;
+    ensure(
+        select(empty_select)["shown"] == "select" && select(empty_develop)["shown"] == "develop",
+        "G and D did not switch workspaces before browsing",
+    )?;
+    checks.note(
+        empty_develop,
+        "G shows Select and D returns to Develop with no browsing view or active frame",
+        json!({"select": select(empty_select), "develop": select(empty_develop)}),
+    );
+
+    let active_develop = launch.at("develop-active")?;
+    let selected = select(launch.at("extended")?);
+    ensure(
+        select(active_develop)["shown"] == "develop",
+        "D did not switch to Develop with an active frame",
+    )?;
+    for key in ["selection", "picked", "library"] {
+        ensure(
+            select(active_develop)[key] == selected[key],
+            format!("D changed Select's {key} instead of only switching workspaces"),
+        )?;
+    }
+    ensure(
+        select(launch.at("select-again")?)["shown"] == "select",
+        "G did not return to Select after D with an active frame",
+    )?;
+    checks.note(
+        active_develop,
+        "D switches to Develop with an active frame without picking or developing it",
+        json!({"selection": selected["selection"], "picked": selected["picked"]}),
+    );
 
     // `G`: Select, its events listed by month.
     let shown = launch.at("select")?;
@@ -1716,7 +1750,7 @@ mod tests {
             catalog,
         );
         plan.validate().unwrap();
-        assert_eq!(plan.len(), 59);
+        assert_eq!(plan.len(), 63);
         assert!(plan.scripted());
     }
 }

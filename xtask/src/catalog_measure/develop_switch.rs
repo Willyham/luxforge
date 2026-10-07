@@ -5,7 +5,7 @@
 //! It generates real JPEGs (`generate-catalog --images 120`), develops `samples + 1` of them into a
 //! catalog of its own with `pick.develop`, and launches the editor in the background over it through
 //! the scenario library ([`Run::tool`], [`Launch`]): `G`, All photographs, the first photograph
-//! clicked and `D`, which opens Develop on it with the view's photographs as the development set;
+//! double-clicked, which opens Develop on it with the view's photographs as the development set;
 //! then, `samples` times, the neighbours' large previews decoded ahead and `→`. Each `→` frame is
 //! captured in the frame after the key and records how many frames the photo surface drew from the
 //! key until the photograph's cached preview was drawn (`develop.timing.presented_after`): one
@@ -33,7 +33,7 @@ const IMAGES: u32 = 120;
 /// The probe's own deadline for its one launch.
 const DEADLINE: Duration = Duration::from_secs(600);
 
-/// The script: Select, All photographs, the first photograph, `D`; then `samples` times the
+/// The script: Select, All photographs, the first photograph double-clicked; then `samples` times the
 /// look-ahead decoded and `→`.
 pub fn plan(samples: usize) -> Plan {
     let develop = |name: String, step: DevelopStep| Step::new(name, script::Step::Develop(step));

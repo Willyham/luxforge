@@ -10,7 +10,7 @@
 //! plan proposes), whose originals are real, so a catalog view has photographs to show. The editor then opens the catalog with nothing open.
 //! Its frames, in [`plan`] order: `G` showing Select; the folder browsed; the burst's first frame
 //! clicked; `E` opening the loupe on it; `→` twice; `1` back to the moment's first frame; `↓` to
-//! the next moment and `↑` back; `Esc` to the grid; the bracket's first frame clicked and `E`;
+//! the next moment and `↑` back; `G` to the grid; the bracket's first frame clicked and `E`;
 //! `→`; `Z`, the 100% focus check at the middle of the frame; `C`, the bracket side by side; `P`,
 //! picking the bracket's frame where it stands; `Esc` back to the grid; the burst's second
 //! frame clicked, `E` and `P`, which picks it and moves on to the next moment's first frame (P7);
@@ -120,7 +120,7 @@ pub fn plan(expected: &Value) -> Result<Plan> {
         key("jump-1", "1"),
         arrow("next-moment", ArrowKey::Down),
         arrow("back-moment", ArrowKey::Up),
-        key("grid", script::KEY_ESCAPE),
+        key("grid", "g"),
         click("bracket", bracket),
         key("bracket-loupe", "e"),
         arrow("bracket-2", ArrowKey::Right),
@@ -673,7 +673,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     let grid = launch.at("grid")?;
     ensure(
         loupe(grid)["open"] == false && select(grid)["selection"]["active"] == burst,
-        "Esc did not return to the grid on the loupe's frame",
+        "G did not return to the grid on the loupe's frame",
     )?;
 
     // The bracket: each frame's picture nearer its own exposure than its siblings'.

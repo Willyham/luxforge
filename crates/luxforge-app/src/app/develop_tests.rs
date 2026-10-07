@@ -721,7 +721,7 @@ fn filmstrip_a_move_is_refused_while_a_draft_is_open() {
     finish(scene);
 }
 
-/// `D` over a catalog view, or a double-click, opens Develop on the photograph with the view's
+/// A double-click over a catalog view opens Develop on the photograph with the view's
 /// photographs as the set, read into it a window of rows at a time: exactly the rows an
 /// independent client reads of the same view.
 #[test]
@@ -854,7 +854,10 @@ fn filmstrip_keys_are_the_keyboard_tables() {
     let d = press(Key::Character("d".into()), Modifiers::empty());
     assert_eq!(
         message(&d, Status::Ignored, &select),
-        develop(DevelopMessage::Key)
+        Some(format!(
+            "{:?}",
+            Message::Select(SelectMessage::Switch(Shown::Develop))
+        ))
     );
     assert_eq!(message(&d, Status::Captured, &select), None);
     let enter = press(Key::Named(Named::Enter), Modifiers::COMMAND);
