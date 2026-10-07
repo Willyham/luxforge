@@ -3,12 +3,12 @@
   "plan_id": "code-structure",
   "title": "Code structure consolidation",
   "objective": "Consolidate repeated GPU contracts/layout rules and execution ownership, remove redundant preparation and preview mechanics, and make current module/preview interfaces coherent while preserving behavior and bounded work.",
-  "context_summary": "The GPU-first refactor is integrated. A structural review identifies one exported provider availability defect, mirrored GPU primitives/layout rules across core/UI/desktop, a reusable executor inside widgets, repeated stream preparation, partial public module APIs, string-based operation identity, loose preview state, repeated grid/loupe mechanisms and small ownership/helper/comment cleanup. Core/UI/CLI/reference boundaries and distinct quality/memory strategies remain. This is a planning-only request: implementation is not authorized, and the proposed pure-contract plus Iced-free backend split requires the boundary decision task. All tasks re-review current main before starting; minimum model is the roadmap high tier. Native qualification and performance claims are deferred to the finished integrated branch, with no cross-plan dependencies or total-memory claim.",
+  "context_summary": "The GPU-first refactor is integrated. A structural review identifies one exported provider availability defect, mirrored GPU primitives/layout rules across core/UI/desktop, a reusable executor inside widgets, repeated stream preparation, partial public module APIs, string-based operation identity, loose preview state, repeated grid/loupe mechanisms and small ownership/helper/comment cleanup. Core/UI/CLI/reference boundaries and distinct quality/memory strategies remain. Implementation is authorized by the owner on 2026-10-07. The proposed pure-contract plus Iced-free backend split still requires explicit approval of TASK-003 before its dependent extraction tasks start. All tasks re-review current main before starting; minimum model is the roadmap high tier. Native qualification and performance claims are deferred to the finished integrated branch, with no cross-plan dependencies or total-memory claim.",
   "tasks": [
     {
       "id": "TASK-001",
       "description": "Make public registered-provider lookups report registry availability consistently.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "R1. Provider carries the override but its inherent descriptor method is crate-private; external method lookup reaches ToolModule through Deref. Internal core checks are correct. Do not infer a shipped disabled-module execution bug.",
@@ -64,7 +64,7 @@
     {
       "id": "TASK-002",
       "description": "Align renderer comments and proof-only boundaries with current GPU-first behavior.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "R12. Remove obsolete gesture-only statements and future-use dead-code expectations. This task changes no rendering algorithm.",
@@ -125,7 +125,7 @@
     {
       "id": "TASK-003",
       "description": "Confirm and freeze the shared GPU contract, layout and backend ownership boundaries.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "R2/R3/R4. Proposed names are luxforge-gpu-contract (pure data/rules) and luxforge-gpu (wgpu executor). They do not exist yet and this task creates no runtime code.",

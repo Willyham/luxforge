@@ -20,6 +20,7 @@ A persistent list of the work that can start now: each plan below has a validate
 
 | Plan | Ready tasks | Notes | Minimum model |
 | --- | --- | --- | --- |
+| [Code structure consolidation](../tasks/project/code-structure.json) ([design](design/code-structure.md)) | TASK-010 operation identity; TASK-011 preview intent; TASK-013 typed preview reads; TASK-015 renderer limits; TASK-016 hidden status | Implementation authorized 2026-10-07; TASK-003 awaits explicit GPU boundary approval; image, budget and scheduling behavior stay current | High tier |
 | [GPU memory accounting](../tasks/rendering/gpu-memory.json) | TASK-001 measure and bound GPU resources outside the photo-texture ceiling | A measurement: run after feature work, on a quiet host | High tier |
 | [RAW looks](../tasks/raw/raw-looks.json) ([design](design/raw-looks.md)) | TASK-006 freeze the camera fit (phase 2) | Phase 1 is built; its TASK-005 waits on the native `look` scenario and the rendered tier | High tier |
 | [Corrections](../tasks/editing/corrections.json) ([design](design/corrections.md)) | TASK-001 freeze the remaining contract; TASK-002 Clone and Heal numerics | Renderer integration targets the merged GPU-first interfaces; the repair-versus-Detail placement is still open | High tier |
@@ -32,17 +33,16 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 
 | Plan | Ready tasks | Notes | Minimum model |
 | --- | --- | --- | --- |
-| [Code structure consolidation](../tasks/project/code-structure.json) ([design](design/code-structure.md)) | TASK-001 provider availability; TASK-002 current comments; TASK-003 GPU boundary decision; TASK-010 operation identity; TASK-011 preview intent; TASK-013 typed preview reads; TASK-015 renderer limits; TASK-016 hidden status | Planning is authorized; implementation is not. GPU extraction follows its boundary decision; image, budget and scheduling behavior stay current | High tier |
 | [Lightroom import](../tasks/lightroom/lightroom-import.json) ([design](design/lightroom-import.md)) | TASK-001 confirm the catalog format against a copy of the owner's catalog | Needs no code; needs the owner's catalog copy | High tier |
 | [Lightroom alignment](../tasks/lightroom/lightroom-alignment.json) ([design](design/lightroom-alignment.md)) | TASK-001 the rig's generator and synthetic targets | Its rounds need the owner to import and export in Lightroom | High tier |
 
 ### In progress
 
-Continue these rather than starting them again: [GPU-first rendering](../tasks/rendering/gpu-first.json) TASK-008, portability without a native GPU, which TASK-010 and 011 wait on. The [Efficiency](../tasks/rendering/efficiency.json) `dist` profile is blocked by the owner's deferral, and the [product decisions](../tasks/project/product-decisions.json) are the owner's to make.
+Continue these rather than starting them again: [Code structure consolidation](../tasks/project/code-structure.json) TASK-001 provider availability, TASK-002 current contracts and TASK-003 GPU boundary proposal (awaiting owner approval); [GPU-first rendering](../tasks/rendering/gpu-first.json) TASK-008, portability without a native GPU, which TASK-010 and 011 wait on. The [Efficiency](../tasks/rendering/efficiency.json) `dist` profile is blocked by the owner's deferral, and the [product decisions](../tasks/project/product-decisions.json) are the owner's to make.
 
 ## Engineering
 
-**Code structure consolidation** ([design](design/code-structure.md), [plan](../tasks/project/code-structure.json)). Planned, awaiting implementation authorization: one shared GPU primitive/layout contract and reusable executor, one preparation per equivalent stream, coherent module/preview types, shared grid/loupe mechanisms and contained ownership cleanup. The GPU crate split is a proposal; native qualification and measurement follow integration.
+**Code structure consolidation** ([design](design/code-structure.md), [plan](../tasks/project/code-structure.json)). Implementation authorized 2026-10-07, in progress: one shared GPU primitive/layout contract and reusable executor, one preparation per equivalent stream, coherent module/preview types, shared grid/loupe mechanisms and contained ownership cleanup. The GPU crate split is a proposal; native qualification and measurement follow integration.
 
 **GPU previews** ([design](design/gpu-preview.md), [qualification](specs/performance.md#gpu-previews-qualified-on-the-m4)). Implemented and qualified on the M4; outstanding:
 - Owner review of the proposed error limits, the 150 ms dissolve and the "GPU preview" label
