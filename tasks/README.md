@@ -83,4 +83,4 @@ RAW editing is implemented with initial native M4 verification. Its [design](../
 
 ## Validation
 
-`cargo xtask check` validates every JSON file in this directory and its area folders against `tools/task-plan.schema.json`: unique plan IDs, contiguous ordered local IDs, dependency status and order, derived waves, and that file links do not point into another task plan. The advisory audit reads the dependency advisories plan to confirm each exception's task remains open.
+`cargo xtask check` validates every JSON file in this directory and its area folders against `tools/task-plan.schema.json`: unique plan IDs, contiguous ordered local IDs, dependency status and order, derived waves, and that file links stay in the repository (no absolute path, no `..` out of it) and do not point into another task plan. The advisory audit reads the dependency advisories plan to confirm each exception's task remains open.
