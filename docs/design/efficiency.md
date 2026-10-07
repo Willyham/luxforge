@@ -6,7 +6,7 @@ Status: done, except the `dist` build profile, which the owner deferred. The own
 
 Spend less CPU time and hold less memory for the same pictures, the same numbers and the same or better latency. Every change in this plan leaves every output byte, histogram count, sample and digest identical, except the catalog's journal mode, which changes how a commit reaches the disk and not what it stores.
 
-The work comes from a read-only audit of the whole workspace on 2026-10-03. The audit found the idle path, the desktop's texture and upload handling, the subscriptions and the GPU preview's steady state already tight. The remaining cost is concentrated in four places: per-pixel kernels (spatial tiles, the Detail and Presence filters, the RAW input reads), source preparation (hashing, zero-fills, reads), per-tick copying on the owner and the desktop while painting, and build configuration. Every figure below is an estimate from reading the code. None was measured, and none may be claimed until the measurement task records it under [rule 13](../engineering/performance-rules.md#rules).
+The work comes from a read-only audit of the whole workspace on 2026-10-03. The audit found the idle path, the desktop's texture and upload handling, the subscriptions and the GPU preview's steady state already tight. The remaining cost is concentrated in four places: per-pixel kernels (spatial tiles, the Detail and Presence filters, the RAW input reads), source preparation (hashing, zero-fills, reads), per-tick copying on the owner and the desktop while painting, and build configuration. The delivered savings and their measured scope are in [performance](../specs/performance.md#cpu-and-memory-efficiency-measured-on-the-m4). Untimed estimates below remain estimates; the CPU kernels now serve the reference renderer and the no-GPU path, while the GPU renders production frames, counts, samples and export.
 
 ## Constraints
 
@@ -38,13 +38,14 @@ The work comes from a read-only audit of the whole workspace on 2026-10-03. The 
   - **What the feature costs.** One new package, `sha2-asm` 0.6.4 (MIT, assembled by the `cc` already in the lock file, notice in [dependencies](../engineering/dependencies.md#hardware-sha-256-on-aarch64)). `sha2` 0.10.9 calls it on x86 only, where it would replace the software fallback behind SHA-NI, so on aarch64 it is built and unused; it refuses to build for Windows, and x86 gains nothing, so no x86 target gets the feature.
 - **JPEG XL DNG decode on the shared pool.** Done. `jxl-oxide` is built with its `rayon` feature, and `src/jxl.rs` passes `JxlThreadPool::rayon_global()` explicitly, so a JPEG XL DNG (Pixel, Galaxy) decodes on the global Rayon pool with no pool of its own (rule 9), and a build without the feature does not compile instead of silently decoding serially. The feature adds no package: `jxl-threadpool` uses the `rayon` and `rayon-core` already in the lock file. `render_frame` still has no cancellation hook, so a cancel waits for it. The decode is deterministic: the Galaxy S22 SM-S901E sample (`pixls-7783`, 4000 × 3000) gives the fixture's `mosaic_sha256` `58cd5a2f…916c4d` with the pool, with one Rayon thread (`RAYON_NUM_THREADS=1`) and on the base without the feature.
 - **Half floats on x86.** Done. `half` is built with `std` in `luxforge-core` and `luxforge-ui`, so x86_64 detects F16C at run time (its baseline target has none at compile time) and converts boundary texels in hardware, falling back to software where the CPU lacks it. aarch64 is unchanged: Apple's target enables `fp16` at compile time, so `half` already converted in hardware there. `std` adds no package. `iced_graphics` already enables `half`'s default features, `std` among them, in every build that includes Iced, so the declarations matter for a core-only build (the CLI, the core's tests) and keep the feature on whatever Iced does. The conversions are IEEE binary16 round-to-nearest-even either way.
-- **The system scan at launch.** `app/mod.rs:558` calls `iced::system::information()`. Iced's `sysinfo` path runs `System::new_all()` and `refresh_all()`, walking every process on the host, to supply two strings: `state.backend`'s graphics backend and adapter. Supply them without a process scan: from the renderer's adapter information if a hook is cheap, or by deferring the call until something reads them. `state.backend` keeps reporting the same strings to every client, with no extra wait for an API reader. Done: iced offers no adapter hook and wgpu's device none either, and only an evidence run reads the two strings (its frames, its capture gate and its `backend` event), so only an evidence launch asks for them.
+- **The system scan at launch.** An evidence launch asks `iced::system::information()` for the backend and adapter strings; the Iced `sysinfo` path walks the host's processes on a spawned thread. An ordinary launch asks once after the surface checks its GPU stage, to confirm the tile worker's adapter. The worker is first named by adapter enumeration after the window opens ([GPU previews](gpu-preview.md#qualifying-a-program)); no process scan delays an ordinary launch's first picture.
+
 
 ### Build profile
 
 Deferred by the owner on 2026-10-03: the other plans' outstanding timing runs and every baseline the [performance spec](../specs/performance.md) records build `release`, and a `dist` figure is never compared with a `release` one. Its task stays blocked until the owner reopens it.
 
-Add `[profile.dist]`, inheriting from `release` with `codegen-units = 1` and LTO. Thin and fat LTO are measured against each other and the faster is kept, unless fat LTO's build time is unreasonable for the timing tier. `cargo xtask package` and the timing commands (`editor-performance`, `editor-latency`, `measure`, the `timing` tier) build with `dist`. `develop`, `smoke`, `quick` and `rendered` keep `release`, so the edit loop does not slow down. `panic` stays `unwind`, because `mozjpeg` unwinds libjpeg errors into Rust. Timing reports already record their profile, and a dist figure is never compared with a release baseline.
+Add `[profile.dist]`, inheriting from `release` with `codegen-units = 1` and LTO. Thin and fat LTO are measured against each other and the faster is kept, unless fat LTO's build time is unreasonable for the timing tier. The proposed change makes `cargo xtask package` and the timing commands (`editor-performance`, `editor-latency`, `measure`, the `timing` tier) build with `dist`; they currently build `release`. `develop` and `smoke` keep `release`, and `rendered` keeps its release editor build; `quick` builds and tests the development profile without launching an editor. `panic` stays `unwind`, because `mozjpeg` unwinds libjpeg errors into Rust. Timing reports already record their profile, and a dist figure is never compared with a release baseline.
 
 ### Source preparation
 
@@ -98,11 +99,11 @@ Done. A development whose sensor stage leaves the normalized values alone alloca
 
 ### Analysis and the owner
 
-- **Histogram reducer.** `Bins::add_pixel` (`analysis.rs:202`) counts each channel's 0 and 255 into their own counters, which equal `r[0]`, `r[255]` and so on, and then recomputes the same comparisons in `clip_class`. Derive the per-channel extremes from the bins in `into_report`. Classify with a 256-entry table (`v == 0` as bit 0, `v == 255` as bit 1), combining the three channels with `|` for any-channel and `&` for all-channel counts into a four-way class count. Use `u32` counts per bounded chunk, widened on merge. This runs between the exact render and the settled frame, an estimated 5–18 ms per settle.
-- **API answers not copied twice.** `ApiResponse::success` (`api/mod.rs:57`) calls `serde_json::to_value` on its result, which is usually already a `Value`, so every answer is rebuilt on the owner thread. Add a constructor that moves a `Value` in, and use it wherever the answer is one.
-- **Lineage prepared once.** `history.lineage` (`editor/history.rs:394`) runs `query_row`, preparing the statement anew for each of up to 100 steps after every undo, redo and restore. Prepare it once (`prepare_cached`), or answer with one recursive CTE.
-- **Buffered live-session writes.** The TCP session writer (`api/transport.rs:138`, `:200`) serializes straight into the socket, one `write` per JSON fragment, with Nagle on. Wrap it in a `BufWriter` flushed at each line, and set `TCP_NODELAY`.
-- **Strokes shared on entry reads.** `entry_from` → `hydrate_strokes` → `read_strokes` (`editor/catalog.rs:378`, `:515`) reads, parses and re-hashes every stroke a new entry references, even though the entry cache holds the same immutable, content-addressed strokes for the asset's other entries. That is O(strokes) per commit and O(n²) over a painting session. Resolve stroke IDs from cached entries of the same asset first, and query only the rest. Those strokes came from the catalog and were verified there, so the cache's rule that it holds only what the catalog returned still holds.
+- **Histogram reducer.** The reference reducer derives per-channel endpoint counts from its bins and uses a fixed class table for any-channel and all-channel clipping, with `u32` counts per bounded chunk widened on merge (`analysis.rs`). The GPU counts production frames on the surface; the reference reducer supplies its own frames and qualification comparisons.
+- **API answers moved once.** `ApiResponse::value` moves a method's `Value` directly into its answer without serializing that tree again on the owner.
+- **Lineage prepared once.** `history.lineage` reuses one cached statement while walking its bounded page (`editor/history.rs`).
+- **Buffered live-session writes.** The TCP session writer uses `BufWriter`, flushed at each line, and `TCP_NODELAY` (`api/transport.rs`).
+- **Strokes shared on entry reads.** Hydration resolves immutable stroke references from the shared stroke tables before querying, parsing and hashing the remaining references (`editor/catalog.rs`); the statement is prepared only when one needs it.
 
 ### Painting
 
@@ -119,17 +120,16 @@ The frozen coverage, draft identities, evidence semantics (`frame_pending`, `dra
 
 - **GPU preview blocks.** Each prepared frame during a GPU gesture concatenates every program's block into one `Vec<u32>` (`pack`, `luxforge-ui/src/photo_surface/gpu_preview.rs`), then the slot and each link of a spatial chain (`gpu_preview/chain.rs`, `write`) compare the whole of it with their last write through `mask::changed_ranges` and copy it again on any difference: up to about 6 MiB per frame with a lens warp grid or a heavy brush mask. Separately, the lens warp grid is converted and collected into a new `Arc<[u32]>` on every tick (`luxforge-app/src/app/gpu_plan.rs`, `grid.nodes`) although it is fixed for the draft. Convert the grid once when the boundary is held. In the surface, remember each step's block `Arc` and offset, skip blocks whose pointer is unchanged and compare only the rest. Done, on the slot's [shared scratch pool](gpu-preview.md#plane-sharing-and-precision), which restructured the same chains: the held boundary keeps its warp grid as the tail's words (`gpu_plan::WarpGrid`), and the slot and each link keep the blocks they packed (`gpu_preview/blocks.rs`), so a block handed again at the same place is neither compared nor copied and a link's key hashes each block once. What remains per tick: a spatial link's schedule (`spatial::Schedule::run`) still hashes its steps' words and blocks whenever the link runs, which over a lens warp includes the whole grid.
 - **Collapsed sections build no controls.** `state/tools.rs:814` builds every section's control models on every message, collapsed or not. For presets that clones each preset's settings and strings (`state/presets.rs:451`), about 1 ms per message with a large library. Build controls only for a section that shows them, after checking what reads section models outside the view: evidence summaries, `query_choice.rs` and curve sampling.
-- **Job polls without a full update.** While an export or capability job runs, `time::every(100 ms)` produces two full updates per tick (`app/export.rs:330`, `app/capabilities.rs:429`), each re-deriving the workspace and rebuilding the view even when the read changed nothing. Extend the idle fast path in `update_inner` to unchanged poll reads, or replace the timer with an owner wake on job change like the event waker.
-- **Done, and what remains.** A collapsed or unavailable section builds no control models; the evidence report and the readers outside the view that need them build them on demand from the same inputs. A live job is read inside its subscription's stream (`app/job_reads.rs`), which sends the desktop a message only when the job's record changes or the job ends, because iced rebuilds the view after every message whatever `update` does; an export reports no progress, so only its end reaches the update loop. Each live job still costs one owner read every 100 ms on the executor; only an owner push on job change would remove it. An expanded Presets section still builds its library on every message. A `module.status` answer applied after a newer read can show an older job record until the job next changes.
+- **Event-driven job reads.** A live export or capability reader holds `job.wait` asynchronously until its change token advances (`app/job_reads.rs`), yielding only a first, changed or terminal record. An unchanged job causes no read, timer, view rebuild or redraw. Hidden readers suppress progress-only changes while retaining partial business results and terminal records. A collapsed or unavailable section builds no controls; an expanded Presets section still rebuilds its library on a desktop message. An older `module.status` answer can still temporarily show an older job record.
 
 ## Later candidates, not in this plan
 
-Byte-identical findings of the same audit that were not taken into scope. Each needs the owner's agreement before it joins the plan:
+Remaining candidates, each needing the owner's agreement before it joins the plan. CPU kernel and proxy candidates affect the reference renderer and sessions without a GPU; they do not establish production GPU gains. Each needs measurement against the current path:
 
 - hashing the original concurrently with its decode;
 - a per-orientation upright copy for JPEGs with EXIF orientation 2 to 8;
 - fusing RAW's output scale with the camera matrix;
-- per-row view resolution in the RAW proxy;
+- per-row view resolution in the RAW proxy of a session without a GPU;
 - a pooled Air 2S warp copy-back;
 - once-per-stage GainMap taps for sensor-stage maps;
 - Clarity fusing encode with block-sum;
@@ -140,7 +140,7 @@ Byte-identical findings of the same audit that were not taken into scope. Each n
 - a shared `Arc` for the owner's head;
 - streaming the recipe identity hash;
 - one draft plan per `draft.set`;
-- a cached prefix hash per sampled point;
+- avoiding repeated prefix-identity work during pixel-read planning, if current measurements show a cost; the retired point pipeline's per-sample hash cache no longer applies;
 - mask outline subdivision reusing its shared points;
 - a lazy history list;
 - filtering keyboard events the keymap ignores;
@@ -150,9 +150,7 @@ Also outside this plan: x86_64 libjpeg-turbo SIMD (`nasm_simd`, which needs NASM
 
 ## Catalog durability
 
-The catalog opens with `synchronous=FULL` and `locking_mode=EXCLUSIVE`, and a rollback journal by default (`editor.rs:642`). Each commit writes its pages twice and syncs three to four times. Bundled SQLite's syncs on macOS are plain `fsync`, because `fullfsync` is off by default, so a commit is not flushed from the drive's cache. That contradicts the crate's own rule in `atomic_file.rs`, where every durable write is `F_FULLFSYNC`.
-
-In the durable build, open with `PRAGMA journal_mode=WAL`, `synchronous=FULL`, `fullfsync=ON` and `checkpoint_fullfsync=ON`, after `locking_mode=EXCLUSIVE`, so no shared-memory file is created. A commit then appends once and makes one full flush; checkpoints run automatically. Test builds keep `synchronous=OFF` behind `test-skip-disk-flush`.
+The durable catalog uses `journal_mode=WAL`, `synchronous=FULL`, `fullfsync=ON` and `checkpoint_fullfsync=ON`, after `locking_mode=EXCLUSIVE`, so no shared-memory file is created. A commit appends to the WAL and performs a full flush; checkpoints run automatically. Test builds keep `synchronous=OFF` behind `test-skip-disk-flush`.
 
 The consequences, each covered by a test or documented:
 

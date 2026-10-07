@@ -1,8 +1,6 @@
 # Saturation and Vibrance mathematics
 
-Status: frozen and implemented as the `colour-adjust` unit of the Basic module ([design](basic-and-histogram.md)). No production code changes here: this document, the independent f64 reference under `crates/luxforge-reference/src/colour.rs` and the fixtures under `fixtures/basic/colour-cases.json` are the oracle a later implementation of the `vibrance` and `saturation` Basic units is checked against. Read it alongside [Basic adjustments and histogram](basic-and-histogram.md), whose "Saturation and vibrance" section and integration contract this study answers, and [product decisions](../decisions.md#basic-adjustments-and-histogram) for the accepted ranges.
-
-Scope: this is a numerical/design task. It does not implement `luxforge.basic.adjust`'s colour units, does not touch `crates/luxforge-core/src/`, and the reference code under `tests/` never runs in a release build or against a real image row. The [performance rules](../engineering/performance-rules.md) checklist therefore does not apply to the files this task adds; it will apply to the implementation task that turns this document into a `PointwiseColor` unit.
+Status: frozen and implemented as the `colour-adjust` unit of the Basic module ([design](basic-and-histogram.md)). This document, the independent f64 reference under `crates/luxforge-reference/src/colour.rs` and `fixtures/basic/colour-cases.json` define the numerical oracle for Vibrance and Saturation. The CPU reference unit is checked against that oracle; its module-owned WGSL is qualified against the CPU within the declared GPU output tolerance. Read it alongside [Basic adjustments and histogram](basic-and-histogram.md) and the accepted ranges in [product decisions](../decisions.md#basic-adjustments-and-histogram).
 
 ## Candidate: Oklab chroma scaling
 

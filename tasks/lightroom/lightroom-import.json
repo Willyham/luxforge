@@ -3,7 +3,7 @@
   "plan_id": "lightroom-import",
   "title": "Lightroom import",
   "objective": "Bring the photographs worked on in a Lightroom Classic catalog, or a folder of XMP sidecars, into the Luxforge catalog read-only, with their organization, their settings as one history entry each, a per-photograph report, re-mapping from the kept source text, and Lightroom's previews as first tiles.",
-  "context_summary": "Planned from docs/design/lightroom-import.md, the contract every task follows; the owner decided all eleven questions on 2026-10-06 and did not authorize implementation, so nothing here starts until authorized. Phase 1 is TASK-001 to TASK-010, deliverable alone; TASK-011 is phase 2 (masks); TASK-012 is phase 3, mappings that land with later tools. The importer never writes to a Lightroom catalog, its previews, sidecars or originals; nothing from the owner's library enters the repository. It reuses the preset mapping and Lua reader, Develop's fingerprinting and event folders, the catalog's library changes and the rendered-preview fallback rule. Fidelity beyond value transfer comes from the Lightroom alignment design, not from this plan. Decisions: docs/decisions.md.",
+  "context_summary": "Planned from docs/design/lightroom-import.md, the contract every task follows; the owner decided all eleven questions on 2026-10-06 and did not authorize implementation, so nothing here starts until authorized. Phase 1 is TASK-001 to TASK-010, deliverable alone; TASK-011 is phase 2 (masks); TASK-012 is phase 3, mappings that land with later tools. The importer never writes to a Lightroom catalog, its previews, sidecars or originals; nothing from the owner's library enters the repository. It reuses the preset mapping and Lua reader, Develop's fingerprinting and event folders, the catalog's library changes and the rendered-preview fallback rule. Fidelity beyond value transfer comes from the Lightroom alignment design, not from this plan. Decisions: docs/decisions.md. Lightroom previews populate only the grid tier; imports have no import undo and keep the existing removal and send-back rules (owner, 2026-10-07). Lightroom commands, origins and the smoke scenario in this plan are proposed deliverables, not implemented interfaces.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -48,7 +48,7 @@
           "Run the repository checks."
         ],
         "commands": [
-          "cargo xtask check-repository"
+          "tools/cargo-cached xtask check-repository"
         ],
         "expected_results": [
           "The note and design agree; links pass."
@@ -99,7 +99,7 @@
           "Run the reader's tests over generated catalogs, including the lock and version refusals and the unchanged-bytes check."
         ],
         "commands": [
-          "cargo test -p luxforge-core lightroom::"
+          "tools/cargo-cached test -p luxforge-core lightroom::"
         ],
         "expected_results": [
           "Every reader test passes."
@@ -117,7 +117,9 @@
         "Extend the presets mapping table rather than adding a second one; per-photo rows are marked as not presettable so preset import keeps excluding them.",
         "The crop conversion (CropTop/Left/Bottom/Right and CropAngle with the photo's orientation into the crop module's normalized rotated box) is frozen by a small study against Lightroom exports of known crops the owner makes once; record the round's figures in the design.",
         "Camera Matching profiles map to Standard with an approximate note until Match camera exists; Adobe Color and Adobe Standard map to Standard.",
-        "The report keeps preset import's shape and adds crop, orientation, lens and look rows, and which rule (value transfer or a calibrated conversion) each mapped row used."
+        "The report keeps preset import's shape and adds crop, orientation, lens and look rows, and which rule (value transfer or a calibrated conversion) each mapped row used.",
+        "Detail globals and manual perspective remain unsupported by the preset mapping despite both modules being delivered; their mappings need the measured alignment, not delivery of those tools. RAW white balance already has an uncalibrated chromaticity conversion; its calibrated preset conversion lands in the alignment RAW white-balance round.",
+        "apply-preset accepts only presettable field patches and at most 16 steps; crop, orientation, lens and look are not all presettable. Build the importer's bounded one-entry transaction through the shared module planning and validation APIs, without weakening public preset eligibility or claiming apply-preset already supports per-photo actions."
       ],
       "context_links": [
         {
@@ -143,7 +145,8 @@
       ],
       "acceptance_criteria": [
         "Every mapping row has a test from a settings table to its actions and report rows; every setting in a test photograph appears in its report exactly once.",
-        "The crop conversion matches the owner's Lightroom exports within one pixel on the study's cases."
+        "The crop conversion matches the owner's Lightroom exports within one pixel on the study's cases.",
+        "Per-photo actions validate and commit with the globals in one importer entry, while preset import retains its existing eligibility and bounds; first preparation cannot append an automatic lens entry after the imported head has moved."
       ],
       "test_strategy": {
         "approach": "unit",
@@ -151,8 +154,8 @@
           "Run the mapping tests and the crop study."
         ],
         "commands": [
-          "cargo test -p luxforge-core lightroom::mapping",
-          "cargo test -p luxforge-core presets::"
+          "tools/cargo-cached test -p luxforge-core lightroom::mapping",
+          "tools/cargo-cached test -p luxforge-core presets::"
         ],
         "expected_results": [
           "Mapping, crop and preset tests pass; preset import is unchanged."
@@ -195,8 +198,8 @@
           "Run the storage tests."
         ],
         "commands": [
-          "cargo test -p luxforge-core lightroom::storage",
-          "cargo test -p luxforge-core catalog"
+          "tools/cargo-cached test -p luxforge-core lightroom::storage",
+          "tools/cargo-cached test -p luxforge-core catalog"
         ],
         "expected_results": [
           "Storage and catalog tests pass."
@@ -205,7 +208,7 @@
     },
     {
       "id": "TASK-005",
-      "description": "Run the import as a job: lightroom.inspect and lightroom.import over a catalog on the library lane, importing the photographs worked on, fingerprinting through Develop's path, catalog folders by event, collections and groups, ratings and labels as collections, virtual copies and snapshots as named versions, duplicates linked with a Lightroom version, missing originals and unsupported kinds reported, one undoable library change, idempotent re-runs and cancellation; with lightroom.report and lightroom.imports.",
+      "description": "Run the import as a job: lightroom.inspect and lightroom.import over a catalog on the library lane, importing the photographs worked on, fingerprinting through Develop's path, catalog folders by event, collections and groups, ratings and labels as collections, virtual copies and snapshots as named versions, duplicates linked with a Lightroom version, missing originals and unsupported kinds reported, journalled bounded parts with no import undo, idempotent re-runs and cancellation; with lightroom.report and lightroom.imports.",
       "status": "pending",
       "dependencies": [
         "TASK-003",
@@ -214,7 +217,10 @@
       "extra_context": [
         "Index the folders of the photographs in scope before computing their events, so catalog folders come from events as Develop's do; an event with a catalog folder reuses it.",
         "Nothing on the owner thread but commits; paths are read by the worker. Each photograph's edit is its own history entry, `Imported from Lightroom` by the system actor.",
-        "Register every method in the command registry with its schema."
+        "Register every method in the command registry with its schema.",
+        "Keep MAX_LIBRARY_BATCH (50,000 library items, not photographs) and the prepared-batch bounds; stream and commit explicit parts as Develop does, recording retry identities. Each completed photograph, its import entry and provenance are atomic, with no half-import on failure or cancellation.",
+        "There is no import undo (owner, 2026-10-07). Existing library undo and asset.send-back retain their guards against entries beyond Original, versions and collections; Remove uses the existing catalog rule.",
+        "version.create names an existing retained entry and does not create a branch. The importer must append validated entries branched from Original for copies, snapshots and linked Lightroom versions, naming them without moving an existing photograph's current head. Reuse the append-only entry and version invariants; do not fake detached entries by temporarily navigating the client's head."
       ],
       "context_links": [
         {
@@ -233,8 +239,9 @@
         }
       ],
       "acceptance_criteria": [
-        "Over generated catalogs: only photographs worked on are imported; folders follow events; collections, ratings, labels, copies and snapshots land as decided; duplicates link; missing originals are reported; a re-run imports only what is new; a cancel keeps finished photographs and nothing partial; undo of the library change restores the catalog.",
-        "The Lightroom catalog, its sidecars and the originals hash the same before and after, cancelled and failed runs included."
+        "Over generated catalogs: only photographs worked on are imported; folders follow events; collections, ratings, labels, copies and snapshots land as decided; duplicates link; missing originals are reported; a re-run imports only what is new; a cancel keeps finished photographs and nothing partial; no import undo is exposed; existing send-back and library-undo guards refuse removal of retained edits, versions or collections without changing data.",
+        "The Lightroom catalog, its sidecars and the originals hash the same before and after, cancelled and failed runs included.",
+        "An import beyond one library part stays within the item and preparation bounds, retries no part twice, and preserves every completed photograph on cancellation. Copies, snapshots and linked versions survive reopen branched from Original, with the master or existing current head preserved."
       ],
       "test_strategy": {
         "approach": "integration",
@@ -242,8 +249,8 @@
           "Run the import tests over generated catalogs and originals from the fixture generator."
         ],
         "commands": [
-          "cargo test -p luxforge-core lightroom::import",
-          "cargo test -p luxforge-core library::"
+          "tools/cargo-cached test -p luxforge-core lightroom::import",
+          "tools/cargo-cached test -p luxforge-core library::"
         ],
         "expected_results": [
           "Every import and library test passes."
@@ -252,14 +259,17 @@
     },
     {
       "id": "TASK-006",
-      "description": "Use Lightroom's previews as the imported photographs' first tiles: read each imported photograph's largest current preview from the preview cache and write its grid and large tiers with origin lightroom, reported as thumbnail and replaced by Luxforge's render under the camera preview rule; a stale preview is not used.",
+      "description": "Use Lightroom's previews as the imported photographs' first grid tiles only: read each new photograph's largest current Lightroom preview, fit it upright within the 512 px grid tier with origin lightroom, report thumbnail and replace it by the tile service's render; reject a stale preview. The large tier follows the existing camera-preview and rendered-tier path.",
       "status": "pending",
       "dependencies": [
         "TASK-005"
       ],
       "extra_context": [
-        "Reads happen on the extraction workers; the preview cache is opened read-only and never written.",
-        "Never shown in Develop or Compare."
+        "Reads happen on the extraction workers; the Lightroom preview cache is opened read-only and never written. origin lightroom and its source-preview key are new cache shapes this task adds, not existing API values.",
+        "Only a newly imported photograph whose imported entry is current gets a Lightroom grid row. A linked photograph gets a named version and no Lightroom preview row, preserving its current head and previews.",
+        "Use the camera-preview write guard: never replace a rendered grid or reseed Lightroom rows after a render, re-run, edit, generation bump or index rebuild. A source-preview row has no drawn_by renderer; renderer-generation invalidation applies to rendered rows only. The import job alone seeds it, and stale-entry collection still removes it.",
+        "A stale or missing Lightroom preview is not written, so the camera-grid extraction remains available. A Lightroom grid row must not suppress extraction of the independent 2048 px large camera tier. The grid origin is shown in Select and filmstrip cells; Develop's canvas, Compare and the large-tier loupe never receive a Lightroom row.",
+        "Replacing rendered tiers use the owner's tile service, the desktop GPU tile worker or the reference fallback, and record drawn_by and the reference reason."
       ],
       "context_links": [
         {
@@ -278,15 +288,17 @@
         }
       ],
       "acceptance_criteria": [
-        "A Lightroom preview becomes the entry's tiers with origin lightroom, is reported thumbnail, is replaced by the render and never written after it; a stale preview falls back to the camera preview."
+        "A Lightroom preview becomes only the new current entry's grid row with origin lightroom and thumbnail state, is replaced by a rendered grid and never reseeded; linked photographs get no Lightroom row. A stale preview falls back to the camera grid.",
+        "The large camera/render tier stays independent; Select loupe, Develop canvas and Compare show no Lightroom preview. Races with camera extraction and rendering preserve origin priority, and generation bumps and index rebuilds do not reseed the import preview.",
+        "Replacing rendered tiers name their renderer and any reference reason; new origin and key shapes round-trip through the index and API with current-format cache rules."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
-          "Run the preview tests over generated preview caches."
+          "Run preview-cache tests over generated Lightroom previews, linked versions, stale entries, renderer-generation changes, rebuilds, camera extraction and a replacing-render race."
         ],
         "commands": [
-          "cargo test -p luxforge-core previews::lightroom"
+          "tools/cargo-cached test -p luxforge-core previews::lightroom"
         ],
         "expected_results": [
           "Every preview test passes."
@@ -328,7 +340,7 @@
           "Run the re-map tests."
         ],
         "commands": [
-          "cargo test -p luxforge-core lightroom::remap"
+          "tools/cargo-cached test -p luxforge-core lightroom::remap"
         ],
         "expected_results": [
           "Every re-map test passes."
@@ -363,7 +375,7 @@
           "Run the sidecar import tests."
         ],
         "commands": [
-          "cargo test -p luxforge-core lightroom::sidecar"
+          "tools/cargo-cached test -p luxforge-core lightroom::sidecar"
         ],
         "expected_results": [
           "Every sidecar test passes."
@@ -381,7 +393,7 @@
       ],
       "extra_context": [
         "Every gesture sends the registered commands; no import logic in widgets.",
-        "Smoke scenario lightroom-import over a generated catalog in a background bundle, correlating frames with state and logs: the sheet, progress, the summary, Lightroom tiles then rendered tiles, a partial photograph's row."
+        "Smoke scenario lightroom-import over a generated catalog in a background bundle, correlating frames with state and logs: the sheet, progress, the summary, Lightroom tiles then rendered tiles, a partial photograph's row. Add the proposed File entry/menu integration as part of this task; no existing File menu is assumed. The scenario records the grid origin and each replacement tier's renderer/reason, and checks the large-tier loupe and Develop canvas never show Lightroom previews."
       ],
       "context_links": [
         {
@@ -408,8 +420,8 @@
           "Build the release app and run the scenario in the background."
         ],
         "commands": [
-          "cargo xtask build --release",
-          "cargo xtask smoke --scenario lightroom-import --output NEW_DIR"
+          "tools/cargo-cached xtask build --release",
+          "tools/cargo-cached xtask smoke --scenario lightroom-import --output NEW_DIR"
         ],
         "expected_results": [
           "The scenario passes."
@@ -425,7 +437,8 @@
       ],
       "extra_context": [
         "Run with cargo xtask develop --background and an isolated catalog; nothing from the owner's library is committed.",
-        "Timing is recorded here, once, after feature work."
+        "Timing is recorded here, once, after feature work.",
+        "Record each replacing tier's renderer and any reference reason with captures and state; a fallback is named, not counted as GPU evidence."
       ],
       "context_links": [
         {
@@ -453,8 +466,8 @@
           "Run the quick tier."
         ],
         "commands": [
-          "cargo xtask check",
-          "cargo xtask verify --tier quick --output NEW_DIR"
+          "tools/cargo-cached xtask check",
+          "tools/cargo-cached xtask verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
           "Check and quick pass; the figures are recorded."
@@ -470,7 +483,8 @@
       ],
       "extra_context": [
         "Brush dabs go to the stroke store; density other than 100 is reported. A radial that Lightroom applies outside gets Invert.",
-        "AI masks are reported as not imported until model-based Select exists; their adjustments are reported as not applied."
+        "AI masks are reported as not imported until model-based Select exists; their adjustments are reported as not applied.",
+        "Import transactions validate every mask and local module action through the shared core APIs; apply-preset is global-only and does not create masks or masked layers. Keep decoded strokes and prepared commits bounded for a photograph with many components."
       ],
       "context_links": [
         {
@@ -497,8 +511,8 @@
           "Run the mask mapping tests and the scenario."
         ],
         "commands": [
-          "cargo test -p luxforge-core lightroom::masks",
-          "cargo xtask smoke --scenario lightroom-import --output NEW_DIR"
+          "tools/cargo-cached test -p luxforge-core lightroom::masks",
+          "tools/cargo-cached xtask smoke --scenario lightroom-import --output NEW_DIR"
         ],
         "expected_results": [
           "Tests and the scenario pass."
@@ -507,13 +521,14 @@
     },
     {
       "id": "TASK-012",
-      "description": "Phase 3: map the settings whose tools land later, each with its tool: Camera Matching profiles to Match camera, spot removal to Clone and Heal, AI masks recomputed through Select, and Detail and perspective once Lightroom alignment has measured them; existing imports reach them through Re-map.",
+      "description": "Phase 3: map Camera Matching, repair and AI settings as their capabilities land, and delivered tools once measured: Camera Matching profiles to Match camera, spot removal to Clone and Heal, AI masks recomputed through Select, and global and local Detail and manual perspective once Lightroom alignment has measured them; existing imports reach them through Re-map.",
       "status": "blocked",
       "dependencies": [
         "TASK-011"
       ],
       "extra_context": [
-        "Blocked on the capabilities by name: Match camera (RAW looks phase 2), Clone and Heal (Corrections), model-based Select (AI editing), and the Detail and perspective alignment studies. Each mapping lands as its capability does."
+        "Blocked on the capabilities by name: Match camera (RAW looks phase 2), Clone and Heal (Corrections), model-based Select (AI editing), and the Detail and perspective alignment studies. Each mapping lands as its capability does.",
+        "Detail and Lens and perspective are delivered; only their Lightroom mappings and measurement are outstanding. Camera Matching is in phase 3, matching this task, and maps to Standard with an approximate report until Match camera lands."
       ],
       "context_links": [
         {
@@ -539,7 +554,7 @@
           "Run the mapping tests as each lands."
         ],
         "commands": [
-          "cargo test -p luxforge-core lightroom::"
+          "tools/cargo-cached test -p luxforge-core lightroom::"
         ],
         "expected_results": [
           "Every mapping test passes."

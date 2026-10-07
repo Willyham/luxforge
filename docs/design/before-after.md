@@ -6,7 +6,7 @@ Tap `\` to toggle a persistent comparison slider. Releasing within 200 ms counts
 
 Both slider sides use the displayed entry's orientation, straighten and crop. After is the immutable entry displayed when comparison starts, including a historical selection. Exiting restores that selection. Comparison changes no recipe, history or source bytes. An open draft or in-flight edit refuses comparison with the existing reason. Text fields retain backslash input; repeated key presses never toggle the mode repeatedly. Escape cancels a pending tap/hold decision and exits comparison. Losing window focus cancels a pending decision or releases a temporary hold while keeping an existing slider open. Late deadlines and releases after cancellation do nothing.
 
-The title bar Compare button toggles the slider, and the palette exposes the same operation. Keyboard holding remains available. Comparison suppresses editing canvas gestures, pointer sampling and clipping/mask overlays so they cannot imply which half they describe. Zoom and pan use the same image geometry on both sides. A retained full-detail After frame is preferred; if only its display proxy exists, that side remains a display preview at percentage zoom.
+The title bar Compare button toggles the slider, and the palette exposes the same operation. Keyboard holding remains available. Comparison suppresses editing canvas gestures and clipping/mask overlays so they cannot imply which half they describe. Zoom and pan use the same image geometry on both sides. A retained full-detail After frame is preferred; if only its display proxy exists, that side remains a display preview at percentage zoom.
 
 ## Command and resource contract
 

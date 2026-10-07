@@ -23,4 +23,4 @@ Recreate the familiar Lightroom crop interaction with an original implementation
 
 ## After M4
 
-The editor follow-up plan owns JPEG export, metadata handling, output color correctness, verified Locate, MCP conformance and complete editor acceptance. Library, tonal tools, RAW, masks and external module loading are later roadmap phases. Open engineering details belong to their owning milestone: the module descriptor representation in M3, crop fitting and filter tolerances in M4.
+JPEG export, metadata handling, the current sRGB output contract, Locate, the library, tonal tools, RAW and masks are delivered. MCP conformance and complete editor acceptance remain outstanding; external module loading remains a later requirement. Current scope and verification gaps are in [feature status](../features.md) and the [roadmap](../plan.md).
