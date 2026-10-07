@@ -48,6 +48,7 @@ Owner decisions and repository upkeep.
 
 | Plan | Purpose |
 | --- | --- |
+| [Code structure consolidation](project/code-structure.json) | Planned, awaiting implementation authorization: shared GPU primitives/layout and reusable backend, coherent module/preview interfaces, one stream preparation, shared grid/loupe mechanics and contained ownership cleanup; [design](../docs/design/code-structure.md) |
 | [Dependency advisories](project/dependency-advisories.json) | Remove or re-review the two expiring advisory exceptions the dependency audit enforces |
 | [Product decisions](project/product-decisions.json) | Open product questions |
 
