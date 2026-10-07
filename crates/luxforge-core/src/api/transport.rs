@@ -20,12 +20,21 @@ const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 /// How many loopback connections are served at once; the tile service's queue is sized from it.
 pub(super) const MAX_CLIENTS: usize = 8;
 
+/// What a live-session file records: the protocol, the loopback address and the per-run token a
+/// client sends with every request. The desktop writes it; a live client such as `luxforge-ctl`
+/// reads it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct LocalSessionInfo {
+pub struct LocalSessionInfo {
     pub protocol: String,
     pub address: SocketAddr,
     pub token: String,
+}
+
+/// The live-session file beside `catalog`, which the owner of that catalog's loopback session writes
+/// and removes: `catalog.sqlite` has `catalog.live-session.json`.
+pub fn live_session_file(catalog: &Path) -> PathBuf {
+    catalog.with_extension("live-session.json")
 }
 
 pub struct LocalServer {
