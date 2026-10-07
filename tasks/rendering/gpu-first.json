@@ -830,9 +830,10 @@
       "context_links": [
         {
           "kind": "file",
-          "label": "TASK-012 design",
-          "target": "/tmp/gpu-first/task-012-plan.md",
-          "relevance": "Findings with file and line references, estimates, the staged-sweep design, steps and owner questions."
+          "label": "GPU-first design",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "The contract, the stages and the throughput rows this task measured.",
+          "locator": "Stages and what each deletes"
         },
         {
           "kind": "file",
