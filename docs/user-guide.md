@@ -25,6 +25,8 @@ cargo xtask develop --catalog /path/to/catalog.sqlite --open /path/to/photo.jpg
 
 For repeated development builds across worktrees, the developer guide covers the
 [shared compiler caching](engineering/development.md#build-caches-and-worktrees) used by agents.
+The [CI workflow](engineering/development.md#ci) checks formatting and repository validity
+before heavy verification, and reuses compiled dependencies across runs and corpus shards.
 
 Omit `--catalog` to use the catalog chosen in [Settings › General](#settings-and-experiments), or the one in the platform configuration directory when none is chosen. `--data-root DIRECTORY` isolates config, data and log paths. `cargo xtask develop --debug` is a lightly optimized build with debug assertions, for debugging, and is unsuitable for timing.
 

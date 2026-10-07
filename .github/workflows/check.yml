@@ -20,11 +20,16 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Pinned toolchain
+        run: rustup toolchain install 1.94.0 --profile minimal --component rustfmt --component clippy
+      # Fail cheap checks before dependency installation, cache transfer or compilation.
+      - name: Formatting gate
+        run: cargo fmt --all -- --check
+      - name: Offline sample corpus tooling
+        run: python3 -m unittest discover -s tools -p 'test_sample_corpus.py' -v
       - name: Linux build prerequisites
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev
-      - name: Pinned toolchain
-        run: rustup toolchain install 1.94.0 --profile minimal --component rustfmt --component clippy
       - name: Native compiler cache identity
         id: native-compiler
         shell: bash
@@ -46,6 +51,10 @@ jobs:
           # The action keys by the compiler, manifests, lockfile and build environment and
           # removes incremental artifacts before saving. Debug and release are both cached.
           key: native-${{ matrix.os }}-${{ steps.native-compiler.outputs.key }}
+      # The full check runs repository checks beside Clippy/tests. Gate them first so an
+      # invalid link or task plan doesn't wait for the entire workspace to finish.
+      - name: Repository gate
+        run: cargo xtask check-repository
       - name: Headless checks, slow tests and doctests included (macOS, on the hosted VM's own adapter)
         if: runner.os != 'Linux'
         run: cargo xtask check
@@ -59,8 +68,6 @@ jobs:
           VK_DRIVER_FILES: /nonexistent/vulkan-icd.json
           VK_ICD_FILENAMES: /nonexistent/vulkan-icd.json
           __EGL_VENDOR_LIBRARY_FILENAMES: /nonexistent/egl-vendor.json
-      - name: Offline sample corpus tooling
-        run: python3 -m unittest discover -s tools -p 'test_sample_corpus.py' -v
       - name: Editor acceptance in release (macOS)
         if: runner.os != 'Linux'
         run: cargo run --release --locked --package xtask -- editor-acceptance --output artifacts/editor-acceptance
