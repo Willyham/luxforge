@@ -1,6 +1,6 @@
 # Initial RAW support: Nikon Z6 and Fujifilm X100VI
 
-Status: continuous RAW editing is implemented; supplied-file M4 verification passes, with broader qualification tracked separately. The owner NEF, RAF and DNG pass native development, actual JSON editing/history/reopen and background Metal rendering. The supplied DJI Air 2S DNG uses required GainMap and WarpRectilinear corrections under the [Air 2S contract](air2s-dng.md). The [RAW plan](../../tasks/raw.json), [integration contract](raw-integration.md) and [coverage manifest](../../fixtures/raw-coverage.json) distinguish delivered behavior from remaining controlled-scene, resource and platform qualification.
+Status: continuous RAW editing is implemented; supplied-file M4 verification passes, and the owner closed its broader qualification on 2026-10-06. The owner NEF, RAF and DNG pass native development, actual JSON editing/history/reopen and background Metal rendering. The supplied DJI Air 2S DNG uses required GainMap and WarpRectilinear corrections under the [Air 2S contract](air2s-dng.md). The [integration contract](raw-integration.md) and [coverage manifest](../../fixtures/raw-coverage.json) distinguish delivered behavior from remaining controlled-scene, resource and platform qualification.
 
 Camera-specific mode and processing policy is defined in the validated embedded
 [RAW camera catalog](raw-camera-profiles.md). Camera profiles select existing
@@ -8,7 +8,7 @@ capabilities; capture-specific metadata remains authoritative in each original.
 
 ## Outcome and delivery boundaries
 
-Open the owner's original Nikon Z6 NEF and Fujifilm X100VI RAF files directly, develop their sensor data into a useful neutral rendition, edit through the same history and command service as JPEG, and preserve every original byte. A camera's embedded JPEG is not the developed result. Support is qualified by actual recording mode and evidence, not by extension or a decoder's camera list.
+Open the owner's original Nikon Z6 NEF and Fujifilm X100VI RAF files directly, develop their sensor data into a useful neutral rendition (on which a new photo's [look](raw-looks.md) builds its starting point), edit through the same history and command service as JPEG, and preserve every original byte. A camera's embedded JPEG is not the developed result. Support is qualified by actual recording mode and evidence, not by extension or a decoder's camera list.
 
 The owner clarified the intended workflow: continually edit RAW in the editor, as in Lightroom. Every adjustment remains editable recipe data evaluated from the RAW original. There is no WB/exposure conversion step that creates a JPEG for subsequent editing. High-precision caches and display previews are disposable evaluations, never replacement sources. Changing an earlier setting recomputes the applicable downstream recipe, including later tools and geometry, without cumulative quantization or resampling.
 
@@ -231,7 +231,7 @@ Update the real support table and current user guide only for outcomes actually 
 
 ## Remaining qualification and decisions
 
-The task DAG separates code delivery from broad visual quality, recovery, resource and platform qualification. It must not mark missing controlled scenes, sanitizer coverage or native target evidence as passed merely because the implementation works on the supplied files.
+The owner closed the RAW qualification plan on 2026-10-06 without running the items below. They are not passed: the implementation is verified on the supplied files only, and controlled scenes, sanitizer and fuzzing coverage and native Windows and Linux evidence do not exist.
 
 | Outstanding item | Current boundary |
 | --- | --- |
@@ -240,7 +240,7 @@ The task DAG separates code delivery from broad visual quality, recovery, resour
 | Resource budget | The 1.5 GiB target is an investigation hypothesis. Screenshot-free Fuji series peak at 1583–1647 MiB; captured 30-trial p95 is 1992 MiB, with an unexplained 2436 MiB maximum. Attribute remaining costs without claiming an accepted budget |
 | Native portability | M4 Metal evidence is distinct from automated Windows/Linux builds and native desktop checks; manual audits remain deferred |
 | Output/Basic | No duplicate exporter or JPEG Basic controls; integrate with those capabilities when delivered |
-| Bayer highlight latitude | RCD clips each gained Bayer site at sensor white before interpolating ([pixel and color contract](#pixel-and-color-contract)). The owner [decided](../decisions.md#plan-refresh) to retain the latitude, as X-Trans does, provided the measured rendering change on the supplied Z6 and Air 2S files shows no new highlight artefacts; otherwise the clip stays as the Bayer path's documented limit. The change and its measurement are outstanding |
+| Bayer highlight latitude | RCD clips each gained Bayer site at sensor white before interpolating ([pixel and color contract](#pixel-and-color-contract)). The owner [decided](../decisions.md#plan-refresh) to retain the latitude, as X-Trans does, provided the measured rendering change on the supplied Z6 and Air 2S files shows no new highlight artefacts; otherwise the clip stays as the Bayer path's documented limit. Not built; a [roadmap](../plan.md#raw) follow-up |
 
 Neutral rendering, exact as-shot defaults, custom WB mapping and the retained working domain are explicit implementation choices documented above. They are not assertions that the owner accepted a particular visual match, arbitrary performance relaxation or a wider feature scope. New consequential tradeoffs still require concrete evidence and consultation.
 

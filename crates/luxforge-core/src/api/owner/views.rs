@@ -885,13 +885,7 @@ mod tests {
     }
 
     /// A view evaluated again into the same items keeps the preview lane's job for it rather than
-    /// cancelling it and reading and queuing the same previews again.
-    ///
-    /// The view's tasks are held at a gate until both reads of the board are made, so the job is
-    /// still running when the view is evaluated again: the card's files are not on disk, so an
-    /// unheld task fails within milliseconds, and a job that ends before the board is read is
-    /// listed by neither read (it ran under the board's recent threshold), after which the view
-    /// evaluated again rightly wants its missing previews through a new job.
+    /// cancelling it and reading and queuing the same previews again; another view replaces it.
     #[test]
     fn browse_a_view_read_again_keeps_its_preview_job() {
         let fx = testing::fixture("owner-same-job");
@@ -899,7 +893,7 @@ mod tests {
         let client = owner.register();
         let gate = std::sync::Arc::new(luxforge_testbase::Gate::new());
         gate.shut();
-        owner.hold_previews(Some(std::sync::Arc::clone(&gate)));
+        owner.hold_previews(Some(gate.clone()));
         let card = json!({"kind": "card", "volume_id": testing::volume("card")});
         let jobs = |owner: &OwnerHandle| -> Vec<Value> {
             let board = ok(owner, client, "activity.list", json!({}));
@@ -913,12 +907,16 @@ mod tests {
                 .collect()
         };
         ok(&owner, client, "browse.view", json!({ "source": card }));
+        // Keep the job active: a short completed job can disappear from the activity board
+        // between reads, independently of whether the repeated view kept it.
+        gate.wait_reached(1, "the view's preview worker");
         let first = jobs(&owner);
-        assert_eq!(first.len(), 1, "the view's one preview job is running");
         ok(&owner, client, "browse.view", json!({ "source": card }));
-        assert_eq!(jobs(&owner), first, "the same items keep their job");
-        owner.hold_previews(None);
+        let again = jobs(&owner);
         gate.open();
+        owner.hold_previews(None);
+        assert_eq!(first.len(), 1, "the held view has one preview job");
+        assert_eq!(again, first, "the same items keep their job");
         owner.stop();
         join.join().unwrap();
     }

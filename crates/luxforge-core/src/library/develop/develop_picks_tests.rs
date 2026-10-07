@@ -356,9 +356,14 @@ fn develop_picks_read_refuses_what_cannot_be_developed() {
     let error = read(&path, false, &JobControl::new(), &|phase| {
         if phase == Phase::Hashed {
             let file = fs::OpenOptions::new().append(true).open(&path).unwrap();
-            let len = file.metadata().unwrap().len();
+            let metadata = file.metadata().unwrap();
+            let len = metadata.len();
             file.set_len(len - 1).unwrap();
             file.set_len(len).unwrap();
+            // Shrinking and regrowing within one filesystem clock tick need not change the
+            // signature. Explicitly change it so this fixture proves the post-read conflict.
+            file.set_modified(metadata.modified().unwrap() + std::time::Duration::from_secs(1))
+                .unwrap();
         }
     })
     .unwrap_err();

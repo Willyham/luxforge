@@ -163,8 +163,8 @@ pub(super) enum FilesMessage {
     #[cfg(any(test, feature = "test-holds"))]
     Hold(Arc<luxforge_testbase::Gate>, PathBuf),
     /// Hold every header read of a file under the folder while the gate is shut, until its work is
-    /// cancelled, from the lane's next start.
-    #[cfg(test)]
+    /// cancelled, from the lane's next start. Only the macOS cursor-replay test uses this message.
+    #[cfg(all(test, target_os = "macos"))]
     HoldReads(Arc<luxforge_testbase::Gate>, PathBuf),
     /// Bound listings by these limits, from the lane's next start.
     #[cfg(test)]
@@ -632,7 +632,7 @@ pub(super) fn handle(owner: &mut Owner, message: FilesMessage) {
         }
         #[cfg(any(test, feature = "test-holds"))]
         FilesMessage::Hold(gate, under) => owner.catalog.files.hold = Some((gate, under)),
-        #[cfg(test)]
+        #[cfg(all(test, target_os = "macos"))]
         FilesMessage::HoldReads(gate, under) => {
             owner.catalog.files.hold_reads = Some((gate, under))
         }

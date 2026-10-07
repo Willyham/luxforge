@@ -601,11 +601,11 @@ fn spatial_planes_are_charged_released_and_refused_past_the_budget() {
 /// A plan whose pool texture the budget holds only once the one it replaces has gone, drawn
 /// straight after the smaller plan: its spatial step's copy, a scratch plane, is held twice as
 /// wide, so the pool's texture of the copy's class retires and one of the wider class takes its
-/// place. The texture it replaces stays charged until its retirement ends, when the GPU is done
-/// with it, so the larger plan's first frame is the CPU's, naming the budget, and nothing of it is
-/// created. Once the retirement ends, the next frame holds the wider texture and every frame after
-/// it draws on the GPU, the slot charged the same: one frame falls back, and nothing is allocated
-/// again or released after it. The in-use figure never passes the budget. A drag at 100% whose
+/// place. The changed plane layout also replaces the kept planes, even though their size stays
+/// the same. Both replacements stay charged until their retirements end, so an attempt can draw
+/// the CPU frame naming either allocation's budget refusal. Once the larger plan is fully held,
+/// every frame draws on the GPU with the same charge, allocating and retiring nothing more. The
+/// in-use figure never passes the budget. A drag at 100% whose
 /// slot replaces a Fit slot, or another region's, meets this as its boundary arrives.
 #[test]
 fn a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own() {
@@ -655,29 +655,37 @@ fn a_larger_plan_waits_for_the_planes_it_replaces_then_holds_its_own() {
         SLOT_BYTES + link + kept + small
     );
     assert_eq!(seen.gpu_preview_scratch_bytes, small);
-    // Straight after it: the smaller pool texture still retires.
-    let first = paint(
-        &device,
-        &queue,
-        &mut pipeline,
-        &primitive(ID, Some(larger.clone())),
-    );
-    let seen = diagnostics(&pipeline, ID);
-    match seen.drawn_path {
-        Some(DrawingPath::Cpu) => {
-            assert_cpu_frame(&first);
-            assert!(
-                matches!(seen.gpu_fallback, Some(GpuFallback::BudgetExceeded { requested, .. })
-                    if requested == large),
-                "{:?}",
-                seen.gpu_fallback
-            );
-            eprintln!("{test}: the first frame is the CPU's, naming the budget");
+    // Fitting the pool can retire its smaller texture, and fitting the changed plane layout can
+    // then retire the kept planes. Their callbacks may finish between allocations or on later
+    // attempts: wait for adoption, checking every fallback rather than assuming one frame suffices.
+    wait_until("the larger plan to hold its replacement planes", || {
+        settle(&pipeline);
+        let frame = paint(
+            &device,
+            &queue,
+            &mut pipeline,
+            &primitive(ID, Some(larger.clone())),
+        );
+        let seen = diagnostics(&pipeline, ID);
+        assert!(seen.gpu_preview_peak_bytes <= budget);
+        match seen.drawn_path {
+            Some(DrawingPath::Cpu) => {
+                assert_cpu_frame(&frame);
+                assert!(
+                    matches!(seen.gpu_fallback, Some(GpuFallback::BudgetExceeded { requested, .. })
+                        if requested == large || requested == kept),
+                    "{:?}",
+                    seen.gpu_fallback
+                );
+                false
+            }
+            Some(DrawingPath::Gpu) => {
+                assert_eq!(seen.gpu_fallback, None);
+                true
+            }
+            None => panic!("a frame was drawn"),
         }
-        // The retirement ended before the wider texture was charged.
-        Some(DrawingPath::Gpu) => eprintln!("{test}: the replaced texture had retired already"),
-        None => panic!("a frame was drawn"),
-    }
+    });
     settle(&pipeline);
     for frame in 0..5 {
         paint(

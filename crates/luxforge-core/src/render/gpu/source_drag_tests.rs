@@ -428,7 +428,23 @@ fn a_raw_warm_list_holds_a_white_balance_drag() {
                     && first.layer == 0)),
         "a white-balance drag among the open stack's plans"
     );
-    // A JPEG's holds none.
+    // The look, which applies to RAW photos only, is warmed as its first drag over the Neutral
+    // look its module names, in the GPU shape: its one unit.
+    let holds_the_look = |plans: &[GpuPlan]| {
+        plans.iter().any(|plan| {
+            plan.content.iter().any(|operation| {
+                operation
+                    .units
+                    .iter()
+                    .any(|unit| unit.program.entry == "lf_look_look")
+            })
+        })
+    };
+    assert!(
+        holds_the_look(&warm.plans),
+        "a RAW's warm list holds the look"
+    );
+    // A JPEG's holds neither.
     let (jpeg, _) = evaluation(
         jpeg(),
         vec![basic(json!({"exposure": 0.2}))],
@@ -448,4 +464,69 @@ fn a_raw_warm_list_holds_a_white_balance_drag() {
             first.units.len() == 1 && std::ptr::eq(first.units[0].program, &WHITE_BALANCE_PROGRAM)
         })
     }));
+    assert!(
+        !holds_the_look(&warm.plans),
+        "a JPEG's warm list has no look"
+    );
+}
+
+/// A look Amount drag on a RAW photo drafts through the core draft lifecycle on the GPU: the look
+/// layer is the drafted one, compiled in its GPU shape, so the drag draws the same program sequence
+/// at amount 0, where the committed stack compiles no look unit, as at 100 and 180.
+#[test]
+fn a_look_amount_drag_through_zero_keeps_one_program_sequence() {
+    let id = LayerId::new();
+    let look = |amount: f64| {
+        let module = crate::modules::LookModule::new();
+        let registry = ModuleRegistry::builtin();
+        let stage = crate::modules::FixedStage::new(crate::modules::Stage {
+            width: 4,
+            height: 4,
+        })
+        .of_kind(crate::SourceTag::Raw);
+        let parameters = json!({"look": "standard", "amount": amount});
+        let input =
+            crate::ToolModule::parse(&module, "set-look", parameters.as_object().unwrap()).unwrap();
+        match crate::ToolModule::plan(&module, &input, &stage.context(&[], &registry)).unwrap() {
+            crate::ActionPlan::Commit(layer) => Layer::new(layer.effect_id, layer.payload),
+            other => panic!("a commit, not {other:?}"),
+        }
+    };
+    let entry = vec![raw(&id, None), basic(json!({"exposure": 0.2})), look(100.0)];
+    let image = planes();
+    let sequence = |plan: &GpuPlan| -> Vec<&'static str> {
+        plan.content
+            .iter()
+            .flat_map(|operation| operation.units.iter().map(|unit| unit.program.entry))
+            .collect()
+    };
+    let mut sequences = Vec::new();
+    for amount in [100.0, 0.0, 180.0] {
+        let drafted = vec![
+            raw(&id, None),
+            basic(json!({"exposure": 0.2})),
+            look(amount),
+        ];
+        let (dragged, draft) = evaluation(
+            raw_source(&image, None),
+            entry.clone(),
+            drafted,
+            Some("set-look"),
+        );
+        let view = GpuView::Fit(ProxyBounds {
+            width: 48,
+            height: 32,
+        });
+        let preview = plan_preview(&dragged, draft.as_ref().unwrap(), view).unwrap();
+        let drawn = sequence(planned(&preview));
+        assert!(
+            drawn.contains(&"lf_look_look"),
+            "amount {amount}: {drawn:?}"
+        );
+        sequences.push(drawn);
+    }
+    assert!(
+        sequences.windows(2).all(|pair| pair[0] == pair[1]),
+        "{sequences:?}"
+    );
 }
