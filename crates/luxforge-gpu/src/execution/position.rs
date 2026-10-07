@@ -27,17 +27,17 @@ impl PositionMap {
     };
 
     /// How many words of a step's header the map takes.
-    pub(super) const WORDS: usize = luxforge_gpu_types::POSITION_WORDS;
+    pub const WORDS: usize = luxforge_gpu_types::POSITION_WORDS;
 
     /// The six coefficients as the `f32` words a step's header holds: `a, b, tx, c, d, ty`.
-    pub(super) fn words(self) -> [u32; Self::WORDS] {
+    pub fn words(self) -> [u32; Self::WORDS] {
         [self.a, self.b, self.tx, self.c, self.d, self.ty].map(|value| (value as f32).to_bits())
     }
 
     /// The WGSL `vec2<f32>` the map gives `pixel`, a `vec2<f32>` expression of the pass's pixel,
     /// with its six coefficients read from `lf_words` from index `first`. Every product and sum is
     /// of integers an `f32` holds exactly, so any order of evaluation gives the same `pos`.
-    pub(super) fn wgsl(first: usize, pixel: &str) -> String {
+    pub fn wgsl(first: usize, pixel: &str) -> String {
         let row = |row: usize| {
             let word = |k: usize| format!("lf_f32({}u)", first + 3 * row + k);
             format!(

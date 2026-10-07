@@ -70,7 +70,7 @@ pub fn refuse_gpu_stage() {
 }
 
 /// Whether the launch refused the GPU stage ([`refuse_gpu_stage`]).
-pub(in crate::photo_surface) fn gpu_stage_refused() -> bool {
+pub fn gpu_stage_refused() -> bool {
     REFUSED.load(Ordering::Acquire)
 }
 
@@ -81,12 +81,12 @@ const REFUSED_STAGE: u8 = 3;
 
 /// The capability check's answer as a pipeline's figures hold it, beside its lost flag.
 #[derive(Default)]
-pub(super) struct StageFigure(AtomicU8);
+pub struct StageFigure(AtomicU8);
 
 impl StageFigure {
     /// The capability check answered: the stage can run (`available`), or not, `refused` when the
     /// launch refused it.
-    pub(super) fn checked(&self, available: bool, refused: bool) {
+    pub fn checked(&self, available: bool, refused: bool) {
         let state = match (available, refused) {
             (true, _) => AVAILABLE,
             (false, true) => REFUSED_STAGE,
@@ -96,7 +96,7 @@ impl StageFigure {
     }
 
     /// The stage's state, with `lost` the device's lost flag.
-    pub(super) fn state(&self, lost: &AtomicBool) -> GpuStageState {
+    pub fn state(&self, lost: &AtomicBool) -> GpuStageState {
         match self.0.load(Ordering::Acquire) {
             UNCHECKED => GpuStageState::Unchecked,
             AVAILABLE if lost.load(Ordering::Acquire) => GpuStageState::DeviceLost,

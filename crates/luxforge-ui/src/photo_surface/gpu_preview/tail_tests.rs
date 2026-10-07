@@ -7,6 +7,7 @@ use super::*;
 use luxforge_gpu_types::PlaneSize as PlaneExtent;
 
 fn encoding() -> &'static OutputEncoding {
+    luxforge_gpu::qualification::install_reference_encoding();
     output_encoding().expect("the test reference's tables")
 }
 

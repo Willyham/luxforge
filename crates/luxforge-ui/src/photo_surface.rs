@@ -135,7 +135,6 @@ impl SurfaceId {
 }
 
 /// What one [`PhotoPipeline`] counts of its own texture work, shared with its retirement worker.
-#[derive(Default)]
 struct SurfaceFigures {
     /// How many photograph frames the pipeline has written into its texture. Diagnostics only: an
     /// evidence run records it beside each captured frame, which is how a run proves that
@@ -145,7 +144,6 @@ struct SurfaceFigures {
     upload_bytes: AtomicU64,
     /// How many mip chains the pipeline has generated.
     mip_generations: AtomicU64,
-    retirement_pending: AtomicU64,
     diagnostics: Mutex<SurfaceDiagnostics>,
     /// Only surfaces still drawn by the pipeline; trim removes a closed surface's identity.
     draws: Mutex<HashMap<SurfaceId, SurfaceDiagnostics>>,
@@ -153,10 +151,25 @@ struct SurfaceFigures {
     /// complete after the draw that drew it.
     clocks: Mutex<HashMap<SurfaceId, Arc<gpu_preview::PassClock>>>,
     /// The GPU-preview budget and what is charged to it, which its retirements discharge.
-    preview: gpu_preview::Figures,
+    signals: Arc<luxforge_gpu::Signals>,
     /// The histogram and clipping counts each surface's GPU stage last took, read live
     /// ([`surface_counts`]): a readback completes on the retirement worker's poll, between draws.
     counts: Mutex<HashMap<SurfaceId, HeldCounts>>,
+}
+
+impl Default for SurfaceFigures {
+    fn default() -> Self {
+        Self {
+            writes: AtomicU64::default(),
+            upload_bytes: AtomicU64::default(),
+            mip_generations: AtomicU64::default(),
+            diagnostics: Mutex::default(),
+            draws: Mutex::default(),
+            clocks: Mutex::default(),
+            counts: Mutex::default(),
+            signals: Arc::new(luxforge_gpu::Signals::new(wake_surface)),
+        }
+    }
 }
 
 /// The counts a surface last took: its picture at rest's, by version, and its gesture's last
@@ -197,6 +210,13 @@ pub fn surface_counts(surface: SurfaceId) -> SurfaceCounts {
     }
 }
 
+impl std::ops::Deref for SurfaceFigures {
+    type Target = luxforge_gpu::Signals;
+    fn deref(&self) -> &Self::Target {
+        &self.signals
+    }
+}
+
 impl SurfaceFigures {
     fn diagnostics(&self) -> MutexGuard<'_, SurfaceDiagnostics> {
         self.diagnostics.lock().expect("surface diagnostics lock")
@@ -204,6 +224,11 @@ impl SurfaceFigures {
 
     fn diagnostics_for(&self, surface: SurfaceId) -> SurfaceDiagnostics {
         let mut overall = *self.diagnostics();
+        let gpu = self.signals.diagnostics();
+        overall.gpu_source = gpu.gpu_source;
+        overall.gpu_source_refused = gpu.gpu_source_refused;
+        overall.gpu_retirement_failures += gpu.gpu_retirement_failures;
+        drop(gpu);
         let draws = self.draws.lock().expect("surface draw identities lock");
         let drawn = draws.get(&surface).copied().unwrap_or_default();
         overall.drawn_content = drawn.drawn_content;
@@ -276,10 +301,7 @@ type SurfaceWaker = Arc<dyn Fn() + Send + Sync>;
 static RETIREMENT_WAKER: OnceLock<Mutex<Option<SurfaceWaker>>> = OnceLock::new();
 
 /// One full-photo allocation's cap.
-const FULL_BUDGET: u64 = 512 * 1024 * 1024;
-/// The most a GPU region frame's bucketed output reservation may take ([`exact_region_capacity`]); a
-/// region whose bucket would pass it reserves its own size.
-const REGION_BUCKET_BUDGET: u64 = 32 * 1024 * 1024;
+const FULL_BUDGET: u64 = luxforge_gpu::FULL_OUTPUT_BUCKET_BUDGET;
 /// Every surface's full allocations, resident and retiring: the owner's provisional one current
 /// and one retiring allocation, shared by all surfaces rather than granted to each.
 const FULL_CEILING: u64 = 2 * FULL_BUDGET;
@@ -1430,6 +1452,13 @@ struct TileLayout {
 }
 
 impl TileLayout {
+    fn whole((width, height): (u32, u32)) -> Self {
+        Self {
+            content: [0, 0, width, height],
+            texels: [0, 0, width, height],
+        }
+    }
+
     fn texture_size(&self) -> (u32, u32) {
         (
             self.texels[2] - self.texels[0],
@@ -2185,12 +2214,7 @@ struct RetiredPicture {
     surface: Arc<Retiring>,
 }
 
-/// What the retirement worker holds until the GPU is done with it: a photograph allocation, or a
-/// GPU-preview slot or buffer, each with the charge its own budget keeps until then.
-enum Retired {
-    Picture(RetiredPicture),
-    Preview(gpu_preview::RetiredPreview),
-}
+use luxforge_gpu::Retired;
 
 /// Allocations charged while they retire: the pipeline's, which the shared budget counts, or one
 /// surface's, which its own at-most-one-retiring rules count.
@@ -2228,12 +2252,9 @@ struct SurfaceSlots {
     /// The last draw's blank (bit 0), stale (bit 1), GPU-drawn (bit 2), fallback (bit 3) and
     /// dissolve (bit 4) status, so a change wakes the desktop once.
     drawn_status: AtomicU8,
-    /// The GPU stage's one slot, charged to the GPU-preview budget, while a plan is given or a
-    /// dissolve starts from its output.
-    gpu: Option<gpu_preview::GpuSlot>,
-    /// The light links writing the slot's light planes, light `k` the `k`-th, each charged to the
-    /// GPU-preview budget, kept with the slot ([`gpu_preview::light`]).
-    gpu_lights: gpu_preview::light::Lights,
+    state: luxforge_gpu::State,
+    gpu_picture: Option<Picture>,
+    rest_picture: Option<Picture>,
     /// This frame's GPU stage: the boundary version it evaluated, or why the frame is the CPU's.
     /// `None` when the frame was handed no plan.
     gpu_outcome: Option<Result<u64, GpuFallback>>,
@@ -2249,35 +2270,29 @@ struct SurfaceSlots {
     dissolving: Option<gpu_preview::DissolveFrame>,
     /// The classes of the clipping marks the plan this frame was handed draws.
     gpu_marks: Option<[bool; 2]>,
-    /// The picture at rest the GPU stage draws in tiles ([`PhotoSurface::gpu_rest`]), with the
-    /// slot its tiles are drawn through, charged to the GPU-preview budget.
-    rest: Option<Box<gpu_preview::RestSlot>>,
-    /// The version of a picture at rest whose own parts could not be created, and why.
-    rest_refused: Option<(u64, GpuFallback)>,
     /// The picture at rest dissolving in over the plan's output drawn when its last tile came in:
     /// from that output's boundary to the rest's version.
     rest_dissolve: Option<gpu_preview::Dissolve>,
     /// That dissolve as this frame draws it, while its share is short of one.
     rest_frame: Option<gpu_preview::DissolveFrame>,
-    /// The histogram reduction every picture at rest's tiles are counted with, made the first time
-    /// and kept for the surface's life, charged to the GPU-preview budget.
-    histogram: Option<gpu_preview::histogram::HistogramReduction>,
-    /// The one a gesture's ticks are counted with, apart, since a picture at rest's counts run
-    /// across frames.
-    tick_histogram: Option<gpu_preview::histogram::HistogramReduction>,
-    /// The boundary and revision of the last tick counted, so each is counted once.
-    tick_counted: Option<(u64, u64)>,
-    /// That tick's counts.
-    tick_counts: Option<gpu_preview::TickCounted>,
-    /// What this frame's evaluation of the GPU slot did ([`gpu_preview::EvaluationFigures`]):
-    /// cleared as each evaluation starts.
-    evaluation: gpu_preview::EvaluationFigures,
+}
+
+impl std::ops::Deref for SurfaceSlots {
+    type Target = luxforge_gpu::State;
+    fn deref(&self) -> &Self::Target {
+        &self.state
+    }
+}
+impl std::ops::DerefMut for SurfaceSlots {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.state
+    }
 }
 
 impl SurfaceSlots {
     /// The picture at rest's output, once its last tile is in it.
     fn rest_output(&self) -> Option<&Picture> {
-        self.rest.as_ref().and_then(|rest| rest.output())
+        self.rest_picture.as_ref()
     }
 
     /// The picture at rest's dissolve as a frame at `now` draws it, from the plan's output under
@@ -2308,7 +2323,7 @@ impl SurfaceSlots {
     /// The GPU stage's output, when this frame draws it in place of the photograph's frame.
     fn gpu_output(&self) -> Option<&Picture> {
         if (matches!(self.gpu_outcome, Some(Ok(_))) || self.gpu_held_frame) && !self.gpu_hold {
-            self.gpu.as_ref().map(gpu_preview::GpuSlot::output)
+            self.gpu_picture.as_ref()
         } else {
             None
         }
@@ -2317,7 +2332,7 @@ impl SurfaceSlots {
     /// The GPU stage's output, when this frame dissolves from it to the photograph's frame.
     fn dissolved_output(&self) -> Option<&Picture> {
         self.dissolving?;
-        self.gpu.as_ref().map(gpu_preview::GpuSlot::output)
+        self.gpu_picture.as_ref()
     }
 
     /// The interface thread's time to prepare the GPU output this surface holds.
@@ -2392,13 +2407,6 @@ fn full_capacity(size: (u32, u32), limit: u32) -> (u32, u32) {
     luxforge_gpu_types::layout::full_capacity(size, limit, FULL_BUDGET)
 }
 
-/// What a GPU region frame's output of `size` pixels of the exact stage reserves: the region and
-/// two more each way in steps of 64, so a pan's one-pixel change reuses the texture. The output is
-/// one texture, so a reservation past `limit` on a side is the region's size.
-fn exact_region_capacity(size: (u32, u32), limit: u32) -> (u32, u32) {
-    luxforge_gpu_types::layout::region_capacity(size, limit, REGION_BUCKET_BUDGET)
-}
-
 /// The render pipeline, the samplers and every surface's textures, shared by every instance of
 /// [`PhotoPrimitive`]: Iced keeps one pipeline per primitive type, so the textures are keyed by the
 /// [`SurfaceId`] each primitive carries. Each surface has one set of textures per layer: one
@@ -2418,11 +2426,19 @@ pub struct PhotoPipeline {
     retirement_sender: std::sync::mpsc::Sender<Retired>,
     /// What this pipeline counts of its own texture work.
     figures: Arc<SurfaceFigures>,
-    /// The GPU stage: whether the device can run it, its lost flag and its compiled sequences.
-    gpu: gpu_preview::GpuStage,
-    /// The lights its light links computed last, kept across slot refits
-    /// ([`gpu_preview::light::LightCache`]).
-    kept_lights: gpu_preview::light::LightCache,
+    executor: luxforge_gpu::Executor,
+}
+
+impl std::ops::Deref for PhotoPipeline {
+    type Target = luxforge_gpu::Executor;
+    fn deref(&self) -> &Self::Target {
+        &self.executor
+    }
+}
+impl std::ops::DerefMut for PhotoPipeline {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.executor
+    }
 }
 
 impl PhotoPipeline {
@@ -2448,23 +2464,17 @@ impl PhotoPipeline {
             retiring: Arc::default(),
             shown: false,
             drawn_status: AtomicU8::new(status),
-            gpu: None,
-            gpu_lights: Default::default(),
+            state: luxforge_gpu::State::default(),
+            gpu_picture: None,
+            rest_picture: None,
             gpu_outcome: None,
             gpu_hold: false,
             gpu_held_frame: false,
             gpu_tag: None,
             dissolving: None,
             gpu_marks: None,
-            rest: None,
-            rest_refused: None,
             rest_dissolve: None,
             rest_frame: None,
-            histogram: None,
-            tick_histogram: None,
-            tick_counted: None,
-            tick_counts: None,
-            evaluation: Default::default(),
         }
     }
 
@@ -2482,17 +2492,17 @@ impl PhotoPipeline {
         // The worker receives each retirement once. Admission bounds what can be charged at once
         // — per surface its current full allocation and one retiring, and for every surface
         // together the shared ceiling — so this queue is bounded without a timer.
-        if let Err(error) = self
-            .retirement_sender
-            .send(Retired::Picture(RetiredPicture {
-                picture,
-                surface: Arc::clone(&surface.retiring),
-            }))
-            && let Retired::Picture(retired) = error.0
-        {
-            // Device loss or pipeline teardown can end the worker. Its GPU allocations are then
-            // invalid; release their charge and wake the desktop instead of waiting forever.
-            finish_retirement(&self.figures, retired, &self.retiring, true);
+        let retired = RetiredPicture {
+            picture,
+            surface: Arc::clone(&surface.retiring),
+        };
+        let figures = Arc::clone(&self.figures);
+        let retiring = Arc::clone(&self.retiring);
+        let finish = Retired::External(Box::new(move |failed| {
+            finish_retirement(&figures, retired, &retiring, failed);
+        }));
+        if let Err(error) = self.retirement_sender.send(finish) {
+            error.0.complete_external(true);
         }
     }
 
@@ -2811,24 +2821,7 @@ impl PhotoPipeline {
         } else {
             &self.linear
         };
-        let bindings = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("luxforge.photo_surface.bindings"),
-            layout: &self.layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(sampler),
-                },
-            ],
-        });
+        let bindings = photo_bindings(device, &self.layout, &uniform, &view, sampler);
         Tile {
             layout,
             capacity: (width, height),
@@ -2838,6 +2831,33 @@ impl PhotoPipeline {
             bindings,
         }
     }
+}
+
+fn photo_bindings(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    uniform: &wgpu::Buffer,
+    view: &wgpu::TextureView,
+    sampler: &wgpu::Sampler,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("luxforge.photo_surface.bindings"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    })
 }
 
 impl Drop for PhotoPipeline {
@@ -3025,63 +3045,6 @@ fn wake_surface() {
     }
 }
 
-/// Ends one retirement, whether it `failed`: [`finish_retirement`] over the charges and figures of
-/// the pipeline that retired it, or the GPU-preview budget's.
-type FinishRetirement = Arc<dyn Fn(Retired, bool) + Send + Sync>;
-
-fn retirement_worker(
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    receiver: std::sync::mpsc::Receiver<Retired>,
-    finish: FinishRetirement,
-) {
-    let mut pending: Vec<Arc<Mutex<Option<Retired>>>> = Vec::new();
-    loop {
-        // Sleep indefinitely when idle. While one or two resources retire, poll maintenance at
-        // bounded intervals; wgpu invokes completion callbacks only during submit or poll.
-        let incoming = if pending.is_empty() {
-            match receiver.recv() {
-                Ok(retired) => Some(retired),
-                Err(_) => break,
-            }
-        } else {
-            match receiver.recv_timeout(std::time::Duration::from_millis(2)) {
-                Ok(retired) => Some(retired),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    std::thread::sleep(std::time::Duration::from_millis(2));
-                    None
-                }
-            }
-        };
-        if let Some(retired) = incoming {
-            // `prepare` removed this picture before the current draw is encoded. A previous draw
-            // was already submitted; this empty submit also flushes any pending write_texture
-            // staging before the completion callback's fence is registered.
-            queue.submit(None);
-            let slot = Arc::new(Mutex::new(Some(retired)));
-            let callback_slot = Arc::clone(&slot);
-            let callback_finish = Arc::clone(&finish);
-            queue.on_submitted_work_done(move || {
-                if let Some(retired) = callback_slot.lock().expect("retirement slot lock").take() {
-                    callback_finish(retired, false);
-                }
-            });
-            pending.push(slot);
-        }
-        if !pending.is_empty() {
-            if device.poll(wgpu::PollType::Poll).is_err() {
-                for slot in &pending {
-                    if let Some(retired) = slot.lock().expect("retirement slot lock").take() {
-                        finish(retired, true);
-                    }
-                }
-            }
-            pending.retain(|slot| slot.lock().expect("retirement slot lock").is_some());
-        }
-    }
-}
-
 /// A sampler clamped to the edge, filtering with `filter` both ways, as the image widget's
 /// `FilterMethod` of the same name does.
 fn sampler(device: &wgpu::Device, label: &str, filter: wgpu::FilterMode) -> wgpu::Sampler {
@@ -3150,7 +3113,7 @@ impl PhotoPipeline {
     /// A pipeline that counts its texture work into `figures`, its GPU stage available wherever
     /// the device can run it, whatever the process's launch refused: a test's, or a headless
     /// surface's ([`gpu_preview::headless`]).
-    #[cfg(any(test, feature = "qualification"))]
+    #[cfg(test)]
     fn with_figures(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -3169,6 +3132,8 @@ impl PhotoPipeline {
         figures: Arc<SurfaceFigures>,
         refused: bool,
     ) -> Self {
+        #[cfg(test)]
+        luxforge_gpu::qualification::install_reference_encoding();
         // The toolkit gamma corrects exactly when it chose an sRGB target, and stores image pixels
         // in an sRGB-typed texture when it does. Matching that is what makes a frame's byte land
         // on the surface as the image widget lands it.
@@ -3276,25 +3241,15 @@ impl PhotoPipeline {
             cache: None,
         });
         let retiring = Arc::new(Retiring::default());
-        let (retirement_sender, retirement_receiver) = std::sync::mpsc::channel();
-        let waiter_device = device.clone();
-        let waiter_queue = queue.clone();
-        let finish: FinishRetirement = {
-            let figures = Arc::clone(&figures);
-            let retiring = Arc::clone(&retiring);
-            Arc::new(move |retired, failed| match retired {
-                Retired::Picture(retired) => {
-                    finish_retirement(&figures, retired, &retiring, failed);
-                }
-                Retired::Preview(retired) => {
-                    gpu_preview::finish_retirement(&figures, retired, failed);
-                }
-            })
-        };
-        std::thread::spawn(move || {
-            retirement_worker(waiter_device, waiter_queue, retirement_receiver, finish);
-        });
-        let gpu = gpu_preview::GpuStage::new(device, format, &figures.preview, refused);
+        // One worker retires preview resources and the UI's independently charged photographs.
+        let executor = luxforge_gpu::Executor::with_stage(
+            device,
+            queue,
+            format,
+            Arc::clone(&figures.signals),
+            refused,
+        );
+        let retirement_sender = executor.retirement_sender.clone();
         Self {
             pipeline,
             layout,
@@ -3306,8 +3261,7 @@ impl PhotoPipeline {
             retiring,
             retirement_sender,
             figures,
-            gpu,
-            kept_lights: Default::default(),
+            executor,
         }
     }
 }

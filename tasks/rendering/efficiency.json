@@ -843,7 +843,7 @@
         {
           "kind": "file",
           "label": "Chain links",
-          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview/chain.rs",
+          "target": "crates/luxforge-gpu/src/execution/chain.rs",
           "relevance": "Each link's block write."
         },
         {

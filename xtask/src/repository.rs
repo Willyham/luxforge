@@ -306,6 +306,7 @@ const TEXT: &[&str] = &["rs", "toml", "md", "json", "wgsl", "txt"];
 /// The source directories of the crates a shipped binary links.
 const SHIPPED_SOURCES: &[&str] = &[
     "crates/luxforge-gpu-types/src",
+    "crates/luxforge-gpu/src",
     "crates/luxforge-core/src",
     "crates/luxforge-net/src",
     "crates/luxforge-app/src",
@@ -322,6 +323,7 @@ const SHIPPED_SOURCES: &[&str] = &[
 /// The crates a shipped binary links, whose normal dependencies the JPEG rules hold.
 const SHIPPED_CRATES: &[&str] = &[
     "crates/luxforge-gpu-types",
+    "crates/luxforge-gpu",
     "crates/luxforge-core",
     "crates/luxforge-net",
     "crates/luxforge-app",
@@ -400,6 +402,17 @@ const SOURCE_RULES: &[SourceRule] = &[
         tests: true,
         once: false,
         reason: "the widget crate (luxforge-ui) never reaches the core",
+    },
+    SourceRule {
+        name: "gpu-backend",
+        tokens: &["luxforge_core", "luxforge_ui", "iced::", "iced_wgpu::"],
+        scope: &["crates/luxforge-gpu"],
+        types: &["rs", "toml"],
+        allowed: &[],
+        mode: Match::Prefix,
+        tests: true,
+        once: false,
+        reason: "the GPU backend executes device data independently of core and presentation",
     },
     // The desktop keeps no stack between messages. An evaluation holds its source, and a RAW
     // source's developed planes hold the source worker's memory gate, so one kept in the desktop's
@@ -931,7 +944,7 @@ const SOURCE_RULES: &[SourceRule] = &[
     },
     // Tests that do not depend on host load: a test orders its steps by a gate or a channel and
     // waits through the one hang-bounded wait, all in `luxforge-testbase`, never by a sleep or a
-    // spin of its own. The one production home keeps its one sleep: the widget crate's GPU
+    // spin of its own. The one production home keeps its one sleep: the backend's GPU
     // retirement worker, which may hold it on one line only, so the tests beside it are held to the
     // rule too.
     SourceRule {
@@ -941,7 +954,7 @@ const SOURCE_RULES: &[SourceRule] = &[
         types: &["rs"],
         allowed: &[
             "crates/luxforge-testbase",
-            "crates/luxforge-ui/src/photo_surface.rs",
+            "crates/luxforge-gpu/src/retirement.rs",
         ],
         mode: Match::Whole,
         tests: true,
@@ -1052,9 +1065,9 @@ const SOURCE_RULES: &[SourceRule] = &[
             // The desktop's diagnostics log writer and its GPU tile worker.
             "crates/luxforge-app/src/diagnostics.rs",
             "crates/luxforge-app/src/app/gpu_tiles.rs",
-            // The widget crate's GPU retirement worker, and its GPU preview's pipeline compiler.
-            "crates/luxforge-ui/src/photo_surface.rs",
-            "crates/luxforge-ui/src/photo_surface/gpu_preview/compile.rs",
+            // The backend's one retirement lane and the current preview pipeline compiler.
+            "crates/luxforge-gpu/src/retirement.rs",
+            "crates/luxforge-gpu/src/execution/compile.rs",
             // The test kit's process threads and the test base's server threads.
             "crates/luxforge-testkit/src/process.rs",
             "crates/luxforge-testbase/src/server.rs",
@@ -1253,6 +1266,27 @@ struct DependencyRule {
 
 const DEPENDENCY_RULES: &[DependencyRule] = &[
     DependencyRule {
+        name: "core-ui-free-gpu-backend",
+        refuses: Depends::Any(&[
+            "iced",
+            "iced_wgpu",
+            "luxforge-core",
+            "luxforge-ui",
+            "luxforge-app",
+            "luxforge-cli",
+            "luxforge-net",
+            "luxforge-raw",
+            "luxforge-watch",
+            "luxforge-jpeg",
+            "rusqlite",
+            "rfd",
+        ]),
+        manifests: &["crates/luxforge-gpu"],
+        tables: EVERY_TABLE,
+        allowed: &[],
+        reason: "luxforge-gpu owns device execution without core, catalog, image-source or UI imports",
+    },
+    DependencyRule {
         name: "std-only-gpu-types",
         refuses: Depends::Every,
         manifests: &["crates/luxforge-gpu-types"],
@@ -1427,6 +1461,7 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
             "naga",
             "rfd",
             "luxforge-ui",
+            "luxforge-gpu",
             "luxforge-app",
         ]),
         manifests: &["crates/luxforge-cli"],
@@ -1450,6 +1485,7 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
             "naga",
             "rfd",
             "luxforge-ui",
+            "luxforge-gpu",
         ]),
         manifests: &["crates/luxforge-core"],
         tables: &[Table::Normal, Table::Build],
@@ -1501,6 +1537,17 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         reason: "only a [dev-dependencies] table may turn on luxforge-ui's qualification feature, \
                  so no build of the desktop reads a GPU pixel back but through the tile runner its \
                  GPU tile worker owns",
+    },
+    DependencyRule {
+        name: "gpu-backend-qualification-only-in-tests",
+        refuses: Depends::Feature {
+            dependency: "luxforge-gpu",
+            feature: "qualification",
+        },
+        manifests: &["", "crates/*", "xtask"],
+        tables: &[Table::Normal, Table::Build, Table::Workspace],
+        allowed: &[],
+        reason: "only a [dev-dependencies] table may turn on luxforge-gpu's qualification feature; production readback belongs to the bounded tile worker",
     },
     // The CPU filters a GPU kernel is qualified against are for qualification: only a
     // `[dev-dependencies]` table turns the core's `qualification` feature on.
@@ -3728,6 +3775,50 @@ fn frame() {}
     }
 
     #[test]
+    fn only_tests_turn_on_the_backends_gpu_qualification() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        // A dev-dependency may turn it on; a dependency without it is the desktop's own.
+        write_all(
+            root,
+            &[(
+                "crates/luxforge-app/Cargo.toml",
+                "[dependencies]\nluxforge-gpu = { path = \"../luxforge-gpu\" }\n\n\
+                 [dev-dependencies]\nluxforge-gpu = { path = \"../luxforge-gpu\", \
+                 features = [\"qualification\"] }\n",
+            )],
+        );
+        let rules = ["gpu-backend-qualification-only-in-tests"];
+        assert!(read(root, &rules).is_ok());
+        // A normal, build or workspace dependency that turns it on is refused.
+        for (path, text) in [
+            (
+                "crates/luxforge-cli/Cargo.toml",
+                "[dependencies]\nluxforge-gpu = { path = \"../luxforge-gpu\", \
+                 features = [\"qualification\"] }\n",
+            ),
+            (
+                "xtask/Cargo.toml",
+                "[build-dependencies.luxforge-gpu]\npath = \"../crates/luxforge-gpu\"\n\
+                 features = [\"qualification\"]\n",
+            ),
+            (
+                "Cargo.toml",
+                "[workspace.dependencies]\nluxforge-gpu = { path = \"crates/luxforge-gpu\", \
+                 features = [\"qualification\"] }\n",
+            ),
+        ] {
+            write_all(root, &[(path, text)]);
+            let error = refusal(root, &rules, path);
+            assert!(
+                error.contains(path) && error.contains("[dev-dependencies] table"),
+                "{path}: {error}"
+            );
+            fs::remove_file(root.join(path)).unwrap();
+        }
+    }
+
+    #[test]
     fn only_tests_turn_on_the_allocation_counter() {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
@@ -4586,7 +4677,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         let rules = &["test-waits", "test-gates"];
-        let surface = "crates/luxforge-ui/src/photo_surface.rs";
+        let surface = "crates/luxforge-gpu/src/retirement.rs";
         let worker = "fn worker() {\n    std::thread::sleep(STEP);\n}\n";
         // The shared crate's one wait and its gate, the production home's one sleep, the core's
         // and the desktop's production blocking points, and tests that wait through the shared
@@ -4920,6 +5011,27 @@ mod tests {
         read(tmp.path(), rule).unwrap();
         fs::write(&other, "pub enum GpuPlaneFormat { Colour }\n").unwrap();
         assert!(refusal(tmp.path(), rule, "duplicate format").contains("shared-gpu-primitives"));
+    }
+
+    #[test]
+    fn gpu_backend_refuses_core_and_ui_dependencies_in_every_table() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = tmp.path().join("crates/luxforge-gpu/Cargo.toml");
+        fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        let clean = "[package]\nname = \"luxforge-gpu\"\n";
+        fs::write(&manifest, clean).unwrap();
+        let rule = &["core-ui-free-gpu-backend"];
+        read(tmp.path(), rule).unwrap();
+        for table in ["dependencies", "build-dependencies", "dev-dependencies"] {
+            for dependency in [
+                "luxforge-core = { path = \"../luxforge-core\" }",
+                "luxforge-ui = { path = \"../luxforge-ui\" }",
+                "gui = { package = \"iced\", version = \"0.14\" }",
+            ] {
+                fs::write(&manifest, format!("{clean}\n[{table}]\n{dependency}\n")).unwrap();
+                assert!(refusal(tmp.path(), rule, dependency).contains("core-ui-free-gpu-backend"));
+            }
+        }
     }
 
     #[test]

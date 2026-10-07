@@ -76,11 +76,11 @@
 //! and inside error scopes read without waiting, as the stage compiles its passes; it belongs where
 //! nothing waits on it, as the mip pass is built with the pipeline.
 
-use super::super::{PhotoPipeline, Retired, SurfaceFigures, wake_surface};
 use super::{
     GpuFallback, GpuStageState, Held, OUTPUT_FORMAT, RetiredPreview, answered, finish_retirement,
     validate,
 };
+use crate::{Executor, Retired, Signals};
 use std::{
     borrow::Cow,
     num::NonZeroU64,
@@ -358,14 +358,14 @@ pub struct HistogramReduction {
     /// The pixels counted since the last clear.
     pixels: u64,
     /// The figures the budget is charged in, and the pipeline's retirement worker.
-    figures: Arc<SurfaceFigures>,
+    figures: Arc<Signals>,
     retirement: mpsc::Sender<Retired>,
 }
 
 impl HistogramReduction {
     /// The kernel and its buffers on `device`, the device `pipeline` draws with, charged to its
     /// GPU-preview budget before anything is created. Compiles the kernel on the calling thread.
-    pub fn new(pipeline: &PhotoPipeline, device: &wgpu::Device) -> Result<Self, HistogramError> {
+    pub fn new(pipeline: &Executor, device: &wgpu::Device) -> Result<Self, HistogramError> {
         let figures = Arc::clone(&pipeline.figures);
         match figures.preview.stage_state() {
             GpuStageState::Available => {}
@@ -550,7 +550,7 @@ impl HistogramReduction {
         {
             queue.submit([encoder.finish()]);
             *outcome.lock().expect("histogram readback lock") = Some(Err(error));
-            wake_surface();
+            self.figures.wake();
             return readback;
         }
         let staging = self.device.create_buffer(&wgpu::BufferDescriptor {
@@ -562,6 +562,7 @@ impl HistogramReduction {
         encoder.copy_buffer_to_buffer(&self.counts, 0, &staging, 0, COUNT_BYTES);
         let mapped = staging.clone();
         let pixels = self.pixels;
+        let wake = self.figures.wake_callback;
         encoder.map_buffer_on_submit(&staging, wgpu::MapMode::Read, .., move |result| {
             // On whichever thread polls the device or submits next: a short decode, then unmapped.
             let counts = match result {
@@ -576,7 +577,7 @@ impl HistogramReduction {
             };
             *outcome.lock().expect("histogram readback lock") = Some(counts);
             // After the counts are stored, so no wake reaches the desktop before them.
-            wake_surface();
+            wake();
         });
         queue.submit([encoder.finish()]);
         // After the submission, so the worker's work-done callback is registered after the mapping.
@@ -658,7 +659,7 @@ fn table_words(limit: u32) -> u64 {
 }
 
 /// Charge `bytes` to the GPU-preview budget, or say why not.
-fn charge(figures: &SurfaceFigures, bytes: u64) -> Result<(), HistogramError> {
+fn charge(figures: &Signals, bytes: u64) -> Result<(), HistogramError> {
     figures
         .preview
         .charge(bytes)
@@ -684,12 +685,7 @@ fn charge(figures: &SurfaceFigures, bytes: u64) -> Result<(), HistogramError> {
 /// Hand `buffer` to the pipeline's retirement worker, still charged `bytes`, as the stage hands a
 /// buffer it outgrew: the worker holds it until the GPU has finished every submission so far,
 /// polling the device meanwhile, then drops it, discharges it and wakes the desktop.
-fn retire(
-    figures: &SurfaceFigures,
-    retirement: &mpsc::Sender<Retired>,
-    buffer: wgpu::Buffer,
-    bytes: u64,
-) {
+fn retire(figures: &Signals, retirement: &mpsc::Sender<Retired>, buffer: wgpu::Buffer, bytes: u64) {
     figures.retirement_pending.fetch_add(1, Ordering::AcqRel);
     if let Err(error) = retirement.send(Retired::Preview(RetiredPreview {
         held: Held::Buffer(buffer),

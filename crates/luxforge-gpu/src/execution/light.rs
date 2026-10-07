@@ -20,7 +20,7 @@
 //!   the stage, the steps' words and blocks and the pipeline — and a link whose key did not change
 //!   encodes nothing. A step reading the light folds that key into its passes' keys and draws whole
 //!   when it changes ([`spatial::GpuSpatial::global`]), the slot evaluating its plan whole then
-//!   ([`PhotoPipeline::evaluate_lit`]).
+//!   ([`Executor::evaluate_lit`]).
 //! - **Bounds.** A link holds the stage's block plane, every tile's words and cut's words, the
 //!   blocks and the passes' parameters, charged to the GPU-preview budget before they are created;
 //!   the light plane is the slot's pool's, one texel. The tile texture is the surface's one
@@ -31,7 +31,7 @@
 //!
 //! - **Where it runs.** A slot evaluating a plan that reads lights ([`super::GpuPlan::lights`]) runs
 //!   each light link first, in the same frame, into its pool's light planes
-//!   ([`PhotoPipeline::evaluate_lit`]): the main slot's plan and every tile of a picture at rest
+//!   ([`Executor::evaluate_lit`]): the main slot's plan and every tile of a picture at rest
 //!   alike. A link whose light did not change encodes nothing; a light that changed makes the slot
 //!   evaluate the plan whole, every link reading it drawn again.
 //! - **Kept across refits.** The pipeline keeps the last [`LIGHT_CACHE`] lights its links wrote,
@@ -45,7 +45,7 @@
 //!   its input's key. Every other slot reads it kept ([`LightInput::Kept`]): a drag's computes its
 //!   stand-in over the source where none is kept, and a picture at rest's view plan waits for it
 //!   ([`GpuFallback::LightPending`]), never drawing a stand-in.
-use super::super::{PhotoPipeline, SurfaceSlots};
+use super::super::{Executor, State};
 use super::BoundaryTexture;
 use super::spatial::PlaneTextureFormat;
 use super::{
@@ -68,7 +68,7 @@ pub const LIGHT_TILE: u32 = 2048;
 
 /// The format a light link's sequence is compiled to write: its frame is never drawn, and its last
 /// pass writes linear values, as a qualification's does, which needs no output encoding.
-pub(super) const LIGHT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
+pub const LIGHT_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba32Float;
 
 /// A light link the surface evaluates: plain data, as a plan is, so this crate names no core type.
 #[derive(Clone, Debug, PartialEq)]
@@ -109,9 +109,9 @@ pub enum LightInput {
 /// Where a light link's tiles are cut from when its input is a stage texture
 /// ([`LightInput::Stage`]): the picture at rest's stage textures and the format they hold.
 #[derive(Clone, Copy)]
-pub(in crate::photo_surface) struct StagesIn<'a> {
-    pub(in crate::photo_surface) holders: &'a [super::staged::StageHolder],
-    pub(in crate::photo_surface) format: BoundaryFormat,
+pub struct StagesIn<'a> {
+    pub holders: &'a [super::staged::StageHolder],
+    pub format: BoundaryFormat,
 }
 
 impl GpuLight {
@@ -325,7 +325,7 @@ const CUT_WORDS: u64 = 11;
 /// the source at full scale in its boundary format: the links run one after another, in one
 /// encoder, so they take this one between them rather than one each, which only their own passes
 /// read. Charged to the GPU-preview budget as scratch.
-pub(in crate::photo_surface) struct LightTile {
+pub struct LightTile {
     format: BoundaryFormat,
     extent: (u32, u32),
     texture: PoolTexture,
@@ -380,10 +380,10 @@ pub const LIGHT_CACHE: usize = 8;
 ///   kept texel into its plane and records the key: no light pass is encoded.
 /// - **Bounds.** At most [`LIGHT_CACHE`] one-texel textures, 128 bytes, each charged to the
 ///   GPU-preview budget as scratch before it is created; one the budget refuses is not kept. They
-///   retire with the source they were computed from ([`PhotoPipeline::retire_kept_lights`]),
+///   retire with the source they were computed from ([`Executor::retire_kept_lights`]),
 ///   whose version every key holds.
 #[derive(Default)]
-pub(in crate::photo_surface) struct LightCache {
+pub struct LightCache {
     entries: Vec<KeptLight>,
     clock: u64,
     /// Over the pipeline's life: light links whose passes were encoded, lights copied in from the
@@ -470,7 +470,7 @@ impl LightCache {
 
     /// The lights it keeps, and the bytes they are charged.
     #[cfg(any(test, feature = "qualification"))]
-    pub(super) fn held(&self) -> (usize, u64) {
+    pub fn held(&self) -> (usize, u64) {
         (
             self.entries.len(),
             self.entries.len() as u64 * spatial::LIGHT_BYTES,
@@ -479,13 +479,13 @@ impl LightCache {
 
     /// The kept lights' texels, in the order they were first kept.
     #[cfg(any(test, feature = "qualification"))]
-    pub(super) fn textures(&self) -> impl Iterator<Item = &wgpu::Texture> {
+    pub fn textures(&self) -> impl Iterator<Item = &wgpu::Texture> {
         self.entries.iter().map(|kept| kept.texture.texture())
     }
 
     /// Light links encoded, lights restored from the cache and light links' blocks rebound, over
     /// the pipeline's life.
-    pub(super) fn counts(&self) -> (u64, u64, u64) {
+    pub fn counts(&self) -> (u64, u64, u64) {
         (self.encoded, self.restored, self.rebinds)
     }
 }
@@ -506,7 +506,7 @@ fn copy_light(encoder: &mut wgpu::CommandEncoder, from: &wgpu::Texture, to: &wgp
 /// A surface's light links, light `k` the `k`-th, and the one tile texture they cut their tiles
 /// into in turn ([`LightTile`]).
 #[derive(Default)]
-pub(in crate::photo_surface) struct Lights {
+pub struct Lights {
     links: Vec<Option<LightLink>>,
     tile: Option<LightTile>,
 }
@@ -527,7 +527,7 @@ impl Lights {
 /// What a light link holds on the GPU, charged to the GPU-preview budget: the stage's block plane,
 /// which only its own passes read, and its buffers; and the content key of the light it last wrote.
 /// It cuts its tiles into its surface's tile texture ([`LightTile`]).
-pub(in crate::photo_surface) struct LightLink {
+pub struct LightLink {
     shape: Shape,
     /// The whole stage's block means beside each block's channel minimum, `rgba32float`.
     blocks: PoolTexture,
@@ -551,7 +551,7 @@ pub(in crate::photo_surface) struct LightLink {
 impl LightLink {
     /// Everything it holds, as charged.
     #[cfg(any(test, feature = "qualification"))]
-    pub(super) fn bytes(&self) -> u64 {
+    pub fn bytes(&self) -> u64 {
         self.texture_bytes + self.buffer_bytes
     }
 
@@ -640,7 +640,7 @@ impl LightLink {
     }
 }
 
-impl PhotoPipeline {
+impl Executor {
     /// A light link of `shape`, charged to the GPU-preview budget before anything is created: its
     /// block plane as the scratch it is, which only its own passes read.
     fn light_link(&self, device: &wgpu::Device, shape: Shape) -> Result<LightLink, GpuFallback> {
@@ -653,7 +653,7 @@ impl PhotoPipeline {
 
     /// Retire `link` through the retirement worker, still charged until the GPU is done with it:
     /// its textures as the scratch they were charged as, and its buffers.
-    pub(super) fn retire_light(&self, link: LightLink) {
+    pub fn retire_light(&self, link: LightLink) {
         let LightLink {
             blocks,
             words,
@@ -720,7 +720,7 @@ impl PhotoPipeline {
     /// lights where they hold it; a kept one ([`LightInput::Kept`]) is restored, or its stand-in
     /// encoded in its place, or the plan waits ([`GpuFallback::LightPending`]).
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn encode_light(
+    pub fn encode_light(
         &mut self,
         link: &mut Option<LightLink>,
         tile: &mut Option<LightTile>,
@@ -908,7 +908,7 @@ impl PhotoPipeline {
     /// Whether `plan` reads a light kept from a picture at rest's sweep that is not kept and that
     /// it has no stand-in for, light plane `k` of `pool` not holding it either: the plan must wait
     /// for the picture at rest to compute it ([`GpuFallback::LightPending`]).
-    pub(super) fn light_pending(&self, plan: &super::GpuPlan, pool: Option<&Pool>) -> bool {
+    pub fn light_pending(&self, plan: &super::GpuPlan, pool: Option<&Pool>) -> bool {
         plan.lights.iter().any(|light| {
             let LightInput::Kept {
                 key,
@@ -932,7 +932,7 @@ impl PhotoPipeline {
     /// when light plane `k` of `pool` does not hold it already and the kept lights do not either:
     /// each tile of its stage copied out of the stage texture into `tile` and reduced into the
     /// stage's block plane, then the selection into the light plane, which is kept under its key
-    /// ([`PhotoPipeline::staged_key`]). Answers that key.
+    /// ([`Executor::staged_key`]). Answers that key.
     fn encode_staged(
         &mut self,
         (link, tile, pool): (&mut Option<LightLink>, &mut Option<LightTile>, &mut Pool),
@@ -1016,7 +1016,7 @@ impl PhotoPipeline {
     /// Retire every light the pipeline keeps ([`LightCache`]), through the retirement worker,
     /// still charged as scratch until the GPU is done with them: the source they were computed
     /// from is let go.
-    pub(super) fn retire_kept_lights(&mut self) {
+    pub fn retire_kept_lights(&mut self) {
         let entries = std::mem::take(&mut self.kept_lights.entries);
         if entries.is_empty() {
             return;
@@ -1027,20 +1027,20 @@ impl PhotoPipeline {
     }
 }
 
-impl PhotoPipeline {
-    /// Evaluate `plan` into `surface`'s slot as [`PhotoPipeline::evaluate`] does, each light its
+impl Executor {
+    /// Evaluate `plan` into `surface`'s slot as [`Executor::evaluate`] does, each light its
     /// steps read written first ([`super::GpuPlan::lights`]): a slot not yet fitted to the plan is
     /// fitted by a first evaluation, which makes its pool hold the light planes; then every light
     /// link is encoded into its plane and submitted, encoding nothing where the plane holds its
-    /// light already ([`PhotoPipeline::encode_light`]); and where any light changed, the slot
+    /// light already ([`Executor::encode_light`]); and where any light changed, the slot
     /// forgets what it holds, so the plan is evaluated whole and every link reading a light draws
     /// with the new one. The surface keeps one link for each light, light `k` the `k`-th, and lets
     /// the ones past the plan's go. Names why the frame is not the GPU's, as `evaluate` does: a
     /// light's sequence compiling, the source still uploading or not held whole among them, the
     /// source checked before anything is fitted.
-    pub(super) fn evaluate_lit(
+    pub fn evaluate_lit(
         &mut self,
-        surface: &mut SurfaceSlots,
+        surface: &mut State,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         plan: &super::GpuPlan,
@@ -1049,13 +1049,13 @@ impl PhotoPipeline {
         self.evaluate_staged(surface, device, queue, plan, change, None)
     }
 
-    /// [`PhotoPipeline::evaluate_lit`] for a tile of a picture at rest drawn in staged sweeps,
+    /// [`Executor::evaluate_lit`] for a tile of a picture at rest drawn in staged sweeps,
     /// whose lights behind a spatial step are reduced from `stages` ([`LightInput::Stage`]). A plan
     /// reading a kept light that is not kept and has no stand-in ([`LightInput::Kept`]) waits,
     /// `light-pending`, before anything is fitted: the slot and what it shows stay as they were.
-    pub(in crate::photo_surface) fn evaluate_staged(
+    pub fn evaluate_staged(
         &mut self,
-        surface: &mut SurfaceSlots,
+        surface: &mut State,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         plan: &super::GpuPlan,
@@ -1136,7 +1136,7 @@ impl PhotoPipeline {
 
     /// Retire every light link of `lights` past the first `keep`, through the retirement worker,
     /// and with none kept the tile texture they cut into.
-    pub(super) fn retire_lights(&self, lights: &mut Lights, keep: usize) {
+    pub fn retire_lights(&self, lights: &mut Lights, keep: usize) {
         if lights.links.len() > keep {
             for link in lights.links.drain(keep..).flatten() {
                 self.retire_light(link);
@@ -1160,7 +1160,7 @@ fn light_key(parts: impl std::hash::Hash) -> u64 {
 }
 
 /// Encode a light's passes over every tile of its stage, then its selection into `light`, the light
-/// plane's view: what [`PhotoPipeline::encode_light`] runs once it knows the light changed.
+/// plane's view: what [`Executor::encode_light`] runs once it knows the light changed.
 fn encode_tiles(
     (held, tile_view): (&mut LightLink, &wgpu::TextureView),
     (device, queue, encoder): (&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder),
@@ -1443,7 +1443,7 @@ fn encode_select(
 /// buffers, the largest window of the source one of its tiles is cut from, the light texture and
 /// its readback copy. Creates nothing and reads no pixel; refused as [`read_light`] would be for a
 /// light whose steps are not a light link's or whose tiles the device cannot hold.
-pub(super) fn read_light_charge(
+pub fn read_light_charge(
     device: &wgpu::Device,
     source: &super::GpuSource,
     light: &GpuLight,
@@ -1479,7 +1479,7 @@ const LIGHT_READBACK: u64 = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT as u64;
 /// every block is one tile's, read in the same order. Then the selection writes the light, which
 /// is copied out and read back. Blocks its caller until the device is done; never on the
 /// interface thread. The caller charges [`read_light_charge`] first.
-pub(super) fn read_light(
+pub(crate) fn read_light(
     (device, queue): (&wgpu::Device, &wgpu::Queue),
     (compiled, support, layouts): (&Compiled, &super::Support, &super::SourceLayouts),
     source: &super::GpuSource,
@@ -1539,7 +1539,7 @@ pub(super) fn read_light(
 /// step, over a stage texture in `format`: the link's textures and buffers, the tile it copies each
 /// of the stage's tiles into, the light texture and its readback copy. Creates nothing; refused for
 /// a light over the source or whose tiles the device cannot hold.
-pub(super) fn read_staged_light_charge(
+pub fn read_staged_light_charge(
     device: &wgpu::Device,
     format: BoundaryFormat,
     light: &GpuLight,
@@ -1565,7 +1565,7 @@ pub(super) fn read_staged_light_charge(
 /// the stage's block plane, in the order a link over the whole stage reduces it, so the light is
 /// the photo surface's own from the same stage, bit for bit. Blocks its caller until the device is
 /// done; never on the interface thread. The caller charges [`read_staged_light_charge`] first.
-pub(super) fn read_staged_light(
+pub(crate) fn read_staged_light(
     (device, queue): (&wgpu::Device, &wgpu::Queue),
     (compiled, support): (&Compiled, &super::Support),
     (holder, format): (&super::staged::StageHolder, BoundaryFormat),
@@ -1718,7 +1718,7 @@ fn select_into_and_read(
 /// is one tile's, read in the order the whole stage would read it: the light is a stage texture's,
 /// bit for bit. Holds the link's block plane and buffers, one tile texture of the side and the
 /// light texel, charged by its caller before it is created ([`LightReducer::charge`]).
-pub(super) struct LightReducer {
+pub struct LightReducer {
     link: LightLink,
     tile: LightTile,
     /// The light the selection writes, one `rgba32float` texel, copied out to be kept or read.
@@ -1747,7 +1747,7 @@ impl LightReducer {
 
     /// What a reducer of `light` over tiles of `side` in `format` takes on `device`: the link's
     /// block plane and buffers, its tile texture and the light texel. Creates nothing.
-    pub(super) fn charge(
+    pub fn charge(
         device: &wgpu::Device,
         light: &GpuLight,
         format: BoundaryFormat,
@@ -1760,7 +1760,7 @@ impl LightReducer {
 
     /// A reducer of `light` over tiles of `side` in `format` on `device`, its words, blocks and
     /// parameters written: its caller charges [`LightReducer::charge`] first.
-    pub(super) fn create(
+    pub fn create(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         light: &GpuLight,
@@ -1799,14 +1799,14 @@ impl LightReducer {
     }
 
     /// Whether every tile of the stage has been reduced.
-    pub(super) fn complete(&self) -> bool {
+    pub fn complete(&self) -> bool {
         self.reduced.iter().all(|reduced| *reduced)
     }
 
     /// Encode the reduction of `rect` (`[x0, y0, x1, y1)` of the stage, one of its tiles), whose
     /// texels `from` holds from texel `origin` on in the stage's format: copied into the tile
     /// texture and reduced into the block plane's blocks it holds.
-    pub(super) fn reduce(
+    pub(crate) fn reduce(
         &mut self,
         (device, encoder): (&wgpu::Device, &mut wgpu::CommandEncoder),
         (compiled, support): (&Compiled, &super::Support),
@@ -1853,7 +1853,7 @@ impl LightReducer {
 
     /// Encode the selection of the light from the block plane into its light texture, once every
     /// tile is reduced.
-    pub(super) fn select(
+    pub(crate) fn select(
         &self,
         (device, encoder): (&wgpu::Device, &mut wgpu::CommandEncoder),
         (compiled, support): (&Compiled, &super::Support),
@@ -1870,13 +1870,13 @@ impl LightReducer {
     }
 
     /// The light texel the selection wrote.
-    pub(super) fn light(&self) -> &wgpu::Texture {
+    pub fn light(&self) -> &wgpu::Texture {
         self.light.texture()
     }
 
     /// The light selected once every tile is reduced, and read back, `[r, g, b, 1]`: what a tile
     /// runner keeps. Blocks its caller until the device is done.
-    pub(super) fn read(
+    pub(crate) fn read(
         &self,
         (device, queue): (&wgpu::Device, &wgpu::Queue),
         (compiled, support): (&Compiled, &super::Support),
@@ -1894,10 +1894,10 @@ impl LightReducer {
     }
 }
 
-impl PhotoPipeline {
+impl Executor {
     /// A reducer of `light` over tiles of `side` in `format` ([`LightReducer`]), charged to the
     /// GPU-preview budget as scratch before it is created.
-    pub(super) fn light_reducer(
+    pub fn light_reducer(
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -1913,7 +1913,7 @@ impl PhotoPipeline {
     }
 
     /// Retire `reducer` through the retirement worker, still charged until the GPU is done with it.
-    pub(super) fn retire_reducer(&self, reducer: LightReducer) {
+    pub fn retire_reducer(&self, reducer: LightReducer) {
         let LightReducer {
             link, tile, light, ..
         } = reducer;
@@ -1925,7 +1925,7 @@ impl PhotoPipeline {
     /// Keep the light `reducer` selected under `key`, the input key of `light` as
     /// [`LightInput::Stage`] keeps it, so every plan reading it kept restores it: copied into the
     /// kept lights on `encoder`. `false` when the kept lights refuse its charge.
-    pub(super) fn keep_reduced(
+    pub fn keep_reduced(
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
@@ -1948,7 +1948,7 @@ impl PhotoPipeline {
     }
 
     /// Whether the pipeline keeps the light of `light` whose input key is `key`.
-    pub(super) fn keeps_light(&self, light: &GpuLight, key: u64) -> bool {
+    pub fn keeps_light(&self, light: &GpuLight, key: u64) -> bool {
         self.staged_key(light, key)
             .is_ok_and(|key| self.kept_lights.holds(key))
     }
@@ -1973,7 +1973,7 @@ pub use bench::{LightBench, Lit};
 /// does.
 #[cfg(any(test, feature = "qualification"))]
 mod bench {
-    use super::super::super::{PhotoPipeline, SurfaceSlots};
+    use super::super::super::{Executor, State};
     use super::super::{GpuChange, GpuFallback, GpuPlan, GpuSource, Held, spatial};
     use super::{GpuLight, LightLink, LightTile};
     use std::sync::Arc;
@@ -1991,12 +1991,12 @@ mod bench {
 
     /// One surface of a pipeline of its own on a headless device, its slot drawing a plan as the
     /// desktop's does, its light links run before its chain, and a light link of its own beside it
-    /// that computes a light alone ([`PhotoPipeline::encode_light`]).
+    /// that computes a light alone ([`Executor::encode_light`]).
     pub struct LightBench {
         device: wgpu::Device,
         queue: wgpu::Queue,
-        pipeline: PhotoPipeline,
-        surface: SurfaceSlots,
+        pipeline: Executor,
+        surface: State,
         /// The pool a light is drawn into when no plan reads it.
         pool: spatial::Pool,
         link: Option<LightLink>,
@@ -2006,7 +2006,7 @@ mod bench {
 
     impl LightBench {
         pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
-            let pipeline = PhotoPipeline::with_figures(
+            let pipeline = Executor::with_figures(
                 device,
                 queue,
                 wgpu::TextureFormat::Bgra8UnormSrgb,
@@ -2053,7 +2053,7 @@ mod bench {
         /// texture of the slot's pool, every record forgotten ([`spatial::Pool::poison`]).
         pub fn set_poison(&mut self, poisoned: bool) {
             self.poisoned = poisoned;
-            #[cfg(test)]
+            #[cfg(any(test, feature = "qualification"))]
             self.pipeline.set_scratch_poison(poisoned);
             if let Some(slot) = self.surface.gpu.as_mut() {
                 slot.pool.set_poisoned(poisoned);
@@ -2199,7 +2199,7 @@ mod bench {
 
         /// `plan` drawn over `source` through the surface's own slot with `change`, reading
         /// `light`, when given, in place of the light links it carries, as the slot runs them
-        /// before its chain ([`PhotoPipeline::evaluate_lit`]). Its output's codes, RGBA row by row.
+        /// before its chain ([`Executor::evaluate_lit`]). Its output's codes, RGBA row by row.
         pub fn draw(
             &mut self,
             source: &GpuSource,
@@ -2230,7 +2230,7 @@ mod bench {
         }
 
         /// `plan` drawn over `source` as the desktop's surface draws a frame of it
-        /// ([`PhotoPipeline::prepare_gpu`]): the slot running the light links the plan carries
+        /// ([`Executor::prepare_gpu`]): the slot running the light links the plan carries
         /// ([`super::super::GpuPlan::lights`]) before its chain, as each frame does, waiting out a
         /// compile and the upload, with `change`. Its output's codes, RGBA row by row.
         pub fn prepare(
@@ -2242,27 +2242,25 @@ mod bench {
             let mut waited = GpuFallback::Compiling;
             luxforge_testbase::try_wait_for("a frame's lights and chain", || {
                 self.hand(source);
-                self.pipeline.prepare_gpu(
+                let outcome = self.pipeline.evaluate_lit(
                     &mut self.surface,
                     &self.device,
                     &self.queue,
-                    Some(plan),
-                    None,
+                    plan,
                     change,
                 );
                 self.trim();
-                match self.surface.gpu_outcome {
-                    Some(Ok(_)) => Some(Ok(())),
-                    Some(Err(
+                match outcome {
+                    Ok(_) => Some(Ok(())),
+                    Err(
                         waiting @ (GpuFallback::Compiling
                         | GpuFallback::SourceUploading { .. }
                         | GpuFallback::BoundaryUploading { .. }),
-                    )) => {
+                    ) => {
                         waited = waiting;
                         None
                     }
-                    Some(Err(fallback)) => Some(Err(fallback)),
-                    None => Some(Err(GpuFallback::PipelineFailed)),
+                    Err(fallback) => Some(Err(fallback)),
                 }
             })
             .unwrap_or(Err(waited))?;

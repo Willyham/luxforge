@@ -50,6 +50,7 @@ fn compiled(pipeline: &mut PhotoPipeline, steps: &[GpuStep]) {
     wait_until("the compile thread", || {
         !pipeline
             .gpu
+            .inspection()
             .pipelines
             .compiling(steps, super::OUTPUT_FORMAT)
     });
@@ -182,7 +183,7 @@ fn the_picture_on_screen_compiles_first_then_the_open_stack_then_the_rest() {
             .is_some_and(|warm_up| !warm_up.running())
     });
     assert_eq!(
-        pipeline.gpu.pipelines.taken(),
+        pipeline.gpu.inspection().pipelines.taken(),
         [
             "order_picture",
             "order_open_1",
@@ -303,9 +304,9 @@ fn the_pipeline_cache_stays_bounded() {
         for steps in chunk {
             compiled(&mut pipeline, steps);
         }
-        assert!(pipeline.gpu.pipelines.len() <= PIPELINE_CACHE);
+        assert!(pipeline.gpu.inspection().pipelines.len() <= PIPELINE_CACHE);
     }
-    assert_eq!(pipeline.gpu.pipelines.len(), PIPELINE_CACHE);
+    assert_eq!(pipeline.gpu.inspection().pipelines.len(), PIPELINE_CACHE);
     assert_eq!(
         figures.preview.compiles(),
         (PIPELINE_CACHE + 4) as u64,
@@ -351,17 +352,19 @@ fn the_compile_queue_drains_with_no_frame_drawn() {
         assert!(list.iter().all(|steps| {
             !pipeline
                 .gpu
+                .inspection()
                 .pipelines
                 .compiling(steps, super::OUTPUT_FORMAT)
         }));
         // Nothing left once the last compile is kept: what a scripted wait for warming reads.
         assert_eq!(figures.preview.compile_pending().0, 0);
     }
-    assert_eq!(pipeline.gpu.pipelines.len(), PIPELINE_CACHE);
+    assert_eq!(pipeline.gpu.inspection().pipelines.len(), PIPELINE_CACHE);
     for steps in &sequences[PIPELINE_CACHE..] {
         assert!(
             pipeline
                 .gpu
+                .inspection()
                 .pipelines
                 .failure(steps, super::OUTPUT_FORMAT)
                 .is_none()
