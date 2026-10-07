@@ -44,7 +44,8 @@ zeroize.workspace = true
 test-skip-disk-flush = []
 # Lets a test outside the core hold the index lane's listings at a `luxforge_testbase::Gate`
 # (`OwnerHandle::hold_listings`), as the core's own tests do, so a desktop test acts while a listing
-# runs whatever the host's load. Only `[dev-dependencies]` tables turn it on (`cargo xtask
+# runs whatever the host's load, and keep its catalog from listing a card the host mounts meanwhile
+# (`OwnerHandle::read_no_host_mounts`). Only `[dev-dependencies]` tables turn it on (`cargo xtask
 # check-repository`'s `test-holds-only-in-tests` rule), so a `cargo build` of any binary has neither
 # the hold nor `luxforge-testbase`.
 test-holds = ["dep:luxforge-testbase"]

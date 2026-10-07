@@ -177,8 +177,12 @@ pub(super) fn selecting() -> (Editor, PathBuf) {
     selecting_over(seeded())
 }
 
-/// The editor over `catalog`, as [`selecting`] opens it.
+/// The editor over `catalog`, as [`selecting`] opens it. Its owner reads no mount table: a card
+/// the host mounts meanwhile, such as the core's disk-image tests attach with a `DCIM` folder of
+/// two photographs, would otherwise be listed as the catalog opens, and its event listed beside
+/// the seeded one (`OwnerHandle::read_no_host_mounts`).
 pub(super) fn selecting_over(catalog: PathBuf) -> (Editor, PathBuf) {
+    OwnerHandle::read_no_host_mounts(&catalog);
     let (owner, join) = OwnerHandle::start(&catalog).unwrap();
     let (mut editor, _) = Editor::new(Boot {
         owner,
