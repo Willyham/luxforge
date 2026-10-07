@@ -175,6 +175,8 @@ Reading a card or folder, reading previews, developing picks, checking and searc
 
 #### Not in Select yet
 
+HDR exposure merging is [planned](design/hdr-merge.md), not available yet. The proposed **Import merged** creates a saved HDR photograph with its originals in an expandable stack; **Pick merged** also adds it to the development set by default. Original frames remain individually pickable, and removing or undoing a merge retains the saved result and edits for restoration. The first version is planned for RAW brackets with automatic alignment and deghosting. Panorama stitching is outside that plan.
+
 Previews in Missing originals' rows, dragging photographs onto a folder (Move to… does it), moving a collection into another group and changing a smart collection's search (`collection.move` and `collection.update-smart` over the API), Locate original… when an export is refused, and narrowing the Metadata browser to photographs with no date, place, lens or known camera, which it lists with their counts but cannot select.
 
 ## Edit and inspect

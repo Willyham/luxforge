@@ -36,6 +36,14 @@ RAW development and looks.
 | --- | --- |
 | [RAW looks](raw/raw-looks.json) | New RAW photos start from a Luxforge look: the frozen look units and the corpus-chosen Standard look in the Original with its preference and section (phase 1), then Match camera fitted to the embedded preview off the owner (phase 2), measured once at the end |
 
+### Library (`library/`)
+
+Selection, catalog sources and library operations.
+
+| Plan | Purpose |
+| --- | --- |
+| [HDR exposure merges](library/hdr-merge.json) ([design](../docs/design/hdr-merge.md)) | Planned Import merged and Pick merged, durable float derived sources, result-led stacks, original picks and reversible removal/undo; RAW-only inputs with automatic alignment/deghosting; storage, radiance and alignment tasks are independently ready, implementation is not authorized; panoramas are outside the plan |
+
 ### Editing tools (`editing/`)
 
 One plan per tool module.
