@@ -895,13 +895,7 @@ const REGION_BUCKET_BYTES: u64 = 32 << 20;
 const FULL_BUCKET_BYTES: u64 = 512 << 20;
 
 /// A slot's placement uniform, six `vec4<f32>`.
-const UNIFORM_BYTES: u64 = 96;
-
-/// One pass's slice of a link's parameter buffer.
-const PARAMS_STRIDE: u64 = 256;
-
-/// One light plane: a single `rgba32float` texel.
-const LIGHT_PLANE_BYTES: u64 = 16;
+const UNIFORM_BYTES: u64 = luxforge_gpu_types::layout::PLACEMENT_BYTES as u64;
 
 /// What a picture at rest's accumulator and its rest output take a view pixel: an `f32` sum of
 /// four channels and the quantized codes.
@@ -1070,14 +1064,9 @@ pub(crate) fn links_bytes(
     // writes its last link's output as an intermediate.
     let textures = if links.last { count } else { count + 1 };
     let tail = if links.last && has_tail(plan) {
-        let texel = if plan.geometry.clamps {
-            4
-        } else if plan.linear {
-            16
-        } else {
-            8
-        };
-        texels * texel
+        texels
+            * luxforge_gpu_types::layout::TailFormat::of(plan.geometry.clamps, plan.linear)
+                .texel_bytes()
     } else {
         0
     };
@@ -1089,63 +1078,35 @@ pub(crate) fn links_bytes(
     let output = u64::from(output.0) * u64::from(output.1) * 4 + UNIFORM_BYTES;
     // Each link's kept planes and parameters, and the most scratch planes of each class any link
     // holds: a class is the plane's texture format and its size.
-    let class = |plane: &super::GpuPlane| {
-        let format = match plane.format {
-            super::GpuPlaneFormat::HalfScalar => super::GpuPlaneFormat::Scalar,
-            super::GpuPlaneFormat::HalfPair => super::GpuPlaneFormat::Pair,
-            other => other,
-        };
-        (format, plane.size)
-    };
+    use luxforge_gpu_types::layout::{LinkLayout, PlaneClass, PlaneRole, PoolLayout};
     let mut kept = 0;
-    let mut pool: Vec<((super::GpuPlaneFormat, super::GpuPlaneSize), u64)> = Vec::new();
-    let mut lights = 0;
+    let mut pool = PoolLayout::default();
     for spatial in spatial {
-        let mut scratch: Vec<((super::GpuPlaneFormat, super::GpuPlaneSize), u64)> = Vec::new();
+        let mut layout = LinkLayout::default();
         for (number, plane) in spatial.planes.iter().enumerate() {
-            if spatial.light == Some(number) {
-                // The slot's light plane, which its pool holds once for every link.
-                if let Some(k) = plan.light_of(spatial.layer) {
-                    lights = lights.max(k as u64 + 1);
-                }
-                continue;
-            }
-            let (width, height) = plane.extent(origin, size);
-            let bytes = u64::from(width) * u64::from(height) * plane.format.texel_bytes();
-            if spatial
-                .applies
-                .iter()
-                .any(|apply| apply.planes.contains(&number))
-            {
-                kept += bytes;
+            let role = if spatial.light == Some(number) {
+                let Some(k) = plan.light_of(spatial.layer) else {
+                    continue;
+                };
+                PlaneRole::Light(k as u32)
             } else {
-                match scratch.iter_mut().find(|(held, _)| *held == class(plane)) {
-                    Some((_, count)) => *count += 1,
-                    None => scratch.push((class(plane), 1)),
+                let class = PlaneClass::new(plane.format, plane.size);
+                if spatial
+                    .applies
+                    .iter()
+                    .any(|apply| apply.planes.contains(&number))
+                {
+                    PlaneRole::Kept(class)
+                } else {
+                    PlaneRole::Scratch(class)
                 }
-            }
-        }
-        kept += PARAMS_STRIDE * spatial.passes.len().max(1) as u64;
-        for (held, count) in scratch {
-            match pool.iter_mut().find(|(class, _)| *class == held) {
-                Some((_, most)) => *most = (*most).max(count),
-                None => pool.push((held, count)),
-            }
-        }
-    }
-    let pool: u64 = pool
-        .into_iter()
-        .map(|((class, extent), count)| {
-            let plane = super::GpuPlane {
-                format: class,
-                size: extent,
-                scratch: true,
             };
-            let (width, height) = plane.extent(origin, size);
-            count * u64::from(width) * u64::from(height) * class.texel_bytes()
-        })
-        .sum::<u64>()
-        + lights * LIGHT_PLANE_BYTES;
+            layout.push(role);
+        }
+        kept += layout.kept_bytes(origin, size, spatial.passes.len());
+        pool.include(&layout);
+    }
+    let pool = pool.bytes(origin, size);
     texels * format.texel_bytes() as u64 * textures + tail + output + kept + pool
 }
 
@@ -1217,29 +1178,12 @@ fn has_tail(plan: &GpuPlan) -> bool {
 /// The texture a region's output of `size` pixels takes: two more pixels each way, in steps of 64,
 /// so a pan's one-pixel change reuses it, where that is within the region bucket and the device's
 /// side; its own size otherwise.
-fn region_capacity((width, height): (u32, u32)) -> (u32, u32) {
-    let reserved = (
-        width.saturating_add(2).next_multiple_of(64),
-        height.saturating_add(2).next_multiple_of(64),
-    );
-    let fits = reserved.0 <= DEVICE_TEXTURE_SIDE
-        && reserved.1 <= DEVICE_TEXTURE_SIDE
-        && u64::from(reserved.0) * u64::from(reserved.1) * 4 <= REGION_BUCKET_BYTES;
-    if fits { reserved } else { (width, height) }
+fn region_capacity(size: (u32, u32)) -> (u32, u32) {
+    luxforge_gpu_types::layout::region_capacity(size, DEVICE_TEXTURE_SIDE, REGION_BUCKET_BYTES)
 }
 
-/// The texture a whole frame's output of `size` pixels takes: a square of the longer side, to the
-/// next power of two up to 2048 and the next multiple of 512 past it, where that fits the device's
-/// side and the full bucket; its own size otherwise.
-fn full_capacity((width, height): (u32, u32)) -> (u32, u32) {
-    let longer = width.max(height);
-    let edge = if longer <= 2048 {
-        longer.next_power_of_two()
-    } else {
-        longer.next_multiple_of(512)
-    };
-    let fits = edge <= DEVICE_TEXTURE_SIDE && u64::from(edge).pow(2) * 4 <= FULL_BUCKET_BYTES;
-    if fits { (edge, edge) } else { (width, height) }
+fn full_capacity(size: (u32, u32)) -> (u32, u32) {
+    luxforge_gpu_types::layout::full_capacity(size, DEVICE_TEXTURE_SIDE, FULL_BUCKET_BYTES)
 }
 
 /// What `preview`'s slot and its light links take by its plan's own figures ([`rest_slot_bytes`],

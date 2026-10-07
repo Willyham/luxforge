@@ -10,7 +10,8 @@ mod transport;
 
 pub use methods::schemas;
 pub use owner::{
-    ClientId, EventWake, JobMonitorStats, OwnerHandle, PIXEL_READ_REQUIRED, PreviewRequest,
+    ClientId, EventWake, JobMonitorStats, OwnerHandle, PIXEL_READ_REQUIRED, PreviewRenderIntent,
+    PreviewRequest, PreviewSelection, PreviewStack,
 };
 pub(crate) use owner::{OWNER_THREAD, SourceFlightKey};
 

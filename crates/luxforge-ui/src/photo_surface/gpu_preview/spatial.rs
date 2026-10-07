@@ -1313,7 +1313,7 @@ pub(super) fn supported(limits: &wgpu::Limits) -> bool {
         && limits.max_storage_buffers_per_shader_stage >= 3
         && limits.max_sampled_textures_per_shader_stage >= 16
         && limits.max_bindings_per_bind_group > PARAMS_BINDING
-        && u64::from(limits.min_storage_buffer_offset_alignment) <= PARAMS_STRIDE
+        && layout::parameter_alignment_supported(limits.min_storage_buffer_offset_alignment)
 }
 
 /// One compiled pass module: its text, its pipeline and its second group's layout.
@@ -1488,47 +1488,8 @@ pub(super) fn compile_passes(
     Ok((compiled, modules))
 }
 
-/// A texture's class: the texture format a plane's own format gives it, and the plane's size.
-/// `Scalar` and `HalfScalar` planes are of one class format, `r32float`, and `Pair` and `HalfPair`
-/// of another, `rg32float`. Every link of a slot covers the boundary's size and origin, so a class
-/// has one extent there. Classes are ordered, so a layout compares by what it holds, not by the
-/// order its planes were seen in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub(super) struct Class {
-    /// The plane format that names the class's texture format ([`PlaneFormat::kept_as`]).
-    pub(super) format: PlaneFormat,
-    pub(super) size: PlaneSize,
-}
-
-impl Class {
-    pub(super) fn of(plane: GpuPlane) -> Self {
-        Self {
-            format: plane.format.kept_as(),
-            size: plane.size,
-        }
-    }
-
-    /// A plane of the class, whose texture format, extent and bytes are the class's.
-    pub(super) fn plane(self) -> GpuPlane {
-        GpuPlane {
-            format: self.format,
-            size: self.size,
-        }
-    }
-}
-
-/// Where one plane of a link's spatial step is held.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(super) enum PlaneTexture {
-    /// The link's kept texture at this index: a plane an apply of its step reads.
-    Kept(usize),
-    /// The pool's `k`-th texture of the class ([`PoolKey`]): a scratch plane, the link's `k`-th of
-    /// its class in its own plane order.
-    Pool(Class, usize),
-    /// The slot's light plane `k` ([`PlaneSize::Light`]), which the pool holds for every link and
-    /// the plan's `k`-th light link writes.
-    Light(u32),
-}
+use luxforge_gpu_types::layout::{self, LinkLayout, PlaneRole, PoolLayout};
+pub(super) use luxforge_gpu_types::layout::{PlaneClass as Class, PlaneLocation as PlaneTexture};
 
 /// How a link lays out its planes, and what decides whether the planes it holds serve another
 /// plan: each spatial step's planes, where each is held, the link's kept textures, how many scratch
@@ -1558,8 +1519,8 @@ pub(super) struct PlanesKey {
     locations: Vec<(usize, Vec<PlaneTexture>)>,
     /// The kept textures, each the plane it holds, in plane order.
     kept: Vec<GpuPlane>,
-    /// How many scratch planes of each class the link holds, in class order.
-    scratch: Vec<(Class, usize)>,
+    /// Shared physical placement and scratch counts.
+    layout: LinkLayout,
     /// How many passes the parameter buffer holds a slice for.
     passes: usize,
     size: (u32, u32),
@@ -1600,7 +1561,7 @@ impl PlanesKey {
         let mut planes = Vec::new();
         let mut locations = Vec::new();
         let mut kept = Vec::new();
-        let mut scratch = std::collections::BTreeMap::<Class, usize>::new();
+        let mut layout = LinkLayout::default();
         for (index, step) in steps.iter().enumerate() {
             let GpuStep::Spatial(spatial) = step else {
                 continue;
@@ -1616,18 +1577,19 @@ impl PlanesKey {
                 .iter()
                 .enumerate()
                 .map(|(number, plane)| {
-                    if let PlaneSize::Light(k) = plane.size {
-                        // The slot's, whichever link reads it: never a texture of the link's.
-                        PlaneTexture::Light(k)
-                    } else if read(number) {
-                        kept.push(*plane);
-                        PlaneTexture::Kept(kept.len() - 1)
-                    } else {
-                        let class = Class::of(*plane);
-                        let count = scratch.entry(class).or_default();
-                        *count += 1;
-                        PlaneTexture::Pool(class, *count - 1)
-                    }
+                    let role = match plane.size {
+                        PlaneSize::Light(k) => PlaneRole::Light(k),
+                        PlaneSize::Extent(extent) => {
+                            let class = Class::new(plane.format, extent);
+                            if read(number) {
+                                kept.push(*plane);
+                                PlaneRole::Kept(class)
+                            } else {
+                                PlaneRole::Scratch(class)
+                            }
+                        }
+                    };
+                    layout.push(role)
                 })
                 .collect();
             planes.push((index, spatial.planes.clone()));
@@ -1640,7 +1602,7 @@ impl PlanesKey {
             planes,
             locations,
             kept,
-            scratch: scratch.into_iter().collect(),
+            layout,
             passes: pass_count(steps),
             size,
             origin,
@@ -1656,8 +1618,9 @@ impl PlanesKey {
     }
 
     /// How many scratch planes of each class the link holds, in class order.
-    pub(super) fn scratch(&self) -> &[(Class, usize)] {
-        &self.scratch
+    #[cfg(test)]
+    pub(super) fn scratch(&self) -> Vec<(Class, usize)> {
+        self.layout.scratch()
     }
 
     /// Each kept texture's plane, in plane order ([`PlaneTexture::Kept`]).
@@ -1669,11 +1632,7 @@ impl PlanesKey {
     /// The bytes the kept textures take, and the passes' parameter buffer: what the link holds
     /// beside the pool.
     pub(super) fn kept_bytes(&self) -> u64 {
-        self.kept
-            .iter()
-            .map(|plane| plane.bytes(self.origin, self.size))
-            .sum::<u64>()
-            + self.parameter_bytes()
+        self.layout.kept_bytes(self.origin, self.size, self.passes)
     }
 
     /// The bytes its kept textures and the passes' parameter buffer take, with a texture of its own
@@ -1681,16 +1640,11 @@ impl PlanesKey {
     /// whole charge ([`super::chain_charge`]).
     #[cfg(test)]
     pub(super) fn bytes(&self) -> u64 {
-        self.kept_bytes()
-            + self
-                .scratch
-                .iter()
-                .map(|&(class, count)| count as u64 * class.plane().bytes(self.origin, self.size))
-                .sum::<u64>()
+        self.kept_bytes() + layout::pool_bytes(self.layout.scratch(), self.origin, self.size, 0)
     }
 
     fn parameter_bytes(&self) -> u64 {
-        PARAMS_STRIDE * self.passes.max(1) as u64
+        layout::parameter_bytes(self.passes)
     }
 }
 
@@ -1712,7 +1666,7 @@ pub(super) struct PoolKey {
 }
 
 /// The bytes one light plane takes: one `rgba32float` texel.
-pub(super) const LIGHT_BYTES: u64 = 16;
+pub(super) use luxforge_gpu_types::layout::LIGHT_BYTES;
 
 impl PoolKey {
     /// The pool the spatial steps of `links` take their scratch planes from over a boundary of
@@ -1723,27 +1677,17 @@ impl PoolKey {
         size: (u32, u32),
         origin: (u32, u32),
     ) -> Self {
-        let mut most = std::collections::BTreeMap::<Class, usize>::new();
-        let mut lights = 0;
+        let mut layout = PoolLayout::default();
         for steps in links {
-            for step in steps {
-                if let GpuStep::Spatial(spatial) = step {
-                    lights = spatial.lights().map(|k| k + 1).fold(lights, u32::max);
-                }
-            }
-            let Some(key) = PlanesKey::of(steps, size, origin) else {
-                continue;
-            };
-            for &(class, count) in key.scratch() {
-                let held = most.entry(class).or_default();
-                *held = (*held).max(count);
+            if let Some(key) = PlanesKey::of(steps, size, origin) {
+                layout.include(&key.layout);
             }
         }
         Self {
-            textures: most.into_iter().collect(),
+            textures: layout.textures(),
             size,
             origin,
-            lights,
+            lights: layout.lights,
         }
     }
 
@@ -1772,22 +1716,22 @@ impl PoolKey {
 
     /// The bytes one of its textures of `class` takes.
     fn texture_bytes(&self, class: Class) -> u64 {
-        let (width, height) = self.extent(class);
-        u64::from(width) * u64::from(height) * class.format.texel_bytes()
+        class.bytes(self.origin, self.size)
     }
 
     /// The extent of each of its textures of `class`.
     pub(super) fn extent(&self, class: Class) -> (u32, u32) {
-        class.plane().extent(self.origin, self.size)
+        class.extent(self.origin, self.size)
     }
 
     /// The bytes its textures take, its light planes' among them.
     pub(super) fn bytes(&self) -> u64 {
-        self.textures()
-            .iter()
-            .map(|&(class, count)| count as u64 * self.texture_bytes(class))
-            .sum::<u64>()
-            + u64::from(self.lights) * LIGHT_BYTES
+        layout::pool_bytes(
+            self.textures.iter().copied(),
+            self.origin,
+            self.size,
+            self.lights,
+        )
     }
 }
 
@@ -2193,7 +2137,7 @@ impl Pool {
             .iter()
             .map(|(class, _)| {
                 let format = class.format.texture();
-                let (width, height) = class.plane().extent(self.origin, self.size);
+                let (width, height) = class.extent(self.origin, self.size);
                 let texel = format.block_copy_size(None).unwrap_or(16);
                 let row = (width * texel).div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
                     * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;

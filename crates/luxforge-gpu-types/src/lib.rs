@@ -1,6 +1,8 @@
 //! Pure GPU formats, extents and shader calling conventions shared by semantic planning and
 //! device execution. No recipe, device, executor or policy budget belongs here.
 
+pub mod layout;
+
 /// How a boundary's texels are held: four little-endian half floats (`rgba16float`), or four
 /// little-endian `f32` (`rgba32float`), red, green, blue and an opaque alpha.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

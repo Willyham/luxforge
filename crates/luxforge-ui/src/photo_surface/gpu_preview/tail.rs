@@ -274,12 +274,11 @@ impl GpuTail {
 /// the CPU quantizes a JPEG's segments, `f32` for one that keeps the RAW linear path's values
 /// whole, else half floats.
 pub(super) fn intermediate(quantize: bool, preserve_f32: bool) -> wgpu::TextureFormat {
-    if quantize {
-        wgpu::TextureFormat::Rgba8Unorm
-    } else if preserve_f32 {
-        wgpu::TextureFormat::Rgba32Float
-    } else {
-        wgpu::TextureFormat::Rgba16Float
+    use luxforge_gpu_types::layout::TailFormat;
+    match TailFormat::of(quantize, preserve_f32) {
+        TailFormat::Codes => wgpu::TextureFormat::Rgba8Unorm,
+        TailFormat::Float => wgpu::TextureFormat::Rgba32Float,
+        TailFormat::Half => wgpu::TextureFormat::Rgba16Float,
     }
 }
 

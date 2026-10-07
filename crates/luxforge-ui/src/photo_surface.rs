@@ -277,7 +277,7 @@ static RETIREMENT_WAKER: OnceLock<Mutex<Option<SurfaceWaker>>> = OnceLock::new()
 
 /// One full-photo allocation's cap.
 const FULL_BUDGET: u64 = 512 * 1024 * 1024;
-/// The most a GPU region frame's bucketed output reservation may take ([`region_reservation`]); a
+/// The most a GPU region frame's bucketed output reservation may take ([`exact_region_capacity`]); a
 /// region whose bucket would pass it reserves its own size.
 const REGION_BUCKET_BUDGET: u64 = 32 * 1024 * 1024;
 /// Every surface's full allocations, resident and retiring: the owner's provisional one current
@@ -1522,7 +1522,7 @@ fn tile_layout(size: (u32, u32), limit: u32) -> Vec<TileLayout> {
 }
 
 /// Six `vec4<f32>`.
-const UNIFORM_SIZE: usize = 96;
+const UNIFORM_SIZE: usize = luxforge_gpu_types::layout::PLACEMENT_BYTES;
 
 /// The uniform block the shader reads for one tile, as little-endian floats: the render pass's
 /// viewport and the whole picture's destination, both in physical pixels of the whole frame; the
@@ -2388,43 +2388,15 @@ fn allocated_bytes(tiles: &[TileLayout]) -> u64 {
 
 /// A full-slot proxy commonly changes orientation or grows a little on a refit. Reserve a square
 /// bucket while it fits the slot's own byte cap, so those changes only rewrite used texels.
-fn full_capacity((width, height): (u32, u32), limit: u32) -> (u32, u32) {
-    let longer = width.max(height);
-    let edge = if longer <= 2048 {
-        longer.next_power_of_two()
-    } else {
-        longer.next_multiple_of(512)
-    };
-    let square = (edge, edge);
-    if edge <= limit && allocated_bytes(&tile_layout(square, limit)) <= FULL_BUDGET {
-        square
-    } else {
-        (width, height)
-    }
+fn full_capacity(size: (u32, u32), limit: u32) -> (u32, u32) {
+    luxforge_gpu_types::layout::full_capacity(size, limit, FULL_BUDGET)
 }
 
 /// What a GPU region frame's output of `size` pixels of the exact stage reserves: the region and
 /// two more each way in steps of 64, so a pan's one-pixel change reuses the texture. The output is
 /// one texture, so a reservation past `limit` on a side is the region's size.
 fn exact_region_capacity(size: (u32, u32), limit: u32) -> (u32, u32) {
-    let reserved = region_reservation(size, limit);
-    if reserved.0 <= limit && reserved.1 <= limit {
-        reserved
-    } else {
-        size
-    }
-}
-
-/// [`exact_region_capacity`]'s bucket for a region of `(width, height)` pixels, or its own size
-/// where the bucket would pass [`REGION_BUCKET_BUDGET`].
-fn region_reservation((width, height): (u32, u32), limit: u32) -> (u32, u32) {
-    let projected = |used: u32| used.saturating_add(2).next_multiple_of(64);
-    let reserved = (projected(width), projected(height));
-    if allocated_bytes(&tile_layout(reserved, limit)) <= REGION_BUCKET_BUDGET {
-        reserved
-    } else {
-        (width, height)
-    }
+    luxforge_gpu_types::layout::region_capacity(size, limit, REGION_BUCKET_BUDGET)
 }
 
 /// The render pipeline, the samplers and every surface's textures, shared by every instance of

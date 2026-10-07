@@ -18,12 +18,12 @@ The current GPU path is core compilation/planning, desktop lowering, and executi
 | --- | --- | --- | --- |
 | R1 | Delivered: public `Provider::descriptor` reads registry availability; explicitly dereferenced module hooks retain raw metadata | One registry-aware availability answer through the public lookup surface | TASK-001 |
 | R2 | Delivered: core and UI consume common formats, extents, pass shapes and shader constants from `luxforge-gpu-types`; executable light references remain in the backend | One shared primitive contract; semantic planning and device lowering keep their distinct responsibilities | TASK-003, 004 |
-| R3 | Core admission and backend allocation separately calculate common resource-layout rules; tests compare the two implementations | Shared layout rules consumed by prediction and allocation, with explicit device inputs | TASK-005 |
+| R3 | Delivered: physical plane placement, scratch-pool maxima, extents, tail precision, parameter sizing/alignment and output/buffer buckets share pure rules | Prediction and allocation use shared rules with explicit device inputs and actual-allocation checks | TASK-005 |
 | R4 | Window-free GPU execution is reusable but lives in the widget subsystem | One core-free, Iced-free executor with a thin presentation adapter | TASK-006, 007 |
 | R5 | Delivered: supported `ToolModule` authors have context helpers and plan builders; field-patch authoring stays internal and the developer proof has an opaque factory | A coherent current cross-crate surface, with internal authoring machinery clearly internal | TASK-009 |
 | R6 | Stream strategy and tile-size selection repeatedly prepare the same GPU stack, and staged selection discards a newly generated tile list | One preparation per equivalent worker-scoped request; derive alternatives and reuse sweep tiles | TASK-008 |
 | R7 | Delivered: colour and spatial operation equality uses exact unit kind, coefficient and stage bits; diagnostics are independent | Explicit exact semantic identity independent of diagnostic wording | TASK-010 |
-| R8 | Preview requests and resource phases use loose flags/options and repeated eligibility checks | Valid request intent and small resource-phase types; one presentation/counts eligibility decision | TASK-011, 012 |
+| R8 | Preview selection and reference/Fit/region intent are explicit; resource phases still use loose flags/options and repeated eligibility checks | Small resource-phase types; one presentation/counts eligibility decision | TASK-011 delivered; TASK-012 remains |
 | R9 | Delivered: one typed preview-read seam. Bounded decode/handle-cache mechanics still repeat | Shared mechanisms with separate grid/loupe policies and budgets | TASK-013, 014 |
 | R10 | Delivered: renderer-only thresholds, frame bounds and tile rules live in core rendering | Renderer-only policy owned by core rendering; shared adapter admission stays with its actual owner | TASK-015 |
 | R11 | Delivered: indexing and Locate share one hidden-file predicate and retain separate traversal policies | One hidden-status helper, separate traversal policies | TASK-016 |
@@ -71,7 +71,7 @@ The owner approved this boundary and the `-types` name on 2026-10-07. TASK-004 t
 
 ### Resource layout
 
-Share format sizes, extent rounding, compatible scratch grouping, kept/intermediate/output allocation rules, size buckets and common parameter layout. Device alignment/limits are explicit inputs where needed. Prediction and allocation use the shared result or rules; actual backend admission still guards device resource creation.
+`luxforge-gpu-types::layout` owns physical plane classes, kept/scratch/light placement, per-link scratch counts and pool maxima, texture/parameter bytes, tail precision and output/buffer buckets. Core prediction and backend allocation use those rules. Device side/binding limits, fixed-stride alignment and policy ceilings are explicit inputs; whole photo presentation retains its separate tiled filtering aprons. Actual backend admission still guards resource creation.
 
 Keep logical estimates, resident allocations, retiring resources, upload/readback staging and process RSS distinct. Existing light-buffer allowances must be explicit; do not turn a texture-only estimate into a total-memory guarantee. The desktop's unconverted fallback estimate omits parameter slices and is not an upper bound: it must not replace conservative admission. Existing total-memory work remains separate, and no accounting scope or budget value changes without its own decision and evidence.
 
@@ -91,7 +91,7 @@ Give colour/spatial units an exact semantic identity separate from `describe`. I
 
 ## Preview and cache interfaces
 
-Represent preview selection (committed, draft or prefix) and render/view intent explicitly. A GPU intent carries its Fit/region view and relevant reduction settings. CPU/reference/proxy intent carries only its applicable fields. Preserve current valid requests and errors; no user-visible quality or fallback policy changes. Public construction should reject or make unrepresentable combinations that currently lose intent silently.
+`PreviewRequest` carries `PreviewSelection` (whole or prefix of a committed stack or client draft) and `PreviewRenderIntent` (reference, GPU Fit or GPU region). Fit carries required bounds; a region carries its magnification, reduction threshold and optional reference proxy. Prefix analysis retains its validation refusal; GPU draft prefixes refuse explicitly rather than dropping the GPU request. Session ownership is checked first. Valid requests, source preparation, quality and fallback policy are unchanged.
 
 Group resource identity with readiness and phase, and share the decision for presenting settled tiles versus obtaining counts. Use small related structs/enums rather than one exclusive global GPU state: Compare, retained content, warm work and counts can overlap. Keep generation rejection, crop behavior, dissolve, compiling timeout and off-owner work unchanged.
 

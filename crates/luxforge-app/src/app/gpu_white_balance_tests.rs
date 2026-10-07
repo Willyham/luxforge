@@ -158,7 +158,7 @@ fn gpu_white_balance_on_the_raw_corpus() {
                     },
                 };
                 let request = |request: PreviewRequest| match view {
-                    GpuView::Fit(bounds) => request.proxy(bounds).gpu(),
+                    GpuView::Fit(bounds) => request.gpu_fit(bounds),
                     GpuView::Region {
                         rect,
                         magnification,
