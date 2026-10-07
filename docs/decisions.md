@@ -497,6 +497,10 @@ Masking phases A–D are delivered. The owner's 2026-09-23 stroke-storage decisi
 
 The Basic and histogram product choices were decided on 2026-09-21 and implementation was authorised the same day; see [Basic adjustments and histogram](#basic-adjustments-and-histogram).
 
+## High-zoom minimap planning
+
+The owner requested a plan for a minimap at zoom levels of **200% or more**. The inclusive percentage threshold is the requirement, and the owner chose **click to jump and drag the viewport rectangle**. The [design](design/minimap.md) records this interaction; lower-right placement and other layout/engineering defaults remain recommendations. This request authorizes planning only; implementation and native qualification remain outstanding.
+
 ## Code structure consolidation
 
 The owner authorized implementation on 2026-10-07 and approved the static `luxforge-gpu-types` plus `luxforge-gpu` split in the [design](design/code-structure.md#approved-boundary-task-003). The shared crate holds std-only GPU primitives, shader conventions and pure layout rules; the backend owns the existing wgpu executor and tile runner. Core keeps semantic planning and `TileService`, the app keeps one lowering path and host source/worker policy, and UI keeps Iced presentation on its existing device. The existing separate tile-worker device, current budgets, bounded caches, retirement, cancellation and fallback behavior are preserved.
