@@ -456,11 +456,18 @@ fn the_select_keys_are_its_own() {
             Some("Select(Loupe(Open))"),
         ),
         (
-            "e in the loupe",
+            "e closes the loupe",
             pressed(letter("e"), Modifiers::empty()),
             Status::Ignored,
             &loupe,
-            None,
+            Some("Select(Loupe(Close))"),
+        ),
+        (
+            "space closes the loupe",
+            pressed(Key::Named(Named::Space), Modifiers::empty()),
+            Status::Ignored,
+            &loupe,
+            Some("Select(Loupe(Close))"),
         ),
         (
             "escape closes the loupe",

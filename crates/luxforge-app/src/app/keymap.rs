@@ -659,9 +659,15 @@ fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<
             CatalogMessage::Act(CatalogAction::Remove),
         )));
     }
-    // `Space` or `E` shows the active frame in the loupe.
-    if !context.loupe_open && (matches!(key, Key::Named(Named::Space)) || character(key, "e")) {
-        return Some(Message::Select(SelectMessage::Loupe(LoupeMessage::Open)));
+    // `Space` or `E` toggles between the active frame's loupe and the grid.
+    if matches!(key, Key::Named(Named::Space)) || character(key, "e") {
+        return Some(Message::Select(SelectMessage::Loupe(
+            if context.loupe_open {
+                LoupeMessage::Close
+            } else {
+                LoupeMessage::Open
+            },
+        )));
     }
     None
 }
