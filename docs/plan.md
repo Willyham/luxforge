@@ -36,6 +36,7 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 | [Lightroom alignment](../tasks/lightroom/lightroom-alignment.json) ([design](design/lightroom-alignment.md)) | TASK-001 the rig's generator and synthetic targets | Its rounds need the owner to import and export in Lightroom | High tier |
 | [Live-session Rust CLI](../tasks/project/live-cli.json) ([design](design/live-cli.md)) | TASK-001 shared catalog targeting and authenticated session client | The command contract and defaults are decided; implementation awaits owner authorization | High tier |
 | [HDR exposure merges](../tasks/library/hdr-merge.json) ([design](design/hdr-merge.md)) | TASK-001 durable chunked derived sources; TASK-002 RAW exposure resolution/fusion; TASK-003 alignment/deghosting | RAW-only scope and automatic alignment/deghosting are decided; independent foundations, working feature before final quality/timing; implementation awaits authorization | High tier |
+| [High-zoom minimap](../tasks/interface/minimap.json) ([design](design/minimap.md)) | TASK-001 shared viewport projection; TASK-002 bounded overview rendering | Inclusive 200% threshold and click/drag navigation chosen; layout remains a proposed default. Planning only; implementation awaits authorization | High tier |
 
 ### In progress
 
@@ -148,6 +149,8 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 **Tuning delivered tools.** Refine the recorded defaults of Presence, the colour mixer and the vignette (decision pending).
 
 ## Interface
+
+**High-zoom minimap** ([design](design/minimap.md), [tasks](../tasks/interface/minimap.json)). Planned for Develop at percentage zoom ≥200: whole-image overview, visible-region rectangle and owner-chosen click/drag navigation through the existing `view.set` path. Shared geometry and bounded overview rendering can proceed independently before UI integration; final native qualification and photo-sized measurements follow working delivery. The request authorizes planning only.
 
 **UI themes** ([design](design/ui-themes.md)) are implemented, with Omarchy import and six bundled Omarchy themes ([feature status](features.md)). Outstanding:
 - Owner review of the recorded defaults: which themes are bundled, the contrast floors, the Omarchy forms read, the canvas background's Theme default and the Appearance tab
