@@ -27,6 +27,8 @@ For repeated development builds across worktrees, the developer guide covers the
 [shared compiler caching](engineering/development.md#build-caches-and-worktrees) used by agents.
 The [CI workflow](engineering/development.md#ci) checks formatting and repository validity
 before heavy verification, and reuses compiled dependencies across runs and corpus shards.
+Developer repository checks and audits now start without compiling photo tooling;
+photo and evidence commands build the tools they need through the same `cargo xtask` interface.
 
 Omit `--catalog` to use the catalog chosen in [Settings › General](#settings-and-experiments), or the one in the platform configuration directory when none is chosen. `--data-root DIRECTORY` isolates config, data and log paths. `cargo xtask develop --debug` is a lightly optimized build with debug assertions, for debugging, and is unsuitable for timing.
 
