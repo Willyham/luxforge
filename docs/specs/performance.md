@@ -4841,6 +4841,146 @@ cargo run --release --locked --package xtask -- editor-latency --source fixtures
   --evidence-dir NEW_DIR --evidence-script SCRIPT.json --open SOURCE
 ```
 
+## GPU throughput against the reference (TASK-012)
+
+The GPU's picture at rest, its counts and its export after TASK-012 of [the plan](../../tasks/rendering/gpu-first.json) (tile charges matching the slot, a larger rest share, tiles ordered by window shape, staged sweeps on the surface and the tile worker, the pipelined tile worker, lights kept across refits, the exact light behind a spatial layer), each row against [TASK-011's figures](#gpu-first-against-the-2026-10-04-baseline) (*before*) and the same build's reference renderer (`--reference-renderer`, which launches with `--no-gpu-render`, or `reference: true` for an export), back to back. The release gate is not run here; it passed on the whole corpus with the exact light ([above](#the-light-behind-a-spatial-layer)).
+
+### Scope
+
+- **Host.** Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal, a hidden 1440 × 900 window at 2× in a background-only bundle, warm filesystem cache, 7 October 2026, 10:17 to 10:33 and 11:16 to 12:08 BST. The host slept from 10:33:46 to 11:05:09 (`pmset -g log`); no timed run's window overlaps it, the last run before it ending at 10:33:16. From then on each run's window was checked against `pmset`'s sleep and wake records. The host ran on battery throughout, but for 11:29 to about 11:38 on mains power; no low-power mode (`powermode 0` on both). Runs repeated across the two agree within their spread (the 24 MP GPU counts 242 / 264 ms on battery, 226 / 242 ms on mains).
+- **Quiet host.** Before every timed run a gate waited until no `cargo`, `rustc`, `clang`, `ld` or Clippy process of another worktree was running and the one-minute load was below 4.0; every run quoted started between 2.5 and 4.0. A reference run raises the load itself (to 7 to 10 by its end), so the run after it waited for the load to fall. Another session built for about a minute at 10:19; the gate held the run until it had finished and the load had fallen. syspolicyd kept pid 15580 throughout.
+- **Build.** Source `2e22257d` (`main`, equal to `claude/gpu-first-9b5b17`), release, `--locked`, Cargo.lock SHA-256 `8f7bce2f…`. `cargo build --release --locked -p luxforge-app -p xtask` made `73d43a6d…` (52.0 MB), which every `editor-latency` and `measure` run used (`--binary`); `cargo xtask develop --background`'s build of `luxforge-app` and `luxforge-cli` made `04e72e5e…`, which the evidence-script probes used (exports, the cold shader cache). Launch and open were also measured on `2837c344` (2026-10-02, `37cc1db8…`, 35.5 MB), built the same way in a detached worktree.
+- **Sources.** The Air 2S DNG (5464 × 3640, `aab79ce1…`), the X100VI RAF (7728 × 5152, `187e3403…`), the generated 24 MP and 60 MP JPEGs (`b54c2a15…`, `b9e0118a…`), each hashed the same before and after the runs.
+- **Stacks.** *The drag stack* and *the masked stack* as [TASK-011 defines them](#gpu-first-against-the-2026-10-04-baseline). *The three-segment stack*: Detail, Presence's three fields at +100 and a masked Presence on a linear mask (`editor-latency --mode commit --detail --presence --mask --action set-presence --parameter clarity`), each commit a new masked Clarity, over the Air 2S as imported; TASK-011's used a radial mask and Texture beside Clarity. *The heavy export stack*: Detail, Presence's three fields and a radial's masked Presence; *the masked export stack*: Detail, a global Presence of Texture 25 and Clarity 20, and three radial masks each holding a masked exposure of +0.3 and a masked Presence of Clarity 50 and Texture 40, radials where the masked stack has a brush.
+- **Figures.** Milliseconds, nearest rank, p50 / p95 over 30 samples unless a count is given. *Rest* runs from the release to the surface's first draw of the picture at rest (`gpu_rest_drawn`), *counts* to the GPU's settled histogram (`analysis_adopted`); the reference renderer's frame and its report arrive together, the counts the tool reports. Commit runs time each commit after the previous one's counts have arrived.
+
+### The picture at rest and the counts after a commit
+
+| Row | Before: GPU counts / reference | GPU rest | GPU counts | Reference frame and counts | Load (GPU, reference) | Tiles drawn |
+| --- | --- | ---: | ---: | ---: | --- | --- |
+| 24 MP JPEG, the drag stack, GPU first | 649.4 / 653.4; 671.9 / 775.8 | 210.1 / 231.9 | 242.4 / 263.6 | 644.4 / 694.6 | 3.67, 3.20 | 2 sweeps of 6 tiles of 2048 px |
+| The same, reference first | | 201.6 / 209.9 | 225.7 / 242.3 | 665.3 / 682.2 | 3.99, 3.27 | the same |
+| Air 2S, the drag stack, reference first | 816.3 / 825.8; 793.1 / 878.9 | 226.2 / 231.8 | 263.7 / 268.5 | 1,136.5 / 1,188.0 | 3.30, 2.86 | 2 sweeps of 6 tiles of 2048 px |
+| The same, GPU first | | 226.9 / 230.5 | 264.1 / 266.2 | 1,152.9 / 1,311.0 | 3.08, 3.38 | the same |
+| 60 MP JPEG, the drag stack, GPU first | 5,676.9 (6 commits); 1,682.3 | 565.7 / 577.6 | 601.5 / 613.8 | 1,923.3 / 2,037.3 (28 commits) | 3.36, 3.36 | 2 sweeps of 15 tiles of 2048 px |
+| The same, reference first | | 564.1 / 568.1 | 599.9 / 604.0 | 1,763.6 / 1,952.0 (20) | 3.10, 3.52 | the same |
+| The same, reference first again | | 574.3 / 585.8 | 610.6 / 621.7 | 2,092.3 / 2,348.0 (20) | 3.99, 3.92 | the same |
+| X100VI RAF (40 MP), the drag stack, reference first | not measured | 597.7 / 614.2 | 615.8 / 646.6 | 2,432.2 / 2,564.5 (20) | 3.85, 3.73 | 2 sweeps of 12 tiles of 2048 px |
+| Air 2S, the three-segment stack, GPU first | rest 14.9 to 17.3 s (4 launches); reference not measured | 301.9 / 333.5 | 309.4 / 341.2 | 959.7 / 1,022.6 | 2.92, 2.84 | 3 sweeps of 24 tiles of 1024 px |
+| The same, reference first | | 297.7 / 317.3 | 305.6 / 326.1 | 976.4 / 1,053.8 | 3.97, 3.87 | the same |
+| Air 2S, the masked stack's stroke release, one a launch | 16.99 and 17.05 s; 1.26 s | 672.8 to 700.0 (5 launches) | 706.2 to 732.4 | 1,301.8 to 1,420.5 (4 launches) | 2.51 to 3.99, 2.98 to 3.91 | 4 sweeps, 42 tiles |
+
+- **Every row's picture at rest and counts now land sooner than the reference renderer's frame and report, at p50 and p95**: by 2.6 to 2.9 times at 24 MP, 4.3 to 4.9 times on the Air 2S, 2.9 to 3.4 times at 60 MP, 3.9 times on the X100VI, 3.1 times over the three segments and about 2 times after the masked stroke. The 60 MP row is 9.4 times sooner than before, the masked release 24 times. The reference's own figures moved between runs more than the GPU's (at 60 MP 1.76 to 2.09 s at p50 in three runs); the tool's 60 s deadline let the first reference run at 60 MP finish 28 of 30 commits, paired from its events, and the others were run at 20.
+- **Attribution, from `gpu_rest` and `gpu_rest_drawn`.** Each picture at rest is now planned in tiles of 2048 px wherever the share allows, where TASK-011 drew 24 tiles of 1024 px at 24 MP and on the Air 2S, 240 of 512 px at 60 MP and 330 of 256 px over a masked Presence. Behind Detail every Dehaze stack is drawn in at least two sweeps, the first writing the stage texture its exact light is reduced from (`lights_encoded` 1, `lights_restored` 5 to 8, `retirement_waits` 0 to 1 a picture; no light sweep was needed on any row: the stage textures fitted). The tiles' summed GPU spans (an upper bound, the spans overlapping) were 0.23 s at 24 MP, 0.36 s on the Air 2S, 0.39 to 0.41 s over the three segments, 0.64 s on the X100VI, 0.85 to 0.87 s after the masked stroke and 1.04 to 1.06 s at 60 MP, the slowest tile 28 to 61 ms; at 60 MP the picture at rest arrives in about half its tiles' summed spans, which overlap. After the masked stroke the rest names 330 tiles of 256 px for its chained plan and draws 4 sweeps of 42 tiles, with 26 refits and 9 rebinds; the GPU-preview peak was 2,146.5 MB of the 2,147.5 MB budget.
+- **The committed frame** stays the GPU's view plan at once: 9.5 to 10.0 ms at p50 and 9.7 to 17.2 ms at p95 on every GPU row.
+- **The 60 MP RAW drag stack**, whose stage textures do not fit, so its light is computed by a light sweep: no 60 MP RAW is in the corpus, so it was not measured in the editor (the X100VI's 40 MP stack fitted its stage textures and drew no light sweep). Its indication on the headless surface (`gpu_rest_the_60_mp_raw_drag_stacks_light_indication`, release, two runs, loads 3.16 and 4.03, an indication and not a timing): as the editor plans it, 20 light-sweep tiles of Detail and 70 chained, 1.63 and 1.65 s, the tiles' spans summing 5.40 and 5.41 s; staged at 1024 px 0.99 s; the reference renderer's whole frame 2.57 and 2.55 s (5.31 s in the [earlier indication](#the-light-behind-a-spatial-layer), whose 1.70 to 2.14 s it repeats).
+
+### A developed photograph's catalog tiers
+
+Both tiers (grid 512 px, large 2048 px) of the corpus's Z 6 and Air 2S under a Basic layer and then a Presence layer, drawn by the GPU tile worker and by the reference, each from its own preparation of the original: `a_gpu_tier_of_a_raw_is_within_the_display_limit_of_the_reference_tier` (release, `--ignored`), three runs at loads 3.18 to 3.62, each run drawing the GPU's tiers first, so the order was not reversed. An indication from a test, not the catalog's own lane under the editor.
+
+| Source and layer | GPU, three runs | Reference, three runs | 2026-10-06 indication, GPU / reference |
+| --- | ---: | ---: | --- |
+| Z 6, Basic | 333, 241, 252 | 423, 415, 421 | 320 / 370 |
+| Z 6, then Presence | 552, 341, 399 | 802, 798, 828 | 840 / 690 |
+| Air 2S, Basic | 246, 235, 241 | 402, 406, 406 | 440 / 470 |
+| Air 2S, then Presence | 346, 334, 338 | 705, 681, 711 | 580 / 680 |
+
+- The GPU draws both tiers sooner than the reference on every row in every run, the Z 6 with Presence in 0.34 to 0.55 s against 0.80 to 0.83 s, where the earlier indication had it slower. Each tier is within its class's display limit of the reference's (largest mean 0.0195, worst block 0.094, p99 0.615).
+
+### Export
+
+`export.jpeg` through the evidence `export` step, five GPU exports and five reference exports (`reference: true`) alternating, after a `gpu_warmed` step; the step is timed from its request to its end, which the desktop now reads through `job.wait`, so it is no longer the 100 ms job reader's upper bound. Beside it, the activity board's `duration_ms` for exports of 250 ms or more. Every GPU export named `{record: "gpu"}`, every reference export `{record: "reference", reason: "requested"}`. Executable `04e72e5e`.
+
+| Source and stack | Before: GPU / reference | GPU: median, range (5) | Reference: median, range (5) | Load | GPU tiles an export; tile worker's peak |
+| --- | --- | ---: | ---: | ---: | --- |
+| 24 MP JPEG, trivial (Basic exposure +0.3) | under 250 either way | 101, 100 to 110 | 85, 84 to 92 | 2.90 | |
+| 24 MP JPEG, heavy | 945; 763 | 275, 269 to 374 (board 258, 251 to 359) | 784, 767 to 819 (board 768, 751 to 801) | 2.90 | |
+| 60 MP JPEG, trivial | under 250 either way | 190, 187 to 199 | 175, 167 to 185 | 3.41 | |
+| 60 MP JPEG, heavy | 10,350; 2,156 | 629, 622 to 656 (board 613, 606 to 637) | 2,016, 1,944 to 2,247 (board 1,998, 1,928 to 2,222) | 3.41 | |
+| Air 2S, the masked export stack | not measured | 457, 451 to 522 (board 441, 433 to 503) | 1,177, 1,149 to 1,191 (board 1,153, 1,132 to 1,174) | 3.31 | 24; 2,112.9 MB |
+| The same, a second launch | | (board 467, 451 to 494) | (board 1,170, 1,131 to 1,193) | 3.43 | 24; 2,112.9 MB |
+
+- **A heavy GPU export is now 2.9 to 3.3 times faster than the reference export** at 24 and 60 MP and 2.5 times over the masked stack; at 60 MP 16 times faster than before.
+- **A trivial GPU export misses by 15 to 16 ms**: 101 against 85 ms at 24 MP and 190 against 175 ms at 60 MP, every GPU export slower than every reference export. The GPU's trivial export opens the tile worker's stream and its slot for one pointwise link, which the reference does not, and a pointwise stack's reference render is cheap; not attributed further.
+- The tile worker's peak was 2.11 GB of its 2 GiB (2,147.5 MB) budget on the masked stack.
+
+### Ticks, nothing regressed
+
+30 drained inputs each, every one drawn on the GPU, none held; executable `73d43a6d`.
+
+| Drag | View | Before p50 / p95 | Now p50 / p95 | Load |
+| --- | --- | ---: | ---: | ---: |
+| Air 2S, Basic exposure over the drag stack | Fit | 9.0 / 9.2 | 9.1 / 9.4 | 3.42 |
+| The same | 33% | 9.0 / 9.6 | 9.0 / 9.1 | 3.62 |
+| The same | 100% | 9.0 / 9.3 | 9.0 / 9.3 | 3.37 |
+| 60 MP JPEG, Basic exposure under Presence's three fields (Dehaze) | 100% | 9.0 / 9.3 | 9.0 / 9.3 | 3.45 |
+| Air 2S, a masked Presence Clarity drag over Detail and Presence (`--mask --action set-presence --parameter clarity`) | Fit | not measured (the tool refused held ticks) | 8.5 / 8.7, worst 26.3 | 3.25 |
+
+### Painting at 100% over the masked stack
+
+240 positions over the masked stack at 100% on the Air 2S, two launches: **8.1 / 24.0 ms, worst 58.1** (233 drawn, load 3.12) and **8.2 / 22.5 ms, worst 24.5** (235 drawn, load 3.92); before 8.2 / 23.7, worst 50.4. **Still a miss at p95.** At Fit 60 positions drew at 7.8 to 8.0 / 8.6 to 9.0 ms in five launches.
+
+- **Every slow tick does the same work as a fast one** (`surface_frame_drawn`'s `evaluation`, joined to each input by its draft revision): 5 links run, 52 spatial passes, a window of 6.39 MP and 31.9 M link texels, no refit and no rebind. So the tail is not the word and block buffers regrowing (the hypothesis H1 of step 8, which would show rebinds), and step 8's fix does not apply.
+- **When they come.** In the first launch the first four ticks, 51 to 58 ms, ran while the warm-up for the 100% view compiled 6 sequences over 392 ms, ending 181 ms into the stroke. Past that, and in the second launch whose warm-up had finished 72 ms before the stroke, the slow ticks come in runs of consecutive positions, 4 to 13 at a time (33 of 233 and 16 of 235), each presented on the third display frame after its input, 22 to 25 ms, with the same work as the ticks around them drawn in one frame. The tools time frames, not each tick's GPU work, so what lengthens those runs, the GPU's own time against the frame or other work queued beside it (the coverage grid each tick asks for), is not separated.
+
+### Launch and the uncached 24 MP open
+
+`measure` at five launches a workload, with the build of this record (`73d43a6d`) and of 2026-10-02 (`2837c344`), interleaved and reversed: this build, the old, the old, this build, then the old and this build again; and once the old build through its own harness (`2837c344`'s `xtask measure`). syspolicyd's pid was the same before and after every run (15580). Each launch is split at the first RSS sample above 1 MiB (the harness's copy of the executable into a fresh bundle and macOS's first check of it), the log clock's zero (the editor's `startup` event, from the launch figure less the capture's elapsed time) and the first `frame_captured`. p50 of the five launches in each run:
+
+| Build and harness | Load | Launch to empty shell | Spawn to first RSS | First RSS to `startup` | `startup` to capture | 24 MP open to raster | 24 MP `decoded` after `startup` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `73d43a6d`, run 1 | 3.54 | 2,071 | 807 | 1,040 | 273 | 1,214 | 254 |
+| `2837c344`, run 1 | 3.19 | 1,821 | 580 | 956 | 253 | 1,203 | 229 |
+| `2837c344`, run 2 | 2.95 | 1,883 | 643 | 937 | 263 | 1,222 | 236 |
+| `73d43a6d`, run 2 | 3.07 | 2,107 | 806 | 1,035 | 259 | 1,211 | 249 |
+| `2837c344`, run 3 | 3.43 | 1,866 | 582 | 1,001 | 250 | 1,214 | 231 |
+| `73d43a6d`, run 3 | 3.85 | 2,069 | 760 | 1,038 | 271 | 1,253 | 256 |
+| `2837c344` through its own `measure` | 3.62 | 1,825 | 584 | 984 | 254 | 1,224 | 245 |
+| 2026-10-02's record of `2837c344` | | 1,378 | | | | 783 | |
+| TASK-011's record of `54d910a4` | 2.99 | 1,869 | 632 | 910 | 636 (60 MP) | 1,099 | 218 |
+
+- **Most of the launch and open "regressions" are not in either build.** Through today's harness, or its own, the 2026-10-02 build launches in 1.82 to 1.88 s and opens the 24 MP JPEG in 1.20 to 1.22 s on this host, against the 1.38 s and 0.78 s it recorded then: about 0.45 s of each is the host's, the same for both executables, and these runs do not attribute it. About 0.95 to 1.0 s of every launch and of every open's `open_to_raster_ms` lies between the process's first RSS sample and its `startup` event on both builds (`open_to_raster_ms` runs from the editor's creation, before the log clock starts).
+- **What this build adds to a launch: 0.19 to 0.25 s.** 0.18 to 0.23 s of it comes before the process's first RSS sample, the harness copying a 52.0 MB executable into a fresh bundle and macOS checking it on first run, where `2837c344`'s is 35.5 MB; 0.04 to 0.10 s is the editor's own start before its `startup` event (the preferences, themes, flags and launch log the plan names; not separated); `startup` to the empty shell's capture is 10 to 20 ms longer. The editor's launch figure is the harness's upper bound, not a foreground activation.
+- **The open is the same on both builds**, 1.21 to 1.25 s against 1.20 to 1.22 s. The open's first picture is the GPU's view plan when its programs are warm (`decoded` `reduced: true`, `preview_displayed` naming `gpu`, a render of about 10 ms) 249 to 256 ms after `startup`, 20 to 25 ms later than `2837c344`'s CPU proxy; the picture at rest follows in 6 tiles 325 to 355 ms after `startup`. The capture `measure` takes waits for the picture at rest and its dissolve, so `startup` to capture at 24 MP is 488 to 519 ms here against 286 to 301 ms on the older build.
+- **Idle CPU after an open**: 0.0% of one core over 30 s in all three runs of this build, 1.2 to 1.5% on `2837c344`.
+
+### The first picture on a cold shader cache
+
+The three-segment probe on the Air 2S, three launches each with a new `LUXFORGE_BACKGROUND_BUNDLE_SUFFIX`, then one on the shared bundle; milliseconds from `startup`, executable `04e72e5e`, loads 2.51 to 3.27:
+
+| Run | Reference frame drawn | GPU frame drawn | GPU after the reference | First warm-up |
+| --- | ---: | ---: | ---: | --- |
+| Fresh bundle 1 | 1,328 | 2,165 | 837 | 2,087 ms, 21 sequences, its picture's own 577 ms |
+| Fresh bundle 2 | 1,404 | 2,199 | 794 | 679 ms, 6 sequences, 380 ms |
+| Fresh bundle 3 | 1,366 | 2,168 | 802 | 686 ms, 6 sequences, 384 ms |
+| Shared bundle | 612 | 723 | 111 | 42 ms, 14 sequences, 3 ms |
+| Before, fresh bundles | 1,207 to 1,261 | 2,351 to 2,550 | 1.1 to 1.3 s | 2.1 to 2.2 s |
+
+- The GPU's first frame on a cold cache comes 0.79 to 0.84 s after the reference's, against 1.1 to 1.3 s before; the reference's own first frame is 0.1 s later than before. The second and third fresh bundles compiled 6 sequences where the first compiled 21, so the system's compiler cache outside the bundle, which a new suffix does not clear, served the rest; only the first launch is a cold compile.
+
+### The timing tier
+
+`verify --tier timing --binary` with `73d43a6d` ran once (436 s, 12:00 to 12:08) and passed, but its own `check` (342 s) left the one-minute load at 19.5 when the timing components started, past the 8.0 threshold, so it reports every timing verdict as unreliable, as on 2026-10-06. Its figures agree with the runs above: the 24 MP slider 8.66 ms at p95, the settled histogram 76.2 ms, a burst at 110 frames a second with staleness 8.6 ms at p95, the 24 MP working set 332.6 MiB, the 60 MP peak 507.3 MiB, idle 0.03% of one core, launch 2,152 ms and the uncached 24 MP open 1,278 ms at p95. The components were not run again alone: the rows above measure each of them on a quiet host. By those runs the provisional slider, histogram, burst, memory and idle targets pass, and launch (p95 under 1 s) and the uncached open (p95 under 750 ms) miss.
+
+### Reproducing it
+
+```sh
+cargo build --release --locked -p luxforge-app -p xtask
+cargo run --release --locked --package xtask -- editor-latency --binary BIN --source SOURCE --output NEW_DIR \
+  --mode commit --samples 30 --basic --detail --presence [--reference-renderer]
+cargo run --release --locked --package xtask -- editor-latency --binary BIN --source AIR2S.DNG --output NEW_DIR \
+  --mode commit --samples 30 --detail --presence --mask --action set-presence --parameter clarity [--reference-renderer]
+cargo run --release --locked --package xtask -- editor-latency --binary BIN --source AIR2S.DNG --output NEW_DIR \
+  --mode paint --samples 60|240 --masks 3 --mask-presence --presence --detail [--zoom 100] [--reference-renderer]
+cargo run --release --locked --package xtask -- measure --binary BIN --output NEW_DIR
+# Exports and the cold shader cache: evidence scripts of `api`, `gpu_warmed` and `export` steps.
+[LUXFORGE_BACKGROUND_BUNDLE_SUFFIX=NEW] cargo xtask develop --background --hidden-window \
+  --evidence-dir NEW_DIR --evidence-script SCRIPT.json --open /ABSOLUTE/SOURCE
+```
+
+The picture at rest is read from the run's `app/events.jsonl` (`gpu_rest`, `gpu_rest_drawn`); a launch's first RSS sample from `measurements.json`'s `rss_samples`.
+
 ## The per-frame light's reduction factor
 
 The factor f the per-frame estimate twin of [GPU-first](../design/gpu-first.md)'s stage 3 needs (TASK-005 in [the plan](../../tasks/rendering/gpu-first.json)). The twin is to compute Dehaze's atmospheric light every frame from the stack compiled at a block stage, the content stage reduced by f per side, f dividing 16: each f × f cell's mean through the colour run, each 16 px block's cells averaged, and the light selected from the blocks as Dehaze prepares it. The reference averages each 16 px block of the colour run's output instead, so where the run clips, crushes or masks by value inside a cell, the colour of the cell's mean is not the mean of its pixels' colour, and the light moves by that gap. Each candidate light was handed to the GPU plan and the frame drawn with it judged against the reference frame of the view, as the release gate judges the picture at rest. A measurement of pixels, not of time: `gpu_dehaze_reduction_factor_candidates`. No factor of 16, 8, 4 and 2 draws every cell within the limits: at f = 2, 4 of 231 cells are past them, each −3 EV with Whites and Blacks at −100 under Dehaze at −100. At f = 1, where the cells are pixels, all 231 are within them.
