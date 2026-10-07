@@ -374,6 +374,10 @@ fn restoration_placement_all_creation_permutations_and_targets() {
 /// An independent horizontal smoother isolates the host's quantization hand-off.
 struct Smooth;
 impl crate::modules::SpatialUnit for Smooth {
+    fn identity(&self) -> crate::OperationIdentity {
+        crate::OperationIdentity::new("test.modules/registry/restoration_tests.rs.Smooth", [])
+    }
+
     fn halo(&self, _: Stage) -> u32 {
         64
     }

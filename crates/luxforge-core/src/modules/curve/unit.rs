@@ -287,6 +287,22 @@ impl ToneCurve {
 }
 
 impl PointwiseColor for ToneCurve {
+    fn identity(&self) -> crate::OperationIdentity {
+        crate::OperationIdentity::new(
+            "curve",
+            [self.first, self.last, self.floor].map(|v| u64::from(v.to_bits())),
+        )
+        .with_words(self.points.iter().flatten().map(|v| v.to_bits()))
+        .with_words(self.x32.iter().map(|v| u64::from(v.to_bits())))
+        .with_words(self.inv_h.iter().map(|v| u64::from(v.to_bits())))
+        .with_words(
+            self.coefficients
+                .iter()
+                .flatten()
+                .map(|v| u64::from(v.to_bits())),
+        )
+    }
+
     /// Encoded luminance through the curve, reconstructed over the curve's black level; nothing is
     /// clamped, and the row coordinates are ignored.
     fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {

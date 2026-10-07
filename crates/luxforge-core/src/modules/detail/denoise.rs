@@ -140,6 +140,36 @@ impl Denoise {
     }
 }
 impl SpatialUnit for Denoise {
+    fn identity(&self) -> crate::OperationIdentity {
+        crate::OperationIdentity::new(
+            "detail.denoise",
+            [
+                self.scale.x.to_bits(),
+                self.scale.y.to_bits(),
+                self.luminance.to_bits(),
+                self.colour.to_bits(),
+                u64::from(self.luminance_detail.to_bits()),
+                u64::from(self.colour_detail.to_bits()),
+                u64::from(self.halo),
+            ],
+        )
+        .with_words(
+            self.thresholds
+                .iter()
+                .flatten()
+                .map(|v| u64::from(v.to_bits())),
+        )
+        .with_words(self.kernels.iter().flatten().flat_map(|k| {
+            std::iter::once(u64::from(k.radius))
+                .chain(std::iter::once(k.taps.len() as u64))
+                .chain(
+                    k.taps
+                        .iter()
+                        .flat_map(|&(at, w)| [at as u64, u64::from(w.to_bits())]),
+                )
+        }))
+    }
+
     fn halo(&self, _: Stage) -> u32 {
         self.halo
     }
@@ -473,5 +503,32 @@ fn shrunk(change: f32, d: f32, factor: f32, squared: f32) -> f32 {
         change + (d * factor - d)
     } else {
         change
+    }
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+    #[test]
+    fn identity_keeps_exact_scale_and_the_gpu_shapes_extra_band() {
+        let scale = SamplingScale { x: 1., y: 1. };
+        let unit = Denoise::new(50., 50., 0., 50., scale);
+        let shape = Denoise::every_level(50., 50., 0., 50., scale);
+        assert_ne!(unit.identity(), shape.identity());
+        let changed = Denoise::new(
+            50.,
+            50.,
+            0.,
+            50.,
+            SamplingScale {
+                x: f64::from_bits(1f64.to_bits() - 1),
+                ..scale
+            },
+        );
+        assert_ne!(unit.identity(), changed.identity());
+        assert_eq!(
+            unit.identity(),
+            Denoise::new(50., 50., 0., 50., scale).identity()
+        );
     }
 }

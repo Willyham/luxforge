@@ -1879,6 +1879,13 @@ mod tests {
     }
 
     impl SpatialUnit for BoxBlur {
+        fn identity(&self) -> crate::OperationIdentity {
+            crate::OperationIdentity::new(
+                "test.render/spatial.rs.BoxBlur",
+                [u64::from(self.radius)],
+            )
+        }
+
         fn halo(&self, _: Stage) -> u32 {
             self.radius
         }
@@ -1960,6 +1967,10 @@ mod tests {
     }
 
     impl SpatialUnit for MeanShift {
+        fn identity(&self) -> crate::OperationIdentity {
+            crate::OperationIdentity::new("test.render/spatial.rs.MeanShift", [])
+        }
+
         fn halo(&self, _: Stage) -> u32 {
             0
         }
@@ -2032,6 +2043,10 @@ mod tests {
     }
 
     impl SpatialUnit for Reach {
+        fn identity(&self) -> crate::OperationIdentity {
+            crate::OperationIdentity::new("test.render/spatial.rs.Reach", [u64::from(self.halo)])
+        }
+
         fn halo(&self, _: Stage) -> u32 {
             self.halo
         }
@@ -2075,6 +2090,10 @@ mod tests {
     }
 
     impl SpatialUnit for Counted {
+        fn identity(&self) -> crate::OperationIdentity {
+            crate::OperationIdentity::new("test.render/spatial.rs.Counted", [])
+        }
+
         fn halo(&self, _: Stage) -> u32 {
             0
         }
@@ -2119,6 +2138,10 @@ mod tests {
     }
 
     impl SpatialUnit for Held {
+        fn identity(&self) -> crate::OperationIdentity {
+            crate::OperationIdentity::new("test.render/spatial.rs.Held", [])
+        }
+
         fn halo(&self, _: Stage) -> u32 {
             0
         }
@@ -2165,6 +2188,13 @@ mod tests {
     }
 
     impl SpatialUnit for HeldAt {
+        fn identity(&self) -> crate::OperationIdentity {
+            crate::OperationIdentity::new(
+                "test.render/spatial.rs.HeldAt",
+                [u64::from(self.x0), u64::from(self.y0)],
+            )
+        }
+
         fn halo(&self, _: Stage) -> u32 {
             0
         }
@@ -2207,6 +2237,10 @@ mod tests {
     struct NonFinite;
 
     impl SpatialUnit for NonFinite {
+        fn identity(&self) -> crate::OperationIdentity {
+            crate::OperationIdentity::new("test.render/spatial.rs.NonFinite", [])
+        }
+
         fn halo(&self, _: Stage) -> u32 {
             1
         }
@@ -4450,6 +4484,10 @@ mod tests {
     struct Partial;
 
     impl SpatialUnit for Partial {
+        fn identity(&self) -> crate::OperationIdentity {
+            crate::OperationIdentity::new("test.render/spatial.rs.Partial", [])
+        }
+
         fn halo(&self, _: Stage) -> u32 {
             0
         }

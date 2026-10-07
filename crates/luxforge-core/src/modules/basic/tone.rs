@@ -211,6 +211,33 @@ impl Tone {
 }
 
 impl PointwiseColor for Tone {
+    fn identity(&self) -> crate::OperationIdentity {
+        crate::OperationIdentity::new(
+            "basic.tone",
+            [
+                self.contrast,
+                self.highlights,
+                self.shadows,
+                self.whites,
+                self.blacks,
+            ]
+            .map(f64::to_bits),
+        )
+        .with_words(
+            [
+                self.alpha,
+                self.contrast_g0,
+                self.contrast_inv_gap,
+                self.contrast_kappa,
+                self.shadows_exp_neg_k,
+                self.highlights_exp_neg_k,
+                self.blacks_bp,
+                self.whites_blacks_inv_gap,
+            ]
+            .map(|v| u64::from(v.to_bits())),
+        )
+    }
+
     fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {
         for pixel in rgb {
             let l_in = luma::rec709(*pixel);

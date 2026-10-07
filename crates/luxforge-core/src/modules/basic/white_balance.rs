@@ -200,6 +200,14 @@ impl WhiteBalance {
 }
 
 impl PointwiseColor for WhiteBalance {
+    fn identity(&self) -> crate::OperationIdentity {
+        crate::OperationIdentity::new(
+            "basic.white-balance",
+            [self.temperature.to_bits(), self.tint.to_bits()],
+        )
+        .with_words(self.matrix.iter().flatten().map(|v| u64::from(v.to_bits())))
+    }
+
     fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {
         for pixel in rgb {
             *pixel = matvec_f32(&self.matrix, *pixel);

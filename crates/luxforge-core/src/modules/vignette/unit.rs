@@ -220,6 +220,35 @@ impl Vignette {
 }
 
 impl PointwiseColor for Vignette {
+    fn identity(&self) -> crate::OperationIdentity {
+        {
+            let identity = crate::OperationIdentity::new(
+                "vignette",
+                [
+                    self.amount,
+                    self.midpoint,
+                    self.roundness,
+                    self.feather,
+                    self.r0,
+                    self.r1,
+                    self.span,
+                    self.a,
+                    self.a_abs,
+                ]
+                .map(f64::to_bits),
+            )
+            .with_words([
+                u64::from(self.width),
+                u64::from(self.height),
+                u64::from(self.hard_step),
+            ]);
+            match self.shape {
+                Shape::Ellipse { a, b } => identity.with_words([0, a.to_bits(), b.to_bits()]),
+                Shape::Superellipse { p } => identity.with_words([1, p.to_bits()]),
+            }
+        }
+    }
+
     /// One contiguous run of row `y` of the output stage. The row's own term is read once, and a
     /// pixel whose mask is exactly `0` — every pixel at or inside the midpoint radius — is left
     /// bit-identical rather than sent through an encode/decode round trip that would move its last
@@ -518,6 +547,11 @@ mod tests {
                 unit.columns.get().is_none() && unit.rows.get().is_none(),
                 "roundness {roundness}: unbuilt right out of the constructor"
             );
+            let identity = unit.identity();
+            assert!(
+                unit.columns.get().is_none() && unit.rows.get().is_none(),
+                "identity must not build either table"
+            );
             unit.describe();
             assert!(
                 unit.columns.get().is_none() && unit.rows.get().is_none(),
@@ -532,6 +566,11 @@ mod tests {
             let mut row = [[0.25f32, 0.5, 0.75]];
             unit.apply_row(0, 0, &mut row);
             assert!(unit.columns.get().is_some() && unit.rows.get().is_some());
+            assert_eq!(
+                unit.identity(),
+                identity,
+                "lazy readiness is not processing state"
+            );
             let built_columns = unit.columns.get().unwrap() as *const Vec<f64>;
             let built_rows = unit.rows.get().unwrap() as *const Vec<f64>;
             // A second read shares the same table rather than rebuilding it.

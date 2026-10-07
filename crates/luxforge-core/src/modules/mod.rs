@@ -108,7 +108,8 @@ pub use presence::qualification as presence_qualification;
 pub(crate) use presets::{APPLY_PRESET, MAX_PRESET_NAME, PresetsModule};
 pub(crate) use processing::MAX_COLOR_UNITS;
 pub use processing::{
-    ColorOperation, CompileStage, PointwiseColor, Processing, SamplingScale, Stage,
+    ColorOperation, CompileStage, OperationIdentity, PointwiseColor, Processing, SamplingScale,
+    Stage,
 };
 pub use processing::{ExactGeometry, Resample};
 pub(crate) use raw::lightroom_white_balance::lightroom_to_luxforge;

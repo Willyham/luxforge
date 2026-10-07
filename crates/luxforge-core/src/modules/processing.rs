@@ -98,6 +98,32 @@ pub struct Resample {
 /// its whole payload into one operation, so this bounds the per-pixel work one layer can ask for.
 pub(crate) const MAX_COLOR_UNITS: usize = 8;
 
+/// Exact processing identity, independent of diagnostic text. Each unit names its kind and
+/// supplies every coefficient and stage-dependent value as exact bits in a fixed layout. Variable
+/// sequences include their lengths. This is neither a digest nor a persisted compatibility format.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OperationIdentity {
+    kind: &'static str,
+    state: Vec<u64>,
+}
+
+impl OperationIdentity {
+    pub fn new(kind: &'static str, state: impl IntoIterator<Item = u64>) -> Self {
+        Self {
+            kind,
+            state: state.into_iter().collect(),
+        }
+    }
+
+    pub(crate) fn with_words(mut self, words: impl IntoIterator<Item = u64>) -> Self {
+        let start = self.state.len();
+        self.state.push(0);
+        self.state.extend(words);
+        self.state[start] = (self.state.len() - start - 1) as u64;
+        self
+    }
+}
+
 /// One pointwise colour step, owned by the module that compiled it. The host decodes the frame into
 /// linear sRGB (D65) f32 rows, hands each row to every unit in declared order and only then clamps,
 /// encodes and quantizes, so a unit sees and may produce values outside `[0, 1]`: an inverse pair in
@@ -118,10 +144,9 @@ pub trait PointwiseColor: Send + Sync {
     /// Whether this unit's own coefficients are finite. Compilation refuses a unit that says no,
     /// so a non-finite parameter fails before a frame is touched.
     fn is_finite(&self) -> bool;
-    /// A short, stable description of this unit and its coefficients. The host compares compiled
-    /// operations by it, so two units that describe themselves identically must process identically:
-    /// write every coefficient exactly, with the shortest round-trip form (`{}`), and never rounded
-    /// to a display precision.
+    /// Exact unit kind, coefficients and relevant stage state. No rendering or lazy table build.
+    fn identity(&self) -> OperationIdentity;
+    /// A diagnostic description. Its wording and formatting do not affect operation equality.
     fn describe(&self) -> String;
     /// This unit's GPU program and the uniform words it reads for display, histogram analysis,
     /// samples, catalog tiers and export (`docs/design/gpu-first.md`). The module keeps the WGSL
@@ -194,11 +219,8 @@ impl ColorOperation {
     }
 }
 
-/// Two operations are the same when their units describe themselves the same way in the same order
-/// and they are modulated by the same compiled mask: a trait object carries no structural identity,
-/// so the description is the comparison. A compiled mask is compared by allocation, which is
-/// conservative — two separately compiled masks of equal payloads report unequal — because the
-/// coverage field has no cheaper identity and nothing in the host depends on the other answer.
+/// Equality compares exact unit identities in order and the same compiled mask allocation.
+/// Mask equality remains conservative: separately compiled equal payloads need not share a field.
 impl PartialEq for ColorOperation {
     fn eq(&self, other: &Self) -> bool {
         let masks = match (&self.mask, &other.mask) {
@@ -209,7 +231,7 @@ impl PartialEq for ColorOperation {
         masks
             && self.units.len() == other.units.len()
             && std::iter::zip(&self.units, &other.units)
-                .all(|(left, right)| left.describe() == right.describe())
+                .all(|(left, right)| left.identity() == right.identity())
     }
 }
 
@@ -253,4 +275,106 @@ pub enum Processing {
     Spatial(SpatialOperation),
     Resample(Resample),
     Warp(WarpStep),
+}
+
+#[cfg(test)]
+mod identity_tests {
+    use super::*;
+
+    #[derive(Clone)]
+    struct Unit {
+        kind: &'static str,
+        gain: f64,
+        width: u32,
+        description: &'static str,
+    }
+    impl PointwiseColor for Unit {
+        fn apply_row(&self, _: u32, x0: u32, rgb: &mut [[f32; 3]]) {
+            for (x, pixel) in rgb.iter_mut().enumerate() {
+                pixel[0] = pixel[0] * self.gain as f32 + (x0 as f32 + x as f32) / self.width as f32;
+            }
+        }
+        fn is_finite(&self) -> bool {
+            self.gain.is_finite()
+        }
+        fn identity(&self) -> OperationIdentity {
+            OperationIdentity::new(self.kind, [self.gain.to_bits(), u64::from(self.width)])
+        }
+        fn describe(&self) -> String {
+            self.description.into()
+        }
+    }
+    fn operation(unit: Unit) -> ColorOperation {
+        ColorOperation::new(vec![Arc::new(unit)])
+    }
+    fn base() -> Unit {
+        Unit {
+            kind: "test.gain",
+            gain: 1.,
+            width: 10,
+            description: "old wording",
+        }
+    }
+
+    #[test]
+    fn diagnostic_wording_can_change_without_changing_equality_or_pixels() {
+        let left = base();
+        let right = Unit {
+            description: "new wording",
+            ..left.clone()
+        };
+        assert_ne!(left.describe(), right.describe());
+        let mut a = [[0.1, 0.2, 0.3]; 2];
+        let mut b = a;
+        left.apply_row(0, 2, &mut a);
+        right.apply_row(0, 2, &mut b);
+        assert_eq!(a, b);
+        assert_eq!(operation(left), operation(right));
+    }
+
+    #[test]
+    fn exact_bits_kind_stage_and_unit_order_are_distinct() {
+        let a = base();
+        for b in [
+            Unit {
+                kind: "test.other",
+                ..a.clone()
+            },
+            Unit {
+                gain: f64::from_bits(a.gain.to_bits() + 1),
+                ..a.clone()
+            },
+            Unit {
+                width: 11,
+                ..a.clone()
+            },
+        ] {
+            assert_eq!(a.describe(), b.describe());
+            assert_ne!(operation(a.clone()), operation(b));
+        }
+        let b = Unit {
+            gain: 2.,
+            ..a.clone()
+        };
+        assert_ne!(
+            ColorOperation::new(vec![Arc::new(a.clone()), Arc::new(b.clone())]),
+            ColorOperation::new(vec![Arc::new(b), Arc::new(a)])
+        );
+        let nan = Unit {
+            gain: f64::from_bits(0x7ff8_0000_0000_0001),
+            ..base()
+        };
+        assert_eq!(operation(nan.clone()), operation(nan));
+    }
+
+    #[test]
+    fn variable_sections_have_explicit_lengths() {
+        let a = OperationIdentity::new("test.sections", [])
+            .with_words([1, 2])
+            .with_words([3]);
+        let b = OperationIdentity::new("test.sections", [])
+            .with_words([1])
+            .with_words([2, 3]);
+        assert_ne!(a, b);
+    }
 }

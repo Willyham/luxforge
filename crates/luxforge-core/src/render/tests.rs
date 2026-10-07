@@ -472,6 +472,13 @@ impl Exposure {
 }
 
 impl PointwiseColor for Exposure {
+    fn identity(&self) -> crate::OperationIdentity {
+        crate::OperationIdentity::new(
+            "test.render/tests.rs.Exposure",
+            [self.ev.to_bits(), u64::from(self.gain.to_bits())],
+        )
+    }
+
     fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {
         for pixel in rgb {
             for channel in pixel {
@@ -499,6 +506,13 @@ impl PointwiseColor for Exposure {
 pub(crate) struct Disabled(Exposure);
 
 impl PointwiseColor for Disabled {
+    fn identity(&self) -> crate::OperationIdentity {
+        crate::OperationIdentity::new(
+            "test.render/tests.rs.Disabled",
+            [self.0.ev.to_bits(), u64::from(self.0.gain.to_bits())],
+        )
+    }
+
     fn apply_row(&self, y: u32, x0: u32, rgb: &mut [[f32; 3]]) {
         self.0.apply_row(y, x0, rgb);
     }
@@ -522,6 +536,10 @@ impl PointwiseColor for Disabled {
 pub(crate) struct Overflow;
 
 impl PointwiseColor for Overflow {
+    fn identity(&self) -> crate::OperationIdentity {
+        crate::OperationIdentity::new("test.render/tests.rs.Overflow", [])
+    }
+
     fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {
         for pixel in rgb {
             for channel in pixel {
@@ -548,6 +566,16 @@ pub(crate) struct Positional {
 }
 
 impl PointwiseColor for Positional {
+    fn identity(&self) -> crate::OperationIdentity {
+        crate::OperationIdentity::new(
+            "test.render/tests.rs.Positional",
+            [
+                u64::from(self.width.to_bits()),
+                u64::from(self.height.to_bits()),
+            ],
+        )
+    }
+
     fn apply_row(&self, y: u32, x0: u32, rgb: &mut [[f32; 3]]) {
         for (offset, pixel) in rgb.iter_mut().enumerate() {
             pixel[0] += (x0 + offset as u32) as f32 / self.width;
@@ -766,6 +794,10 @@ pub(crate) fn greys() -> SourceImage {
 pub(crate) struct Counting(Arc<std::sync::atomic::AtomicUsize>);
 
 impl PointwiseColor for Counting {
+    fn identity(&self) -> crate::OperationIdentity {
+        crate::OperationIdentity::new("test.render/tests.rs.Counting", [])
+    }
+
     fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {
         self.0
             .fetch_add(rgb.len(), std::sync::atomic::Ordering::Relaxed);
