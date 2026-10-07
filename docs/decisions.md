@@ -452,6 +452,17 @@ Decided the same day ([design](design/lightroom-alignment.md#decided)):
 
 The [task plan](../tasks/lightroom/lightroom-alignment.json) is written; whether it is authorized remains open.
 
+## Colour grading
+
+Decided by the owner on 2026-10-07 for [colour grading in the mixer](design/colour-grading.md) ([implementation plan](../tasks/editing/colour-grading.json)):
+
+- **HSL / Grading tabs inside Colour mixer**, with three-way and individual/Global wheel views.
+- **The working feature includes all four wheels, luminance, masks, Luxforge presets and direct Lightroom preset mappings.** Measured Lightroom conversions are later refinement, not an import prerequisite.
+- **Retain hue choices at zero saturation**, with separate wheel, HSL and Grading resets and reset-all on the mixer band.
+- **The plan is ready for implementation without approval or research gates.** Deliver a working feature first; all Lightroom matching and independent-reference perfection work comes at the end. Initial numerical and layout details are implementer choices within the settled contract, with ordinary tests and rendered verification alongside the feature.
+
+The final refinement task may build the grading-only slice of the alignment tooling without waiting on the separate alignment programme. Actual Lightroom exports are measurement inputs; missing exports leave response figures unmeasured and do not delay the working feature or reference/tooling delivery. This decision does not authorize unrelated alignment work or change its policy on private-catalog validation.
+
 ## Open product questions
 
 Tracked in [product decisions](../tasks/project/product-decisions.json).
