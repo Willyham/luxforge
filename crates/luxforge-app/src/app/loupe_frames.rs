@@ -29,13 +29,13 @@
 //! - **Decoding.** One [`Latest`] worker, started with the first decode and blocked while idle,
 //!   takes the newest plan — the wanted slots whose answer names a preview not held at the size
 //!   they need, most wanted first, whose decoded bytes together fit the budget, at most
-//!   [`MAX_PLAN`] — and decodes them one by one through [`decode_preview`], handing each over as it
+//!   [`MAX_PLAN`] — and decodes them one by one through [`decoded_handles::decode`], handing each over as it
 //!   lands. A newer plan starts after the decode running now when that decode is still wanted; when
 //!   it is not, the running decode is abandoned at its next strip. So a held arrow never queues more
 //!   decodes than the budget holds, and a frame passed is not decoded.
 //! - **Handles.** A decoded frame or thumbnail becomes its handle here, once, on the update loop,
-//!   while it is still the preview its slot's newest answer names (its `key`): with the Select
-//!   grid's, one of the desktop's two homes of `Handle::from_rgba`. The 100% region's handle is made
+//!   while it is still the preview its slot's newest answer names (its `key`), through the same
+//!   [`decoded_handles::image_handle`] as the Select grid. The 100% region's handle is made
 //!   here too ([`region_handle`]). A better stage — the tier after its stand-in — replaces the held
 //!   one when it lands, so the frame never goes blank between the two. A handle is lent only for
 //!   its own slot's item and key ([`LoupeFrames::handle`], [`LoupeFrames::thumbnail`]).
@@ -46,16 +46,16 @@
 //!   and not decoded again until the wanted slots change.
 //! - **Releasing.** [`LoupeFrames::release`] forgets everything when the loupe closes or Select is
 //!   left, cancelling the reads still queued; dropping the cache ends the worker.
+use super::decoded_handles::{self, Adoption, Limits, Usage};
 use super::preview_read::{self, Refusal};
 use crate::app::tasks::call_detailed;
 use crate::state::loupe::{Held as HeldFrame, Picture};
 use iced::widget::image::Handle;
 use luxforge_core::{
-    ClientId, DecodedPreview, EntryId, ErrorKind, OwnerHandle,
+    ClientId, DecodedPreview, EntryId, OwnerHandle,
     catalog_types::{
         PreviewAnswer, PreviewInfo, PreviewItem, PreviewOrigin, PreviewPriority, PreviewTier,
     },
-    decode_preview,
     jobs::JOB_CANCEL,
     latest::{Latest, Running},
 };
@@ -260,16 +260,19 @@ impl Source {
     }
 }
 
-/// A decoded frame's handle, made once, and what it is.
-struct Held {
-    handle: Handle,
+/// Presentation facts belonging only to the loupe's held frame or thumbnail.
+struct FrameMetadata {
     picture: Picture,
-    /// The entry a photograph's preview is of.
     entry: Option<EntryId>,
-    /// The side it was decoded to fit.
-    side: u32,
-    bytes: usize,
 }
+
+impl decoded_handles::SourceKey for FrameMetadata {
+    fn source_key(&self) -> &str {
+        &self.picture.key
+    }
+}
+
+type Held = decoded_handles::Held<FrameMetadata>;
 
 /// One slot's reads, its preview and its handle.
 struct Entry {
@@ -312,11 +315,8 @@ pub(crate) struct Decode {
     pub(crate) bytes: usize,
 }
 
-/// One decode's pixels, or why it failed.
-pub(crate) struct Decoded {
-    pub(crate) decode: Decode,
-    pub(crate) result: Result<DecodedPreview, String>,
-}
+/// One decode's pixels, or why it failed, using the shared bounded handoff.
+pub(crate) type Decoded = decoded_handles::Decoded<Decode>;
 
 /// The decodes wanted now, most wanted first, under the plan's number.
 struct Plan {
@@ -355,19 +355,15 @@ impl DecodeWorker {
                         continue;
                     }
                     *now.lock().unwrap_or_else(PoisonError::into_inner) = Some(decode.clone());
-                    let result = decode_preview(&decode.path, decode.side, job.abandoned());
+                    let result =
+                        decoded_handles::decode(&decode.path, decode.side, job.abandoned());
                     *now.lock().unwrap_or_else(PoisonError::into_inner) = None;
-                    let result = match result {
-                        // Nothing wants it any more.
-                        Err(error) if error.kind == ErrorKind::Cancelled => return None,
-                        result => result.map_err(|error| error.to_string()),
-                    };
+                    let result = result?;
                     finished = Some(decode.clone());
                     // Waits while `DECODED_WAITING` wait; fails once the cache is gone.
-                    if sender.send(Decoded { decode, result }).is_err() {
+                    if !(Decoded { decode, result }).handoff(&sender, wake) {
                         return None;
                     }
-                    wake();
                 }
                 None
             },
@@ -399,8 +395,7 @@ pub(crate) struct LoupeFrames {
     /// Raised by every change of what is wanted; an entry wanted now was stamped with it.
     tick: u64,
     budget: usize,
-    bytes: usize,
-    handles: usize,
+    usage: Usage,
     /// The read batch in flight: one owner task at a time.
     reading: Option<u64>,
     serial: u64,
@@ -436,8 +431,8 @@ impl fmt::Debug for LoupeFrames {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("LoupeFrames")
             .field("entries", &self.entries.len())
-            .field("handles", &self.handles)
-            .field("bytes", &self.bytes)
+            .field("handles", &self.usage.handles)
+            .field("bytes", &self.usage.bytes)
             .field("reading", &self.reading)
             .finish_non_exhaustive()
     }
@@ -468,12 +463,7 @@ pub(crate) fn read(owner: &OwnerHandle, client: ClientId, batch: ReadBatch) -> R
 /// A 100% region's pixels as the handle the inset draws, made once when the region lands: the
 /// loupe's pictures are all made in this module.
 pub(crate) fn region_handle(decoded: DecodedPreview) -> Handle {
-    let DecodedPreview {
-        width,
-        height,
-        rgba,
-    } = decoded;
-    Handle::from_rgba(width, height, rgba)
+    decoded_handles::image_handle(decoded)
 }
 
 impl LoupeFrames {
@@ -490,8 +480,7 @@ impl LoupeFrames {
             shown: HashSet::new(),
             tick: 0,
             budget,
-            bytes: 0,
-            handles: 0,
+            usage: Usage::default(),
             reading: None,
             serial: 0,
             woken_while_reading: false,
@@ -589,8 +578,7 @@ impl LoupeFrames {
                 None => {
                     entry.source = None;
                     if let Some(held) = entry.held.take() {
-                        self.bytes -= held.bytes;
-                        self.handles -= 1;
+                        self.usage.remove(held.bytes);
                     }
                 }
             }
@@ -631,8 +619,7 @@ impl LoupeFrames {
         self.wanted.clear();
         self.shown.clear();
         self.tick += 1;
-        self.bytes = 0;
-        self.handles = 0;
+        self.usage = Usage::default();
         self.planned.clear();
         self.woken_while_reading = false;
         self.plan_reads()
@@ -652,7 +639,7 @@ impl LoupeFrames {
     /// The handle `slot`, one of `picture`'s item, holds, when it is exactly `picture`'s preview.
     fn lend(&self, slot: &Slot, picture: &Picture) -> Option<&Handle> {
         let held = self.entries.get(slot)?.held.as_ref()?;
-        (held.picture.key == picture.key).then_some(&held.handle)
+        (held.metadata.picture.key == picture.key).then_some(&held.handle)
     }
 
     /// The handle, picture and entry held for `slot`, whatever its newest answer names: what
@@ -661,8 +648,8 @@ impl LoupeFrames {
         let held = self.entries.get(slot)?.held.as_ref()?;
         Some(HeldPhoto {
             handle: &held.handle,
-            picture: &held.picture,
-            entry: held.entry.as_ref(),
+            picture: &held.metadata.picture,
+            entry: held.metadata.entry.as_ref(),
         })
     }
 
@@ -673,7 +660,7 @@ impl LoupeFrames {
             item: slot.item.clone(),
             picture: entry
                 .and_then(|entry| entry.held.as_ref())
-                .map(|held| held.picture.clone()),
+                .map(|held| held.metadata.picture.clone()),
             unavailable: entry.and_then(|entry| match &entry.read {
                 Read::Refused(refusal) if entry.source.is_none() => Some(refusal.code.clone()),
                 _ => None,
@@ -705,11 +692,11 @@ impl LoupeFrames {
         self.frame_settled(want)
             && self.entries.get(&want.slot).is_some_and(|entry| {
                 entry.held.as_ref().is_some_and(|held| {
-                    !held.picture.stand_in
+                    !held.metadata.picture.stand_in
                         && entry
                             .source
                             .as_ref()
-                            .is_some_and(|source| source.key == held.picture.key)
+                            .is_some_and(|source| source.key == held.metadata.picture.key)
                 })
             })
     }
@@ -726,8 +713,10 @@ impl LoupeFrames {
                     entry.failed.as_ref() == Some(&source.key)
                         || entry.over_budget.as_ref() == Some(&source.key)
                         || entry.held.as_ref().is_some_and(|held| {
-                            held.picture.key == source.key
-                                && held.side >= side(source.width, source.height, want.pixels)
+                            held.matches(
+                                &source.key,
+                                side(source.width, source.height, want.pixels),
+                            )
                         })
                 }
             },
@@ -744,7 +733,7 @@ impl LoupeFrames {
                     entry
                         .held
                         .as_ref()
-                        .is_some_and(|held| !held.picture.stand_in)
+                        .is_some_and(|held| !held.metadata.picture.stand_in)
                 })
             })
             .count();
@@ -760,8 +749,8 @@ impl LoupeFrames {
                 .filter(|want| want.slot.role == Role::Thumbnail)
         };
         json!({
-            "handles": self.handles,
-            "bytes": self.bytes,
+            "handles": self.usage.handles,
+            "bytes": self.usage.bytes,
             "budget": self.budget,
             "wanted": self.wanted.len(),
             "shown": self.shown.len(),
@@ -808,28 +797,21 @@ impl LoupeFrames {
         let Some(entry) = self.entries.get_mut(&decode.slot) else {
             return;
         };
-        // An older stage, or the preview of an item that changed since: a newer answer replaced it.
-        let Some(source) = entry
-            .source
-            .as_ref()
-            .filter(|source| source.key == decode.key)
-        else {
-            return;
-        };
-        let preview = match result {
-            Ok(preview) => preview,
-            Err(_) => {
+        let preview = match decoded_handles::accept(
+            entry.source.as_ref().map(|source| source.key.as_str()),
+            entry.held.as_ref(),
+            &decode.key,
+            decode.side,
+            result,
+        ) {
+            Adoption::Stale | Adoption::Reused => return,
+            Adoption::Failed => {
                 entry.failed = Some(decode.key);
                 return;
             }
+            Adoption::Ready(preview) => preview,
         };
-        if entry
-            .held
-            .as_ref()
-            .is_some_and(|held| held.picture.key == decode.key && held.side >= decode.side)
-        {
-            return;
-        }
+        let source = entry.source.as_ref().expect("accepted current source");
         let photo_entry = source.entry.clone();
         let picture = Picture {
             item: decode.slot.item.clone(),
@@ -852,24 +834,17 @@ impl LoupeFrames {
         let Some(entry) = self.entries.get_mut(&decode.slot) else {
             return;
         };
-        let DecodedPreview {
-            width,
-            height,
-            rgba,
-        } = preview;
-        let held = Held {
-            handle: Handle::from_rgba(width, height, rgba),
-            picture,
-            entry: photo_entry,
-            side: decode.side,
-            bytes,
-        };
-        match entry.held.replace(held) {
-            Some(old) => self.bytes -= old.bytes,
-            None => self.handles += 1,
-        }
-        self.bytes += bytes;
-        self.peak = self.peak.max(self.bytes);
+        let held = Held::new(
+            FrameMetadata {
+                picture,
+                entry: photo_entry,
+            },
+            decode.side,
+            preview,
+        );
+        let old = entry.held.replace(held).map(|held| held.bytes);
+        self.usage.replace(old, bytes);
+        self.peak = self.peak.max(self.usage.bytes);
     }
 
     /// Evict until `incoming` bytes fit — replacing `replaced` bytes of `slot`'s own — within the
@@ -877,39 +852,38 @@ impl LoupeFrames {
     /// slot still wanted only for one on screen. Evicts nothing and answers `false` when they
     /// cannot fit so.
     fn make_room(&mut self, slot: &Slot, incoming: usize, replaced: Option<usize>) -> bool {
-        let mut bytes = self.bytes - replaced.unwrap_or(0) + incoming;
-        let mut handles = self.handles + usize::from(replaced.is_none());
-        let over = |bytes: usize, handles: usize| bytes > self.budget || handles > MAX_HANDLES;
-        if !over(bytes, handles) {
+        let limits = Limits {
+            bytes: self.budget,
+            handles: MAX_HANDLES,
+        };
+        if self.usage.fits_replacing(incoming, replaced, limits) {
             return true;
         }
         let for_screen = self.shown.contains(slot);
-        let mut candidates: Vec<(u64, Slot, usize)> = self
+        let mut candidates: Vec<(u64, &Slot, usize)> = self
             .entries
             .iter()
             .filter(|(held, entry)| {
-                *held != slot
-                    && !self.shown.contains(*held)
-                    && (for_screen || entry.wanted_at != self.tick)
+                decoded_handles::may_evict(
+                    *held,
+                    slot,
+                    self.shown.contains(*held),
+                    entry.wanted_at == self.tick,
+                    for_screen,
+                )
             })
-            .filter_map(|(held, entry)| {
-                Some((entry.wanted_at, held.clone(), entry.held.as_ref()?.bytes))
-            })
+            .filter_map(|(held, entry)| Some((entry.wanted_at, held, entry.held.as_ref()?.bytes)))
             .collect();
         candidates.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-        let mut evict = 0;
-        for (_, _, held) in &candidates {
-            if !over(bytes, handles) {
-                break;
-            }
-            bytes -= held;
-            handles -= 1;
-            evict += 1;
-        }
-        if over(bytes, handles) {
+        let Some(evicted) = self.usage.evictions(
+            incoming,
+            replaced,
+            limits,
+            candidates.iter().map(|(_, key, bytes)| (*key, *bytes)),
+        ) else {
             return false;
-        }
-        for (_, evicted, _) in &candidates[..evict] {
+        };
+        for evicted in &evicted {
             self.evict(evicted);
         }
         true
@@ -921,8 +895,7 @@ impl LoupeFrames {
             return;
         };
         if let Some(held) = entry.held.take() {
-            self.bytes -= held.bytes;
-            self.handles -= 1;
+            self.usage.remove(held.bytes);
         }
         if entry.wanted_at != self.tick && entry.job.is_none() {
             self.entries.remove(slot);
@@ -995,7 +968,7 @@ impl LoupeFrames {
             if entry
                 .held
                 .as_ref()
-                .is_some_and(|held| held.picture.key == source.key && held.side >= side)
+                .is_some_and(|held| held.matches(&source.key, side))
             {
                 continue;
             }
@@ -1068,7 +1041,7 @@ impl LoupeFrames {
     /// The bytes held and the handles, for tests.
     #[cfg(test)]
     pub(crate) fn held_bytes(&self) -> (usize, usize) {
-        (self.bytes, self.handles)
+        (self.usage.bytes, self.usage.handles)
     }
 }
 

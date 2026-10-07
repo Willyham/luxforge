@@ -90,6 +90,7 @@ mod gpu_white_balance_tests;
 #[cfg(test)]
 mod gpu_window_tests;
 // The shared lowering from core semantic plans to executable display and tile-worker plans.
+mod decoded_handles;
 pub(crate) mod gpu_plan;
 pub(crate) mod gpu_settle;
 #[cfg(test)]

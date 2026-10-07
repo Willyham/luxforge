@@ -148,19 +148,36 @@ struct HeldSource {
     refused: Option<&'static str>,
 }
 
-/// The picture at rest the surfaces draw in tiles (`docs/design/gpu-preview.md`, "The picture at
-/// rest"): the core's tiles for the displayed stack, from its job or its exact phase, and the
-/// surfaces' plain data once converted — the picture, reduced to the view, where the view draws
-/// the stage smaller than it is, and the same tiles for their histogram and clipping counts alone
-/// (`docs/design/gpu-first.md`, stage 2).
-/// A crop draft's input stage the GPU draws ([`Editor::gpu_stage_from`]): the layer prefix's tiles
-/// at full resolution, reduced to the stage's display bounds, as the surfaces are handed them once
-/// converted, or why they cannot be.
+/// Conversion belongs to each resource's identity; ready data and a refusal cannot coexist.
+enum Conversion<T> {
+    Pending,
+    Ready(T),
+    Refused(&'static str),
+}
+
+impl<T> Conversion<T> {
+    fn pending(&self) -> bool {
+        matches!(self, Self::Pending)
+    }
+    fn ready(&self) -> Option<&T> {
+        match self {
+            Self::Ready(value) => Some(value),
+            _ => None,
+        }
+    }
+    fn refusal(&self) -> Option<&'static str> {
+        match self {
+            Self::Refused(reason) => Some(reason),
+            _ => None,
+        }
+    }
+}
+
+/// A crop draft's input-stage tiles, their version and conversion readiness.
 struct StageRest {
     tiles: Box<luxforge_core::RestTiles>,
     version: u64,
-    gpu: Option<surface::GpuRest>,
-    refused: Option<&'static str>,
+    conversion: Conversion<surface::GpuRest>,
 }
 
 /// Where a crop draft's input stage on the GPU has got to ([`Editor::gpu_stage_state`]).
@@ -176,24 +193,46 @@ pub(crate) enum StageState {
     Refused(&'static str),
 }
 
+struct RestVersions {
+    picture: u64,
+    counts: u64,
+}
+
+/// Converted together: the picture and its counts-only variant share tiles, source and stages.
+struct RestVariants {
+    picture: surface::GpuRest,
+    counts: surface::GpuRest,
+}
+
+impl RestVariants {
+    fn new(picture: surface::GpuRest, versions: &RestVersions) -> Self {
+        let counts = match picture.reduction {
+            Some(_) => surface::GpuRest {
+                version: versions.counts,
+                tiles: Arc::clone(&picture.tiles),
+                stages: picture.stages.clone(),
+                light_sweeps: Arc::clone(&picture.light_sweeps),
+                reduction: None,
+            },
+            None => picture.clone(),
+        };
+        Self { picture, counts }
+    }
+}
+
+/// A settled stack's tiles and their picture/counts variants, converted together.
 struct HeldRest {
     tiles: Box<luxforge_core::RestTiles>,
-    /// Handed to the surfaces, which start over whenever it changes: the picture's version.
-    version: u64,
-    /// The counts' own variant's version, for the tiles drawn with no reduction.
-    counts_version: u64,
-    /// The picture as the surfaces are handed it, or the counts' variant where the tiles have no
-    /// reduction; `None` until a lens warp's stage grid is held.
-    gpu: Option<surface::GpuRest>,
-    /// The tiles drawn for their counts alone: handed where the picture is not, while the counts
-    /// are wanted.
-    counts: Option<surface::GpuRest>,
-    /// Why the tiles cannot be drawn on the GPU: their source is not the one the surface holds, or
-    /// a tile's plan is one the surface cannot run.
-    refused: Option<&'static str>,
-    /// The content the GPU presents is this stack's, whose counts are its report
-    /// ([`Editor::present_on_gpu`]), and they have not been taken up yet.
+    versions: RestVersions,
+    conversion: Conversion<RestVariants>,
+    /// This content's counts are wanted, independently from whether its picture is handed.
     wanted: bool,
+}
+
+/// One settled resource's handoff. Crop, retained Compare content and warming remain independent.
+enum RestPresentation<'a> {
+    Picture(&'a surface::GpuRest),
+    Counts(&'a surface::GpuRest),
 }
 
 /// `tiles` as the surfaces draw them under `version`: each tile's plan over its window cut from the
@@ -1342,7 +1381,7 @@ impl GpuPreviews {
         let tile = self
             .rest
             .as_ref()
-            .and_then(|held| held.gpu.as_ref().or(held.counts.as_ref()))
+            .and_then(|held| held.conversion.ready().map(|ready| &ready.picture))
             .and_then(|rest| rest.tiles.first());
         surface::gpu_programs_ready(std::iter::once(&at_rest.handed.plan).chain(tile))
     }
@@ -1352,8 +1391,8 @@ impl GpuPreviews {
     pub(crate) fn rest_versions(&self, source: &ProxyIdentity) -> Option<[u64; 2]> {
         self.rest
             .as_ref()
-            .filter(|held| held.tiles.source == *source && held.refused.is_none())
-            .map(|held| [held.version, held.counts_version])
+            .filter(|held| held.tiles.source == *source && held.conversion.refusal().is_none())
+            .map(|held| [held.versions.picture, held.versions.counts])
     }
 
     /// Mark the held picture at rest's counts as wanted, or no longer: the surfaces are handed its
@@ -1380,12 +1419,12 @@ impl GpuPreviews {
         });
         // The picture at rest in tiles: what the surfaces are handed, or why not yet.
         let rest = self.rest.as_ref().map(|held| {
-            json!({"version": held.version, "counts_version": held.counts_version,
+            json!({"version": held.versions.picture, "counts_version": held.versions.counts,
                 "tiles": held.tiles.tiles.len(),
                 "view": held.tiles.reduction.as_ref().map(|reduction| [reduction.view.0,
                     reduction.view.1]),
                 "output": [held.tiles.output.width, held.tiles.output.height],
-                "handed": held.gpu.is_some(), "refused": held.refused,
+                "handed": held.conversion.ready().is_some(), "refused": held.conversion.refusal(),
                 "counts_wanted": held.wanted})
         });
         let Some(drag) = &self.drag else {
@@ -2211,7 +2250,7 @@ impl Editor {
         }
         let Some(tiles) = tiles else {
             if let Some(held) = self.gpu.rest.take() {
-                let version = held.version;
+                let version = held.versions.picture;
                 self.event(
                     "gpu_rest_released",
                     || json!({"version": version, "why": "no-tiles"}),
@@ -2230,11 +2269,11 @@ impl Editor {
         self.gpu.rests += 2;
         self.gpu.rest = Some(HeldRest {
             tiles,
-            version: self.gpu.rests - 1,
-            counts_version: self.gpu.rests,
-            gpu: None,
-            counts: None,
-            refused: None,
+            versions: RestVersions {
+                picture: self.gpu.rests - 1,
+                counts: self.gpu.rests,
+            },
+            conversion: Conversion::Pending,
             wanted: false,
         });
         self.gpu_convert_rest();
@@ -2259,8 +2298,7 @@ impl Editor {
         self.gpu.stage = Some(StageRest {
             tiles,
             version: self.gpu.rests,
-            gpu: None,
-            refused: None,
+            conversion: Conversion::Pending,
         });
         self.gpu_convert_stage();
         !matches!(self.gpu_stage_state(), StageState::Refused(_))
@@ -2278,11 +2316,7 @@ impl Editor {
     /// are held, as [`Self::gpu_convert_rest`] converts the photograph's.
     pub(crate) fn gpu_convert_stage(&mut self) {
         let gpu = &mut self.gpu;
-        let Some(held) = gpu
-            .stage
-            .as_mut()
-            .filter(|held| held.gpu.is_none() && held.refused.is_none())
-        else {
+        let Some(held) = gpu.stage.as_mut().filter(|held| held.conversion.pending()) else {
             return;
         };
         let detail = match rest_of(
@@ -2298,11 +2332,11 @@ impl Editor {
                     "view": converted.reduction.as_ref().map(|reduction| [reduction.view.0,
                         reduction.view.1]),
                     "output": [held.tiles.output.width, held.tiles.output.height]});
-                held.gpu = Some(converted);
+                held.conversion = Conversion::Ready(converted);
                 detail
             }
             Err(reason) => {
-                held.refused = Some(reason);
+                held.conversion = Conversion::Refused(reason);
                 json!({"version": held.version, "refused": reason})
             }
         };
@@ -2313,7 +2347,7 @@ impl Editor {
     /// the GPU stage.
     pub(crate) fn gpu_stage_handed(&self) -> Option<&surface::GpuRest> {
         self.gpu_preview_allowed().ok()?;
-        self.gpu.stage.as_ref()?.gpu.as_ref()
+        self.gpu.stage.as_ref()?.conversion.ready()
     }
 
     /// Where the crop stage on the GPU has got to: what the conversion and the surface's last draw
@@ -2322,7 +2356,7 @@ impl Editor {
         let Some(stage) = &self.gpu.stage else {
             return StageState::None;
         };
-        if let Some(reason) = stage.refused {
+        if let Some(reason) = stage.conversion.refusal() {
             return StageState::Refused(reason);
         }
         if let Err(reason) = self.gpu_preview_allowed() {
@@ -2347,11 +2381,7 @@ impl Editor {
     /// stage grid are held: run when it is held, and after any message that may bring either.
     pub(crate) fn gpu_convert_rest(&mut self) {
         let gpu = &mut self.gpu;
-        let Some(held) = gpu
-            .rest
-            .as_mut()
-            .filter(|held| held.gpu.is_none() && held.refused.is_none())
-        else {
+        let Some(held) = gpu.rest.as_mut().filter(|held| held.conversion.pending()) else {
             return;
         };
         let detail = match rest_of(
@@ -2359,12 +2389,12 @@ impl Editor {
             &mut gpu.versions,
             &mut gpu.grids,
             &held.tiles,
-            held.version,
+            held.versions.picture,
         ) {
             Ok(None) => return,
             Ok(Some(converted)) => {
                 let anchor = held.tiles.plan.anchor();
-                let detail = json!({"version": held.version, "tiles": converted.tiles.len(),
+                let detail = json!({"version": held.versions.picture, "tiles": converted.tiles.len(),
                     "view": converted.reduction.as_ref().map(|reduction| [reduction.view.0,
                         reduction.view.1]),
                     "output": [held.tiles.output.width, held.tiles.output.height],
@@ -2372,26 +2402,14 @@ impl Editor {
                     "sweeps": converted.stages.as_ref().map_or(0, |stages| stages.sweeps.len()),
                     "light_sweeps": converted.light_sweeps.len(),
                     "anchor": anchor.multiple, "lead": anchor.lead});
-                // The same tiles for their counts alone, under a version of their own, so a
-                // surface handed one after the other starts over rather than drawing the picture.
-                held.counts = Some(match converted.reduction {
-                    Some(_) => surface::GpuRest {
-                        version: held.counts_version,
-                        tiles: Arc::clone(&converted.tiles),
-                        stages: converted.stages.clone(),
-                        light_sweeps: Arc::clone(&converted.light_sweeps),
-                        reduction: None,
-                    },
-                    None => converted.clone(),
-                });
-                held.gpu = Some(converted);
+                held.conversion = Conversion::Ready(RestVariants::new(converted, &held.versions));
                 detail
             }
             // The source the tiles read is not held yet: tried again when it is.
             Err("source-missing") => return,
             Err(reason) => {
-                held.refused = Some(reason);
-                json!({"version": held.version, "refused": reason})
+                held.conversion = Conversion::Refused(reason);
+                json!({"version": held.versions.picture, "refused": reason})
             }
         };
         self.event("gpu_rest", || detail);
@@ -2403,27 +2421,10 @@ impl Editor {
     /// the overlay's marks being the view plan's; Compare's Before side among them. None while the
     /// gate refuses the GPU stage or an evidence hook hands a plan of its own.
     pub(crate) fn gpu_rest_handed(&self) -> Option<&surface::GpuRest> {
-        self.gpu_preview_allowed().ok()?;
-        #[cfg(test)]
-        if self.gpu.rest_off {
-            return None;
+        match self.rest_presentation()? {
+            RestPresentation::Picture(picture) => Some(picture),
+            RestPresentation::Counts(_) => None,
         }
-        if self.core_gesture().is_some()
-            || self.drafting()
-            || super::gpu_settle::clip_flags(&self.session.workspace).is_some()
-            || self
-                .evidence
-                .as_ref()
-                .is_some_and(|evidence| evidence.gpu_identity.is_some())
-        {
-            return None;
-        }
-        self.gpu
-            .rest
-            .as_ref()?
-            .gpu
-            .as_ref()
-            .filter(|rest| rest.reduction.is_some())
     }
 
     /// The picture at rest's tiles for their histogram and clipping counts alone, which the
@@ -2433,13 +2434,21 @@ impl Editor {
     /// the view plan's. None while a gesture or a crop draft is open, the gate refuses the GPU
     /// stage or an evidence hook hands a plan of its own.
     pub(crate) fn gpu_counts_handed(&self) -> Option<&surface::GpuRest> {
+        match self.rest_presentation()? {
+            RestPresentation::Counts(counts) => Some(counts),
+            RestPresentation::Picture(_) => None,
+        }
+    }
+
+    /// One eligibility decision for the picture and the tiles for counts alone. A released
+    /// gesture may still have its last plan on screen; an active gesture or crop draft owns it.
+    fn rest_presentation(&self) -> Option<RestPresentation<'_>> {
         self.gpu_preview_allowed().ok()?;
         #[cfg(test)]
         if self.gpu.rest_off {
             return None;
         }
-        if self.gpu_rest_handed().is_some()
-            || self.core_gesture().is_some()
+        if self.core_gesture().is_some()
             || self.drafting()
             || self
                 .evidence
@@ -2448,8 +2457,17 @@ impl Editor {
         {
             return None;
         }
-        let held = self.gpu.rest.as_ref().filter(|held| held.wanted)?;
-        held.counts.as_ref()
+        let held = self.gpu.rest.as_ref()?;
+        let ready = held.conversion.ready()?;
+        if ready.picture.reduction.is_some()
+            && super::gpu_settle::clip_flags(&self.session.workspace).is_none()
+        {
+            Some(RestPresentation::Picture(&ready.picture))
+        } else if held.wanted {
+            Some(RestPresentation::Counts(&ready.counts))
+        } else {
+            None
+        }
     }
 
     /// Compare begins: the GPU picture of the stack on screen — its view plan and its picture at
@@ -2465,7 +2483,7 @@ impl Editor {
         };
         let detail = json!({
             "view_boundary": retained.at_rest.as_ref().map(|at_rest| at_rest.boundary.version()),
-            "rest": retained.rest.as_ref().map(|rest| rest.version),
+            "rest": retained.rest.as_ref().map(|rest| rest.versions.picture),
         });
         self.gpu.compare = Some(retained);
         self.event("gpu_compare_retained", || detail);
@@ -2479,7 +2497,7 @@ impl Editor {
         };
         let detail = json!({
             "view_boundary": retained.at_rest.as_ref().map(|at_rest| at_rest.boundary.version()),
-            "rest": retained.rest.as_ref().map(|rest| rest.version),
+            "rest": retained.rest.as_ref().map(|rest| rest.versions.picture),
         });
         self.gpu.at_rest = retained.at_rest;
         self.gpu.rest = retained.rest;
@@ -2517,7 +2535,7 @@ impl Editor {
             .rest
             .as_ref()
             .filter(|_| whole && super::gpu_settle::clip_flags(&self.session.workspace).is_none())
-            .and_then(|rest| rest.gpu.as_ref())
+            .and_then(|rest| rest.conversion.ready().map(|ready| &ready.picture))
             // Tiles with no reduction are the counts' alone: they draw no After side.
             .filter(|rest| rest.reduction.is_some());
         (plan, rest)
@@ -2808,7 +2826,7 @@ pub(super) fn after_message(editor: &mut Editor, _: &super::Before) -> iced::Tas
             || json!({"version": version, "why": "asset-changed"}),
         );
         if let Some(rest) = editor.gpu.rest.take() {
-            let version = rest.version;
+            let version = rest.versions.picture;
             editor.event(
                 "gpu_rest_released",
                 || json!({"version": version, "why": "asset-changed"}),

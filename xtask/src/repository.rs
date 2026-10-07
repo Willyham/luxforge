@@ -1172,18 +1172,16 @@ const SOURCE_RULES: &[SourceRule] = &[
         types: &["rs"],
         allowed: &[
             "crates/luxforge-ui/src/gallery_thumbnails.rs",
-            "crates/luxforge-app/src/app/select_previews.rs",
-            "crates/luxforge-app/src/app/loupe_frames.rs",
+            "crates/luxforge-app/src/app/decoded_handles.rs",
         ],
         mode: Match::Whole,
         tests: true,
         once: false,
         reason: "an image handle made from pixels uploads a new texture each time it is made; the \
                  photo surface owns the photograph's GPU uploads, the components gallery's \
-                 stand-in photographs are made once in gallery_thumbnails.rs, the Select \
-                 grid's decoded previews once each, when a decode lands, in \
-                 app/select_previews.rs, which holds each while its cell may be shown, and the \
-                 loupe's decoded frames and 100% regions likewise in app/loupe_frames.rs",
+                 stand-in photographs are made once in gallery_thumbnails.rs; shared \
+                 decoded_handles.rs makes accepted grid/loupe previews and loupe regions once, \
+                 and each controller holds the handle while it may be shown",
     },
     SourceRule {
         name: "project-name",
@@ -3486,11 +3484,7 @@ fn frame() {}
                     "Handle::from_rgba(w, h, render(&scene, ev))\n",
                 ),
                 (
-                    "crates/luxforge-app/src/app/select_previews.rs",
-                    "handle: Handle::from_rgba(width, height, rgba),\n",
-                ),
-                (
-                    "crates/luxforge-app/src/app/loupe_frames.rs",
+                    "crates/luxforge-app/src/app/decoded_handles.rs",
                     "handle: Handle::from_rgba(width, height, rgba),\n",
                 ),
                 (RULES_FILE, "tokens: &[\"Handle::from_rgba\"],\n"),
@@ -3509,6 +3503,14 @@ fn frame() {}
                 (
                     "crates/luxforge-app/src/view/select.rs",
                     "image: Some(&Handle::from_rgba(w, h, pixels)),\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/select_previews.rs",
+                    "Handle::from_rgba(w, h, pixels);\n",
+                ),
+                (
+                    "crates/luxforge-app/src/app/loupe_frames.rs",
+                    "Handle::from_rgba(w, h, pixels);\n",
                 ),
                 (
                     "crates/luxforge-ui/src/photo_tests.rs",
