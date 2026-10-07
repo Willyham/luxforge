@@ -1063,7 +1063,7 @@
     {
       "id": "TASK-017",
       "description": "Qualify and measure the integrated structural refactor on current production paths.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-002",
         "TASK-007",
@@ -1084,7 +1084,8 @@
         "Full native corpus and rendered workflows pass, but the full harness exposed existing baseline failures: RAW CLI undo fixtures assumed auto-collapse off, and RAW Detail percentage capture accepted a frame still marked updating. Both reproduce at 3ac13023. Qualification will isolate test preferences and explicitly disable collapse for per-edit undo, and strengthen only the evidence capture predicate to wait for the current visible-detail readiness. History behavior, rendering strategy, budgets and tolerances remain unchanged. Standard full timing rows were unreliable under high host load; record that scope and collect the requested additional matched measurements only after work finishes on a quiet host.",
         "Linux no-adapter quick checks compiled the new backend and passed all other binaries, but two unchanged source-signature unit fixtures rewrote equal-length bytes without guaranteeing a new timestamp. They require deterministic metadata changes rather than assuming filesystem clock resolution; production source-cache behavior is unchanged. Use the existing source-test touch helper and explicitly advance the owner fixture timestamp, then rerun those checks and the Linux lane.",
         "The corrected Linux quick run exposed the same timestamp assumption in Locate verification: its fixture grows then restores a file in one clock tick. Advance only the fixture modification time deterministically, preserving file bytes and production conflict checks; rerun the Locate test and current Linux functional lane. Native full GPU qualification still exercises unchanged product behavior.",
-        "Integrated native evidence: artifacts/code-structure-integrated-full-corrected/summary.json passes all 77 components, all four standard timing rows reliable, and the complete authentic corpus passes 277 recipe/source pairs with originals unchanged. artifacts/code-structure-comparison/report.md and report.json retain 30-sample setup, 24/60 MP JPEG plus authentic Nikon RAW drag/commit, warm GPU export streams and charge peaks against isolated 3ac13023. Candidate setup preparations are 5 to 1 and stack compiles 5 to 0; desktop/stream costs remain similar and charged peaks are unchanged. The first integrated export measurement had compiler-induced high load and is excluded; fresh matched export runs use a 3.18 to 3.60 load trace. Linux full no-adapter headless checks and release owner acceptance pass; editor build/adapter enumeration/software functional checks remain running. Native Windows/Linux GPU scope, authentic 60 MP RAW desktop/export timing and total-memory accounting remain explicitly unqualified."
+        "Integrated native evidence: artifacts/code-structure-integrated-full-corrected/summary.json passes all 77 components, all four standard timing rows reliable, and the complete authentic corpus passes 277 recipe/source pairs with originals unchanged. artifacts/code-structure-comparison/report.md and report.json retain 30-sample setup, 24/60 MP JPEG plus authentic Nikon RAW drag/commit, warm GPU export streams and charge peaks against isolated 3ac13023. Candidate setup preparations are 5 to 1 and stack compiles 5 to 0; desktop/stream costs remain similar and charged peaks are unchanged. The first integrated export measurement had compiler-induced high load and is excluded; fresh matched export runs use a 3.18 to 3.60 load trace. Linux full no-adapter headless checks and release owner acceptance pass; editor build/adapter enumeration/software functional checks remain running. Native Windows/Linux GPU scope, authentic 60 MP RAW desktop/export timing and total-memory accounting remain explicitly unqualified.",
+        "Accepted available scope: native M4 full 77/77, complete authentic corpus 277 pairs, matched measurements and qualified-quick passed. Linux no-adapter full checks/slow tests/doctests/release owner acceptance/editor build/empty enumeration pass. All 13 software Vulkan/Xvfb journeys pass on llvmpipe CPU with correlated default reference, explicit software GPU and no-GPU fallback state; artifacts/code-structure-linux contains the evidence. Native Windows/Linux GPU and authentic 60 MP RAW desktop/export evidence are unavailable and remain explicitly open in current qualification/portability documentation, as the acceptance requires. Current main e833a284 adds only plans/docs; its code/dependencies are identical to a20cf0b8 and the new docs are integrated. No tolerance, budget or product behavior was changed."
       ],
       "context_links": [
         {
@@ -1150,7 +1151,7 @@
     {
       "id": "TASK-018",
       "description": "Reconcile architecture, interfaces and status with the qualified outcome and retire the completed plan.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-017"
       ],
