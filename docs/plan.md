@@ -34,6 +34,7 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 | [Code structure consolidation](../tasks/project/code-structure.json) ([design](design/code-structure.md)) | TASK-001 provider availability; TASK-002 current comments; TASK-003 GPU boundary decision; TASK-010 operation identity; TASK-011 preview intent; TASK-013 typed preview reads; TASK-015 renderer limits; TASK-016 hidden status | Planning is authorized; implementation is not. GPU extraction follows its boundary decision; image, budget and scheduling behavior stay current | High tier |
 | [Lightroom import](../tasks/lightroom/lightroom-import.json) ([design](design/lightroom-import.md)) | TASK-001 confirm the catalog format against a copy of the owner's catalog | Needs no code; needs the owner's catalog copy | High tier |
 | [Lightroom alignment](../tasks/lightroom/lightroom-alignment.json) ([design](design/lightroom-alignment.md)) | TASK-001 the rig's generator and synthetic targets | Its rounds need the owner to import and export in Lightroom | High tier |
+| [Live-session Rust CLI](../tasks/project/live-cli.json) ([design](design/live-cli.md)) | TASK-001 shared catalog targeting and authenticated session client | The command contract and defaults are decided; implementation awaits owner authorization | High tier |
 
 ### In progress
 
@@ -152,6 +153,8 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 - Later, if the owner wants them: following Omarchy's current theme on Linux, following the system's light or dark appearance
 
 ## Programmability
+
+**Live-session Rust CLI** ([design](design/live-cli.md), [tasks](../tasks/project/live-cli.json)). A thin `luxforge-ctl` client attaches to the authenticated loopback session for the already-open catalog and exposes state, schemas, generic calls and same-connection job waiting. The shared catalog resolver follows the desktop's stored/default rules; revisioned calls use a schema-driven `--asset` helper. It does not start another catalog owner or infer the asset from the desktop's selection. The contract is specified; implementation awaits owner authorization.
 
 **MCP adapter.** Expose the whole operation registry to agents through a standards-compliant MCP server over the existing command service.
 

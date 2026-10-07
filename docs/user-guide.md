@@ -1,6 +1,6 @@
 # Luxforge user guide
 
-The Develop workspace opens JPEG and the camera recording modes listed in the bundled RAW catalog, with exact transforms, crop/straighten, persistent history and the JSON API. On a RAW photo the same Basic section sets the white balance on the sensor data, in kelvin. [Exporting](#exporting) writes the photograph on screen to a new JPEG. Locate and MCP are planned; see [feature status](features.md).
+The Develop workspace opens JPEG and the camera recording modes listed in the bundled RAW catalog, with exact transforms, crop/straighten, persistent history and the JSON API. On a RAW photo the same Basic section sets the white balance on the sensor data, in kelvin. [Exporting](#exporting) writes the photograph on screen to a new JPEG. Locate and MCP are planned; a Rust CLI for the live editor session is specified and awaits implementation authorization ([feature status](features.md)).
 
 JPEG Basic exposure, tone, white balance and colour controls are built, with the neutral picker, and so are the histogram and clipping inspector that share their [design](design/basic-and-histogram.md), and the Presence, Colour mixer and Vignette sections of their own [design](design/presence-mixer-vignette.md). [Presets](design/presets.md) save and apply those settings, and import Lightroom Classic presets.
 

@@ -1,0 +1,261 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "live-cli",
+  "title": "Rust CLI for the live editor session",
+  "objective": "Provide a small Rust command-line client that safely attaches to the already-open Luxforge catalog and drives the existing JSON API.",
+  "context_summary": "The desktop already publishes an authenticated loopback JSON-lines session beside its catalog, and the same command registry is available to every client. `luxforge-json` is a separate headless catalog owner. The specified design adds a thin `luxforge-ctl` client to the existing `luxforge-cli` package; it does not launch an owner or write catalog data directly. The binary name, catalog targeting and schema-driven revision helper are resolved in docs/design/live-cli.md. Implementation awaits explicit authorization, not further product decisions.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Implement safe discovery and a bounded Rust client for an already-open live session.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Implementation still needs the owner's go-ahead. Follow docs/design/live-cli.md: factor the ordinary desktop catalog selection rule into UI-independent shared code used by both launch paths; allow an explicit --catalog; validate the live-session protocol; connect only to loopback with the sidecar token; and fail without starting another owner.",
+        "Keep the client in luxforge-cli without GUI dependencies. Preserve the existing JSON-lines request/response types and framing; cap sidecars at 4 KiB, outgoing request lines at 1 MiB and response lines at 64 MiB. Use a one-second connection timeout and no response deadline for a valid call. A separate connection represents a separate API client; keep it open for a request's job wait."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Proposed live CLI contract",
+          "target": "docs/design/live-cli.md",
+          "locator": "Proposed targeting and safety",
+          "relevance": "Defines target selection, authentication, authority and no-fallback behavior."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop session transport",
+          "target": "crates/luxforge-core/src/api/transport.rs",
+          "locator": "LocalServer",
+          "relevance": "Publishes the authenticated loopback endpoint and bounded JSON-lines protocol."
+        },
+        {
+          "kind": "file",
+          "label": "Desktop catalog selection",
+          "target": "crates/luxforge-app/src/main.rs",
+          "locator": "resolve_launch",
+          "relevance": "The CLI should share the desktop's catalog targeting rules."
+        },
+        {
+          "kind": "file",
+          "label": "Current catalog path resolver",
+          "target": "crates/luxforge-app/src/state/preferences.rs",
+          "locator": "LaunchCatalog",
+          "relevance": "Contains the ordinary explicit, stored and fallback catalog selection behavior to extract into shared UI-independent code."
+        },
+        {
+          "kind": "file",
+          "label": "Public API client types",
+          "target": "crates/luxforge-core/src/api/mod.rs",
+          "locator": "ApiRequest",
+          "relevance": "Defines the shared request, response and protocol behavior."
+        }
+      ],
+      "acceptance_criteria": [
+        "The desktop and CLI use one UI-independent catalog selection rule: explicit path, otherwise stored preference when its parent exists, otherwise the configured default catalog path.",
+        "The client connects only to the selected catalog's valid loopback live session and creates no config directories or files while resolving it.",
+        "Missing, stale, malformed or unsupported session data fails clearly and never starts luxforge-json or another owner.",
+        "Requests carry the per-session token and unique request IDs; responses preserve structured API errors.",
+        "The client does not expose permission authority or bypass API validation, history or revision checks."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Add focused tests for target resolution, malformed and stale sidecars, loopback-only addresses, protocol mismatch, authentication and response framing.",
+          "Exercise oversized requests and responses, connection timeout and structured API failures without launching the desktop."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-cli live_session_client"
+        ],
+        "expected_results": [
+          "Focused client tests pass; malformed or unauthenticated sessions are refused without fallback, and protocol memory limits are enforced."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Add the `luxforge-ctl` binary with status, schema and generic API call commands, including same-connection job waiting.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "Implement the fixed command contract in docs/design/live-cli.md. Use a hand-written argument parser and add the pinned workspace uuid dependency directly. Use schema.list to add request-only mutation envelopes automatically; revisioned asset mutations require --asset, which fetches asset.state immediately before the call and inserts asset_id plus expected_revision. Revisioned non-asset mutations require --expected-revision. Races return conflict; never retry or rebase.",
+        "The CLI is a distinct live client. Require explicit asset IDs rather than inheriting the desktop's selected photo. Derive available methods and parameter semantics from schema.list instead of maintaining a duplicate registry."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Proposed command interface",
+          "target": "docs/design/live-cli.md",
+          "locator": "Proposed v0 command shape",
+          "relevance": "Defines the recommended binary and command behaviors."
+        },
+        {
+          "kind": "file",
+          "label": "Live method schemas",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "locator": "schema.list",
+          "relevance": "The command should discover the API's current methods and parameter requirements."
+        },
+        {
+          "kind": "file",
+          "label": "Existing CLI package",
+          "target": "crates/luxforge-cli/Cargo.toml",
+          "relevance": "Add a separate client binary without changing the headless owner's role."
+        }
+      ],
+      "acceptance_criteria": [
+        "The package builds both luxforge-json and luxforge-ctl, with no GUI dependency added to the CLI binary.",
+        "status and schema print scriptable JSON; call accepts a method and JSON parameters and returns the API response.",
+        "When --wait is requested and a call returns a job, the client follows job.wait change tokens to a terminal state over the originating connection.",
+        "Mutation envelopes are derived from schema.list: request-only mutations receive a generated request ID and the fixed luxforge-ctl actor; revisioned asset mutations require --asset and use its freshly read revision.",
+        "Success output stays on stdout; structured errors and diagnostics go to stderr with a non-zero exit status.",
+        "The CLI uses ordinary live-client authority and never silently chooses an asset or retries a conflicting mutation."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Test argument parsing, JSON input, output streams, exit status, request IDs and each supported command against a controlled local endpoint.",
+          "Verify job polling remains on the same connection and stops at ready, failed or cancelled."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-cli luxforge_ctl_commands"
+        ],
+        "expected_results": [
+          "Command tests confirm stable JSON output, structured errors and correct same-session job polling."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Prove the CLI process boundary against the shared API and a live-session test server.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002"
+      ],
+      "extra_context": [
+        "Use an isolated temporary catalog and a controlled local server or the existing testkit patterns. Do not launch the foreground desktop for routine checks.",
+        "Cover an actual schema lookup, a request-only mutation, a revision-checked edit that produces normal history, a conflict after a competing commit, and one job awaited to completion. Confirm source files remain untouched."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Existing process-test patterns",
+          "target": "crates/luxforge-cli/tests/json_cli/main.rs",
+          "relevance": "Shows how this package tests a command-line process boundary."
+        },
+        {
+          "kind": "file",
+          "label": "Process and API test helpers",
+          "target": "crates/luxforge-testkit/src/process.rs",
+          "relevance": "Provides isolated process-test patterns for the existing headless binary."
+        },
+        {
+          "kind": "file",
+          "label": "Live session semantics",
+          "target": "docs/design/versions-and-lineage.md",
+          "locator": "Sessions live with the owner",
+          "relevance": "Describes per-client drafts and the effects of edits from another client."
+        }
+      ],
+      "acceptance_criteria": [
+        "A process-level test connects to an isolated live owner and successfully reads its schema and state.",
+        "A CLI edit is recorded through the shared command service and appears in history; the original file hash is unchanged.",
+        "A stale expected revision returns conflict without an automatic retry or lost human commit.",
+        "A returned job reaches a terminal response through job.wait and --wait, and disconnect behavior matches the API contract."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Run the focused luxforge-cli live-session process tests using fresh temporary catalog and evidence paths.",
+          "Inspect assertions for history, conflict handling, job completion, stdout/stderr and source preservation."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-cli live_session_process"
+        ],
+        "expected_results": [
+          "The CLI is shown to be a normal API client with no direct catalog writes or source-file changes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Document the shipped CLI, update feature status, and complete the repository's quick verification tier.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003"
+      ],
+      "extra_context": [
+        "Documentation describes only the commands and flags that were implemented and verified. Update the live CLI design if the owner-authorized contract differs from the proposal.",
+        "The quick tier is the final gate; UI rendering evidence is out of scope because the command-line client does not change the UI or image renderer."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "User guide automation section",
+          "target": "docs/user-guide.md",
+          "locator": "JSON automation",
+          "relevance": "Document actual live CLI usage alongside the existing headless JSON interface."
+        },
+        {
+          "kind": "file",
+          "label": "Feature status",
+          "target": "docs/features.md",
+          "relevance": "Record shipped capability and its verified scope."
+        },
+        {
+          "kind": "file",
+          "label": "Development verification rules",
+          "target": "AGENTS.md",
+          "locator": "Verify proportionately, and last",
+          "relevance": "Requires quick verification before handing off completed changes."
+        }
+      ],
+      "acceptance_criteria": [
+        "The user guide documents the actual binary path, targeting defaults, commands, schema-driven mutation envelope, --asset revision helper, JSON input/output, errors and job waiting.",
+        "Feature status distinguishes the new live client from the existing luxforge-json headless owner.",
+        "The quick verification tier passes and its evidence is recorded; no rendering or performance claim is made."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Review documentation examples against the binary's help output and process tests.",
+          "Run the repository's quick verification tier once after all feature work is complete."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask verify --tier quick --output /tmp/luxforge-live-cli-quick"
+        ],
+        "expected_results": [
+          "Quick verification passes and documentation matches the implemented behavior."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-002"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-003"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-004"
+      ]
+    }
+  ]
+}
