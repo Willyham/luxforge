@@ -52,7 +52,7 @@
 //!   reference renderer's reads ([`ReferenceReads`]), its answer naming why ([`Answered::reason`]),
 //!   and so is every later read of that call, so what remains of a call has one renderer. Never
 //!   silently.
-//! - **A stream.** [`GpuTiles::stream`] plans the export on its caller's thread ([`plan_stream`]),
+//! - **A stream.** [`GpuTiles::stream`] plans the export on its caller's thread ([`PreparedStream`]),
 //!   so a stack the GPU cannot draw is answered at once and the export lane renders its reference
 //!   frame. The worker then draws the output stage at the longest of [`STREAM_TILE_SIDES`] whose
 //!   every tile the runner's own charge holds within [`GPU_TILE_BUDGET`] less
@@ -73,9 +73,9 @@
 use super::gpu_plan::{self, WarpGrid, surface_plan_over, sweep_plan_over};
 use luxforge_core::{
     Cancel, ClientId, CoordinateGrid, Error, GpuFallback, GpuGeometry, GpuLightSweep, GpuPlan,
-    GpuStaging, GpuSweep, GpuSweeps, LinearImage, PreviewSource, Region, RestTile,
+    GpuStaging, GpuSweep, GpuSweeps, LinearImage, PreparedStream, PreviewSource, Region, RestTile,
     STREAM_TILE_SIDES, StreamPlan, TilePlan, plan_read, plan_stream, plan_stream_light_sweeps,
-    plan_stream_sweeps, plan_stream_sweeps_at,
+    plan_stream_sweeps,
     tiles::{
         Answered, Band, BandSender, BandStream, EXPORT_BANDS_IN_FLIGHT, ReadAnswer, ReadPixels,
         ReadStage, ReadValues, ReferenceReads, TILE_QUEUE_CAPACITY, TileCall, TileFallback,
@@ -532,7 +532,8 @@ impl TileService for GpuTiles {
             return Err(reason);
         }
         let (sides, sweep_sides) = (self.sides(), self.sweep_sides());
-        let plan = plan_stream(evaluation, sides[0])?;
+        let prepared = PreparedStream::of(evaluation)?;
+        let plan = prepared.stream(sides[0])?;
         let taken = Arc::new(AtomicUsize::new(0));
         let wake = {
             let (shared, taken) = (Arc::clone(&self.shared), Arc::clone(&taken));
@@ -575,6 +576,7 @@ impl TileService for GpuTiles {
             sides,
             sweep_sides,
             first: Some(plan),
+            prepared: Some(prepared),
             drawing: None,
             next: 0,
             open: VecDeque::new(),
@@ -638,6 +640,8 @@ struct Stream {
     /// those.
     sweep_sides: Option<Vec<u32>>,
     first: Option<StreamPlan>,
+    /// Source-derived preparation only until strategy and side selection have finished.
+    prepared: Option<PreparedStream>,
     /// What the worker draws it with, once it has begun.
     drawing: Option<Drawing>,
     /// The next tile to submit, and the bands its tiles in flight and read back are assembled in,
@@ -1405,7 +1409,9 @@ impl Worker {
         if staged.next == tiles && staged.pending.is_empty() {
             staged.sweep += 1;
             staged.next = 0;
-            (staged.windows, staged.band_of) = bands(&staged.sweeps.sweeps[staged.sweep].tiles);
+            if staged.drawing_stages() {
+                (staged.windows, staged.band_of) = bands(&staged.sweeps.sweeps[staged.sweep].tiles);
+            }
         }
         Ok(())
     }
@@ -1668,6 +1674,10 @@ impl Worker {
             .first
             .take()
             .ok_or_else(|| unplannable("the stream was begun twice"))?;
+        let prepared = stream
+            .prepared
+            .take()
+            .ok_or_else(|| unplannable("the stream was begun twice"))?;
         let source = gpu_source(self.version(), stream.stack.source())?;
         let grid = match first.warp() {
             Some(warp) => Some(stage_grid(warp)?),
@@ -1677,15 +1687,19 @@ impl Worker {
         // A stack whose layers together reach far is drawn in staged sweeps, the runner holding
         // their stage textures, charged before they are created, for as long as the stream is
         // drawn; any other is drawn chained.
-        let staging = match &stream.sweep_sides {
-            _ if self.chains_streams() => None,
-            Some(sides) => Some(plan_stream_sweeps_at(&stream.stack, budget, sides)?),
-            None => Some(plan_stream_sweeps(&stream.stack, budget)?),
+        let sides = stream.sweep_sides.as_deref().unwrap_or(&STREAM_TILE_SIDES);
+        let (staging, lit) = if self.chains_streams() {
+            (None, prepared.light_sweeps(budget, sides)?)
+        } else {
+            let (staging, lit) = prepared.strategy(budget, sides)?;
+            (Some(staging), lit)
         };
-        if let Some(GpuStaging::Staged(sweeps)) = staging {
-            let last = sweeps.sweeps.last().expect("at least two sweeps");
-            let mut plan = plan_stream(&stream.stack, last.side)?;
-            plan.tiles = last.tiles.clone();
+        if let Some(GpuStaging::Staged(mut sweeps)) = staging {
+            let last = sweeps.sweeps.last_mut().expect("at least two sweeps");
+            // The selected sweep already owns exactly the final windows/order. Only its
+            // metadata is needed by Staged; Drawing owns this tile list from here on.
+            let mut plan = first;
+            plan.tiles = std::mem::take(&mut last.tiles);
             plan.side = last.side;
             {
                 let mut runner = self.runner()?;
@@ -1706,32 +1720,17 @@ impl Worker {
         // A light behind a spatial layer whose stage textures do not fit is computed by light
         // sweeps first, which hold none; the stream's chained tiles read it kept. A stack no light
         // sweep fits is the reference's, never drawn with a stand-in.
-        let lit = match first
-            .plan
-            .lights
-            .iter()
-            .any(luxforge_core::GpuLight::staged)
-        {
-            false => None,
-            true => {
-                let sides = stream
-                    .sweep_sides
-                    .clone()
-                    .unwrap_or_else(|| luxforge_core::STREAM_TILE_SIDES.to_vec());
-                Some(plan_stream_light_sweeps(&stream.stack, budget, &sides)?)
-            }
-        };
         let mut requested = 0;
         for &side in &stream.sides {
             let plan = if side == first.side {
                 first.clone()
             } else {
-                plan_stream(&stream.stack, side)?
+                prepared.stream(side)?
             };
             let charge = self.largest_charge(&plan, &source, grid.as_ref())?;
             if charge <= budget {
                 let mut drawing = Drawing::new(plan, source, grid, self.runners.get());
-                drawing.lit = lit.map(LightSweeps::new);
+                drawing.lit = (!lit.is_empty()).then(|| LightSweeps::new(lit));
                 return Ok(drawing);
             }
             requested = charge;

@@ -45,7 +45,6 @@
 //!   white balance, which the GPU source does not hold.
 use super::{
     GpuAnchor, GpuAnswer, GpuFallback, GpuGeometry, GpuPlan, GpuPlanRequest, RestTile, anchored,
-    gpu_plan,
 };
 use crate::{
     BoundaryFormat, Error, Evaluation, PreviewSource, ProxyIdentity, Recipe,
@@ -197,30 +196,109 @@ pub fn plan_read(
 /// ([`StreamPlan`]), or the reason the reference renders the export instead. One compile and one
 /// plan of the stack and a window for each tile: `O(layers + tiles × segments)`, no pixel read.
 pub fn plan_stream(evaluation: &Evaluation, side: u32) -> Result<StreamPlan, TileFallback> {
-    let planned = Planned::of(evaluation, ReadStage::Output)?;
-    let (output, side, anchor) = (planned.size, side.max(1), planned.plan.anchor());
-    let mut tiles = Vec::with_capacity(
-        output.width.div_ceil(side) as usize * output.height.div_ceil(side) as usize,
-    );
-    for y0 in (0..output.height).step_by(side as usize) {
-        for x0 in (0..output.width).step_by(side as usize) {
-            let rect = Region {
-                x0,
-                y0,
-                width: side.min(output.width - x0),
-                height: side.min(output.height - y0),
-            };
-            tiles.push(planned.tile(rect, anchor)?);
-        }
+    PreparedStream::of(evaluation)?.stream(side)
+}
+
+/// One exact source-derived plan, shared across strategy and tile-side selection for this stream.
+/// Its evaluation shares the bound compilation/source; it belongs only to the active request,
+/// never a desktop cache. A differently sampled, reduced or prefixed request prepares separately.
+pub struct PreparedStream {
+    evaluation: Evaluation,
+    plan: Box<GpuPlan>,
+    output: Stage,
+    full: Stage,
+}
+
+impl PreparedStream {
+    pub fn of(evaluation: &Evaluation) -> Result<Self, TileFallback> {
+        let planned = Planned::of(evaluation, ReadStage::Output)?;
+        Ok(Self {
+            evaluation: evaluation.clone(),
+            plan: planned.plan,
+            output: planned.size,
+            full: planned.full,
+        })
     }
-    Ok(StreamPlan {
-        tiles,
-        output,
-        side,
-        source: planned.source.identity(),
-        format: BoundaryFormat::of(planned.plan.linear),
-        plan: planned.plan,
-    })
+
+    /// Another tile grid from the same compilation and GPU plan; no source preparation or plan.
+    pub fn stream(&self, side: u32) -> Result<StreamPlan, TileFallback> {
+        let (output, side, anchor) = (self.output, side.max(1), self.plan.anchor());
+        let compiled = self
+            .evaluation
+            .compiled()
+            .map_err(|error| unplannable(error.detail))?;
+        let mut tiles = Vec::with_capacity(
+            output.width.div_ceil(side) as usize * output.height.div_ceil(side) as usize,
+        );
+        for y0 in (0..output.height).step_by(side as usize) {
+            for x0 in (0..output.width).step_by(side as usize) {
+                let rect = Region {
+                    x0,
+                    y0,
+                    width: side.min(output.width - x0),
+                    height: side.min(output.height - y0),
+                };
+                tiles.push(tile(compiled, self.full, output, rect, anchor)?);
+            }
+        }
+        Ok(StreamPlan {
+            tiles,
+            output,
+            side,
+            source: self.evaluation.source().identity(),
+            format: BoundaryFormat::of(self.plan.linear),
+            plan: self.plan.clone(),
+        })
+    }
+
+    /// Staging and, when chained, any required light sweeps selected from the same plan.
+    pub fn strategy(
+        &self,
+        budget: u64,
+        sides: &[u32],
+    ) -> Result<(super::GpuStaging, Vec<super::GpuLightSweep>), TileFallback> {
+        let request = self.request(budget, sides)?;
+        let staging = super::sweeps::plan_sweeps(&request);
+        let lights = if matches!(staging, super::GpuStaging::Chained(_)) {
+            self.light_sweeps(budget, sides)?
+        } else {
+            Vec::new()
+        };
+        Ok((staging, lights))
+    }
+
+    pub fn light_sweeps(
+        &self,
+        budget: u64,
+        sides: &[u32],
+    ) -> Result<Vec<super::GpuLightSweep>, TileFallback> {
+        let request = self.request(budget, sides)?;
+        super::sweeps::plan_light_sweeps(&request).map_err(|chained| {
+            TileFallback::Plan(
+                super::preview::staged_light_fallback(&self.plan, &chained)
+                    .unwrap_or_else(|| GpuFallback::Unplannable("no staged light".into())),
+            )
+        })
+    }
+
+    fn request<'a>(
+        &'a self,
+        budget: u64,
+        sides: &'a [u32],
+    ) -> Result<super::sweeps::SweepRequest<'a>, TileFallback> {
+        Ok(super::sweeps::SweepRequest {
+            compiled: self
+                .evaluation
+                .compiled()
+                .map_err(|error| unplannable(error.detail))?,
+            source: (self.full.width, self.full.height),
+            plan: &self.plan,
+            format: BoundaryFormat::of(self.plan.linear),
+            sides,
+            budget: Some(budget),
+            order: super::sweeps::TileOrder::Rows,
+        })
+    }
 }
 
 /// `evaluation`'s output stage for an export in staged sweeps ([`super::GpuSweeps`]), each sweep at
@@ -244,57 +322,18 @@ pub fn plan_stream_sweeps_at(
     budget: u64,
     sides: &[u32],
 ) -> Result<super::GpuStaging, TileFallback> {
-    let planned = Planned::of(evaluation, ReadStage::Output)?;
-    let staging = super::sweeps::plan_sweeps(&request(&planned, budget, sides));
-    // A light behind a spatial layer is computed from a staged sweep's stage texture, or, where
-    // those do not fit, by light sweeps that hold none ([`plan_stream_light_sweeps`]); a stack
-    // neither fits is the reference's.
-    if let super::GpuStaging::Chained(_) = &staging
-        && planned.plan.lights.iter().any(super::GpuLight::staged)
-        && let Err(chained) = super::sweeps::plan_light_sweeps(&request(&planned, budget, sides))
-    {
-        let fallback =
-            super::preview::staged_light_fallback(&planned.plan, &chained).expect("a staged light");
-        return Err(TileFallback::Plan(fallback));
-    }
-    Ok(staging)
+    PreparedStream::of(evaluation)?
+        .strategy(budget, sides)
+        .map(|(staging, _)| staging)
 }
 
-/// The light sweeps of `evaluation`'s output stage within `budget`, each at the longest of `sides`
-/// that fits ([`super::GpuLightSweep`]): what an export or a read draws before its chained tiles
-/// where its stage textures do not fit, computing each light behind a spatial layer with no stage
-/// texture, the chained tiles then reading it kept. Empty for a stack reading none; the reference's
-/// where a sweep fits no side. `O(layers + lights × sides × segments + tiles × segments)`, no pixel
-/// read.
+/// Light sweeps for one exact request, without keeping any stage texture.
 pub fn plan_stream_light_sweeps(
     evaluation: &Evaluation,
     budget: u64,
     sides: &[u32],
 ) -> Result<Vec<super::GpuLightSweep>, TileFallback> {
-    let planned = Planned::of(evaluation, ReadStage::Output)?;
-    super::sweeps::plan_light_sweeps(&request(&planned, budget, sides)).map_err(|chained| {
-        TileFallback::Plan(
-            super::preview::staged_light_fallback(&planned.plan, &chained)
-                .unwrap_or_else(|| GpuFallback::Unplannable("no staged light".into())),
-        )
-    })
-}
-
-/// The sweep request of `planned`'s output stage within `budget` at `sides`, row by row.
-fn request<'a>(
-    planned: &'a Planned<'_>,
-    budget: u64,
-    sides: &'a [u32],
-) -> super::sweeps::SweepRequest<'a> {
-    super::sweeps::SweepRequest {
-        compiled: &planned.compiled,
-        source: (planned.full.width, planned.full.height),
-        plan: &planned.plan,
-        format: BoundaryFormat::of(planned.plan.linear),
-        sides,
-        budget: Some(budget),
-        order: super::sweeps::TileOrder::Rows,
-    }
+    PreparedStream::of(evaluation)?.light_sweeps(budget, sides)
 }
 
 /// A stage of an evaluation planned for the GPU: its compilation, the plan of it from the source,
@@ -318,6 +357,8 @@ impl<'a> Planned<'a> {
     /// layers before the read layer compiled once and planned, as the GPU plan compiles them, with
     /// the lights it reads.
     fn of(evaluation: &'a Evaluation, stage: ReadStage) -> Result<Self, TileFallback> {
+        #[cfg(test)]
+        preparation_count::note();
         let source = evaluation.source();
         if source.approximate_white_balance() {
             return Err(unplannable(
@@ -344,7 +385,19 @@ impl<'a> Planned<'a> {
         let request = GpuPlanRequest::exact(0, full).from_source();
         let request = if linear { request.linear() } else { request };
         let planned = before.as_ref().unwrap_or(recipe);
-        let plan = match gpu_plan(registry, planned, request) {
+        let answer = compiled
+            .gpu_plan(
+                0,
+                full,
+                None,
+                super::plan::Planning {
+                    linear,
+                    source: true,
+                    ..super::plan::Planning::default()
+                },
+            )
+            .map_err(refused)?;
+        let plan = match super::plan::with_lights(registry, planned, request, &compiled, answer) {
             Ok(GpuAnswer::Plan(plan)) => plan,
             Ok(GpuAnswer::Fallback(reason)) => return Err(TileFallback::Plan(reason)),
             Err(error) => return Err(refused(error)),
@@ -362,15 +415,26 @@ impl<'a> Planned<'a> {
     /// reads, as the region planner plans a GPU region from the source, moved to `anchor`. Empty,
     /// window and all, where the rectangle misses the stage.
     fn tile(&self, rect: Region, anchor: GpuAnchor) -> Result<RestTile, TileFallback> {
-        let rect = clipped(rect, self.size);
-        if rect.is_empty() {
-            return Ok(RestTile {
-                rect,
-                window: Region::EMPTY,
-            });
-        }
-        let source = (self.full.width, self.full.height);
-        let windows = WindowPlan::of_gpu_rect(&self.compiled, source, rect).map_err(|reason| {
+        tile(&self.compiled, self.full, self.size, rect, anchor)
+    }
+}
+
+fn tile(
+    compiled: &Compiled,
+    full: Stage,
+    size: Stage,
+    rect: Region,
+    anchor: GpuAnchor,
+) -> Result<RestTile, TileFallback> {
+    let rect = clipped(rect, size);
+    if rect.is_empty() {
+        return Ok(RestTile {
+            rect,
+            window: Region::EMPTY,
+        });
+    }
+    let windows =
+        WindowPlan::of_gpu_rect(compiled, (full.width, full.height), rect).map_err(|reason| {
             unplannable(format!(
                 "the tile at ({}, {}): {}",
                 rect.x0,
@@ -378,16 +442,28 @@ impl<'a> Planned<'a> {
                 reason.reason()
             ))
         })?;
-        Ok(RestTile {
-            rect,
-            window: anchored(windows.reads(0), anchor),
-        })
+    Ok(RestTile {
+        rect,
+        window: anchored(windows.reads(0), anchor),
+    })
+}
+
+#[cfg(test)]
+mod preparation_count {
+    use std::cell::Cell;
+    thread_local! { static PREPARED: Cell<u64> = const { Cell::new(0) }; }
+    pub(super) fn note() {
+        PREPARED.with(|count| count.set(count.get() + 1));
+    }
+    pub(super) fn take() -> u64 {
+        PREPARED.with(|count| count.replace(0))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gpu_plan;
     use crate::{
         AssetId, BASIC_EFFECT, CropPayload, DETAIL_EFFECT, EntryId, HistoryEntry, Layer,
         LinearSettings, MIXER_EFFECT, ModuleRegistry, PRESENCE_EFFECT, ProxyBounds, RenderContext,
@@ -504,6 +580,43 @@ mod tests {
         match answer.unwrap() {
             GpuAnswer::Plan(plan) => plan,
             GpuAnswer::Fallback(reason) => panic!("{reason}"),
+        }
+    }
+
+    /// Side retries and strategy/light choices must not recompile or replan a source. Check
+    /// both counters and compare each candidate's windows/order to a fresh exact request.
+    #[test]
+    fn a_prepared_stream_reuses_one_compilation_and_plan_across_candidates() {
+        for (_, source) in sources(157, 101) {
+            for (_, recipe) in stacks().into_iter().chain(std::iter::once((
+                "staged light",
+                recipe_of(vec![
+                    Layer::new(DETAIL_EFFECT, json!({"sharpening": 40.0})),
+                    Layer::new(PRESENCE_EFFECT, json!({"dehaze": 30.0})),
+                ]),
+            ))) {
+                let evaluation = stored(&source, &recipe);
+                crate::modules::stack_compiles::take();
+                preparation_count::take();
+                let prepared = PreparedStream::of(&evaluation).unwrap();
+                let candidates: Vec<_> = [64, 32, 16]
+                    .into_iter()
+                    .map(|side| prepared.stream(side).unwrap())
+                    .collect();
+                let _ = prepared.strategy(2 << 30, &[64, 32, 16]).unwrap();
+                // A tiny budget exercises the chained/refusal choice, without another plan.
+                let _ = prepared.strategy(1, &[64, 32, 16]);
+                let _ = prepared.light_sweeps(2 << 30, &[64, 32, 16]).unwrap();
+                assert_eq!(
+                    crate::modules::stack_compiles::take(),
+                    0,
+                    "the evaluation already owns its exact compilation"
+                );
+                assert_eq!(preparation_count::take(), 1);
+                for candidate in candidates {
+                    assert_eq!(candidate, plan_stream(&evaluation, candidate.side).unwrap());
+                }
+            }
         }
     }
 

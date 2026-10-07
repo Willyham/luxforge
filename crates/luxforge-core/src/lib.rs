@@ -131,11 +131,12 @@ pub use render::gpu::{
     GpuLightInput, GpuLightPasses, GpuLightRestoration, GpuLightSweep, GpuMask, GpuOperation,
     GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest, GpuPlane, GpuPlaneFormat, GpuPlaneSize,
     GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuRest, GpuSpatial, GpuSpatialUnit,
-    GpuStaging, GpuSweep, GpuSweeps, GpuView, GpuWarmList, REDUCED_AFTER_BYTES, REST_SHARE_MAX,
-    REST_TILE_SIDES, REST_TILE_WORK, RestReduction, RestTile, RestTiles, STREAM_TILE_SIDES,
-    SWEEP_SPLIT_REACH, SWEEP_STAGE_TEXTURES, SourceBoundary, StreamPlan, TilePlan, anchored,
-    gpu_fit_plan, gpu_lights, gpu_plan, plan_read, plan_stream, plan_stream_light_sweeps,
-    plan_stream_sweeps, plan_stream_sweeps_at, rest_light_bytes, rest_slot_bytes,
+    GpuStaging, GpuSweep, GpuSweeps, GpuView, GpuWarmList, PreparedStream, REDUCED_AFTER_BYTES,
+    REST_SHARE_MAX, REST_TILE_SIDES, REST_TILE_WORK, RestReduction, RestTile, RestTiles,
+    STREAM_TILE_SIDES, SWEEP_SPLIT_REACH, SWEEP_STAGE_TEXTURES, SourceBoundary, StreamPlan,
+    TilePlan, anchored, gpu_fit_plan, gpu_lights, gpu_plan, plan_read, plan_stream,
+    plan_stream_light_sweeps, plan_stream_sweeps, plan_stream_sweeps_at, rest_light_bytes,
+    rest_slot_bytes,
 };
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{

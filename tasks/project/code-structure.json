@@ -477,7 +477,7 @@
     {
       "id": "TASK-008",
       "description": "Prepare equivalent GPU stream work once and derive strategy/tile candidates from it.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-005"
       ],
@@ -485,7 +485,8 @@
         "R6. plan_stream, staged/light sweeps and smaller-side retries each prepare a plan; staged selection builds then replaces a tile list.",
         "Consume the shared primitives/layout to derive budget candidates. Reduced stage, sampling or draft differences remain separate preparations.",
         "Prepared evaluations stay within current read/stream lifetimes; source gates must not be retained in desktop/global caches. Timing belongs to integrated TASK-017.",
-        "Re-reviewed current main a20cf0b8, merged docs-only decisions, current code and completed TASK-005. Exact output compilation already belongs to Evaluation and has the same Point sampling/full dimensions/no drafted shape as GPU stream planning. Reuse it in a worker-scoped PreparedStream with one source-derived GPU plan; preserve immediate caller refusal and initial window validation. Derive sweep/light/side candidates from it and move the selected last sweep tiles into the stream without rebuilding. No competing implementation worktree exists."
+        "Re-reviewed current main a20cf0b8, merged docs-only decisions, current code and completed TASK-005. Exact output compilation already belongs to Evaluation and has the same Point sampling/full dimensions/no drafted shape as GPU stream planning. Reuse it in a worker-scoped PreparedStream with one source-derived GPU plan; preserve immediate caller refusal and initial window validation. Derive sweep/light/side candidates from it and move the selected last sweep tiles into the stream without rebuilding. No competing implementation worktree exists.",
+        "Accepted: core tile planning 7 passed, including one prepared plan and zero stack recompiles across multiple tile sides, staged/chained budget choices and light sweeps; fresh-request window/order equivalence remains exact. App tile-worker 27 passed/2 ignored, including staged light, identical bands, cancellation and fallback cases. Quick passed at artifacts/code-structure-stream-preparation-quick/summary.json. Stream preparation is taken/dropped by begin; no source gate enters global/desktop caches. Timing remains TASK-017."
       ],
       "context_links": [
         {
