@@ -1349,16 +1349,17 @@ fn the_warmed_plans_hold_a_drag_of_each_of_two_spatial_layers() {
     }
 }
 
-/// Behind Detail, Dehaze's light reads Detail's exact output, which only a sweep of the whole
-/// stage at full resolution computes: every plan reading it holds that light's link, Detail's
-/// operation in its prefix, and beside it the stand-in with Detail left out, over the source,
-/// which a slot computes in its place. At a percentage zoom, with
+/// Behind Detail, Dehaze's light reads Detail's exact output, which only the picture at rest's
+/// staged sweeps compute: every plan reading it holds that light's link, Detail's operation in its
+/// prefix, and a drag's beside it the stand-in with Detail left out, over the source, which its
+/// slot computes where no exact light is kept; the view plan at rest has none. At a percentage
+/// zoom, with
 /// nothing rendered and nothing stored, a Presence drag plans at once, reading the light at rest,
 /// its plan running Detail's operation, then Presence's, from the photograph — the boundary every
 /// gesture over the view starts from — over the window the region reads, every texel the whole
 /// stage's. A Detail drag reads the light of the stack it started from, the slot's still; a Basic
 /// drag between them, which changes the light's input by its tone, computes it every tick from the
-/// source with Detail left out, the recorded default.
+/// source with Detail left out, the owner's decision.
 #[test]
 fn behind_detail_a_region_plan_reads_the_light_at_rest_or_its_stand_in() {
     let rect = crate::modules::Region {
@@ -1413,12 +1414,23 @@ fn behind_detail_a_region_plan_reads_the_light_at_rest_or_its_stand_in() {
         panic!("one light: {at_rest:?}");
     };
     assert!(light.layer == 1 && !light.over_source() && light.spatial.len() == 1);
-    let stand_in = light.stand_in.as_deref().expect("its stand-in");
-    assert!(stand_in.over_source() && stand_in.left_out == [0]);
+    assert!(
+        light.staged() && light.stand_in.is_none(),
+        "no stand-in at rest"
+    );
 
     let (preview, job) = plan_of("set-presence", &presence_drag);
     let plan = planned(&preview);
-    assert_eq!(plan.lights, at_rest, "the light at rest");
+    assert_eq!(
+        without_stand_ins(&plan.lights),
+        at_rest,
+        "the light at rest"
+    );
+    let stand_in = plan.lights[0]
+        .stand_in
+        .as_deref()
+        .expect("a drag's stand-in");
+    assert!(stand_in.over_source() && stand_in.left_out == [0]);
     assert_eq!(
         plan.spatial.len(),
         2,
@@ -1498,9 +1510,11 @@ fn behind_detail_a_region_plan_reads_the_light_at_rest_or_its_stand_in() {
     let plan = planned(&preview);
     assert_eq!(plan.spatial.len(), 2, "Detail's operation, then Presence's");
     assert_eq!(
-        plan.lights, at_rest,
+        without_stand_ins(&plan.lights),
+        at_rest,
         "the light of the stack it started from"
     );
+    assert!(plan.lights[0].stand_in.is_some(), "a drag's stand-in");
     assert!(preview.boundary.unwrap().window.is_some());
     let basic_drag = vec![
         detail.clone(),
@@ -1560,11 +1574,11 @@ fn a_drag_after_presence_behind_detail_reads_the_light_at_rest() {
         crate::render::gpu::plan_rest(&committed(context.clone(), entry), GpuView::Fit(bounds()))
             .unwrap();
     assert_eq!(
-        plan.lights,
+        without_stand_ins(&plan.lights),
         planned(&at_rest.view).lights,
         "the light at rest"
     );
-    assert!(!plan.lights[0].over_source());
+    assert!(!plan.lights[0].over_source() && plan.lights[0].stand_in.is_some());
     assert!(preview.boundary.unwrap().window.is_some());
     assert_eq!(context.reductions(), 0, "nothing reduced");
 }
@@ -1796,8 +1810,9 @@ fn a_picture_at_rest_is_planned_in_anchored_tiles_of_the_output_stage() {
 
 /// A picture at rest of a Dehaze stack is planned at once, nothing rendered or stored: its tiles'
 /// plan reads the light its light link computes from the source. Behind Detail the light reads
-/// Detail's output: the tiles' plan holds that light with Detail's operation in its prefix, and its
-/// stand-in over the source with Detail left out, which a slot computes in its place.
+/// Detail's output, which the tiles' staged sweeps write: the tiles' plan holds that light with
+/// Detail's operation in its prefix, staged, and the view plan reads the same light with no
+/// stand-in, which it never draws at rest.
 #[test]
 fn a_picture_at_rest_reads_its_lights() {
     let dehaze = Layer::new(crate::PRESENCE_EFFECT, json!({"dehaze": 40.0}));
@@ -1818,14 +1833,33 @@ fn a_picture_at_rest_reads_its_lights() {
     let [light] = &tiles.plan.lights[..] else {
         panic!("one light");
     };
-    assert!(!light.over_source() && light.spatial.len() == 1);
-    let stand_in = light.stand_in.as_deref().expect("its stand-in");
-    assert!(stand_in.over_source() && stand_in.left_out == [0]);
+    assert!(!light.over_source() && light.spatial.len() == 1 && light.staged());
+    assert!(tiles.staging.sweeps().is_some_and(|sweeps| {
+        sweeps
+            .sweeps
+            .last()
+            .is_some_and(|sweep| sweep.lights == [0])
+    }));
     assert_eq!(
         planned(&rest.view).lights,
-        tiles.plan.lights,
+        without_stand_ins(&tiles.plan.lights),
         "one light at every view"
     );
+}
+
+/// `lights` as the view plan at rest holds them: a staged light without its stand-in.
+fn without_stand_ins(lights: &[crate::GpuLight]) -> Vec<crate::GpuLight> {
+    lights
+        .iter()
+        .map(|light| crate::GpuLight {
+            stand_in: if light.staged() {
+                None
+            } else {
+                light.stand_in.clone()
+            },
+            ..light.clone()
+        })
+        .collect()
 }
 
 // The warm list over as many masked spatial layers as a recipe may hold.
