@@ -721,6 +721,11 @@ impl Editor {
         // the surface did not refuse; otherwise its view plan's frame once the surface has
         // evaluated it. A plan the surface fell back from leaves the CPU frame the photograph.
         if self.gpu_at_rest() {
+            // A retained Fit rest frame can still fill a percentage view while its exact region
+            // is being prepared. Capture the current visible detail, as the status already reports.
+            if self.visible_detail_updating() {
+                return false;
+            }
             let drawn = luxforge_ui::surface_diagnostics(crate::view::canvas::DEVELOP_SURFACE);
             let whole = match self.session.preview.view.zoom {
                 luxforge_core::Zoom::Fit => true,

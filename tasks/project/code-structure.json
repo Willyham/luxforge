@@ -1063,7 +1063,7 @@
     {
       "id": "TASK-017",
       "description": "Qualify and measure the integrated structural refactor on current production paths.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-002",
         "TASK-007",
@@ -1079,7 +1079,10 @@
         "All implementation outputs must be integrated before qualification/timing. This task is the single final performance/measurement owner; each earlier task still runs its scoped and required integration checks.",
         "Use a separately built pre-refactor baseline, representative JPEG/RAW 24/60 MP sources, the authentic-source manifest and a quiet native M4. Existing private fixture availability is a real prerequisite for a complete claim.",
         "No tolerance/budget increase to make a refactor pass. Software/VM/no-GPU evidence is separate from native GPU evidence; skipped/incomplete is not passed.",
-        "GPU accounting keeps current scope; total-memory claims remain dependent by named capability on complete accounting of all excluded resources, not on this structural plan."
+        "GPU accounting keeps current scope; total-memory claims remain dependent by named capability on complete accounting of all excluded resources, not on this structural plan.",
+        "Re-reviewed integrated db95e2d8 against current main a20cf0b8: main differs from the pre-refactor 3ac13023 baseline only in documentation; all implementation dependencies are completed and no competing implementation is active. Authentic owner manifest is available. Use an isolated baseline worktree/target and identical release harness commands; preserve missing native Windows/Linux scope honestly. Existing reports expose worker GPU compiles/charged peaks and commit latency/RSS but no stream-setup plan/stack-compile distribution, so add only a test-only scoped setup/export probe and mirror it in the isolated baseline. Full verification, then matched additional timing, runs after integration with no product changes.",
+        "Full native corpus and rendered workflows pass, but the full harness exposed existing baseline failures: RAW CLI undo fixtures assumed auto-collapse off, and RAW Detail percentage capture accepted a frame still marked updating. Both reproduce at 3ac13023. Qualification will isolate test preferences and explicitly disable collapse for per-edit undo, and strengthen only the evidence capture predicate to wait for the current visible-detail readiness. History behavior, rendering strategy, budgets and tolerances remain unchanged. Standard full timing rows were unreliable under high host load; record that scope and collect the requested additional matched measurements only after work finishes on a quiet host.",
+        "Linux no-adapter quick checks compiled the new backend and passed all other binaries, but two unchanged source-signature unit fixtures rewrote equal-length bytes without guaranteeing a new timestamp. They require deterministic metadata changes rather than assuming filesystem clock resolution; production source-cache behavior is unchanged. Use the existing source-test touch helper and explicitly advance the owner fixture timestamp, then rerun those checks and the Linux lane."
       ],
       "context_links": [
         {

@@ -20,7 +20,6 @@ A persistent list of the work that can start now: each plan below has a validate
 
 | Plan | Ready tasks | Notes | Minimum model |
 | --- | --- | --- | --- |
-| [Code structure consolidation](../tasks/project/code-structure.json) TASK-017 | All implementation dependencies completed; integrated native qualification and before/after measurement | High |
 | [GPU memory accounting](../tasks/rendering/gpu-memory.json) | TASK-001 measure and bound GPU resources outside the photo-texture ceiling | A measurement: run after feature work, on a quiet host | High tier |
 | [Corrections](../tasks/editing/corrections.json) ([design](design/corrections.md)) | TASK-001 freeze the remaining contract; TASK-002 Clone and Heal numerics | Repair before Detail, spatial GPU tolerance and exclusion from presets are decided; freeze the remaining contract and GPU-evaluable numerics | High tier |
 | [AI editing](../tasks/editing/ai-editing.json) ([design](design/ai-editing.md)) | TASK-002 the prototype on `main` as the harness; TASK-006 the inference port and ONNX Runtime crate; TASK-008 the model-selection mask kind | The GPU-first integration they were sequenced after has merged; the Corrections foundation runs beside the first stage | High tier |
@@ -37,7 +36,7 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 
 ### In progress
 
-Continue these rather than starting them again: [GPU-first rendering](../tasks/rendering/gpu-first.json) TASK-008, portability without a native GPU: prior hosted Linux no-adapter checks pass, but lavapipe stops at `large24` before the required histogram and `gpu-preview` scenarios; the current run fails earlier in the indexed-folder watcher test. TASK-010, 011 and 012 record delivery and wait on it. [RAW looks](../tasks/raw/raw-looks.json) TASK-005 remains in progress: supplied-file journeys pass, but the rendered tier with the owner manifest and the Neutral Amount control remain outstanding. The [Efficiency](../tasks/rendering/efficiency.json) `dist` profile is blocked by the owner's deferral, and the [product decisions](../tasks/project/product-decisions.json) are the owner's to make.
+Continue these rather than starting them again: [Code structure consolidation](../tasks/project/code-structure.json) TASK-017, integrated native qualification and before/after measurement; [GPU-first rendering](../tasks/rendering/gpu-first.json) TASK-008, portability without a native GPU: prior hosted Linux no-adapter checks pass, but lavapipe stops at `large24` before the required histogram and `gpu-preview` scenarios; the current run fails earlier in the indexed-folder watcher test. TASK-010, 011 and 012 record delivery and wait on it. [RAW looks](../tasks/raw/raw-looks.json) TASK-005 remains in progress: supplied-file journeys pass, but the rendered tier with the owner manifest and the Neutral Amount control remain outstanding. The [Efficiency](../tasks/rendering/efficiency.json) `dist` profile is blocked by the owner's deferral, and the [product decisions](../tasks/project/product-decisions.json) are the owner's to make.
 
 ## Engineering
 

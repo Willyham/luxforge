@@ -2697,6 +2697,7 @@ mod tests {
             &replaced,
         )
         .unwrap();
+        touch(&replaced); // Equal-length replacement still needs a distinct metadata signature.
         let needs = service.entry_needs(&other, None).unwrap();
         original_work::take();
         assert_eq!(
