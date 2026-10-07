@@ -50,6 +50,12 @@
 //!   copied into its stage texture; the last sweep's tiles are reduced and counted as chained
 //!   tiles are, and draw the same codes, since every texel a sweep writes is the whole stage's.
 //!   The stage textures are charged before they are created and retire with the picture at rest.
+//! - **Light sweeps.** A picture at rest reading a light behind a spatial step whose stage textures
+//!   do not fit is handed light sweeps instead ([`RestLightSweep`]), drawn before its chained tiles:
+//!   each tile of a sweep draws the steps before the light over its window, and its rectangle of
+//!   the slot's tail intermediate is reduced into the light's block plane
+//!   ([`super::light::LightReducer`]); after the sweep's last tile the light is selected and kept,
+//!   and the chained tiles read it kept. A light the pipeline keeps already skips its sweep.
 //! - **Figures.** What its tiles did, for attributing a slow picture at rest
 //!   ([`RestFigures`]): their evaluations summed — refits, rebinds, links run, lights encoded or
 //!   restored, window texels — the frames a tile waited for a retirement, and each tile's GPU span
@@ -97,6 +103,41 @@ pub struct GpuRest {
     /// The same picture in staged sweeps, drawn in place of the tiles above where its stage
     /// textures fit the budget; `None` draws the tiles, chained.
     pub stages: Option<RestStages>,
+    /// Drawn chained, the light sweeps that compute each light behind a spatial step its tiles read
+    /// first, with no stage texture; empty for none.
+    pub light_sweeps: Arc<[RestLightSweep]>,
+}
+
+/// A light sweep of a picture at rest (the core's `GpuLightSweep`): plain data, as the tiles are.
+#[derive(Clone, Debug)]
+pub struct RestLightSweep {
+    /// The light it computes: its own step alone, read kept under its input's key
+    /// ([`super::light::LightInput::Kept`], with no stand-in).
+    pub light: super::light::GpuLight,
+    /// Its tiles' side, a multiple of the light's block, and the format their output is held in,
+    /// the boundary's.
+    pub side: u32,
+    pub format: BoundaryFormat,
+    /// Its tiles' plans, row by row over the content stage: each a region plan of the steps before
+    /// the light through an identity tail whose intermediate holds their output over the window,
+    /// its region the tile's rectangle of the light's stage.
+    pub tiles: Arc<[GpuPlan]>,
+}
+
+impl RestLightSweep {
+    /// Its light's input key, when the light is read kept.
+    fn key(&self) -> Option<u64> {
+        match self.light.input {
+            super::light::LightInput::Kept { key, .. } => Some(key),
+            _ => None,
+        }
+    }
+
+    fn valid(&self) -> bool {
+        self.key().is_some()
+            && !self.tiles.is_empty()
+            && self.tiles.iter().all(|plan| plan.region.is_some())
+    }
 }
 
 /// A picture at rest in staged sweeps: plain data, as the tiles are.
@@ -188,6 +229,7 @@ impl GpuRest {
         !self.tiles.is_empty()
             && self.tiles.iter().all(|tile| tile.region.is_some())
             && self.reduction.as_ref().is_none_or(RestReduction::valid)
+            && self.light_sweeps.iter().all(RestLightSweep::valid)
     }
 }
 
@@ -648,6 +690,9 @@ pub(in super::super) struct RestSlot {
     first_output: usize,
     /// The staged sweeps its tiles are drawn in; zero for chained tiles.
     sweeps: u32,
+    /// The light sweeps drawn before its chained tiles, and the reducer of the one being drawn.
+    light_sweeps: Arc<[RestLightSweep]>,
+    reducer: Option<super::light::LightReducer>,
     /// The next tile to draw.
     next: usize,
     /// Why a tile could not be drawn; the rest draws nothing more.
@@ -676,10 +721,12 @@ pub(in super::super) struct RestSlot {
 
 /// A staged tile's place: the stage texture its boundary is copied out of, and the one its
 /// rectangle is copied into, a tile that writes none being the output's.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 struct Place {
     reads: Option<u32>,
     writes: Option<u32>,
+    /// For a light sweep's tile, the sweep, and the place of the tile after its last.
+    light: Option<(usize, usize)>,
 }
 
 impl RestSlot {
@@ -950,6 +997,26 @@ impl PhotoPipeline {
             slot.waiting = false;
             let started = std::time::Instant::now();
             let place = slot.places.get(slot.next).copied();
+            // A light sweep's tile: skipped with its sweep where the light is kept already, its
+            // reducer made at its first tile.
+            if let Some((sweep, end)) = place.and_then(|place| place.light) {
+                match self.light_sweep_start(slot, device, queue, sweep) {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        slot.next = end;
+                        continue;
+                    }
+                    Err(GpuFallback::Compiling) => {
+                        slot.waiting = true;
+                        return;
+                    }
+                    Err(fallback) => {
+                        slot.fallback = Some(fallback);
+                        self.release_gpu(&mut slot.tile);
+                        return;
+                    }
+                }
+            }
             // A later sweep's boundary: the slot fitted for it, then its window copied out of the
             // stage texture the sweep before it wrote.
             // What the fit and the evaluation did, whatever they answered: a refit or a light
@@ -997,6 +1064,19 @@ impl PhotoPipeline {
                     self.release_gpu(&mut slot.tile);
                     return;
                 }
+            }
+            // A light sweep's tile: its rectangle of the steps' output reduced into the light's block
+            // plane, and after the sweep's last the light selected and kept.
+            if let Some((sweep, end)) = place.and_then(|place| place.light) {
+                if let Err(fallback) = self.light_sweep_tile(slot, device, queue, &plan, sweep, end)
+                {
+                    slot.fallback = Some(fallback);
+                    self.release_gpu(&mut slot.tile);
+                    return;
+                }
+                slot.clock.follow(queue, started);
+                slot.next += 1;
+                continue;
             }
             // A sweep before the last: its tile's rectangle of its last link's output, which its
             // identity tail's intermediate holds over the window, copied into its stage texture.
@@ -1142,6 +1222,103 @@ impl PhotoPipeline {
         Ok(())
     }
 
+    /// Begin light sweep `sweep` of `slot` at its first tile: `false` where the pipeline keeps its
+    /// light already, so the sweep is skipped; otherwise its light step's sequence ready and its
+    /// reducer made, charged. A later tile of the sweep finds the reducer made.
+    fn light_sweep_start(
+        &mut self,
+        slot: &mut RestSlot,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        sweep: usize,
+    ) -> Result<bool, GpuFallback> {
+        if slot.reducer.is_some() {
+            return Ok(true);
+        }
+        let planned = slot
+            .light_sweeps
+            .get(sweep)
+            .cloned()
+            .ok_or(GpuFallback::PipelineFailed)?;
+        let key = planned.key().ok_or(GpuFallback::PipelineFailed)?;
+        if self.keeps_light(&planned.light, key) {
+            return Ok(false);
+        }
+        self.gpu.pipeline(
+            device,
+            &planned.light.steps,
+            super::light::LIGHT_FORMAT,
+            &self.figures.preview,
+        )?;
+        slot.reducer = Some(self.light_reducer(
+            device,
+            queue,
+            &planned.light,
+            planned.format,
+            planned.side,
+        )?);
+        Ok(true)
+    }
+
+    /// Light sweep `sweep`'s tile `plan`, just evaluated by `slot`'s tile slot: its rectangle of the
+    /// steps' output, which the slot's tail intermediate holds over the window, reduced into the
+    /// light's block plane; and at `end`, past the sweep's last tile, the light selected and kept
+    /// and the reducer let go.
+    fn light_sweep_tile(
+        &mut self,
+        slot: &mut RestSlot,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        plan: &GpuPlan,
+        sweep: usize,
+        end: usize,
+    ) -> Result<(), GpuFallback> {
+        let planned = slot
+            .light_sweeps
+            .get(sweep)
+            .cloned()
+            .ok_or(GpuFallback::PipelineFailed)?;
+        let (compiled, _) = self.gpu.pipeline(
+            device,
+            &planned.light.steps,
+            super::light::LIGHT_FORMAT,
+            &self.figures.preview,
+        )?;
+        let support = self.gpu.support.clone().ok_or(GpuFallback::NoAdapter)?;
+        let region = plan.region.ok_or(GpuFallback::PipelineFailed)?;
+        let origin = plan.texels.origin.map(|at| at.max(0.0) as u32);
+        let [x0, y0, _, _] = region.rect;
+        let intermediate = slot
+            .tile
+            .gpu
+            .as_ref()
+            .and_then(|tile| tile.intermediate.as_ref())
+            .map(|intermediate| intermediate.texture.clone())
+            .ok_or(GpuFallback::PipelineFailed)?;
+        let reducer = slot.reducer.as_mut().ok_or(GpuFallback::PipelineFailed)?;
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("luxforge.gpu_rest.light_sweep_encoder"),
+        });
+        reducer.reduce(
+            (device, &mut encoder),
+            (&compiled, &support),
+            &intermediate,
+            (x0 - origin[0], y0 - origin[1]),
+            region.rect,
+        )?;
+        if slot.next + 1 == end {
+            reducer.select((device, &mut encoder), (&compiled, &support))?;
+            let key = planned.key().ok_or(GpuFallback::PipelineFailed)?;
+            let reducer = slot.reducer.take().expect("the sweep's reducer");
+            self.keep_reduced(device, &mut encoder, &reducer, &planned.light, key)?;
+            queue.submit([encoder.finish()]);
+            self.retire_reducer(reducer);
+        } else {
+            queue.submit([encoder.finish()]);
+        }
+        Ok(())
+    }
+
     /// Retire `slot`'s stage textures, through the retirement worker.
     fn release_stages(&self, slot: &mut RestSlot) {
         let stages = std::mem::take(&mut slot.stages);
@@ -1162,6 +1339,9 @@ impl PhotoPipeline {
         };
         self.release_gpu(&mut slot.tile);
         self.release_stages(&mut slot);
+        if let Some(reducer) = slot.reducer.take() {
+            self.retire_reducer(reducer);
+        }
         let RestSlot { reduce, bytes, .. } = *slot;
         if let Some(reduce) = reduce {
             self.retire_preview(Held::Rest(Box::new(reduce.parts)), bytes);
@@ -1216,6 +1396,7 @@ impl PhotoPipeline {
                     places.extend(sweep.tiles.iter().map(|_| Place {
                         reads: sweep.reads,
                         writes: sweep.writes,
+                        light: None,
                     }));
                 }
                 let first_output =
@@ -1236,13 +1417,31 @@ impl PhotoPipeline {
                 if !textures.is_empty() {
                     self.retire_preview(Held::Stage(textures), stage_bytes);
                 }
-                if rest.reads_staged_lights() {
+                if rest.reads_staged_lights() && rest.light_sweeps.is_empty() {
                     if let Some(reduce) = reduce {
                         self.retire_preview(Held::Rest(Box::new(reduce.parts)), bytes);
                     }
                     return Err(unstaged);
                 }
-                (Arc::clone(&rest.tiles), Vec::new(), 0, 0)
+                // The light sweeps first, then the chained tiles, which read their lights kept.
+                let mut tiles: Vec<GpuPlan> = Vec::new();
+                let mut places = Vec::new();
+                for (index, sweep) in rest.light_sweeps.iter().enumerate() {
+                    let end = tiles.len() + sweep.tiles.len();
+                    tiles.extend(sweep.tiles.iter().cloned());
+                    places.extend(sweep.tiles.iter().map(|_| Place {
+                        light: Some((index, end)),
+                        ..Place::default()
+                    }));
+                }
+                if tiles.is_empty() {
+                    (Arc::clone(&rest.tiles), Vec::new(), 0, 0)
+                } else {
+                    let first_output = tiles.len();
+                    tiles.extend(rest.tiles.iter().cloned());
+                    places.extend(rest.tiles.iter().map(|_| Place::default()));
+                    (Arc::from(tiles), places, first_output, 0)
+                }
             }
         };
         Ok(RestSlot {
@@ -1253,6 +1452,8 @@ impl PhotoPipeline {
             stages,
             first_output,
             sweeps,
+            light_sweeps: Arc::clone(&rest.light_sweeps),
+            reducer: None,
             next: 0,
             fallback: None,
             tile: Box::new(self.new_surface()),

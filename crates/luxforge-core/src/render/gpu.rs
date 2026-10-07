@@ -72,9 +72,10 @@ pub use spatial::{
 };
 pub(crate) use spatial::{Word, Words};
 pub use sweeps::{
-    Chained, GpuStaging, GpuSweep, GpuSweeps, SWEEP_SPLIT_REACH, SWEEP_STAGE_TEXTURES,
+    Chained, GpuLightSweep, GpuStaging, GpuSweep, GpuSweeps, SWEEP_SPLIT_REACH,
+    SWEEP_STAGE_TEXTURES,
 };
 pub use tiles::{
-    STREAM_TILE_SIDES, StreamPlan, TilePlan, plan_read, plan_stream, plan_stream_sweeps,
-    plan_stream_sweeps_at,
+    STREAM_TILE_SIDES, StreamPlan, TilePlan, plan_read, plan_stream, plan_stream_light_sweeps,
+    plan_stream_sweeps, plan_stream_sweeps_at,
 };

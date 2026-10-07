@@ -916,8 +916,12 @@ pub struct RestTiles {
     /// The same stack in staged sweeps within the same share, the stage textures charged in it, or
     /// why it is drawn chained ([`super::GpuStaging`]): the tiles above are the chained drawing,
     /// kept as the fallback, and a staged picture's last sweep is drawn, reduced and counted as
-    /// they are. Planned, not yet drawn.
+    /// they are.
     pub staging: super::GpuStaging,
+    /// Where it reads a light behind a spatial layer and is drawn chained, the stage textures not
+    /// fitting the share, the light sweeps that compute each such light first with no stage texture
+    /// ([`super::GpuLightSweep`]), the chained tiles reading it kept; empty otherwise.
+    pub light_sweeps: Vec<super::GpuLightSweep>,
     /// The output stage the tiles cover.
     pub output: Stage,
     /// Where the view draws the output stage smaller than it is, the reduction of the tiles to the
@@ -1279,6 +1283,10 @@ pub(crate) enum RestSizing {
     /// The side a test or the release gate's harness names.
     #[cfg(any(test, feature = "qualification"))]
     Side(u32),
+    /// The side a test names, a stack reading a staged light planned with light sweeps and no
+    /// stage texture whatever fits ([`super::GpuLightSweep`]).
+    #[cfg(any(test, feature = "qualification"))]
+    StageFree(u32),
 }
 
 /// `tiles`, given row by row, in the order a picture at rest draws them: by their slot's shape,
@@ -1375,7 +1383,7 @@ fn plan_tiles(
     let share =
         match sizing {
             #[cfg(any(test, feature = "qualification"))]
-            RestSizing::Side(_) => None,
+            RestSizing::Side(_) | RestSizing::StageFree(_) => None,
             RestSizing::Beside(view_bytes) => {
                 let accumulator = view.map_or(0, |(width, height)| {
                     u64::from(width) * u64::from(height) * ACCUMULATOR_PIXEL_BYTES
@@ -1392,7 +1400,7 @@ fn plan_tiles(
     // most the work a tile may; a caller may name its own.
     let side = match sizing {
         #[cfg(any(test, feature = "qualification"))]
-        RestSizing::Side(side) => side,
+        RestSizing::Side(side) | RestSizing::StageFree(side) => side,
         RestSizing::Beside(_) => {
             let share = share.unwrap_or(0);
             let lights = rest_light_bytes(&plan, format);
@@ -1441,7 +1449,7 @@ fn plan_tiles(
         Some(_) => &REST_TILE_SIDES,
         None => std::slice::from_ref(&side),
     };
-    let staging = super::sweeps::plan_sweeps(&super::sweeps::SweepRequest {
+    let request = super::sweeps::SweepRequest {
         compiled,
         source,
         plan: &plan,
@@ -1449,19 +1457,46 @@ fn plan_tiles(
         sides,
         budget: share,
         order: super::sweeps::TileOrder::ByShape,
-    });
-    // A light behind a spatial layer is computed from a staged sweep's stage texture alone: a stack
-    // reading one that cannot be staged is drawn by the reference, never with a stand-in.
-    if let super::GpuStaging::Chained(chained) = &staging
-        && let Some(fallback) = staged_light_fallback(&plan, chained)
+    };
+    #[cfg_attr(not(any(test, feature = "qualification")), allow(unused_mut))]
+    let mut staging = super::sweeps::plan_sweeps(&request);
+    #[cfg(any(test, feature = "qualification"))]
+    if let RestSizing::StageFree(_) = sizing
+        && plan.lights.iter().any(GpuLight::staged)
     {
-        return Ok(Err(fallback));
+        staging = super::GpuStaging::Chained(super::Chained::OverBudget {
+            needed: 0,
+            budget: 0,
+        });
+    }
+    // A light behind a spatial layer is computed from a staged sweep's stage texture, or where
+    // those do not fit by light sweeps that hold none, the chained tiles reading it kept; a stack
+    // neither fits is drawn by the reference, never with a stand-in.
+    let mut light_sweeps = Vec::new();
+    if let super::GpuStaging::Chained(_) = &staging
+        && plan.lights.iter().any(GpuLight::staged)
+    {
+        match super::sweeps::plan_light_sweeps(&request) {
+            Ok(sweeps) => light_sweeps = sweeps,
+            Err(chained) => {
+                return Ok(Err(
+                    staged_light_fallback(&plan, &chained).expect("a staged light")
+                ));
+            }
+        }
+    }
+    let staging = staging;
+    // At rest a staged light is the exact one, never its stand-in.
+    let mut plan = plan;
+    for light in plan.lights.iter_mut().filter(|light| light.staged()) {
+        light.stand_in = None;
     }
     Ok(Ok(Box::new(RestTiles {
         plan,
         tiles: by_shape(tiles),
         share,
         staging,
+        light_sweeps,
         output,
         reduction: view.map(|view| RestReduction {
             view,

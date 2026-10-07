@@ -1478,3 +1478,98 @@ fn gpu_light_a_light_behind_a_spatial_layer_is_the_cpus_over_its_exact_prefix() 
         "lights past {LIGHT_TOLERANCE:e}: {missed:?}"
     );
 }
+
+/// Where its stage textures do not fit, a picture at rest computes a light behind a spatial layer
+/// by a light sweep with no stage texture: each tile draws the layers before the light over its
+/// window and reduces its rectangle into the light's block plane. That light is the staged
+/// picture's, bit for bit — every block one tile's, summed in the same order — and the chained
+/// tiles reading it draw the staged picture's codes, byte for byte: over both photographs on the
+/// byte and linear paths, for every stack behind a spatial layer and one before a lens warp.
+#[test]
+fn gpu_light_the_stage_free_light_is_the_stage_textures_bit_for_bit() {
+    let test = "gpu_light_the_stage_free_light_is_the_stage_textures_bit_for_bit";
+    let Some(qualifier) = qualifier(test) else {
+        return;
+    };
+    eprintln!("{test}: adapter {}", qualifier.adapter());
+    let photos = [
+        (
+            "a 1001 x 667 synthetic photograph",
+            Photo::synthetic(1001, 667, 0x11),
+        ),
+        ("the 1440 x 960 Presence fixture", Photo::presence_fixture()),
+    ];
+    let bounds = luxforge_core::ProxyBounds {
+        width: 320,
+        height: 240,
+    };
+    let mut version = 1000;
+    for (name, photo) in &photos {
+        let mut cases = behind_spatial();
+        let mut lens = cases[0].1.clone();
+        lens.layers.push(qualification::lens_layer(
+            -0.06,
+            (photo.width, photo.height),
+        ));
+        cases.push(("a masked Dehaze behind Clarity before a lens warp", lens, 1));
+        for path in [Path::Byte, Path::Linear] {
+            version += 1;
+            let gpu = photo.gpu(path, version);
+            let preview = match path {
+                Path::Byte => luxforge_core::PreviewSource::Jpeg(photo.jpeg()),
+                Path::Linear => luxforge_core::PreviewSource::Raw {
+                    image: photo.linear(),
+                    settings: LinearSettings::default(),
+                },
+            };
+            for (case, recipe, _) in &cases {
+                let what = format!("{name}, {path:?}, {case}");
+                let evaluation = super::gpu_rest_tests::committed(preview.clone(), recipe.clone());
+                let mut drawn = Vec::new();
+                for stage_free in [false, true] {
+                    let tiles = match stage_free {
+                        false => qualification::rest_tiles(&evaluation, bounds, 256),
+                        true => qualification::rest_tiles_stage_free(&evaluation, bounds, 256),
+                    }
+                    .unwrap_or_else(|reason| panic!("{what}: {reason}"));
+                    assert_eq!(
+                        (
+                            tiles.staging.sweeps().is_some(),
+                            tiles.light_sweeps.is_empty()
+                        ),
+                        (!stage_free, !stage_free),
+                        "{what}: staged {}",
+                        !stage_free
+                    );
+                    version += 1;
+                    let rest = super::gpu_preview::rest_now(&gpu, &tiles, version).unwrap();
+                    // A surface of its own, so no light the other kept is read.
+                    let mut surface = qualifier.surface();
+                    let picture = surface
+                        .rest(&gpu, &rest)
+                        .unwrap_or_else(|fallback| panic!("{what}: {fallback:?}"));
+                    let kept = surface.kept_lights().expect("the kept lights");
+                    let [light] = kept[..] else {
+                        panic!("{what}: one kept light, not {kept:?}");
+                    };
+                    drawn.push((light.map(f32::to_bits), picture));
+                }
+                let [(staged_light, staged), (free_light, free)] = &drawn[..] else {
+                    unreachable!()
+                };
+                assert_eq!(staged_light, free_light, "{what}: the light, bit for bit");
+                assert_eq!(free.figures.sweeps, 0, "{what}: chained");
+                assert!(
+                    staged.codes == free.codes && staged.counts == free.counts,
+                    "{what}: the stage-free picture is the staged one"
+                );
+                eprintln!(
+                    "{test}: {what}: light {:?} bit for bit, {} tiles, the light sweep's and the \
+                     chained ones, the staged picture's codes",
+                    staged_light.map(f32::from_bits),
+                    free.figures.tiles
+                );
+            }
+        }
+    }
+}

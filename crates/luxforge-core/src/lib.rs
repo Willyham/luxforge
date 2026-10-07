@@ -126,14 +126,14 @@ pub use render::gpu::{
     GPU_SHARED_VALUES, GPU_WARM_LINKS, GPU_WORKGROUP_LANES, GRID_MAX_NODES,
     GRID_SAMPLE_TOLERANCE_PX, GRID_TOLERANCE_PX, GpuAnchor, GpuAnswer, GpuApply, GpuBoundary,
     GpuChange, GpuClipping, GpuComponent, GpuDescription, GpuFallback, GpuGeometry, GpuLight,
-    GpuLightInput, GpuLightPasses, GpuLightRestoration, GpuMask, GpuOperation, GpuPass,
-    GpuPassShape, GpuPlan, GpuPlanRequest, GpuPlane, GpuPlaneFormat, GpuPlaneSize, GpuPosition,
-    GpuPreview, GpuProgram, GpuProgramKind, GpuRest, GpuSpatial, GpuSpatialUnit, GpuStaging,
-    GpuSweep, GpuSweeps, GpuView, GpuWarmList, REDUCED_AFTER_BYTES, REST_SHARE_MAX,
+    GpuLightInput, GpuLightPasses, GpuLightRestoration, GpuLightSweep, GpuMask, GpuOperation,
+    GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest, GpuPlane, GpuPlaneFormat, GpuPlaneSize,
+    GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuRest, GpuSpatial, GpuSpatialUnit,
+    GpuStaging, GpuSweep, GpuSweeps, GpuView, GpuWarmList, REDUCED_AFTER_BYTES, REST_SHARE_MAX,
     REST_TILE_SIDES, REST_TILE_WORK, RestReduction, RestTile, RestTiles, STREAM_TILE_SIDES,
     SWEEP_SPLIT_REACH, SWEEP_STAGE_TEXTURES, SourceBoundary, StreamPlan, TilePlan, anchored,
-    gpu_fit_plan, gpu_lights, gpu_plan, plan_read, plan_stream, plan_stream_sweeps,
-    plan_stream_sweeps_at, rest_light_bytes, rest_slot_bytes,
+    gpu_fit_plan, gpu_lights, gpu_plan, plan_read, plan_stream, plan_stream_light_sweeps,
+    plan_stream_sweeps, plan_stream_sweeps_at, rest_light_bytes, rest_slot_bytes,
 };
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{
@@ -173,11 +173,34 @@ pub mod qualification {
         bounds: crate::ProxyBounds,
         side: u32,
     ) -> Result<Box<crate::RestTiles>, String> {
-        match crate::render::gpu::plan_rest_tiles(
+        rest_tiles_sized(
             evaluation,
             bounds,
             crate::render::gpu::RestSizing::Side(side),
-        ) {
+        )
+    }
+
+    /// [`rest_tiles`] with a stack reading a light behind a spatial layer planned with light
+    /// sweeps and no stage texture ([`crate::GpuLightSweep`]), its tiles chained, whatever fits:
+    /// for a test that holds the stage-free light to the staged one.
+    pub fn rest_tiles_stage_free(
+        evaluation: &crate::Evaluation,
+        bounds: crate::ProxyBounds,
+        side: u32,
+    ) -> Result<Box<crate::RestTiles>, String> {
+        rest_tiles_sized(
+            evaluation,
+            bounds,
+            crate::render::gpu::RestSizing::StageFree(side),
+        )
+    }
+
+    fn rest_tiles_sized(
+        evaluation: &crate::Evaluation,
+        bounds: crate::ProxyBounds,
+        sizing: crate::render::gpu::RestSizing,
+    ) -> Result<Box<crate::RestTiles>, String> {
+        match crate::render::gpu::plan_rest_tiles(evaluation, bounds, sizing) {
             Ok(Some(Ok(tiles))) => Ok(tiles),
             Ok(Some(Err(reason))) => Err(reason.to_string()),
             Ok(None) => Err("the bounds draw the output stage at its own size".into()),

@@ -328,9 +328,49 @@ fn rest_over(
             })
         }
     };
+    // Drawn chained with a light behind a spatial layer, the light sweeps that compute it first,
+    // each tile cut from the source.
+    let mut light_sweeps = Vec::with_capacity(tiles.light_sweeps.len());
+    for planned in &tiles.light_sweeps {
+        let sweep = gpu_plan::light_sweep_as_sweep(&tiles.plan, planned);
+        let mut plans = Vec::with_capacity(planned.tiles.len());
+        for tile in &planned.tiles {
+            let window = tile.window;
+            *versions += 1;
+            let boundary = GpuBoundary::derived(
+                gpu,
+                Derivation::Cut {
+                    origin: (window.x0, window.y0),
+                },
+                window.width,
+                window.height,
+                *versions,
+            )
+            .ok_or("boundary-size")?;
+            plans.push(
+                gpu_plan::sweep_plan_over(
+                    &tiles.plan,
+                    &sweep,
+                    boundary,
+                    (window.x0, window.y0),
+                    None,
+                    tile.rect,
+                )
+                .map_err(|unrunnable| unrunnable.code())?,
+            );
+        }
+        light_sweeps.push(surface::RestLightSweep {
+            light: gpu_plan::light_sweep_light(&tiles.plan, planned)
+                .map_err(|unrunnable| unrunnable.code())?,
+            side: planned.side,
+            format: gpu_plan::boundary_format(tiles.format),
+            tiles: plans.into(),
+        });
+    }
     Ok(surface::GpuRest {
         version,
         tiles: plans.into(),
+        light_sweeps: light_sweeps.into(),
         stages,
         reduction: tiles
             .reduction
@@ -2330,6 +2370,7 @@ impl Editor {
                     "output": [held.tiles.output.width, held.tiles.output.height],
                     "side": held.tiles.tiles.first().map(|tile| tile.rect.width.max(tile.rect.height)),
                     "sweeps": converted.stages.as_ref().map_or(0, |stages| stages.sweeps.len()),
+                    "light_sweeps": converted.light_sweeps.len(),
                     "anchor": anchor.multiple, "lead": anchor.lead});
                 // The same tiles for their counts alone, under a version of their own, so a
                 // surface handed one after the other starts over rather than drawing the picture.
@@ -2338,6 +2379,7 @@ impl Editor {
                         version: held.counts_version,
                         tiles: Arc::clone(&converted.tiles),
                         stages: converted.stages.clone(),
+                        light_sweeps: Arc::clone(&converted.light_sweeps),
                         reduction: None,
                     },
                     None => converted.clone(),

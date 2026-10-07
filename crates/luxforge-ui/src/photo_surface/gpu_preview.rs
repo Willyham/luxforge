@@ -3833,7 +3833,7 @@ pub mod histogram;
 mod rest;
 pub use rest::{
     CountsOutcome, EvaluationFigures, GpuRest, REST_TILES_PER_FRAME, REST_VIEW_PIXELS, RestFigures,
-    RestReduction, RestStages, RestSweep, TickCounts,
+    RestLightSweep, RestReduction, RestStages, RestSweep, TickCounts,
 };
 pub(super) use rest::{RestCounts, RestSlot, TickCounted};
 pub mod staged;

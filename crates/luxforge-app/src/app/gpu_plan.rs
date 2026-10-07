@@ -273,6 +273,16 @@ pub(crate) fn sweep_plan_over(
                         },
                     })
                 }
+                // A first sweep reads no stage texture: a light sweep's, which reads the earlier
+                // lights its steps read kept, computed by the light sweeps before it.
+                (GpuLightInput::Stage { key }, None) => Ok(gpu_preview::light::GpuLight {
+                    stage: (light.stage.width, light.stage.height),
+                    steps: vec![light_step(light, k)?],
+                    input: LightInput::Kept {
+                        key: input_key(key),
+                        stand_in: None,
+                    },
+                }),
                 (GpuLightInput::Stage { .. }, _) => Err(Unrunnable::Light { layer: light.layer }),
             }
         })
@@ -498,6 +508,57 @@ pub(crate) fn surface_light(
         stage: (light.stage.width, light.stage.height),
         steps,
         input: LightInput::Source,
+    })
+}
+
+/// `sweep`, a light sweep of `plan`, as the staged sweep of `plan` its tiles are converted as
+/// ([`sweep_plan_over`]): the first, over the content stage, writing no stage texture.
+pub(crate) fn light_sweep_as_sweep(
+    plan: &luxforge_core::GpuPlan,
+    sweep: &luxforge_core::GpuLightSweep,
+) -> luxforge_core::GpuSweep {
+    let stage = plan.boundary.stage;
+    luxforge_core::GpuSweep {
+        spatial: sweep.spatial.clone(),
+        first: true,
+        last: false,
+        anchor: sweep.anchor,
+        reach: 0,
+        reads: None,
+        writes: None,
+        covers: Region {
+            x0: 0,
+            y0: 0,
+            width: stage.width,
+            height: stage.height,
+        },
+        side: sweep.side,
+        tiles: Vec::new(),
+        slot_bytes: sweep.slot_bytes,
+        lights: Vec::new(),
+    }
+}
+
+/// The light `sweep`, a light sweep of `plan`, computes, as the surface's light reducer runs it:
+/// its own step alone, read kept under its input's key with no stand-in.
+pub(crate) fn light_sweep_light(
+    plan: &luxforge_core::GpuPlan,
+    sweep: &luxforge_core::GpuLightSweep,
+) -> Result<gpu_preview::light::GpuLight, Unrunnable> {
+    let light = plan
+        .lights
+        .get(sweep.light)
+        .ok_or(Unrunnable::Light { layer: 0 })?;
+    let GpuLightInput::Stage { key } = &light.input else {
+        return Err(Unrunnable::Light { layer: light.layer });
+    };
+    Ok(gpu_preview::light::GpuLight {
+        stage: (light.stage.width, light.stage.height),
+        steps: vec![light_step(light, 0)?],
+        input: LightInput::Kept {
+            key: input_key(key),
+            stand_in: None,
+        },
     })
 }
 

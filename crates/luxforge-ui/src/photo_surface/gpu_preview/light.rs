@@ -1687,6 +1687,242 @@ fn select_and_read(
     Ok(light)
 }
 
+/// A light reduced tile by tile from a sweep's tiles with no stage texture (`docs/design/
+/// gpu-preview.md`, "The global estimate"; the core's `GpuLightSweep`): each tile of the light's
+/// stage, drawn by a slot over its own window, has its rectangle of the slot's output copied into
+/// the reducer's tile texture and reduced into the stage's block plane, the blocks it holds and no
+/// other; after the last, the selection writes the light into the reducer's own light texture.
+/// The tiles are the light link's own at the sweep's side, a multiple of the block, so every block
+/// is one tile's, read in the order the whole stage would read it: the light is a stage texture's,
+/// bit for bit. Holds the link's block plane and buffers, one tile texture of the side and the
+/// light texel, charged by its caller before it is created ([`LightReducer::charge`]).
+pub(super) struct LightReducer {
+    link: LightLink,
+    tile: LightTile,
+    /// The light the selection writes, one `rgba32float` texel, copied out to be kept or read.
+    light: PoolTexture,
+    places: Vec<Place>,
+    /// Which of the stage's tiles have been reduced.
+    reduced: Vec<bool>,
+}
+
+/// What a light reducer's light texture is created with: written by the selection, copied out.
+const REDUCED_LIGHT_USAGE: wgpu::TextureUsages = wgpu::TextureUsages::TEXTURE_BINDING
+    .union(wgpu::TextureUsages::STORAGE_BINDING)
+    .union(wgpu::TextureUsages::COPY_SRC);
+
+impl LightReducer {
+    /// The shape of a reducer of `light` over stage tiles of `side` in `format`: `None` for steps
+    /// that are not a light link's or a side that is not a multiple of its block.
+    fn shape(light: &GpuLight, format: BoundaryFormat, side: u32) -> Option<Shape> {
+        let mut shape = Shape::of(light, format, u32::MAX)?;
+        if side == 0 || !side.is_multiple_of(shape.block) {
+            return None;
+        }
+        shape.side = side;
+        Some(shape)
+    }
+
+    /// What a reducer of `light` over tiles of `side` in `format` takes on `device`: the link's
+    /// block plane and buffers, its tile texture and the light texel. Creates nothing.
+    pub(super) fn charge(
+        device: &wgpu::Device,
+        light: &GpuLight,
+        format: BoundaryFormat,
+        side: u32,
+    ) -> Result<u64, GpuFallback> {
+        let shape = Self::shape(light, format, side).ok_or(GpuFallback::PipelineFailed)?;
+        let (textures, sizes) = LightLink::sized(device, &shape)?;
+        Ok(textures + shape.tile_bytes() + sizes.iter().sum::<u64>() + spatial::LIGHT_BYTES)
+    }
+
+    /// A reducer of `light` over tiles of `side` in `format` on `device`, its words, blocks and
+    /// parameters written: its caller charges [`LightReducer::charge`] first.
+    pub(super) fn create(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        light: &GpuLight,
+        format: BoundaryFormat,
+        side: u32,
+    ) -> Result<Self, GpuFallback> {
+        let shape = Self::shape(light, format, side).ok_or(GpuFallback::PipelineFailed)?;
+        let sized = LightLink::sized(device, &shape)?;
+        let tile = LightTile::create(device, shape.format, shape.tile());
+        let mut link = LightLink::create(device, shape, sized);
+        link.written_blocks
+            .write(queue, &link.block_words.buffer, &light.steps, BLOCK_CHUNK);
+        let places = prepare_tiles(&mut link, queue, light)?;
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("luxforge.gpu_light.reduced"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: spatial::PlaneFormat::Quad.texture(),
+            usage: REDUCED_LIGHT_USAGE,
+            view_formats: &[],
+        });
+        let reduced = vec![false; places.len()];
+        Ok(Self {
+            link,
+            tile,
+            light: PoolTexture::new(texture),
+            places,
+            reduced,
+        })
+    }
+
+    /// What it holds, as charged.
+    pub(super) fn bytes(&self) -> u64 {
+        self.link.texture_bytes + self.link.buffer_bytes + self.tile.bytes + spatial::LIGHT_BYTES
+    }
+
+    /// The stage's tiles, `[x0, y0, x1, y1)` row by row, each of which a sweep tile reduces.
+    pub(super) fn tiles(&self) -> Vec<[u32; 4]> {
+        self.link.shape.tiles()
+    }
+
+    /// Whether every tile of the stage has been reduced.
+    pub(super) fn complete(&self) -> bool {
+        self.reduced.iter().all(|reduced| *reduced)
+    }
+
+    /// Encode the reduction of `rect` (`[x0, y0, x1, y1)` of the stage, one of its tiles), whose
+    /// texels `from` holds from texel `origin` on in the stage's format: copied into the tile
+    /// texture and reduced into the block plane's blocks it holds.
+    pub(super) fn reduce(
+        &mut self,
+        (device, encoder): (&wgpu::Device, &mut wgpu::CommandEncoder),
+        (compiled, support): (&Compiled, &super::Support),
+        from: &wgpu::Texture,
+        origin: (u32, u32),
+        rect: [u32; 4],
+    ) -> Result<(), GpuFallback> {
+        let index = self
+            .link
+            .shape
+            .tiles()
+            .iter()
+            .position(|tile| *tile == rect)
+            .ok_or(GpuFallback::PipelineFailed)?;
+        let [x0, y0, x1, y1] = rect;
+        encoder.copy_texture_to_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: from,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: origin.0,
+                    y: origin.1,
+                    z: 0,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            self.tile.texture.texture().as_image_copy(),
+            wgpu::Extent3d {
+                width: x1 - x0,
+                height: y1 - y0,
+                depth_or_array_layers: 1,
+            },
+        );
+        encode_reduce_held(
+            (&self.link, self.tile.view()),
+            (device, encoder),
+            (compiled, support),
+            index,
+            &self.places[index],
+        )?;
+        self.reduced[index] = true;
+        Ok(())
+    }
+
+    /// Encode the selection of the light from the block plane into its light texture, once every
+    /// tile is reduced.
+    pub(super) fn select(
+        &self,
+        (device, encoder): (&wgpu::Device, &mut wgpu::CommandEncoder),
+        (compiled, support): (&Compiled, &super::Support),
+    ) -> Result<(), GpuFallback> {
+        if !self.complete() {
+            return Err(GpuFallback::PipelineFailed);
+        }
+        encode_select(
+            (&self.link, self.tile.view()),
+            (device, encoder),
+            (compiled, support),
+            self.light.view(),
+        )
+    }
+
+    /// The light texel the selection wrote.
+    pub(super) fn light(&self) -> &wgpu::Texture {
+        self.light.texture()
+    }
+}
+
+impl PhotoPipeline {
+    /// A reducer of `light` over tiles of `side` in `format` ([`LightReducer`]), charged to the
+    /// GPU-preview budget as scratch before it is created.
+    pub(super) fn light_reducer(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        light: &GpuLight,
+        format: BoundaryFormat,
+        side: u32,
+    ) -> Result<LightReducer, GpuFallback> {
+        let bytes = LightReducer::charge(device, light, format, side)?;
+        let preview = &self.figures.preview;
+        preview.charge(bytes)?;
+        preview.scratch.fetch_add(bytes, Ordering::AcqRel);
+        LightReducer::create(device, queue, light, format, side)
+    }
+
+    /// Retire `reducer` through the retirement worker, still charged until the GPU is done with it.
+    pub(super) fn retire_reducer(&self, reducer: LightReducer) {
+        let LightReducer {
+            link, tile, light, ..
+        } = reducer;
+        self.retire_light(link);
+        self.retire_light_tile(tile);
+        self.retire_preview(Held::Pool(vec![light]), spatial::LIGHT_BYTES);
+    }
+
+    /// Keep the light `reducer` selected under `key`, the input key of `light` as
+    /// [`LightInput::Stage`] keeps it, so every plan reading it kept restores it: copied into the
+    /// kept lights on `encoder`. `false` when the kept lights refuse its charge.
+    pub(super) fn keep_reduced(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        reducer: &LightReducer,
+        light: &GpuLight,
+        key: u64,
+    ) -> Result<bool, GpuFallback> {
+        let key = self.staged_key(light, key)?;
+        let preview = &self.figures.preview;
+        let Some(kept) = self.kept_lights.slot(device, key, |bytes| {
+            preview.charge(bytes)?;
+            preview.scratch.fetch_add(bytes, Ordering::AcqRel);
+            Ok(())
+        }) else {
+            return Ok(false);
+        };
+        copy_light(encoder, reducer.light(), kept);
+        self.kept_lights.encoded += 1;
+        Ok(true)
+    }
+
+    /// Whether the pipeline keeps the light of `light` whose input key is `key`.
+    pub(super) fn keeps_light(&self, light: &GpuLight, key: u64) -> bool {
+        self.staged_key(light, key)
+            .is_ok_and(|key| self.kept_lights.holds(key))
+    }
+}
+
 /// What the block plane is created with: written by the reductions, read by the selection, and in
 /// a build with a readback copied out by a test.
 #[cfg(not(any(test, feature = "qualification")))]
