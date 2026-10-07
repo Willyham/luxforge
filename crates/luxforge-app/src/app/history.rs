@@ -350,12 +350,12 @@ impl Editor {
             self.status.text = "Wait for the photograph before comparing".into();
             return Task::none();
         }
-        // Compare's After side is a frame of the content on screen, which the GPU presented
-        // without one: the photograph under its picture is an earlier content's, drawn wherever
-        // the GPU's picture is not the After side (at 100% and above, under clipping marks). The
-        // reference renders the content first, and Compare begins when it lands
-        // (`Editor::frame_ready`).
-        if self.presentation.gpu_presented == Some(self.presentation.presented_content) {
+        // Retain the GPU's whole After picture when it covers this view. A region or clipping
+        // marks still need the reference frame of this content: the frame under the GPU picture
+        // may belong to an earlier edit. Compare begins when that render lands.
+        if self.presentation.gpu_presented == Some(self.presentation.presented_content)
+            && !self.gpu_compare_can_retain()
+        {
             self.gpu.refused_content = Some(self.presentation.presented_content);
             self.gpu.compare_waits = true;
             self.status.text = "Rendering the photograph to compare…".into();
@@ -389,11 +389,13 @@ impl Editor {
         // A frame the surface cannot give mip levels (one held in tiles) would alias at Fit, so
         // the display reduction of the same exact photograph, when it is the one on screen, is
         // kept to draw there instead.
-        let after = super::compare_after::CompareAfter::new(
+        let mut after = super::compare_after::CompareAfter::new(
             after,
             super::compare_after::display_reduction(&self.presentation).cloned(),
             super::compare_after::DEVICE_TEXTURE_LIMIT,
         );
+        after.gpu_only =
+            self.presentation.gpu_presented == Some(self.presentation.presented_content);
         let previous = self.shown_selection();
         if !self.compare_call(json!({"enabled":true,"position":0.5})) {
             return Task::none();

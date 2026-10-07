@@ -5413,3 +5413,41 @@ Logical boundaries and user enablement do not by themselves reduce memory or lau
 ## Growth rules
 
 Catalog opening never enumerates or decodes all originals. Grid memory depends on visible items and cache quotas. Import, hashing, thumbnailing and indexing use backpressure and resumable batches. Switching photos cancels obsolete preview requests, and the app stays interactive during exports and indexing. Introduce tiling with neighborhood halos before promising unrestricted large-image local processing. A cleanly reported resource limit is acceptable; silent exhaustion is not.
+
+## Catalog-edit comparison
+
+Native Apple M4 Pro / Metal, release, 2026-10-07: three matched runs per binary over the owner's
+DSC_3187.NEF (4024 × 6048), using isolated copies of the current catalog's thirteen-layer,
+three-mask edit. A global Exposure change from 0.32 to 0.33 EV recreates the freshly committed
+GPU presentation; the original edit and source remain untouched. The hidden window is 1440 × 900
+points at scale 2. Entry is measured from the scripted backslash tap to the verified renderer
+readback with both comparison surfaces ready, including capture overhead; this is not scanout
+latency or cold-open performance. Each run opens and warms the photograph first. The host-wide
+timing gate is held and starting one-minute load is 2.84–4.86, below the threshold of 8.
+
+| Build | Three entry-to-readback observations (ms) | Median (ms) |
+| --- | --- | --- |
+| Previous release, edited stack rendered again on the CPU | 1448.3, 1552.9, 1443.2 | 1448.3 |
+| Retained GPU After plans and source | 728.3, 750.8, 752.2 | 750.8 |
+
+The measured median is 1.93 times faster. The owner's reported five-second delay is not reproduced
+as a five-second baseline in these warmed runs. The extra edited-stack CPU render is removed;
+the comparison's second GPU surface still evaluates the retained picture. The edited picture
+stays visible during that handoff. In all three final runs the After endpoint and restored picture
+match the warmed edited picture exactly in the same 1050 × 1420-pixel photographic rectangle,
+excluding divider and label chrome. Captured state records the fixed After picture, the Original
+Before and the GPU drawing paths at Fit, through 100%, and on exit. A separate native white-balance
+check retains the exact After fallback when Before needs another RAW development. The executor
+holds one prepared source; attempting to reuse GPU-only After across that change stalls source
+residency, so the optimization is limited to shared-source comparisons.
+
+A comparison entered at Fit retains that display detail when magnified; entering at 100% or
+above, with changed RAW sensor gains or historical selection, with clipping marks, without eligible
+whole GPU content, or near the shared GPU budget keeps the exact reference After fallback. No general editor memory or latency qualification is
+implied. Local evidence is `artifacts/editor-repairs-comparison/verified.json`, with command lines,
+binary hashes, source hash, load, captures, state and events beside it; RAW source checks are in
+`artifacts/editor-repairs-raw-source/validated-app`, and mask/navigation checks in
+`artifacts/editor-repairs-masks` and `artifacts/editor-repairs-navigation/selection-checked-app`.
+The final comparison eligibility and source-restoration checks are in
+`artifacts/editor-repairs-comparison/current-build/verified.json` and
+`artifacts/editor-repairs-raw-source/verified.json`; their native runs qualify behavior, not timing.

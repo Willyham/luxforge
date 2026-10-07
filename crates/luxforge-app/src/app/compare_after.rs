@@ -43,6 +43,8 @@ pub(crate) struct CompareAfter {
     /// The display reduction of `full`, held only when `full` cannot have mip levels and a
     /// reduction at least half its size is to hand.
     reduction: Option<Frame>,
+    /// The retained whole GPU picture supplies pixels; the frame is its layout stand-in.
+    pub(crate) gpu_only: bool,
 }
 
 impl CompareAfter {
@@ -58,7 +60,11 @@ impl CompareAfter {
                 && reduced_width * 2 <= width
                 && reduced_height * 2 <= height
         });
-        Self { full, reduction }
+        Self {
+            full,
+            reduction,
+            gpu_only: false,
+        }
     }
 
     /// The frame the surface draws, at Fit or at a percentage zoom.

@@ -161,6 +161,7 @@ impl Message {
                     | M::Overlay(_)
                     | M::OverlayColour(_)
                     | M::ToggleOverlay
+                    | M::ToggleHandles
                     | M::Hover(_)
                     | M::Typing(
                         T::Text(_)

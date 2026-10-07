@@ -59,6 +59,7 @@ pub(crate) struct Surfaces<'a> {
     /// The photograph.
     pub(crate) photo: Option<&'a luxforge_ui::Frame>,
     pub(crate) comparison: Option<(&'a luxforge_ui::Frame, f32)>,
+    pub(crate) comparison_waiting: bool,
     pub(crate) photo_content: Option<u64>,
     pub(crate) current_content: u64,
     /// A mask's coverage of the region the GPU draws at 100% and above, laid over that region.
@@ -77,6 +78,7 @@ pub(crate) struct Surfaces<'a> {
     /// The open mask shape gesture and the affine its handles are drawn through.
     pub(crate) mask_draft: Option<&'a crate::mask_draft::MaskDraft>,
     pub(crate) mask_map: Option<&'a crate::mask_draft::ContentMap>,
+    pub(crate) mask_handles: bool,
     pub(crate) draft: Option<&'a CropDraft>,
     /// A GPU plan the photograph is drawn from in place of its frame, which stays the surface's
     /// fallback: a whole frame's at Fit and below 100%, a region's at 100% or more. An open
@@ -106,6 +108,7 @@ pub(crate) struct Surfaces<'a> {
     /// began, retained while it is shown — its view plan, with its serial, and its picture at rest
     /// in tiles — drawn in place of the retained After frame, which stays the surface's fallback.
     pub(crate) compare_gpu: Option<&'a luxforge_gpu::GpuPlan>,
+    pub(crate) compare_source: Option<&'a luxforge_gpu::GpuSource>,
     pub(crate) compare_change: Option<luxforge_gpu::GpuChange>,
     pub(crate) compare_rest: Option<&'a luxforge_gpu::GpuRest>,
     /// A settle's dissolve from the GPU frame on screen to the CPU frame that replaces it

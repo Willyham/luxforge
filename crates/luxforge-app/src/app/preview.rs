@@ -629,6 +629,7 @@ impl Presentation {
     pub(crate) fn surfaces(&self, clipping: Option<&OverlayRequest>) -> view::Surfaces<'_> {
         view::Surfaces {
             comparison: None,
+            comparison_waiting: false,
             photo: self.presenter.photo_for(self.presented_content),
             // A frame smaller than its stage — a reduction, or a drag's proxy magnified at 100% and
             // above — is drawn whole, whatever exact frame the surface held before it.
@@ -643,6 +644,7 @@ impl Presentation {
             coverage: self.coverage(),
             mask_draft: None,
             mask_map: None,
+            mask_handles: true,
             draft: None,
             gpu: None,
             gpu_hold: false,
@@ -655,6 +657,7 @@ impl Presentation {
             stage_rest: None,
             gpu_counts: None,
             compare_gpu: None,
+            compare_source: None,
             compare_change: None,
             compare_rest: None,
         }

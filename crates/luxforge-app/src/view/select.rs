@@ -86,18 +86,21 @@ pub(crate) struct Grid<'a> {
 
 /// The workspace switch at a title bar's leading edge, `current` raised. Either segment sends the
 /// switch; the app answers it, refusing Select while a Develop draft is open.
-pub(crate) fn switch<'a>(current: Shown) -> Element<'a, Message> {
+pub(crate) fn switch<'a>(current: Shown, can_develop: bool) -> Element<'a, Message> {
     let tab = match current {
         Shown::Select => WorkspaceTab::Select,
         Shown::Develop => WorkspaceTab::Develop,
     };
     workspace_switch(
         tab,
-        Some(|tab| {
-            Message::Select(SelectMessage::Switch(match tab {
+        Some(move |tab| {
+            if tab == WorkspaceTab::Develop && !can_develop {
+                return None;
+            }
+            Some(Message::Select(SelectMessage::Switch(match tab {
                 WorkspaceTab::Select => Shown::Select,
                 WorkspaceTab::Develop => Shown::Develop,
-            }))
+            })))
         }),
     )
 }
@@ -201,7 +204,7 @@ fn title_bar<'a>(
     develop: &'a crate::state::develop::DevelopModel,
 ) -> Element<'a, Message> {
     let identity = row![
-        switch(Shown::Select),
+        switch(Shown::Select, develop.can_enter),
         text(model.name.clone())
             .size(theme::SIZE_TITLE)
             .font(theme::FONT_SEMIBOLD)
@@ -1050,7 +1053,7 @@ mod tests {
                 loupe: loupe.images(&previews),
             },
         );
-        let _ = switch(Shown::Develop);
-        let _ = switch(Shown::Select);
+        let _ = switch(Shown::Develop, true);
+        let _ = switch(Shown::Select, false);
     }
 }

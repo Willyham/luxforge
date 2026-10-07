@@ -439,6 +439,38 @@ fn select_views_selects_and_follows_another_clients_pick_on_a_real_owner() {
 /// it ends, the status bar saying so meanwhile), and then the folder is viewed with its
 /// subfolders.
 #[test]
+fn broad_folder_navigation_never_starts_a_scan_and_the_api_refuses_one() {
+    let (mut editor, catalog) = selecting();
+    let root = if cfg!(windows) {
+        std::path::PathBuf::from("C:/")
+    } else {
+        std::path::PathBuf::from("/")
+    };
+    drop(
+        editor.update(Message::Select(SelectMessage::FolderPicked(Some(
+            root.clone(),
+        )))),
+    );
+    assert!(editor.select.reading.is_none());
+    assert!(editor.status.text.contains("specific subfolder"));
+    for (method, params) in [
+        (
+            "index.refresh",
+            json!({"source":{"kind":"folder","path":root}}),
+        ),
+        (
+            "index.add-folder",
+            json!({"path":root,"mutation":{"request_id":"broad-folder-refusal","actor":"test"}}),
+        ),
+    ] {
+        let error =
+            crate::app::tasks::call(&editor.owner, editor.client, method, params).unwrap_err();
+        assert!(error.contains("too broad"), "{method}: {error}");
+    }
+    finish(editor, catalog);
+}
+
+#[test]
 fn a_select_folder_browsed_on_disk_is_read_then_viewed_on_a_real_owner() {
     let (mut editor, catalog) = selecting();
     let folder = catalog.parent().unwrap().join("Card dump");
@@ -1253,7 +1285,16 @@ fn select_sources_list_volumes_folders_and_counts_on_a_real_owner() {
             .iter()
             .map(|folder| (
                 folder.name.clone(),
-                Some(SourcePress::Read(ReadSource::Folder(folder.path.clone())))
+                Some(
+                    if luxforge_core::catalog_types::disk::broad_folder(
+                        &folder.path,
+                        editor.select.state.home.as_deref()
+                    ) {
+                        SourcePress::Toggle(folder.path.clone())
+                    } else {
+                        SourcePress::Read(ReadSource::Folder(folder.path.clone()))
+                    }
+                )
             ))
             .collect::<Vec<_>>()
     );

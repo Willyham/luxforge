@@ -43,6 +43,11 @@ pub(crate) enum DevelopMessage {
     },
     /// A view's photographs were read into the set numbered `serial`, with where the photograph it
     /// was opened on is among them.
+    /// The last viewed catalog folder read in an independent browse session.
+    FolderSetRead {
+        serial: u64,
+        result: Result<(Vec<SetPhoto>, usize), String>,
+    },
     SetRead {
         serial: u64,
         result: Result<(Vec<SetPhoto>, usize), String>,

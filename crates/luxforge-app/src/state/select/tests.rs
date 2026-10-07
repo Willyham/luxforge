@@ -542,7 +542,7 @@ fn the_select_sources_panel_lists_cards_volumes_folders_and_counts() {
     );
     assert_eq!(
         model.on_disk[2].press,
-        Some(SourcePress::Read(ReadSource::Folder("/Users/w".into())))
+        Some(SourcePress::Toggle("/Users/w".into()))
     );
     assert!(model.on_disk[2].selected, "the folder being viewed");
     assert!(model.on_disk[4].dimmed && model.on_disk[4].press.is_none());

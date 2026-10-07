@@ -39,7 +39,7 @@ impl Editor {
             }
             SelectStep::Switch(SelectWorkspace::Develop) => {
                 let task = self.update(Message::Select(SelectMessage::Switch(Shown::Develop)));
-                self.capture_next_frame();
+                self.await_develop();
                 task
             }
             SelectStep::Source(name) => self.source_step(&name),
