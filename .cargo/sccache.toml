@@ -1,0 +1,8 @@
+# Agent compiler cache policy v1. Keep this namespace separate from experiments.
+# Directory and server address are set by tools/cargo-cached, shared across worktrees.
+[cache.disk]
+size = 10737418240
+
+[cache.disk.preprocessor_cache_mode]
+# Re-preprocess every native compilation, including newly appearing optional headers.
+use_preprocessor_cache_mode = false
