@@ -45,108 +45,11 @@ use crate::{
     render::{Compiled, Entry, pipeline::SpatialEntry},
 };
 
-/// How many inputs one pass may read: planes `0..4` of `lf_plane`.
-pub const GPU_PASS_INPUTS: usize = 4;
-
-/// The most planes the applies of one spatial operation may read. The surface runs each spatial
-/// operation as a link of its own over the texture the link before wrote, so a pass binds only its
-/// own inputs, at most [`GPU_PASS_INPUTS`], and its own operation's apply planes, beside that
-/// input, within the 16 sampled textures a shader stage has on every adapter the surface runs
-/// spatial steps on: `16 - 1 - 4`. Detail's three apply planes and Presence's four fit with room
-/// to spare, and a chain of any length holds; an operation past it names `spatial-chain`.
-pub const GPU_CHAIN_APPLY_PLANES: usize = 11;
-
-/// The lanes of a [`GpuPassShape::Workgroup`] pass, and how many values `lf_shared` holds.
-pub const GPU_WORKGROUP_LANES: u32 = 256;
-pub const GPU_SHARED_VALUES: u32 = 1024;
-
-/// What one plane's texels hold: how many channels and whether half precision holds them, and so
-/// the texture format the surface keeps it in when it takes a texture of its own.
-///
-/// A plane may instead take a texture an earlier unit or operation no longer needs, when that
-/// texture's format [holds](Self::holds) it: as many channels or more, at its precision or a finer
-/// one. Half precision saves memory only for three or four channels, since `rgba16float` is the one
-/// half-precision format every adapter stores to: a plane of one or two channels that half
-/// precision holds takes `r32float` or `rg32float` when it takes a texture of its own, which costs
-/// no more, and an `rgba16float` an earlier unit left free when one is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum GpuPlaneFormat {
-    /// Four channels at half precision, `rgba16float`.
-    Colour,
-    /// One accumulator, `r32float`.
-    Scalar,
-    /// Two accumulators read together, such as a mean and a mean square, `rg32float`.
-    Pair,
-    /// Four accumulators, or a reduced colour with one more channel beside it, `rgba32float`.
-    Quad,
-    /// One channel half precision holds: `r32float` of its own.
-    HalfScalar,
-    /// Two channels half precision holds: `rg32float` of its own.
-    HalfPair,
-}
-
-impl GpuPlaneFormat {
-    /// The bytes one texel takes.
-    pub fn texel_bytes(self) -> u64 {
-        match self {
-            Self::Scalar | Self::HalfScalar => 4,
-            Self::Colour | Self::Pair | Self::HalfPair => 8,
-            Self::Quad => 16,
-        }
-    }
-
-    /// How many channels it holds.
-    pub fn channels(self) -> u32 {
-        match self {
-            Self::Scalar | Self::HalfScalar => 1,
-            Self::Pair | Self::HalfPair => 2,
-            Self::Colour | Self::Quad => 4,
-        }
-    }
-
-    /// Whether its texture stores half floats.
-    pub fn stores_half(self) -> bool {
-        matches!(self, Self::Colour)
-    }
-
-    /// Whether half precision holds what it is declared for.
-    pub fn half_holds(self) -> bool {
-        matches!(self, Self::Colour | Self::HalfScalar | Self::HalfPair)
-    }
-
-    /// Whether a texture of this format holds a plane of `plane`'s: as many channels or more, and
-    /// full precision unless half precision holds the plane.
-    pub fn holds(self, plane: Self) -> bool {
-        self.channels() >= plane.channels() && (!self.stores_half() || plane.half_holds())
-    }
-}
-
-/// A plane's size against the boundary it is computed over.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum GpuPlaneSize {
-    /// The stage's blocks of `s × s` pixels, anchored at the stage origin, that the boundary
-    /// reaches: `s = 1` is the boundary itself. A boundary at stage origin `o` of width `w` holds
-    /// reduced columns `floor(o / s)` to `ceil((o + w) / s)`, so a block a window cuts is held, and
-    /// a reduced plane is the CPU's own blocks wherever the window holds them whole.
-    Reduced(u32),
-    /// A fixed number of texels, whatever the boundary: a global estimate's.
-    Fixed { width: u32, height: u32 },
-}
-
-impl GpuPlaneSize {
-    /// A light plane: one `rgba32float` texel holding a global estimate, Dehaze's atmospheric
-    /// light, as its `xyz` (`docs/design/gpu-preview.md`, "The global estimate"). Declared by the
-    /// [`GpuLight`] that writes it, and by a unit that reads a light it does not compute: a plane of
-    /// this size that no pass of its operation writes is the light its plan's light link writes
-    /// ([`GpuSpatial::light`]). It is a fixed size, not a size of its own, so every description
-    /// the desktop's conversion is handed is one it already converts; the conversion names the
-    /// plane the slot's light plane on the photo surface, from [`GpuSpatial::light`] in a reader
-    /// and as the plane a light link's last pass writes.
-    pub const LIGHT: Self = Self::Fixed {
-        width: 1,
-        height: 1,
-    };
-}
+pub use luxforge_gpu_types::{
+    CHAIN_APPLY_PLANES as GPU_CHAIN_APPLY_PLANES, PASS_INPUTS as GPU_PASS_INPUTS,
+    PassShape as GpuPassShape, PlaneFormat as GpuPlaneFormat, PlaneSize as GpuPlaneSize,
+    SHARED_VALUES as GPU_SHARED_VALUES, WORKGROUP_LANES as GPU_WORKGROUP_LANES,
+};
 
 /// One plane a spatial operation's passes write.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -161,26 +64,8 @@ pub struct GpuPlane {
 impl GpuPlane {
     /// Its size over a boundary of `size` texels whose texel `(0, 0)` is stage pixel `origin`.
     pub fn extent(&self, origin: (u32, u32), size: (u32, u32)) -> (u32, u32) {
-        match self.size {
-            GpuPlaneSize::Fixed { width, height } => (width, height),
-            GpuPlaneSize::Reduced(s) => {
-                let s = s.max(1);
-                let axis = |origin: u32, length: u32| (origin + length).div_ceil(s) - origin / s;
-                (axis(origin.0, size.0), axis(origin.1, size.1))
-            }
-        }
+        self.size.extent(origin, size)
     }
-}
-
-/// How a pass runs its kernel.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum GpuPassShape {
-    /// Once for every `span` texels of the output plane, `at` the first of them: `[1, 1]` for a
-    /// pointwise kernel, a run along one axis for a running sum reseeded at each run's start.
-    Texels { span: [u32; 2] },
-    /// One workgroup of [`GPU_WORKGROUP_LANES`] lanes, for a reduction of a small plane to a few
-    /// values.
-    Workgroup,
 }
 
 /// One compute pass: a kernel of the operation's program over one output plane.

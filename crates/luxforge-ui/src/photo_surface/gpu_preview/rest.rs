@@ -61,6 +61,7 @@
 //!   restored, window texels — the frames a tile waited for a retirement, and each tile's GPU span
 //!   from its preparation to when the queue reported it done ([`TileClock`]). Counters only.
 use super::super::{PhotoPipeline, Picture, SurfaceSlots, Tile, TileLayout, UNIFORM_SIZE};
+use super::BoundaryTexture;
 use super::histogram::{
     Counts, HistogramError, HistogramReadback, HistogramRect, HistogramReduction,
 };

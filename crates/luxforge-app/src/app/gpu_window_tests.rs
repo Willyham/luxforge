@@ -288,7 +288,7 @@ fn gpu_window_a_windowed_boundary_draws_the_whole_boundarys_frame() {
                 }
                 let draw = |window: Region| {
                     let held = boundary_as(
-                        super::gpu_plan::boundary_format(format),
+                        format,
                         window.width,
                         window.height,
                         1,
@@ -416,7 +416,7 @@ fn gpu_window_a_spatial_step_over_a_window_draws_the_whole_boundarys_frame() {
             cut_windows += usize::from(window.pixels() < u64::from(WIDTH * HEIGHT));
             let draw = |window: Region| {
                 let held = boundary_as(
-                    super::gpu_plan::boundary_format(format),
+                    format,
                     window.width,
                     window.height,
                     1,
@@ -874,7 +874,7 @@ fn gpu_window_a_chained_masked_plan_derives_its_boundary_when_its_pooled_slot_fi
         let window = request.window.expect("the region's window");
         let (origin, size) = ((window.x0, window.y0), (window.width, window.height));
         let steps = super::gpu_plan::plan_steps(plan).expect("convertible steps");
-        let format = super::gpu_plan::boundary_format(request.format);
+        let format = request.format;
         let chain = chain_charge(&steps, size, origin, format);
         assert_eq!(chain.intermediates.len(), 4, "five links");
         // Each pass's 256-byte parameter slice, as the old figure counted them.
@@ -1082,7 +1082,7 @@ fn gpu_window_an_unconverted_plan_is_charged_every_plane_apart() {
             GpuAnswer::Fallback(reason) => panic!("{reason}"),
         };
         let steps = super::gpu_plan::plan_steps(&plan).expect("convertible steps");
-        let format = super::gpu_plan::boundary_format(BoundaryFormat::Half);
+        let format = BoundaryFormat::Half;
         let converted = chain_charge(&steps, (width, height), (0, 0), format);
         assert_eq!(
             super::gpu_preview::chain_charge(&plan, window, BoundaryFormat::Half),
@@ -1509,7 +1509,7 @@ fn gpu_window_the_paint_harness_masks_at_100_grow_the_window_by_every_links_halo
             let (boundary, slot) = editor.gpu.region_charge().expect("a region's charge");
             let steps = super::gpu_plan::plan_steps(plan);
             let converted = steps.is_ok();
-            let format = super::gpu_plan::boundary_format(request.format);
+            let format = request.format;
             let size = (window.width, window.height);
             let origin = (window.x0, window.y0);
             let chain = chain_charge(&steps.expect("convertible steps"), size, origin, format);

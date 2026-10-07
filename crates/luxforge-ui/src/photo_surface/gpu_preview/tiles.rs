@@ -73,6 +73,7 @@
 //!   `refused`, `device-lost`, `adapter-mismatch`), the budget (`tiles-budget`), or the plan's own
 //!   reason the stage cannot run it — `pipeline-failed`, `texture-limit`, `buffer-limit` or
 //!   `source-missing` for a window whose pixels were let go — exactly as the surface names them.
+use super::BoundaryTexture;
 use super::staged::StageHolder;
 use super::{
     BLOCK_CHUNK, BoundaryFormat, Charged, Compiled, Derivation, GpuFallback, GpuPlan, GpuSource,

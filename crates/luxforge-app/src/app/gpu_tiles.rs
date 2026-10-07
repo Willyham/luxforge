@@ -1145,7 +1145,7 @@ impl Worker {
             let mut runner = self.runner()?;
             let held = runner.hold_stages(
                 (sweeps.stage.width, sweeps.stage.height),
-                gpu_plan::boundary_format(sweeps.format),
+                sweeps.format,
                 sweeps.textures,
             );
             self.figures.borrow_mut().runner = runner.figures();
@@ -1691,7 +1691,7 @@ impl Worker {
                 let mut runner = self.runner()?;
                 let held = runner.hold_stages(
                     (sweeps.stage.width, sweeps.stage.height),
-                    gpu_plan::boundary_format(sweeps.format),
+                    sweeps.format,
                     sweeps.textures,
                 );
                 self.figures.borrow_mut().runner = runner.figures();

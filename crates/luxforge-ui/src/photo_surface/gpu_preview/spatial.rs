@@ -59,44 +59,18 @@ use super::{
     mask::{self, Coverage, MaskedColour, Role},
     validate, validate_program,
 };
+use luxforge_gpu_types::PlaneSize as PlaneExtent;
 use std::borrow::Cow;
 use wgpu::naga;
 
-/// How many inputs one pass reads, and how many planes one apply reads.
-pub const PASS_INPUTS: usize = 4;
-const APPLY_PLANES: usize = 4;
-
-/// The lanes of a workgroup pass, and the values of `lf_shared`.
-const WORKGROUP_LANES: u32 = 256;
-const SHARED_VALUES: u32 = 1024;
-
-/// One side of a texel pass's workgroup.
-pub(super) const GROUP_SIDE: u32 = 8;
-
-/// The binding of a pass's output plane in its second group, after every plane it reads.
-pub(super) const OUTPUT_BINDING: u32 = 64;
-
-/// The binding of a pass's parameters in its second group.
-pub(super) const PARAMS_BINDING: u32 = 65;
-
-/// One pass's slice of the parameter buffer, in bytes and in words: the largest storage-binding
-/// offset alignment a device may ask for.
-pub(super) const PARAMS_STRIDE: u64 = 256;
-const PARAMS_WORDS: usize = (PARAMS_STRIDE / 4) as usize;
-
-/// A pass's parameters: its step's header index, its words' offset in the step's words, its span,
-/// then the offsets of the applies its source runs, the rectangle of its output it writes,
-/// `[x0, y0, x1, y1)`, and last the texel of its output its first invocation starts at, the corner
-/// of the rectangle a tick runs it over.
-const PARAM_STEP: usize = 0;
-const PARAM_WORDS: usize = 1;
-const PARAM_SPAN: usize = 2;
-const PARAM_APPLIES: usize = 4;
-const PARAM_LIMIT: usize = PARAMS_WORDS - 6;
-const PARAM_ORIGIN: usize = PARAMS_WORDS - 2;
-
-/// A limit's far edge that no plane reaches, which a `vec2<i32>` holds.
-pub(super) const UNLIMITED: u32 = i32::MAX as u32;
+pub(super) use luxforge_gpu_types::{
+    GROUP_SIDE, OUTPUT_BINDING, PARAMS_BINDING, PARAMS_STRIDE, UNLIMITED,
+};
+use luxforge_gpu_types::{
+    PARAM_APPLIES, PARAM_LIMIT, PARAM_ORIGIN, PARAM_SPAN, PARAM_STEP, PARAM_WORDS, PARAMS_WORDS,
+    SHARED_VALUES, UNIT_APPLY_PLANES as APPLY_PLANES, WORKGROUP_LANES,
+};
+pub use luxforge_gpu_types::{PASS_INPUTS, PassShape, PlaneFormat, SPATIAL_PRELUDE};
 
 /// How many compiled pass modules the stage keeps across sequences, the least recently used
 /// evicted first: every pass of the [`super::PIPELINE_CACHE`] sequences the pipeline keeps holds its
@@ -107,27 +81,12 @@ pub(super) const UNLIMITED: u32 = i32::MAX as u32;
 /// compiles its render pipeline alone.
 pub(super) const PASS_CACHE: usize = 64;
 
-/// What a plane's texels hold — how many channels, and whether half precision holds them — and so
-/// the texture format it is kept in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
-pub enum PlaneFormat {
-    /// `rgba16float`: four channels at half precision.
-    Colour,
-    /// `r32float`: one accumulator.
-    Scalar,
-    /// `rg32float`: two accumulators.
-    Pair,
-    /// `rgba32float`: four.
-    Quad,
-    /// One channel half precision holds, `r32float` of its own: `rgba16float` is the one
-    /// half-precision format every adapter stores to.
-    HalfScalar,
-    /// Two channels half precision holds, `rg32float` of its own.
-    HalfPair,
+pub(super) trait PlaneTextureFormat {
+    fn texture(self) -> wgpu::TextureFormat;
 }
 
-impl PlaneFormat {
-    pub(super) fn texture(self) -> wgpu::TextureFormat {
+impl PlaneTextureFormat for PlaneFormat {
+    fn texture(self) -> wgpu::TextureFormat {
         match self {
             Self::Colour => wgpu::TextureFormat::Rgba16Float,
             Self::Scalar | Self::HalfScalar => wgpu::TextureFormat::R32Float,
@@ -135,44 +94,13 @@ impl PlaneFormat {
             Self::Quad => wgpu::TextureFormat::Rgba32Float,
         }
     }
-
-    fn wgsl(self) -> &'static str {
-        match self {
-            Self::Colour => "rgba16float",
-            Self::Scalar | Self::HalfScalar => "r32float",
-            Self::Pair | Self::HalfPair => "rg32float",
-            Self::Quad => "rgba32float",
-        }
-    }
-
-    /// The bytes one texel takes.
-    pub fn texel_bytes(self) -> u64 {
-        match self {
-            Self::Scalar | Self::HalfScalar => 4,
-            Self::Colour | Self::Pair | Self::HalfPair => 8,
-            Self::Quad => 16,
-        }
-    }
-
-    /// The format that names its texture's: `Scalar` for `HalfScalar`, `Pair` for `HalfPair`, and
-    /// every other its own, so two formats kept in one texture format answer one.
-    fn kept_as(self) -> Self {
-        match self {
-            Self::HalfScalar => Self::Scalar,
-            Self::HalfPair => Self::Pair,
-            other => other,
-        }
-    }
 }
 
 /// A plane's size against the boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum PlaneSize {
-    /// The stage's `s × s` blocks, anchored at the stage origin, the boundary reaches: `s = 1` is
-    /// the boundary.
-    Reduced(u32),
-    /// A fixed size whatever the boundary.
-    Fixed { width: u32, height: u32 },
+    /// A shared reduced or fixed extent, resolved without a device resource.
+    Extent(luxforge_gpu_types::PlaneSize),
     /// The slot's light plane `k` (`docs/design/gpu-preview.md`, "The global estimate"): one
     /// [`PlaneFormat::Quad`] texel whose `xyz` is a global estimate, Dehaze's atmospheric light,
     /// computed from the whole stage. The slot's pool holds it for every link, whatever their
@@ -193,13 +121,8 @@ impl GpuPlane {
     /// reduction `s`, the blocks `floor(origin / s)` to `ceil((origin + size) / s)` on each axis.
     pub fn extent(&self, origin: (u32, u32), size: (u32, u32)) -> (u32, u32) {
         match self.size {
-            PlaneSize::Fixed { width, height } => (width, height),
+            PlaneSize::Extent(extent) => extent.extent(origin, size),
             PlaneSize::Light(_) => (1, 1),
-            PlaneSize::Reduced(s) => {
-                let s = s.max(1);
-                let axis = |origin: u32, length: u32| (origin + length).div_ceil(s) - origin / s;
-                (axis(origin.0, size.0), axis(origin.1, size.1))
-            }
         }
     }
 
@@ -208,15 +131,6 @@ impl GpuPlane {
         let (width, height) = self.extent(origin, size);
         u64::from(width) * u64::from(height) * self.format.texel_bytes()
     }
-}
-
-/// How a pass runs its kernel.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum PassShape {
-    /// Once for every `span` texels of the output, `at` the first.
-    Texels { span: [u32; 2] },
-    /// One workgroup of 256 lanes.
-    Workgroup,
 }
 
 /// One compute pass of a spatial step.
@@ -509,7 +423,7 @@ impl GpuSpatial {
             || self
                 .planes
                 .iter()
-                .any(|plane| matches!(plane.size, PlaneSize::Fixed { .. }))
+                .any(|plane| matches!(plane.size, PlaneSize::Extent(PlaneExtent::Fixed { .. })))
             || self.lights().next().is_some()
     }
 
@@ -518,7 +432,8 @@ impl GpuSpatial {
     pub fn lights(&self) -> impl Iterator<Item = u32> + '_ {
         self.planes.iter().filter_map(|plane| match plane.size {
             PlaneSize::Light(k) => Some(k),
-            PlaneSize::Reduced(_) | PlaneSize::Fixed { .. } => None,
+            PlaneSize::Extent(PlaneExtent::Reduced(_))
+            | PlaneSize::Extent(PlaneExtent::Fixed { .. }) => None,
         })
     }
 
@@ -529,7 +444,7 @@ impl GpuSpatial {
             .get(pass.output as usize)
             .map(|plane| plane.size)
         {
-            Some(PlaneSize::Reduced(s)) => s.max(1),
+            Some(PlaneSize::Extent(PlaneExtent::Reduced(s))) => s.max(1),
             _ => 1,
         }
     }
@@ -677,18 +592,6 @@ impl GpuSpatial {
     }
 }
 
-/// The spatial convention's declarations as stubs, which a program alone is validated against.
-pub const SPATIAL_PRELUDE: &str = "
-// Luxforge GPU-preview spatial declarations.
-var<workgroup> lf_shared: array<f32, 1024>;
-fn lf_plane(slot: u32, at: vec2<i32>) -> vec4<f32> { return vec4<f32>(f32(slot), vec2<f32>(at), 1.0); }
-fn lf_plane_size(slot: u32) -> vec2<i32> { return vec2<i32>(i32(slot) + 1); }
-fn lf_source(at: vec2<i32>) -> vec3<f32> { return vec3<f32>(vec2<f32>(at), 0.5); }
-fn lf_origin() -> vec2<i32> { return vec2<i32>(0); }
-fn lf_size() -> vec2<i32> { return vec2<i32>(1); }
-fn lf_store(at: vec2<i32>, value: vec4<f32>) {}
-";
-
 /// The declarations' functions, which a program does not declare itself.
 pub(super) const SPATIAL_FUNCTIONS: &[&str] = &[
     "lf_plane",
@@ -774,8 +677,8 @@ pub(super) fn validate_spatial(spatial: &GpuSpatial) -> Result<(), String> {
     let planes = spatial.planes.len() as u32;
     for (number, plane) in spatial.planes.iter().enumerate() {
         let valid = match plane.size {
-            PlaneSize::Reduced(s) => s >= 1,
-            PlaneSize::Fixed { width, height } => width >= 1 && height >= 1,
+            PlaneSize::Extent(PlaneExtent::Reduced(s)) => s >= 1,
+            PlaneSize::Extent(PlaneExtent::Fixed { width, height }) => width >= 1 && height >= 1,
             PlaneSize::Light(_) => true,
         };
         if !valid {
@@ -2593,8 +2496,12 @@ impl Groups {
             .zip(rects)
             .map(|(pass, rect)| {
                 let covered = match pass.plane.size {
-                    PlaneSize::Reduced(s) => rect.reduced(s, self.origin, pass.extent),
-                    PlaneSize::Fixed { .. } | PlaneSize::Light(_) => Rect::whole(pass.extent),
+                    PlaneSize::Extent(PlaneExtent::Reduced(s)) => {
+                        rect.reduced(s, self.origin, pass.extent)
+                    }
+                    PlaneSize::Extent(PlaneExtent::Fixed { .. }) | PlaneSize::Light(_) => {
+                        Rect::whole(pass.extent)
+                    }
                 };
                 match pass.shape {
                     // A pass's invocations start where they would over the whole plane, every
@@ -2851,7 +2758,8 @@ impl Schedule {
             .iter()
             .map(|plane| match plane.size {
                 PlaneSize::Light(k) => pool.light_key(k).unwrap_or(UNLIT),
-                PlaneSize::Reduced(_) | PlaneSize::Fixed { .. } => 0,
+                PlaneSize::Extent(PlaneExtent::Reduced(_))
+                | PlaneSize::Extent(PlaneExtent::Fixed { .. }) => 0,
             })
             .collect();
         let holds = |held: &[u64], plane: &u32| held.get(*plane as usize).copied().unwrap_or(0);

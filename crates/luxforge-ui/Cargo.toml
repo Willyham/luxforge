@@ -11,6 +11,7 @@ name = "luxforge_ui"
 path = "src/lib.rs"
 
 [dependencies]
+luxforge-gpu-types = { path = "../luxforge-gpu-types" }
 iced.workspace = true
 iced_wgpu.workspace = true
 wgpu.workspace = true

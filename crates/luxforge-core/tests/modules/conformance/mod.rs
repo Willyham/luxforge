@@ -28,7 +28,7 @@ pub mod shape;
 
 pub use luxforge_testkit::client::{Checked, ensure, within};
 
-use luxforge_core::{ControlsModule, ModuleRegistry};
+use luxforge_core::{ModuleRegistry, controls_module};
 use luxforge_testkit::client::request_id;
 use serde_json::{Value, json};
 use std::{fs, path::Path, sync::Arc, time::Instant};
@@ -79,7 +79,7 @@ pub fn run(fixture: &Path, out: &Path) -> Checked<Value> {
         .map_err(|error| format!("{} is unreadable: {error}", fixture.display()))?;
     let mut registry = ModuleRegistry::builtin();
     registry
-        .register(Arc::new(ControlsModule::new()))
+        .register(Arc::new(controls_module()))
         .map_err(|error| format!("the controls proof did not register: {error}"))?;
     let modules = shape::field_patches(&registry);
     let found: Vec<&str> = modules.iter().map(|module| module.id.as_str()).collect();

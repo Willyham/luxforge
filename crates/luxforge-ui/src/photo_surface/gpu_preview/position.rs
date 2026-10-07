@@ -27,7 +27,7 @@ impl PositionMap {
     };
 
     /// How many words of a step's header the map takes.
-    pub(super) const WORDS: usize = 6;
+    pub(super) const WORDS: usize = luxforge_gpu_types::POSITION_WORDS;
 
     /// The six coefficients as the `f32` words a step's header holds: `a, b, tx, c, d, ty`.
     pub(super) fn words(self) -> [u32; Self::WORDS] {

@@ -46,6 +46,8 @@
 //!   stand-in over the source where none is kept, and a picture at rest's view plan waits for it
 //!   ([`GpuFallback::LightPending`]), never drawing a stand-in.
 use super::super::{PhotoPipeline, SurfaceSlots};
+use super::BoundaryTexture;
+use super::spatial::PlaneTextureFormat;
 use super::{
     BLOCK_CHUNK, BoundaryFormat, Charged, Compiled, GpuFallback, GpuStep, Held, TexelMap,
     blocks::{self, WrittenBlocks},
@@ -54,6 +56,7 @@ use super::{
     spatial::{self, GpuSpatial, Place, PlaneSize, Pool, PoolTexture, Rect},
     storage_buffer,
 };
+use luxforge_gpu_types::PlaneSize as PlaneExtent;
 use std::sync::atomic::Ordering;
 
 /// The side, in stage pixels, of the tiles a light link cuts its stage into: each tile is cut from
@@ -74,7 +77,7 @@ pub struct GpuLight {
     pub stage: (u32, u32),
     /// Its steps: the prefix's colour and masked colour steps, run per texel over the source's
     /// texels, then its own spatial step, which draws nothing: the reduction into the stage's block
-    /// plane, a [`PlaneSize::Reduced`] plane of the whole stage, and the selection into the light
+    /// plane, a [`PlaneExtent::Reduced`] plane of the whole stage, and the selection into the light
     /// plane it declares ([`PlaneSize::Light`]). A light whose input is a stage texture has its own
     /// step alone.
     pub steps: Vec<GpuStep>,
@@ -127,7 +130,7 @@ impl GpuLight {
         let last = spatial.passes.last()?;
         let blocks = matches!(
             spatial.planes.get(first.output as usize)?.size,
-            PlaneSize::Reduced(_)
+            PlaneSize::Extent(PlaneExtent::Reduced(_))
         );
         let light = matches!(
             spatial.planes.get(last.output as usize)?.size,
@@ -144,7 +147,8 @@ impl GpuLight {
         let last = spatial.passes.last()?;
         match spatial.planes[last.output as usize].size {
             PlaneSize::Light(k) => Some(k),
-            PlaneSize::Reduced(_) | PlaneSize::Fixed { .. } => None,
+            PlaneSize::Extent(PlaneExtent::Reduced(_))
+            | PlaneSize::Extent(PlaneExtent::Fixed { .. }) => None,
         }
     }
 
@@ -152,8 +156,8 @@ impl GpuLight {
     fn block(&self) -> Option<u32> {
         let spatial = self.step()?;
         match spatial.planes[spatial.passes[0].output as usize].size {
-            PlaneSize::Reduced(s) => Some(s.max(1)),
-            PlaneSize::Fixed { .. } | PlaneSize::Light(_) => None,
+            PlaneSize::Extent(PlaneExtent::Reduced(s)) => Some(s.max(1)),
+            PlaneSize::Extent(PlaneExtent::Fixed { .. }) | PlaneSize::Light(_) => None,
         }
     }
 }

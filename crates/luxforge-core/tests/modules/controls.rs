@@ -1,7 +1,7 @@
 //! The developer proof module is deliberately registered only in these tests. Its descriptor,
 //! method table, persistence and identity render are exercised through the same public paths as
 //! an independent JSON client.
-use luxforge_core::{CONTROLS_EFFECT, ControlsModule, ModuleRegistry, OwnerHandle, SnapshotId};
+use luxforge_core::{CONTROLS_EFFECT, ModuleRegistry, OwnerHandle, SnapshotId, controls_module};
 use luxforge_testbase::paths;
 use luxforge_testkit::client::{call, open, refused};
 use luxforge_testkit::fixtures::render;
@@ -12,7 +12,7 @@ use std::{fs, sync::Arc};
 #[test]
 fn controls_query_choice_is_described_and_selects_through_the_json_service() {
     let mut registry = ModuleRegistry::builtin();
-    registry.register(Arc::new(ControlsModule::new())).unwrap();
+    registry.register(Arc::new(controls_module())).unwrap();
     let catalog = paths::temp_catalog("controls-query-choice");
     let (owner, join) = OwnerHandle::start_with(&catalog, Arc::new(registry)).unwrap();
     let client = owner.register();
@@ -78,7 +78,7 @@ fn proof_is_opt_in_and_each_control_field_has_an_independent_json_action() {
     );
     let mut registry = ModuleRegistry::builtin();
     registry
-        .register(Arc::new(ControlsModule::new()))
+        .register(Arc::new(controls_module()))
         .expect("proof module registers");
     let catalog = paths::temp_catalog("controls-proof");
     let (owner, join) = OwnerHandle::start_with(&catalog, Arc::new(registry)).expect("owner");
@@ -243,7 +243,7 @@ fn proof_is_opt_in_and_each_control_field_has_an_independent_json_action() {
 #[test]
 fn proof_layer_is_byte_exact_and_shares_the_source_allocation() {
     let mut registry = ModuleRegistry::builtin();
-    registry.register(Arc::new(ControlsModule::new())).unwrap();
+    registry.register(Arc::new(controls_module())).unwrap();
     let source = source_of(2, 1, &[[11, 22, 33], [240, 80, 16]]);
     let layer = fixtures::layer(
         CONTROLS_EFFECT,

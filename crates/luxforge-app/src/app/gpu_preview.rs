@@ -274,7 +274,7 @@ fn rest_over(
     let stages = match &tiles.staging {
         luxforge_core::GpuStaging::Chained(_) => None,
         luxforge_core::GpuStaging::Staged(planned) => {
-            let format = gpu_plan::boundary_format(planned.format);
+            let format = planned.format;
             let mut sweeps = Vec::with_capacity(planned.sweeps.len());
             for sweep in &planned.sweeps {
                 let mut plans = Vec::with_capacity(sweep.tiles.len());
@@ -363,7 +363,7 @@ fn rest_over(
             light: gpu_plan::light_sweep_light(&tiles.plan, planned)
                 .map_err(|unrunnable| unrunnable.code())?,
             side: planned.side,
-            format: gpu_plan::boundary_format(tiles.format),
+            format: tiles.format,
             tiles: plans.into(),
         });
     }
@@ -1095,7 +1095,7 @@ pub(crate) fn region_charge(plan: &CorePlan, request: &SourceBoundary) -> Option
     // RAW linear path, as `gpu_plan` builds it.
     let textures = surface::gpu_preview::texture_charge(
         (window.width, window.height),
-        gpu_plan::boundary_format(request.format),
+        request.format,
         (rect.width, rect.height),
         gpu_plan::has_tail(plan).then_some((plan.geometry.clamps, plan.linear)),
         region,
@@ -1120,7 +1120,7 @@ pub(crate) fn light_charge(plan: &CorePlan, format: luxforge_core::BoundaryForma
             .collect();
         surface::gpu_preview::light::lights_charge(
             &runnable,
-            gpu_plan::boundary_format(format),
+            format,
             super::compare_after::DEVICE_TEXTURE_LIMIT,
             super::compare_after::DEVICE_STORAGE_BINDING,
         )
@@ -1157,7 +1157,7 @@ pub(crate) fn reduced_charge(plan: &CorePlan, request: &SourceBoundary) -> u64 {
     let output = plan.geometry.output();
     surface::gpu_preview::texture_charge(
         (window.width, window.height),
-        gpu_plan::boundary_format(request.format),
+        request.format,
         (output.width, output.height),
         gpu_plan::has_tail(plan).then_some((plan.geometry.clamps, plan.linear)),
         true,
@@ -1193,7 +1193,7 @@ pub(super) fn chain_charge(
             &steps,
             (window.width, window.height),
             (window.x0, window.y0),
-            gpu_plan::boundary_format(format),
+            format,
         )
         .total(),
         Err(_) => unconverted_chain_charge(plan, window, format),
@@ -2577,7 +2577,7 @@ impl Editor {
             if let Ok(steps) = gpu_plan::plan_steps(plan) {
                 sequences.push((
                     super::gpu_settle::marked_steps(steps, plan, clip),
-                    gpu_plan::boundary_format(luxforge_core::BoundaryFormat::of(plan.linear)),
+                    luxforge_core::BoundaryFormat::of(plan.linear),
                 ));
             }
             if index < warm.open {

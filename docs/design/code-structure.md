@@ -17,10 +17,10 @@ The current GPU path is core compilation/planning, desktop lowering, and executi
 | Finding | Current issue | Outcome | Tasks |
 | --- | --- | --- | --- |
 | R1 | Delivered: public `Provider::descriptor` reads registry availability; explicitly dereferenced module hooks retain raw metadata | One registry-aware availability answer through the public lookup surface | TASK-001 |
-| R2 | Core and UI separately declare GPU formats, plane extents, pass shapes and shader constants; desktop lowering maps the corresponding families | One shared primitive contract; semantic planning and device lowering keep their distinct responsibilities | TASK-003, 004 |
+| R2 | In progress: core and UI consume common formats, extents, pass shapes and shader constants from `luxforge-gpu-types`; executable light references remain in the backend | One shared primitive contract; semantic planning and device lowering keep their distinct responsibilities | TASK-003, 004 |
 | R3 | Core admission and backend allocation separately calculate common resource-layout rules; tests compare the two implementations | Shared layout rules consumed by prediction and allocation, with explicit device inputs | TASK-005 |
 | R4 | Window-free GPU execution is reusable but lives in the widget subsystem | One core-free, Iced-free executor with a thin presentation adapter | TASK-006, 007 |
-| R5 | Public module-authoring types expose traits without accessible builders/readers; context helpers are internal while raw fields are public | A coherent current cross-crate surface, with internal authoring machinery clearly internal | TASK-009 |
+| R5 | Delivered: supported `ToolModule` authors have context helpers and plan builders; field-patch authoring stays internal and the developer proof has an opaque factory | A coherent current cross-crate surface, with internal authoring machinery clearly internal | TASK-009 |
 | R6 | Stream strategy and tile-size selection repeatedly prepare the same GPU stack, and staged selection discards a newly generated tile list | One preparation per equivalent worker-scoped request; derive alternatives and reuse sweep tiles | TASK-008 |
 | R7 | Colour and spatial operation equality uses diagnostic description strings | Explicit exact semantic identity independent of diagnostic wording | TASK-010 |
 | R8 | Preview requests and resource phases use loose flags/options and repeated eligibility checks | Valid request intent and small resource-phase types; one presentation/counts eligibility decision | TASK-011, 012 |
@@ -119,7 +119,7 @@ Source files, recipes, immutable history, command schemas, declared output toler
 
 ## Performance review of the contained cleanups
 
-Provider lookup, current-contract comments, typed preview reads, renderer policy ownership and hidden metadata sharing add no original read/hash/decode path, frame allocation, render in a query/validation/no-op check, owner-thread frame work, desktop refresh/upload, timer, poll, subscription or cache. Existing source verification, worker limits, JSON request data and traversal policies are retained. The moved policy values are unchanged. Exact rendering/admission regressions and protocol/traversal tests cover these changes; no image algorithm changes. Photo-sized timing and allocation comparisons remain TASK-017 work on the integrated branch, so these cleanups make no speed or memory claim.
+Provider lookup, current-contract comments, module surface visibility, typed preview reads, renderer policy ownership and hidden metadata sharing add no original read/hash/decode path, frame allocation, render in a query/validation/no-op check, owner-thread frame work, desktop refresh/upload, timer, poll, subscription or cache. Existing source verification, worker limits, JSON request data and traversal policies are retained. The moved policy values are unchanged. Exact rendering/admission regressions and protocol/traversal tests cover these changes; no image algorithm changes. Photo-sized timing and allocation comparisons remain TASK-017 work on the integrated branch, so these cleanups make no speed or memory claim.
 
 ## Acceptance and verification
 

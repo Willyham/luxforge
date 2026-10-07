@@ -4,8 +4,9 @@
 //! links of a chain taking their scratch planes from the slot's one pool in turn. Last, a chain's
 //! planes laid out as each link's kept textures and one pool of scratch textures, and the chain's
 //! charge, without a device.
-use super::super::spatial::{Slots, fragment_declarations, pass_module};
+use super::super::spatial::{PlaneTextureFormat, Slots, fragment_declarations, pass_module};
 use super::*;
+use luxforge_gpu_types::PlaneSize as PlaneExtent;
 
 /// A hand-supplied spatial program under the convention: a pass that copies its unit's input into
 /// a plane, a horizontal and a vertical box mean of a plane of the radius its word holds, a
@@ -72,18 +73,18 @@ pub(super) fn test_spatial() -> GpuSpatial {
         planes: vec![
             GpuPlane {
                 format: PlaneFormat::Colour,
-                size: PlaneSize::Reduced(1),
+                size: PlaneSize::Extent(PlaneExtent::Reduced(1)),
             },
             GpuPlane {
                 format: PlaneFormat::Quad,
-                size: PlaneSize::Reduced(1),
+                size: PlaneSize::Extent(PlaneExtent::Reduced(1)),
             },
             GpuPlane {
                 format: PlaneFormat::Quad,
-                size: PlaneSize::Fixed {
+                size: PlaneSize::Extent(PlaneExtent::Fixed {
                     width: 1,
                     height: 1,
-                },
+                }),
             },
         ],
         passes: vec![
@@ -296,7 +297,7 @@ fn the_frame_and_every_pass_assemble_into_modules_that_validate() {
 fn a_reduced_plane_holds_the_stage_blocks_its_boundary_reaches() {
     let plane = |s| GpuPlane {
         format: PlaneFormat::Scalar,
-        size: PlaneSize::Reduced(s),
+        size: PlaneSize::Extent(PlaneExtent::Reduced(s)),
     };
     assert_eq!(plane(1).extent((0, 0), (37, 21)), (37, 21));
     assert_eq!(plane(4).extent((0, 0), (37, 21)), (10, 6));
@@ -306,10 +307,10 @@ fn a_reduced_plane_holds_the_stage_blocks_its_boundary_reaches() {
     assert_eq!(plane(16).extent((0, 0), (37, 21)), (3, 2));
     let fixed = GpuPlane {
         format: PlaneFormat::Quad,
-        size: PlaneSize::Fixed {
+        size: PlaneSize::Extent(PlaneExtent::Fixed {
             width: 1,
             height: 1,
-        },
+        }),
     };
     assert_eq!(
         (
@@ -736,7 +737,7 @@ fn pass_pipelines_depend_on_their_kernel_and_shape_alone() {
             2,
             GpuPlane {
                 format: PlaneFormat::Quad,
-                size: PlaneSize::Reduced(1),
+                size: PlaneSize::Extent(PlaneExtent::Reduced(1)),
             },
         );
         let lead = lead as u32;
@@ -973,7 +974,7 @@ fn ramp() -> GpuProgram {
 fn blurred(radius_x: u32, radius_y: u32, amount: f32) -> GpuSpatial {
     let plane = |format| GpuPlane {
         format,
-        size: PlaneSize::Reduced(1),
+        size: PlaneSize::Extent(PlaneExtent::Reduced(1)),
     };
     let pass = |kernel: &'static str, inputs: Vec<u32>, output: u32, words: u32| GpuPass {
         kernel: Cow::Borrowed(kernel),
@@ -1550,12 +1551,12 @@ fn plane(format: PlaneFormat, size: PlaneSize) -> GpuPlane {
     GpuPlane { format, size }
 }
 
-const R1: PlaneSize = PlaneSize::Reduced(1);
-const R4: PlaneSize = PlaneSize::Reduced(4);
-const ONE: PlaneSize = PlaneSize::Fixed {
+const R1: PlaneSize = PlaneSize::Extent(PlaneExtent::Reduced(1));
+const R4: PlaneSize = PlaneSize::Extent(PlaneExtent::Reduced(4));
+const ONE: PlaneSize = PlaneSize::Extent(PlaneExtent::Fixed {
     width: 1,
     height: 1,
-};
+});
 
 /// A spatial step for the layout alone: `planes`, each with whether an apply reads it, a pass
 /// writing each, and one apply reading every plane marked. Nothing runs it.
