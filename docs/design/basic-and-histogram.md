@@ -296,17 +296,9 @@ to the reference, the counts in motion and the reference before the surface has 
 The drafted composition's arithmetic is separately exact through `analysis.request {target:
 draft}` in the acceptance chapter, which the reference renderer answers.
 
-## Later module candidates
+## Later scope
 
-| Candidate | Useful next scope | Why separate |
-| --- | --- | --- |
-| Tone Curve | Monotone point curve, composite first; numeric point API and reset | Reuses pointwise color stage but needs curve interaction and interpolation contracts |
-| Detail | Sharpening, then noise reduction, judged at 100% | Requires scale, neighborhood halos and noise/detail quality evidence |
-| Texture / Clarity | Fine/mid-scale local contrast | Requires bounded multiscale processing and halo/edge tests; cannot be relabeled global Contrast |
-| Dehaze | Global atmospheric-haze correction with explicit limits | Requires a selected estimation model, color/noise review and photo-sized analysis budget |
-| B&W / Color Mixer | Explicit grayscale treatment and sampled/ranged color control | Additional interaction and color contracts; saturation −100 alone is not a B&W mixer |
-
-Auto Tone, profiles/presets, HDR, local masks, healing, red-eye and screenshot metadata rows are not selected for the first two slices. No disabled placeholders for them. Histogram dragging can follow once tone control semantics are proven; first ship the histogram as feedback. The existing export/Locate/MCP commitments keep their own priorities. Default order after Slice B: Tone Curve, then Detail, Texture and Clarity, Dehaze and the colour mixer, unless the owner reorders them.
+Tone curve, Detail, Texture, Clarity, Dehaze, the eight-range colour mixer, presets and masks are delivered. Their remaining scope and qualification are recorded in their designs and the [roadmap](../plan.md). A dedicated B&W mixer, Auto Tone, HDR, red-eye, histogram dragging and additional metadata presentation remain unselected proposals; saturation −100 is not a B&W mixer. Clone/Heal and AI editing have separate plans. JPEG export and Locate are delivered; MCP remains outstanding. No disabled placeholders represent later work.
 
 ## Decisions
 

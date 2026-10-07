@@ -47,11 +47,11 @@ Luxforge is pre-release. Everything is v0, formats change without migrations, an
 - **Presence** (texture, clarity, dehaze), an eight-range **colour mixer**, and a **vignette**.
 - **Local masking**: linear and radial gradients, feathered brushes with erase and colour constraints, and luminance and colour range selections. Combine components with Add, Subtract and Intersect, invert them or adjust the mask's amount, then use the same Basic, colour mixer and Presence controls locally. Live coverage overlays and editable canvas handles show what you're adjusting.
 - **Crop, transform, straighten**, including 90° left/right rotation, mirror and flip, with exact integer transforms.
-- **RAW editing**: Nikon Z6, Fujifilm X100VI and DJI Air 2S DNG files are developed from sensor data, and changing the white balance later redevelops the RAW. The camera catalog now covers **107 models and 126 recording modes**, with authentic-file adapter evidence for every model; controlled colour, remaining modes and broader editor qualification are ongoing. [Camera coverage](docs/design/raw-camera-profiles.md) records the exact scope.
+- **RAW editing**: Nikon Z6, Fujifilm X100VI and DJI Air 2S DNG files are developed from sensor data, and changing the white balance later redevelops the RAW. The camera catalog now covers **259 camera and phone identities and 316 recording modes**; the retained authentic-file corpus covers 258 identities and 315 modes, and the supplied Air 2S fixture covers the remaining profile. Controlled colour, unsampled settings and broader native platform qualification remain open. [Camera coverage](docs/design/raw-camera-profiles.md) records the exact scope.
 - **Presets**, including import of Lightroom Classic XMP and `.lrtemplate` presets, with a report of anything that couldn't be carried over.
-- **JPEG export** from JPEG or RAW originals: an exact saved edit at its output size, quality 90, with an embedded sRGB profile. Metadata is stripped by default or kept for supported EXIF fields. Exports never replace an existing file or touch the original.
-- **An RGB histogram** with clipping overlays and a pixel readout, plus original comparison, a command palette and **Copy as JSON request** on controls.
-- **GPU rendering**: the GPU draws every drag and the finished picture at every zoom, the histogram, samples and exports too, each held within a declared tolerance to a whole-frame CPU reference renderer, which draws whatever the GPU cannot.
+- **JPEG export** from JPEG or RAW originals: a frozen saved edit at its output size, drawn on the GPU within the declared tolerance against the CPU reference, quality 90, with an embedded sRGB profile. Metadata is stripped by default or kept for supported EXIF fields. Exports never replace an existing file or touch the original.
+- **An RGB histogram** with clipping overlays, plus original comparison, a command palette and **Copy as JSON request** on controls.
+- **GPU rendering**: the GPU draws motion and the finished picture at every zoom, the histogram, samples and exports. Finished outputs are held within a declared tolerance to the whole-frame CPU reference; fast reduced-source motion is reported separately and becomes sharp at rest. The reference draws whatever the GPU cannot.
 - **Live performance counters** for memory, CPU and GPU, alongside background jobs.
 - **Live agents**: if a script commits an edit while you're mid-drag, Luxforge keeps your draft and asks whether to discard it or reapply it on top.
 
@@ -61,7 +61,7 @@ Luxforge is pre-release. Everything is v0, formats change without migrations, an
   <sub>Masking in the app: a radial gradient, subtracting brush and luminance intersection shape a local adjustment. The green overlay shows coverage.</sub>
 </p>
 
-Relinking moved originals, an MCP adapter and a multi-photo library are the next big pieces. Clone, Heal and AI Remove remain proposals. [Feature status](docs/features.md) has the full, current picture, including what hasn't been verified yet.
+The Select workspace browses photographs, develops picks into the catalog and locates moved originals. The MCP adapter and full-editor verification remain planned. Offline Clone and Heal remain proposals; AI Remove is decided and planned. [Feature status](docs/features.md) has the full, current picture, including what hasn't been verified yet.
 
 ## Getting started
 
@@ -118,7 +118,7 @@ More detail is in the [architecture](docs/design/architecture.md) and [tool modu
 
 ## Platforms
 
-macOS on Apple silicon is the primary target and the only platform with native GPU verification so far. Windows 11 and Ubuntu 24.04 build and package in CI, but haven't had native desktop checks yet. See [platforms](docs/engineering/platforms.md).
+macOS on Apple silicon is the primary target and the only platform with native GPU verification so far. Ubuntu 24.04 has prior hosted build and package evidence; current CI is blocked by an index-watcher failure and the software Vulkan rendered lane's photo-sized deadline. Windows CI is disabled, and Windows support will come later. Native Windows and Linux desktop checks remain open. See [platforms](docs/engineering/platforms.md).
 
 ## Contributing
 

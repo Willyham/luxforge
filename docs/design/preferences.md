@@ -111,7 +111,7 @@ A held `[` key that resizes the brush therefore writes at most one call in fligh
 
 - **Core unit tests.** Each field round-trips. `null` resets. Every bad value is refused by name. A malformed file is refused without being rewritten. Only the General fields announce.
 - **First open.** First open skips the lens action when `auto_lens_profile` is off and still commits it when on.
-- **New photographs.** The owner hands `raw_look` to the Original hook at start and after `preferences.set`, for each photograph a `pick.develop` creates from then on. A test module's layer lands in each new RAW Original where its stage places it, a JPEG's Original is untouched, a refused or failing contribution refuses its pick by the module's name, and a seeded RAW follows the same rule. No built-in module contributes yet, so the look itself is proven with the look module.
+- **New photographs.** The owner hands `raw_look` to the Original hook at start and after `preferences.set`, for each photograph a `pick.develop` creates from then on. A test module's layer lands in each new RAW Original where its stage places it, a JPEG's Original is untouched, a refused or failing contribution refuses its pick by the module's name, and a seeded RAW follows the same rule. The built-in Look module contributes the Standard RAW look; Neutral contributes none. The look module and owner tests prove both paths.
 - **Export.** `export.plan` suggests the remembered folder only while it exists.
 - **Launch.** Resolution reads the catalog and window, `--catalog` and `--window-size` override them, and a missing catalog folder falls back to the default with the reason.
 - **Desktop unit tests.**
@@ -153,7 +153,7 @@ Decided by the owner on 2026-10-04:
 - Add the mask overlay colour, the canvas background and a switch for automatic lens correction to General.
 - Add an interface size and a catalog location to General.
 - The GPU preview stays a per-session switch, not a preference. Superseded on 2026-10-05 ([decisions](../decisions.md#gpu-first-rendering)): the switch is retired, the GPU is the renderer of record, and only `--no-gpu-render` refuses it, for a launch.
-- Export defaults (JPEG quality, Keep metadata) wait for the export work.
+- **Export defaults** (owner, 2026-10-07): keep JPEG quality fixed at 90 and Keep metadata chosen per export. Neither becomes a preference; the export folder remains remembered as described above.
 
 Recorded defaults, proposals the owner can revise:
 
