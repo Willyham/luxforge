@@ -1,0 +1,378 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "minimap",
+  "title": "Develop minimap at 200% and above",
+  "objective": "Deliver a bounded whole-image overview with a visible-region rectangle and owner-chosen click/drag navigation at percentage zoom >=200, through existing view.set state, with native rendered evidence and declared-tolerance GPU correctness.",
+  "context_summary": "The owner requested a plan, not implementation. The inclusive 200% threshold is explicit. The owner chose click-to-jump and dragging the viewport rectangle. Lower-right placement and other layout/engineering defaults remain proposed recommendations; implementation awaits a separate instruction. Routine sizes, styling and code organization are delegated within the design contract. No external inputs block working delivery: use generated 24 MP/60 MP images and current supplied RAW fixtures; missing native Windows/Linux evidence stays unrun. Geometry/API projection and overview rendering are independent outputs consumed by integration. Re-review against current main and use the roadmap high-tier model minimum. No implementation approval, owner-review or research task is inserted.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Define shared minimap placement, viewport projection and pan conversion using the existing view command.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Deliver pure geometry/model helpers consumed by TASK-003; do not build the widget or change authoritative recipe state.",
+        "Use exact stored percentage >=200, not rounded text; Fit is always ineligible. Reuse or factor existing percentage placement, centred axes, crop-box and effective scale arithmetic.",
+        "The command is already view.set; clarify existing pan units/origin in its registered schema and prove same-client session parity. No new view persistence or minimap method.",
+        "Implementer chooses helper boundaries and routine responsive layout within the design. Minimap chrome is fixed to the viewport and never changes scroll extents."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Minimap design",
+          "target": "docs/design/minimap.md",
+          "relevance": "Behavior, proposed defaults, stage mapping, bounds and evidence contract"
+        },
+        {
+          "kind": "file",
+          "label": "Canvas placement",
+          "target": "crates/luxforge-app/src/view/canvas_view.rs",
+          "relevance": "CanvasView percent/fit and stage/canvas mapping"
+        },
+        {
+          "kind": "file",
+          "label": "Scrollable placement",
+          "target": "crates/luxforge-app/src/view/canvas.rs",
+          "relevance": "scrolled, percent_size and surface chrome"
+        },
+        {
+          "kind": "file",
+          "label": "Pointer anchored zoom",
+          "target": "crates/luxforge-app/src/app/view_zoom.rs",
+          "relevance": "pinched_view centres fitting axes and clamps pan"
+        },
+        {
+          "kind": "file",
+          "label": "View command",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "relevance": "ViewSet, view_set and command registration"
+        },
+        {
+          "kind": "file",
+          "label": "View session",
+          "target": "crates/luxforge-core/src/preview.rs",
+          "relevance": "ViewState and Zoom validation"
+        }
+      ],
+      "acceptance_criteria": [
+        "Visibility boundary covers Fit, 199.9, 200, 200.1 and 1600 regardless of display rounding.",
+        "An independent geometric oracle agrees with normalized visible bounds and inverse click/drag pan for portrait/landscape, centred fitting axes, edges, letterboxing, crop box, effective 1x/2x and interface scale.",
+        "Degenerate dimensions/nonfinite data yield no actionable geometry; pan clamps without drifting on a fitting axis.",
+        "Existing view.set schema describes its actual pan units; equivalent pan requests have identical per-client ViewState and no edit/history/content-generation change."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run focused existing view tests and add non-mirroring projection tests with hand-computed coordinates and edge cases.",
+          "Inspect the schema discovery response and test session isolation using independent clients."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app view",
+          "tools/cargo-cached test -p luxforge-core view"
+        ],
+        "expected_results": [
+          "Projection and schema/session tests pass; no renderer work, recipe mutation or new durable state is introduced."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Provide a bounded, identity-keyed whole-stage overview from the existing GPU tile sweep and reference fallback.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Deliver the overview result/lifecycle and narrow surface presentation seam consumed by TASK-003. No second source residency, GPU device or full-photo texture.",
+        "High-zoom RestTiles currently have no reduction: add a distinct overview output while preserving the full-detail main region and histogram counts. Reuse final chained/staged tile work, light sweeps, output encoding and existing cancellation/visibility wakes.",
+        "For a first eligible view without an overview, one existing bounded sweep is permitted if the histogram sweep already completed; ordinary pan/zoom with valid content must reuse the overview.",
+        "Crop draft uses the rotated input-stage box; Compare uses fixed After, held Before its matching Original and uncropped hold its own geometry. Reference overview reduction borrows the already-required frame on a worker.",
+        "Cap raster dimensions at 256x256 physical pixels, total new GPU allocations at 4 MiB inside the existing preview budget and total CPU buffers/scratch at 1 MiB. Account replacement/retirement before allocation.",
+        "Keep one current overview and one replacement at most; content identity excludes pan and high-zoom percentage with unchanged bounds. During edit motion retain the last settled overview labelled Updating; remove geometrically incompatible imagery."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Minimap design",
+          "target": "docs/design/minimap.md",
+          "relevance": "Behavior, proposed defaults, stage mapping, bounds and evidence contract"
+        },
+        {
+          "kind": "file",
+          "label": "Core rest planning",
+          "target": "crates/luxforge-core/src/render/gpu/preview.rs",
+          "relevance": "GpuRest, RestTiles, RestReduction and plan_rest currently plan counts-only tiles at region zoom"
+        },
+        {
+          "kind": "file",
+          "label": "GPU tile execution",
+          "target": "crates/luxforge-gpu/src/execution/rest.rs",
+          "relevance": "Existing tile reductions, sweeps, charging and bounded frame cadence"
+        },
+        {
+          "kind": "file",
+          "label": "Desktop plan lowering",
+          "target": "crates/luxforge-app/src/app/gpu_plan.rs",
+          "relevance": "Keep one lowering path for core plans"
+        },
+        {
+          "kind": "file",
+          "label": "Surface adapter",
+          "target": "crates/luxforge-ui/src/photo_surface/gpu_preview.rs",
+          "relevance": "Present GPU results without a second photo surface"
+        },
+        {
+          "kind": "file",
+          "label": "Reference reduction",
+          "target": "crates/luxforge-core/src/render/view.rs",
+          "relevance": "Linear-light process-first reduction of a finished frame"
+        },
+        {
+          "kind": "file",
+          "label": "GPU contract",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "Declared display tolerance, renderer of record and honest fallback"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Allocation, source-cache, idle, owner-thread and reuse requirements"
+        }
+      ],
+      "acceptance_criteria": [
+        "Ready overviews cover the entire selected edited stage, including geometry, and match an independently reduced whole-frame reference within the declared display tolerance; CPU reduction is exact.",
+        "Both chained and staged sweeps, light-sweep fallback, RAW, crop-stage, history and comparison identities work without changing main-view detail or full-image histogram meaning.",
+        "Unchanged pan or high-zoom percentage reuses pixels with zero overview rebuild/upload and no overview-only full-frame CPU render.",
+        "Late results and budget exhaustion cannot show the wrong photo/stage; geometry mismatch disables navigation; non-geometric draft motion keeps visibly Updating settled imagery.",
+        "All new current/replacement/scratch/retiring storage remains inside caps; attribution, reuse/rebuild diagnostics and lifecycle release are testable, with no new idle timer or retained RAW source ownership."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add focused reduction/coverage fixtures, sharing tests, identity invalidation tests and capacity/retirement/cancellation tests.",
+          "Compare overview output against CPU whole-frame reduction for pointwise, geometry and spatial stacks using a native GPU where available; skips remain explicit.",
+          "Exercise exhausted budgets and explicit no-GPU/reference paths; inspect main region and histogram regression tests."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core render::gpu",
+          "tools/cargo-cached test -p luxforge-gpu rest",
+          "tools/cargo-cached test -p luxforge-ui photo_surface",
+          "tools/cargo-cached test -p luxforge-app gpu_rest"
+        ],
+        "expected_results": [
+          "Focused tests pass with bounded ownership; native/device limitations are reported honestly and final corpus qualification remains TASK-004."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Integrate the minimap widget, view-only navigation and targeted background rendered proof.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001",
+        "TASK-002"
+      ],
+      "extra_context": [
+        "Consumes TASK-001 geometry/projection and TASK-002 ready/updating/unavailable overview seam. This task delivers the useful feature with ordinary correctness and rendered integration checks.",
+        "Owner-chosen interaction is click-to-centre and drag the rectangle, with grab offset, letterbox rejection and edge clamp. Layout/theming details are delegated within the design.",
+        "Widget owns pointer capture only. Use existing immediate local pan, one-in-flight/latest-pending owner synchronization and actual scrollable positioning; prevent late responses from undoing newer state.",
+        "Route starting events inside minimap before brush/picker/crop/divider/Space-drag/main pinch input. Release, Escape and focus loss end navigation without changing an underlying draft. Wheel follows ordinary pan; handle focus/keyboard nudge through existing view semantics where the framework supports focus.",
+        "Add minimap state/bounds/identity/rectangle and overview counters to snapshot evidence. Extend the existing zoom journey with actual semantic press/move/release through the UI navigation path, plus equivalent same-client API pan."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Minimap design",
+          "target": "docs/design/minimap.md",
+          "relevance": "Behavior, proposed defaults, stage mapping, bounds and evidence contract"
+        },
+        {
+          "kind": "file",
+          "label": "Canvas model",
+          "target": "crates/luxforge-app/src/state/canvas.rs",
+          "relevance": "Model derivation and active plain/draft/empty stage"
+        },
+        {
+          "kind": "file",
+          "label": "Canvas composition",
+          "target": "crates/luxforge-app/src/view/canvas.rs",
+          "relevance": "Viewport chrome placement and existing scrolled surface"
+        },
+        {
+          "kind": "file",
+          "label": "View navigation",
+          "target": "crates/luxforge-app/src/app/view_state.rs",
+          "relevance": "Editor::pan, PanSynced, local pan and bounded synchronization"
+        },
+        {
+          "kind": "file",
+          "label": "View messages",
+          "target": "crates/luxforge-app/src/app/message/view.rs",
+          "relevance": "Semantic view intents, not private command logic"
+        },
+        {
+          "kind": "file",
+          "label": "Snapshot evidence",
+          "target": "crates/luxforge-app/src/app/snapshot.rs",
+          "relevance": "Correlate view, minimap identity, geometry and resource counters"
+        },
+        {
+          "kind": "file",
+          "label": "Evidence dispatcher",
+          "target": "crates/luxforge-app/src/app/evidence.rs",
+          "relevance": "Scripted operations follow actual messages and command paths"
+        },
+        {
+          "kind": "file",
+          "label": "Zoom journey",
+          "target": "xtask/src/zoom_smoke.rs",
+          "relevance": "Existing real background captures on generated 24 MP and 60 MP JPEGs"
+        },
+        {
+          "kind": "file",
+          "label": "Comparison contract",
+          "target": "docs/design/before-after.md",
+          "relevance": "Shared framing, fixed After and held/uncropped Original"
+        }
+      ],
+      "acceptance_criteria": [
+        "Card appears automatically at inclusive 200% through all zoom entry points, remains anchored with panels hidden and never expands the image scroll area.",
+        "Click/drag moves the actual main view with unchanged zoom; clamping, centred axes, out-of-card release, Escape and focus loss agree with the shared geometry.",
+        "Pointer/pinch interception prevents brush, pick, crop and divider edits; draft state, recipe, history and histogram identity remain unchanged by navigation.",
+        "Crop, historical, comparison, unavailable, updating and rapid asset/stage switches honor the design with no stale actionable rectangle.",
+        "Native background zoom evidence correlates threshold visibility, pixels, minimap/main bounds, UI and API pan, request logs and overview reuse; zero overview upload/rebuild is proved on ordinary pan."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run narrow app/widget tests covering request sequences, session adoption, scrollable placement, gesture interception and threshold derivation.",
+          "Run the extended existing zoom scenario through its background launcher; inspect captures and assert against independent geometry rather than only snapshot values.",
+          "Include a drafted brush/picker/crop interception and comparison navigation integration case; source checksums and recipe/history/draft invariants are explicit assertions."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app view",
+          "tools/cargo-cached test -p luxforge-ui minimap",
+          "tools/cargo-cached xtask smoke --scenario zoom --output artifacts/minimap-integration"
+        ],
+        "expected_results": [
+          "A working minimap with ordinary tests and genuine rendered proof is available; extensive corpus/resource measurements follow without a review gate."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Qualify overview output and high-zoom interactions, measure once, and publish current documentation.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003"
+      ],
+      "extra_context": [
+        "Consumes the working widget and targeted journey from TASK-003. This task adds broader qualification and final evidence, not an owner approval gate.",
+        "Extend existing GPU qualification tooling for settled overview output; all claims use the current declared display tolerance and current corpus. Missing supplied files/native platforms remain explicit unavailable evidence, not hidden passes.",
+        "Measure once after feature work: native release on the M4, generated 24 MP/60 MP, warmed/cold overview availability, 199.9% control and 200%/800% interactions. Different region windows prevent an isolated rendering-speed claim; extend existing latency tooling for actual minimap drag when needed.",
+        "Update feature status, user guide, workspace design, limits/performance documentation and roadmap/task status with current behavior and evidence. Keep the performance-rules checklist answered once for the finished change.",
+        "Automated launches use existing hidden background bundles; ad hoc checks use develop --background with isolated data. A physical foreground feel check is optional owner work outside this plan, never a delivery prerequisite."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Minimap design",
+          "target": "docs/design/minimap.md",
+          "relevance": "Behavior, proposed defaults, stage mapping, bounds and evidence contract"
+        },
+        {
+          "kind": "file",
+          "label": "Acceptance and review",
+          "target": "docs/design/minimap.md",
+          "relevance": "Acceptance matrix and performance-rules checklist"
+        },
+        {
+          "kind": "file",
+          "label": "Verification commands",
+          "target": "docs/engineering/development.md",
+          "relevance": "Quick/rendered tiers, background launches and measurement scope"
+        },
+        {
+          "kind": "file",
+          "label": "GPU qualification",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "Release gate and native-versus-software evidence"
+        },
+        {
+          "kind": "file",
+          "label": "Feature status",
+          "target": "docs/features.md",
+          "relevance": "Replace planned status only with verified current behavior"
+        },
+        {
+          "kind": "file",
+          "label": "User guide",
+          "target": "docs/user-guide.md",
+          "relevance": "Document delivered minimap/navigation alongside zoom"
+        },
+        {
+          "kind": "file",
+          "label": "Develop design",
+          "target": "docs/design/develop-workspace.md",
+          "relevance": "Keep canvas and tool-array description current"
+        },
+        {
+          "kind": "file",
+          "label": "Architecture limits",
+          "target": "docs/design/architecture.md",
+          "relevance": "Name new allocation bounds"
+        },
+        {
+          "kind": "file",
+          "label": "Performance evidence",
+          "target": "docs/specs/performance.md",
+          "relevance": "Current measured costs and declared scope"
+        }
+      ],
+      "acceptance_criteria": [
+        "Background rendered coverage includes inclusive threshold/fractional/pinch/API zoom, corner drags, fitting axes, resize/scaling/panels, image switches, history, crop/warp/masks/Compare, reference fallback and recovery.",
+        "Corpus overview output passes the declared reference tolerance; CPU fixtures remain exact; main-image and histogram correctness remain unchanged.",
+        "Native photo-sized measurements report p50/p95 pan-to-frame, first overview latency, retained/peak CPU/GPU bytes, reuse/rebuild/upload counts, cache/host/profile and idle scope; all budget/lifecycle assertions pass.",
+        "Documentation describes delivered behavior and outstanding platform/input limits only, with no unrun check claimed passed or proposed method described as shipped.",
+        "Final quick and rendered verification pass; updated plans/indexes/links validate. No full milestone claim is made without the full tier."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Complete the acceptance matrix with correlated native state/logs/captures and explicit source/history/draft invariants; verify oversubscribed memory and hidden-window cancellation/recovery.",
+          "Add the settled overview output to existing GPU qualification and run the corpus; inspect/report skips separately.",
+          "Take release photo-sized measurements once after changes finish, using existing latency diagnostics extended for minimap gestures rather than treating a slider measurement as navigation evidence.",
+          "Run final quick and rendered tiers after documentation/code are finished; validate task/schema/link consistency and visually inspect captures."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask gpu-qualification --output artifacts/minimap-gpu-qualification",
+          "tools/cargo-cached xtask verify --tier quick --output artifacts/minimap-quick",
+          "tools/cargo-cached xtask verify --tier rendered --output artifacts/minimap-rendered"
+        ],
+        "expected_results": [
+          "Native qualification, bounds and focused rendered journeys pass; measurements and remaining platform/input limitations are recorded without an owner-review gate."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-003"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-004"
+      ]
+    }
+  ]
+}

@@ -63,6 +63,12 @@ Import from and alignment with Lightroom Classic.
 | [Lightroom alignment](lightroom/lightroom-alignment.json) | Decided, not authorized: the measurement rig over deterministic reference-rendered study outputs, two Lightroom rounds by the owner, calibrated conversions for the importers with RAW preset white balance in its round, each control's response realigned by editing area with its CPU reference and GPU program, targeted behaviour changes past the threshold, and validation on the owner's real edits |
 | [Lightroom import](lightroom/lightroom-import.json) | Decided, not authorized: a read-only import of Lightroom Classic catalogs and sidecar folders, the photographs worked on with their organization, settings, report, re-mapping and Lightroom's first grid tiles only, with no import undo (phase 1), masks (phase 2), and mappings that land with later capabilities or alignment measurements (phase 3) |
 
+### Interface (`interface/`)
+
+| Plan | Purpose |
+| --- | --- |
+| [High-zoom minimap](interface/minimap.json) ([design](../docs/design/minimap.md)) | Planned whole-image overview at percentage zoom ≥200, with owner-chosen click/drag navigation through `view.set`, bounded GPU/reference rendering, working integration first and final qualification/measurement; implementation awaits authorization |
+
 ### Project (`project/`)
 
 Owner decisions and repository upkeep.
