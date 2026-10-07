@@ -69,6 +69,36 @@ impl CanvasBackground {
     }
 }
 
+/// The look a new RAW photograph's Original starts from: what [`crate::ToolModule::original`] reads
+/// when the host builds the Original of a photograph it is bringing in. It changes which layers a
+/// photograph created from then on starts with, never a saved recipe.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RawLook {
+    /// Luxforge's own look over the development.
+    #[default]
+    Standard,
+    /// The bare development, with no look.
+    Neutral,
+}
+
+impl RawLook {
+    /// Every choice, in the order the General row offers them. The accepted vocabulary is read
+    /// from here, so a choice and its spelling cannot drift apart.
+    pub const ALL: [Self; 2] = [Self::Standard, Self::Neutral];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::Neutral => "neutral",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|look| look.as_str() == value)
+    }
+}
+
 /// The five workspace switches the desktop remembers across launches. The canvas mode, the mask
 /// overlay mode, zoom and the GPU preview are not remembered.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -131,6 +161,10 @@ pub(crate) struct Preferences {
     /// ([`crate::EditorService::set_auto_lens_profile`]). On unless the person turned it off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) auto_lens_profile: Option<bool>,
+    /// The look a new RAW photograph's Original starts from
+    /// ([`crate::EditorService::set_raw_look`]). Standard unless the person chose another.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) raw_look: Option<RawLook>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) mask_overlay_colour: Option<MaskOverlayColour>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -165,6 +199,7 @@ pub(crate) struct Preferences {
 type GeneralRows<'a> = (
     bool,
     bool,
+    RawLook,
     MaskOverlayColour,
     CanvasBackground,
     u16,
@@ -182,6 +217,10 @@ impl Preferences {
 
     pub(crate) fn auto_lens_profile(&self) -> bool {
         self.auto_lens_profile.unwrap_or(true)
+    }
+
+    pub(crate) fn raw_look(&self) -> RawLook {
+        self.raw_look.unwrap_or_default()
     }
 
     pub(crate) fn mask_overlay_colour(&self) -> MaskOverlayColour {
@@ -210,6 +249,7 @@ impl Preferences {
         (
             self.auto_collapse_history(),
             self.auto_lens_profile(),
+            self.raw_look(),
             self.mask_overlay_colour(),
             self.canvas_background(),
             self.interface_size(),
@@ -312,6 +352,7 @@ pub(crate) struct PreferenceChange {
     pub(crate) performance_expanded: Option<Option<bool>>,
     pub(crate) auto_collapse_history: Option<Option<bool>>,
     pub(crate) auto_lens_profile: Option<Option<bool>>,
+    pub(crate) raw_look: Option<Option<RawLook>>,
     pub(crate) mask_overlay_colour: Option<Option<MaskOverlayColour>>,
     pub(crate) canvas_background: Option<Option<CanvasBackground>>,
     pub(crate) interface_size: Option<Option<u16>>,
@@ -339,6 +380,7 @@ impl PreferenceChange {
             self.auto_collapse_history,
         );
         put(&mut preferences.auto_lens_profile, self.auto_lens_profile);
+        put(&mut preferences.raw_look, self.raw_look);
         put(
             &mut preferences.mask_overlay_colour,
             self.mask_overlay_colour,
@@ -456,6 +498,7 @@ mod tests {
             performance_expanded: Some(Some(false)),
             auto_collapse_history: Some(Some(false)),
             auto_lens_profile: Some(Some(false)),
+            raw_look: Some(Some(RawLook::Neutral)),
             mask_overlay_colour: Some(Some(MaskOverlayColour::White)),
             canvas_background: Some(Some(CanvasBackground::Grey)),
             interface_size: Some(Some(125)),
@@ -528,6 +571,7 @@ mod tests {
             b"{\"format\":1,\"performance_expanded\":false,\"unknown\":1}",
             b"{\"format\":1,\"interface_size\":120}",
             b"{\"format\":1,\"canvas_background\":\"white\"}",
+            b"{\"format\":1,\"raw_look\":\"camera\"}",
             b"{\"format\":1,\"catalog\":\"relative/catalog.sqlite\"}",
             b"{\"format\":1,\"brush\":{\"size\":0.1,\"feather\":101,\"flow\":100}}",
             b"{\"format\":1,\"window\":{\"width\":100,\"height\":800,\"x\":0,\"y\":0}}",
@@ -568,6 +612,7 @@ mod tests {
         assert_eq!(read.performance_expanded, Some(true));
         assert!(!read.auto_collapse_history());
         assert!(read.auto_lens_profile());
+        assert_eq!(read.raw_look(), RawLook::Standard);
         assert_eq!(read.workspace(), WorkspacePreference::default());
         assert_eq!((read.brush, read.window), (None, None));
         std::fs::remove_dir_all(root).unwrap();
@@ -584,6 +629,7 @@ mod tests {
         assert!(!reopened.performance_expanded());
         assert!(!reopened.auto_collapse_history());
         assert!(!reopened.auto_lens_profile());
+        assert_eq!(reopened.raw_look(), RawLook::Neutral);
         assert_eq!(reopened.mask_overlay_colour(), MaskOverlayColour::White);
         assert_eq!(reopened.canvas_background(), CanvasBackground::Grey);
         assert_eq!(reopened.interface_size(), 125);
@@ -627,6 +673,7 @@ mod tests {
             performance_expanded: Some(None),
             auto_collapse_history: Some(None),
             auto_lens_profile: Some(None),
+            raw_look: Some(None),
             mask_overlay_colour: Some(None),
             canvas_background: Some(None),
             interface_size: Some(None),
@@ -824,6 +871,7 @@ mod tests {
             export_folder: Some(Some(PathBuf::from("/tmp"))),
             // A default chosen explicitly shows the same as the default.
             auto_lens_profile: Some(Some(true)),
+            raw_look: Some(Some(RawLook::Standard)),
             ..PreferenceChange::default()
         }
         .apply(&mut changed);
@@ -835,6 +883,10 @@ mod tests {
             },
             PreferenceChange {
                 auto_lens_profile: Some(Some(false)),
+                ..PreferenceChange::default()
+            },
+            PreferenceChange {
+                raw_look: Some(Some(RawLook::Neutral)),
                 ..PreferenceChange::default()
             },
             PreferenceChange {
@@ -874,5 +926,15 @@ mod tests {
         }
         assert_eq!(CanvasBackground::parse("white"), None);
         assert_eq!(CanvasBackground::default(), CanvasBackground::Theme);
+    }
+
+    #[test]
+    fn the_raw_look_spells_each_choice_once() {
+        for look in RawLook::ALL {
+            assert_eq!(RawLook::parse(look.as_str()), Some(look));
+            assert_eq!(serde_json::to_value(look).unwrap(), look.as_str());
+        }
+        assert_eq!(RawLook::parse("camera"), None);
+        assert_eq!(RawLook::default(), RawLook::Standard);
     }
 }

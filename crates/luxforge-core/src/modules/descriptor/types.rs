@@ -943,11 +943,24 @@ pub struct ChoiceControl {
     pub label: String,
     #[serde(default, skip_serializing_if = "is_default")]
     pub style: ChoiceStyle,
+    /// What a client shows for each of the parameter's options, in their order, when an option's
+    /// value is not fit to read ("standard" shown as "Standard"). Empty shows the values
+    /// themselves. Presentation only: a request still sends the option's value.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<String>,
 }
 
 impl ChoiceControl {
     pub fn choice_style(self, style: ChoiceStyle) -> Self {
         Self { style, ..self }
+    }
+
+    /// Show these labels for the parameter's options, one per option in their order.
+    pub fn labels<I: IntoIterator<Item = S>, S: Into<String>>(self, labels: I) -> Self {
+        Self {
+            labels: labels.into_iter().map(Into::into).collect(),
+            ..self
+        }
     }
 }
 
@@ -1223,6 +1236,7 @@ impl Control {
             parameter: parameter.into(),
             label: label.into(),
             style: ChoiceStyle::default(),
+            labels: Vec::new(),
         }
     }
 

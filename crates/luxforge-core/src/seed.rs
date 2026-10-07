@@ -9,9 +9,12 @@
 //!
 //! Everything a seeded row names is the caller's, identities included, so the same rows give the
 //! same catalog: an Original's entry, snapshot and layer identities are derived from the asset's.
+//! An Original's stack is built by the rule a Develop's is ([`editor::original_recipe`]), over the
+//! linked modules and the default preferences, so a seeded RAW photograph starts from the layers a
+//! developed one does.
 use crate::{
-    AssetId, AssetRecord, EditorService, EntryId, Error, HistoryEntry, LayerId, Recipe, Snapshot,
-    SnapshotId, SourceKind,
+    AssetId, AssetRecord, EditorService, EntryId, Error, HistoryEntry, LayerId, ModuleRegistry,
+    OriginalPreferences, Snapshot, SnapshotId, SourceKind,
     catalog_types::{
         AssetRowId, CatalogFolder, CatalogFolderId, Collection, CollectionId, FileAvailability,
         FileId, FileRecord, HeaderMetadata, IndexRoot, IndexedFolder, MomentId, Pick, Volume,
@@ -22,7 +25,10 @@ use crate::{
 };
 use rusqlite::{Connection, params};
 use serde_json::json;
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 /// What a seeded photograph's original is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -64,6 +70,8 @@ pub struct SeedAsset {
 pub struct CatalogSeeder {
     connection: Connection,
     artifact_root: PathBuf,
+    /// The linked modules, which contribute to each Original as they do to a Develop's.
+    registry: Arc<ModuleRegistry>,
 }
 
 impl CatalogSeeder {
@@ -87,7 +95,15 @@ impl CatalogSeeder {
         Ok(Self {
             connection,
             artifact_root: editor::default_artifact_root(path),
+            registry: Arc::new(ModuleRegistry::builtin()),
         })
+    }
+
+    /// Build Originals over `registry`'s modules instead of the linked ones, for a test of a
+    /// module's contribution.
+    #[cfg(test)]
+    pub(crate) fn serving(self, registry: Arc<ModuleRegistry>) -> Self {
+        Self { registry, ..self }
     }
 
     pub fn volumes(&mut self, volumes: &[Volume]) -> Result<(), Error> {
@@ -111,10 +127,11 @@ impl CatalogSeeder {
     /// in order. Their folders and volumes must already be seeded.
     pub fn assets(&mut self, assets: &[SeedAsset]) -> Result<Vec<AssetRowId>, Error> {
         let artifact_root = &self.artifact_root;
+        let registry = &*self.registry;
         editor::write(&mut self.connection, |tx| {
             let mut rows = Vec::with_capacity(assets.len());
             for asset in assets {
-                let (record, entry) = original(asset)?;
+                let (record, entry) = original(registry, asset)?;
                 let canonical = asset.locator.to_string_lossy();
                 let source_folder = asset.locator.parent().unwrap_or(Path::new(""));
                 let file_name = asset
@@ -192,22 +209,33 @@ impl CatalogSeeder {
     }
 }
 
-/// A seeded photograph's asset record and Original entry, with identities derived from its own.
-fn original(asset: &SeedAsset) -> Result<(AssetRecord, HistoryEntry), Error> {
+/// A seeded photograph's asset record and Original entry, with identities derived from its own:
+/// its first layer is `layer-<suffix>`, each one after it `layer-<suffix>-<n>`.
+fn original(
+    registry: &ModuleRegistry,
+    asset: &SeedAsset,
+) -> Result<(AssetRecord, HistoryEntry), Error> {
     let suffix = &asset.id.as_str()[AssetId::PREFIX.len()..];
-    let mut recipe = Recipe::default();
     let source = match asset.kind {
         SeedKind::Jpeg => SourceKind::Jpeg,
-        SeedKind::Raw => {
-            let metadata = synthetic_interpretation(asset)?;
-            recipe = recipe.with_layer_inserted(
-                0,
-                crate::RawPayload::for_as_shot(metadata.as_shot_gains, metadata.cam_xyz)?
-                    .layer(LayerId::parse(format!("{}{suffix}", LayerId::PREFIX))?),
-            )?;
-            SourceKind::Raw { metadata }
-        }
+        SeedKind::Raw => SourceKind::Raw {
+            metadata: synthetic_interpretation(asset)?,
+        },
     };
+    let mut layers = 0;
+    let recipe = editor::original_recipe(
+        registry,
+        &source,
+        &asset.header,
+        OriginalPreferences::default(),
+        || {
+            layers += 1;
+            LayerId::parse(match layers {
+                1 => format!("{}{suffix}", LayerId::PREFIX),
+                n => format!("{}{suffix}-{n}", LayerId::PREFIX),
+            })
+        },
+    )?;
     let record = AssetRecord {
         id: asset.id.clone(),
         source_root: asset

@@ -97,7 +97,7 @@ pub use modules::{
     CompileStage, Control, ControlVariant, Controls, ControlsModule, CropAspect, CropPayload,
     CropStage, CurveBackground, CurveChannel, CurveControl, DETAIL_EFFECT, Edge, EffectDescriptor,
     EffectStage, ExactGeometry, FieldPatch, FieldPatchModule, GPU_PROGRAMS, GroupControl,
-    IdentityKind, LENS_EFFECT, LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE,
+    IdentityKind, LENS_EFFECT, LOOK_EFFECT, LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE,
     MAX_MASKED_SPATIAL_LAYERS, MIN_ANGLE, MIXER_EFFECT, ModuleDescriptor, ModuleLayout,
     ModuleRegistry, NewLayer, NumberControl, NumberStyle, ORIENTATION_EFFECT, OutputRect,
     PERSPECTIVE_EFFECT, PIXEL_EFFECT, PRESENCE_EFFECT, PROOF_GENERATE_PATH, PROOF_PALETTE,
@@ -110,6 +110,7 @@ pub use modules::{
     insertion_index_among, largest_with_ratio_inside, palette_bytes, resolve_control,
     resolve_group_reset, temperature_tint_from_gains,
 };
+pub use modules::{OriginalContext, OriginalLayer, OriginalPreferences};
 pub use presets::{
     ImportReport, ImportedPreset, MAX_PRESET_BYTES, MappedSetting, PresetOrigin, PresetRecord,
     PresetSummary, ReportCounts, ReportedSetting, USER_PRESET_GROUP, inspect_preset,

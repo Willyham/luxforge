@@ -495,6 +495,7 @@ pub(super) fn controls_descriptor() -> ModuleDescriptor {
             parameter: "mode".into(),
             label: "Mode".into(),
             style: ChoiceStyle::Menu,
+            labels: Vec::new(),
         }),
         Control::Number(NumberControl {
             action: "set-controls".into(),

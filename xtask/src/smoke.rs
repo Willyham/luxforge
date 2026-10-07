@@ -9,7 +9,7 @@ use crate::{
     develop_picks_smoke as develop_picks, export_smoke as export, filmstrip_smoke as filmstrip,
     gallery_smoke as gallery, gpu_preview_smoke as gpu_preview,
     gpu_preview_zoom_smoke as gpu_preview_zoom, histogram_smoke as histogram,
-    information_smoke as information, lens_smoke as lens, loupe_smoke as loupe,
+    information_smoke as information, lens_smoke as lens, look_smoke as look, loupe_smoke as loupe,
     mask_brush_smoke as mask_brush, mask_combine_smoke as mask_combine,
     mask_interactions_smoke as mask_interactions, mask_panel_smoke as mask_panel,
     mask_range_smoke as mask_range, mask_smoke as mask, minify_smoke as minify,
@@ -1024,6 +1024,19 @@ pub static SCENARIOS: &[Scenario] = &[
         own: None,
     },
     Scenario {
+        name: look::SCENARIO,
+        about: "The RAW look over a supplied RAW file: Standard in the new photograph's Original, Neutral and Standard through the Look section above Basic, an Amount drag, the reset and a double-click, Neutral through the API",
+        launches: &[LaunchSpec {
+            plan: look::plan,
+            ..APP
+        }],
+        verify: look::verify,
+        source: Source::Supplied { listed: false },
+        window: Some(PANELLED),
+        note: None,
+        own: None,
+    },
+    Scenario {
         name: raw_editor::SCENARIO,
         about: "RAW exposure, gains, white balance, neutral pick, geometry, undo and history over a manifest-listed RAW file, then a reopen",
         launches: &[
@@ -1935,6 +1948,7 @@ mod tests {
             );
         }
         assert!(find("raw-panel").is_ok_and(|raw| !raw.rendered()));
+        assert!(find("look").is_ok_and(|look| !look.rendered()));
         // The filmstrip takes a RAW source, and runs without one, its RAW steps pending.
         assert!(find("filmstrip").is_ok_and(|filmstrip| filmstrip.rendered()));
         assert_eq!(
@@ -1945,6 +1959,7 @@ mod tests {
                 "performance",
                 "filmstrip",
                 "raw-panel",
+                "look",
                 "raw-editor"
             ]
         );

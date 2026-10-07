@@ -7,7 +7,9 @@
 //!
 //! [`Interpolant`] builds the open monotone piecewise-cubic Hermite interpolant (PCHIP:
 //! Fritsch–Carlson monotonicity with Fritsch–Butland weighted-harmonic-mean knot slopes and secant
-//! end slopes) in `f64`, and evaluates it in `f64` for the sample query. [`ToneCurve`] casts its
+//! end slopes) in `f64`, and evaluates it in `f64` for the sample query, with one of two tail
+//! policies ([`Tails`]): the Tone curve's, or the RAW look's (`docs/design/raw-looks.md`, "The
+//! look"), whose unit builds its knots from the same construction. [`ToneCurve`] casts its
 //! knots, inverse widths and per-segment `t`-form coefficients to `f32` once; the per-pixel path is
 //! `f32` throughout, ignores the row coordinates and never computes a width or its inverse in `f32`,
 //! so knots closer than an `f32` step collapse to one value without a division by zero.
@@ -34,10 +36,23 @@ pub(crate) static PROGRAM: GpuProgram = GpuProgram {
     enabled: true,
 };
 
+/// How [`Interpolant::value`] continues the curve outside its span.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Tails {
+    /// The Tone curve's (`docs/design/tone-curve.md`, "The curve `C`"): the unit-slope tails
+    /// `y_0 + x` and `y_{n-1} + (x - 1)` outside `[0, 1]`, flat holds at `y_0` and `y_{n-1}` beyond
+    /// the span inside `[0, 1]`, and an exact identity point list answering its input exactly.
+    ToneCurve,
+    /// The RAW look's (`docs/design/raw-looks.md`, "The look"), for knots that start at `x = 0`
+    /// and may run past `1`: below `0` the first segment continued linearly, `y_0 + d_0 x`; at and
+    /// above the last knot its value held, `y_{n-1}`; the segment between. No identity shortcut.
+    Look,
+}
+
 /// The curve's interpolant over its checked points, built once in `f64`: the knots, the segment
-/// widths and the knot slopes.
+/// widths and the knot slopes, and the tails it continues with.
 #[derive(Clone, Debug)]
-pub(super) struct Interpolant {
+pub(crate) struct Interpolant {
     xs: Vec<f64>,
     ys: Vec<f64>,
     /// `h_i = x_{i+1} - x_i`, strictly positive for a checked list (subnormal at the smallest).
@@ -45,14 +60,24 @@ pub(super) struct Interpolant {
     /// `d_i`, the knot slopes; `0` where a slope belongs only to linear segments and is never
     /// evaluated.
     d: Vec<f64>,
-    /// The exact identity map, for which [`Interpolant::value`] returns its input exactly.
+    /// The exact identity map under the Tone curve's tails, for which [`Interpolant::value`]
+    /// returns its input exactly. Always `false` under the look's.
     identity: bool,
+    tails: Tails,
 }
 
 impl Interpolant {
     /// The interpolant through `points`, which the host's `curve` kind has checked: `2..=16`
-    /// points, every coordinate in `[0, 1]`, `x` strictly increasing and `y` non-decreasing.
-    pub(super) fn new(points: &[[f64; 2]]) -> Self {
+    /// points, every coordinate in `[0, 1]`, `x` strictly increasing and `y` non-decreasing, with
+    /// the Tone curve's tails.
+    pub(crate) fn new(points: &[[f64; 2]]) -> Self {
+        Self::with_tails(points, Tails::ToneCurve)
+    }
+
+    /// The interpolant through `points` with `tails`. The caller has checked the list: at least
+    /// two points, every coordinate finite, `x` strictly increasing and `y` non-decreasing, and,
+    /// for the look's tails, the first knot at `x = 0`.
+    pub(crate) fn with_tails(points: &[[f64; 2]], tails: Tails) -> Self {
         let n = points.len();
         assert!(n >= 2, "a checked curve holds at least two points");
         let xs: Vec<f64> = points.iter().map(|point| point[0]).collect();
@@ -80,39 +105,58 @@ impl Interpolant {
             };
         }
         Self {
-            identity: Self::is_identity(points),
+            identity: tails == Tails::ToneCurve && Self::is_identity(points),
             xs,
             ys,
             h,
             d,
+            tails,
         }
     }
 
     /// Whether `points` are the exact identity map, compared in `f64`: `(0, 0)` first, `(1, 1)`
     /// last and every point on the diagonal, so `-0.0` equals `0.0`.
-    pub(super) fn is_identity(points: &[[f64; 2]]) -> bool {
+    pub(crate) fn is_identity(points: &[[f64; 2]]) -> bool {
         let (Some(first), Some(last)) = (points.first(), points.last()) else {
             return false;
         };
         *first == [0.0, 0.0] && *last == [1.0, 1.0] && points.iter().all(|p| p[0] == p[1])
     }
 
-    fn len(&self) -> usize {
+    /// The knot count.
+    pub(crate) fn len(&self) -> usize {
         self.xs.len()
     }
 
-    fn first(&self) -> f64 {
+    /// The knots' `x_i`.
+    pub(crate) fn xs(&self) -> &[f64] {
+        &self.xs
+    }
+
+    /// The segment widths `h_i`.
+    pub(crate) fn widths(&self) -> &[f64] {
+        &self.h
+    }
+
+    /// The knot slopes `d_i`: `d_0` is the slope the look's tail continues below `0` with.
+    pub(crate) fn slopes(&self) -> &[f64] {
+        &self.d
+    }
+
+    /// `y_0`.
+    pub(crate) fn first(&self) -> f64 {
         self.ys[0]
     }
 
-    fn last(&self) -> f64 {
+    /// `y_{n-1}`.
+    pub(crate) fn last(&self) -> f64 {
         self.ys[self.len() - 1]
     }
 
     /// Segment `i`'s coefficients in `t`, `C = c0 + t (c1 + t (c2 + t c3))` with
     /// `t = (x - x_i) / h_i`: an exactly flat segment is the constant `y_i`, a linear one (whose
     /// secant is not finite) `y_i + Δy t`, and a cubic one the Hermite basis collected by powers.
-    fn coefficients(&self, i: usize) -> [f64; 4] {
+    pub(crate) fn coefficients(&self, i: usize) -> [f64; 4] {
         let (y0, y1, h) = (self.ys[i], self.ys[i + 1], self.h[i]);
         let rise = y1 - y0;
         if rise == 0.0 {
@@ -125,27 +169,41 @@ impl Interpolant {
         [y0, m0, 3.0 * rise - 2.0 * m0 - m1, -2.0 * rise + m0 + m1]
     }
 
-    /// `C(x)` in `f64`, by the first rule that applies: the unit-slope tails outside `[0, 1]`, the
-    /// flat holds beyond the span, and otherwise the segment whose left knot is the last at or
-    /// below `x`. An exact identity point list answers `x` exactly.
-    pub(super) fn value(&self, x: f64) -> f64 {
-        if self.identity {
-            return x;
-        }
+    /// `C(x)` in `f64`, by the first rule of its tails that applies ([`Tails`]), and otherwise the
+    /// segment whose left knot is the last at or below `x`. Under the Tone curve's tails: the
+    /// unit-slope tails outside `[0, 1]`, the flat holds beyond the span, and an exact identity
+    /// point list answers `x` exactly. Under the look's: the first segment continued below `0` and
+    /// the last value held at and above the last knot.
+    pub(crate) fn value(&self, x: f64) -> f64 {
         let n = self.len();
-        if x < 0.0 {
-            return self.first() + x;
+        match self.tails {
+            Tails::ToneCurve => {
+                if self.identity {
+                    return x;
+                }
+                if x < 0.0 {
+                    return self.first() + x;
+                }
+                if x > 1.0 {
+                    return self.last() + (x - 1.0);
+                }
+                if x <= self.xs[0] {
+                    return self.first();
+                }
+                if x >= self.xs[n - 1] {
+                    return self.last();
+                }
+            }
+            Tails::Look => {
+                if x < 0.0 {
+                    return self.first() + self.d[0] * x;
+                }
+                if x >= self.xs[n - 1] {
+                    return self.last();
+                }
+            }
         }
-        if x > 1.0 {
-            return self.last() + (x - 1.0);
-        }
-        if x <= self.xs[0] {
-            return self.first();
-        }
-        if x >= self.xs[n - 1] {
-            return self.last();
-        }
-        let i = (self.xs.partition_point(|&k| k <= x) - 1).min(n - 2);
+        let i = (self.xs.partition_point(|&k| k <= x).saturating_sub(1)).min(n - 2);
         let [c0, c1, c2, c3] = self.coefficients(i);
         let t = (x - self.xs[i]) / self.h[i];
         c0 + t * (c1 + t * (c2 + t * c3))
@@ -153,7 +211,7 @@ impl Interpolant {
 }
 
 /// `value` as `f32`, saturating at `f32::MAX` rather than rounding to infinity.
-fn saturating_f32(value: f64) -> f32 {
+pub(crate) fn saturating_f32(value: f64) -> f32 {
     if value >= f64::from(f32::MAX) {
         f32::MAX
     } else {
@@ -643,6 +701,48 @@ mod tests {
             let x = f64::from(k) / 256.0;
             assert_eq!(identity.value(x), x);
         }
+    }
+
+    /// Under the look's tails the interpolant continues its first segment below `0`, holds its
+    /// last value at and above the last knot, which may lie past `1`, and agrees with the
+    /// independent reference's look tone (`luxforge_reference::look::LookTone`) everywhere; an
+    /// identity knot list is no shortcut there, and the same knots under the Tone curve's tails
+    /// keep theirs.
+    #[test]
+    fn the_look_tails_continue_the_first_segment_and_hold_the_last_value() {
+        use luxforge_reference::look::{LookTone, STANDARD, standard_knots};
+        let sets = [
+            standard_knots(&STANDARD),
+            vec![[0.0, 0.1], [0.4, 0.5], [1.3, 0.95]],
+            vec![[0.0, 0.0], [1.0, 1.0]],
+            vec![[0.0, 0.0], [0.5, 0.5], [0.500_000_01, 0.6], [1.6, 1.0]],
+        ];
+        for knots in &sets {
+            let look = Interpolant::with_tails(knots, Tails::Look);
+            let reference = LookTone::new(knots);
+            let x_max = knots[knots.len() - 1][0];
+            for k in 0..=4096 {
+                let x = -0.5 + (x_max + 1.0) * f64::from(k) / 4096.0;
+                let (ours, theirs) = (look.value(x), reference.value(x));
+                assert!(
+                    (ours - theirs).abs() <= 1e-12,
+                    "{knots:?} at {x}: {ours} against {theirs}"
+                );
+            }
+            assert_eq!(look.value(-0.25), look.first() + look.slopes()[0] * -0.25);
+            assert_eq!(look.value(x_max), look.last());
+            assert_eq!(look.value(x_max + 3.0), look.last());
+        }
+        let identity = [[0.0, 0.0], [1.0, 1.0]];
+        assert_eq!(Interpolant::new(&identity).value(1.5), 1.5);
+        assert_eq!(
+            Interpolant::with_tails(&identity, Tails::Look).value(1.5),
+            1.0
+        );
+        assert_eq!(
+            Interpolant::with_tails(&identity, Tails::Look).value(-0.5),
+            -0.5
+        );
     }
 
     /// The GPU program's words are the knot count, the curve's ends and its black level, its

@@ -2,7 +2,7 @@
 
 Status: **proposal for owner review; planning only**. Clone and Heal are not implemented. The owner accepted the [AI editing](ai-editing.md) scope on 2026-10-05 and decided the repair stage after source development and before colour, deletion of the developer-only `PointReplace` primitive, and the stale-patch rule below. Those decisions are settled; the remaining Clone/Heal contract and numerical choices are this plan's first work. The plan follows the current module, catalog, geometry, stroke and rendering contracts; implementation remains proposed.
 
-The [Corrections task plan](../../tasks/corrections.json) owns offline Clone/Heal, the repair processing primitive, the shared brush interaction and the repair layer's frozen-patch operation. [AI editing](ai-editing.md) owns model qualification, inference, downloads and activation, automatic selection, provider adapters, generation and candidate-review UI. The implemented [module capabilities](module-capabilities.md) already supply settings, resources, jobs and durable artifacts; they are reused, not another delivery slice.
+The [Corrections task plan](../../tasks/editing/corrections.json) owns offline Clone/Heal, the repair processing primitive, the shared brush interaction and the repair layer's frozen-patch operation. [AI editing](ai-editing.md) owns model qualification, inference, downloads and activation, automatic selection, provider adapters, generation and candidate-review UI. The implemented [module capabilities](module-capabilities.md) already supply settings, resources, jobs and durable artifacts; they are reused, not another delivery slice.
 
 ## User result and delivery
 
