@@ -340,7 +340,12 @@ only `[dev-dependencies]` turn on, like the disk-flush skip above (`test-holds-o
 refuses it in any normal, build or workspace dependency). It has one hold so far:
 `OwnerHandle::hold_listings`, which holds every index listing under a folder at each folder it
 walks while the gate is shut; the desktop's long-work tests hold a listing there while they read
-the board.
+the board. It also keeps a test's catalog off the host's mount table:
+`OwnerHandle::read_no_host_mounts` has every owner later opened over a catalog read an empty one,
+so a card another process mounts meanwhile is not listed into it. The core's disk-image tests
+attach a browsable image with a `DCIM` folder of two photographs, which any catalog opened while
+it is attached lists as a connected card; the desktop's Select owner and loupe tests open theirs
+this way.
 
 Every Cargo that `xtask` starts to build drops the package variables `cargo run` set for `xtask`
 itself. `ring`'s build script reruns when `CARGO_MANIFEST_DIR` or `CARGO_PKG_NAME` changes, so a
