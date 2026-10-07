@@ -700,8 +700,13 @@ GitHub's encrypted reader secrets and `R2_ACCOUNT_ID` repository variable. Its
 Monday 04:23 UTC schedule activates on the default branch, runs four shards
 with at most two jobs concurrently, limits each job to 30 minutes and retains
 reports for 14 days. It receives no publishing credential and has no
-pull-request trigger. Hosted Linux elapsed time remains unmeasured until its
-first run; the strict 132-reference M4 adapter run takes about five minutes.
+pull-request trigger. Shards share a pinned dependency-only Cargo cache keyed
+by the Rust/build environment and native compiler. Source edits rebuild the
+qualifier without discarding unchanged dependencies; manifest changes can
+restore earlier dependencies. This release-only lane saves compiled dependencies
+even if corpus transfer or qualification fails. Photographs and R2 credentials
+are outside the cached paths. Successful hosted corpus throughput and warm-cache
+savings remain unmeasured; the strict 132-reference M4 adapter run takes about five minutes.
 
 ## Running the application
 
@@ -1595,14 +1600,21 @@ Rules for any UI or image check:
 
 ## CI
 
-The main workflow uses pinned `Swatinem/rust-cache` 2.8.2 for debug and release dependency artifacts
+The main workflow gates formatting and offline corpus tooling before native setup and
+compilation, then gates repository links and task plans before Clippy and tests. The full
+check still runs all of its checks, slow tests and doctests included.
+
+The main and extended-corpus workflows use pinned `Swatinem/rust-cache` 2.8.2 for dependency artifacts
+(debug and release in the native lane)
 and downloaded Cargo sources. Its keys include the compiler, manifests, lockfile and build
 environment, with native lanes separated by runner image and native compiler/SDK identity; it excludes workspace and incremental
 artifacts, so checks still build the current source. The dependency-policy lane separately caches
 the exact cargo-deny 0.20.2 installation by OS, architecture and toolchain; it still runs the audit
 and fetches current advisories. Superseded runs on the same ref are cancelled; different refs and
-the extended corpus keep their own runs. Hosted cache hit rates and wall-time savings remain
-unmeasured until the workflow runs.
+the extended corpus keep their own runs. The native lane saves on success so the first cache
+contains both debug and release dependencies; it does not freeze an incomplete profile set
+after an early test failure under the action's immutable exact key. Hosted warm-cache hit
+rates and wall-time savings remain unmeasured.
 
 `.github/workflows/check.yml` runs one job per hosted platform, macOS arm64 and Ubuntu x64, each testing, building and packaging the tree with seven-day artifact retention, plus a separate dependency-policy job (`cargo xtask audit`). Windows CI is disabled; Windows support will come later. A hosted lane is compilation and functional evidence of what it ran and what it ran on, never native desktop or GPU acceptance, which only a native machine gives ([pillar 5](../../AGENTS.md#pillars), [GPU-first](../design/gpu-first.md#the-contract)). The release gate, `cargo xtask gpu-qualification`, needs a native GPU and runs on the owner's machines, never on a hosted lane. Each lane records the graphics adapters it had with the packaged editor's `--gpu-adapters` (`artifacts/gpu-adapters*.jsonl`), and every rendered run records the adapter that drew each launch in `result.json` (`launches[].adapter`, with its `device_type`).
 
