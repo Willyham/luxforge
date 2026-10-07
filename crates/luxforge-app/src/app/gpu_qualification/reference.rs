@@ -851,7 +851,7 @@ fn picture(
                 let drawn = surface
                     .rest(gpu, &handed)
                     .map_err(|fallback| format!("the picture at rest in tiles: {fallback:?}"))?;
-                drawn_rest = Some(drawn);
+                drawn_rest = Some((drawn, tiles.light_sweeps.len()));
             }
             Some(Err(reason)) => {
                 return Ok(gap(format!(
@@ -882,17 +882,21 @@ fn picture(
                     "the tiles are reduced to {view:?}, the view plan draws {size:?}"
                 ));
             }
+            let light_sweeps = tiles.light_sweeps.len();
             let drawn = match drawn_rest {
-                Some(drawn) => drawn,
+                Some((drawn, _)) => drawn,
                 None => surface
                     .rest(gpu, &handed)
                     .map_err(|fallback| format!("the picture at rest in tiles: {fallback:?}"))?,
             };
             // Drawn in staged sweeps where the editor plans them and their stage textures fit,
             // the tiles drawn being the sweeps'.
-            let renderer = match drawn.figures.sweeps {
-                0 => "the picture at rest in tiles".to_owned(),
-                sweeps => format!("the picture at rest in {sweeps} staged sweeps"),
+            let renderer = match (drawn.figures.sweeps, light_sweeps) {
+                (0, 0) => "the picture at rest in tiles".to_owned(),
+                (0, light_sweeps) => {
+                    format!("the picture at rest in tiles after {light_sweeps} light sweep(s)")
+                }
+                (sweeps, _) => format!("the picture at rest in {sweeps} staged sweeps"),
             };
             (
                 rgb_codes(&drawn.codes),
@@ -906,12 +910,18 @@ fn picture(
             None,
         ),
         _ => match &drawn_rest {
-            Some(drawn) => (
+            Some((drawn, light_sweeps)) => (
                 motion.clone(),
-                format!(
-                    "the view plan, its light computed by the picture at rest's {} staged sweeps",
-                    drawn.figures.sweeps
-                ),
+                match drawn.figures.sweeps {
+                    0 => format!(
+                        "the view plan, its light computed by the picture at rest's \
+                         {light_sweeps} light sweep(s)"
+                    ),
+                    sweeps => format!(
+                        "the view plan, its light computed by the picture at rest's {sweeps} \
+                         staged sweeps"
+                    ),
+                },
                 None,
             ),
             None => (motion.clone(), "the view plan".to_owned(), None),

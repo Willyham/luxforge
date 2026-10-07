@@ -1084,9 +1084,10 @@ impl Worker {
     /// the runner already, or computed now by drawing `stack`'s staged sweeps before them into stage
     /// textures, every tile of each into its stage texture, each light reduced from the texture its
     /// reading sweep reads before that sweep's first tile, and kept under its input's key, the stage
-    /// textures released after. The read's tile then reads them kept. Refused, naming
-    /// `light-stage`, while a staged export holds the runner's stage textures, or where the stack's
-    /// sweeps do not fit. Blocks the worker for those sweeps, once a stack and source.
+    /// textures released after; or, where those do not fit or a staged export holds the runner's,
+    /// by light sweeps that hold none. The read's tile then reads them kept. Refused, naming
+    /// `light-stage`, while an export's light sweep is drawn, or where no light sweep fits. Blocks
+    /// the worker for those sweeps, once a stack and source.
     fn stage_lights(
         &self,
         stack: &Stack,
@@ -1103,16 +1104,22 @@ impl Worker {
                 why: why.to_owned(),
             })
         };
+        let held;
         {
             let mut runner = self.runner()?;
             if runner.keeps_lights(converted, source) {
                 return Ok(());
             }
-            if runner.stages().0 > 0 {
-                return Err(refused("a staged export holds the stage textures"));
+            if runner.light_sweeping() {
+                return Err(refused("an export's light sweep holds the light reducer"));
             }
+            held = runner.stages().0 > 0;
         }
         let budget = GPU_TILE_BUDGET - STREAM_READ_RESERVE;
+        // A staged export holds the stage textures: the light by light sweeps, which hold none.
+        if held {
+            return self.read_light_sweeps(stack, source, budget);
+        }
         let staging = match self.chains_streams() {
             true => GpuStaging::Chained(luxforge_core::Chained::OneSweep),
             false => plan_stream_sweeps(stack, budget)?,
