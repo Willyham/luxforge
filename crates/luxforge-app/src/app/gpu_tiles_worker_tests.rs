@@ -2000,10 +2000,11 @@ fn a_measured_export_staged_is_chained() {
 }
 
 /// A stack whose Dehaze reads the output of a spatial layer before it — the owner's masked Dehaze
-/// behind Clarity, and Dehaze behind Detail — streamed in staged sweeps, the runner reducing the
-/// light from the stage texture the sweep before it wrote, is bit for bit the photo surface's own
-/// staged picture at rest drawn at full size on another device of the same adapter, whose sweep
-/// reduces the same light from its own stage texture, on both paths. A read through such a light
+/// behind Clarity, Dehaze behind Detail, and the first before a lens warp — streamed in staged
+/// sweeps, the runner reducing the light from the stage texture the sweep before it wrote, is bit
+/// for bit the photo surface's own staged picture at rest drawn at full size on another device of
+/// the same adapter, whose sweep reduces the same light from its own stage texture, on both
+/// paths. A read through such a light
 /// draws its one tile on the GPU, reading the light the worker's staged sweeps of the stack
 /// computed first and kept: the stream's bytes, its stage textures let go after.
 #[test]
@@ -2041,6 +2042,17 @@ fn a_staged_stream_reads_the_light_behind_a_spatial_layer_from_its_stage() {
                     Layer::new(PRESENCE_EFFECT, json!({"dehaze": -60.0})),
                 ],
                 Vec::new(),
+            ),
+        ),
+        (
+            "Dehaze behind Clarity before a lens warp",
+            recipe(
+                vec![
+                    Layer::new(PRESENCE_EFFECT, json!({"clarity": 60.0})),
+                    Layer::new(PRESENCE_EFFECT, json!({"dehaze": 60.0})),
+                    luxforge_core::qualification::lens_layer(-0.06, STAGED),
+                ],
+                vec![(1, radial())],
             ),
         ),
     ];
