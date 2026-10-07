@@ -612,16 +612,26 @@ fn a_light_behind_a_spatial_layer_is_reduced_from_the_stage_its_sweep_reads() {
     let [sweep] = &free.light_sweeps[..] else {
         panic!("{:?}", free.light_sweeps);
     };
-    assert_eq!((sweep.light, sweep.spatial.clone(), sweep.side), (0, 0..1, 64));
+    assert_eq!(
+        (sweep.light, sweep.spatial.clone(), sweep.side),
+        (0, 0..1, 64)
+    );
     let area: u64 = sweep.tiles.iter().map(|tile| tile.rect.pixels()).sum();
-    assert_eq!(area, u64::from(WIDTH * HEIGHT), "the whole content stage once");
+    assert_eq!(
+        area,
+        u64::from(WIDTH * HEIGHT),
+        "the whole content stage once"
+    );
     assert!(
         sweep
             .tiles
             .iter()
             .all(|tile| tile.rect.x0 % 64 == 0 && tile.rect.y0 % 64 == 0)
     );
-    assert!(free.plan.lights[0].stand_in.is_none(), "no stand-in at rest");
+    assert!(
+        free.plan.lights[0].stand_in.is_none(),
+        "no stand-in at rest"
+    );
     // A share no light sweep's tile fits either: the reference draws it, never a stand-in.
     let refused = super::plan_rest_tiles(
         &rest,

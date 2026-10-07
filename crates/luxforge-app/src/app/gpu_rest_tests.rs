@@ -1650,3 +1650,102 @@ fn gpu_rest_the_air_2s_masked_stack_staged_is_chained() {
     );
     assert!(failure.is_none(), "{failure:?}");
 }
+
+/// An indication, not a timing claim: the 60 MP RAW drag stack's picture at rest drawn by the
+/// photo surface's own drawing on this host's device as the editor plans it — a light sweep of
+/// Detail with no stage texture, then the chained tiles — and, with the side named so the stage
+/// texture is planned, in staged sweeps where the surface's budget holds them; beside the reference
+/// renderer's whole frame. Prints each one's wall time and its tiles' summed GPU spans
+/// (`RestFigures::gpu_us`), one run each on a possibly shared host.
+#[test]
+#[ignore = "an indication on this host's device; run on demand"]
+fn gpu_rest_the_60_mp_raw_drag_stacks_light_indication() {
+    let test = "gpu_rest_the_60_mp_raw_drag_stacks_light_indication";
+    let Some((backend, name)) = super::gpu_tiles_tests::host_adapter(test) else {
+        return;
+    };
+    assert!(super::gpu_plan::install_output_encoding());
+    let window = luxforge_ui::adapters::open(&backend, &name)
+        .unwrap_or_else(|unopened| panic!("{test}: the surface's device: {unopened:?}"));
+    let (_, _, recipe) = measured_stacks().swap_remove(0);
+    let (width, height) = (9_504u32, 6_336u32);
+    let mut planes = Vec::with_capacity(3 * (width * height) as usize);
+    for channel in 0..3u32 {
+        for y in 0..height {
+            for x in 0..width {
+                let wave = ((x as f32) * 0.013 + (y as f32) * 0.007 + channel as f32).sin();
+                planes.push(0.2 + 0.15 * wave + ((x * 7 + y * 3) % 11) as f32 / 120.0);
+            }
+        }
+    }
+    let source = PreviewSource::Raw {
+        image: LinearImage::new(width, height, planes).expect("finite planes"),
+        settings: LinearSettings::default(),
+    };
+    let evaluation = committed(source.clone(), recipe.clone());
+    let gpu = super::gpu_tiles_tests::gpu_source(1, &source);
+    let editor = planned_tiles(&evaluation);
+    let staged = luxforge_core::qualification::rest_tiles(
+        &evaluation,
+        super::gpu_qualification::fit_bounds(),
+        1024,
+    )
+    .expect("tiles");
+    for (what, tiles) in [
+        ("as the editor plans it", editor),
+        ("staged at 1024 px", staged),
+    ] {
+        let rest = super::gpu_preview::rest_now(&gpu, &tiles, 7).unwrap();
+        let mut surface = luxforge_ui::photo_surface::gpu_preview::headless::HeadlessSurface::new(
+            &window.device,
+            &window.queue,
+        );
+        // Warm: compiles and the source's upload; then the timed draw on the same surface, every
+        // kept light let go so it is computed again.
+        let _ = surface.rest(&gpu, &rest);
+        surface.forget_lights();
+        let rest = super::gpu_preview::rest_now(&gpu, &tiles, 8).unwrap();
+        let started = std::time::Instant::now();
+        let drawn = surface.rest(&gpu, &rest);
+        let wall = started.elapsed();
+        match drawn {
+            Ok(drawn) => eprintln!(
+                "{test}: {what}: {} light sweep tile(s) and {} chained, {} staged sweeps, {} \
+                 tiles; wall {:.2} s over {} frames, tiles' GPU spans {:.2} s",
+                tiles
+                    .light_sweeps
+                    .iter()
+                    .map(|sweep| sweep.tiles.len())
+                    .sum::<usize>(),
+                tiles.tiles.len(),
+                drawn.figures.sweeps,
+                drawn.figures.tiles,
+                wall.as_secs_f64(),
+                drawn.frames,
+                drawn.figures.gpu_us as f64 / 1e6
+            ),
+            Err(fallback) => eprintln!("{test}: {what}: not drawn on the surface: {fallback:?}"),
+        }
+    }
+    let registry = ModuleRegistry::builtin();
+    let PreviewSource::Raw { image, settings } = &source else {
+        unreachable!()
+    };
+    let started = std::time::Instant::now();
+    render(
+        &registry,
+        luxforge_core::RenderSource::Linear {
+            image,
+            settings: settings.clone(),
+        },
+        &recipe,
+        RenderOptions::exact(&Cancel::never()),
+        &RenderContext::new(),
+    )
+    .and_then(|rendered| rendered.frame(SnapshotId::new()))
+    .expect("the reference frame");
+    eprintln!(
+        "{test}: the reference renderer's whole frame: {:.2} s",
+        started.elapsed().as_secs_f64()
+    );
+}

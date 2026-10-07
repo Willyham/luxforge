@@ -346,6 +346,12 @@ impl HeadlessSurface {
             .collect())
     }
 
+    /// Let go of every light the surface's pipeline keeps, so the next picture at rest computes
+    /// its lights again: for a measurement drawing one picture twice.
+    pub fn forget_lights(&mut self) {
+        self.pipeline.retire_kept_lights();
+    }
+
     /// The lights the surface's pipeline keeps ([`super::light::LightCache`]), `[r, g, b, 1]`
     /// each, read back in the order they were first kept: what a picture at rest's staged sweep
     /// computed from a stage texture, for a test to hold to the CPU's.
