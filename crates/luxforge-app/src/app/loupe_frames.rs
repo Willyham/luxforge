@@ -46,6 +46,7 @@
 //!   and not decoded again until the wanted slots change.
 //! - **Releasing.** [`LoupeFrames::release`] forgets everything when the loupe closes or Select is
 //!   left, cancelling the reads still queued; dropping the cache ends the worker.
+use super::preview_read::{self, Refusal};
 use crate::app::tasks::call_detailed;
 use crate::state::loupe::{Held as HeldFrame, Picture};
 use iced::widget::image::Handle;
@@ -110,13 +111,6 @@ pub(crate) struct ReadBatch {
 pub(crate) struct ReadAnswers {
     pub(crate) serial: u64,
     pub(crate) answers: Vec<(Slot, Result<PreviewAnswer, Refusal>)>,
-}
-
-/// Why the owner refused a frame's preview: its error code and message.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Refusal {
-    pub(crate) code: String,
-    pub(crate) message: String,
 }
 
 /// A decoded preview held for a frame: its handle, what it is, and the entry a photograph's
@@ -460,22 +454,8 @@ pub(crate) fn read(owner: &OwnerHandle, client: ClientId, batch: ReadBatch) -> R
         .reads
         .into_iter()
         .map(|slot| {
-            let params = json!({
-                "item": slot.item,
-                "tier": slot.tier(),
-                "priority": slot.priority(),
-            });
-            let answer = call_detailed(owner, client, "preview.read", params)
-                .map_err(|error| Refusal {
-                    code: error.code,
-                    message: error.message,
-                })
-                .and_then(|answer| {
-                    serde_json::from_value::<PreviewAnswer>(answer).map_err(|error| Refusal {
-                        code: "protocol".into(),
-                        message: error.to_string(),
-                    })
-                });
+            let answer =
+                preview_read::read(owner, client, &slot.item, slot.tier(), slot.priority());
             (slot, answer)
         })
         .collect();

@@ -106,8 +106,8 @@ impl Unrunnable {
 /// The largest coordinate an `f32` holds exactly, and with it every integer a position map adds.
 const EXACT_F32: i64 = 1 << 24;
 
-/// `plan` as the surface's plain data over `boundary`, which holds the plan's whole boundary
-/// stage: [`surface_plan_at`] at the stage's origin.
+/// Qualification's CPU-held boundary through the same lowering production uses for a derived one.
+#[cfg(test)]
 pub(crate) fn surface_plan(
     plan: &luxforge_core::GpuPlan,
     boundary: GpuBoundary,
@@ -122,6 +122,7 @@ pub(crate) fn surface_plan(
 /// (`plan.boundary.continues_run`) must hold that run's unclamped value; the half floats of a
 /// [`GpuBoundary`] do. A warp's tail is drawn through `grid`, the coordinate grid the boundary's
 /// job computed for the plan's geometry, converted once ([`WarpGrid`]).
+#[cfg(test)]
 pub(crate) fn surface_plan_at(
     plan: &luxforge_core::GpuPlan,
     boundary: GpuBoundary,
@@ -131,7 +132,7 @@ pub(crate) fn surface_plan_at(
     surface_plan_over(plan, boundary, origin, grid, None)
 }
 
-/// [`surface_plan_at`], at a percentage zoom drawing only `region` of the plan's output stage at
+/// Lower a plan over `boundary`, at a percentage zoom drawing only `region` of its output stage at
 /// full scale: the tail's output is the rectangle, whose first pixel the surface offsets each pixel
 /// by, and with no tail the held window must hold the rectangle, which the content pass reads at
 /// one texel a pixel. `None` draws the whole output stage.

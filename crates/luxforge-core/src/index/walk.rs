@@ -10,7 +10,8 @@
 //! skipped; the root itself must be readable.
 //!
 //! Memory is one folder's supported files and the stack of folders still to visit.
-use super::exclude::{Exclusions, hidden, kind_of};
+use super::exclude::{Exclusions, kind_of};
+use crate::file_metadata::hidden;
 use crate::{Error, SourceTag, atomic_file::file_error, catalog_types::FileSignature};
 use std::{
     fs::Metadata,

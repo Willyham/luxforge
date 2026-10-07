@@ -34,7 +34,7 @@ const MIB: f64 = (1024 * 1024) as f64;
 /// plan is handed, and the one place a tile's side is decided.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Tiling {
-    /// Production: the side [`luxforge_raw::spatial_tile`] gives the operation's summed halo at its
+    /// Production: the side [`crate::render::limits::spatial_tile`] gives the operation's summed halo at its
     /// stage, 512 px for a small halo and 1024 px past the bound, so an operation whose halo would
     /// be recomputed around every small tile runs in fewer, larger ones.
     Halo,
@@ -47,15 +47,15 @@ pub(crate) enum Tiling {
 // No halo the host accepts is wider than the tile it runs in, which is what bounds a point
 // query's reads to the 3 × 3 tiles around its own.
 const _: () = assert!(
-    luxforge_raw::SPATIAL_WIDE_HALO <= luxforge_raw::SPATIAL_TILE
-        && MAX_SPATIAL_HALO <= luxforge_raw::SPATIAL_WIDE_TILE
+    crate::render::limits::SPATIAL_WIDE_HALO <= crate::render::limits::SPATIAL_TILE
+        && MAX_SPATIAL_HALO <= crate::render::limits::SPATIAL_WIDE_TILE
 );
 
 impl Tiling {
     /// The side of the tiles `operation` runs in at `stage`.
     pub(crate) fn tile(self, operation: &SpatialOperation, stage: Stage) -> u32 {
         match self {
-            Self::Halo => luxforge_raw::spatial_tile(operation.summed_halo(stage)),
+            Self::Halo => crate::render::limits::spatial_tile(operation.summed_halo(stage)),
             #[cfg(test)]
             Self::Fixed(tile) => tile.max(1),
         }
@@ -997,7 +997,7 @@ pub(crate) fn reset_masked_tile_counts() {
 }
 
 /// Run every tile of a stage, as a rolling window of workers on the shared Rayon pool at and above
-/// the spatial pass's parallel threshold ([`luxforge_raw::PARALLEL_SPATIAL_PIXELS`]) and in a plain
+/// the spatial pass's parallel threshold ([`crate::render::limits::PARALLEL_SPATIAL_PIXELS`]) and in a plain
 /// loop on the calling thread below it, checking the cancellation token between tiles.
 ///
 /// **Shares.** Every tile in flight holds one working set of the budget, reserved before it
@@ -1800,6 +1800,7 @@ pub(crate) fn plane_pixel(region: Region, values: &[f32], x: u32, y: u32) -> [f3
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::limits::SPATIAL_TILE;
     use crate::{
         EFFECT_FORMAT, Layer, LayerId, LinearImage, LinearSettings, ModuleRegistry, Raster, Recipe,
         RenderContext, RenderOptions, SnapshotId, SourceImage, Transform,
@@ -1815,7 +1816,6 @@ mod tests {
             tests::{CropReference, crop_layer, fitted_crop, geometry_registry, gradient, turn},
         },
     };
-    use luxforge_raw::SPATIAL_TILE;
     use luxforge_reference::srgb;
     use luxforge_testbase::{Distribution, Gate};
     use serde_json::{Map, Value, json};
@@ -3107,7 +3107,7 @@ mod tests {
     /// fixed tiling ignores the halo.
     #[test]
     fn the_tile_side_follows_the_summed_halo() {
-        use luxforge_raw::{SPATIAL_WIDE_HALO, SPATIAL_WIDE_TILE};
+        use crate::render::limits::{SPATIAL_WIDE_HALO, SPATIAL_WIDE_TILE};
         let stage = Stage {
             width: 3000,
             height: 2000,
@@ -3137,7 +3137,7 @@ mod tests {
     /// seam and a small one's, is the rendered byte.
     #[test]
     fn a_wide_halo_renders_in_wide_tiles_and_reads_equal_it_on_both_paths() {
-        use luxforge_raw::{SPATIAL_WIDE_HALO, SPATIAL_WIDE_TILE};
+        use crate::render::limits::{SPATIAL_WIDE_HALO, SPATIAL_WIDE_TILE};
         let registry = spatial_registry();
         // Wider and taller than one wide tile, above the parallel threshold.
         let (width, height) = (1300_u32, 1100_u32);

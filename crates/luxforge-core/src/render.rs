@@ -1,10 +1,12 @@
 //! Rendering: a recipe compiled into segments and evaluated over one source, by concept.
 //!
 //! - [`entry`]: the one way in, [`render`], and the [`Render`] it returns.
-//! - [`boundary`]: a GPU preview's held input boundary, rendered once per draft.
+//! - [`boundary`]: boundary formats and CPU boundary rendering for proof/qualification; production
+//!   derives boundaries on the GPU from its held source.
 //! - [`compiled`]: the compiled IR, segments separated by stage boundaries, and [`Entry`], the
 //!   one dispatch over the boundary kinds.
-//! - [`gpu`]: the GPU programs modules own and the plan a gesture's preview is drawn from.
+//! - [`gpu`]: module-owned GPU programs and semantic plans for display, histogram, samples,
+//!   catalog tiers and export; the whole-frame CPU pipeline is the reference and fallback.
 //! - [`geometry`]: exact geometry, a resample's mapping and read rectangle, and the byte
 //!   domain's bilinear pass.
 //! - [`colour_runs`]: colour runs and their masked blend.
@@ -24,6 +26,7 @@ mod entry;
 mod geometry;
 pub(crate) mod gpu;
 mod input_grid;
+pub(crate) mod limits;
 pub(crate) mod linear;
 mod locate;
 pub(crate) mod map;

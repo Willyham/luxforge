@@ -37,9 +37,10 @@ use super::{Input, LaneEvent, Listed, Post, RootPlan, Run, Write};
 use crate::{
     Error, ErrorKind,
     catalog_types::{FileSignature, RootKind, VolumeId},
+    file_metadata::hidden,
     index::{
         database,
-        exclude::{hidden, kind_of},
+        exclude::kind_of,
         reconcile::Reconciler,
         volumes::{PlatformMount, volume_in},
         walk::{ListedFile, ListedFolder, WalkLimits},

@@ -43,10 +43,8 @@
 //!   when Select is left and the worker blocks idle; dropping the cache (the catalog closing with
 //!   the window) ends the worker. A view's new revision drops nothing it holds: its previews stay,
 //!   the least recently wanted evicted first.
-use crate::app::{
-    tasks::{call_detailed, owner_work},
-    waker::Signal,
-};
+use super::preview_read::{self, Refusal};
+use crate::app::{tasks::owner_work, waker::Signal};
 use crate::state::select::RowCache;
 use iced::{Subscription, Task, widget::image::Handle};
 use luxforge_core::{
@@ -159,13 +157,6 @@ pub(crate) struct ReadAnswers {
     pub(crate) serial: u64,
     pub(crate) revision: u64,
     pub(crate) answers: Vec<(Item, Result<PreviewAnswer, Refusal>)>,
-}
-
-/// Why the owner refused a file's preview: its error code and message.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Refusal {
-    pub(crate) code: String,
-    pub(crate) message: String,
 }
 
 /// What the grid wants now: the cells on screen before those near it.
@@ -445,22 +436,8 @@ pub(crate) fn read(owner: &OwnerHandle, client: ClientId, batch: ReadBatch) -> R
         .reads
         .into_iter()
         .map(|(file, priority)| {
-            let params = json!({
-                "item": file.preview(),
-                "tier": PreviewTier::Grid,
-                "priority": priority,
-            });
-            let answer = call_detailed(owner, client, "preview.read", params)
-                .map_err(|error| Refusal {
-                    code: error.code,
-                    message: error.message,
-                })
-                .and_then(|answer| {
-                    serde_json::from_value::<PreviewAnswer>(answer).map_err(|error| Refusal {
-                        code: "protocol".into(),
-                        message: error.to_string(),
-                    })
-                });
+            let answer =
+                preview_read::read(owner, client, &file.preview(), PreviewTier::Grid, priority);
             (file, answer)
         })
         .collect();

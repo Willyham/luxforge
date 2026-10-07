@@ -88,7 +88,7 @@ impl ByteFrame {
             .checked_mul(u64::from(stage.height))
             .and_then(|n| n.checked_mul(6))
             .ok_or_else(|| Error::resource_limit("wide image dimensions overflow"))?;
-        if bytes > luxforge_raw::MAX_FRAME_BYTES {
+        if bytes > crate::render::limits::MAX_FRAME_BYTES {
             return Err(Error::resource_limit(
                 "wide evaluated image exceeds 512 MiB",
             ));

@@ -3,16 +3,17 @@
   "plan_id": "code-structure",
   "title": "Code structure consolidation",
   "objective": "Consolidate repeated GPU contracts/layout rules and execution ownership, remove redundant preparation and preview mechanics, and make current module/preview interfaces coherent while preserving behavior and bounded work.",
-  "context_summary": "The GPU-first refactor is integrated. A structural review identifies one exported provider availability defect, mirrored GPU primitives/layout rules across core/UI/desktop, a reusable executor inside widgets, repeated stream preparation, partial public module APIs, string-based operation identity, loose preview state, repeated grid/loupe mechanisms and small ownership/helper/comment cleanup. Core/UI/CLI/reference boundaries and distinct quality/memory strategies remain. Implementation is authorized by the owner on 2026-10-07. The proposed pure-contract plus Iced-free backend split still requires explicit approval of TASK-003 before its dependent extraction tasks start. All tasks re-review current main before starting; minimum model is the roadmap high tier. Native qualification and performance claims are deferred to the finished integrated branch, with no cross-plan dependencies or total-memory claim.",
+  "context_summary": "The GPU-first refactor is integrated. A structural review identifies one exported provider availability defect, mirrored GPU primitives/layout rules across core/UI/desktop, a reusable executor inside widgets, repeated stream preparation, partial public module APIs, string-based operation identity, loose preview state, repeated grid/loupe mechanisms and small ownership/helper/comment cleanup. Core/UI/CLI/reference boundaries and distinct quality/memory strategies remain. Implementation is authorized by the owner on 2026-10-07. The owner approved the pure luxforge-gpu-types plus Iced-free luxforge-gpu boundary on 2026-10-07. TASK-003 is accepted with owner approval and repository/quick evidence; dependent extraction may start. All tasks re-review current main before starting; minimum model is the roadmap high tier. Native qualification and performance claims are deferred to the finished integrated branch, with no cross-plan dependencies or total-memory claim.",
   "tasks": [
     {
       "id": "TASK-001",
       "description": "Make public registered-provider lookups report registry availability consistently.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "R1. Provider carries the override but its inherent descriptor method is crate-private; external method lookup reaches ToolModule through Deref. Internal core checks are correct. Do not infer a shipped disabled-module execution bug.",
-        "Make descriptor public and decide explicitly whether raw-hook access still warrants Deref; preserve unavailable effect readability and explicit refusal."
+        "Make descriptor public and decide explicitly whether raw-hook access still warrants Deref; preserve unavailable effect readability and explicit refusal.",
+        "Accepted: registry scopes passed 57 internal and one external lookup regression; unavailable provider/refusal coverage also passed in quick. Shared handoff evidence: artifacts/code-structure-initial-quick/summary.json (aarch64-apple-darwin, passed). Scoped logs: /tmp/luxforge-structure-*.log."
       ],
       "context_links": [
         {
@@ -64,11 +65,12 @@
     {
       "id": "TASK-002",
       "description": "Align renderer comments and proof-only boundaries with current GPU-first behavior.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "R12. Remove obsolete gesture-only statements and future-use dead-code expectations. This task changes no rendering algorithm.",
-        "Trace callers before deleting helpers; qualification/reference code is not dead merely because production does not call it."
+        "Trace callers before deleting helpers; qualification/reference code is not dead merely because production does not call it.",
+        "Accepted: traced production/qualification callers; whole-boundary lowering helpers are test-only and the broad dead-code expectation is removed. Repository and quick checks passed. Shared handoff evidence: artifacts/code-structure-initial-quick/summary.json (aarch64-apple-darwin, passed). Scoped logs: /tmp/luxforge-structure-*.log."
       ],
       "context_links": [
         {
@@ -125,12 +127,13 @@
     {
       "id": "TASK-003",
       "description": "Confirm and freeze the shared GPU contract, layout and backend ownership boundaries.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
-        "R2/R3/R4. Proposed names are luxforge-gpu-contract (pure data/rules) and luxforge-gpu (wgpu executor). They do not exist yet and this task creates no runtime code.",
-        "This is the genuine decision gate: map Iced device/pipeline integration, core semantic versus executable plans, production/qualification dependencies, layout inputs, raw hooks and retirement ownership.",
-        "Record the owner decision before downstream extraction; rejection requires a revised validated DAG rather than assuming acceptance."
+        "Owner-approved static names: luxforge-gpu-types (std-only data/rules) and luxforge-gpu (wgpu executor). They do not exist yet; this task creates no runtime code.",
+        "The approved ownership/dependency table and device/retirement seam are in the design. Core semantic plans remain distinct from executable plans; current light and accounting scope remain explicit.",
+        "Owner approved the split and the -types name on 2026-10-07. Complete repository/quick checks before downstream extraction starts.",
+        "Accepted: owner explicitly approved luxforge-gpu-types and luxforge-gpu, the concrete seam and preserved worker device. Repository and quick checks passed before extraction. Shared handoff evidence: artifacts/code-structure-initial-quick/summary.json (aarch64-apple-darwin, passed). Scoped logs: /tmp/luxforge-structure-*.log."
       ],
       "context_links": [
         {
@@ -193,7 +196,7 @@
     {
       "id": "TASK-004",
       "description": "Centralize common GPU primitive types, shader conventions and pure extent rules.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-003"
       ],
@@ -534,7 +537,7 @@
     {
       "id": "TASK-009",
       "description": "Tighten the current public Rust module surface and prove its cross-crate usability.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-001"
       ],
@@ -785,11 +788,12 @@
     {
       "id": "TASK-013",
       "description": "Share typed preview.read calls and response/error decoding between grid and loupe.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "R9 read half. Both controllers serialize preview.read and parse PreviewAnswer with matching protocol/refusal conversion.",
-        "Keep batching, revisions, loupe job cancellation, tier/priority selection and policy at the caller. This task introduces only the shared typed request/answer seam."
+        "Keep batching, revisions, loupe job cancellation, tier/priority selection and policy at the caller. This task introduces only the shared typed request/answer seam.",
+        "Accepted: grid 11, loupe 11 and shared reader one scoped tests passed, including distinct protocol/server refusals; quick passed. Shared handoff evidence: artifacts/code-structure-initial-quick/summary.json (aarch64-apple-darwin, passed). Scoped logs: /tmp/luxforge-structure-*.log."
       ],
       "context_links": [
         {
@@ -841,7 +845,7 @@
     {
       "id": "TASK-014",
       "description": "Share bounded decoded-handle cache mechanics while preserving grid and loupe policies.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-013"
       ],
@@ -907,12 +911,13 @@
     {
       "id": "TASK-015",
       "description": "Move renderer-only bounds and parallel/tile policy out of the RAW adapter.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "R10. RenderPass, per-render-pass thresholds, RGBA frame bounds and spatial tile/halo rules are exported by RAW but used by core rendering.",
         "Leave adapter/source/development admission and genuinely shared values in their appropriate existing home. Preserve all numerical values and measured choices.",
-        "Update render-limits-home repository rules and imports together; this location-only change adds no crate and claims no speedup."
+        "Update render-limits-home repository rules and imports together; this location-only change adds no crate and claims no speedup.",
+        "Accepted: core render 281 passed (15 ignored measurement cases), RAW 123 passed (17 ignored), two ownership-rule regressions passed. Values were inspected unchanged; repository and quick passed. Shared handoff evidence: artifacts/code-structure-initial-quick/summary.json (aarch64-apple-darwin, passed). Scoped logs: /tmp/luxforge-structure-*.log."
       ],
       "context_links": [
         {
@@ -971,11 +976,13 @@
     {
       "id": "TASK-016",
       "description": "Share hidden-file platform metadata detection between indexing and Locate.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "R11. Dot-file, macOS UF_HIDDEN and Windows hidden-attribute logic is duplicated. Share that predicate only.",
-        "Keep index exclusion and Locate traversal policy independent, including which directories each skips."
+        "Keep index exclusion and Locate traversal policy independent, including which directories each skips.",
+        "Re-review found no native hidden-flag test in the prior traversal coverage. Shared predicate tests now exercise dot names and native macOS UF_HIDDEN / Windows hidden attributes; Windows remains unrun on this host.",
+        "Accepted on native macOS: index 49 passed (one ignored), Locate four and shared metadata two passed, including UF_HIDDEN. Windows hidden-attribute test is unrun; native scope remains in TASK-017. Shared handoff evidence: artifacts/code-structure-initial-quick/summary.json (aarch64-apple-darwin, passed). Scoped logs: /tmp/luxforge-structure-*.log."
       ],
       "context_links": [
         {
@@ -1009,6 +1016,7 @@
           "Run existing index and Locate cases, retaining platform-gated coverage and reporting unavailable native scope honestly."
         ],
         "commands": [
+          "tools/cargo-cached test --locked -p luxforge-core --lib file_metadata",
           "tools/cargo-cached test --locked -p luxforge-core index",
           "tools/cargo-cached test --locked -p luxforge-core library::missing",
           "tools/cargo-cached xtask verify --tier quick --output NEW_DIR"
