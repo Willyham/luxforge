@@ -1,6 +1,6 @@
 # Crop, export and conflicts
 
-Status: the M4 crop module and JPEG export are implemented; Locate and MCP remain editor follow-ups. History behavior comes from [layers and history](edit-history.md).
+Status: the M4 crop module and JPEG export are implemented; Locate is delivered; MCP remains an editor follow-up. History behavior comes from [layers and history](edit-history.md).
 
 ## Viewport and coordinates
 
@@ -66,7 +66,7 @@ An agent commit during a human draft keeps the draft and marks it conflicted, of
 
 ## Export
 
-Export evaluates a saved entry's snapshot, frozen when the request is accepted, and writes a new baseline JPEG at the recipe's output size (source scale, after orientation, transforms and crop) at quality 90. No resize presets, watermarks or batch export. Output is 8-bit sRGB with an embedded sRGB profile, normalized orientation and no thumbnail. Keep metadata starts off, and the file then carries no EXIF, IPTC or XMP; when on, one EXIF segment carries the supported descriptive, camera, capture and GPS fields with Orientation 1, the sRGB colour space and the output's dimensions. Private manufacturer metadata is not round-tripped.
+Export evaluates a saved entry's snapshot, frozen when the request is accepted, through the desktop's GPU tile worker within the declared reference tolerance, or the whole-frame CPU reference when requested or when the GPU cannot draw it, and writes a new baseline JPEG at the recipe's output size (source scale, after orientation, transforms and crop) at quality 90. No resize presets or watermarks. Catalog batch export uses the same frozen-snapshot exporter for each photograph. Output is 8-bit sRGB with an embedded sRGB profile, normalized orientation and no thumbnail. Keep metadata starts off, and the file then carries no EXIF, IPTC or XMP; when on, one EXIF segment carries the supported descriptive, camera, capture and GPS fields with Orientation 1, the sRGB colour space and the output's dimensions. Private manufacturer metadata is not round-tripped.
 
 The desktop's save dialog suggests the source stem plus `-edited.jpg`, counting up when that name is taken. Anything already at the destination is refused, so no existing file, symlink or hard link to an original is ever written through. A temporary file in the destination directory is written, synced and published without replacement; failure or cancellation removes only temporary output. The [export design](../design/export.md) holds the exact rules, fields, API and bounds.
 
@@ -80,6 +80,6 @@ Manual Locate and the MCP adapter are specified in [source recovery](source-reco
 4. Apply, Cancel, reset, undo, redo, preview, restore, edit again and reopen: exactly one action per commit and every snapshot retained.
 5. Live UI and API clients with stale revisions, draft conflicts, restore and preview during reconnect, malformed input and failed writes; compare complete stacks and decoded output.
 6. Native M4 rendered content correlated with state, logs, entry IDs, revisions and render generation, plus queue, memory and latency measurements and unchanged original hashes.
-7. Follow-ups add verified Locate, MCP interoperability and complete package acceptance.
+7. Locate preserves asset identity, edits and history while verifying replacement bytes; MCP interoperability and complete native package acceptance remain open.
 
-RAW, PNG, tonal controls, a multi-image library and externally loaded modules remain later scope. A Lightroom-style interaction reference does not imply Adobe rendering compatibility.
+RAW, tonal controls and the multi-image catalog are delivered within their documented qualification boundaries. PNG and externally loaded modules remain later scope. A Lightroom-style interaction reference does not imply Adobe rendering compatibility.

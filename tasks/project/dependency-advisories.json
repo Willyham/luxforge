@@ -11,7 +11,7 @@
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "RUSTSEC-2026-0192 on ttf-parser 0.25.1 via fontdb 0.23 in the Iced text stack (and ab_glyph in winit's Wayland decorations on Linux), last reviewed 2026-09-29 and expiring exclusively on 2026-10-29 (UTC), as `exceptions()` in xtask/src/policy.rs records. At that review fontdb 0.24.0 had dropped ttf-parser and cosmic-text main had adopted it, but no cosmic-text or Iced release used it, and the upstream denial-of-service report was still undisclosed and unfixed. The audit wrapper enforces the expiry, the exact resolved version and registry source, a review window of at most 90 days and that this task stays open. Review sooner for new security information, a cosmic-text or Iced release that adopts fontdb 0.24, distribution or font-input scope changes."
+        "RUSTSEC-2026-0192 on registry ttf-parser 0.25.1, through fontdb 0.23.0 in the Iced text stack and owned_ttf_parser 0.25.1/ab_glyph in winit's Linux Wayland decorations. The enforced review is 2026-09-29 and expires exclusively on 2026-10-29 UTC, as exceptions() in xtask/src/policy.rs records. fontdb 0.24.0 drops ttf-parser and cosmic-text main uses it, but released cosmic-text 0.19.0 still requires fontdb 0.23; pinned Iced 0.14.0 uses cosmic-text 0.15.0. The current RustSec advisory lists no patched version. No supported lockfile-only update removes both paths. The audit enforces the exact resolved version/registry source, a review window of at most 90 days and this task remaining open. Re-review sooner for published security details, compatible upstream adoption, distribution or font-input scope changes."
       ],
       "context_links": [
         {
@@ -26,6 +26,12 @@
           "target": "xtask/src/policy.rs",
           "locator": "exceptions",
           "relevance": "The advisory, exact version, review and expiry dates and task the audit checks."
+        },
+        {
+          "kind": "url",
+          "label": "Released cosmic-text dependency manifest",
+          "target": "https://github.com/pop-os/cosmic-text/blob/0.19.0/Cargo.toml",
+          "relevance": "Current upstream release constraint; no dependency migration is performed by this review."
         }
       ],
       "acceptance_criteria": [
@@ -54,7 +60,7 @@
       "status": "ready",
       "dependencies": [],
       "extra_context": [
-        "RUSTSEC-2024-0436 on paste 1.0.15, a build-time proc macro reached through metal and wgpu-hal, reviewed 2026-09-19 and expiring exclusively on 2026-12-18 (UTC), as `exceptions()` in xtask/src/policy.rs records. The audit wrapper enforces the expiry, the exact resolved version and registry source, a review window of at most 90 days and that this task stays open. Review sooner for new security information or a change to the pinned Iced, wgpu or Metal stack."
+        "RUSTSEC-2024-0436 on registry paste 1.0.15, a build-time proc macro through metal 0.32.0 and wgpu-hal 27.0.4 in wgpu 27.0.1. The enforced review is 2026-09-19 and expires exclusively on 2026-12-18 UTC, as exceptions() in xtask/src/policy.rs records. Released metal 0.33.0 still requires paste; wgpu 30.0.1 uses objc2-metal instead, but that major renderer change is not a compatible update of the pinned Iced/wgpu stack. The audit enforces expiry, exact resolved version/registry source, a review window of at most 90 days and this task remaining open. Review sooner for new security information or a change to the pinned stack."
       ],
       "context_links": [
         {
@@ -69,6 +75,12 @@
           "target": "xtask/src/policy.rs",
           "locator": "exceptions",
           "relevance": "The advisory, exact version, review and expiry dates and task the audit checks."
+        },
+        {
+          "kind": "url",
+          "label": "Released Metal dependency manifest",
+          "target": "https://github.com/gfx-rs/metal-rs/blob/v0.33.0/Cargo.toml",
+          "relevance": "Current upstream release constraint; no dependency migration is performed by this review."
         }
       ],
       "acceptance_criteria": [

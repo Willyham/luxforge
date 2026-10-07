@@ -276,7 +276,7 @@ The owner asked for this work to proceed without blocking. These are proposals t
 | Item | Needs |
 | --- | --- |
 | Amount slider | A per-field scaling rule from each module; Lightroom scales only presets that declare `SupportsAmount` |
-| Hover preview | A draft of `apply-preset` drawn as a drag's frames are, within the slider latency budget |
+| Hover preview | A draft of `apply-preset` drawn as a drag's frames are, on the GPU within the slider latency budget, with warm-up coverage for the hovered stack's program combinations within the existing warm-list bound. The current warm list already includes first drags of available absent modules, but not every multi-layer preset combination; a cold combination uses the declared compiling hold and reference fallback |
 | Copy/Paste Settings | Capture into a transient set and apply it with `apply-preset`; no core change |
 | DNG presets and profiles | Reading an embedded XMP packet from binary content; a profile system |
 | Writing Lightroom XMP | An exporter for the mapped fields only, with the same value-transfer caveat |

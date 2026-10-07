@@ -123,8 +123,10 @@ RAW payloads and generated outputs remain outside the repository.
 - Tests cover profile mutation, malformed/ambiguous catalogs, unknown cameras,
   mode rejection and required-correction selection. Authentic source/mosaic and
   DNG numerical references plus background editor evidence verify preservation.
-- Run quick, rendered and timing verification. Delete the completed temporary
-  task plan per repository convention.
+- New coverage runs quick and rendered verification; completed feature work
+  carries scoped timing and full verification before a broader support claim.
+  GPU-rendered stacks remain within the declared tolerance of the whole-frame
+  CPU reference; decode and development references keep their exact contracts.
 
 ## Performance checklist
 

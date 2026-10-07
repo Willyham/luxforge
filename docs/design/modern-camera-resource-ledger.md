@@ -16,7 +16,7 @@ as evidence that the editor admits a camera mode. A decoder limit is not a
 process or GPU limit.
 
 The table uses binary MiB (bytes / 2^20), with one full pixel per sensor
-sample. A u16 mosaic is `2 bytes/pixel`; planar RGB float is `3 * 4`
+sample. The mosaic rows describe CFA sources; linear RGB sources retain six bytes per pixel of interleaved u16 sensor data. A u16 CFA mosaic is `2 bytes/pixel`; planar RGB float is `3 * 4`
 bytes/pixel; the terminal RGBA display buffer is 8-bit `4 bytes/pixel`.
 
 | Work item | 24 MP | 40 MP | 128 MP | Liveness implication |
@@ -25,7 +25,7 @@ bytes/pixel; the terminal RGBA display buffer is 8-bit `4 bytes/pixel`.
 | Immutable u16 mosaic | 45.8 MiB | 76.3 MiB | 244.1 MiB | Retained by the source while WB or a source redevelopment is possible. |
 | One planar RGB float frame | 274.7 MiB | 457.8 MiB | 1,464.8 MiB | A 128 MP frame is below the approved 1.5 GiB per-buffer bound. |
 | One terminal RGBA8 display/upload frame | 91.6 MiB | 152.6 MiB | 488.3 MiB | The terminal buffer is 8-bit; GPU/shared-memory copies still need accounting. |
-| Two planar RGB float frames | 549.3 MiB | 915.5 MiB | 2,929.7 MiB | Active plus pending preview, or input plus output at a resample boundary. |
+| Two planar RGB float frames | 549.3 MiB | 915.5 MiB | 2,929.7 MiB | Old plus new RAW development or reference input plus output at a resample boundary; not a count of GPU preview jobs. |
 | Mosaic plus two planar RGB frames | 595.1 MiB | 991.8 MiB | 3,173.8 MiB | Does not include native decoder scratch, allocator retention, or GPU/shared-memory copies. |
 
 The 1.5 GiB contract therefore covers one 128 MP planar RGB frame only. It
@@ -41,20 +41,9 @@ The source worker reads encoded bytes and keeps them alive through signature
 validation and decode. After the immutable u16 mosaic is established, the
 encoded buffer should be released; the in-memory source cache retains the
 mosaic and a developed float result only while references require them. The
-serialized recipe/source metadata does not contain the mosaic. A white-balance
-change redevelops from the retained mosaic. If the old preview remains visible
-while a new preview is being computed, both float results are live. The
-documented preview queue is one active job plus one replaceable pending job, so
-a pending result must be accounted for even when it will soon be superseded.
+serialized recipe/source metadata does not contain the mosaic. Committed white-balance changes redevelop from the retained sensor data; GPU white-balance motion applies a leading approximation over the developed planes until that exact development is adopted. The source cache can hold an old and a new shared development within its byte-accounted second-slot policy, and the source worker waits for live references before replacement. The reference preview worker's active/pending queue is not the production GPU photo path and does not imply an allocated float result for each queued request.
 
-At a pixel-stage geometry resample boundary, the architecture permits two full
-frames: the prior segment's input and the next segment's output. Ordinary crop
-and orientation views share the developed float planes. The display path then
-samples into a terminal RGBA buffer. On Apple unified memory, a GPU
-texture is still a physical memory cost even when it is not reported as a
-separate process allocation; a capture or readback can add another live copy.
-The source and float memory gate must therefore wait for actual references,
-not just queue state, before admitting another large source.
+The reference renderer can hold input and output frames at a resample boundary. Crop and orientation views share developed planes. Production GPU rendering uploads a RAW's three crop-window float planes once, then derives view boundaries, chains, scratch and staged-sweep textures on the GPU. The surface and tile worker have separate 2 GiB budgets. GPU textures on Apple unified memory remain physical memory costs; capture/readback and resources outside the budgets need separate accounting. Source admission follows actual buffer references, not queue state; no per-buffer or per-device limit establishes a process-wide peak.
 
 Native RCD and Markesteijn workspaces are additional to these formulas. The
 standalone probe recorded historical peak RSS of approximately 425 MiB for
@@ -222,9 +211,7 @@ references and measured native/display phases.
 
 Keep JPEG's existing frame and scratch limits. For RAW, use the [approved admission
 contract](architecture.md#limits) while qualification
-continues. Prefer single-frame modes whose measured liveness fits the available
-buffer and worker budgets, release native scratch before display conversion, and enforce one
-active plus one pending preview with byte-accounted eviction. Measure complete editor workflows at each supported resolution before making process-memory claims;
+continues. Prefer qualified single-frame modes whose measured liveness fits source/development budgets; release native scratch before upload and keep source-cache replacement byte-accounted and gated by actual references. Account separately for GPU source uploads, boundaries, chains and staged textures on both devices, reference fallback, captures and resources outside their budgets. Measure complete editor workflows at each supported resolution before making process-memory claims;
 128 MP modes remain qualification work. A process-wide 128 MP claim
 needs tiling or another bounded representation plus measured RCD/Markesteijn,
 display/GPU, and WB replacement liveness; accepting it by increasing the

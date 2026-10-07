@@ -1,6 +1,6 @@
 # Mask coverage mathematics
 
-Status: frozen. No production mask code exists: this document, the independent [`f64`
+Status: frozen and implemented by the reference mask components; their GPU coverage is qualified separately against that reference. This document, the independent [`f64`
 reference](../../crates/luxforge-reference/src/mask.rs) and its
 [proofs](../../crates/luxforge-reference/tests/studies/mask.rs) are the complete specification the
 mask units of the [masking design](masking.md) are checked against, answering its "What a mask is",
@@ -8,10 +8,7 @@ mask units of the [masking design](masking.md) are checked against, answering it
 (the composition algebra), P3 (what a radial selects) and P4 (the brush's build-up rule, and the
 Density control that follows from not having one) with the figures below.
 
-Scope: this is a numerical/design task. It implements nothing, touches no crate's `src/`, and the
-reference under `tests/` never runs in a release build or against a real image row, so the
-[performance rules](../engineering/performance-rules.md) checklist applies to the transcription
-tasks rather than to the files this one adds. **Not frozen here**, and named so nothing assumes
+Scope: the independent numerical oracle does not run in a release build. The implemented mask components and their GPU programs follow the [performance rules](../engineering/performance-rules.md). **Not frozen here**, and named so nothing assumes
 otherwise: the luminance and colour range metrics (their own study), the conservative bounds *pixel
 rectangle* and `min_feature_px`, the brush's grid index and its occupancy cap, and the masked colour
 and spatial blend itself. What is frozen is mask space, the legality of a stored distance, the
@@ -650,13 +647,11 @@ difference is at most one code and only near a boundary. The same statement carr
 pixel: a coverage difference of `2e-6` moves a blended channel by at most `2e-6 * |effect - input|`,
 which cannot cross more than one code boundary.
 
-No production `f32` implementation exists to measure against yet. `1e-6` is the considered starting
-point for that implementation's own verification, to be tightened or loosened there against measured
-results, exactly as the vignette study states for its own bound.
+The reference components transcribe the `f64` oracle. GPU coverage uses `f32` and its own geometric and output qualification; this study bound does not define the GPU picture gate.
 
 ## Transcription
 
-**A production unit transcribes the blocks above expression for expression and in the same order, so
+**A CPU reference unit transcribes the blocks above expression for expression and in the same order, so
 it is bit-identical to this reference rather than merely within tolerance of it.** The reference's
 module documentation says the same thing from the other side, as
 [the vignette unit's does](../../crates/luxforge-core/src/modules/vignette/unit.rs). The rule that

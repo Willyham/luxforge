@@ -99,9 +99,10 @@ uses two transfer workers per job, deletes downloaded test files, caches only
 build dependencies and retains reports for 14 days. The full current run and qualified-only selection each read
 12.18 GiB per week, because every retained source is now qualified. AWS CLI,
 Rust and Actions are pinned. GitHub has the bucket-only reader secrets and
-account variable. The schedule becomes active when the workflow reaches the
-default branch; its first hosted run still needs Linux timing/compatibility
-evidence. No pull-request event receives R2 access.
+account variable. The scheduled workflow is on the default branch. Its recorded hosted run
+37304142552 at `6a53f7d3` fails all four qualifier shards (12, 8, 7 and 8
+failures); no successful complete hosted run is recorded, so current-main
+Linux timing and compatibility evidence remain outstanding. No pull-request event receives R2 access.
 
 ## Acceptance
 
