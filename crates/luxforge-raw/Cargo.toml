@@ -27,7 +27,9 @@ sha2 = { workspace = true, features = ["asm"] }
 [build-dependencies]
 serde.workspace = true
 serde_json.workspace = true
-cc = "=1.4.7"
+# Compile the vendored C++ translation units concurrently, within Cargo's jobserver budget.
+# Runtime decoding remains serial where specified; this changes build scheduling only.
+cc = { version = "=1.4.7", features = ["parallel"] }
 
 [dev-dependencies]
 luxforge-testbase = { path = "../luxforge-testbase" }

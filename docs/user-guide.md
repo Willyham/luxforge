@@ -23,6 +23,9 @@ After [developer setup](engineering/development.md), start an optimized build wi
 cargo xtask develop --catalog /path/to/catalog.sqlite --open /path/to/photo.jpg
 ```
 
+For repeated development builds across worktrees, the developer guide covers the
+[shared compiler caching](engineering/development.md#build-caches-and-worktrees) used by agents.
+
 Omit `--catalog` to use the catalog chosen in [Settings › General](#settings-and-experiments), or the one in the platform configuration directory when none is chosen. `--data-root DIRECTORY` isolates config, data and log paths. `cargo xtask develop --debug` is a lightly optimized build with debug assertions, for debugging, and is unsuitable for timing.
 
 Developer mode registers the test modules, the pixel proof (`luxforge.pixel`) and the controls proof (`luxforge.controls`), with their API methods, and shows them under Developer. It is a [flag](#settings-and-experiments), on by default in debug builds and off in optimized ones; turn it on in Settings › Experiments for the next launch, or pass `--developer` to force it on for one launch. Without it they are absent from both discovery and the workspace: `module.list` and `schema.list` name no test module or method, and a stored layer of one is reported unavailable rather than rendered. `--disable-module luxforge.crop` (or another built-in id) registers that module as unavailable, which keeps its stored layers readable and reports them instead of rendering without them.
