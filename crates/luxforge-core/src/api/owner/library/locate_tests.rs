@@ -607,9 +607,9 @@ fn a_file_changed_around_its_verification_is_refused() {
         |name: &str| harness.copy("orientation-1.jpg", &harness.dir.join("b").join(name));
     let touch = |path: &Path| {
         let file = fs::OpenOptions::new().append(true).open(path).unwrap();
-        let len = file.metadata().unwrap().len();
-        file.set_len(len + 1).unwrap();
-        file.set_len(len).unwrap();
+        let modified = file.metadata().unwrap().modified().unwrap();
+        file.set_modified(modified + std::time::Duration::from_secs(1))
+            .unwrap();
     };
 
     // Touched after every byte was read, before the signature is taken again.
