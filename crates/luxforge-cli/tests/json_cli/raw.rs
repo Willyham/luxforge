@@ -12,9 +12,15 @@ use std::path::{Path, PathBuf};
 
 /// One `luxforge-json` process over one catalog.
 fn start(catalog: &Path) -> JsonProcess {
+    let data_root = catalog.with_extension("data");
     JsonProcess::start(
         env!("CARGO_BIN_EXE_luxforge-json"),
-        &["--catalog", catalog.to_str().expect("catalog is UTF-8")],
+        &[
+            "--catalog",
+            catalog.to_str().expect("catalog is UTF-8"),
+            "--data-root",
+            data_root.to_str().expect("data root is UTF-8"),
+        ],
         "raw-cli",
     )
 }
@@ -159,6 +165,9 @@ fn run_fixture(path: &Path, label: &str, wb_after_geometry: bool) {
     let metadata_before = std::fs::metadata(path).expect("fixture metadata");
     let catalog = paths::temp_catalog(&format!("raw-json-{label}"));
     let mut client = start(&catalog);
+    // This journey checks undo/redo of each immutable edit; continuous-control collapsing is
+    // qualified separately. Store the explicit preference only in this fixture’s data root.
+    client.call("preferences.set", json!({"auto_collapse_history":false}));
     let schema = client.call("schema.list", Value::Null);
     let temperature_action = raw_action(&schema, "set-raw", "temperature");
     let tint_action = raw_action(&schema, "set-raw", "tint");

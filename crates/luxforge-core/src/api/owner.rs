@@ -3820,9 +3820,17 @@ mod tests {
                 Vec::new(),
             )
             .unwrap();
+        let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
         let mut bytes = std::fs::read(&path).unwrap();
         bytes[0] = 0;
         std::fs::write(&path, bytes).unwrap();
+        // Do not assume two same-length writes occupy different filesystem clock ticks.
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(modified + std::time::Duration::from_secs(1))
+            .unwrap();
         let second = sources
             .enqueue(
                 &mut jobs,
