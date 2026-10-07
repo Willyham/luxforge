@@ -27,10 +27,9 @@ pub use placement::insertion_index_among;
 pub(crate) use variants::Superseded;
 
 use super::{
-    BasicModule, CanvasInteraction, CapabilitiesProofModule, ControlsModule, CropModule,
-    CurveModule, DetailModule, LensModule, LookModule, MixerModule, ModuleDescriptor,
-    PerspectiveModule, PixelModule, PresenceModule, PresetsModule, RawModule, ToolModule,
-    VignetteModule,
+    BasicModule, CanvasInteraction, CapabilitiesProofModule, CropModule, CurveModule, DetailModule,
+    LensModule, LookModule, MixerModule, ModuleDescriptor, PerspectiveModule, PixelModule,
+    PresenceModule, PresetsModule, RawModule, ToolModule, VignetteModule, controls_module,
 };
 use crate::Error;
 #[cfg(test)]
@@ -64,7 +63,7 @@ pub(crate) fn linked_modules(developer: bool) -> Vec<Arc<dyn ToolModule>> {
         Arc::new(LensModule::new()),
         Arc::new(PerspectiveModule::new()),
         Arc::new(VignetteModule::new()),
-        Arc::new(ControlsModule::new()),
+        Arc::new(controls_module()),
     ];
     linked
         .into_iter()

@@ -52,7 +52,7 @@ pub use capabilities_proof::{
     PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH, palette_bytes,
 };
 pub use capability::CapabilityModule;
-pub use controls::{CONTROLS_EFFECT, Controls, ControlsModule};
+pub use controls::{CONTROLS_EFFECT, controls_module};
 pub(crate) use crop::CropModule;
 pub use crop::ORIENTATION_EFFECT;
 pub use crop::geometry::{
@@ -89,7 +89,6 @@ use detail::DetailModule;
 pub(crate) use detail::gpu_functions as detail_gpu_functions;
 #[cfg(feature = "qualification")]
 pub use detail::qualification as detail_qualification;
-pub use field_patch::{FieldPatch, FieldPatchModule, Spec, Values};
 pub use lens::LENS_EFFECT;
 pub(crate) use lens::{LENS_MODULE, LensModule};
 pub use look::LOOK_EFFECT;
@@ -160,7 +159,7 @@ pub struct NewLayer {
 }
 
 impl NewLayer {
-    pub(crate) fn new(effect_id: impl Into<String>, payload: Value) -> Self {
+    pub fn new(effect_id: impl Into<String>, payload: Value) -> Self {
         Self {
             effect_id: effect_id.into(),
             payload,
@@ -168,7 +167,7 @@ impl NewLayer {
         }
     }
 
-    pub(crate) fn with_artifacts(self, artifacts: Vec<ArtifactId>) -> Self {
+    pub fn with_artifacts(self, artifacts: Vec<ArtifactId>) -> Self {
         Self { artifacts, ..self }
     }
 }
@@ -186,7 +185,7 @@ pub struct LayerUpdate {
 }
 
 impl LayerUpdate {
-    pub(crate) fn new(id: LayerId, payload: Value) -> Self {
+    pub fn new(id: LayerId, payload: Value) -> Self {
         Self {
             id,
             payload,
@@ -194,7 +193,7 @@ impl LayerUpdate {
         }
     }
 
-    pub(crate) fn with_artifacts(self, artifacts: Vec<ArtifactId>) -> Self {
+    pub fn with_artifacts(self, artifacts: Vec<ArtifactId>) -> Self {
         Self { artifacts, ..self }
     }
 }
@@ -312,7 +311,7 @@ impl<'a> StageContext<'a> {
     /// maskable effect belongs only to its own mask's target and a stack that holds two layers of
     /// the effect for the target is refused, as the whole-stack compile refuses it for a declared
     /// `single` effect. `O(layers)`; reads no pixels.
-    pub(crate) fn own_layer(&self, effect_id: &str) -> Result<Option<(usize, &'a Layer)>, Error> {
+    pub fn own_layer(&self, effect_id: &str) -> Result<Option<(usize, &'a Layer)>, Error> {
         self.registry.own_layer(self.layers, effect_id, self.target)
     }
 
@@ -322,7 +321,7 @@ impl<'a> StageContext<'a> {
     /// A module plans against that position instead of choosing one, so
     /// [`StageContext::stage_before`] of this index is the stage its coordinates address.
     /// `O(layers · masks)`; reads no pixels.
-    pub(crate) fn insertion_index_for(&self, effect_id: &str) -> usize {
+    pub fn insertion_index_for(&self, effect_id: &str) -> usize {
         self.registry
             .insertion_index_for_target(self.layers, effect_id, self.target, self.masks)
     }
@@ -330,40 +329,30 @@ impl<'a> StageContext<'a> {
     /// The output stage of the whole stack: [`StageContext::stage_before`] of `layers.len()`. The
     /// host compiles the stack to answer it, `O(layers)`, only when a module asks, so a plan that
     /// never needs the stage, such as a Basic patch, costs no compile.
-    pub(crate) fn stage(&self) -> Result<Stage, Error> {
+    pub fn stage(&self) -> Result<Stage, Error> {
         self.stage_before(self.layers.len())
     }
 
     /// The stage the layer at index `index` receives ([`StageQuestions::stage_before`]);
     /// `layers.len()` is [`StageContext::stage`]. A module updating a layer in place plans against
     /// that layer's own input stage, not the final one.
-    pub(crate) fn stage_before(&self, index: usize) -> Result<Stage, Error> {
+    pub fn stage_before(&self, index: usize) -> Result<Stage, Error> {
         self.questions.stage_before(index)
     }
 
     /// One pixel of the stage the first `index` layers produce
     /// ([`StageQuestions::sample_before`]).
-    pub(crate) fn sample_before(
-        &self,
-        index: usize,
-        x: u32,
-        y: u32,
-    ) -> Result<Option<[u8; 4]>, Error> {
+    pub fn sample_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error> {
         self.questions.sample_before(index, x, y)
     }
 
-    pub(crate) fn input_before(
-        &self,
-        index: usize,
-        x: u32,
-        y: u32,
-    ) -> Result<Option<[f64; 3]>, Error> {
+    pub fn input_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
         self.questions.input_before(index, x, y)
     }
 
     /// A RAW original's sensor patch at upright content coordinates
     /// ([`StageQuestions::sensor_neutral`]).
-    pub(crate) fn sensor_neutral(&self, x: u32, y: u32) -> Result<[f32; 3], Error> {
+    pub fn sensor_neutral(&self, x: u32, y: u32) -> Result<[f32; 3], Error> {
         self.questions.sensor_neutral(x, y)
     }
 }

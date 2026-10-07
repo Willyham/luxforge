@@ -127,7 +127,7 @@ fn gpu_rest_a_stage_in_tiles_is_the_stage_in_one_region_bit_for_bit() {
             let stage_grid = plan.geometry.stage_grid(1.0).expect("a stage grid");
             let draw = |rect: Region, window: Region| {
                 let held = boundary_as(
-                    super::gpu_plan::boundary_format(format),
+                    format,
                     window.width,
                     window.height,
                     1,
@@ -412,7 +412,7 @@ fn surface_charge(tiles: &luxforge_core::RestTiles, tile: &luxforge_core::RestTi
     let (plan, window, rect) = (&tiles.plan, tile.window, tile.rect);
     luxforge_ui::photo_surface::gpu_preview::texture_charge(
         (window.width, window.height),
-        super::gpu_plan::boundary_format(tiles.format),
+        tiles.format,
         (rect.width, rect.height),
         super::gpu_plan::has_tail(plan).then_some((plan.geometry.clamps, plan.linear)),
         true,
@@ -497,7 +497,7 @@ fn gpu_rest_a_tiles_charge_is_the_slots_own_on_a_device() {
         }
         let tile = tiles.tiles[tiles.tiles.len() / 2];
         let window = tile.window;
-        let format = super::gpu_plan::boundary_format(tiles.format);
+        let format = tiles.format;
         let texels = vec![0u8; window.pixels() as usize * format.texel_bytes()];
         let boundary = luxforge_ui::photo_surface::GpuBoundary::new(
             Arc::new(texels),

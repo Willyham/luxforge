@@ -17,6 +17,7 @@
 //! Built only with the crate's `qualification` feature, which only a `[dev-dependencies]` table
 //! may turn on (`cargo xtask check-repository`), so no build of the desktop has it: the surface
 //! itself never reads a pixel back or waits on the GPU. Everything here blocks the calling test.
+use super::BoundaryTexture;
 use super::{
     BoundaryFormat, Compiled, GpuBoundary, GpuFallback, GpuPlan, GpuSource, GpuStep, GpuTail,
     OUTPUT_FORMAT, SourceLayouts, SourceSlot, SpatialSlot, Support, assemble_passes, chain,

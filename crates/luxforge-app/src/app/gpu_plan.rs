@@ -34,13 +34,12 @@
 //! [`install_output_encoding`] hands them over once at start.
 use luxforge_core::{
     ComponentMode, CoordinateGrid, GpuDescription, GpuGeometry, GpuLightInput, GpuMask,
-    GpuOperation, GpuPassShape, GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuSpatial, Region,
-    Stage,
+    GpuOperation, GpuPosition, GpuSpatial, Region, Stage,
 };
 use luxforge_ui::photo_surface::{
     Coverage, CoverageComponent, CoverageMode, GpuBoundary, GpuPlan, GpuProgram, GpuRegion,
     GpuStep, GpuTail, MaskedColour, PositionMap, TexelMap,
-    gpu_preview::{self, PassShape, PlaneFormat, PlaneSize, light::LightInput},
+    gpu_preview::{self, PlaneSize, light::LightInput},
 };
 use std::{borrow::Cow, sync::Arc};
 
@@ -57,16 +56,6 @@ pub(crate) fn output_encoding() -> luxforge_ui::photo_surface::OutputEncoding {
 /// compiles. Whether the surface holds the core's tables.
 pub(crate) fn install_output_encoding() -> bool {
     luxforge_ui::photo_surface::install_output_encoding(output_encoding())
-}
-
-/// The core's boundary format as the surface's: half floats on the byte path, `f32` on the linear.
-pub(crate) fn boundary_format(
-    format: luxforge_core::BoundaryFormat,
-) -> luxforge_ui::photo_surface::BoundaryFormat {
-    match format {
-        luxforge_core::BoundaryFormat::Half => luxforge_ui::photo_surface::BoundaryFormat::Half,
-        luxforge_core::BoundaryFormat::Float => luxforge_ui::photo_surface::BoundaryFormat::Float,
-    }
 }
 
 /// Why the surface cannot run a plan the core answered. Each is a stage the surface does not
@@ -623,20 +612,10 @@ pub(crate) fn spatial_step(
             .iter()
             .enumerate()
             .map(|(index, plane)| gpu_preview::GpuPlane {
-                format: match plane.format {
-                    GpuPlaneFormat::Colour => PlaneFormat::Colour,
-                    GpuPlaneFormat::Scalar => PlaneFormat::Scalar,
-                    GpuPlaneFormat::Pair => PlaneFormat::Pair,
-                    GpuPlaneFormat::Quad => PlaneFormat::Quad,
-                    GpuPlaneFormat::HalfScalar => PlaneFormat::HalfScalar,
-                    GpuPlaneFormat::HalfPair => PlaneFormat::HalfPair,
-                },
-                size: match (plane.size, light) {
-                    (_, Some((read, k))) if read == index => PlaneSize::Light(k),
-                    (GpuPlaneSize::Reduced(s), _) => PlaneSize::Reduced(s),
-                    (GpuPlaneSize::Fixed { width, height }, _) => {
-                        PlaneSize::Fixed { width, height }
-                    }
+                format: plane.format,
+                size: match light {
+                    Some((read, k)) if read == index => PlaneSize::Light(k),
+                    _ => PlaneSize::Extent(plane.size),
                 },
             })
             .collect(),
@@ -650,10 +629,7 @@ pub(crate) fn spatial_step(
                 words: index(pass.words),
                 source: index(pass.source),
                 reads_source: pass.reads_source,
-                shape: match pass.shape {
-                    GpuPassShape::Texels { span } => PassShape::Texels { span },
-                    GpuPassShape::Workgroup => PassShape::Workgroup,
-                },
+                shape: pass.shape,
                 unit: index(pass.unit),
             })
             .collect(),

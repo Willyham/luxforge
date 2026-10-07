@@ -18,6 +18,7 @@ use super::gpu_plan::surface_plan;
 use super::gpu_qualification::{
     Stream, codes, differing, drafted_against_cpu, figures, lit, lit_fixed, worst,
 };
+use luxforge_core::GpuPlaneSize as PlaneExtent;
 use luxforge_core::{
     Cancel, GPU_PROGRAMS, GpuAnswer, GpuPlanRequest, GpuProgramKind, Layer, LinearImage,
     LinearSettings, ModuleRegistry, PRESENCE_EFFECT, PreviewSource, Recipe, RenderContext,
@@ -190,14 +191,14 @@ fn test_program(words: Vec<u32>) -> GpuProgram {
 fn full(format: PlaneFormat) -> GpuPlane {
     GpuPlane {
         format,
-        size: PlaneSize::Reduced(1),
+        size: PlaneSize::Extent(PlaneExtent::Reduced(1)),
     }
 }
 
 fn reduced(format: PlaneFormat, s: u32) -> GpuPlane {
     GpuPlane {
         format,
-        size: PlaneSize::Reduced(s),
+        size: PlaneSize::Extent(PlaneExtent::Reduced(s)),
     }
 }
 
@@ -783,10 +784,10 @@ fn gpu_presence_atmospheric_light_matches_the_cpu() {
                     reduced(PlaneFormat::Quad, 16),
                     GpuPlane {
                         format: PlaneFormat::Quad,
-                        size: PlaneSize::Fixed {
+                        size: PlaneSize::Extent(PlaneExtent::Fixed {
                             width: 1,
                             height: 1,
-                        },
+                        }),
                     },
                 ],
                 vec![

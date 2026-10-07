@@ -305,6 +305,7 @@ const TEXT: &[&str] = &["rs", "toml", "md", "json", "wgsl", "txt"];
 
 /// The source directories of the crates a shipped binary links.
 const SHIPPED_SOURCES: &[&str] = &[
+    "crates/luxforge-gpu-types/src",
     "crates/luxforge-core/src",
     "crates/luxforge-net/src",
     "crates/luxforge-app/src",
@@ -320,6 +321,7 @@ const SHIPPED_SOURCES: &[&str] = &[
 
 /// The crates a shipped binary links, whose normal dependencies the JPEG rules hold.
 const SHIPPED_CRATES: &[&str] = &[
+    "crates/luxforge-gpu-types",
     "crates/luxforge-core",
     "crates/luxforge-net",
     "crates/luxforge-app",
@@ -334,6 +336,24 @@ const SHIPPED_CRATES: &[&str] = &[
 ];
 
 const SOURCE_RULES: &[SourceRule] = &[
+    SourceRule {
+        name: "shared-gpu-primitives",
+        tokens: &[
+            "enum BoundaryFormat",
+            "enum PlaneFormat",
+            "enum GpuPlaneFormat",
+            "enum GpuPlaneSize",
+            "enum PassShape",
+            "enum GpuPassShape",
+        ],
+        scope: &["crates"],
+        types: &["rs"],
+        allowed: &["crates/luxforge-gpu-types/src"],
+        mode: Match::Whole,
+        tests: false,
+        once: false,
+        reason: "common GPU formats, semantic extents and pass shapes have one definition in luxforge-gpu-types",
+    },
     // The desktop's layering: the view model reaches no framework, not the widget crate, not the
     // view that draws it and not the update layer above it (`app/`, which depends on it). `app::`
     // and `view::` catch `crate::app::`, `super::view::` and a grouped `use crate::{ view::... }`
@@ -1199,6 +1219,8 @@ const EVERY_TABLE: &[Table] = &[Table::Normal, Table::Dev, Table::Build, Table::
 /// renames one, the package it names.
 #[derive(Clone, Copy)]
 enum Depends {
+    /// Every declared dependency, for std-only crates.
+    Every,
     /// A dependency on exactly this crate.
     On(&'static str),
     /// A dependency on any one of these crates.
@@ -1232,6 +1254,14 @@ struct DependencyRule {
 }
 
 const DEPENDENCY_RULES: &[DependencyRule] = &[
+    DependencyRule {
+        name: "std-only-gpu-types",
+        refuses: Depends::Every,
+        manifests: &["crates/luxforge-gpu-types"],
+        tables: EVERY_TABLE,
+        allowed: &[],
+        reason: "luxforge-gpu-types uses std only: shared GPU data and layout may not depend on any crate",
+    },
     DependencyRule {
         name: "xtask-cli-no-photo-dependencies",
         refuses: Depends::Any(&[
@@ -1846,6 +1876,7 @@ impl Depends {
     fn refuses(self, dependency: &Dependency) -> bool {
         let named = |test: &dyn Fn(&str) -> bool| dependency.names.iter().any(|n| test(n));
         match self {
+            Depends::Every => true,
             Depends::On(name) => named(&|n| n == name),
             Depends::Any(names) => named(&|n| names.contains(&n)),
             Depends::Prefixed(prefix) => named(&|n| n.starts_with(prefix)),
@@ -4872,6 +4903,45 @@ mod tests {
                     && error.contains("DEPENDENCY_RULES"),
                 "{what}: {error}"
             );
+        }
+    }
+
+    #[test]
+    fn gpu_primitives_have_one_definition_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("crates/luxforge-gpu-types/src/lib.rs");
+        let other = tmp.path().join("crates/luxforge-core/src/types.rs");
+        fs::create_dir_all(home.parent().unwrap()).unwrap();
+        fs::create_dir_all(other.parent().unwrap()).unwrap();
+        fs::write(&home, "pub enum PlaneFormat { Colour }\n").unwrap();
+        let rule = &["shared-gpu-primitives"];
+        read(tmp.path(), rule).unwrap();
+        fs::write(&other, "pub enum GpuPlaneFormat { Colour }\n").unwrap();
+        assert!(refusal(tmp.path(), rule, "duplicate format").contains("shared-gpu-primitives"));
+    }
+
+    #[test]
+    fn gpu_types_are_std_only_in_every_dependency_table() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = tmp.path().join("crates/luxforge-gpu-types/Cargo.toml");
+        fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        let clean = "[package]\nname = \"luxforge-gpu-types\"\n";
+        fs::write(&manifest, clean).unwrap();
+        let rule = &["std-only-gpu-types"];
+        read(tmp.path(), rule).unwrap();
+        for table in [
+            "dependencies",
+            "dev-dependencies",
+            "build-dependencies",
+            "target.'cfg(unix)'.dependencies",
+        ] {
+            fs::write(
+                &manifest,
+                format!("{clean}\n[{table}]\nserde.workspace = true\n"),
+            )
+            .unwrap();
+            let error = refusal(tmp.path(), rule, table);
+            assert!(error.contains("std-only-gpu-types"), "{error}");
         }
     }
 

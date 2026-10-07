@@ -2101,6 +2101,7 @@ dependencies = [
  "image",
  "kamadak-exif",
  "luxforge-core",
+ "luxforge-gpu-types",
  "luxforge-jpeg",
  "luxforge-process",
  "luxforge-raw",
@@ -2130,6 +2131,10 @@ dependencies = [
  "serde",
  "serde_json",
 ]
+
+[[package]]
+name = "luxforge-gpu-types"
+version = "0.0.0"
 
 [[package]]
 name = "luxforge-input"
@@ -2231,6 +2236,7 @@ dependencies = [
  "half",
  "iced",
  "iced_wgpu",
+ "luxforge-gpu-types",
  "luxforge-process",
  "luxforge-reference",
  "luxforge-testbase",

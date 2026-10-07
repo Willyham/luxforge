@@ -196,14 +196,15 @@
     {
       "id": "TASK-004",
       "description": "Centralize common GPU primitive types, shader conventions and pure extent rules.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [
         "TASK-003"
       ],
       "extra_context": [
         "R2. Consume the boundary frozen by TASK-003. Semantic plans and executable plans retain their distinct meanings; only shared primitives/rules move.",
         "Include formats/texel sizes, reduced/fixed extents, compatible plane reuse, pass shapes and common calling-convention constants. Backend-resolved Light references stay explicit.",
-        "Update check commands if unit tests move to a newly created package; do not retain old format families or compatibility mappings."
+        "Update check commands if unit tests move to a newly created package; do not retain old format families or compatibility mappings.",
+        "Primitive/core/surface scopes passed (three, 51 and 137 tests; two surface measurements ignored), and shared-type/dependency rule regressions passed. Quick passed in artifacts/code-structure-types-modules-quick-final. Rendered integration remains before task acceptance; final authentic qualification/timing stay in TASK-017."
       ],
       "context_links": [
         {
@@ -255,6 +256,7 @@
           "Run focused GPU planner/surface tests, production convention validation and rendered integration."
         ],
         "commands": [
+          "tools/cargo-cached test --locked -p luxforge-gpu-types --lib",
           "tools/cargo-cached test --locked -p luxforge-core render::gpu",
           "tools/cargo-cached test --locked -p luxforge-ui gpu_preview",
           "tools/cargo-cached xtask verify --tier quick --output NEW_DIR",
@@ -537,14 +539,17 @@
     {
       "id": "TASK-009",
       "description": "Tighten the current public Rust module surface and prove its cross-crate usability.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
       "extra_context": [
         "R5. Inventory actual producers/consumers of ToolModule, Provider, FieldPatch/Spec/Values, StageContext and SpatialOperation before changing visibility.",
         "Default to current supported consumers: internal built-in authoring machinery becomes internal; public opaque inputs/outputs remain where required. Publish invariant helpers only for an existing supported authoring path.",
-        "New external loading/plugin authoring is outside scope. A newly discovered external-author requirement goes to the owner rather than widening the task implicitly."
+        "New external loading/plugin authoring is outside scope. A newly discovered external-author requirement goes to the owner rather than widening the task implicitly.",
+        "Re-review: FieldPatch, FieldPatchModule, Spec and Values have built-in-only consumers and become internal. ToolModule is consumed by the desktop failure regression and remains public; StageContext target ownership/placement and lazy question helpers are its supported surface. SpatialOperation remains a public opaque Processing output with built-in spatial construction; no new spatial/plugin authoring interface is required.",
+        "The developer ControlsModule public type alias exposes the internal field-patch adapter. Its current consumers only construct it to register a ToolModule. Replace that alias with an opaque controls_module() factory and migrate those consumers, keeping the authoring table internal without a delegating wrapper or compatibility alias.",
+        "Accepted: 392 scoped core module tests passed (seven ignored), external authoring/target-placement regression passed, 57 scoped desktop control tests passed, and artifacts/code-structure-types-modules-quick-final/summary.json passed on aarch64-apple-darwin. Public descriptors and command schemas remain covered by their existing snapshot/conformance checks."
       ],
       "context_links": [
         {

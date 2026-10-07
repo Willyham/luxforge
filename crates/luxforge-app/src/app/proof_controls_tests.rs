@@ -11,7 +11,7 @@ use crate::Config;
 use crate::state::fields;
 use crate::state::tools::ControlModel;
 use luxforge_core::{
-    ApiRequest, AssetId, ClientId, ControlsModule, ModuleDescriptor, ModuleRegistry, OwnerHandle,
+    ApiRequest, AssetId, ClientId, ModuleDescriptor, ModuleRegistry, OwnerHandle, controls_module,
 };
 use luxforge_testbase::paths::temp_catalog;
 use luxforge_ui::{ColorPickerEvent, CurveEditorEvent};
@@ -38,7 +38,7 @@ impl Proof {
     fn new() -> Self {
         let catalog = temp_catalog("desktop-controls-parity");
         let mut registry = ModuleRegistry::new();
-        registry.register(Arc::new(ControlsModule::new())).unwrap();
+        registry.register(Arc::new(controls_module())).unwrap();
         let (owner, join) = OwnerHandle::start_with(&catalog, Arc::new(registry)).unwrap();
         let json_client = owner.register();
         let asset = import_and_adopt(

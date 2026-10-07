@@ -5,6 +5,7 @@
 //! editor-acceptance` also runs in release; and the one committed snapshot of what the built-in
 //! registry publishes (`descriptors`).
 
+mod authoring;
 mod conformance;
 mod controls;
 mod curve;

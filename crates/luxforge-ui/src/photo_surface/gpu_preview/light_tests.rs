@@ -11,6 +11,7 @@ use super::super::{
     },
 };
 use super::{GpuLight, light_charge};
+use luxforge_gpu_types::PlaneSize as PlaneExtent;
 use std::borrow::Cow;
 
 /// A spatial program with a reduction, a selection, and a pass and an apply that read a light.
@@ -65,7 +66,10 @@ fn reading(k: u32) -> GpuSpatial {
         program: program(),
         planes: vec![
             plane(PlaneFormat::Quad, PlaneSize::Light(k)),
-            plane(PlaneFormat::Quad, PlaneSize::Reduced(1)),
+            plane(
+                PlaneFormat::Quad,
+                PlaneSize::Extent(PlaneExtent::Reduced(1)),
+            ),
         ],
         passes: vec![pass("lf_lighttest_scale", &[0], 1, EACH)],
         applies: vec![GpuApply {
@@ -85,7 +89,10 @@ fn writing(k: u32) -> GpuSpatial {
     GpuSpatial {
         program: program(),
         planes: vec![
-            plane(PlaneFormat::Quad, PlaneSize::Reduced(16)),
+            plane(
+                PlaneFormat::Quad,
+                PlaneSize::Extent(PlaneExtent::Reduced(16)),
+            ),
             plane(PlaneFormat::Quad, PlaneSize::Light(k)),
         ],
         passes: vec![
@@ -115,7 +122,10 @@ fn a_light_plane_is_the_pools_whatever_link_declares_it() {
     assert_eq!(key.location(0, 1), Some(PlaneTexture::Kept(0)));
     assert_eq!(
         key.kept(),
-        [plane(PlaneFormat::Quad, PlaneSize::Reduced(1))]
+        [plane(
+            PlaneFormat::Quad,
+            PlaneSize::Extent(PlaneExtent::Reduced(1))
+        )]
     );
     assert!(key.scratch().is_empty());
     let pool = PoolKey::of([&read[..]], size, origin);
@@ -160,7 +170,10 @@ fn only_a_light_link_writes_a_light_plane_and_its_readers_are_global() {
     assert!(validate_spatial(&half).is_err(), "a light is rgba32float");
     assert!(reading(1).global());
     let mut local = reading(0);
-    local.planes[0] = plane(PlaneFormat::Quad, PlaneSize::Reduced(1));
+    local.planes[0] = plane(
+        PlaneFormat::Quad,
+        PlaneSize::Extent(PlaneExtent::Reduced(1)),
+    );
     assert!(!local.global());
     assert_eq!(reading(4).lights().collect::<Vec<_>>(), [4]);
 }

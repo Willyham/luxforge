@@ -24,6 +24,7 @@
 //!   build averages with, across each source row and then down; a JPEG's average is quantized
 //!   through the output thresholds and decoded again, as the CPU's proxy is. Within a code of the
 //!   CPU's proxy: its sums are `f64`, these `f32`.
+use super::BoundaryTexture;
 use super::{BoundaryFormat, GpuFallback, UPLOAD_CHUNK, spatial::HALF_ROUNDING, tail::encoding};
 use std::sync::Arc;
 

@@ -119,7 +119,7 @@ impl EffectDescriptor {
     /// An effect of `stage` at the current payload format ([`crate::EFFECT_FORMAT`]) and order
     /// `0`, on every source kind, neither maskable nor single and with no artifacts: a base for
     /// struct update, which names each field the effect declares otherwise.
-    pub(crate) fn new(id: impl Into<String>, stage: EffectStage) -> Self {
+    pub fn new(id: impl Into<String>, stage: EffectStage) -> Self {
         Self {
             id: id.into(),
             format: crate::EFFECT_FORMAT,

@@ -114,10 +114,10 @@ pub const GPU_PREVIEW_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
 /// The words before any step's: the texel map's origin and step, then the offset of the output's
 /// first pixel ([`GpuRegion`]): in boundary texels for the content pass of a plan with no tail, in
 /// output-stage pixels for a tail's pass; zero for a whole-frame plan.
-const MAP_WORDS: usize = 6;
+use luxforge_gpu_types::MAP_WORDS;
 
 /// Each step's header words: its program's two base indices and its position map.
-const STEP_WORDS: usize = 2 + PositionMap::WORDS;
+use luxforge_gpu_types::STEP_WORDS;
 
 /// A words or blocks buffer is never smaller than this, so a plan's first few ticks do not each
 /// outgrow the last one's buffer.
@@ -154,29 +154,7 @@ const OUTPUT_READ: wgpu::TextureUsages = wgpu::TextureUsages::COPY_SRC;
 #[cfg(not(any(test, feature = "qualification")))]
 const OUTPUT_READ: wgpu::TextureUsages = wgpu::TextureUsages::empty();
 
-/// The WGSL every assembled GPU-preview shader starts with; see the [module documentation](self).
-/// A program's own WGSL, appended to this, must validate on its own.
-pub const PRELUDE: &str = "\
-// Luxforge GPU-preview prelude: the bindings and helpers every program may use.
-@group(0) @binding(0) var<storage, read> lf_words: array<u32>;
-@group(0) @binding(1) var<storage, read> lf_blocks: array<u32>;
-
-fn lf_word(i: u32) -> u32 {
-    return lf_words[i];
-}
-
-fn lf_f32(i: u32) -> f32 {
-    return bitcast<f32>(lf_words[i]);
-}
-
-fn lf_block_word(i: u32) -> u32 {
-    return lf_blocks[i];
-}
-
-fn lf_block_f32(i: u32) -> f32 {
-    return bitcast<f32>(lf_blocks[i]);
-}
-";
+pub use luxforge_gpu_types::PRELUDE;
 
 /// The surface's own binding and entry points, after the prelude and the programs.
 const BOUNDARY_BINDING: &str = "
@@ -377,27 +355,14 @@ enum StepKind {
     Clipping,
 }
 
-/// How the held boundary's texels are stored: four little-endian half floats (`rgba16float`), as a
-/// JPEG's byte path holds them, or four little-endian `f32` (`rgba32float`), as a developed RAW's
-/// linear path does, where half rounding of a near-black value can flip the sign a spatial
-/// operation divides by.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub enum BoundaryFormat {
-    Half,
-    Float,
+pub use luxforge_gpu_types::BoundaryFormat;
+
+pub(super) trait BoundaryTexture {
+    fn texture(self) -> wgpu::TextureFormat;
 }
 
-impl BoundaryFormat {
-    /// Bytes per texel.
-    pub const fn texel_bytes(self) -> usize {
-        match self {
-            Self::Half => 8,
-            Self::Float => 16,
-        }
-    }
-
-    /// The texture the boundary is uploaded to.
-    pub(super) fn texture(self) -> wgpu::TextureFormat {
+impl BoundaryTexture for BoundaryFormat {
+    fn texture(self) -> wgpu::TextureFormat {
         match self {
             Self::Half => wgpu::TextureFormat::Rgba16Float,
             Self::Float => wgpu::TextureFormat::Rgba32Float,

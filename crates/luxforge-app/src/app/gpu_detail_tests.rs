@@ -17,6 +17,7 @@
 //! and `cargo test` counting it as passed does not make it GPU evidence.
 use super::gpu_plan::surface_plan;
 use super::gpu_qualification::{Stream, codes, drafted_against_cpu, figures, grid, worst};
+use luxforge_core::GpuPlaneSize as PlaneExtent;
 use luxforge_core::{
     Cancel, DETAIL_EFFECT, GPU_PROGRAMS, GpuAnswer, GpuPlanRequest, Layer, LinearImage,
     LinearSettings, ModuleRegistry, Recipe, RenderContext, RenderOptions, RenderSource, SnapshotId,
@@ -182,7 +183,7 @@ fn test_program(words: Vec<u32>) -> GpuProgram {
 fn full(format: PlaneFormat) -> GpuPlane {
     GpuPlane {
         format,
-        size: PlaneSize::Reduced(1),
+        size: PlaneSize::Extent(PlaneExtent::Reduced(1)),
     }
 }
 
@@ -1456,7 +1457,7 @@ fn gpu_detail_plane_precision_is_measured() {
                 continue;
             };
             for (number, plane) in spatial.planes.iter().enumerate() {
-                if plane.size != PlaneSize::Reduced(1) {
+                if plane.size != PlaneSize::Extent(PlaneExtent::Reduced(1)) {
                     continue;
                 }
                 let half = with_formats(&shipped, |at, n, format| {

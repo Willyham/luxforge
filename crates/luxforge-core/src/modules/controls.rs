@@ -25,10 +25,12 @@ const CURVES: [(&str, &str, bool); 2] = [("master", "Master", true), ("red", "Re
 
 /// The controls proof's table, identity compilation and curve sampling.
 #[derive(Debug, Default)]
-pub struct Controls;
+pub(crate) struct Controls;
 
-/// The developer controls proof: `Controls` as a field-patch module.
-pub type ControlsModule = FieldPatchModule<Controls>;
+/// Construct the developer control proof through the supported module interface.
+pub fn controls_module() -> impl super::ToolModule {
+    FieldPatchModule::<Controls>::new()
+}
 
 /// A curve parameter of 2 to 8 points in 0.01 steps, monotone when `monotone`.
 fn curve(name: &str, monotone: bool) -> ParameterDescriptor {

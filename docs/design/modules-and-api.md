@@ -60,6 +60,8 @@ One control can behave as each source kind requires. A `number`, `action` or `pi
 
 ## Module trait
 
+The supported current cross-crate authoring interface is `ToolModule` plus the descriptor, action, context and processing types it uses. `EffectDescriptor::new`, `NewLayer::new` and `LayerUpdate::new` construct current effects/plans; artifact builders are available when an effect declares artifacts. Planning uses `StageContext::own_layer` and `insertion_index_for` for target ownership and placement, and its lazy stage, point-sample, input and sensor helpers for questions. A plan need not reconstruct mask ordering or sample a frame. The developer control proof is constructed through the opaque `controls_module()` factory. The built-in field-patch table (`FieldPatch`, `FieldPatchModule`, `Spec`, `Values`) is internal. `SpatialOperation` remains an opaque processing output constructed by built-in spatial units; there is no external spatial authoring or loading framework.
+
 ```text
 descriptor()                             -> &ModuleDescriptor
 parse(action_id, input)                  -> ActionInput { action_id, parameters }

@@ -331,7 +331,7 @@ fn draw(
             frame.width,
             frame.height,
             1,
-            crate::app::gpu_plan::boundary_format(frame.format),
+            frame.format,
         )
         .ok_or("a boundary")?;
         let grid = plan
