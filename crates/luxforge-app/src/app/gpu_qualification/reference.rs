@@ -1467,6 +1467,17 @@ fn on_screen(
     let Ok(converted) = surface_plan_over(&plan, boundary, origin, grid.as_ref(), region) else {
         return Ok(None);
     };
+    // A light behind a spatial layer is the one the picture at rest's staged sweeps keep: its
+    // tiles drawn first, for their counts alone, as the editor draws them at 100%.
+    if plan.lights.iter().any(luxforge_core::GpuLight::staged) {
+        let Some(Ok(tiles)) = &rest.tiles else {
+            return Ok(None);
+        };
+        let handed = rest_now(gpu, tiles, 1)?;
+        if surface.rest(gpu, &handed).is_err() {
+            return Ok(None);
+        }
+    }
     let Ok(drawn) = surface.draw(gpu, &converted) else {
         return Ok(None);
     };
