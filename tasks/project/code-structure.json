@@ -271,7 +271,7 @@
     {
       "id": "TASK-005",
       "description": "Use shared resource-layout rules for GPU prediction, admission and allocation.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-004"
       ],
@@ -280,7 +280,7 @@
         "Logical estimates, allocation, resident/retiring resources, light-buffer allowances and process RSS remain distinct. The unconverted fallback estimate is not an upper bound.",
         "No budget number, quality threshold or total-memory accounting scope changes in this task.",
         "Re-reviewed current main 3ac13023 and TASK-004: runtime light references remain distinct from semantic fixed extents. Share pure plane roles, placement/counting and pool maxima, parameter sizing/alignment, output buckets and buffer capacities. Keep existing device admission and logical light allowances; photo presentation apron allocation remains a caller input.",
-        "Implemented shared layout; gpu-types 5 passed, UI GPU 137 passed/2 ignored, app gpu_rest 8 passed/3 ignored including device allocation and staged/chained equality. Quick passed at artifacts/code-structure-preview-layout-quick/summary.json; rendered handoff pending. Current main a20cf0b8 re-reviewed: documentation/owner decisions only, no implementation changes; accepted current tolerances, counts, fallback and budgets reinforce this scope."
+        "Accepted shared layout: gpu-types 5 passed, UI GPU 137 passed/2 ignored, app gpu_rest 8 passed/3 ignored; actual allocation test rerun with --nocapture passed without a skip. Quick passed at artifacts/code-structure-preview-layout-quick/summary.json. Rendered at artifacts/code-structure-preview-layout-rendered/summary.json: 57 runnable components passed on Apple M4 Pro Metal; GPU qualification no errors and sources unchanged, 118 authentic RAW cells unavailable without the private manifest. Available-source integration accepted; full authentic qualification remains TASK-017. Current main a20cf0b8 re-reviewed: docs/owner decisions only; current tolerances, counts, fallback and budgets preserved."
       ],
       "context_links": [
         {
@@ -339,7 +339,7 @@
     {
       "id": "TASK-006",
       "description": "Extract shader compilation, execution and allocation into the decided Iced-free GPU backend.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-005"
       ],
@@ -477,14 +477,15 @@
     {
       "id": "TASK-008",
       "description": "Prepare equivalent GPU stream work once and derive strategy/tile candidates from it.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-005"
       ],
       "extra_context": [
         "R6. plan_stream, staged/light sweeps and smaller-side retries each prepare a plan; staged selection builds then replaces a tile list.",
         "Consume the shared primitives/layout to derive budget candidates. Reduced stage, sampling or draft differences remain separate preparations.",
-        "Prepared evaluations stay within current read/stream lifetimes; source gates must not be retained in desktop/global caches. Timing belongs to integrated TASK-017."
+        "Prepared evaluations stay within current read/stream lifetimes; source gates must not be retained in desktop/global caches. Timing belongs to integrated TASK-017.",
+        "Re-reviewed current main a20cf0b8, merged docs-only decisions, current code and completed TASK-005. Exact output compilation already belongs to Evaluation and has the same Point sampling/full dimensions/no drafted shape as GPU stream planning. Reuse it in a worker-scoped PreparedStream with one source-derived GPU plan; preserve immediate caller refusal and initial window validation. Derive sweep/light/side candidates from it and move the selected last sweep tiles into the stream without rebuilding. No competing implementation worktree exists."
       ],
       "context_links": [
         {
@@ -733,14 +734,17 @@
     {
       "id": "TASK-012",
       "description": "Group GPU preview resources by identity/readiness and centralize settled-picture/counts eligibility.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-011"
       ],
       "extra_context": [
         "R8 desktop half. Consume the explicit request selection/intent from TASK-011; preserve overlapping Compare, retained pictures, warm work and counts.",
         "Replace only demonstrably coupled options/flags with small resource-phase types. Keep crop, generation cancellation, dissolve and compile-timeout policy.",
-        "Do not introduce one exclusive global state or move work onto UI/catalog threads."
+        "Do not introduce one exclusive global state or move work onto UI/catalog threads.",
+        "Re-reviewed current main a20cf0b8 and completed TASK-011: StageRest and HeldRest conversion options are mutually coupled; group pending/ready/refused per resource and keep ready picture/counts variants together. Centralize gpu_rest_handed/gpu_counts_handed common eligibility. Retain separate source, crop, Compare, warm and counts-target lifetimes and all existing timeout/source/version guards.",
+        "Implemented per-resource conversion phases and paired settled variants; scoped GPU 205 passed/22 ignored and Compare 18 passed. Quick passed at artifacts/code-structure-resources-caches-quick-final/summary.json; affected rendered handoff accepted on M4 Pro Metal, macos-background-bundle. Quick evidence: artifacts/code-structure-resources-caches-quick-final/summary.json.",
+        "Rendered scenarios all passed with correlated state/logs/captures: artifacts/code-structure-resources-caches-gpu-preview/result.json, artifacts/code-structure-resources-caches-gpu-preview-zoom/result.json, artifacts/code-structure-resources-caches-compare-tiled/result.json, artifacts/code-structure-resources-caches-crop-draft/result.json, artifacts/code-structure-resources-caches-histogram/result.json, artifacts/code-structure-resources-caches-viewport-region/result.json. Integrated native/portability/timing qualification remains TASK-017."
       ],
       "context_links": [
         {
@@ -789,7 +793,12 @@
           "tools/cargo-cached test --locked -p luxforge-app gpu",
           "tools/cargo-cached test --locked -p luxforge-app compare",
           "tools/cargo-cached xtask verify --tier quick --output NEW_DIR",
-          "tools/cargo-cached xtask verify --tier rendered --output NEW_DIR"
+          "tools/cargo-cached xtask smoke --scenario gpu-preview --binary target/release/luxforge --output NEW_DIR",
+          "tools/cargo-cached xtask smoke --scenario gpu-preview-zoom --binary target/release/luxforge --output NEW_DIR",
+          "tools/cargo-cached xtask smoke --scenario compare-tiled --binary target/release/luxforge --output NEW_DIR",
+          "tools/cargo-cached xtask smoke --scenario crop-draft --binary target/release/luxforge --output NEW_DIR",
+          "tools/cargo-cached xtask smoke --scenario histogram --binary target/release/luxforge --output NEW_DIR",
+          "tools/cargo-cached xtask smoke --scenario viewport-region --binary target/release/luxforge --output NEW_DIR"
         ],
         "expected_results": [
           "Current preview transitions and honest counts survive simpler resource state."
@@ -856,14 +865,17 @@
     {
       "id": "TASK-014",
       "description": "Share bounded decoded-handle cache mechanics while preserving grid and loupe policies.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-013"
       ],
       "extra_context": [
         "R9 cache half. Use the shared typed source/answer seam to centralize key/side matching, accounting, one-time handles, generation acceptance and protected-entry eviction.",
         "Preserve separate budgets/count caps/workers and wanted/priority policy. Loupe roles/lookahead/cancellation and grid revision/cell planning remain distinct.",
-        "Reuse Latest; do not create a generic cache framework or merge the complete controllers."
+        "Reuse Latest; do not create a generic cache framework or merge the complete controllers.",
+        "Re-reviewed current main a20cf0b8 after its decision/docs-only merge; TASK-013 completed. Keep source-key acceptance (newer plans may still want a finished decode), grid supersession/shrinking plans and loupe abandoned-decode/lookahead policies. Share private handles, decode errors/handoff, exact key/side matches, accounting and atomic protected eviction with explicit caller caps/order; do not combine workers/controllers.",
+        "Implemented private decoded_handles; shared stale/reuse/accounting/eviction/handoff tests 3 passed, grid 11 passed, loupe 40 passed, ownership rule 1 passed. Quick passed at artifacts/code-structure-resources-caches-quick-final/summary.json; affected rendered handoff accepted on M4 Pro Metal, macos-background-bundle. Quick evidence: artifacts/code-structure-resources-caches-quick-final/summary.json.",
+        "Rendered scenarios all passed with correlated state/logs/captures: artifacts/code-structure-resources-caches-select/result.json, artifacts/code-structure-resources-caches-loupe/result.json. Integrated native/portability/timing qualification remains TASK-017."
       ],
       "context_links": [
         {
@@ -912,7 +924,8 @@
           "tools/cargo-cached test --locked -p luxforge-app select_previews",
           "tools/cargo-cached test --locked -p luxforge-app loupe",
           "tools/cargo-cached xtask verify --tier quick --output NEW_DIR",
-          "tools/cargo-cached xtask verify --tier rendered --output NEW_DIR"
+          "tools/cargo-cached xtask smoke --scenario select --binary target/release/luxforge --output NEW_DIR",
+          "tools/cargo-cached xtask smoke --scenario loupe --binary target/release/luxforge --output NEW_DIR"
         ],
         "expected_results": [
           "Reuse removes matching mechanisms without conflating policies or doubling budgets."
