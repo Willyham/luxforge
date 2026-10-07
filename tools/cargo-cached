@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Pinned, local-only compiler caching for agent Cargo commands (macOS and Linux).
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "$0")/.." && pwd -P)"
+if [[ "${LUXFORGE_CACHE_OFF:-0}" == 1 ]]; then
+  exec cargo "$@"
+fi
+case "$(uname -s)" in
+  Darwin|Linux) ;;
+  *) echo 'cargo-cached supports macOS and Linux; use cargo directly on this platform.' >&2; exit 1 ;;
+esac
+
+tool_root="${LUXFORGE_SCCACHE_ROOT:-$HOME/.local/share/luxforge/sccache/0.18.0}"
+cache_root="${LUXFORGE_SCCACHE_CACHE:-$HOME/.cache/luxforge/sccache-0.18.0-safe-v1}"
+tool="$tool_root/bin/sccache"
+if [[ ! -x "$tool" ]] || [[ "$("$tool" --version)" != 'sccache 0.18.0' ]]; then
+  echo "Install pinned sccache: cargo install --locked --version 0.18.0 --root \"$tool_root\" sccache" >&2
+  exit 1
+fi
+if [[ -n "${RUSTC_WRAPPER:-}" && "$RUSTC_WRAPPER" != "$repo_root/tools/rustc-cache" ]]; then
+  echo 'Another RUSTC_WRAPPER is set; use LUXFORGE_CACHE_OFF=1 to preserve that wrapper.' >&2
+  exit 1
+fi
+(umask 077; mkdir -p "$cache_root")
+cache_root="$(cd "$cache_root" && pwd -P)"
+
+# Ignore inherited remote, normalization and experimental cache settings. The dedicated
+# socket gives all worktrees one server per local cache, without restarting other builds.
+for cache_name in "${!SCCACHE_@}"; do
+  unset "$cache_name"
+done
+export SCCACHE_CONF="$repo_root/.cargo/sccache.toml"
+export SCCACHE_DIR="$cache_root/objects"
+export SCCACHE_SERVER_UDS="$cache_root/server.sock"
+export SCCACHE_DIRECT=false
+export SCCACHE_CACHE_SIZE=10G
+export LUXFORGE_SCCACHE_BIN="$tool"
+export RUSTC_WRAPPER="$repo_root/tools/rustc-cache"
+export PATH="$tool_root/bin:$PATH"
+
+# Preserve compiler choice. Complex caller-provided compiler commands stay uncached.
+cc_compiler="${CC:-cc}"
+cxx_compiler="${CXX:-c++}"
+native_identity="$(
+  for compiler in "$cc_compiler" "$cxx_compiler"; do
+    if [[ "$compiler" != *[[:space:]]* ]]; then
+      "$compiler" --version
+    fi
+  done
+  if [[ "$(uname -s)" == Darwin ]]; then
+    sdk_path="$(xcrun --show-sdk-path)"
+    printf '%s\n' "$sdk_path"
+    git hash-object "$sdk_path/SDKSettings.json"
+  fi
+)"
+export SCCACHE_C_CUSTOM_CACHE_BUSTER="$(printf '%s' "$native_identity" | git hash-object --stdin)"
+if [[ "$cc_compiler" != *[[:space:]]* ]]; then
+  export CC="sccache $cc_compiler"
+fi
+if [[ "$cxx_compiler" != *[[:space:]]* ]]; then
+  export CXX="sccache $cxx_compiler"
+fi
+
+# Do not change optimization, incremental compilation, flags, or target directories.
+if [[ "${1:-}" == --cache-stats ]]; then
+  shift
+  exec "$tool" --show-stats "$@"
+fi
+# Refuse an accidentally started server with another policy in this namespace.
+# Do not stop it: another worktree may be compiling through it.
+profile_stats="$("$tool" --show-stats)"
+actual_location="$(printf '%s\n' "$profile_stats" | sed -n 's/^Cache location[[:blank:]]*//p')"
+actual_basedirs="$(printf '%s\n' "$profile_stats" | sed -n 's/^Base directories[[:blank:]]*//p')"
+actual_direct="$(printf '%s\n' "$profile_stats" | sed -n 's/^Use direct\/preprocessor mode?[[:blank:]]*//p')"
+if [[ "$actual_location" != "Local disk: \"$SCCACHE_DIR\"" || "$actual_basedirs" != '(none)' || "$actual_direct" != no ]]; then
+  echo 'The shared cache server has a different policy; refusing compilation. Inspect --cache-stats or use LUXFORGE_CACHE_OFF=1.' >&2
+  exit 1
+fi
+exec cargo "$@"
