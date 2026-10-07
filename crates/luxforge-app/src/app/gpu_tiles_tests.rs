@@ -632,4 +632,5 @@ fn a_60_megapixel_raw_through_detail_and_presence_fits_the_budget_in_2048_pixel_
     };
     eprintln!("{test}: a summed halo of {halo} px, the anchor {anchor:?}");
     assert!(charge(2048) <= GPU_TILE_BUDGET - super::gpu_tiles::STREAM_READ_RESERVE);
+    charge(1024);
 }

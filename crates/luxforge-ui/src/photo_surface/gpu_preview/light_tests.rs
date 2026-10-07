@@ -172,12 +172,14 @@ fn a_light_links_steps_name_its_light() {
     let light = GpuLight {
         stage: (300, 200),
         steps: steps(writing(3)),
+        input: super::LightInput::Source,
     };
     assert_eq!(light.index(), Some(3));
     assert_eq!(light.block(), Some(16));
     let reader = GpuLight {
         stage: (300, 200),
         steps: steps(reading(3)),
+        input: super::LightInput::Source,
     };
     assert_eq!(reader.index(), None);
     assert_eq!(

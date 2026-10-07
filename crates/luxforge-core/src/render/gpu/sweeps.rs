@@ -10,6 +10,11 @@
 //!   after it, and a stack whose one large reach is its last link is drawn chained, as before. The
 //!   first sweep also runs the content operations before the first spatial one, the last the
 //!   geometry tail and the output operations after the last.
+//! - **Staged lights.** An operation reading a light whose input is the spatial operations before
+//!   it ([`super::GpuLightInput::Stage`], Dehaze behind Clarity or Detail) always starts a sweep,
+//!   whatever the reach, so the stage texture that sweep reads holds the light's exact input; the
+//!   sweep before it covers the whole content stage, and the light is reduced from the texture
+//!   before the reading sweep's first tile ([`GpuSweep::lights`]).
 //! - **Stage textures.** Every sweep but the last writes its tiles' rectangles of its last link's
 //!   output, the content stage in the boundary's format, into a stage texture the size of the
 //!   content stage; the next sweep cuts its windows from it. At most [`SWEEP_STAGE_TEXTURES`] are
@@ -137,6 +142,11 @@ pub struct GpuSweep {
     pub tiles: Vec<RestTile>,
     /// What its middle tile's slot and its light links take by the plan's own figures.
     pub slot_bytes: u64,
+    /// The plan's lights, `k` of [`GpuPlan::lights`], whose input is the stage texture it reads
+    /// ([`super::GpuLightInput::Stage`]): each reduced from the whole texture before its first
+    /// tile, which its first operation reads. Empty for a sweep whose lights, if any, are over the
+    /// source.
+    pub lights: Vec<usize>,
 }
 
 /// What one spatial operation carries into a window: its summed halo and the larger of its
@@ -146,14 +156,36 @@ fn reach(spatial: &super::GpuSpatial) -> u32 {
     spatial.halos.iter().sum::<u32>() + lead.0.max(lead.1)
 }
 
+/// The staged lights operation `spatial` of `plan` reads ([`super::GpuLightInput::Stage`]): their
+/// places among the plan's lights.
+fn staged_lights<'a>(
+    plan: &'a GpuPlan,
+    spatial: &'a [super::GpuSpatial],
+) -> impl Iterator<Item = usize> + 'a {
+    spatial.iter().filter_map(|operation| {
+        operation.light?;
+        plan.light_of(operation.layer)
+            .filter(|k| plan.lights[*k].staged())
+    })
+}
+
 /// `plan`'s spatial operations grouped into sweeps, in order: a sweep ends before an operation
-/// only where the reach of those already in it passes [`SWEEP_SPLIT_REACH`]. One range, `0..0`,
-/// for a plan with none. `O(passes)`.
+/// where the reach of those already in it passes [`SWEEP_SPLIT_REACH`], and before every operation
+/// reading a staged light. One range, `0..0`, for a plan with none. `O(passes)`.
 pub(crate) fn sweep_ranges(plan: &GpuPlan) -> Vec<Range<usize>> {
+    ranges_of(plan, true)
+}
+
+/// `plan`'s spatial operations grouped into sweeps, split before every operation reading a staged
+/// light and, `by_reach`, where the reach already in a sweep passes [`SWEEP_SPLIT_REACH`].
+fn ranges_of(plan: &GpuPlan, by_reach: bool) -> Vec<Range<usize>> {
     let mut ranges = Vec::new();
     let (mut start, mut carried) = (0, 0);
     for (index, spatial) in plan.spatial.iter().enumerate() {
-        if index > start && carried > SWEEP_SPLIT_REACH {
+        let staged = staged_lights(plan, std::slice::from_ref(spatial))
+            .next()
+            .is_some();
+        if index > start && ((by_reach && carried > SWEEP_SPLIT_REACH) || staged) {
             ranges.push(start..index);
             (start, carried) = (index, 0);
         }
@@ -191,6 +223,23 @@ pub(crate) struct SweepRequest<'a> {
 /// last sweep back, each earlier sweep covering what the one after it reads: `O(sweeps × sides ×
 /// segments + tiles × segments)`, no pixel read.
 pub(crate) fn plan_sweeps(request: &SweepRequest) -> GpuStaging {
+    let staging = plan_ranges(request, sweep_ranges(request.plan));
+    // A stack reading a staged light that does not fit is tried again split only where a light
+    // needs it: fewer sweeps hold fewer stage textures, each sweep's windows carrying more.
+    if let GpuStaging::Chained(Chained::OverBudget { .. }) = &staging {
+        let forced = ranges_of(request.plan, false);
+        if forced.len() >= 2
+            && forced != sweep_ranges(request.plan)
+            && let staged @ GpuStaging::Staged(_) = plan_ranges(request, forced)
+        {
+            return staged;
+        }
+    }
+    staging
+}
+
+/// [`plan_sweeps`] over the sweeps `ranges`.
+fn plan_ranges(request: &SweepRequest, ranges: Vec<Range<usize>>) -> GpuStaging {
     let SweepRequest {
         compiled,
         source,
@@ -200,7 +249,6 @@ pub(crate) fn plan_sweeps(request: &SweepRequest) -> GpuStaging {
         budget,
         order,
     } = *request;
-    let ranges = sweep_ranges(plan);
     if ranges.len() < 2 {
         return GpuStaging::Chained(Chained::OneSweep);
     }
@@ -242,8 +290,10 @@ pub(crate) fn plan_sweeps(request: &SweepRequest) -> GpuStaging {
                 produced.width, produced.height, stage.width, stage.height
             )));
         }
+        // A sweep before one reading a staged light writes the whole stage the light reduces.
         let covers = match sweeps.last() {
             None => Region::whole(produced),
+            Some(after) if !after.lights.is_empty() => Region::whole(produced),
             Some(after) => bounding(after.tiles.iter().map(|tile| tile.window)),
         };
         let anchor = anchor_of(&plan.spatial[range.clone()]);
@@ -327,6 +377,10 @@ pub(crate) fn plan_sweeps(request: &SweepRequest) -> GpuStaging {
             side,
             tiles,
             slot_bytes,
+            lights: match first {
+                true => Vec::new(),
+                false => staged_lights(plan, &plan.spatial[range.clone()]).collect(),
+            },
         });
     }
     sweeps.reverse();
@@ -359,4 +413,177 @@ fn bounding(regions: impl Iterator<Item = Region>) -> Region {
         width: x1 - x0,
         height: y1 - y0,
     })
+}
+
+/// A staged light's sweep with no stage texture ([`plan_light_sweeps`]): the spatial operations
+/// before the light's own drawn over tiles of the whole content stage, each tile's rectangle of
+/// their output reduced into the light's block plane where it lies, then the light selected — the
+/// same blocks, summed in the same order, as a reduction of the whole stage held in a stage
+/// texture, so the same light.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GpuLightSweep {
+    /// The light it computes, `k` of [`GpuPlan::lights`].
+    pub light: usize,
+    /// The plan's spatial operations it runs, `plan.spatial[spatial]`, each with the colour
+    /// operations after it, after the content operations: every one before the light's.
+    pub spatial: Range<usize>,
+    /// Where its windows start: its own spatial operations' anchor.
+    pub anchor: GpuAnchor,
+    /// Its tiles' side, a multiple of the light's 16-pixel block, so every block lies in one tile.
+    pub side: u32,
+    /// Its tiles, row by row from the content stage's origin, covering it once: each its
+    /// rectangle and the window of the source it reads, anchored.
+    pub tiles: Vec<RestTile>,
+    /// What its middle tile's slot, its light links and the light's own link take by the plan's
+    /// own figures.
+    pub slot_bytes: u64,
+}
+
+/// What a light link reducing the content stage `stage` of `light` in tiles of `side` takes by the
+/// plan's own figures: the stage's block plane and one tile texture of the side in `format`.
+fn light_sweep_link_bytes(light: &super::GpuLight, format: BoundaryFormat, side: u32) -> u64 {
+    let stage = light.stage;
+    let blocks = u64::from(stage.width.div_ceil(LIGHT_BLOCK))
+        * u64::from(stage.height.div_ceil(LIGHT_BLOCK))
+        * 16;
+    blocks
+        + u64::from(side.min(stage.width))
+            * u64::from(side.min(stage.height))
+            * format.texel_bytes() as u64
+}
+
+/// The side of the block a light's reduction writes, which a light sweep's tiles are multiples of.
+const LIGHT_BLOCK: u32 = 16;
+
+/// The light sweeps of `request`'s plan ([`GpuLightSweep`]), one for each staged light, in the
+/// plan's order, so a light behind an earlier one reads it kept: what a picture at rest, an export
+/// or a read whose stage textures do not fit draws before its chained tiles, which then read each
+/// light kept. Each takes the longest of `request`'s sides that are multiples of the block whose
+/// middle tile's slot and links fit the budget beside nothing else and carry at most
+/// [`REST_TILE_WORK`]; why none fits otherwise. Empty for a plan reading no staged light.
+/// `O(lights × sides × segments + tiles × segments)`, no pixel read.
+pub(crate) fn plan_light_sweeps(request: &SweepRequest) -> Result<Vec<GpuLightSweep>, Chained> {
+    let SweepRequest {
+        compiled,
+        source,
+        plan,
+        format,
+        sides,
+        budget,
+        ..
+    } = *request;
+    let entries: Vec<usize> = compiled
+        .segments
+        .iter()
+        .enumerate()
+        .filter(|(_, segment)| matches!(segment.entry, Some(Entry::Spatial(_))))
+        .map(|(index, _)| index)
+        .collect();
+    if entries.len() != plan.spatial.len() {
+        return Err(Chained::Unplannable(format!(
+            "{} spatial boundaries compiled for {} planned spatial operations",
+            entries.len(),
+            plan.spatial.len()
+        )));
+    }
+    let stage = plan.boundary.stage;
+    let mut sweeps = Vec::new();
+    for (k, light) in plan
+        .lights
+        .iter()
+        .enumerate()
+        .filter(|(_, light)| light.staged())
+    {
+        let Some(at) = plan
+            .spatial
+            .iter()
+            .position(|operation| operation.layer == light.layer)
+        else {
+            continue;
+        };
+        if at == 0 {
+            return Err(Chained::Unplannable(format!(
+                "light {k} is staged with no spatial operation before it"
+            )));
+        }
+        let end = entries[at] - 1;
+        let produced = compiled.segments[end].stage();
+        if produced != stage || light.stage != stage {
+            return Err(Chained::Unplannable(format!(
+                "light {k}'s input is a {}x{} stage, not the {}x{} content stage",
+                produced.width, produced.height, stage.width, stage.height
+            )));
+        }
+        let anchor = anchor_of(&plan.spatial[..at]);
+        let window_of = |rect: Region| {
+            WindowPlan::gpu_window_between(compiled, source, 0, end, rect)
+                .map(|window| anchored(window, anchor))
+                .map_err(|reason| {
+                    Chained::Unplannable(format!(
+                        "light {k}'s sweep tile at ({}, {}): {}",
+                        rect.x0,
+                        rect.y0,
+                        reason.reason()
+                    ))
+                })
+        };
+        let links = Links {
+            spatial: 0..at,
+            first: true,
+            last: false,
+        };
+        let work = at as u64;
+        let mut chosen = None;
+        let mut smallest = 0;
+        for &side in sides.iter().filter(|side| *side % LIGHT_BLOCK == 0) {
+            let (width, height) = (side.min(stage.width), side.min(stage.height));
+            let middle = Region {
+                x0: (stage.width - width) / 2,
+                y0: (stage.height - height) / 2,
+                width,
+                height,
+            };
+            let window = window_of(middle)?;
+            let slot = links_bytes(plan, &links, window, format, (width, height), true)
+                + lights_bytes(plan, 0..at, format)
+                + light_sweep_link_bytes(light, format, side);
+            smallest = slot;
+            if budget
+                .is_none_or(|budget| slot <= budget && window.pixels() * work <= REST_TILE_WORK)
+            {
+                chosen = Some((side, slot));
+                break;
+            }
+        }
+        let Some((side, slot_bytes)) = chosen else {
+            return Err(Chained::OverBudget {
+                needed: smallest,
+                budget: budget.unwrap_or(0),
+            });
+        };
+        let mut tiles = Vec::new();
+        for y0 in (0..stage.height).step_by(side as usize) {
+            for x0 in (0..stage.width).step_by(side as usize) {
+                let rect = Region {
+                    x0,
+                    y0,
+                    width: side.min(stage.width - x0),
+                    height: side.min(stage.height - y0),
+                };
+                tiles.push(RestTile {
+                    rect,
+                    window: window_of(rect)?,
+                });
+            }
+        }
+        sweeps.push(GpuLightSweep {
+            light: k,
+            spatial: 0..at,
+            anchor,
+            side,
+            tiles,
+            slot_bytes,
+        });
+    }
+    Ok(sweeps)
 }

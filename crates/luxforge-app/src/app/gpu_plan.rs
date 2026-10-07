@@ -33,13 +33,14 @@
 //! Every pass the surface draws ends in the CPU's output encoding, whose tables are the core's:
 //! [`install_output_encoding`] hands them over once at start.
 use luxforge_core::{
-    ComponentMode, CoordinateGrid, GpuDescription, GpuGeometry, GpuMask, GpuOperation,
-    GpuPassShape, GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuSpatial, Region, Stage,
+    ComponentMode, CoordinateGrid, GpuDescription, GpuGeometry, GpuLightInput, GpuMask,
+    GpuOperation, GpuPassShape, GpuPlaneFormat, GpuPlaneSize, GpuPosition, GpuSpatial, Region,
+    Stage,
 };
 use luxforge_ui::photo_surface::{
     Coverage, CoverageComponent, CoverageMode, GpuBoundary, GpuPlan, GpuProgram, GpuRegion,
     GpuStep, GpuTail, MaskedColour, PositionMap, TexelMap,
-    gpu_preview::{self, PassShape, PlaneFormat, PlaneSize},
+    gpu_preview::{self, PassShape, PlaneFormat, PlaneSize, light::LightInput},
 };
 use std::{borrow::Cow, sync::Arc};
 
@@ -252,19 +253,38 @@ pub(crate) fn sweep_plan_over(
         }));
         (stage.width, stage.height)
     };
+    // A light behind a spatial operation is reduced from the stage texture the sweep reads, the
+    // exact output of the operations before it, which the core split the sweep for.
     let lights = read
         .iter()
         .enumerate()
         .map(|(k, held)| {
             let light = &plan.lights[*held];
-            let link = match light.over_source() {
-                true => light,
-                false => light
-                    .stand_in
-                    .as_deref()
-                    .ok_or(Unrunnable::Light { layer: light.layer })?,
-            };
-            surface_light(link, u32::try_from(k).expect("a light index"))
+            let k = u32::try_from(k).expect("a light index");
+            match (&light.input, sweep.reads) {
+                (GpuLightInput::Source, _) => surface_light(light, k),
+                (GpuLightInput::Stage { key }, Some(texture)) if sweep.lights.contains(held) => {
+                    Ok(gpu_preview::light::GpuLight {
+                        stage: (light.stage.width, light.stage.height),
+                        steps: vec![light_step(light, k)?],
+                        input: LightInput::Stage {
+                            key: input_key(key),
+                            texture,
+                        },
+                    })
+                }
+                // A first sweep reads no stage texture: a light sweep's, which reads the earlier
+                // lights its steps read kept, computed by the light sweeps before it.
+                (GpuLightInput::Stage { key }, None) => Ok(gpu_preview::light::GpuLight {
+                    stage: (light.stage.width, light.stage.height),
+                    steps: vec![light_step(light, k)?],
+                    input: LightInput::Kept {
+                        key: input_key(key),
+                        stand_in: None,
+                    },
+                }),
+                (GpuLightInput::Stage { .. }, _) => Err(Unrunnable::Light { layer: light.layer }),
+            }
         })
         .collect::<Result<_, _>>()?;
     if rect.is_empty() || rect.x1() > stage.0 || rect.y1() > stage.1 {
@@ -439,35 +459,43 @@ fn light_of(plan: &luxforge_core::GpuPlan, spatial: &GpuSpatial) -> Option<u32> 
 }
 
 /// The light links of `plan` as the surface runs them before its steps ([`gpu_preview::light`]),
-/// light `k` the `k`-th: each one's colour operations' steps, as a plan's are converted, then its
-/// own step, the plane its selection writes the slot's light `k`. A light behind a spatial
-/// operation, whose exact input only a sweep of the whole stage through it computes, which no slot
-/// runs yet, is computed by its stand-in over the source with those operations left out
-/// ([`luxforge_core::GpuLight::stand_in`]).
+/// light `k` the `k`-th ([`surface_light`]).
 pub(crate) fn surface_lights(
     plan: &luxforge_core::GpuPlan,
 ) -> Result<Vec<gpu_preview::light::GpuLight>, Unrunnable> {
     plan.lights
         .iter()
         .enumerate()
-        .map(|(k, light)| {
-            let link = match light.over_source() {
-                true => light,
-                false => light
-                    .stand_in
-                    .as_deref()
-                    .ok_or(Unrunnable::Light { layer: light.layer })?,
-            };
-            surface_light(link, u32::try_from(k).expect("a light index"))
-        })
+        .map(|(k, light)| surface_light(light, u32::try_from(k).expect("a light index")))
         .collect()
 }
 
-/// One light link over the source as the surface's, writing the slot's light `k`.
+/// One light link as the surface's, writing the slot's light `k`. A link over the source is its
+/// colour operations' steps, as a plan's are converted, then its own step, the plane its selection
+/// writes the slot's light `k`. A light behind a spatial operation, whose exact input only a
+/// picture at rest's staged sweep computes ([`luxforge_core::GpuLightInput::Stage`]), is read as
+/// the light that sweep kept under its input's key ([`LightInput::Kept`]): with its stand-in over
+/// the source, those operations left out, computed in its place where none is kept, for a drag; and
+/// with none, for a picture at rest's view plan, which waits for it
+/// ([`luxforge_core::GpuLight::stand_in`]).
 pub(crate) fn surface_light(
     light: &luxforge_core::GpuLight,
     k: u32,
 ) -> Result<gpu_preview::light::GpuLight, Unrunnable> {
+    if let GpuLightInput::Stage { key } = &light.input {
+        let stand_in = match light.stand_in.as_deref() {
+            Some(stand_in) => Some(Box::new(surface_light(stand_in, k)?)),
+            None => None,
+        };
+        return Ok(gpu_preview::light::GpuLight {
+            stage: (light.stage.width, light.stage.height),
+            steps: vec![light_step(light, k)?],
+            input: LightInput::Kept {
+                key: input_key(key),
+                stand_in,
+            },
+        });
+    }
     if !light.over_source() {
         return Err(Unrunnable::Light { layer: light.layer });
     }
@@ -475,6 +503,67 @@ pub(crate) fn surface_light(
     for operation in &light.content {
         operation_steps(operation, &mut steps)?;
     }
+    steps.push(light_step(light, k)?);
+    Ok(gpu_preview::light::GpuLight {
+        stage: (light.stage.width, light.stage.height),
+        steps,
+        input: LightInput::Source,
+    })
+}
+
+/// `sweep`, a light sweep of `plan`, as the staged sweep of `plan` its tiles are converted as
+/// ([`sweep_plan_over`]): the first, over the content stage, writing no stage texture.
+pub(crate) fn light_sweep_as_sweep(
+    plan: &luxforge_core::GpuPlan,
+    sweep: &luxforge_core::GpuLightSweep,
+) -> luxforge_core::GpuSweep {
+    let stage = plan.boundary.stage;
+    luxforge_core::GpuSweep {
+        spatial: sweep.spatial.clone(),
+        first: true,
+        last: false,
+        anchor: sweep.anchor,
+        reach: 0,
+        reads: None,
+        writes: None,
+        covers: Region {
+            x0: 0,
+            y0: 0,
+            width: stage.width,
+            height: stage.height,
+        },
+        side: sweep.side,
+        tiles: Vec::new(),
+        slot_bytes: sweep.slot_bytes,
+        lights: Vec::new(),
+    }
+}
+
+/// The light `sweep`, a light sweep of `plan`, computes, as the surface's light reducer runs it:
+/// its own step alone, read kept under its input's key with no stand-in.
+pub(crate) fn light_sweep_light(
+    plan: &luxforge_core::GpuPlan,
+    sweep: &luxforge_core::GpuLightSweep,
+) -> Result<gpu_preview::light::GpuLight, Unrunnable> {
+    let light = plan
+        .lights
+        .get(sweep.light)
+        .ok_or(Unrunnable::Light { layer: 0 })?;
+    let GpuLightInput::Stage { key } = &light.input else {
+        return Err(Unrunnable::Light { layer: light.layer });
+    };
+    Ok(gpu_preview::light::GpuLight {
+        stage: (light.stage.width, light.stage.height),
+        steps: vec![light_step(light, 0)?],
+        input: LightInput::Kept {
+            key: input_key(key),
+            stand_in: None,
+        },
+    })
+}
+
+/// A light link's own step: its light passes, the plane its selection writes the slot's light `k`.
+fn light_step(light: &luxforge_core::GpuLight, k: u32) -> Result<GpuStep, Unrunnable> {
     let mut step = spatial_step(&light.light, None)?;
     let GpuStep::Spatial(spatial) = &mut step else {
         unreachable!("a light's step is spatial");
@@ -486,11 +575,15 @@ pub(crate) fn surface_light(
         .filter(|&plane| plane < spatial.planes.len())
         .ok_or(Unrunnable::Light { layer: light.layer })?;
     spatial.planes[written].size = PlaneSize::Light(k);
-    steps.push(step);
-    Ok(gpu_preview::light::GpuLight {
-        stage: (light.stage.width, light.stage.height),
-        steps,
-    })
+    Ok(step)
+}
+
+/// A staged light's input key as the surface keeps its light under: the core's key hashed.
+fn input_key(key: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::hash::DefaultHasher::new();
+    key.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// The spatial operation as the surface's spatial step: the core's static program text, borrowed,
