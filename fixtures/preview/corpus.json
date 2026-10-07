@@ -392,6 +392,18 @@
       ]
     },
     {
+      "id": "presence-dehaze-masked-behind-clarity",
+      "family": "presence",
+      "class": "spatial",
+      "description": "Presence clarity +60, then a radial's masked Presence of Dehaze +60: Dehaze's light reads Clarity's output over the whole stage, which the sweep before it writes into a stage texture the light is reduced from. The stack the stand-in light, Clarity left out, drew past the limits on the Z6.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.set-presence", "params": {"clarity": 60}}},
+        {"api": {"method": "mask.create-radial", "params": {"x": 0.5, "y": 0.5, "radius_x": 0.28, "radius_y": 0.22, "angle": 18.0, "feather": 45.0}}},
+        {"api": {"method": "edit.set-presence", "params": {"mask": {"name": "Mask 1"}, "dehaze": 60}}}
+      ]
+    },
+    {
       "id": "detail-moderate",
       "family": "detail",
       "class": "spatial",

@@ -839,6 +839,29 @@ fn picture(
     let charged = qualifier
         .charged_bytes(&converted)
         .map_err(|reason| format!("{reason:?}"))?;
+    // A light behind a spatial layer is computed by the picture at rest's staged sweeps alone, and
+    // the view plan reads it kept, as the editor draws them: the tiles first, reduced to the view
+    // or for their counts alone. A stack whose sweeps cannot be drawn is the reference's at rest.
+    let staged = plan.lights.iter().any(luxforge_core::GpuLight::staged);
+    let mut drawn_rest = None;
+    if staged {
+        match &rest.tiles {
+            Some(Ok(tiles)) => {
+                let handed = rest_now(gpu, tiles, 1)?;
+                let drawn = surface
+                    .rest(gpu, &handed)
+                    .map_err(|fallback| format!("the picture at rest in tiles: {fallback:?}"))?;
+                drawn_rest = Some((drawn, tiles.light_sweeps.len()));
+            }
+            Some(Err(reason)) => {
+                return Ok(gap(format!(
+                    "{}: the reference draws this stack at rest: {reason}",
+                    reason.code()
+                )));
+            }
+            None => return Ok(gap("the picture at rest planned no tiles")),
+        }
+    }
     let (motion, size) = match surface.draw(gpu, &converted) {
         Ok(drawn) => (rgb_codes(&drawn.codes), drawn.size),
         Err(fallback) => return Ok(gap(format!("the view plan is not drawn: {fallback:?}"))),
@@ -859,14 +882,21 @@ fn picture(
                     "the tiles are reduced to {view:?}, the view plan draws {size:?}"
                 ));
             }
-            let drawn = surface
-                .rest(gpu, &handed)
-                .map_err(|fallback| format!("the picture at rest in tiles: {fallback:?}"))?;
+            let light_sweeps = tiles.light_sweeps.len();
+            let drawn = match drawn_rest {
+                Some((drawn, _)) => drawn,
+                None => surface
+                    .rest(gpu, &handed)
+                    .map_err(|fallback| format!("the picture at rest in tiles: {fallback:?}"))?,
+            };
             // Drawn in staged sweeps where the editor plans them and their stage textures fit,
             // the tiles drawn being the sweeps'.
-            let renderer = match drawn.figures.sweeps {
-                0 => "the picture at rest in tiles".to_owned(),
-                sweeps => format!("the picture at rest in {sweeps} staged sweeps"),
+            let renderer = match (drawn.figures.sweeps, light_sweeps) {
+                (0, 0) => "the picture at rest in tiles".to_owned(),
+                (0, light_sweeps) => {
+                    format!("the picture at rest in tiles after {light_sweeps} light sweep(s)")
+                }
+                (sweeps, _) => format!("the picture at rest in {sweeps} staged sweeps"),
             };
             (
                 rgb_codes(&drawn.codes),
@@ -879,7 +909,23 @@ fn picture(
             format!("the view plan, the tiles not drawn: {}", reason.code()),
             None,
         ),
-        _ => (motion.clone(), "the view plan".to_owned(), None),
+        _ => match &drawn_rest {
+            Some((drawn, light_sweeps)) => (
+                motion.clone(),
+                match drawn.figures.sweeps {
+                    0 => format!(
+                        "the view plan, its light computed by the picture at rest's \
+                         {light_sweeps} light sweep(s)"
+                    ),
+                    sweeps => format!(
+                        "the view plan, its light computed by the picture at rest's {sweeps} \
+                         staged sweeps"
+                    ),
+                },
+                None,
+            ),
+            None => (motion.clone(), "the view plan".to_owned(), None),
+        },
     };
     // The reference at the view: its visible region at 100%, the whole frame reduced elsewhere.
     let expected = match region {
@@ -1431,6 +1477,17 @@ fn on_screen(
     let Ok(converted) = surface_plan_over(&plan, boundary, origin, grid.as_ref(), region) else {
         return Ok(None);
     };
+    // A light behind a spatial layer is the one the picture at rest's staged sweeps keep: its
+    // tiles drawn first, for their counts alone, as the editor draws them at 100%.
+    if plan.lights.iter().any(luxforge_core::GpuLight::staged) {
+        let Some(Ok(tiles)) = &rest.tiles else {
+            return Ok(None);
+        };
+        let handed = rest_now(gpu, tiles, 1)?;
+        if surface.rest(gpu, &handed).is_err() {
+            return Ok(None);
+        }
+    }
     let Ok(drawn) = surface.draw(gpu, &converted) else {
         return Ok(None);
     };

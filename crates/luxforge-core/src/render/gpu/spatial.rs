@@ -495,16 +495,15 @@ pub(crate) fn admit(
 /// only the full-resolution stage holds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GpuLightRestoration {
-    /// The light reads their exact output, which only a sweep of the whole stage through them at
-    /// full resolution produces. The link holds each as a spatial operation of its own
-    /// ([`GpuLight::spatial`]), which a light link over the source does not evaluate
-    /// ([`GpuLight::over_source`]). The light every frame draws with at rest.
+    /// The light reads their exact output, which only a staged sweep of the whole stage through
+    /// them at full resolution produces ([`GpuLightInput::Stage`]). The link holds each as a
+    /// spatial operation of its own ([`GpuLight::spatial`]), which names its input. The light every
+    /// frame draws with at rest.
     Included,
     /// The light reads the prefix without them, their colour operations after them joining the
-    /// ones before: a drag's per-tick light over the source, since their exact output exists only
-    /// at rest. The recorded default for a colour drag before an estimating layer behind Detail,
-    /// whose five sharpen-stress cells under Dehaze −100 miss the limits in motion
-    /// (`docs/design/gpu-first.md`, "Proposals with recorded defaults").
+    /// ones before: the stand-in, a drag's per-tick light over the source for a colour drag
+    /// between them, since their exact output exists only at rest (the owner's decision of
+    /// 2026-10-06, `docs/decisions.md`, "GPU-first rendering").
     LeftOut,
 }
 
@@ -541,8 +540,12 @@ pub struct GpuLightPasses {
 ///   operation that reads the light reads its plane ([`GpuSpatial::light`]).
 /// - **Where it runs.** A link over the source ([`Self::over_source`]) is run by any slot that
 ///   draws a plan reading its light, before the plan's links, whenever its content changes. One
-///   holding spatial operations needs a sweep of the whole stage through them at full resolution,
-///   which no slot runs yet: a slot computes its [`Self::stand_in`] in its place.
+///   holding spatial operations reads their exact output over the whole stage, which a staged sweep
+///   writes into a stage texture ([`GpuLightInput::Stage`]): the picture at rest's and an export's
+///   sweeps split before the operation reading it, and the light is reduced from that texture
+///   before the sweep that reads it ([`super::GpuSweep::lights`]). Every other slot reads the light
+///   so computed, kept under its input's key; a drag's slot computes its [`Self::stand_in`] in its
+///   place where none is kept.
 /// - Planned on the catalog owner from the stack's compilation alone, `O(layers + units)`, reading
 ///   no pixel ([`gpu_lights`]).
 #[derive(Clone, Debug, PartialEq)]
@@ -567,10 +570,26 @@ pub struct GpuLight {
     /// the byte path clamps it.
     pub light: GpuSpatial,
     /// For a link that is not over the source, the same light with every spatial operation before
-    /// it left out ([`GpuLightRestoration::LeftOut`]), over the source: what a slot computes in its
-    /// place, no sweep of the whole stage through those operations running yet. `None` for a link
-    /// over the source.
+    /// it left out ([`GpuLightRestoration::LeftOut`]), over the source: what a drag's slot computes
+    /// in its place where the exact light is not kept. `None` for a link over the source, and for
+    /// a picture at rest's view plan, which never draws with it.
     pub stand_in: Option<Box<GpuLight>>,
+    /// Where its input comes from: the source, or a staged sweep's stage texture.
+    pub input: GpuLightInput,
+}
+
+/// Where a light link's input comes from (`docs/design/gpu-preview.md`, "The global estimate").
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GpuLightInput {
+    /// The source, through the link's colour operations ([`GpuLight::content`]), per texel: a
+    /// prefix of colour operations alone, or a stand-in with the spatial operations left out.
+    Source,
+    /// The exact output of the spatial operations before its layer ([`GpuLight::spatial`]) over
+    /// the whole content stage, which only a staged sweep of the whole stage writes, into the stage
+    /// texture the sweep reading the light cuts its windows from. `key` names that input: the
+    /// layers before the light's layer and the masks they read, on the plan's path, so a light
+    /// computed at rest is the one any plan whose input is the same reads, wherever it was kept.
+    Stage { key: String },
 }
 
 impl GpuLight {
@@ -579,6 +598,11 @@ impl GpuLight {
     /// sweep of the whole stage at full resolution produces.
     pub fn over_source(&self) -> bool {
         self.spatial.is_empty()
+    }
+
+    /// Whether its input is a staged sweep's stage texture ([`GpuLightInput::Stage`]).
+    pub fn staged(&self) -> bool {
+        matches!(self.input, GpuLightInput::Stage { .. })
     }
 }
 
@@ -607,12 +631,13 @@ pub fn gpu_lights(
     let GpuAnswer::Plan(plan) = answer else {
         return Ok(Vec::new());
     };
-    links(&compiled, &plan, request, restoration)
+    links(recipe, &compiled, &plan, request, restoration)
 }
 
 /// The light links of `plan`, `compiled` from the source over its whole content stage at full
 /// scale for `request`, with the spatial operations before each `restoration`'s.
 fn links(
+    recipe: &Recipe,
     compiled: &Compiled,
     plan: &super::GpuPlan,
     request: GpuPlanRequest,
@@ -624,6 +649,12 @@ fn links(
     let mut left_out = Vec::new();
     for (spatial, entry) in plan.spatial.iter().zip(spatial_entries(compiled, 0)) {
         if let Some(passes) = light_passes(entry, request.stage) {
+            let input = match held.is_empty() {
+                true => GpuLightInput::Source,
+                false => GpuLightInput::Stage {
+                    key: stage_key(recipe, spatial.layer, request)?,
+                },
+            };
             lights.push(GpuLight {
                 layer: spatial.layer,
                 stage: request.stage,
@@ -633,6 +664,7 @@ fn links(
                 left_out: left_out.clone(),
                 light: light_step(spatial.layer, passes, !request.linear)?,
                 stand_in: None,
+                input,
             });
         }
         match restoration {
@@ -644,6 +676,24 @@ fn links(
         }
     }
     Ok(lights)
+}
+
+/// The key of a staged light's input ([`GpuLightInput::Stage`]): the layers of `recipe` before
+/// layer `layer` and the masks they read, sampled at points as a light's whole stage is, on the
+/// path and over the stage of `request`. `O(layers)`, no pixel read.
+fn stage_key(recipe: &Recipe, layer: usize, request: GpuPlanRequest) -> Result<String, Error> {
+    let before = recipe.layers.get(..layer).ok_or_else(|| {
+        Error::internal(format!(
+            "a light of layer {layer} in a {}-layer stack",
+            recipe.layers.len()
+        ))
+    })?;
+    let prefix = crate::render::spatial::prefix_hash(before, &recipe.masks, MaskSampling::Point)?;
+    let path = if request.linear { "linear" } else { "byte" };
+    Ok(format!(
+        "{prefix}+{path}:{}x{}",
+        request.stage.width, request.stage.height
+    ))
 }
 
 /// The request a plan's lights are planned for: `request` from the source over the whole content
@@ -661,7 +711,8 @@ pub(super) fn light_request(request: GpuPlanRequest) -> GpuPlanRequest {
 
 /// The lights a plan of `recipe` for `request` reads, each the exact light the picture at rest
 /// draws with ([`GpuLightRestoration::Included`]) and, where that is not over the source, its
-/// stand-in with the spatial operations before it left out: planned from the source over the whole
+/// stand-in with the spatial operations before it left out, which a drag computes where no exact
+/// light is kept: planned from the source over the whole
 /// content stage at full scale ([`light_request`]), reusing `compiled` and `plan` when they are
 /// that request's. Every operation of `plan` reading a light has one of its layer, or the answer is
 /// the reason the plan cannot be drawn. `O(layers + units)`, no pixel.
@@ -692,7 +743,7 @@ pub(super) fn plan_lights(
             (_, GpuAnswer::Fallback(reason)) => return Ok(Err(reason.clone())),
         }
     };
-    let lights = with_stand_ins(compiled, plan, full)?;
+    let lights = with_stand_ins(recipe, compiled, plan, full)?;
     if let Some(layer) = reads
         .iter()
         .find(|layer| !lights.iter().any(|light| light.layer == **layer))
@@ -716,7 +767,7 @@ pub(super) fn lights_of(
     let full = light_request(request);
     let (compiled, answer) = planned(registry, recipe, full)?;
     match answer {
-        GpuAnswer::Plan(plan) => with_stand_ins(&compiled, &plan, full),
+        GpuAnswer::Plan(plan) => with_stand_ins(recipe, &compiled, &plan, full),
         GpuAnswer::Fallback(_) => Ok(Vec::new()),
     }
 }
@@ -725,12 +776,25 @@ pub(super) fn lights_of(
 /// stage, with the spatial operations before each included, and beside each that is not over the
 /// source its stand-in with them left out.
 fn with_stand_ins(
+    recipe: &Recipe,
     compiled: &Compiled,
     plan: &super::GpuPlan,
     request: GpuPlanRequest,
 ) -> Result<Vec<GpuLight>, Error> {
-    let mut lights = links(compiled, plan, request, GpuLightRestoration::Included)?;
-    let left_out = links(compiled, plan, request, GpuLightRestoration::LeftOut)?;
+    let mut lights = links(
+        recipe,
+        compiled,
+        plan,
+        request,
+        GpuLightRestoration::Included,
+    )?;
+    let left_out = links(
+        recipe,
+        compiled,
+        plan,
+        request,
+        GpuLightRestoration::LeftOut,
+    )?;
     for light in &mut lights {
         if !light.over_source() {
             light.stand_in = left_out

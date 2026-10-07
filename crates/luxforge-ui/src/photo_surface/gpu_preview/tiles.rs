@@ -41,7 +41,10 @@
 //!   the plan then reads that light from its light plane, written before its passes
 //!   ([`super::spatial::Pool::write_light`]). The runner keeps the last [`TILE_LIGHTS`] lights it
 //!   computed, keyed by the source's version and the link's steps, words and blocks, so a stream's
-//!   tiles and a call's reads compute each light once.
+//!   tiles and a call's reads compute each light once. A light behind a spatial step
+//!   ([`light::LightInput::Stage`]) is reduced instead from the stage texture the sweep before the
+//!   reading one wrote ([`light::read_staged_light`]), once, before that sweep's first tile, and
+//!   kept under its input's identity.
 //! - **Bounds.** Everything a tile creates is charged to [`GPU_TILE_BUDGET`], beside and apart from
 //!   the photo surface's GPU-preview budget, before anything is created: the window of the source,
 //!   the boundary, each link's intermediate, words and blocks, every link's kept planes and the
@@ -94,7 +97,7 @@ use std::time::Instant;
 /// own charge over the core's plan, an estimate and not a measurement, a tile in the interior of a
 /// 60-megapixel RAW (9504 × 6336) through Detail and all three Presence fields reads the tile grown
 /// by its summed halo of 465 pixels on every side, anchored: at 2048 pixels a 3281-pixel square
-/// window, charged 1,331.5 MB; at 1024 a 2257-pixel one, charged 622.6 MB.
+/// window, charged 1,330.8 MB; at 1024 a 2257-pixel one, charged 622.3 MB.
 pub const GPU_TILE_BUDGET: u64 = 2 << 30;
 
 /// How many tiles a runner keeps submitted and not yet read back: the GPU draws one while its
@@ -285,6 +288,8 @@ pub struct TileRunner {
     /// and what they are charged.
     stages: Vec<StageHolder>,
     stage_bytes: u64,
+    /// The light a light sweep's tiles reduce, while one is drawn ([`TileRunner::begin_light`]).
+    light_sweep: Option<LightSweep>,
     sequences: Lru<Key, Sequence>,
     /// The lights it computed last, each under its key ([`light_key`]).
     lights: Lru<u64, [f32; 4]>,
@@ -353,7 +358,15 @@ pub enum TileInput {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TileOutput {
     Read(TileEnd),
-    Stage { writes: u32, rect: [u32; 4] },
+    Stage {
+        writes: u32,
+        rect: [u32; 4],
+    },
+    /// A light sweep's tile: its rectangle (`[x0, y0, x1, y1)` of the content stage) of its last
+    /// link's output reduced into the light the runner computes ([`TileRunner::begin_light`]).
+    Light {
+        rect: [u32; 4],
+    },
 }
 
 impl TileOutput {
@@ -361,7 +374,7 @@ impl TileOutput {
     fn end(self) -> Option<TileEnd> {
         match self {
             Self::Read(end) => Some(end),
-            Self::Stage { .. } => None,
+            Self::Stage { .. } | Self::Light { .. } => None,
         }
     }
 }
@@ -626,6 +639,7 @@ impl TileRunner {
             tickets: 0,
             stages: Vec::new(),
             stage_bytes: 0,
+            light_sweep: None,
             sequences: Lru::new(TILE_PIPELINE_CACHE),
             lights: Lru::new(TILE_LIGHTS),
             support,
@@ -713,6 +727,7 @@ impl TileRunner {
         self.window.as_ref().map_or(0, |(_, bytes)| *bytes)
             + self.slot.as_ref().map_or(0, |slot| slot.bytes)
             + self.stage_bytes
+            + self.light_sweep.as_ref().map_or(0, |sweep| sweep.bytes)
             + self.pinned()
             + self.spare()
     }
@@ -816,13 +831,19 @@ impl TileRunner {
         Ok(most)
     }
 
-    /// What computing `light` from `source` holds ([`light::read_light_charge`]).
+    /// What computing `light` holds: from `source` ([`light::read_light_charge`]), or for a light
+    /// behind a spatial step from a stage texture in the source's boundary format
+    /// ([`light::read_staged_light_charge`]).
     fn light_charge(
         &self,
         source: &GpuSource,
         light: &light::GpuLight,
     ) -> Result<u64, TileFailure> {
-        light::read_light_charge(&self.device, source, light).map_err(TileFailure::Plan)
+        match light.input {
+            light::LightInput::Source => light::read_light_charge(&self.device, source, light),
+            _ => light::read_staged_light_charge(&self.device, source.kind().boundary(), light),
+        }
+        .map_err(TileFailure::Plan)
     }
 
     /// `plan` drawn over a boundary cut from `window` (`[x, y, width, height]` of the content
@@ -906,6 +927,11 @@ impl TileRunner {
         if let TileOutput::Stage { writes, .. } = output {
             stage(writes, &self.stages)?;
         }
+        if let TileOutput::Light { .. } = output
+            && self.light_sweep.is_none()
+        {
+            return Err(TileFailure::PIPELINE_FAILED);
+        }
         if self.lost() {
             // Nothing it held outlives its device.
             self.in_flight.clear();
@@ -929,7 +955,10 @@ impl TileRunner {
         };
         let slot_bytes = self.slot_bytes(plan, end)?;
         let window_bytes = held.as_ref().map_or(0, GpuSource::bytes);
-        let single = window_bytes + slot_bytes + self.stage_bytes;
+        let single = window_bytes
+            + slot_bytes
+            + self.stage_bytes
+            + self.light_sweep.as_ref().map_or(0, |sweep| sweep.bytes);
         if single > GPU_TILE_BUDGET {
             return Err(TileFailure::Budget {
                 requested: single,
@@ -1097,6 +1126,82 @@ impl TileRunner {
         Ok((tile, wait_us))
     }
 
+    /// Begin a light sweep of `light`, a light behind a spatial step whose stage texture does not
+    /// fit (`docs/design/gpu-preview.md`, "The global estimate"), over tiles of `side`: `false`
+    /// where the runner keeps its light for `source` already. Otherwise its light link's reducer is
+    /// made, charged to [`GPU_TILE_BUDGET`] beside everything the runner holds, refused past it
+    /// having created nothing; each of the sweep's tiles is then submitted with
+    /// [`TileOutput::Light`], and [`TileRunner::finish_light`] selects the light and keeps it.
+    pub fn begin_light(
+        &mut self,
+        source: &GpuSource,
+        light: &light::GpuLight,
+        side: u32,
+    ) -> Result<bool, TileFailure> {
+        let key = light_key(source, light);
+        if self.lights.find(|held| *held == key).is_some() {
+            return Ok(false);
+        }
+        self.light_sweep = None;
+        let format = source.kind().boundary();
+        let bytes = light::LightReducer::charge(&self.device, light, format, side)
+            .map_err(TileFailure::Plan)?;
+        let requested = self.holding() + bytes;
+        if requested > GPU_TILE_BUDGET {
+            return Err(TileFailure::Budget {
+                requested,
+                budget: GPU_TILE_BUDGET,
+            });
+        }
+        let (compiled, _) = self.sequence(&light.steps, light::LIGHT_FORMAT)?;
+        let reducer = light::LightReducer::create(&self.device, &self.queue, light, format, side)
+            .map_err(TileFailure::Plan)?;
+        self.light_sweep = Some(LightSweep {
+            reducer,
+            compiled,
+            key,
+            bytes,
+        });
+        self.figures.peak = self.figures.peak.max(self.holding());
+        self.account();
+        Ok(true)
+    }
+
+    /// The light the sweep begun by [`TileRunner::begin_light`] reduced, once every tile of its
+    /// stage is reduced and done on the device ([`TileRunner::finish_stage`]): selected, read back
+    /// and kept, the reducer let go. Blocks its caller until the device is done.
+    pub fn finish_light(&mut self) -> Result<[f32; 4], TileFailure> {
+        let sweep = self
+            .light_sweep
+            .take()
+            .ok_or(TileFailure::PIPELINE_FAILED)?;
+        self.account();
+        let read = sweep
+            .reducer
+            .read(
+                (&self.device, &self.queue),
+                (&sweep.compiled, &self.support),
+            )
+            .map_err(|fallback| match fallback {
+                GpuFallback::DeviceLost => TileFailure::Unavailable(TileUnavailable::DeviceLost),
+                other => TileFailure::Plan(other),
+            })?;
+        self.figures.lights += 1;
+        self.lights.insert(sweep.key, read);
+        Ok(read)
+    }
+
+    /// Whether a light sweep is being drawn ([`TileRunner::begin_light`]).
+    pub fn light_sweeping(&self) -> bool {
+        self.light_sweep.is_some()
+    }
+
+    /// Let a light sweep begun go unfinished: its stream ended or fell back.
+    pub fn abandon_light(&mut self) {
+        self.light_sweep = None;
+        self.account();
+    }
+
     /// Tests only: `light` computed from `source` as a run computes each light its plan reads, or
     /// the one the runner keeps: `[r, g, b, 1]`, read back.
     #[cfg(any(test, feature = "qualification"))]
@@ -1110,6 +1215,35 @@ impl TileRunner {
         }
         let lit = self.lit(std::slice::from_ref(light), source)?;
         Ok(lit[0])
+    }
+
+    /// Whether the runner keeps every light behind a spatial step that `plan` reads
+    /// ([`light::LightInput::Kept`]) for `source`: computed from a stage texture by a staged sweep
+    /// before, which a one-tile run cannot compute.
+    pub fn keeps_lights(&mut self, plan: &GpuPlan, source: &GpuSource) -> bool {
+        plan.lights
+            .iter()
+            .filter(|light| light.input != light::LightInput::Source)
+            .all(|light| {
+                let key = light_key(source, light);
+                self.lights.find(|held| *held == key).is_some()
+            })
+    }
+
+    /// The lights `plan`, a staged sweep's tile, reads, each computed now and kept, or the one the
+    /// runner keeps: a light behind a spatial step from the stage texture the sweep before it
+    /// wrote, which the runner must hold ([`TileRunner::hold_stages`]). What a read's staged
+    /// sweeps run before the read's own tile, which then reads them kept. Blocks its caller until
+    /// the device is done.
+    pub fn compute_lights(
+        &mut self,
+        plan: &GpuPlan,
+        source: &GpuSource,
+    ) -> Result<(), TileFailure> {
+        if self.layouts.is_none() {
+            self.layouts = SourceLayouts::new(&self.device).ok();
+        }
+        self.lit(&plan.lights, source).map(|_| ())
     }
 
     /// Every light of `computed`, a plan's lights, light `k` the `k`-th: each the runner keeps for
@@ -1150,12 +1284,26 @@ impl TileRunner {
             ] {
                 self.device.push_error_scope(filter);
             }
-            let read = light::read_light(
-                (&self.device, &self.queue),
-                (&compiled, &self.support, layouts),
-                source,
-                computed,
-            );
+            // A light behind a spatial step is reduced from the stage texture the sweep before it
+            // wrote, which the stream's tiles before this one have finished writing.
+            let read = match computed.input {
+                light::LightInput::Stage { texture, .. } => match self.stages.get(texture as usize)
+                {
+                    Some(holder) => light::read_staged_light(
+                        (&self.device, &self.queue),
+                        (&compiled, &self.support),
+                        (holder, source.kind().boundary()),
+                        computed,
+                    ),
+                    None => Err(GpuFallback::PipelineFailed),
+                },
+                _ => light::read_light(
+                    (&self.device, &self.queue),
+                    (&compiled, &self.support, layouts),
+                    source,
+                    computed,
+                ),
+            };
             let answers: Vec<_> = (0..3)
                 .map(|_| answered(self.device.pop_error_scope()))
                 .collect();
@@ -1703,6 +1851,39 @@ impl TileRunner {
                 );
                 None
             }
+            // The tile's rectangle of its last link's intermediate reduced into the light's block
+            // plane, as a stage texture's would be.
+            TileOutput::Light { rect } => {
+                let Derivation::Cut { origin: (x, y) } = derivation else {
+                    return Err(TileFailure::PIPELINE_FAILED);
+                };
+                let (from, (width, height)) = match &slot.intermediate {
+                    Some(intermediate) => (intermediate, size),
+                    None => (&slot.output, output_size),
+                };
+                if rect[0] < *x
+                    || rect[1] < *y
+                    || u64::from(rect[2]) > u64::from(*x) + u64::from(width)
+                    || u64::from(rect[3]) > u64::from(*y) + u64::from(height)
+                {
+                    return Err(TileFailure::PIPELINE_FAILED);
+                }
+                let sweep = self
+                    .light_sweep
+                    .as_mut()
+                    .ok_or(TileFailure::PIPELINE_FAILED)?;
+                sweep
+                    .reducer
+                    .reduce(
+                        (device, &mut encoder),
+                        (&sweep.compiled, &self.support),
+                        from,
+                        (rect[0] - x, rect[1] - y),
+                        rect,
+                    )
+                    .map_err(TileFailure::Plan)?;
+                None
+            }
         };
         let index = queue.submit([encoder.finish()]);
         let readback = readback.map(|(buffer, bytes, padded, end)| {
@@ -1818,6 +1999,14 @@ fn texel_origin(plan: &GpuPlan) -> (u32, u32) {
 /// steps' programs, words and blocks.
 fn light_key(source: &GpuSource, light: &light::GpuLight) -> u64 {
     use std::hash::{Hash, Hasher};
+    // A light behind a spatial step is kept under its input's identity, as the photo surface keeps
+    // it, whichever light plane a sweep's plan numbers it.
+    if let light::LightInput::Stage { key, .. } | light::LightInput::Kept { key, .. } = light.input
+    {
+        let mut hasher = std::hash::DefaultHasher::new();
+        ("stage", source.version(), light.stage, key).hash(&mut hasher);
+        return hasher.finish();
+    }
     let mut words = Vec::new();
     chain::pack_words(super::TexelMap::IDENTITY, (0, 0), &light.steps, &mut words);
     let mut hasher = std::hash::DefaultHasher::new();
@@ -1829,6 +2018,15 @@ fn light_key(source: &GpuSource, light: &light::GpuLight) -> u64 {
         (format!("{kind:?}"), entry).hash(&mut hasher);
     }
     hasher.finish()
+}
+
+/// A light sweep being drawn: its reducer, its light step's sequence, the key the light is kept
+/// under and what the reducer was charged.
+struct LightSweep {
+    reducer: light::LightReducer,
+    compiled: Compiled,
+    key: u64,
+    bytes: u64,
 }
 
 /// A row of `bytes` padded to a texture copy's row alignment.
