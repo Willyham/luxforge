@@ -253,7 +253,7 @@ impl Editor {
 
     /// Back to the grid, which shows the active frame: the loupe's frames and region are released
     /// and its reads still queued cancelled.
-    fn loupe_close(&mut self) -> Task<Message> {
+    pub(crate) fn loupe_close(&mut self) -> Task<Message> {
         let loupe = &mut self.select.state.loupe;
         loupe.open = false;
         loupe.compare = false;

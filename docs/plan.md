@@ -35,7 +35,9 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 | [Lightroom import](../tasks/lightroom/lightroom-import.json) ([design](design/lightroom-import.md)) | TASK-001 confirm the catalog format against a copy of the owner's catalog | Needs no code; needs the owner's catalog copy | High tier |
 | [Lightroom alignment](../tasks/lightroom/lightroom-alignment.json) ([design](design/lightroom-alignment.md)) | TASK-001 the rig's generator and synthetic targets | Its rounds need the owner to import and export in Lightroom | High tier |
 | [Live-session Rust CLI](../tasks/project/live-cli.json) ([design](design/live-cli.md)) | TASK-001 shared catalog targeting and authenticated session client | The command contract and defaults are decided; implementation awaits owner authorization | High tier |
-| [Export settings](../tasks/rendering/export-settings.json) ([design](design/export-settings.md)) | TASK-001 settings, presets and API; TASK-002 JPEG options and limit search; TASK-003 WebP and TIFF encoders; TASK-004 resized and 16-bit output | Formats, direct-writing sheet and sharpening-after-core chosen; other defaults recorded in the design. Planning only; implementation awaits authorization | High tier |
+| [Auto tone](../tasks/editing/auto-tone.json) ([design](design/auto-tone.md)) | TASK-001 the auto-tone/1 solver; TASK-002 the bounded analysis sample | Lightroom's eight sliders, no white balance, Auto in presets and import, and a later fit to Lightroom's Auto chosen; the owner's Lightroom export is needed only by the final fit. Planning only; implementation awaits authorization | High tier |
+| [HDR exposure merges](../tasks/library/hdr-merge.json) ([design](design/hdr-merge.md)) | TASK-001 durable chunked derived sources; TASK-002 RAW exposure resolution/fusion; TASK-003 alignment/deghosting | RAW-only scope and automatic alignment/deghosting are decided; independent foundations, working feature before final quality/timing; implementation awaits authorization | High tier |
+| [Export settings](../tasks/rendering/export-settings.json) ([design](design/export-settings.md)) | TASK-001 settings, presets and API; TASK-002 JPEG options and limit search; TASK-003 WebP and TIFF encoders; TASK-004 resized and 16-bit output | Formats, direct-writing sheet, sharpening after the core and uncapped optimisation with a large-image warning and progress bar chosen; other defaults recorded in the design. Planning only; implementation awaits authorization | High tier |
 | [High-zoom minimap](../tasks/interface/minimap.json) ([design](design/minimap.md)) | TASK-001 shared viewport projection; TASK-002 bounded overview rendering | Inclusive 200% threshold and click/drag navigation chosen; layout remains a proposed default. Planning only; implementation awaits authorization | High tier |
 
 ### In progress
@@ -90,7 +92,7 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 - Native Linux and Windows runs of the folder and volume watchers
 - In the desktop: dragging photographs onto a catalog folder, moving collections between groups, changing a smart collection's query, previews in Missing originals' rows, and Locate original… in export's refusal
 - Background availability checks, and a browse filter for a missing value
-- Later: merging brackets to HDR and stitching panoramas as a merge source kind (not selected)
+- **HDR exposure merges** are [planned](design/hdr-merge.md): Import merged creates a saved catalog result and collapsed source stack; Pick merged also appends to the development set by default; originals stay individually pickable and removal/undo retains the result and edits. RAW-only inputs and automatic alignment/deghosting are decided; implementation is not authorized. Panorama stitching remains later and has no plan; the derived-source/merge-kind/stack boundary leaves room for it
 - Catalog portability and backup, carrying each catalog's derived-artifact directory with it (decision pending)
 
 ## RAW
@@ -151,6 +153,8 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 - GPU painting over three masks holding masked exposure, Texture and Clarity is within a display frame at Fit (p95 8.5–9.0 ms in the recorded qualification). Misses remain over 10–16 masks at Fit and the Air 2S masked stack at 100% (p95 22.5–24.0 ms after the throughput changes); earlier CPU boundary-wait figures do not describe the current GPU-source path ([performance](specs/performance.md#painting-over-masked-spatial-layers))
 - The range selections have no photographic corpus: every figure in the [range study](design/range-study.md) is over flat synthetic patches
 - Density, edge-aware refinement, copying masks between photographs and mask presets are out of scope with their reasons recorded; model-based selections are the [AI editing](design/ai-editing.md) proposal's Select
+
+**Auto tone** ([design](design/auto-tone.md), [tasks](../tasks/editing/auto-tone.json)). Planned: an Auto button and `edit.auto-tone` that set Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Vibrance and Saturation on the global Basic layer as one entry, from deterministic statistics and clipping searches over a bounded sample of the stage Basic receives, solved through Basic and the Look. Presets can carry Auto, recomputed per photo, and the Lightroom importer maps `AutoTone`. The solver and the sample can proceed independently; the fit to Lightroom's Auto on the owner's photos follows delivery. The request authorizes planning only.
 
 **Tuning delivered tools.** Refine the recorded defaults of Presence, the colour mixer and the vignette (decision pending).
 
