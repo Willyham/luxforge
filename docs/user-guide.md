@@ -189,6 +189,8 @@ Slider, stepper, colour picker and curve gestures whose field is a whole request
 
 The Controls proof in developer mode demonstrates this vocabulary without changing photo pixels. Its edits still create normal history entries; `edit.set-controls` changes one field and `edit.reset-controls` restores the defaults. Text and 2D pad controls are deferred.
 
+Colour grading is [planned for the Colour mixer](design/colour-grading.md), alongside its existing eight-range HSL controls. Tonal/Global wheels, Blending and Balance are not available yet.
+
 ### Settings and experiments
 
 The gear at the end of the title bar or Cmd+, (Ctrl+, elsewhere) opens Settings over the workspace at its **General** tab; the palette's Settings · General, Settings · Appearance and Settings · Experiments open it at any tab. General holds your preferences, each saved as you change it, outside any catalog:

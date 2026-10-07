@@ -46,6 +46,8 @@ Every setting Luxforge supports that has a Lightroom counterpart:
 
 The base rendering is measured so that it can be **subtracted**, not to change it: the RAW looks decision stands unless the owner reopens it ([A5](#decided)).
 
+The decided [colour-grading extension](colour-grading.md) delivers its working controls and direct preset mappings first. Its final TASK-010 adds independent-reference analysis and grading response refinement, reusing this rig or implementing its grading-only slice; neither this programme nor an owner review/export is a prerequisite for the working feature. Actual exports are required for measured Lightroom figures, which remain unmeasured until supplied. The grading-only tooling scope is covered by the owner’s 2026-10-07 [decision](../decisions.md#colour-grading); unrelated alignment work remains separately planned.
+
 ## The rig
 
 Lightroom cannot be run by an agent or in CI; it needs the owner's installation and licence. The rig keeps the owner's part to one import and one export per round, and everything else in Rust, so the project keeps one toolchain:

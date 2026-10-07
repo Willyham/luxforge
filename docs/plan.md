@@ -4,7 +4,7 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 ## Ready to implement
 
-A persistent list of the work that can start now: each plan below has a validated design and task file on `main`, and each task named has status `ready`. Keep it current: add a plan when one of its tasks becomes ready, and remove a task when it starts or completes. The task files are organised by area in [tasks](../tasks/README.md).
+A persistent list of the work that can start now: each plan below has a validated design and task file on `main`, and each task named has status `ready`. Keep it current: add a plan when one of its tasks becomes ready, and remove a task when it starts or completes. The task files are organised by area in [tasks](../tasks/README.md). Product questions are resolved while planning, and ready tasks are concrete work with no further question or approval task; follow [planning for execution](../tasks/README.md#planning-for-execution). Working delivery comes before deferrable review, calibration and reference refinement.
 
 **Minimum model: the high tier.** Every task in this section is implemented by Opus 5.5 High, Fable 5.1 High, 6-Astra High or 6.1-Sol High, or a stronger model. This applies to each agent that writes any part of a task, subagents included. A row may raise the minimum; none lowers it.
 
@@ -13,13 +13,14 @@ A persistent list of the work that can start now: each plan below has a validate
 1. Read the design, then the task's description, context, links, acceptance and test strategy against current `main`. Confirm the files, symbols, commands, flags and figures it names still exist and still mean what it says.
 2. Confirm every dependency is `completed` and no other agent has started the task: look for a branch or worktree carrying it (`git branch -a`, `git worktree list`) and continue that work rather than restarting it.
 3. Check [decisions](decisions.md) and [feature status](features.md) for anything decided or delivered since that changes the task's scope.
-4. If the plan no longer matches `main`, correct the plan and design first and run `cargo xtask check-repository`; take a consequential product change to the owner rather than deciding it. Then set the task to `in_progress` and remove it from this list.
+4. If the plan no longer matches `main`, correct the plan and design first and run `cargo xtask check-repository`. Use the recorded delegation for routine implementation choices; resolve a newly consequential scope change during that focused plan update rather than inserting an owner-question task, while unaffected work continues. Then set the task to `in_progress` and remove it from this list.
 5. Work and verify as [AGENTS.md](../AGENTS.md#how-we-work) says: narrow tests while building, the verification tier the task asks for at the end.
 
 ### Ready now
 
 | Plan | Ready tasks | Notes | Minimum model |
 | --- | --- | --- | --- |
+| [Colour grading](../tasks/editing/colour-grading.json) ([design](design/colour-grading.md)) | TASK-002 initial grading unit; TASK-003 shared wheels and nested views | Product choices settled; working feature first, reference/Lightroom refinement last; no approval or research gates | High tier |
 | [GPU memory accounting](../tasks/rendering/gpu-memory.json) | TASK-001 measure and bound GPU resources outside the photo-texture ceiling | A measurement: run after feature work, on a quiet host | High tier |
 | [RAW looks](../tasks/raw/raw-looks.json) ([design](design/raw-looks.md)) | TASK-006 freeze the camera fit (phase 2) | Phase 1 is built; its TASK-005 waits on the native `look` scenario and the rendered tier | High tier |
 | [Corrections](../tasks/editing/corrections.json) ([design](design/corrections.md)) | TASK-001 freeze the remaining contract; TASK-002 Clone and Heal numerics | Renderer integration targets the merged GPU-first interfaces; the repair-versus-Detail placement is still open | High tier |
@@ -96,6 +97,8 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 - Sony A7 V compressed ARW once a pinned decoder reads it
 
 ## Editing tools
+
+**Colour grading in the mixer** (decided, [design](design/colour-grading.md), [plan](../tasks/editing/colour-grading.json)). HSL / Grading tabs with three-way and individual/Global wheels, luminance, masks, Luxforge presets and direct Lightroom mappings. TASK-002 and TASK-003 can start now; TASK-009 hands off the working feature before TASK-010 independent-reference and Lightroom response refinement. Product choices are settled and initial numerical/layout choices belong to the implementer; no approval or research gate remains.
 
 **Tone curve follow-ups** ([design](design/tone-curve.md)). The Tone curve is delivered ([feature status](features.md)).
 - Owner review of the recorded defaults: what the composite acts on, channels, order, endpoints, the point limit, the Lightroom transfer and the editor gestures; below black the curve uses a floor-subtracted ratio (decided 2026-09-30)
