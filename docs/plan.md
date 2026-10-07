@@ -35,6 +35,7 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 | [Lightroom import](../tasks/lightroom/lightroom-import.json) ([design](design/lightroom-import.md)) | TASK-001 confirm the catalog format against a copy of the owner's catalog | Needs no code; needs the owner's catalog copy | High tier |
 | [Lightroom alignment](../tasks/lightroom/lightroom-alignment.json) ([design](design/lightroom-alignment.md)) | TASK-001 the rig's generator and synthetic targets | Its rounds need the owner to import and export in Lightroom | High tier |
 | [Live-session Rust CLI](../tasks/project/live-cli.json) ([design](design/live-cli.md)) | TASK-001 shared catalog targeting and authenticated session client | The command contract and defaults are decided; implementation awaits owner authorization | High tier |
+| [HDR exposure merges](../tasks/library/hdr-merge.json) ([design](design/hdr-merge.md)) | TASK-001 durable chunked derived sources; TASK-002 RAW exposure resolution/fusion; TASK-003 alignment/deghosting | RAW-only scope and automatic alignment/deghosting are decided; independent foundations, working feature before final quality/timing; implementation awaits authorization | High tier |
 
 ### In progress
 
@@ -82,7 +83,7 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 - Native Linux and Windows runs of the folder and volume watchers
 - In the desktop: dragging photographs onto a catalog folder, moving collections between groups, changing a smart collection's query, previews in Missing originals' rows, and Locate original… in export's refusal
 - Background availability checks, and a browse filter for a missing value
-- Later: merging brackets to HDR and stitching panoramas as a merge source kind (not selected)
+- **HDR exposure merges** are [planned](design/hdr-merge.md): Import merged creates a saved catalog result and collapsed source stack; Pick merged also appends to the development set by default; originals stay individually pickable and removal/undo retains the result and edits. RAW-only inputs and automatic alignment/deghosting are decided; implementation is not authorized. Panorama stitching remains later and has no plan; the derived-source/merge-kind/stack boundary leaves room for it
 - Catalog portability and backup, carrying each catalog's derived-artifact directory with it (decision pending)
 
 ## RAW

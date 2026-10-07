@@ -128,8 +128,8 @@ The owner edits local files and syncs them to an external drive, so moved-origin
 | Speed and unused-tool bloat | Measure startup, loading, idle and first-use costs; keep the core small and initialize lazily |
 | Filtering, tagging and collections | Design one retrieval model from concrete workflows |
 | Full catalog with lazy shoot subsets | Keep catalog scale independent of decoded pixels; scope views to the working set |
-| Multi-selection and stacking | Define selection ranges, stack identity and batch semantics in later library work |
-| Bracket and panorama identification | Research detection separately; merging is not selected |
+| Multi-selection and stacking | Multi-selection is delivered; result-led merge stacks are [planned](design/hdr-merge.md) |
+| Bracket and panorama identification | Brackets are detected; [HDR merging](#hdr-exposure-merges) is requested for planning; panorama stitching remains outside that plan |
 | Confusing export controls | One clear JPEG export path with explicit metadata behavior |
 
 ## Presets
@@ -462,6 +462,18 @@ Decided by the owner on 2026-10-07 for [colour grading in the mixer](design/colo
 - **The plan is ready for implementation without approval or research gates.** Deliver a working feature first; all Lightroom matching and independent-reference perfection work comes at the end. Initial numerical and layout details are implementer choices within the settled contract, with ordinary tests and rendered verification alongside the feature.
 
 The final refinement task may build the grading-only slice of the alignment tooling without waiting on the separate alignment programme. Actual Lightroom exports are measurement inputs; missing exports leave response figures unmeasured and do not delay the working feature or reference/tooling delivery. This decision does not authorize unrelated alignment work or change its policy on private-catalog validation.
+
+## HDR exposure merges
+
+Requested for planning by the owner on 2026-10-07 ([design](design/hdr-merge.md)):
+
+- Select's grid offers **Import merged** and **Pick merged** for exposure brackets, creates one HDR result shown as a virtual photograph and collapses the original frames into a stack.
+- Keep the merged pixels durably on disk so ordinary reopening needs no repeated merge; source files stay unchanged and each bracket frame can still be picked independently.
+- A merge can be removed or undone without losing the originals. The planned lifecycle retains the generated result and edits for restoration through library undo/redo.
+- **Pick merged adds the result to the development set by default.** The design distinguishes Import's catalog-only result from Pick's appended set member and keeps Select open; ordinary file picks remain the existing workflow.
+- Be aware of other merge kinds, particularly panoramas, at the source/provenance/stack boundary. Do not implement or plan panorama stitching now.
+
+The owner selected **RAW brackets only** and **automatic alignment and deghosting** for the first implementation. JPEG bracket inputs are outside this plan; the existing SDR JPEG export remains available for merged results. Numerical/backend/layout details are delegated within the contract, so the storage, radiance and alignment tasks can start independently once implementation is authorized. This planning request does not authorize implementation.
 
 ## Open product questions
 
