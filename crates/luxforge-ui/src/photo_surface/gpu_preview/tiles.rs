@@ -1121,6 +1121,35 @@ impl TileRunner {
         Ok(lit[0])
     }
 
+    /// Whether the runner keeps every light behind a spatial step that `plan` reads
+    /// ([`light::LightInput::Kept`]) for `source`: computed from a stage texture by a staged sweep
+    /// before, which a one-tile run cannot compute.
+    pub fn keeps_lights(&mut self, plan: &GpuPlan, source: &GpuSource) -> bool {
+        plan.lights
+            .iter()
+            .filter(|light| light.input != light::LightInput::Source)
+            .all(|light| {
+                let key = light_key(source, light);
+                self.lights.find(|held| *held == key).is_some()
+            })
+    }
+
+    /// The lights `plan`, a staged sweep's tile, reads, each computed now and kept, or the one the
+    /// runner keeps: a light behind a spatial step from the stage texture the sweep before it
+    /// wrote, which the runner must hold ([`TileRunner::hold_stages`]). What a read's staged
+    /// sweeps run before the read's own tile, which then reads them kept. Blocks its caller until
+    /// the device is done.
+    pub fn compute_lights(
+        &mut self,
+        plan: &GpuPlan,
+        source: &GpuSource,
+    ) -> Result<(), TileFailure> {
+        if self.layouts.is_none() {
+            self.layouts = SourceLayouts::new(&self.device).ok();
+        }
+        self.lit(&plan.lights, source).map(|_| ())
+    }
+
     /// Every light of `computed`, a plan's lights, light `k` the `k`-th: each the runner keeps for
     /// `source`, or computed now from it on the runner's device and kept ([`light::read_light`]),
     /// charged to [`GPU_TILE_BUDGET`] before anything is created beside the window the runner
@@ -1843,7 +1872,8 @@ fn light_key(source: &GpuSource, light: &light::GpuLight) -> u64 {
     use std::hash::{Hash, Hasher};
     // A light behind a spatial step is kept under its input's identity, as the photo surface keeps
     // it, whichever light plane a sweep's plan numbers it.
-    if let light::LightInput::Stage { key, .. } = light.input {
+    if let light::LightInput::Stage { key, .. } | light::LightInput::Kept { key, .. } = light.input
+    {
         let mut hasher = std::hash::DefaultHasher::new();
         ("stage", source.version(), light.stage, key).hash(&mut hasher);
         return hasher.finish();

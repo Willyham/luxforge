@@ -2003,8 +2003,9 @@ fn a_measured_export_staged_is_chained() {
 /// behind Clarity, and Dehaze behind Detail — streamed in staged sweeps, the runner reducing the
 /// light from the stage texture the sweep before it wrote, is bit for bit the photo surface's own
 /// staged picture at rest drawn at full size on another device of the same adapter, whose sweep
-/// reduces the same light from its own stage texture, on both paths. A read through such a light,
-/// which draws one tile, is the reference's, naming `light-stage`.
+/// reduces the same light from its own stage texture, on both paths. A read through such a light
+/// draws its one tile on the GPU, reading the light the worker's staged sweeps of the stack
+/// computed first and kept: the stream's bytes, its stage textures let go after.
 #[test]
 fn a_staged_stream_reads_the_light_behind_a_spatial_layer_from_its_stage() {
     let test = "a_staged_stream_reads_the_light_behind_a_spatial_layer_from_its_stage";
@@ -2097,12 +2098,31 @@ fn a_staged_stream_reads_the_light_behind_a_spatial_layer_from_its_stage() {
                 (0, 0, 0),
                 "{what}: nothing held once it ends"
             );
-            match plan_read(&stack, ReadStage::Output, WHOLE) {
-                Err(TileFallback::Plan(GpuFallback::LightStage { layer, .. })) => {
-                    assert_eq!(layer, 1, "{what}")
-                }
-                other => panic!("{what}: a read through the light: {other:?}"),
+            // A read through the light draws one tile, which reads the light the worker's staged
+            // sweeps of the stack computed and kept: the stream's codes at every point.
+            let points: Vec<Read> = [(17, 23), (800, 500), (1599, 999), (1201, 77)]
+                .into_iter()
+                .map(|(x, y)| point(ReadStage::Output, x, y, ReadValues::Codes))
+                .collect();
+            let (answers, _) = call(&service, client, &stack, &points);
+            for (answer, (_, rect, _)) in answers.iter().zip(&points) {
+                assert_eq!(answer.answered, Answered::gpu(), "{what}: {rect:?}");
+                let ReadPixels::Codes(codes) = &answer.pixels else {
+                    panic!("{what}: codes");
+                };
+                let at = ((rect.y0 * width + rect.x0) * 4) as usize;
+                assert_eq!(
+                    codes[0][..3],
+                    rgba[at..at + 3],
+                    "{what}: the read at {rect:?} is the stream's byte"
+                );
             }
+            settle(&service, client);
+            assert_eq!(
+                service.figures().stage_bytes,
+                0,
+                "{what}: the read's sweeps let their stage textures go"
+            );
             eprintln!(
                 "{test}: {what}: {} sweeps, bit for bit the surface's staged picture at rest",
                 sweeps.sweeps.len()
