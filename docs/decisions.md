@@ -222,6 +222,17 @@ Accepted on 2026-09-27 for the delivered [JPEG export](design/export.md#decision
 - The earlier state-panel export proposal (presets, resizing, unique names by default, durable export records) is not adopted.
 - The desktop's export records 72 pixels per inch for each physical pixel of a point on the window's display, 144 on Retina, on macOS only (owner, 2026-10-05), so Preview's Actual Size matches the editor's 100%; `export.jpeg` takes the density as an optional parameter and the core never reads a display.
 
+## Export settings planning
+
+The owner asked on 2026-10-07 for more comprehensive export with settings: JPEG, WebP and a lossless hand-off format, optimised for the web by default, with a separate print setting. After reviewing the [design's](design/export-settings.md) boards, the owner chose:
+
+- **JPEG, WebP and TIFF.** DNG is not exported. The lossless hand-off is an 8- or 16-bit TIFF with the edits baked in.
+- **Lossy WebP** through libwebp.
+- **An Export sheet that writes directly** into the folder its settings name, with an editable suffix and no second save dialog. The same sheet serves batch export, Export again and Export with preset.
+- **Output sharpening in this plan, delivered after the core:** formats, resizing, optimisation and presets first.
+
+This request supersedes "quality fixed at 90, metadata chosen per export, no export preference" for the planned work. The never-replace, never-a-draft and displayed-entry rules stand. On 2026-10-08 the owner removed any memory cap from optimisation: optimised JPEG and file-size limits use the memory the image needs at any size. The sheet warns about large images, and long exports show a progress bar. The design records the other choices as proposals with defaults: the preset values, where presets are stored, the resampling filter, the quantisation tables, the warning threshold, when the progress bar appears, the metadata levels and the shortcuts. It also declares the resized, 16-bit and sharpened export tolerances. The request authorizes planning only; implementation awaits authorization.
+
 ## Source-kind controls
 
 Decided by the owner on 2026-09-27, who took every recommended default of the [source controls](design/source-controls.md#decisions) design:
