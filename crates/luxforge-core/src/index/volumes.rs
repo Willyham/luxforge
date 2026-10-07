@@ -47,7 +47,7 @@ pub(crate) enum MountSource {
     Platform,
     /// A fixed list, which a test stands in with and may change, as a card is taken out.
     #[cfg_attr(
-        not(test),
+        not(any(test, feature = "test-holds")),
         allow(dead_code, reason = "tests stand in with a fixed table")
     )]
     Fixed(Arc<Mutex<Vec<Mount>>>),
