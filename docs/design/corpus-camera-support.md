@@ -46,7 +46,11 @@ white-balance development, followed by actual editor/API/history/reopen checks.
 3. Run the production qualifier over the whole retained corpus, require frozen
    source/mosaic/metadata/development references and review every failure.
 4. Exercise new processing families and recording layouts through background
-   editor rendering, API edits, history and reopen. Keep coverage explicit for
+   GPU editor rendering, API edits, history and reopen, with reference fixtures
+   for source/development behaviour and GPU corpus comparisons within the
+   declared tolerance for picture, counts, samples, developed tiers and export.
+   Pixel reads use the tile service; changed GPU programs need warm-up and
+   window/staged-sweep coverage where applicable. Keep coverage explicit for
    sources not given a complete editor journey.
 5. Finish quick/rendered verification and proportionate photo-sized measurement
    after implementation. Update the camera catalog documentation, corpus

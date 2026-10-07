@@ -75,3 +75,9 @@ The owner limited scope to visibility and event monitoring, excluding proxy CPU 
 ## Performance-rules review
 
 No original reads, decodes, frame allocations, image processing or new preview requests are introduced. The owner handles bounded job bookkeeping only. Notifications and visibility events replace idle polling; active display throttles exist only while a visible consumer needs them. All new queues/subscribers have explicit limits, and notification callbacks never read under producer locks. Rendering, image correctness, caching and CPU scheduling remain outside this work. Native CPU evidence is recorded after implementation, with process monitoring overhead and hidden-window evidence controls stated.
+
+## Remaining GPU-count verification
+
+`analysis.request` does not wait for a visible desktop frame: if no ready report or matching job exists, the owner queues its bounded reference analysis worker, which renders and reduces the planned identity off the owner. A GPU report arriving for that identity can complete the same job or be cached. Native hiding gates presentation sampling and progress display, not this authoritative worker.
+
+The native `visibility-monitoring` scenario proves sampler suspension, held business jobs and restoration, but makes no edit commit and no `analysis.request` while minimized or hidden. A commit in that state followed by `analysis.request`, with matching entry/snapshot identity, terminal job result, counts and correlated logs/state, remains an explicit native verification gap in [GPU-first TASK-012](../../tasks/rendering/gpu-first.json). Do not treat the existing visibility captures as its pass.

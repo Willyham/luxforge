@@ -3,7 +3,7 @@
   "plan_id": "lightroom-alignment",
   "title": "Lightroom alignment",
   "objective": "Make every supported slider do about what the same value does in Lightroom Classic: measure each setting's response from rendered outputs, calibrate the importers' conversions in the meantime, realign each control's response by editing area, and change an algorithm only where a dimension still differs past the threshold.",
-  "context_summary": "Planned from docs/design/lightroom-alignment.md, the contract every task follows; the owner decided every question on 2026-10-06 and did not authorize implementation, so nothing here starts until authorized. Lightroom is driven by generated XMP and one manual import and export per round by the owner; agents cannot run Lightroom. Only rendered outputs are compared: no Adobe code, SDK source or binary is read or used, and no Adobe data ships. Response changes run by editing area (Basic and the Tone curve, then Presence, the mixer and the vignette, then Detail, then masks and geometry, then RAW white balance); each raises its module's format marker so earlier recipes are refused. Behaviour changes follow only past the threshold (median ΔE2000 above 2 at ±25 and beyond, or a difference in kind). Decisions: docs/decisions.md.",
+  "context_summary": "Planned from docs/design/lightroom-alignment.md, the contract every task follows; the owner decided every question on 2026-10-06 and did not authorize implementation, so nothing here starts until authorized. Lightroom is driven by generated XMP and one manual import and export per round by the owner; agents cannot run Lightroom. Only rendered outputs are compared by new alignment work: it introduces no Adobe code, SDK source, binary or data. The existing RAW importer and white-coordinate table are for separate review (owner, 2026-10-07). Response changes run by editing area (Basic and the Tone curve, then Presence, the mixer and the vignette, then Detail, then masks and geometry, then RAW white balance); each raises its module's format marker so earlier recipes are refused. Behaviour changes follow only past the threshold (median ΔE2000 above 2 at ±25 and beyond, or a difference in kind). Decisions: docs/decisions.md. The whole-frame reference renderer supplies deterministic study buffers; rendering orchestration lives in xtask, never in the independent luxforge-reference crate. The RAW white-balance round includes calibrated preset import (owner, 2026-10-07). Commands and test filters for lr-align are deliverables, not existing commands.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -13,7 +13,8 @@
       "extra_context": [
         "Only the round's own copies carry XMP: embedded in a JPEG copy, a sidecar beside a RAW copy. Originals and the corpus are never written.",
         "Every variant's XMP must read back through Luxforge's own preset reader to the manifest's settings.",
-        "Round 1 is single settings across each range; round 2 the interacting pairs the design names. Supplied and corpus RAW files come from their manifests; none enter the repository."
+        "Round 1 is single settings across each range; round 2 the interacting pairs the design names. Supplied and corpus RAW files come from their manifests; none enter the repository.",
+        "The lr-align command and lr_align test filter are proposed deliverables of this task; they do not exist yet."
       ],
       "context_links": [
         {
@@ -46,8 +47,8 @@
           "Generate a round twice and compare; run the round-trip tests."
         ],
         "commands": [
-          "cargo test -p xtask lr_align",
-          "cargo xtask lr-align generate --round 1 --output NEW_DIR"
+          "tools/cargo-cached test -p xtask lr_align",
+          "tools/cargo-cached xtask lr-align generate --round 1 --output NEW_DIR"
         ],
         "expected_results": [
           "Both rounds are identical and every variant round-trips."
@@ -56,15 +57,16 @@
     },
     {
       "id": "TASK-002",
-      "description": "Build measurement and fitting: render each variant through the CPU reference renderer, read Lightroom's 16-bit TIFF exports, measure responses relative to each editor's neutral rendering, fit a monotone map per setting with its residual and range shortfall, and write per-setting pages, contact sheets and a ranked summary (cargo xtask lr-align measure).",
+      "description": "Build measurement and fitting: render each variant through the whole-frame reference renderer in xtask, with a study-only 16-bit sRGB output path, read Lightroom's 16-bit TIFF exports, measure responses relative to each editor's neutral rendering, fit a monotone map per setting with its residual and range shortfall, and write per-setting pages, contact sheets and a ranked summary (cargo xtask lr-align measure).",
       "status": "pending",
       "dependencies": [
         "TASK-001"
       ],
       "extra_context": [
-        "The TIFF decoder is a pinned development dependency of the study, never of the editor.",
+        "The pinned TIFF decoder belongs to xtask tooling, never to the editor or to production dependencies of luxforge-reference. Pure measures and fits belong in luxforge-reference, which may never depend on luxforge-core; xtask orchestrates the production reference render, decoding and sheets.",
         "Measures: transfer curves, ΔE2000 and signed ΔL*, Oklab chroma ratio and hue shift per sector, overshoot and halo width, band gain, radial profiles, grid positions; each checked on synthetic cases with known answers.",
-        "Outputs only: no Adobe code, SDK source or binary is read or used."
+        "Outputs only: no Adobe code, SDK source or binary is read or used.",
+        "Current Render::frame and read_rect return 8-bit display buffers. Add study-only access before terminal display quantization; never promote those bytes and claim 16-bit precision. Preserve and report the existing JPEG geometry and other intermediate quantization. This is study output, not a new production export kind; a new export kind declares its tolerance with its feature."
       ],
       "context_links": [
         {
@@ -83,15 +85,18 @@
         }
       ],
       "acceptance_criteria": [
-        "Every measure recovers its known answer on synthetic cases; maps are monotone; shortfalls are reported, never clamped."
+        "Every measure recovers its known answer on synthetic cases; maps are monotone; shortfalls are reported, never clamped.",
+        "The study output has a checked 16-bit sRGB terminal conversion before 8-bit display quantization, with known gradients and RAW headroom cases; the report names any intermediate quantization, and existing 8-bit fixtures are unchanged. Rendering tests live in xtask, while luxforge-reference remains independent of luxforge-core."
       ],
       "test_strategy": {
         "approach": "unit",
         "steps": [
-          "Run the measurement and fit tests on synthetic cases."
+          "Run the measurement and fit tests on synthetic cases.",
+          "Check TIFF decoding and the study output precision through xtask against known inputs; check pure measures and fits in the independent reference crate."
         ],
         "commands": [
-          "cargo test -p luxforge-reference --test studies lr_align::"
+          "tools/cargo-cached test -p luxforge-reference --test studies lr_align::",
+          "tools/cargo-cached test -p xtask lr_align"
         ],
         "expected_results": [
           "Every measurement test passes."
@@ -126,8 +131,8 @@
           "Generate round 1, hand it to the owner, measure the exports, record the figures."
         ],
         "commands": [
-          "cargo xtask lr-align generate --round 1 --output NEW_DIR",
-          "cargo xtask lr-align measure --round 1 --exports DIR --output NEW_DIR"
+          "tools/cargo-cached xtask lr-align generate --round 1 --output NEW_DIR",
+          "tools/cargo-cached xtask lr-align measure --round 1 --exports DIR --output NEW_DIR"
         ],
         "expected_results": [
           "The round's figures are recorded in the design."
@@ -169,7 +174,7 @@
           "Run the preset mapping tests."
         ],
         "commands": [
-          "cargo test -p luxforge-core presets::"
+          "tools/cargo-cached test -p luxforge-core presets::"
         ],
         "expected_results": [
           "Every preset test passes."
@@ -204,8 +209,8 @@
           "Generate round 2, hand it to the owner, measure, record."
         ],
         "commands": [
-          "cargo xtask lr-align generate --round 2 --output NEW_DIR",
-          "cargo xtask lr-align measure --round 2 --exports DIR --output NEW_DIR"
+          "tools/cargo-cached xtask lr-align generate --round 2 --output NEW_DIR",
+          "tools/cargo-cached xtask lr-align measure --round 2 --exports DIR --output NEW_DIR"
         ],
         "expected_results": [
           "The round's figures are recorded."
@@ -221,9 +226,11 @@
         "TASK-005"
       ],
       "extra_context": [
-        "Each response change follows the design's path: a study with figures and contact sheets, the f64 reference refrozen, the CPU unit exact against it, the GPU program within the declared tolerance, the module's payload format marker raised so earlier recipes are refused, the owner's review of the sheets before freezing, and the setting's level A map refitted to the identity within tolerance.",
-        "The algorithm, stage and processing cost stay unchanged; a confirming Lightroom round by the owner closes each batch.",
-        "A setting past the A8 threshold is recorded with the dimension that differs, for a behaviour-change task."
+        "Each response change follows the design's path: a study with figures and contact sheets, the f64 reference refrozen, the CPU unit exact against it, the module or mask kind's WGSL beside its CPU unit changed with it, warmed on both GPU executors and qualified within the declared output-kind tolerance on the whole corpus, the module's payload format marker raised so earlier recipes are refused, the owner's review of the sheets before freezing, and the setting's level A map refitted to the identity within tolerance.",
+        "The algorithm and stage stay unchanged. Keep the supported physical range and maximum halo; report range shortfalls rather than silently extending them. A remap can change the per-value kernel, halo and processing cost, so review the window, scratch charge and staged sweeps rather than claiming cost is unchanged. A confirming Lightroom round by the owner closes each batch.",
+        "A setting past the A8 threshold is recorded with the dimension that differs, for a behaviour-change task.",
+        "Pixel reads and export keep using the tile service, the desktop GPU tile worker and the reference fallback. Run gpu-qualification with the RAW manifest and without narrowing kind, family, source or recipe: a narrowed or missing-source run is incomplete. The gate judges the picture at rest; drag differences are reported under the current motion rule.",
+        "Add corpus coverage of changed responses and bounds where current recipes do not exercise them, then run the complete corpus; a passing unchanged recipe is not evidence for an uncovered changed value."
       ],
       "context_links": [
         {
@@ -248,7 +255,7 @@
       ],
       "acceptance_criteria": [
         "Basic and the Tone curve: each setting's response matches Lightroom's within the study's tolerance on the confirming round, with figures and sheets recorded in the design and reviewed by the owner.",
-        "Earlier recipes of each changed module are refused naming the format; exact CPU fixtures and GPU qualification pass."
+        "Earlier recipes of each changed module or mask kind are refused naming the format; exact reference fixtures, GPU warm-up and whole-corpus qualification with all RAW sources pass, including the picture at rest, counts, samples and export."
       ],
       "test_strategy": {
         "approach": "mixed",
@@ -256,12 +263,18 @@
           "Run the studies and the modules' tests; run the confirming round with the owner."
         ],
         "commands": [
-          "cargo test -p luxforge-reference --test studies tone::",
-          "cargo test -p luxforge-core modules::basic",
-          "cargo xtask check"
+          "tools/cargo-cached test -p luxforge-reference --test studies tone::",
+          "tools/cargo-cached test -p luxforge-reference --test studies colour::",
+          "tools/cargo-cached test -p luxforge-reference --test studies white_balance::",
+          "tools/cargo-cached test -p luxforge-reference --test studies exposure::",
+          "tools/cargo-cached test -p luxforge-reference --test studies curve::",
+          "tools/cargo-cached test -p luxforge-core modules::basic",
+          "tools/cargo-cached test -p luxforge-core modules::curve",
+          "tools/cargo-cached xtask check",
+          "tools/cargo-cached xtask gpu-qualification --manifest RAW_MANIFEST --output NEW_DIR"
         ],
         "expected_results": [
-          "Studies, module tests and check pass; the confirming round is recorded."
+          "Studies, module tests and check pass; whole-corpus GPU qualification with the RAW manifest passes, and the confirming Lightroom round is recorded."
         ]
       }
     },
@@ -273,9 +286,11 @@
         "TASK-006"
       ],
       "extra_context": [
-        "Each response change follows the design's path: a study with figures and contact sheets, the f64 reference refrozen, the CPU unit exact against it, the GPU program within the declared tolerance, the module's payload format marker raised so earlier recipes are refused, the owner's review of the sheets before freezing, and the setting's level A map refitted to the identity within tolerance.",
-        "The algorithm, stage and processing cost stay unchanged; a confirming Lightroom round by the owner closes each batch.",
-        "A setting past the A8 threshold is recorded with the dimension that differs, for a behaviour-change task."
+        "Each response change follows the design's path: a study with figures and contact sheets, the f64 reference refrozen, the CPU unit exact against it, the module or mask kind's WGSL beside its CPU unit changed with it, warmed on both GPU executors and qualified within the declared output-kind tolerance on the whole corpus, the module's payload format marker raised so earlier recipes are refused, the owner's review of the sheets before freezing, and the setting's level A map refitted to the identity within tolerance.",
+        "The algorithm and stage stay unchanged. Keep the supported physical range and maximum halo; report range shortfalls rather than silently extending them. A remap can change the per-value kernel, halo and processing cost, so review the window, scratch charge and staged sweeps rather than claiming cost is unchanged. A confirming Lightroom round by the owner closes each batch.",
+        "A setting past the A8 threshold is recorded with the dimension that differs, for a behaviour-change task.",
+        "Pixel reads and export keep using the tile service, the desktop GPU tile worker and the reference fallback. Run gpu-qualification with the RAW manifest and without narrowing kind, family, source or recipe: a narrowed or missing-source run is incomplete. The gate judges the picture at rest; drag differences are reported under the current motion rule.",
+        "Add corpus coverage of changed responses and bounds where current recipes do not exercise them, then run the complete corpus; a passing unchanged recipe is not evidence for an uncovered changed value."
       ],
       "context_links": [
         {
@@ -294,7 +309,7 @@
       ],
       "acceptance_criteria": [
         "Presence, the mixer and the vignette: each setting's response matches Lightroom's within the study's tolerance on the confirming round, with figures and sheets recorded in the design and reviewed by the owner.",
-        "Earlier recipes of each changed module are refused naming the format; exact CPU fixtures and GPU qualification pass."
+        "Earlier recipes of each changed module or mask kind are refused naming the format; exact reference fixtures, GPU warm-up and whole-corpus qualification with all RAW sources pass, including the picture at rest, counts, samples and export."
       ],
       "test_strategy": {
         "approach": "mixed",
@@ -302,13 +317,17 @@
           "Run the studies and the modules' tests; run the confirming round with the owner."
         ],
         "commands": [
-          "cargo test -p luxforge-reference --test studies presence::",
-          "cargo test -p luxforge-reference --test studies mixer::",
-          "cargo test -p luxforge-reference --test studies vignette::",
-          "cargo xtask check"
+          "tools/cargo-cached test -p luxforge-reference --test studies presence::",
+          "tools/cargo-cached test -p luxforge-reference --test studies mixer::",
+          "tools/cargo-cached test -p luxforge-reference --test studies vignette::",
+          "tools/cargo-cached test -p luxforge-core modules::presence",
+          "tools/cargo-cached test -p luxforge-core modules::mixer",
+          "tools/cargo-cached test -p luxforge-core modules::vignette",
+          "tools/cargo-cached xtask check",
+          "tools/cargo-cached xtask gpu-qualification --manifest RAW_MANIFEST --output NEW_DIR"
         ],
         "expected_results": [
-          "Studies, module tests and check pass; the confirming round is recorded."
+          "Studies, module tests and check pass; whole-corpus GPU qualification with the RAW manifest passes, and the confirming Lightroom round is recorded."
         ]
       }
     },
@@ -320,9 +339,12 @@
         "TASK-007"
       ],
       "extra_context": [
-        "Each response change follows the design's path: a study with figures and contact sheets, the f64 reference refrozen, the CPU unit exact against it, the GPU program within the declared tolerance, the module's payload format marker raised so earlier recipes are refused, the owner's review of the sheets before freezing, and the setting's level A map refitted to the identity within tolerance.",
-        "The algorithm, stage and processing cost stay unchanged; a confirming Lightroom round by the owner closes each batch.",
-        "A setting past the A8 threshold is recorded with the dimension that differs, for a behaviour-change task."
+        "Each response change follows the design's path: a study with figures and contact sheets, the f64 reference refrozen, the CPU unit exact against it, the module or mask kind's WGSL beside its CPU unit changed with it, warmed on both GPU executors and qualified within the declared output-kind tolerance on the whole corpus, the module's payload format marker raised so earlier recipes are refused, the owner's review of the sheets before freezing, and the setting's level A map refitted to the identity within tolerance.",
+        "The algorithm and stage stay unchanged. Keep the supported physical range and maximum halo; report range shortfalls rather than silently extending them. A remap can change the per-value kernel, halo and processing cost, so review the window, scratch charge and staged sweeps rather than claiming cost is unchanged. A confirming Lightroom round by the owner closes each batch.",
+        "A setting past the A8 threshold is recorded with the dimension that differs, for a behaviour-change task.",
+        "Pixel reads and export keep using the tile service, the desktop GPU tile worker and the reference fallback. Run gpu-qualification with the RAW manifest and without narrowing kind, family, source or recipe: a narrowed or missing-source run is incomplete. The gate judges the picture at rest; drag differences are reported under the current motion rule.",
+        "Detail currently accepts Radius 0.5..3 px. Its Gaussian tap radius is ceil(3*sigma), sharpening declares a maximum halo of 16, and denoise declares 32 exact or 46 sampled. Any changed support must be justified explicitly with matching CPU/GPU halo and window declarations, staged-sweep splits, both 2 GiB GPU budgets and measured cost; a range extension is not assumed by level B.",
+        "Add corpus coverage of changed responses and bounds where current recipes do not exercise them, then run the complete corpus; a passing unchanged recipe is not evidence for an uncovered changed value."
       ],
       "context_links": [
         {
@@ -341,7 +363,7 @@
       ],
       "acceptance_criteria": [
         "Detail: each setting's response matches Lightroom's within the study's tolerance on the confirming round, with figures and sheets recorded in the design and reviewed by the owner.",
-        "Earlier recipes of each changed module are refused naming the format; exact CPU fixtures and GPU qualification pass."
+        "Earlier recipes of each changed module or mask kind are refused naming the format; exact reference fixtures, GPU warm-up and whole-corpus qualification with all RAW sources pass, including the picture at rest, counts, samples and export."
       ],
       "test_strategy": {
         "approach": "mixed",
@@ -349,11 +371,13 @@
           "Run the study and the module's tests; run the confirming round with the owner."
         ],
         "commands": [
-          "cargo test -p luxforge-reference --test studies detail::",
-          "cargo xtask check"
+          "tools/cargo-cached test -p luxforge-reference --test studies detail::",
+          "tools/cargo-cached test -p luxforge-core modules::detail",
+          "tools/cargo-cached xtask check",
+          "tools/cargo-cached xtask gpu-qualification --manifest RAW_MANIFEST --output NEW_DIR"
         ],
         "expected_results": [
-          "Study, module tests and check pass; the confirming round is recorded."
+          "Studies, module tests and check pass; whole-corpus GPU qualification with the RAW manifest passes, and the confirming Lightroom round is recorded."
         ]
       }
     },
@@ -365,9 +389,12 @@
         "TASK-008"
       ],
       "extra_context": [
-        "Each response change follows the design's path: a study with figures and contact sheets, the f64 reference refrozen, the CPU unit exact against it, the GPU program within the declared tolerance, the module's payload format marker raised so earlier recipes are refused, the owner's review of the sheets before freezing, and the setting's level A map refitted to the identity within tolerance.",
-        "The algorithm, stage and processing cost stay unchanged; a confirming Lightroom round by the owner closes each batch.",
-        "A setting past the A8 threshold is recorded with the dimension that differs, for a behaviour-change task."
+        "Each response change follows the design's path: a study with figures and contact sheets, the f64 reference refrozen, the CPU unit exact against it, the module or mask kind's WGSL beside its CPU unit changed with it, warmed on both GPU executors and qualified within the declared output-kind tolerance on the whole corpus, the module's payload format marker raised so earlier recipes are refused, the owner's review of the sheets before freezing, and the setting's level A map refitted to the identity within tolerance.",
+        "The algorithm and stage stay unchanged. Keep the supported physical range and maximum halo; report range shortfalls rather than silently extending them. A remap can change the per-value kernel, halo and processing cost, so review the window, scratch charge and staged sweeps rather than claiming cost is unchanged. A confirming Lightroom round by the owner closes each batch.",
+        "A setting past the A8 threshold is recorded with the dimension that differs, for a behaviour-change task.",
+        "Pixel reads and export keep using the tile service, the desktop GPU tile worker and the reference fallback. Run gpu-qualification with the RAW manifest and without narrowing kind, family, source or recipe: a narrowed or missing-source run is incomplete. The gate judges the picture at rest; drag differences are reported under the current motion rule.",
+        "The geometry round also reports lens-profile distortion against the detected Lensfun profile; a lens switch is not a continuous slider to rescale, and no Adobe profile coefficients are copied. The study distinguishes profile/model differences from crop and straighten conversion errors.",
+        "Add corpus coverage of changed responses and bounds where current recipes do not exercise them, then run the complete corpus; a passing unchanged recipe is not evidence for an uncovered changed value."
       ],
       "context_links": [
         {
@@ -393,7 +420,7 @@
       ],
       "acceptance_criteria": [
         "Masks and perspective: each setting's response matches Lightroom's within the study's tolerance on the confirming round, with figures and sheets recorded in the design and reviewed by the owner.",
-        "Earlier recipes of each changed module are refused naming the format; exact CPU fixtures and GPU qualification pass."
+        "Earlier recipes of each changed module or mask kind are refused naming the format; exact reference fixtures, GPU warm-up and whole-corpus qualification with all RAW sources pass, including the picture at rest, counts, samples and export."
       ],
       "test_strategy": {
         "approach": "mixed",
@@ -401,26 +428,34 @@
           "Run the studies and the tests; run the confirming round with the owner."
         ],
         "commands": [
-          "cargo test -p luxforge-reference --test studies mask::",
-          "cargo test -p luxforge-reference --test studies geometry::",
-          "cargo xtask check"
+          "tools/cargo-cached test -p luxforge-reference --test studies mask::",
+          "tools/cargo-cached test -p luxforge-reference --test studies brush::",
+          "tools/cargo-cached test -p luxforge-reference --test studies range::",
+          "tools/cargo-cached test -p luxforge-reference --test studies geometry::",
+          "tools/cargo-cached test -p luxforge-core mask::",
+          "tools/cargo-cached test -p luxforge-core modules::perspective",
+          "tools/cargo-cached xtask check",
+          "tools/cargo-cached xtask gpu-qualification --manifest RAW_MANIFEST --output NEW_DIR"
         ],
         "expected_results": [
-          "Studies, tests and check pass; the confirming round is recorded."
+          "Studies, module tests and check pass; whole-corpus GPU qualification with the RAW manifest passes, and the confirming Lightroom round is recorded."
         ]
       }
     },
     {
       "id": "TASK-010",
-      "description": "Realign RAW white balance (Temperature in kelvin and Tint) to Lightroom's responses on the corpus and the owner's colour-checker frames.",
+      "description": "Realign RAW white balance (Temperature in kelvin and Tint) to Lightroom's responses on the corpus and the owner's colour-checker frames. Include the calibrated RAW Kelvin/tint preset-import conversion in this round, shared with catalog import.",
       "status": "pending",
       "dependencies": [
         "TASK-009"
       ],
       "extra_context": [
-        "Each response change follows the design's path: a study with figures and contact sheets, the f64 reference refrozen, the CPU unit exact against it, the GPU program within the declared tolerance, the module's payload format marker raised so earlier recipes are refused, the owner's review of the sheets before freezing, and the setting's level A map refitted to the identity within tolerance.",
-        "The algorithm, stage and processing cost stay unchanged; a confirming Lightroom round by the owner closes each batch.",
-        "A setting past the A8 threshold is recorded with the dimension that differs, for a behaviour-change task."
+        "Committed RAW white balance becomes camera-space gains through modules/raw/white_balance.rs and is applied during source development on the CPU. Refreeze its independent reference and development fixtures, raise the RAW payload marker when its meaning changes, have the owner review the sheets and refit the level A conversion.",
+        "A drag uses the GPU leading white-balance step over the previously developed planes; release redevelops the source. raw-panel reports the moving frame against the release at Fit and 100%, failing only on the existing gross-error bound, rather than applying the ordinary at-rest tolerance to the approximation.",
+        "The current preset conversion maps Lightroom Kelvin/tint to the same white chromaticity, not the same rendered response. The measured calibrated conversion and its exact fixtures land here (owner, 2026-10-07), with missing-pair, applicability and range-shortfall reporting retained; preset import and catalog import share the mapping.",
+        "A confirming Lightroom round on the corpus and the owner's colour-checker frames closes the batch. gpu-qualification with the RAW manifest gates the redeveloped picture at rest, counts, samples and export; no narrowed selection counts as a pass.",
+        "Calibration uses measured outputs only; the existing DNG white-coordinate conversion is a baseline, not evidence of rendering equivalence.",
+        "Extend qualification recipes or prepared RAW variants where the existing corpus does not exercise a changed response and its bounds; then run the complete corpus. In particular, current RAW recipes do not sweep committed Kelvin/tint, so this round adds redeveloped white-balance variants instead of treating as-shot-only coverage as validation of the changed conversion."
       ],
       "context_links": [
         {
@@ -432,9 +467,9 @@
         },
         {
           "kind": "file",
-          "label": "Basic white balance",
-          "target": "docs/design/basic-white-balance.md",
-          "relevance": "The white balance numerics."
+          "label": "RAW white balance",
+          "target": "docs/design/initial-raw.md",
+          "relevance": "Source development and the GPU leading white-balance drag step."
         },
         {
           "kind": "file",
@@ -442,23 +477,33 @@
           "target": "docs/research/lightroom/presets.md",
           "relevance": "The current Kelvin and tint conversion.",
           "locator": "RAW Temperature/Tint conversion"
+        },
+        {
+          "kind": "file",
+          "label": "Preset mapping",
+          "target": "crates/luxforge-core/src/presets/mapping.rs",
+          "relevance": "The Kelvin/tint pair and its current conversion; calibrated import lands with this round."
         }
       ],
       "acceptance_criteria": [
         "RAW white balance: each setting's response matches Lightroom's within the study's tolerance on the confirming round, with figures and sheets recorded in the design and reviewed by the owner.",
-        "Earlier recipes of each changed module are refused naming the format; exact CPU fixtures and GPU qualification pass."
+        "Earlier RAW recipes are refused naming the changed format; exact conversion and development fixtures pass, the calibrated preset and catalog mapping agree, whole-corpus GPU qualification gates the released development, and raw-panel records the approximate drags at Fit and 100% within its existing gross-error rule."
       ],
       "test_strategy": {
         "approach": "mixed",
         "steps": [
-          "Run the study and the tests; run the confirming round with the owner."
+          "Run the white-balance study, RAW module and preset mapping tests; have the owner confirm the round; run raw-panel once per supplied RAW file and qualify the whole corpus with the RAW manifest."
         ],
         "commands": [
-          "cargo test -p luxforge-reference --test studies white_balance::",
-          "cargo xtask check"
+          "tools/cargo-cached test -p luxforge-reference --test studies white_balance::",
+          "tools/cargo-cached test -p luxforge-core modules::raw",
+          "tools/cargo-cached test -p luxforge-core presets::",
+          "tools/cargo-cached xtask smoke --scenario raw-panel --source RAW_FILE --output NEW_DIR",
+          "tools/cargo-cached xtask gpu-qualification --manifest RAW_MANIFEST --output NEW_DIR",
+          "tools/cargo-cached xtask check"
         ],
         "expected_results": [
-          "Study, tests and check pass; the confirming round is recorded."
+          "White-balance and preset fixtures pass; calibrated import is recorded with the confirming round, raw-panel reports each supplied RAW drag within its gross-error rule, and whole-corpus GPU qualification passes at rest."
         ]
       }
     },
@@ -470,7 +515,9 @@
         "TASK-010"
       ],
       "extra_context": [
-        "Candidates are confirmed by measurement, never assumed. Each change answers the performance-rules checklist."
+        "Candidates are confirmed by measurement, never assumed. Each change answers the performance-rules checklist.",
+        "Each changed render effect needs a changed CPU reference unit and WGSL beside it, exact fixtures, warm-up on the photo surface and tile worker, output-kind tolerance, whole-corpus qualification including RAW sources, and tile-service samples/export with reference fallback. A spatial change declares halos, windows, incremental changes and staged-sweep splits against the 2 GiB preview and separate 2 GiB tile-worker budgets. A RAW development change follows the development and drag rules above.",
+        "Add corpus coverage of changed responses and bounds where current recipes do not exercise them, then run the complete corpus; a passing unchanged recipe is not evidence for an uncovered changed value."
       ],
       "context_links": [
         {
@@ -488,7 +535,8 @@
         }
       ],
       "acceptance_criteria": [
-        "Each change meets its study's acceptance and its setting falls within the A8 threshold on a confirming round."
+        "Each change meets its study's acceptance and its setting falls within the A8 threshold on a confirming round.",
+        "Every changed effect meets its reference fixtures and whole-corpus GPU qualification; spatial declarations and warm-up coverage are checked, and any new export kind declares its own tolerance with that feature."
       ],
       "test_strategy": {
         "approach": "mixed",
@@ -496,7 +544,8 @@
           "Plan each change as its own task when identified."
         ],
         "commands": [
-          "cargo xtask check"
+          "tools/cargo-cached xtask check",
+          "tools/cargo-cached xtask gpu-qualification --manifest RAW_MANIFEST --output NEW_DIR"
         ],
         "expected_results": [
           "Each added change passes its own acceptance."
@@ -505,7 +554,7 @@
     },
     {
       "id": "TASK-012",
-      "description": "Validate on the owner's real edits and document: cargo xtask lr-align validate reads the owner's catalog read-only with consent asked each run, renders a sample of edited photographs through the import mapping with and without calibration, compares each with Lightroom's preview, and records the figures; the user guide, feature status and design describe what is built.",
+      "description": "Validate on the owner's real edits and document: cargo xtask lr-align validate reads the owner's catalog read-only with consent asked each run, renders a sample through the same whole-frame reference path as the rounds of edited photographs through the import mapping with and without calibration, compares each with Lightroom's preview, and records the figures; the user guide, feature status and design describe what is built.",
       "status": "pending",
       "dependencies": [
         "TASK-010"
@@ -539,8 +588,8 @@
           "Run validation with the owner's consent; update the docs; run the quick tier."
         ],
         "commands": [
-          "cargo xtask check",
-          "cargo xtask verify --tier quick --output NEW_DIR"
+          "tools/cargo-cached xtask check",
+          "tools/cargo-cached xtask verify --tier quick --output NEW_DIR"
         ],
         "expected_results": [
           "Check and quick pass; the figures are recorded."

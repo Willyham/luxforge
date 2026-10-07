@@ -20,9 +20,11 @@ Store the source root separately from the relative path, plus availability state
 
 Cancellation, inaccessible candidates, mismatches and write failures leave the prior record intact. Recheck identity if the file changes between verification and use. Export must never use a stale preview or an unrelated file at the old path. The same operation is exposed programmatically as `source.locate` with the asset ID and candidate path under the `{request_id, actor}` envelope, following the same validation and conflict rules; it moves no history, so it takes no expected revision, and an edit committed while it verifies stands. Luxforge never moves, copies, syncs or deletes originals; the user points Locate at the copy they want after their own sync.
 
-## Later: folder moves and assistance
+## Folder moves and later assistance
 
-Research how photographers use internal SSDs, removable drives, NAS, managed copies, sidecars and multiple computers before promising support, especially how they distinguish a working copy from an archive and which application syncs. Candidate behavior: relink a root with a dry run showing matched, missing, changed and ambiguous files; search only user-selected roots with progress, cancellation and bounded I/O, filtering by cheap metadata and verifying by fingerprint; treat an offline volume differently from a changed file; use filesystem notifications only as accelerators. Filename alone never authorizes reassignment. Relinking is not a backup strategy, and Luxforge does not become a sync engine by implication. Sidecars may help later but add write, conflict and identity choices of their own.
+The catalog groups missing originals by source folder. `source.find` searches only a user-selected root, with bounded, cancellable I/O and progress, verifying candidates by fingerprint and reporting found, several identical, different bytes, claimed and not found separately. `source.relink` commits the verified, still-unchanged pairs as one undoable library change; no ambiguous candidate is chosen automatically. `source.check` distinguishes disconnected volumes, missing files and changed bytes, and can verify a moved file found by its filesystem identity. Filesystem notifications accelerate index reconciliation, never authorize reassignment.
+
+Catalog backup, portability, sidecars and external-drive sync remain owner questions. Research how photographers distinguish working copies from archives across internal SSDs, removable drives, NAS and multiple computers before promising further assistance. Relinking is not a backup strategy; Luxforge does not move originals or become a sync engine.
 
 ## Locate acceptance
 
