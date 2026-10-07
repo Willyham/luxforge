@@ -4,7 +4,7 @@ Outstanding work by area. What is delivered is in [feature status](features.md);
 
 ## Ready to implement
 
-A persistent list of the work that can start now: each plan below has a validated design and task file on `main`, and each task named has status `ready`. Keep it current: add a plan when one of its tasks becomes ready, and remove a task when it starts or completes. The task files are organised by area in [tasks](../tasks/README.md).
+A persistent list of the work that can start now: each plan below has a validated design and task file on `main`, and each task named has status `ready`. Keep it current: add a plan when one of its tasks becomes ready, and remove a task when it starts or completes. The task files are organised by area in [tasks](../tasks/README.md). Product questions are resolved while planning, and ready tasks are concrete work with no further question or approval task; follow [planning for execution](../tasks/README.md#planning-for-execution). Working delivery comes before deferrable review, calibration and reference refinement.
 
 **Minimum model: the high tier.** Every task in this section is implemented by Opus 5.5 High, Fable 5.1 High, 6-Astra High or 6.1-Sol High, or a stronger model. This applies to each agent that writes any part of a task, subagents included. A row may raise the minimum; none lowers it.
 
@@ -13,13 +13,14 @@ A persistent list of the work that can start now: each plan below has a validate
 1. Read the design, then the task's description, context, links, acceptance and test strategy against current `main`. Confirm the files, symbols, commands, flags and figures it names still exist and still mean what it says.
 2. Confirm every dependency is `completed` and no other agent has started the task: look for a branch or worktree carrying it (`git branch -a`, `git worktree list`) and continue that work rather than restarting it.
 3. Check [decisions](decisions.md) and [feature status](features.md) for anything decided or delivered since that changes the task's scope.
-4. If the plan no longer matches `main`, correct the plan and design first and run `cargo xtask check-repository`; take a consequential product change to the owner rather than deciding it. Then set the task to `in_progress` and remove it from this list.
+4. If the plan no longer matches `main`, correct the plan and design first and run `cargo xtask check-repository`. Use the recorded delegation for routine implementation choices; resolve a newly consequential scope change during that focused plan update rather than inserting an owner-question task, while unaffected work continues. Then set the task to `in_progress` and remove it from this list.
 5. Work and verify as [AGENTS.md](../AGENTS.md#how-we-work) says: narrow tests while building, the verification tier the task asks for at the end.
 
 ### Ready now
 
 | Plan | Ready tasks | Notes | Minimum model |
 | --- | --- | --- | --- |
+| [Colour grading](../tasks/editing/colour-grading.json) ([design](design/colour-grading.md)) | TASK-002 initial grading unit; TASK-003 shared wheels and nested views | Product choices settled; working feature first, reference/Lightroom refinement last; no approval or research gates | High tier |
 | [GPU memory accounting](../tasks/rendering/gpu-memory.json) | TASK-001 measure and bound GPU resources outside the photo-texture ceiling | A measurement: run after feature work, on a quiet host | High tier |
 | [Corrections](../tasks/editing/corrections.json) ([design](design/corrections.md)) | TASK-001 freeze the remaining contract; TASK-002 Clone and Heal numerics | Repair before Detail, spatial GPU tolerance and exclusion from presets are decided; freeze the remaining contract and GPU-evaluable numerics | High tier |
 | [AI editing](../tasks/editing/ai-editing.json) ([design](design/ai-editing.md)) | TASK-002 the prototype on `main` as the harness; TASK-006 the inference port and ONNX Runtime crate; TASK-008 the model-selection mask kind | The GPU-first integration they were sequenced after has merged; the Corrections foundation runs beside the first stage | High tier |
@@ -33,6 +34,7 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 | --- | --- | --- | --- |
 | [Lightroom import](../tasks/lightroom/lightroom-import.json) ([design](design/lightroom-import.md)) | TASK-001 confirm the catalog format against a copy of the owner's catalog | Needs no code; needs the owner's catalog copy | High tier |
 | [Lightroom alignment](../tasks/lightroom/lightroom-alignment.json) ([design](design/lightroom-alignment.md)) | TASK-001 the rig's generator and synthetic targets | Its rounds need the owner to import and export in Lightroom | High tier |
+| [Live-session Rust CLI](../tasks/project/live-cli.json) ([design](design/live-cli.md)) | TASK-001 shared catalog targeting and authenticated session client | The command contract and defaults are decided; implementation awaits owner authorization | High tier |
 
 ### In progress
 
@@ -101,6 +103,8 @@ Continue these rather than starting them again: [Code structure consolidation](.
 
 ## Editing tools
 
+**Colour grading in the mixer** (decided, [design](design/colour-grading.md), [plan](../tasks/editing/colour-grading.json)). HSL / Grading tabs with three-way and individual/Global wheels, luminance, masks, Luxforge presets and direct Lightroom mappings. TASK-002 and TASK-003 can start now; TASK-009 hands off the working feature before TASK-010 independent-reference and Lightroom response refinement. Product choices are settled and initial numerical/layout choices belong to the implementer; no approval or research gate remains.
+
 **Tone curve follow-ups** ([design](design/tone-curve.md)). The Tone curve is delivered ([feature status](features.md)).
 - Owner review of the recorded defaults: what the composite acts on, channels, order, endpoints, the point limit, the Lightroom transfer and the editor gestures; below black the curve uses a floor-subtracted ratio (decided 2026-09-30)
 - Follow-up: whether Basic's Blacks adopts the same floor-subtracted ratio, since lifting Blacks turns near-black noise into coloured speckle
@@ -151,6 +155,8 @@ Continue these rather than starting them again: [Code structure consolidation](.
 - Later, if the owner wants them: following Omarchy's current theme on Linux, following the system's light or dark appearance
 
 ## Programmability
+
+**Live-session Rust CLI** ([design](design/live-cli.md), [tasks](../tasks/project/live-cli.json)). A thin `luxforge-ctl` client attaches to the authenticated loopback session for the already-open catalog and exposes state, schemas, generic calls and same-connection job waiting. The shared catalog resolver follows the desktop's stored/default rules; revisioned calls use a schema-driven `--asset` helper. It does not start another catalog owner or infer the asset from the desktop's selection. The contract is specified; implementation awaits owner authorization.
 
 **MCP adapter.** Expose the whole operation registry to agents through a standards-compliant MCP server over the existing command service.
 

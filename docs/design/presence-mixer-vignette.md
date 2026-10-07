@@ -2,6 +2,8 @@
 
 Status: implemented and verified on the M4 Mac. The owner authorized implementation on 2026-09-22 on the recorded defaults; the three modules, the host stages, the spatial primitive and the acceptance and rendered evidence are delivered, and [performance](../specs/performance.md#presence-colour-mixer-and-vignette-qualification) records the measurements and the missed slider targets. The [proposals](#proposals-with-recorded-defaults) at the end carry those defaults so the plan runs to completion on agent judgement; each is the owner's to refine, as the Basic defaults were. It builds on the delivered [Basic adjustments](basic-and-histogram.md) integration contract (field patches, the draft lifecycle, pointwise colour runs), the [module and API contract](modules-and-api.md), the [UI components](ui-components.md) vocabulary and the [Develop workspace](develop-workspace.md) tool array.
 
+[Colour grading](colour-grading.md) is a decided, implementation-ready extension of the delivered mixer, with its own [task plan](../../tasks/editing/colour-grading.json). Tonal/Global wheels, shared view controls and direct grading preset mappings ship before final reference/Lightroom refinement; none is built yet.
+
 ## Outcome and scope
 
 Three further Lightroom-familiar editing sections over the delivered editor, each a built-in module with generated controls and generated API methods:

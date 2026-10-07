@@ -1,0 +1,941 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "colour-grading",
+  "title": "Colour grading in the mixer",
+  "objective": "Extend the existing mixer with Lightroom-familiar tonal and Global grading, shared atomic wheels and numeric/API parity, independently proven CPU/GPU rendering, masks, presets and mapped Lightroom grading documents.",
+  "context_summary": "The owner settled product choices on 2026-10-07 and requested an implementation-ready plan with no approval/research gates. Deliver HSL/Grading tabs with three-way and individual/Global wheels, luminance, masks, Luxforge presets and direct Lightroom preset mappings; retain dormant hue and scoped resets. Initial numerical/layout details are implementer decisions. TASK-001 records the completed contract. TASK-002 and TASK-003 implement numerics and shared controls immediately; TASK-009 hands off the working feature. Only TASK-010 performs independent f64 reference analysis and Lightroom matching/refinement, with no dependency back into initial delivery. Lightroom exports are measurement inputs, not approval gates or prerequisites for feature/tooling implementation. Ordinary correctness tests, GPU-versus-CPU checks and background rendered evidence ship with the feature. Keep current shapes only, bounded work and the roadmap high-tier minimum.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Record the settled product contract and implementation sequence.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "Completed by this planning refinement from the owner’s answers on 2026-10-07: HSL/Grading with three-way/individual/Global views, all four wheels/luminance/masks/presets/direct mappings, dormant hue and scoped resets.",
+        "The owner requested no gates and moved all Lightroom matching/reference perfection after working-feature delivery. Numerical/layout details are implementer choices; no further approval task remains.",
+        "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Colour grading design",
+          "target": "docs/design/colour-grading.md",
+          "relevance": "Settled product/control contract, initial implementation and final reference/Lightroom refinement sequence."
+        },
+        {
+          "kind": "file",
+          "label": "Mixer declaration",
+          "target": "crates/luxforge-core/src/modules/mixer/mod.rs",
+          "relevance": "Current field-patch module, twenty-four HSL fields, effect identity, order and maskability."
+        },
+        {
+          "kind": "file",
+          "label": "Field-patch service",
+          "target": "crates/luxforge-core/src/modules/field_patch.rs",
+          "relevance": "Payload defaults, group resets, stored state, format checks and compilation neutrality."
+        },
+        {
+          "kind": "file",
+          "label": "Semantic controls",
+          "target": "crates/luxforge-core/src/modules/descriptor/types.rs",
+          "relevance": "Current controls, group tree and top-level layout; wheel and nested tabs are absent."
+        },
+        {
+          "kind": "file",
+          "label": "Lightroom response alignment",
+          "target": "docs/design/lightroom-alignment.md",
+          "relevance": "Final refinement only: decided measurement method and response policy; no initial feature dependency."
+        },
+        {
+          "kind": "file",
+          "label": "Preset contract",
+          "target": "docs/design/presets.md",
+          "relevance": "Capture grouping, patch semantics, inspection/import reports and source preservation."
+        },
+        {
+          "kind": "file",
+          "label": "Host masking contract",
+          "target": "docs/design/masking.md",
+          "relevance": "One effect per target, draft binding, ordering and host-owned coverage blend."
+        },
+        {
+          "kind": "file",
+          "label": "Owner decisions",
+          "target": "docs/decisions.md",
+          "relevance": "Record only actual answers; existing alignment policy remains authoritative."
+        },
+        {
+          "kind": "file",
+          "label": "Roadmap",
+          "target": "docs/plan.md",
+          "relevance": "Priority, authorization and re-review rules."
+        }
+      ],
+      "acceptance_criteria": [
+        "The design and decisions record the owner’s product answers and delivery sequence accurately.",
+        "The plan has immediately runnable implementation tasks, genuine output dependencies and a final refinement task with no dependency back into working-feature delivery.",
+        "No owner review, alignment rig, external exports or numerical study is an initial delivery prerequisite."
+      ],
+      "test_strategy": {
+        "approach": "inspection",
+        "steps": [
+          "Compare the design and task sequence with the owner’s explicit answers.",
+          "Validate task schema/dependencies/waves and current repository links."
+        ],
+        "commands": [],
+        "expected_results": [
+          "Product decisions are recorded; implementation tasks can start without further approval."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Implement the initial bounded grading colour unit and its correctness fixtures.",
+      "status": "ready",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "Implement production numerical behaviour now; there is no independent study, Lightroom data or owner contact-sheet prerequisite. Select/document initial equations and constants through engineering judgement within the settled design.",
+        "Use post-HSL perceptual brightness, smooth three-range weights, Balance/Blending, RGB-wheel hue-to-tint conversion, luminance and independent Global composition. Oklab is the initial candidate; handle signed/headroom RAW explicitly and retain alpha.",
+        "Keep this outcome independent of the payload declaration: the unit consumes fixed typed coefficients/parameters for the fourteen decided fields. TASK-004 binds it to the API, and TASK-005 ports the same contract to the GPU.",
+        "Add ordinary whole-buffer/neutral/finite/continuity tests for the chosen initial equations. Independent f64 analysis, response plots, Lightroom matching and perfection belong exclusively to TASK-010 after delivery.",
+        "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Colour grading design",
+          "target": "docs/design/colour-grading.md",
+          "relevance": "Settled product/control contract, initial implementation and final reference/Lightroom refinement sequence."
+        },
+        {
+          "kind": "file",
+          "label": "Existing HSL study",
+          "target": "docs/design/mixer-study.md",
+          "relevance": "Frozen HSL numerics to preserve when grading is neutral."
+        },
+        {
+          "kind": "file",
+          "label": "GPU renderer contract",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "Renderer of record, whole-frame reference, tolerance and current qualification scope."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Bounded work, source reuse, worker ownership, final measurements and checklist."
+        },
+        {
+          "kind": "file",
+          "label": "Verification workflow",
+          "target": "docs/engineering/development.md",
+          "relevance": "Targeted edit-loop tests, cached Cargo, background launches and final tier selection."
+        },
+        {
+          "kind": "file",
+          "label": "Production HSL unit",
+          "target": "crates/luxforge-core/src/modules/mixer/unit.rs",
+          "relevance": "Existing pointwise unit/coefficients pattern to extend without changing neutral HSL output."
+        }
+      ],
+      "acceptance_criteria": [
+        "A production pointwise grading unit implements the fourteen-field contract with fixed-size coefficients, smooth tonal weights, hue tinting, luminance and Global independent of Balance/Blending.",
+        "Initial equations/constants, gamut/endpoints and signed/headroom RAW behaviour are documented; all outputs are finite and alpha is unchanged.",
+        "Ordinary exact whole-buffer fixtures and property checks cover greys, neutral bypass, seams, opposing tints, overlap extremes, luminance-only, endpoint lifting/dimming and Global independence.",
+        "No standalone research report, owner review or Lightroom output is needed to complete this implementation task; independent refinement is deferred to TASK-010."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the narrowly filtered mixer unit tests for the initial algorithm and unchanged HSL behaviour.",
+          "Inspect the documented coefficient/extended-domain contracts and fixture coverage.",
+          "Run quick once at the completed implementation handoff."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "The task acceptance evidence is recorded with scope; skipped checks remain incomplete."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Add semantic hue/saturation wheel and nested view controls through the shared UI paths.",
+      "status": "ready",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "The frozen parameter and interaction contract comes from the completed TASK-001; numerical grading output is not needed to implement and prove the controls. Exercise the controls proof module before mixer integration.",
+        "Current Control has RGB colour pickers but no numeric hue/saturation wheel, and ModuleLayout::Tabs applies only at module level. Add the smallest shared wheel binding and recursive group/view hint needed; never hardcode luxforge.mixer in desktop dispatch.",
+        "A wheel updates two declared fields of one action atomically through one draft. Session view selection must never enter recipe history or create photo work. Preserve numeric fallback, inspection, historic/disabled states and current group-tree traversal.",
+        "Do not add a generic pad framework, speculative controls or pixel sampling. The widget owns pointer geometry; the core owns parameter validation, transaction state and meaning.",
+        "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step.",
+        "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Colour grading design",
+          "target": "docs/design/colour-grading.md",
+          "relevance": "Settled product/control contract, initial implementation and final reference/Lightroom refinement sequence."
+        },
+        {
+          "kind": "file",
+          "label": "Semantic controls",
+          "target": "crates/luxforge-core/src/modules/descriptor/types.rs",
+          "relevance": "Current controls, group tree and top-level layout; wheel and nested tabs are absent."
+        },
+        {
+          "kind": "file",
+          "label": "Field-patch service",
+          "target": "crates/luxforge-core/src/modules/field_patch.rs",
+          "relevance": "Payload defaults, group resets, stored state, format checks and compilation neutrality."
+        },
+        {
+          "kind": "file",
+          "label": "Generated desktop controls",
+          "target": "crates/luxforge-app/src/app/controls.rs",
+          "relevance": "Shared projection/dispatch and draft lifecycle."
+        },
+        {
+          "kind": "file",
+          "label": "Control-tree traversal",
+          "target": "crates/luxforge-app/src/state/control_tree.rs",
+          "relevance": "Walk nested views without losing field controls and resets."
+        },
+        {
+          "kind": "file",
+          "label": "Widget implementation",
+          "target": "crates/luxforge-ui/src/lib.rs",
+          "relevance": "Custom widget geometry, focus and painting."
+        },
+        {
+          "kind": "file",
+          "label": "Controls proof module",
+          "target": "crates/luxforge-core/src/modules/controls.rs",
+          "relevance": "Descriptor-driven proof independent of grading numerics."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Bounded work, source reuse, worker ownership, final measurements and checklist."
+        },
+        {
+          "kind": "file",
+          "label": "Verification workflow",
+          "target": "docs/engineering/development.md",
+          "relevance": "Targeted edit-loop tests, cached Cargo, background launches and final tier selection."
+        },
+        {
+          "kind": "file",
+          "label": "Workspace method table",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "relevance": "Extend current session workspace read/set schemas for declared view selection without recipe history or photo work."
+        }
+      ],
+      "acceptance_criteria": [
+        "The registry validates wheel bindings to compatible numeric fields of one action, and describes view layouts without a mixer-specific business path.",
+        "Wheel pointer, seam/centre and modifier handling, keyboard/numeric routes and reset/inspection all use declared fields; release yields one history entry and Escape restores prior state.",
+        "View selection has a validated, discoverable session workspace API with desktop/API state parity. Nested views preserve the semantic field tree, capture/reset grouping and control focus; hidden-view switching creates zero history entries, photo renders/uploads or new polls.",
+        "The controls proof has correlated background native state/log/capture evidence, including external edits, disabled histories, centre hue retention and invalid declaration refusal."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run targeted descriptor, control-state and widget tests; replay atomic draft/cancel and view-only transitions in the developer controls proof.",
+          "Run the affected registered background smoke scenario and inspect correlated captures/state/logs.",
+          "Run quick at the finished handoff."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "The task acceptance evidence is recorded with scope; skipped checks remain incomplete."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Extend the mixer payload, API and CPU reference path with grading.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002"
+      ],
+      "extra_context": [
+        "TASK-001 freezes the contract and TASK-002 supplies the working production unit and documented initial equations. Use the current effect identity/order and one layer per global/mask target.",
+        "Add fourteen grading numeric fields to set-mixer, with Blending default 50; preserve existing twenty-four HSL fields. Keep parameter state even when tint amounts are zero, while compile omits pixel-neutral grading.",
+        "Keep the HSL unit followed by grading in the existing colour segment with no added quantization boundary. The host blends a masked layer once; module units do not duplicate coverage.",
+        "Raise only the relevant effect/current shape markers. If FieldPatch Spec needs per-effect format declaration, make that contained shared addition. Reject unsupported payloads without rewriting/discarding data; no old-shape reader, migration or historical parity fixtures.",
+        "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step.",
+        "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Colour grading design",
+          "target": "docs/design/colour-grading.md",
+          "relevance": "Settled product/control contract, initial implementation and final reference/Lightroom refinement sequence."
+        },
+        {
+          "kind": "file",
+          "label": "Mixer declaration",
+          "target": "crates/luxforge-core/src/modules/mixer/mod.rs",
+          "relevance": "Current field-patch module, twenty-four HSL fields, effect identity, order and maskability."
+        },
+        {
+          "kind": "file",
+          "label": "Field-patch service",
+          "target": "crates/luxforge-core/src/modules/field_patch.rs",
+          "relevance": "Payload defaults, group resets, stored state, format checks and compilation neutrality."
+        },
+        {
+          "kind": "file",
+          "label": "Existing HSL study",
+          "target": "docs/design/mixer-study.md",
+          "relevance": "Frozen HSL numerics to preserve when grading is neutral."
+        },
+        {
+          "kind": "file",
+          "label": "Host masking contract",
+          "target": "docs/design/masking.md",
+          "relevance": "One effect per target, draft binding, ordering and host-owned coverage blend."
+        },
+        {
+          "kind": "file",
+          "label": "HSL unit",
+          "target": "crates/luxforge-core/src/modules/mixer/unit.rs",
+          "relevance": "Reuse unchanged arithmetic and exact bypass."
+        },
+        {
+          "kind": "file",
+          "label": "Mixer contract tests",
+          "target": "crates/luxforge-core/tests/modules/mixer.rs",
+          "relevance": "Current API, single-layer and reference-path tests."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Bounded work, source reuse, worker ownership, final measurements and checklist."
+        },
+        {
+          "kind": "file",
+          "label": "Verification workflow",
+          "target": "docs/engineering/development.md",
+          "relevance": "Targeted edit-loop tests, cached Cargo, background launches and final tier selection."
+        }
+      ],
+      "acceptance_criteria": [
+        "schema.list/module.list describe all thirty-eight fields and defaults; set-mixer patches only named fields and rejects unknown/non-finite/out-of-range values atomically.",
+        "Layer identity, order and mask target remain stable across HSL/grade patches and resets, with no-op handling and one atomic wheel-equivalent two-field action.",
+        "Dormant hue/Blending/Balance persist, all declared-default payloads are neutral, and grade processing is absent when saturation/luminance amounts are zero regardless of dormant values.",
+        "The whole-frame CPU reference passes initial correctness fixtures/exact buffers, grading-neutral HSL outputs and alpha/source preservation; zero/partial/full mask coverage follows the host contract.",
+        "Unsupported formats, duplicate layers and missing providers fail explicitly without changing originals/history, including reopen/refusal/recovery."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run narrowly filtered mixer, field-patch conformance, masking and reference-buffer tests covering the new fields.",
+          "Drive JSON patch/reset/draft/history/reopen parity and refusal tests using the existing command service.",
+          "Run quick once at the finished handoff."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "The task acceptance evidence is recorded with scope; skipped checks remain incomplete."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Implement the grading GPU colour program and verify it against the working CPU renderer.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "extra_context": [
+        "TASK-004 supplies the actual compiled unit and payload; reuse its coefficient pack and TASK-002 documented implementation. Register the program in existing discovery, warm-up and validation paths.",
+        "Keep one fixed-size pointwise coefficient pack and current resource limits. Support unmasked/masked colour runs, approximate drag view paths and exact picture/sample/histogram/export GPU paths.",
+        "Prove against the working whole-frame CPU renderer within the declared GPU tolerance, and exact neutral bypass separately. A selected comparison has its scope recorded; complete working-feature verification is TASK-009. Independent reference refinement comes later in TASK-010.",
+        "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step.",
+        "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Colour grading design",
+          "target": "docs/design/colour-grading.md",
+          "relevance": "Settled product/control contract, initial implementation and final reference/Lightroom refinement sequence."
+        },
+        {
+          "kind": "file",
+          "label": "GPU renderer contract",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "Renderer of record, whole-frame reference, tolerance and current qualification scope."
+        },
+        {
+          "kind": "file",
+          "label": "Mixer shader",
+          "target": "crates/luxforge-core/src/modules/mixer/unit.wgsl",
+          "relevance": "Current HSL program stays unchanged when grade is inactive."
+        },
+        {
+          "kind": "file",
+          "label": "GPU program contract",
+          "target": "crates/luxforge-core/src/render/gpu/program.rs",
+          "relevance": "Program registration, kind and coefficient bounds."
+        },
+        {
+          "kind": "file",
+          "label": "GPU qualification gate",
+          "target": "xtask/src/gpu_qualification.rs",
+          "relevance": "Extend current corpus recipes and reference comparisons."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Bounded work, source reuse, worker ownership, final measurements and checklist."
+        },
+        {
+          "kind": "file",
+          "label": "Verification workflow",
+          "target": "docs/engineering/development.md",
+          "relevance": "Targeted edit-loop tests, cached Cargo, background launches and final tier selection."
+        }
+      ],
+      "acceptance_criteria": [
+        "Grading has a registered validated GPU colour program with bounded coefficients; inactive grading emits no program and HSL-only output is preserved.",
+        "Native M4 targeted comparisons cover every range and Global, seam/endpoints, luminance-only, interacting weights/HSL, masks and signed/headroom RAW inputs.",
+        "Fit and percentage views, draft/at-rest, histogram/samples and export tile paths use the same declared semantics; warm-up and unsupported-adapter/refusal recovery are exercised.",
+        "No new full-frame staging allocations, queues, source decodes or unaccepted tolerance/resource increases are introduced."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run targeted unit/program-packing tests and shader validation.",
+          "Use the existing gpu-qualification selection flags on affected grading recipes/sources/zooms against the working whole-frame CPU renderer; record the selection scope.",
+          "Run quick once at handoff; defer distributions and the complete GPU gate to the integrated feature."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "The task acceptance evidence is recorded with scope; skipped checks remain incomplete."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Integrate HSL and Grading views into the generated mixer workspace.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003",
+        "TASK-004",
+        "TASK-005"
+      ],
+      "extra_context": [
+        "TASK-003 supplies semantic wheel/views, TASK-004 parameter/action/reset semantics and TASK-005 native GPU output. UI projects those declarations and sends shared actions only.",
+        "Build accepted three-way and range/Global views, numeric controls, Blending/Balance visibility and nested HSL tabs. Wheel/range, HSL, Grading and band resets use exact declared scopes.",
+        "Use real rendered checks in the background with an isolated catalog. Use the decided individual-wheel fallback at narrow widths, retaining usable targets and theme contrast; rendered layout review is implementer work, without an approval stop.",
+        "Update current user-facing docs at this behaviour handoff while clearly marking final qualification still pending.",
+        "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step.",
+        "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Colour grading design",
+          "target": "docs/design/colour-grading.md",
+          "relevance": "Settled product/control contract, initial implementation and final reference/Lightroom refinement sequence."
+        },
+        {
+          "kind": "file",
+          "label": "Semantic controls",
+          "target": "crates/luxforge-core/src/modules/descriptor/types.rs",
+          "relevance": "Current controls, group tree and top-level layout; wheel and nested tabs are absent."
+        },
+        {
+          "kind": "file",
+          "label": "Control renderer",
+          "target": "crates/luxforge-app/src/app/controls.rs",
+          "relevance": "Generate views and dispatch shared drafts."
+        },
+        {
+          "kind": "file",
+          "label": "Existing mixer smoke",
+          "target": "xtask/src/mixer_smoke.rs",
+          "relevance": "Retain HSL gestures, hue continuity and tab behaviour."
+        },
+        {
+          "kind": "file",
+          "label": "Workspace visual language",
+          "target": "docs/design/develop-workspace.md",
+          "relevance": "Panel density and familiar focused defaults."
+        },
+        {
+          "kind": "file",
+          "label": "Host masking contract",
+          "target": "docs/design/masking.md",
+          "relevance": "One effect per target, draft binding, ordering and host-owned coverage blend."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Bounded work, source reuse, worker ownership, final measurements and checklist."
+        },
+        {
+          "kind": "file",
+          "label": "Verification workflow",
+          "target": "docs/engineering/development.md",
+          "relevance": "Targeted edit-loop tests, cached Cargo, background launches and final tier selection."
+        }
+      ],
+      "acceptance_criteria": [
+        "Colour mixer exposes accepted HSL/Grading and tonal/Global views; switching views changes no pixels, history or uploads and HSL remains usable.",
+        "Wheels, values, rails, reset scope, keyboard/modifiers, external-client changes and displayed historical entries agree with API state for global and mask targets.",
+        "Native captured panel layouts are readable in default/light/dark themes and narrow widths, with actionable focus and no clipped fields or tiny hit targets.",
+        "Background native tests prove one-entry wheel commit/cancel, hue retained at centre, reset isolation and external-refresh/reopen; existing HSL smoke still passes.",
+        "Design, feature status and user guide describe the delivered behaviour and remaining evidence accurately."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run targeted control/UI projection tests and the registered mixer/grading background smoke journeys once available.",
+          "Inspect each relevant captured view with matching state/logs; run rendered at this completed integration point.",
+          "Run quick once at handoff."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask verify --tier quick --output NEW_DIR",
+          "tools/cargo-cached xtask verify --tier rendered --manifest RAW_MANIFEST --output NEW_RENDERED_DIR"
+        ],
+        "expected_results": [
+          "The task acceptance evidence is recorded with scope; skipped checks remain incomplete."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Carry grading through presets and the existing Lightroom mapper.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004"
+      ],
+      "extra_context": [
+        "TASK-004 supplies registered fields/shape; Initial import uses direct value transfers; response calibration belongs to TASK-010 and is not a prerequisite. This task is independent of wheel rendering and GPU delivery.",
+        "Give HSL and Grading independent capture groups while retaining wheel subviews as presentation. Grade-only full capture must reproduce dormant choices and Blending/Balance; partial imported modern presets remain declared patches.",
+        "Replace only the existing grading unsupported rows in the shared mapper; respect EnableSplitToning, source era, direct-transfer reports and exact validation with no clamps.",
+        "Use actual XMP/lrtemplate examples to distinguish unambiguous legacy split toning from partial modern grading. Legacy translation resets later grade controls and sets Blending 100 only when source semantics prove it. Ambiguous inputs remain reported/refused; old Luxforge shapes stay unsupported.",
+        "No Lightroom catalog importer is implemented here. Its future source settings mapping consumes this shared mapper without new parallel logic.",
+        "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step.",
+        "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Colour grading design",
+          "target": "docs/design/colour-grading.md",
+          "relevance": "Settled product/control contract, initial implementation and final reference/Lightroom refinement sequence."
+        },
+        {
+          "kind": "file",
+          "label": "Preset contract",
+          "target": "docs/design/presets.md",
+          "relevance": "Capture grouping, patch semantics, inspection/import reports and source preservation."
+        },
+        {
+          "kind": "file",
+          "label": "Lightroom preset mapper",
+          "target": "crates/luxforge-core/src/presets/mapping.rs",
+          "relevance": "Recognised grading fields, dependency rules, unsupported rows and panel switch."
+        },
+        {
+          "kind": "file",
+          "label": "Lightroom response alignment",
+          "target": "docs/design/lightroom-alignment.md",
+          "relevance": "Final refinement only: decided measurement method and response policy; no initial feature dependency."
+        },
+        {
+          "kind": "file",
+          "label": "Preset mapping tests",
+          "target": "crates/luxforge-core/src/presets/tests.rs",
+          "relevance": "Import report, disabled switch and invalid-value fixtures."
+        },
+        {
+          "kind": "file",
+          "label": "Preset library tests",
+          "target": "crates/luxforge-core/src/presets/library_tests.rs",
+          "relevance": "Capture/application/update round trips."
+        },
+        {
+          "kind": "file",
+          "label": "Planned catalog importer",
+          "target": "docs/design/lightroom-import.md",
+          "relevance": "Reuse grading mapping after this feature lands."
+        },
+        {
+          "kind": "file",
+          "label": "Verification workflow",
+          "target": "docs/engineering/development.md",
+          "relevance": "Targeted edit-loop tests, cached Cargo, background launches and final tier selection."
+        }
+      ],
+      "acceptance_criteria": [
+        "Luxforge create/capture/update/apply/export includes independently selectable HSL and Grading groups without dropped/duplicated fields; each preserves fields outside its declared scope.",
+        "XMP and lrtemplate map all recognised grading fields with the accepted modern/legacy semantics, panel switch and source era; range/non-finite/ambiguous failures report without changes or source writes.",
+        "Exact tests cover sparse modern patches, full grading, luminosity without saturation, dormant hue, default Blending, inactive panel, unambiguous legacy split toning and ambiguous sources.",
+        "Initial import reports identify direct value transfer and retain unsupported settings; no measured Lightroom response or rendering equivalence is claimed.",
+        "Update presets and future catalog mapping documentation only after those rows exist."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run targeted preset reader/mapping, capture and library tests, then JSON preset apply/history/source-hash parity checks.",
+          "Inspect exported/imported current documents and compare exact mapped fields and report classifications.",
+          "Run quick once at the completed handoff."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "The task acceptance evidence is recorded with scope; skipped checks remain incomplete."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Extend integrated acceptance, smoke and corpus coverage for grading.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-006",
+        "TASK-007"
+      ],
+      "extra_context": [
+        "TASK-006 delivers the usable native workspace and TASK-007 preset/import semantics. Extend current harnesses rather than creating a second editor test system.",
+        "Register a grading smoke scenario, fixtures and CPU/GPU gate recipes; extend the latency harness to represent a two-field wheel gesture, without running distributions during harness construction.",
+        "Use real background editor journeys with state/log/capture correlation and actual export.plan/export.jpeg/batch.export flows, not only render-to-buffer substitutes.",
+        "Include mask kinds that depend on luminance/colour so layer ordering and coverage inputs are proved, plus stale/cancel/revision race recovery and immutable source hashes.",
+        "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step.",
+        "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Colour grading design",
+          "target": "docs/design/colour-grading.md",
+          "relevance": "Settled product/control contract, initial implementation and final reference/Lightroom refinement sequence."
+        },
+        {
+          "kind": "file",
+          "label": "Mixer smoke",
+          "target": "xtask/src/mixer_smoke.rs",
+          "relevance": "Retain existing native HSL acceptance."
+        },
+        {
+          "kind": "file",
+          "label": "API/editor acceptance",
+          "target": "xtask/src/editor_acceptance.rs",
+          "relevance": "Shared field-patch and independent image chapters."
+        },
+        {
+          "kind": "file",
+          "label": "GPU corpus gate",
+          "target": "xtask/src/gpu_qualification.rs",
+          "relevance": "Program families, recipe coverage and output kinds."
+        },
+        {
+          "kind": "file",
+          "label": "Latency harness",
+          "target": "xtask/src/editor_latency.rs",
+          "relevance": "Extend bounded multi-field gesture measurement."
+        },
+        {
+          "kind": "file",
+          "label": "Real export contract",
+          "target": "docs/design/export.md",
+          "relevance": "Single and batch JPEG worker workflows."
+        },
+        {
+          "kind": "file",
+          "label": "Host masking contract",
+          "target": "docs/design/masking.md",
+          "relevance": "One effect per target, draft binding, ordering and host-owned coverage blend."
+        },
+        {
+          "kind": "file",
+          "label": "GPU renderer contract",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "Renderer of record, whole-frame reference, tolerance and current qualification scope."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Bounded work, source reuse, worker ownership, final measurements and checklist."
+        },
+        {
+          "kind": "file",
+          "label": "Verification workflow",
+          "target": "docs/engineering/development.md",
+          "relevance": "Targeted edit-loop tests, cached Cargo, background launches and final tier selection."
+        }
+      ],
+      "acceptance_criteria": [
+        "A discoverable registered grading scenario covers all accepted views and reset scopes, numeric/wheel/API parity, dormant state, masks, presets, external edits, Compare and undo/redo/reopen.",
+        "Initial CPU whole-buffer correctness fixtures and native GPU-reference recipe coverage exercise every range, Global, blending/balance extremes, seams, alpha, signed/headroom RAW and HSL-only neutrality.",
+        "History/refusal/recovery and single/batch exports preserve original hashes and pixels outside zero-coverage masks; rendered/export/sample/histogram comparisons respect their distinct tolerances.",
+        "The latency harness can record wheel as well as scalar gestures and view-only zero-work evidence on 24/60 MP and qualified RAW without added production polling.",
+        "Correlated background evidence passes the completed rendered integration tier; gaps and unsupported platforms remain explicit."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run only affected harness tests while building, then the grading/mixer registered background scenarios and acceptance chapter.",
+          "Inspect correlated evidence and run quick plus rendered once at the completed harness integration point.",
+          "Do not run timing distributions here before feature/harness edits are finished."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask verify --tier quick --output NEW_DIR",
+          "tools/cargo-cached xtask verify --tier rendered --manifest RAW_MANIFEST --output NEW_RENDERED_DIR"
+        ],
+        "expected_results": [
+          "The task acceptance evidence is recorded with scope; skipped checks remain incomplete."
+        ]
+      }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Hand off the working feature with native verification, measurements and current documentation.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-008"
+      ],
+      "extra_context": [
+        "This is the working-feature delivery, after all feature and harness work and before TASK-010 reference/Lightroom refinement. Run on a quiet M4 using new evidence directories and the actual supported RAW manifest. Full includes timing and the GPU release gate; do not rerun the same complete tiers separately.",
+        "Record baseline HSL-only and grading scalar/wheel drag, commit, sample/export and resource figures at 24/60 MP and representative supported RAW. Report sample counts, current known exceptions and misses rather than inventing new unreviewed bounds.",
+        "Complete the performance-rules checklist for the integrated crates change. Reuse bounded source/texture/worker services; validate no photo work for view-only actions and no hidden-view timer.",
+        "Documentation reflects current delivered contracts and scoped evidence only. Native Windows/Linux, screen-reader and calibrated-display claims need native evidence; skips remain incomplete.",
+        "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step.",
+        "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Colour grading design",
+          "target": "docs/design/colour-grading.md",
+          "relevance": "Settled product/control contract, initial implementation and final reference/Lightroom refinement sequence."
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Bounded work, source reuse, worker ownership, final measurements and checklist."
+        },
+        {
+          "kind": "file",
+          "label": "Verification workflow",
+          "target": "docs/engineering/development.md",
+          "relevance": "Targeted edit-loop tests, cached Cargo, background launches and final tier selection."
+        },
+        {
+          "kind": "file",
+          "label": "GPU renderer contract",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "Renderer of record, whole-frame reference, tolerance and current qualification scope."
+        },
+        {
+          "kind": "file",
+          "label": "Lightroom response alignment",
+          "target": "docs/design/lightroom-alignment.md",
+          "relevance": "Final refinement only: decided measurement method and response policy; no initial feature dependency."
+        },
+        {
+          "kind": "file",
+          "label": "Feature status",
+          "target": "docs/features.md",
+          "relevance": "Current implementation/qualification state."
+        },
+        {
+          "kind": "file",
+          "label": "User guide",
+          "target": "docs/user-guide.md",
+          "relevance": "Shipped controls, resets and presets only."
+        },
+        {
+          "kind": "file",
+          "label": "Module/API design",
+          "target": "docs/design/modules-and-api.md",
+          "relevance": "New semantic control and layout contract."
+        },
+        {
+          "kind": "file",
+          "label": "Mixer design",
+          "target": "docs/design/presence-mixer-vignette.md",
+          "relevance": "Current extended layer and stage contract."
+        },
+        {
+          "kind": "file",
+          "label": "Roadmap",
+          "target": "docs/plan.md",
+          "relevance": "Remove delivered work and retain real outstanding outcomes."
+        }
+      ],
+      "acceptance_criteria": [
+        "Full verification with the supported RAW manifest passes before the feature is described as complete; GPU gate coverage includes grading output kinds/views and the new smoke scenario runs in the background.",
+        "Native M4 baseline/grade comparisons record latency and CPU/GPU memory with scope, samples, quiet-host setup and any misses; the finished performance checklist answers each applicable item.",
+        "Design, module/API/UI contracts, preset mapping, feature status, user guide, roadmap and task statuses agree with delivered evidence; no proposals or absent commands are described as shipped.",
+        "Deliver the complete working feature without waiting for independent reference analysis, Lightroom response measurements, owner contact-sheet review or the wider alignment programme; documentation says alignment is not yet measured."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run full once with the supported RAW manifest after all changes; inspect the GPU/working-CPU comparison reports and correlated native journeys.",
+          "Use the extended latency harness only for wheel/grade workloads not already covered by full, on a quiet host, and record scoped before/after distributions.",
+          "Review docs/schema listings against captures, import reports and qualification evidence; validate JSON/repository links and run quick once after final documentation changes."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask verify --tier full --manifest RAW_MANIFEST --output NEW_FULL_DIR",
+          "tools/cargo-cached xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "The task acceptance evidence is recorded with scope; skipped checks remain incomplete."
+        ]
+      }
+    },
+    {
+      "id": "TASK-010",
+      "description": "Refine independent reference correctness and Lightroom response after working-feature delivery.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-009"
+      ],
+      "extra_context": [
+        "Start after TASK-009 has delivered the usable feature. No earlier task depends on this outcome, and no owner approval/review stop is introduced.",
+        "Add an independent f64 grading reference and expanded synthetic/corpus analysis now; investigate and fix concrete discrepancies with the delivered algorithm through contained changes and exact fixtures.",
+        "Reuse delivered Lightroom alignment tooling, or implement a small grading-only generate/measure slice using the same Rust/generated-XMP method. Do not wait for the separate programme’s implementation authorization or expand into unrelated controls.",
+        "Real Lightroom measurements consume owner-provided rendered exports when available. Build/test all reference and measurement tooling autonomously with known synthetic inputs; absent exports leave response measurements explicitly unmeasured, without delaying the working feature or tooling handoff.",
+        "When measured inputs exist, apply the existing B/C response policy to grading, update conversions and current format markers as needed, and verify the resulting changes. No fabricated measurements, copied Adobe data, private-catalog access or contact-sheet approval requirement.",
+        "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step.",
+        "Use tools/cargo-cached, targeted tests while editing and background native verification for any numerical changes. Measure after those changes are finished."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Colour grading design",
+          "target": "docs/design/colour-grading.md",
+          "relevance": "Final refinement scope after the working-feature handoff."
+        },
+        {
+          "kind": "file",
+          "label": "Independent reference pattern",
+          "target": "crates/luxforge-reference/src/mixer.rs",
+          "relevance": "Standalone f64 reference without production workspace dependencies."
+        },
+        {
+          "kind": "file",
+          "label": "Lightroom response policy",
+          "target": "docs/design/lightroom-alignment.md",
+          "relevance": "Generated XMP, neutral-relative measures, rendered outputs only and B/C refinement policy."
+        },
+        {
+          "kind": "file",
+          "label": "GPU comparison contract",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "Compare changes to the independent CPU reference within declared GPU tolerance."
+        },
+        {
+          "kind": "file",
+          "label": "Preset mapper",
+          "target": "crates/luxforge-core/src/presets/mapping.rs",
+          "relevance": "Replace direct transfers with measured conversions only where supported by evidence."
+        },
+        {
+          "kind": "file",
+          "label": "Verification workflow",
+          "target": "docs/engineering/development.md",
+          "relevance": "Proportional targeted tests and final rendered checks for any refinement."
+        }
+      ],
+      "acceptance_criteria": [
+        "Independent f64 reference fixtures and expanded plots/contact sheets cover tonal ranges, Global, hue seams, tint/luminance interaction, gamut and signed/headroom RAW; concrete discrepancies are fixed or reported with scope.",
+        "A grading-only measurement path is reusable/tested on known synthetic responses, writes only round-owned copies/evidence and consumes actual Lightroom exports without a private catalog.",
+        "Available Lightroom inputs produce scoped response/residual figures and warranted B/C changes; when unavailable, figures stay explicitly unmeasured rather than becoming an approval or feature-delivery gate.",
+        "Any numerical/conversion changes receive exact fixture, native GPU-versus-reference and rendered checks, with current format refusal and updated docs; alignment claims never exceed the measurements.",
+        "The final reference/tooling outcome is delivered autonomously, with no dependency back into TASK-009 and no new product-approval task."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run targeted independent-reference and known-response measurement tests; inspect generated manifests and source preservation.",
+          "Consume available Lightroom exports and review response plots/contact sheets as implementer work; accurately report missing measured inputs.",
+          "For numerical refinements, run targeted CPU/GPU comparisons, affected background smoke and rendered verification; run quick once at the completed handoff."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask verify --tier quick --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Reference analysis and calibration tooling are delivered after the working feature; measured matching is reported only where actual exports support it."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-002",
+        "TASK-003"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-004"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-005",
+        "TASK-007"
+      ]
+    },
+    {
+      "wave": 5,
+      "task_ids": [
+        "TASK-006"
+      ]
+    },
+    {
+      "wave": 6,
+      "task_ids": [
+        "TASK-008"
+      ]
+    },
+    {
+      "wave": 7,
+      "task_ids": [
+        "TASK-009"
+      ]
+    },
+    {
+      "wave": 8,
+      "task_ids": [
+        "TASK-010"
+      ]
+    }
+  ]
+}
