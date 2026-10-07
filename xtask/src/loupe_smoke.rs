@@ -15,7 +15,9 @@
 //! picking the bracket's frame where it stands; `Esc` back to the grid; the burst's second
 //! frame clicked, `E` and `P`, which picks it and moves on to the next moment's first frame (P7);
 //! and `Esc`, All photographs, the first imported photograph clicked (where the core's view of
-//! them puts it, beside the generated catalog's own) and `E`, the loupe over it.
+//! them puts it, beside the generated catalog's own) and `E`, the loupe over it; `D` and `G`
+//! preserving that loupe, then the folder browsed again showing its grid; its burst opened in the
+//! loupe, then All photographs showing its grid without an intervening Escape.
 //!
 //! Each loupe frame's `select.loupe` block is checked against the core's answers: the active frame
 //! is the row at the position the step moved to, and the picture drawn is that frame's own (draw
@@ -135,6 +137,17 @@ pub fn plan(expected: &Value) -> Result<Plan> {
         select("photographs", SelectStep::Source("All photographs".into())),
         click("photo", photo),
         key("photo-loupe", "e"),
+        key("develop-switch", "d"),
+        key("select-return", "g"),
+        select("folder-return", SelectStep::Folder(folder.into())),
+        click("folder-burst", burst),
+        key("folder-loupe", "e"),
+        key("e-grid", "e"),
+        key("e-loupe", "e"),
+        select(
+            "photographs-return",
+            SelectStep::Source("All photographs".into()),
+        ),
     ]))
 }
 
@@ -670,6 +683,23 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         "back-moment",
         burst,
     )?;
+    loupe_frame(
+        &mut checks,
+        &expected,
+        launch.at("e-loupe")?,
+        "e-loupe",
+        burst,
+    )?;
+    let e_grid = launch.at("e-grid")?;
+    ensure(
+        loupe(e_grid)["open"] == false && select(e_grid)["selection"]["active"] == burst,
+        "E did not return to the grid on the loupe's frame",
+    )?;
+    checks.note(
+        e_grid,
+        "E returns to the grid on the active frame",
+        crate::select_smoke::grid_drawn(e_grid)?,
+    );
     let grid = launch.at("grid")?;
     ensure(
         loupe(grid)["open"] == false && select(grid)["selection"]["active"] == burst,
@@ -836,6 +866,40 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         burst + burst_len,
     )?;
     photo_loupe(&mut checks, &expected, launch.at("photo-loupe")?)?;
+    photo_loupe(&mut checks, &expected, launch.at("select-return")?)?;
+    loupe_frame(
+        &mut checks,
+        &expected,
+        launch.at("folder-loupe")?,
+        "folder-loupe",
+        burst,
+    )?;
+    for (name, count) in [
+        ("folder-return", expected["folder"]["count"].clone()),
+        (
+            "photographs-return",
+            expected["photographs"]["view"]
+                .as_array()
+                .map(|rows| json!(rows.len()))
+                .unwrap_or(Value::Null),
+        ),
+    ] {
+        let frame = launch.at(name)?;
+        ensure(
+            loupe(frame)["open"] == false
+                && select(frame)["count"] == count
+                && select(frame)["selection"]["active"].is_null(),
+            format!(
+                "{name}: changing source did not expose its grid: {}",
+                select(frame)
+            ),
+        )?;
+        checks.note(
+            frame,
+            &format!("{name}: the new source's grid is drawn after leaving the loupe"),
+            crate::select_smoke::grid_drawn(frame)?,
+        );
+    }
     checks.write(
         &launch.evidence,
         "loupe",
@@ -994,7 +1058,7 @@ mod tests {
         assert_eq!(photo_position(&expected).unwrap(), 1, "the imported one");
         let plan = plan(&expected).unwrap();
         plan.validate().unwrap();
-        assert_eq!(plan.len(), 25);
+        assert_eq!(plan.len(), 33);
         assert!(plan.scripted());
     }
 }
