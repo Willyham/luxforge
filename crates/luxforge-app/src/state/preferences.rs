@@ -9,6 +9,7 @@
 //! changes laid over it, so a change shows at once; the answer that lands confirms it, and a
 //! refusal drops it, which puts the stored value back.
 use crate::coalesce::Coalesce;
+use luxforge_cli::CatalogSelection;
 use luxforge_core::{
     MaskOverlayColour,
     preferences::{
@@ -304,8 +305,7 @@ const INTERFACE_SIZE_LABELS: [&str; INTERFACE_SIZES.len()] = ["100%", "110%", "1
 pub(crate) const CATALOG_DESCRIPTION: &str = "Luxforge opens the catalog in this folder, creating \
      one if there is none; the current catalog stays where it is.";
 
-/// The file a chosen catalog folder holds, as the default catalog's folder does.
-pub(crate) const CATALOG_FILE: &str = "catalog.sqlite";
+pub(crate) use luxforge_cli::CATALOG_FILE;
 
 /// What took precedence over the stored catalog location for this launch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -333,42 +333,35 @@ pub(crate) struct LaunchCatalog {
 }
 
 impl LaunchCatalog {
-    /// The catalog a launch opens: `--catalog`, then an evidence run's own, then the stored
-    /// location when its folder exists, then the default. A stored catalog whose folder is missing,
-    /// as with an unplugged drive, opens the default and is kept as [`Self::missing`]; a folder
-    /// without a catalog gets one, as the default's does. `None` when nothing names a catalog and
-    /// there is no configuration directory to hold the default.
+    /// The catalog a launch opens: `--catalog`, then an evidence run's own, then the shared
+    /// selection `luxforge-ctl` makes too ([`CatalogSelection`]): the stored location when its
+    /// folder exists, then the default. A stored catalog whose folder is missing, as with an
+    /// unplugged drive, opens the default and is kept as [`Self::missing`]; a folder without a
+    /// catalog gets one, as the default's does. `None` when nothing names a catalog and there is no
+    /// configuration directory to hold the default.
     pub(crate) fn resolve(
         command_line: Option<&Path>,
         evidence: Option<&Path>,
         default: Option<PathBuf>,
         stored: Option<PathBuf>,
     ) -> Option<Self> {
-        let forced = match (command_line, evidence) {
-            (Some(catalog), _) => Some((catalog.to_path_buf(), CatalogOverride::CommandLine)),
-            (None, Some(evidence)) => {
-                Some((evidence.join(CATALOG_FILE), CatalogOverride::Evidence))
-            }
-            (None, None) => None,
+        let (explicit, forced) = match (command_line, evidence) {
+            (Some(catalog), _) => (
+                Some(catalog.to_path_buf()),
+                Some(CatalogOverride::CommandLine),
+            ),
+            (None, Some(evidence)) => (
+                Some(evidence.join(CATALOG_FILE)),
+                Some(CatalogOverride::Evidence),
+            ),
+            (None, None) => (None, None),
         };
-        if let Some((path, forced)) = forced {
-            return Some(Self {
-                path,
-                default,
-                forced: Some(forced),
-                missing: None,
-            });
-        }
-        let (path, missing) = match stored {
-            Some(stored) if stored.parent().is_some_and(Path::is_dir) => (stored, None),
-            Some(stored) => (default.clone()?, Some(stored)),
-            None => (default.clone()?, None),
-        };
+        let selection = CatalogSelection::select(explicit, default.clone(), stored)?;
         Some(Self {
-            path,
+            path: selection.path,
             default,
-            forced: None,
-            missing,
+            forced,
+            missing: selection.missing,
         })
     }
 

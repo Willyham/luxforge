@@ -133,13 +133,13 @@ impl Config {
     /// `--window-size` and a hidden or evidence launch open at their own size, placed by the
     /// system. Reading creates nothing, and a file that cannot be read leaves the defaults.
     fn resolve_launch(&mut self) {
-        use state::preferences::{CATALOG_FILE, LaunchCatalog};
+        use state::preferences::LaunchCatalog;
         let config = self.paths.as_ref().map(|paths| paths.config.clone());
-        let stored = luxforge_core::preferences::LaunchPreferences::read(config.clone());
+        let stored = luxforge_core::preferences::LaunchPreferences::read(config);
         self.launch_catalog = LaunchCatalog::resolve(
             self.catalog.as_deref(),
             self.evidence.as_deref(),
-            config.map(|config| config.join(CATALOG_FILE)),
+            self.paths.as_ref().map(Paths::default_catalog),
             stored.catalog,
         );
         self.remember_window = !self.hidden && self.evidence.is_none();

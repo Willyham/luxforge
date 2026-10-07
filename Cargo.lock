@@ -2092,6 +2092,7 @@ dependencies = [
  "luxforge-testbase",
  "luxforge-testkit",
  "serde_json",
+ "uuid",
 ]
 
 [[package]]
