@@ -482,7 +482,7 @@ fn a_finished_job_leaves_a_sentence() {
 /// words its end.
 #[test]
 fn a_batch_job_leaves_its_sentence_to_its_view() {
-    for kind in ["batch.apply-preset", "batch.export"] {
+    for kind in ["batch.apply-settings", "batch.export"] {
         let batch = running(7, kind, Some("12 photographs"), 0, None);
         for outcome in [Outcome::Completed, Outcome::Cancelled, Outcome::Failed] {
             assert_eq!(

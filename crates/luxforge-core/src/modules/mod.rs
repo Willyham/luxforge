@@ -108,7 +108,8 @@ pub(crate) use presence::PresenceModule;
 pub(crate) use presence::gpu_functions as presence_gpu_functions;
 #[cfg(feature = "qualification")]
 pub use presence::qualification as presence_qualification;
-pub(crate) use presets::{APPLY_PRESET, MAX_PRESET_NAME, PASTE_SETTINGS, PresetsModule};
+pub(crate) use presets::{APPLY_SETTINGS, MAX_PRESET_NAME, PresetsModule};
+pub use presets::{MAX_SOURCE_NAME, SettingsOrigin};
 pub(crate) use processing::MAX_COLOR_UNITS;
 pub use processing::{
     ColorOperation, CompileStage, OperationIdentity, PointwiseColor, Processing, SamplingScale,

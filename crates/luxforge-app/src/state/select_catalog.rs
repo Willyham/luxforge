@@ -120,7 +120,7 @@ pub(crate) struct PresetChoice {
 /// What a batch of this desktop's does to the photographs it names.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum BatchKind {
-    /// `batch.apply-preset` of the library preset named so.
+    /// `batch.apply-settings` of the library preset named so.
     Preset {
         name: String,
     },
@@ -408,7 +408,7 @@ pub(crate) enum CatalogAction {
     Metadata,
     /// `Cmd+F`: the search field takes the focus.
     FocusSearch,
-    /// Apply preset…'s choice: `batch.apply-preset` of the selection with the library preset.
+    /// Apply preset…'s choice: `batch.apply-settings` of the selection with the library preset.
     ApplyPreset {
         id: PresetId,
         name: String,
@@ -674,7 +674,7 @@ pub(crate) fn removal_params(mutation: &MutationRequest) -> Value {
     json!({"targets": selection(), "mutation": mutation})
 }
 
-/// `batch.apply-preset`'s parameters: the library preset `preset`, applied to the selection.
+/// `batch.apply-settings`'s parameters: the library preset `preset`, applied to the selection.
 pub(crate) fn batch_preset_params(preset: &PresetId, mutation: &MutationRequest) -> Value {
     json!({"targets": selection(), "preset_id": preset, "mutation": mutation})
 }

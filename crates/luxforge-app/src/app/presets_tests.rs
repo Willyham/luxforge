@@ -212,16 +212,15 @@ fn a_rows_click_sends_exactly_the_apply_request_and_commits_one_entry() {
     assert_eq!(
         without_request_id(request.clone()),
         json!({
-            "method": "edit.apply-preset",
+            "method": "edit.apply-settings",
             "params": {
                 "asset_id": library.asset,
                 "mutation": {"expected_revision": revision, "actor": "desktop"},
                 "settings": settings,
-                "name": "Soft film",
-                "preset-id": row.id,
+                "origin": {"kind": "preset", "name": "Soft film", "preset_id": row.id},
             }
         }),
-        "the settings, the name and the library identity, and nothing else"
+        "the settings and their origin, the name and the library identity, and nothing else"
     );
     // The palette entry runs the very message the row's click sends.
     let _ = library
@@ -252,12 +251,12 @@ fn a_rows_click_sends_exactly_the_apply_request_and_commits_one_entry() {
         preset: fields,
     }));
     assert!(library.editor.busy, "the command was sent");
-    assert_eq!(library.editor.status.text, "Running edit.apply-preset…");
+    assert_eq!(library.editor.status.text, "Running edit.apply-settings…");
     // The same request, sent as the task sends it, commits one entry labelled by the preset.
     let (outcome, _) = call(
         &library.owner(),
         library.editor.client,
-        "edit.apply-preset",
+        "edit.apply-settings",
         request["params"].clone(),
     )
     .unwrap();
@@ -282,7 +281,7 @@ fn a_preset_that_skips_settings_says_so_in_the_status_bar() {
     let mut library = Library::opened();
     let action = library.presets().action.clone();
     fn apply(library: &mut Library, action: &str, settings: Value, name: &str) {
-        let fields = json!({"settings": settings, "name": name})
+        let fields = json!({"settings": settings, "origin": {"kind": "preset", "name": name}})
             .as_object()
             .cloned()
             .expect("an object");

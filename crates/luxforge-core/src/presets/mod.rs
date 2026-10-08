@@ -235,7 +235,7 @@ pub(crate) fn parse_preset(
 }
 
 /// Check a settings set against the registry, without a stack: the `settings` parameter's own
-/// shape check, then every action presettable ([`ModuleRegistry::patch_action`]) and every field
+/// shape check, then every action a settings key ([`ModuleRegistry::settings_action`]) and every field
 /// passing that action's parameter check. The library runs this when a set is created, updated,
 /// imported or captured; the host checks again when one is applied, through the same shape check
 /// and resolver.

@@ -526,7 +526,9 @@ fn registration_rejects_duplicate_and_invalid_identities_across_modules() {
 #[test]
 fn a_module_that_declares_no_effects_registers() {
     let mut registry = ModuleRegistry::builtin();
-    let (presets, _) = registry.action("apply-preset").expect("the presets module");
+    let (presets, _) = registry
+        .action("apply-settings")
+        .expect("the presets module");
     assert!(presets.descriptor().effects.is_empty());
     let mut descriptor = TestModule::new(
         "test.effectless",
