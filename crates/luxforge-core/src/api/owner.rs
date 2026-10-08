@@ -9261,6 +9261,7 @@ mod tests {
         let asset = state["asset"]["id"].clone();
         let (reached, release) = hold_tiles(&owner);
         std::thread::scope(|scope| {
+            let _release_on_exit = ReleaseTiles(release.clone());
             let pending = scope.spawn(|| {
                 send(
                     &owner,
@@ -9285,10 +9286,11 @@ mod tests {
                 "edit.set-basic",
                 json!({"asset_id":asset,"temperature":5,"mutation":crate::editor::mutation_json(0,"other")}),
             );
-            assert!(
-                active.is_cancelled(),
-                "the commit makes the read stale, which trips the read's own token"
-            );
+            // The owner replies to the commit before it cancels stale reads at the end of the
+            // message turn. The caller may resume between those two steps.
+            luxforge_testbase::wait_until("the commit to cancel the stale Auto read", || {
+                active.is_cancelled()
+            });
             release.send(()).unwrap();
             // Replayed as a stale read that finished would be: it needs the analysis again.
             assert_eq!(pending.join().unwrap().error.unwrap().code, "conflict");

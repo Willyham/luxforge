@@ -44,7 +44,7 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 
 [Copy and paste settings](../tasks/interface/copy-settings.json): implemented with quick and native M2 / Metal verification; TASK-006 final rendered qualification remains in progress. Its project-wide GPU corpus gate needs the owner’s private RAW manifest, unavailable in this environment.
 
-Continue these rather than starting them again: [GPU-first rendering](../tasks/rendering/gpu-first.json) TASK-008, portability without a native GPU: prior hosted Linux no-adapter checks pass, but lavapipe stops at `large24` before the required histogram and `gpu-preview` scenarios; the current run fails earlier in the indexed-folder watcher test. TASK-010, 011 and 012 record delivery and wait on it. [RAW looks](../tasks/raw/raw-looks.json) TASK-005 remains in progress: supplied-file journeys pass, but the rendered tier with the owner manifest and the Neutral Amount control remain outstanding. The [Efficiency](../tasks/rendering/efficiency.json) `dist` profile is blocked by the owner's deferral, and the [product decisions](../tasks/project/product-decisions.json) are the owner's to make.
+Continue these rather than starting them again: [GPU-first rendering](../tasks/rendering/gpu-first.json) TASK-008, portability without a native GPU: hosted Linux no-adapter checks and release acceptance pass; the lavapipe lane now retains small GPU-stage journeys and attempts every retained scenario before aggregate failure, with its passing hosted result still open. TASK-010, 011 and 012 record delivery and wait on it. [RAW looks](../tasks/raw/raw-looks.json) TASK-005 remains in progress: supplied-file journeys pass, but the rendered tier with the owner manifest and the Neutral Amount control remain outstanding. The [Efficiency](../tasks/rendering/efficiency.json) `dist` profile is blocked by the owner's deferral, and the [product decisions](../tasks/project/product-decisions.json) are the owner's to make.
 
 ## Engineering
 
@@ -67,7 +67,7 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 - Explicit qualification of the softer `budget-reduced` motion frame at 100%, accepted with that requirement on 2026-10-07
 - The neutral-picker answer naming the renderer, required on 2026-10-07; it currently carries none
 - A hidden or minimised commit followed by `analysis.request`, with correlated state and counts; the existing visibility journey does not establish this
-- Hosted Linux's lavapipe lane stopping at `large24` before histogram and `gpu-preview`, and the current indexed-folder watcher failure before rendered journeys
+- A passing hosted result for Linux's retained lavapipe journeys, including histogram and `gpu-preview`
 - The native Windows and Linux checks
 
 **CPU and memory efficiency** ([design](design/efficiency.md), [plan](../tasks/rendering/efficiency.json)). Done and measured, except the `dist` build profile, which the owner deferred until the timing runs other plans have outstanding are recorded.
@@ -207,7 +207,7 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 **Full-editor verification.** Native M4 handoff of the complete editor, then Windows and Linux.
 
 **Cross-platform builds.**
-- macOS hosted build, reference checks, editor acceptance and packaging pass. Latest Linux CI fails in indexed-folder watching before release/rendered checks; earlier lavapipe loops stop at `large24`. Retain small functional coverage and run every selected scenario before aggregate failure (owner, 2026-10-07; recommended lane change, not implemented). Native Windows/Linux GPU and desktop checks remain separate acceptance; Windows CI is disabled
+- macOS hosted build, reference checks, editor acceptance and packaging pass. Linux no-adapter checks, release acceptance and packaging pass. The lavapipe lane uses small GPU-stage fixtures and runs every retained scenario before aggregate failure; its passing hosted result remains open. Native Windows/Linux GPU and desktop checks remain separate acceptance; Windows CI is disabled
 - Windows and Linux packaging, checked in real desktop sessions
 - Reproducible Linux VM route
 - Developer guide checked on Windows and Linux
