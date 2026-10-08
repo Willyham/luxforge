@@ -238,6 +238,8 @@ fn descriptors_reject_malformed_identities_duplicates_and_invalid_controls() {
                 variants: Vec::new(),
             })],
             collapsed: false,
+            layout: ModuleLayout::Stacked,
+            view: false,
             variants: Vec::new(),
         })],
         ..sample_descriptor()
@@ -582,6 +584,8 @@ fn descriptors_reject_malformed_identities_duplicates_and_invalid_controls() {
                         preset: json!({"missing": 1}).as_object().unwrap().clone(),
                     }),
                     collapsed: false,
+                    layout: ModuleLayout::Stacked,
+                    view: false,
                     variants: Vec::new(),
                 })],
                 ..descriptor()
@@ -598,6 +602,8 @@ fn descriptors_reject_malformed_identities_duplicates_and_invalid_controls() {
                         preset: json!({"mode": "sloppy"}).as_object().unwrap().clone(),
                     }),
                     collapsed: false,
+                    layout: ModuleLayout::Stacked,
+                    view: false,
                     variants: Vec::new(),
                 })],
                 ..descriptor()
@@ -812,6 +818,8 @@ fn descriptors_reject_malformed_identities_duplicates_and_invalid_controls() {
                             variants: Vec::new(),
                         })],
                         collapsed: false,
+                        layout: ModuleLayout::Stacked,
+                        view: false,
                         variants: Vec::new(),
                     }),
                 ],
@@ -942,6 +950,8 @@ fn a_presets_control_needs_its_own_action_with_exactly_the_preset_parameters() {
                 action: "apply-thing".into(),
             })],
             collapsed: false,
+            layout: ModuleLayout::Stacked,
+            view: false,
             variants: Vec::new(),
         })],
         ..presets_descriptor()
@@ -1243,4 +1253,260 @@ fn layout_defaults_to_stacked_and_tabs_needs_at_least_two_top_level_groups() {
         .validate()
         .expect_err("tabs needs every top-level control to be a group");
     assert!(error.detail.contains("layout: tabs"), "{error}");
+}
+
+/// A field-patch action of a wheel's three fields and three others, and a non-patch action, with
+/// `controls` as the module's controls.
+fn wheel_descriptor(controls: Vec<Control>) -> ModuleDescriptor {
+    let mut descriptor = descriptor();
+    descriptor.actions = vec![
+        ActionDescriptor {
+            patch: true,
+            parameters: vec![
+                number("hue", 0.0, 360.0),
+                number("saturation", 0.0, 100.0),
+                number("luminance", -100.0, 100.0),
+                number("narrow", 0.0, 180.0),
+                number("signed", -50.0, 50.0),
+                integer("count"),
+            ],
+            ..ActionDescriptor::new("set-tint", "Set tint", "test")
+        },
+        action(),
+    ];
+    descriptor.controls = controls;
+    descriptor.reset = None;
+    descriptor
+}
+
+fn tint_wheel() -> crate::WheelControl {
+    Control::wheel("set-tint", "hue", "saturation", "Shadows")
+}
+
+#[test]
+fn a_wheel_binds_hue_and_saturation_numbers_of_one_field_patch() {
+    let full: Control = tint_wheel()
+        .luminance("luminance")
+        .wheel_style(crate::WheelStyle::Large)
+        .wheel_reset(ResetAction {
+            action: "set-tint".into(),
+            preset: json!({"hue": 0, "saturation": 0, "luminance": 0})
+                .as_object()
+                .unwrap()
+                .clone(),
+        })
+        .into();
+    let descriptor = wheel_descriptor(vec![full.clone()]);
+    descriptor
+        .validate()
+        .expect("a wheel over its three fields");
+    assert_eq!(
+        serde_json::to_value(&full).unwrap(),
+        json!({"kind":"wheel","action":"set-tint","hue":"hue","saturation":"saturation",
+               "luminance":"luminance","label":"Shadows","style":"large",
+               "reset":{"action":"set-tint","preset":{"hue":0,"saturation":0,"luminance":0}}})
+    );
+    assert_eq!(
+        ModuleDescriptor::deserialize(&serde_json::to_value(&descriptor).unwrap()).unwrap(),
+        descriptor
+    );
+    // Compact is the default style and an absent luminance draws no rail: neither is listed.
+    let compact: Control = tint_wheel().into();
+    wheel_descriptor(vec![compact.clone()])
+        .validate()
+        .expect("a wheel of hue and saturation alone");
+    assert_eq!(
+        serde_json::to_value(&compact).unwrap(),
+        json!({"kind":"wheel","action":"set-tint","hue":"hue","saturation":"saturation",
+               "label":"Shadows"})
+    );
+    assert_eq!(compact.kind_name(), "wheel");
+
+    let reset = |preset: serde_json::Value| ResetAction {
+        action: "set-tint".into(),
+        preset: preset.as_object().unwrap().clone(),
+    };
+    for (case, control, detail) in [
+        (
+            "no label",
+            Control::wheel("set-tint", "hue", "saturation", " "),
+            "wheel control of action set-tint has no label",
+        ),
+        (
+            "undeclared action",
+            Control::wheel("set-missing", "hue", "saturation", "Wheel"),
+            "module test.module references undeclared action set-missing",
+        ),
+        (
+            "not a field patch",
+            Control::wheel("set-thing", "x", "x", "Wheel"),
+            "wheel control of action set-thing needs a field-patch action, since one gesture \
+             patches its hue and saturation together",
+        ),
+        (
+            "missing parameter",
+            Control::wheel("set-tint", "hue", "gone", "Wheel"),
+            "action set-tint has no parameter gone",
+        ),
+        (
+            "an integer",
+            Control::wheel("set-tint", "hue", "saturation", "Wheel").luminance("count"),
+            "wheel control for count of action set-tint is not a number",
+        ),
+        (
+            "bound twice",
+            Control::wheel("set-tint", "hue", "saturation", "Wheel").luminance("hue"),
+            "wheel control of action set-tint binds hue twice",
+        ),
+        (
+            "a hue that is not degrees",
+            Control::wheel("set-tint", "narrow", "saturation", "Wheel"),
+            "wheel hue narrow of action set-tint declares 0..=180, not the 0..=360 degrees a \
+             wheel's angle spans",
+        ),
+        (
+            "a saturation below zero",
+            Control::wheel("set-tint", "hue", "signed", "Wheel"),
+            "wheel saturation signed of action set-tint declares -50..=50; a wheel's radius runs \
+             from 0 at its centre to a positive rim",
+        ),
+        (
+            "a reset of another field",
+            tint_wheel().wheel_reset(reset(json!({"hue": 0, "signed": 0}))),
+            "wheel control reset of action set-tint names signed, which the wheel does not bind",
+        ),
+        (
+            "a reset out of range",
+            tint_wheel().wheel_reset(reset(json!({"hue": 400}))),
+            "parameter hue must be a number within 0..=360",
+        ),
+    ] {
+        let error = wheel_descriptor(vec![control.into()])
+            .validate()
+            .expect_err(case);
+        assert_eq!(error.detail, detail, "{case}");
+    }
+}
+
+#[test]
+fn a_group_may_lay_its_child_groups_out_as_tabs_of_views() {
+    let view = |label: &str, style: crate::WheelStyle| -> Control {
+        Control::group(label, vec![tint_wheel().wheel_style(style).into()])
+            .as_view()
+            .into()
+    };
+    let tabbed = |children: Vec<Control>| -> Control {
+        Control::group("Grading", children)
+            .group_layout(ModuleLayout::Tabs)
+            .into()
+    };
+    let nested = wheel_descriptor(vec![tabbed(vec![
+        view("3-way", crate::WheelStyle::Compact),
+        view("Shadows", crate::WheelStyle::Large),
+    ])]);
+    nested.validate().expect("a tabbed group of two views");
+    let serialized = serde_json::to_value(&nested.controls[0]).unwrap();
+    assert_eq!(serialized["layout"], json!("tabs"));
+    assert_eq!(serialized["controls"][0]["view"], json!(true));
+    // A stacked group lists neither, so a descriptor that declares no tabs reads as before.
+    let stacked = serde_json::to_value(&descriptor().controls[0]).unwrap();
+    assert!(stacked.get("layout").is_none() && stacked.get("view").is_none());
+    assert_eq!(
+        nested.views_at(&["Grading"]),
+        Some(vec!["3-way", "Shadows"])
+    );
+    assert_eq!(
+        nested.views_at(&[] as &[&str]),
+        None,
+        "the module is stacked"
+    );
+    assert_eq!(nested.views_at(&["Missing"]), None);
+
+    let one_view = wheel_descriptor(vec![tabbed(vec![view(
+        "3-way",
+        crate::WheelStyle::Compact,
+    )])]);
+    let twins = wheel_descriptor(vec![tabbed(vec![
+        view("Same", crate::WheelStyle::Compact),
+        view("Same", crate::WheelStyle::Large),
+    ])]);
+    let loose_wheel = wheel_descriptor(vec![tabbed(vec![
+        view("3-way", crate::WheelStyle::Compact),
+        tint_wheel().into(),
+    ])]);
+    let stacked_view = wheel_descriptor(vec![
+        Control::group(
+            "Grading",
+            vec![
+                view("3-way", crate::WheelStyle::Compact),
+                view("Shadows", crate::WheelStyle::Large),
+            ],
+        )
+        .into(),
+    ]);
+    let top_view = wheel_descriptor(vec![view("3-way", crate::WheelStyle::Compact)]);
+    let reset_view = wheel_descriptor(vec![tabbed(vec![
+        Control::group("3-way", vec![tint_wheel().into()])
+            .as_view()
+            .reset(ResetAction {
+                action: "set-tint".into(),
+                preset: Map::new(),
+            })
+            .into(),
+        view("Shadows", crate::WheelStyle::Large),
+    ])]);
+    let ambiguous = wheel_descriptor(vec![
+        Control::group("Grading", vec![tint_wheel().into()]).into(),
+        tabbed(vec![
+            view("3-way", crate::WheelStyle::Compact),
+            view("Shadows", crate::WheelStyle::Large),
+        ]),
+    ]);
+    for (case, descriptor, detail) in [
+        (
+            "one view",
+            one_view,
+            "group Grading of module test.module declares layout: tabs but needs at least two \
+             groups with distinct labels",
+        ),
+        (
+            "two views of one label",
+            twins,
+            "group Grading of module test.module declares layout: tabs but needs at least two \
+             groups with distinct labels",
+        ),
+        (
+            "a control that is not a tab",
+            loose_wheel,
+            "group Grading of module test.module declares layout: tabs but needs at least two \
+             groups with distinct labels",
+        ),
+        (
+            "views in a stacked group",
+            stacked_view,
+            "view 3-way of module test.module is not a tab: group Grading does not declare \
+             layout: tabs",
+        ),
+        (
+            "a view at a stacked top level",
+            top_view,
+            "view 3-way of module test.module is not a tab: the top level does not declare \
+             layout: tabs",
+        ),
+        (
+            "a view with a reset",
+            reset_view,
+            "view 3-way of module test.module declares a reset or variants; a view is \
+             presentation only",
+        ),
+        (
+            "a tab row its label path cannot name",
+            ambiguous,
+            "tabbed group Grading of module test.module shares its label path with an earlier \
+             group, so its views cannot be named",
+        ),
+    ] {
+        let error = descriptor.validate().expect_err(case);
+        assert_eq!(error.detail, detail, "{case}");
+    }
 }

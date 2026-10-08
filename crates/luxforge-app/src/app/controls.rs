@@ -15,7 +15,9 @@ use crate::state::{
 };
 use iced::{Task, widget::operation};
 use luxforge_core::{AssetId, Control, EntryId, ParameterKind, check_value};
-use luxforge_ui::{ColorPickerEvent, CurveEditorEvent, hex_to_rgb, hsv_to_rgb, rgb_to_hsv};
+use luxforge_ui::{
+    ColorPickerEvent, CurveEditorEvent, WheelEvent, hex_to_rgb, hsv_to_rgb, rgb_to_hsv,
+};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -175,8 +177,23 @@ impl Editor {
                     .or_insert(initial);
                 *entry = !*entry;
             }
-            ControlMessage::SelectTab { module_id, index } => {
-                self.controls.ui.selected_tab.insert(module_id, index);
+            ControlMessage::SelectView {
+                module_id,
+                group,
+                view,
+            } => return self.select_view(module_id, group, view),
+            ControlMessage::Wheel { action, hue, event } => {
+                return self.control_wheel(action, hue, event);
+            }
+            ControlMessage::WheelNudge {
+                action,
+                hue,
+                saturation,
+                direction,
+                shift,
+                option,
+            } => {
+                return self.control_wheel_nudge(action, hue, saturation, direction, shift, option);
             }
             ControlMessage::Picker {
                 action,
@@ -265,6 +282,130 @@ impl Editor {
             }
         }
         Task::none()
+    }
+
+    /// Show `view` of the tab row of `module_id` at the label path `group`, through `workspace.set`
+    /// exactly as any client selects one: the session's answer is what the panel then draws. A
+    /// row or view the module does not declare sends nothing, and choosing the view already shown
+    /// sends nothing either. No recipe field, history entry, frame or poll follows.
+    pub(crate) fn select_view(
+        &mut self,
+        module_id: String,
+        group: Vec<String>,
+        view: String,
+    ) -> Task<Message> {
+        let Some(module) = tools::module_of(&self.modules, &module_id) else {
+            return Task::none();
+        };
+        let Some(views) = module.views_at(&group) else {
+            return Task::none();
+        };
+        let Some(index) = views.iter().position(|offered| *offered == view) else {
+            return Task::none();
+        };
+        let shown = self
+            .session
+            .workspace
+            .view(&module_id, &group)
+            .and_then(|chosen| views.iter().position(|offered| *offered == chosen))
+            .unwrap_or(0);
+        if shown == index {
+            return Task::none();
+        }
+        self.event(
+            "view_selected",
+            || json!({"module": module_id, "group": group, "view": view}),
+        );
+        crate::app::tasks::workspace_task(
+            self.owner.clone(),
+            self.client,
+            json!({"views": [{"module": module_id, "group": group, "view": view}]}),
+        )
+    }
+
+    /// One wheel event: a move drafts the hue and saturation it stands for together, as one patch
+    /// through one draft keyed by the hue field; the release commits that draft once; a
+    /// double-click runs the wheel's declared reset as one action.
+    pub(crate) fn control_wheel(
+        &mut self,
+        action: String,
+        hue: String,
+        event: WheelEvent,
+    ) -> Task<Message> {
+        let Some(wheel) = wheel_of(&self.modules, &action, &hue).cloned() else {
+            return Task::none();
+        };
+        match event {
+            WheelEvent::Moved {
+                hue: degrees,
+                radius,
+            } => {
+                let (Some(hue_spec), Some(saturation_spec)) = (
+                    self.number_spec(&action, &wheel.hue),
+                    self.number_spec(&action, &wheel.saturation),
+                ) else {
+                    return Task::none();
+                };
+                let values = serde_json::Map::from_iter([
+                    (wheel.hue.clone(), hue_spec.snapped(f64::from(degrees))),
+                    (
+                        wheel.saturation.clone(),
+                        saturation_spec.snapped(f64::from(radius) * saturation_spec.max),
+                    ),
+                ]);
+                self.controls_moved(action, wheel.hue, values)
+            }
+            WheelEvent::Release => self.control_release(action, wheel.hue),
+            WheelEvent::Reset => {
+                let Some(reset) = wheel.reset else {
+                    return Task::none();
+                };
+                if let Some(reason) = self.action_refusal(&reset.action) {
+                    self.status.text = reason;
+                    return Task::none();
+                }
+                self.dispatch(Message::Action(ActionMessage::Run {
+                    action: reset.action,
+                    preset: reset.preset,
+                }))
+            }
+        }
+    }
+
+    /// An arrow key on a focused wheel: Left and Right turn the hue, wrapping across the seam,
+    /// and Up and Down move the saturation, by the field's step, ten with Shift or its fine step
+    /// with Option. It drafts like a drag, keyed by the hue field, and the key's release commits.
+    pub(crate) fn control_wheel_nudge(
+        &mut self,
+        action: String,
+        hue: String,
+        saturation: bool,
+        direction: i8,
+        shift: bool,
+        option: bool,
+    ) -> Task<Message> {
+        let Some(wheel) = wheel_of(&self.modules, &action, &hue).cloned() else {
+            return Task::none();
+        };
+        let parameter = if saturation {
+            wheel.saturation.clone()
+        } else {
+            wheel.hue.clone()
+        };
+        let Some(spec) = self.number_spec(&action, &parameter) else {
+            return Task::none();
+        };
+        let current = self
+            .control_field_value(&action, &parameter)
+            .and_then(|value| value.as_f64())
+            .unwrap_or(spec.min);
+        let next = if saturation {
+            spec.nudged(current, direction, shift, option)
+        } else {
+            wrapped_hue(&spec, current, direction, shift, option)
+        };
+        let values = serde_json::Map::from_iter([(parameter, spec.value(next))]);
+        self.controls_moved(action, wheel.hue, values)
     }
 
     /// The reset of the group at `path` in the module's section, as the view model resolved it.
@@ -984,6 +1125,49 @@ impl Editor {
             }
         }
         self.start_curve_sample()
+    }
+}
+
+/// The wheel a module declares over `hue` of `action`, wherever it sits in its controls.
+pub(crate) fn wheel_of<'a>(
+    modules: &'a [luxforge_core::ModuleDescriptor],
+    action: &str,
+    hue: &str,
+) -> Option<&'a luxforge_core::WheelControl> {
+    modules.iter().find_map(|module| {
+        walk(&module.controls).find_map(|control| match control {
+            Control::Wheel(wheel) if wheel.action == action && wheel.hue == hue => Some(wheel),
+            _ => None,
+        })
+    })
+}
+
+/// One hue nudge from `current`, by the field's step (ten with Shift, its fine step with Option),
+/// wrapping across the seam rather than stopping at it: a hue is a direction, so 359 and one step
+/// more is 0, and 0 and one step less is 359.
+pub(crate) fn wrapped_hue(
+    spec: &NumberSpec,
+    current: f64,
+    direction: i8,
+    shift: bool,
+    option: bool,
+) -> f64 {
+    let step = if option {
+        spec.fine_step
+    } else if shift {
+        spec.step * 10.0
+    } else {
+        spec.step
+    };
+    let span = spec.max - spec.min;
+    let next = current + f64::from(direction.signum()) * step;
+    if span > 0.0 && (next < spec.min || next >= spec.max) {
+        let wrapped = (next - spec.min).rem_euclid(span) + spec.min;
+        // Rounding residue of the wrap stays on the declared decimals.
+        let factor = 10f64.powi(spec.fine_decimals as i32);
+        (wrapped * factor).round() / factor
+    } else {
+        next
     }
 }
 

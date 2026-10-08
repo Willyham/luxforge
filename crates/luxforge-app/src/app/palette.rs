@@ -14,6 +14,7 @@ use crate::state::tools::{self, RevealKey};
 use crate::view;
 use iced::{Subscription, Task, widget::operation};
 use luxforge_core::{Control, ModuleLayout};
+use serde_json::{Value, json};
 use std::time::Duration;
 
 /// How long a revealed section or control stays marked.
@@ -126,6 +127,7 @@ impl Editor {
     /// the panel scrolls to the target in [`after_derive`] once it is drawn, and [`subscription`]
     /// ends the mark.
     fn reveal(&mut self, target: RevealTarget) -> Task<Message> {
+        let mut views: Vec<Value> = Vec::new();
         for module in &self.modules {
             self.controls
                 .expanded
@@ -146,18 +148,32 @@ impl Editor {
                     .group_expanded
                     .insert(tools::group_key(&module.id, &path[..depth]), true);
             }
-            // A tabbed module's top-level groups are its tabs, counted among its groups only.
-            if module.layout == ModuleLayout::Tabs
-                && let Some(top) = path.first()
-                && matches!(module.controls.get(*top), Some(Control::Group(_)))
-            {
-                let tab = module.controls[..*top]
-                    .iter()
-                    .filter(|control| matches!(control, Control::Group(_)))
-                    .count();
-                self.controls.ui.selected_tab.insert(module.id.clone(), tab);
+            // Every tab row on the way shows the tab that holds the control: the module's own row
+            // and any nested group's, selected through the session as a click on the tab would.
+            let mut controls = &module.controls[..];
+            let mut layout = module.layout;
+            let mut labels: Vec<String> = Vec::new();
+            for index in path.iter().take(groups) {
+                let Some(Control::Group(group)) = controls.get(*index) else {
+                    break;
+                };
+                if layout == ModuleLayout::Tabs {
+                    views.push(json!({"module": module.id, "group": labels, "view": group.label}));
+                }
+                labels.push(group.label.clone());
+                controls = &group.controls;
+                layout = group.layout;
             }
         }
+        let views = if views.is_empty() {
+            Task::none()
+        } else {
+            crate::app::tasks::workspace_task(
+                self.owner.clone(),
+                self.client,
+                json!({ "views": views }),
+            )
+        };
         self.palette.reveal_sequence += 1;
         self.palette.revealed = Some(Revealed {
             target,
@@ -165,9 +181,12 @@ impl Editor {
             scrolled: false,
         });
         if self.session.workspace.tools_panel {
-            Task::none()
+            views
         } else {
-            self.dispatch(Message::View(ViewMessage::TogglePanel(Panel::Tools)))
+            Task::batch([
+                views,
+                self.dispatch(Message::View(ViewMessage::TogglePanel(Panel::Tools))),
+            ])
         }
     }
 }

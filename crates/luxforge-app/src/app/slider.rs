@@ -57,20 +57,39 @@ impl Editor {
 
     /// A drafting control moved: the widget's value, already mapped from its rail fraction or
     /// picker or curve event. The first move of a gesture opens the draft; later moves offer the
-    /// newest value. A control never carries a second parameter.
+    /// newest value.
     pub(crate) fn control_moved(
         &mut self,
         action: String,
         parameter: String,
         value: Value,
     ) -> Task<Message> {
+        let fields = Map::from_iter([(parameter.clone(), value)]);
+        self.controls_moved(action, parameter, fields)
+    }
+
+    /// A drafting control moved and now stands for `values`, every one a field of `action`: one
+    /// field for a slider, a wheel's hue and saturation together. `parameter` is the field that
+    /// keys the gesture ([`Editor::drafting_control`]); the values travel as one patch through
+    /// the one draft, so a wheel gesture is one draft and, on release, one history entry.
+    pub(crate) fn controls_moved(
+        &mut self,
+        action: String,
+        parameter: String,
+        values: Map<String, Value>,
+    ) -> Task<Message> {
         if let Some(reason) = self.control_refusal(&action, &parameter, true) {
             self.status.text = reason;
             return Task::none();
         }
-        let fields = json!({ parameter.clone(): value.clone() });
+        let fields = Value::Object(values.clone());
+        let show = |editor: &mut Self| {
+            for (name, value) in &values {
+                editor.set_control_field_value(&action, name, value);
+            }
+        };
         if self.drafting_control().is_some() {
-            self.set_control_field_value(&action, &parameter, &value);
+            show(self);
             self.controls.editing = None;
             self.controls.dragging = Some((action, parameter));
             // Sent now when the previous round trip has answered; recorded otherwise, and the
@@ -84,7 +103,7 @@ impl Editor {
         let base_revision = state.revision;
         let label = tools::control_label(&self.modules, &action, &parameter)
             .unwrap_or_else(|| parameter.clone());
-        self.set_control_field_value(&action, &parameter, &value);
+        show(self);
         self.controls.editing = None;
         self.controls.dragging = Some((action.clone(), parameter.clone()));
         self.status.text = format!("Drafting {label}…");

@@ -242,6 +242,8 @@ pub(super) fn descriptor() -> ModuleDescriptor {
                 }),
             ],
             collapsed: false,
+            layout: ModuleLayout::Stacked,
+            view: false,
             variants: Vec::new(),
         })],
         reset: Some(ResetAction {
@@ -424,6 +426,8 @@ pub(super) fn presets_cases() -> Vec<(&'static str, ModuleDescriptor, &'static s
                             action: "apply-thing".into(),
                         })],
                         collapsed: false,
+                        layout: ModuleLayout::Stacked,
+                        view: false,
                         variants: Vec::new(),
                     }),
                 ],
@@ -535,6 +539,8 @@ pub(super) fn controls_descriptor() -> ModuleDescriptor {
             controls: Vec::new(),
             reset: None,
             collapsed: true,
+            layout: ModuleLayout::Stacked,
+            view: false,
             variants: Vec::new(),
         }),
     ];
@@ -584,6 +590,8 @@ pub(super) fn two_group_descriptor() -> ModuleDescriptor {
                 variants: Vec::new(),
             })],
             collapsed: false,
+            layout: ModuleLayout::Stacked,
+            view: false,
             variants: Vec::new(),
         })
     };

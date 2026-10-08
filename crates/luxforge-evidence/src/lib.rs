@@ -808,6 +808,23 @@ pub enum ControlsStep {
         parameter: String,
         value: Value,
     },
+    /// One gesture on the hue and saturation wheel keyed by `hue`: a press at the first position
+    /// and a drag through the rest, each a unit-disc offset from the centre (`x` right, `y` down,
+    /// 1 at the rim), with the gesture's modifiers held throughout; then the gesture ends the way
+    /// `finish` says. The desktop maps each position exactly as the widget does.
+    Wheel {
+        action: String,
+        hue: String,
+        positions: Vec<[f32; 2]>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        shift: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        command: bool,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        option: bool,
+        #[serde(default)]
+        finish: SliderEnd,
+    },
 }
 
 impl ControlsStep {
@@ -877,6 +894,26 @@ impl ControlsStep {
                 text(parameter, "controls parameter")?;
                 if value.is_null() {
                     return Err("discrete needs a typed value".into());
+                }
+                Ok(())
+            }
+            Self::Wheel {
+                action,
+                hue,
+                positions,
+                ..
+            } => {
+                text(action, "wheel action")?;
+                text(hue, "wheel hue")?;
+                if positions.is_empty() || positions.len() > 64 {
+                    return Err("wheel needs 1 to 64 positions".into());
+                }
+                if positions
+                    .iter()
+                    .flatten()
+                    .any(|coordinate| !coordinate.is_finite() || coordinate.abs() > 4.0)
+                {
+                    return Err("wheel positions are finite offsets within 4 radii".into());
                 }
                 Ok(())
             }
@@ -1156,10 +1193,14 @@ pub struct GroupStep {
     pub expanded: bool,
 }
 
+/// The view a tab row shows, as its tab row selects it: the row of `module` at the label path
+/// `group` (empty for the module's own tabs), its `index`th view.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TabStep {
     pub module: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub group: Vec<String>,
     pub index: usize,
 }
 
