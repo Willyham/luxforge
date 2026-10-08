@@ -307,7 +307,10 @@ impl Editor {
             return Some("No previous photograph in this window".into());
         }
         if !previous && self.view_state.copy_settings.clipboard.is_none() {
-            return Some("Nothing copied yet · Copy settings ⇧⌘C".into());
+            return Some(format!(
+                "Nothing copied yet · Copy settings {}",
+                crate::state::host_commands::HostCommand::CopySettingsChoosing.glyphs()
+            ));
         }
         if let Some(batch) = self.select.state.catalog.running() {
             return Some(format!("Waiting for the batch: {}", batch.running()));
@@ -521,10 +524,11 @@ impl Editor {
                         }
                         self.view_state.copy_settings.request = Some(clipboard.capture.clone());
                         self.status.text = format!(
-                            "Copied {} group{} from {} · Paste ⌘V",
+                            "Copied {} group{} from {} · Paste {}",
                             clipboard.groups.len(),
                             if clipboard.groups.len() == 1 { "" } else { "s" },
-                            clipboard.source.name
+                            clipboard.source.name,
+                            crate::state::host_commands::HostCommand::PasteSettings.glyphs()
                         );
                         self.view_state.copy_settings.clipboard = Some(clipboard);
                     }
