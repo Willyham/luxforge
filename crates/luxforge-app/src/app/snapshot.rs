@@ -11,6 +11,8 @@ impl Editor {
             controls: &[tools::ControlModel],
             curves: &mut Vec<Value>,
             pickers: &mut Vec<Value>,
+            wheels: &mut Vec<Value>,
+            tab_rows: &mut Vec<Value>,
             local: &tools::ControlsUi,
             entry: Option<&luxforge_core::EntryId>,
         ) {
@@ -33,6 +35,24 @@ impl Editor {
                             "background":curve.background,"points_open":curve.points_open,
                             "points_max":curve.points_max,"hint":curve.hint,
                             "label_shown":curve.label_shown}));
+                    }
+                    tools::ControlModel::Wheel(wheel) => {
+                        wheels.push(json!({"action":wheel.action,"label":wheel.label,
+                            "hue_parameter":wheel.hue.parameter,"hue":wheel.hue.value,
+                            "saturation_parameter":wheel.saturation.parameter,
+                            "saturation":wheel.saturation.value,"radius":wheel.radius(),
+                            "luminance":wheel.luminance.as_ref().map(|field| field.value),
+                            "large":wheel.large,"dragging":wheel.dragging,
+                            "reset":wheel.reset.as_ref().map(|reset| &reset.preset)}));
+                    }
+                    tools::ControlModel::Group(group) if group.selected.is_some() => {
+                        tab_rows.push(json!({"group":group.labels,"path":group.path,
+                            "selected":group.selected,
+                            "visible":group.visible_view().map(|view| &view.label),
+                            "views":group.controls.iter().filter_map(|child| match child {
+                                tools::ControlModel::Group(child) => Some((&child.label, child.view)),
+                                _ => None,
+                            }).map(|(label, view)| json!({"label":label,"view":view})).collect::<Vec<_>>()}));
                     }
                     tools::ControlModel::Color(color) => {
                         pickers.push(json!({"action":color.action,"parameter":color.parameter,
@@ -75,20 +95,29 @@ impl Editor {
         let entry = self.displayed_entry();
         let mut curves = Vec::new();
         let mut pickers = Vec::new();
+        let mut wheels = Vec::new();
+        let mut tab_rows = Vec::new();
+        let mut selected_tab = serde_json::Map::new();
         // Every section's controls, the drawn ones as derived and a collapsed section's built now
         // from the same inputs, so a frame reports what an always-built section held.
         let inputs = self.inputs();
         let sections = self.workspace.tools.with_controls(&inputs);
         for reported in &sections {
+            // A tabbed module's own row, as the session's view selection has it.
+            if let tools::SectionLayout::Tabs { selected } = reported.section.layout {
+                selected_tab.insert(reported.section.module_id.clone(), json!(selected));
+            }
             summarize_controls(
                 &reported.controls,
                 &mut curves,
                 &mut pickers,
+                &mut wheels,
+                &mut tab_rows,
                 &self.controls.ui,
                 entry.as_ref(),
             );
         }
-        json!({"run_id":self.log.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.shown_selection(),"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.presentation.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"renderer":self.session.renderer,"status":self.status.text,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.controls.fields.summary(),"control_ui":{"query_choices":self.controls.ui.query_choices,"group_expanded":self.controls.ui.group_expanded,"selected_tab":self.controls.ui.selected_tab,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(&sections),"masks":self.workspace.masks.summary(),"mask_draft":self.mask_draft_summary(),"mask_tool":self.mask_shape().map(|shape| shape.summary()),"mask_handles":self.resting.as_ref().map(|resting| json!({"summary":resting.mask.shape.summary(),"mapped":resting.mask.map.is_some(),"stale":resting.stale()})),"mask_overlay":self.mask_overlay_summary(),"last_mask_request":self.mask_panel.last_request.as_ref().map(|(method, params)| json!({"method":method,"params":params})),"draft":self.draft_summary(),"stack":self.stack_summary(),"geometry":self.document.recipe.as_ref().and_then(|r|r.geometry.clone()),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":state::Workspace::pickers(&sections),"section_controls":state::Workspace::section_controls(&sections),"information":self.workspace.canvas.information,"notices":self.notice_titles(),"draft_bar":self.draft_bar_summary(),"compare":self.document.compare_return.is_some(),"comparison":self.session.preview.comparison,"compare_after":self.presentation.compare_after.as_ref().map(|after| json!(after.full().size())),"compare_after_reduced_at_fit":self.presentation.compare_after.as_ref().map(super::compare_after::CompareAfter::reduced_at_fit),"compare_hold":self.document.compare_hold,"compare_key_pending":self.compare_key.pending().is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette.open,"query":self.palette.query},"presets":self.presets_summary(&sections),"histogram":self.histogram_summary(),"status_bar":self.status_bar_summary(),"reference":self.reference_summary(),"approximate_white_balance":self.presentation.presented_approximate_white_balance,"surface":self.surface_summary(),"active":self.workspace.active(),"scopes":self.workspace.scopes(),"scratch":self.scratch_summary(),"capabilities":state::capabilities::summary(&self.capabilities,&self.modules,self.document.state.as_ref()),"performance":self.performance_summary(),"visibility":self.visibility.summary(),"job_monitoring":self.owner.job_monitor_stats(),"settings":self.settings_summary(),"preferences":self.preferences_summary(),"theme":self.theme_summary(),"export":self.export_summary(),"select":self.select_summary(),"missing":self.missing_summary(),"long_work":self.long_work_summary(),"develop":self.develop_summary()})
+        json!({"run_id":self.log.run_id,"mode":if self.evidence.is_some() {"evidence"} else {"editor"},"selection":self.shown_selection(),"orientation":self.activity.orientation,"phase":self.activity.phase,"requested_generation":self.activity.requested,"displayed_generation":self.activity.displayed,"displayed_draft_revision":self.presentation.displayed_draft_revision,"source_dimensions":self.activity.source_dimensions,"preview_dimensions":self.activity.preview_dimensions,"backend":self.activity.backend,"renderer":self.session.renderer,"status":self.status.text,"error_code":self.activity.error_code,"modules":module_summary(&self.modules),"controls":self.controls.fields.summary(),"control_ui":{"query_choices":self.controls.ui.query_choices,"group_expanded":self.controls.ui.group_expanded,"selected_tab":selected_tab,"wheels":wheels,"tab_rows":tab_rows,"curve_channels":curve_channels,"curve_points":curve_points,"picker_open":picker_open,"curves":curves,"pickers":pickers},"gallery":gallery,"tools_scroll":tools_scroll,"crop":self.crop_summary(&sections),"masks":self.workspace.masks.summary(),"mask_draft":self.mask_draft_summary(),"mask_tool":self.mask_shape().map(|shape| shape.summary()),"mask_handles":self.resting.as_ref().map(|resting| json!({"summary":resting.mask.shape.summary(),"mapped":resting.mask.map.is_some(),"stale":resting.stale()})),"mask_overlay":self.mask_overlay_summary(),"last_mask_request":self.mask_panel.last_request.as_ref().map(|(method, params)| json!({"method":method,"params":params})),"draft":self.draft_summary(),"stack":self.stack_summary(),"geometry":self.document.recipe.as_ref().and_then(|r|r.geometry.clone()),"workspace":serde_json::to_value(&self.session.workspace).unwrap_or(Value::Null),"developer":self.developer,"expanded":self.workspace.expanded(),"pickers":state::Workspace::pickers(&sections),"section_controls":state::Workspace::section_controls(&sections),"information":self.workspace.canvas.information,"notices":self.notice_titles(),"draft_bar":self.draft_bar_summary(),"compare":self.document.compare_return.is_some(),"comparison":self.session.preview.comparison,"compare_after":self.presentation.compare_after.as_ref().map(|after| json!(after.full().size())),"compare_after_reduced_at_fit":self.presentation.compare_after.as_ref().map(super::compare_after::CompareAfter::reduced_at_fit),"compare_hold":self.document.compare_hold,"compare_key_pending":self.compare_key.pending().is_some(),"render_error":self.render_error_summary(),"palette":{"open":self.palette.open,"query":self.palette.query},"presets":self.presets_summary(&sections),"histogram":self.histogram_summary(),"status_bar":self.status_bar_summary(),"reference":self.reference_summary(),"approximate_white_balance":self.presentation.presented_approximate_white_balance,"surface":self.surface_summary(),"active":self.workspace.active(),"scopes":self.workspace.scopes(),"scratch":self.scratch_summary(),"capabilities":state::capabilities::summary(&self.capabilities,&self.modules,self.document.state.as_ref()),"performance":self.performance_summary(),"visibility":self.visibility.summary(),"job_monitoring":self.owner.job_monitor_stats(),"settings":self.settings_summary(),"preferences":self.preferences_summary(),"theme":self.theme_summary(),"export":self.export_summary(),"select":self.select_summary(),"missing":self.missing_summary(),"long_work":self.long_work_summary(),"develop":self.develop_summary()})
     }
 
     /// The Presets section as the frame drew it: its rows, the create form and whether the section

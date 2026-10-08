@@ -1034,6 +1034,7 @@ fn control_action(control: &Control) -> Option<&str> {
         Control::Color(color) => Some(&color.action),
         Control::Curve(curve) => Some(&curve.action),
         Control::Range(range) => Some(&range.action),
+        Control::Wheel(wheel) => Some(&wheel.action),
         Control::Action(button) => Some(&button.action),
         Control::Presets(presets) => Some(&presets.action),
         // A group, a picker and a module worker task submit no mask command, so none is offered here.

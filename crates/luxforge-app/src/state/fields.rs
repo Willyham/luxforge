@@ -148,6 +148,12 @@ fn seed_controls(owner: ControlOwner<'_>, controls: &[Control], fields: &mut Fie
                     seed(&range.action, parameter);
                 }
             }
+            // A wheel's hue, saturation and luminance are its own number fields too.
+            Control::Wheel(wheel) => {
+                for parameter in wheel.parameters() {
+                    seed(&wheel.action, parameter);
+                }
+            }
             // None carries a field of its own: a group's fields are its children's, an action
             // button submits the fields already seeded, a picker only enters its module's canvas
             // mode, a preset row submits a library preset's own settings, name and identity, and a

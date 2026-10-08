@@ -162,24 +162,58 @@ pub(crate) fn presettable_groups(
     groups
 }
 
-/// One module's entries, one per control group in declaration order. A value control belongs to
+/// One module's entries, one per capture group in declaration order. A value control belongs to
 /// the entry of its enclosing group, or, at the module's top level, to the module's own entry,
 /// which is added where the first such control is.
+///
+/// A group that declares `layout: tabs` is one capture group with everything under it: its tabs
+/// are parallel presentations of its fields, so neither a presentation-only view nor a nested tab
+/// is a checkbox of its own, and a field several views show is captured once.
 fn collect(modules: &[ModuleDescriptor], module: &ModuleDescriptor) -> Vec<PresettableGroup> {
     let mut entries = Vec::new();
     let mut loose = None;
-    // Each group's path and its entry's index.
-    let mut groups: Vec<(Vec<usize>, usize)> = Vec::new();
+    // Each group's path, its entry's index, and whether its descendants join that entry.
+    let mut groups: Vec<(Vec<usize>, usize, bool)> = Vec::new();
     let mut controls = walk(&module.controls);
     while let Some(control) = controls.next() {
         let fields: Vec<(&str, &str)> = match control {
             Control::Group(group) => {
-                entries.push(PresettableGroup {
-                    label: format!("{} \u{00b7} {}", module.title, group.label),
-                    fields: Vec::new(),
-                    default_checked: true,
-                });
-                groups.push((controls.path(), entries.len() - 1));
+                let path = controls.path();
+                let parent = &path[..path.len() - 1];
+                let absorbed = groups
+                    .iter()
+                    .find(|(named, _, absorbs)| named == parent && *absorbs)
+                    .map(|(_, index, _)| *index);
+                let index = match absorbed {
+                    Some(index) => index,
+                    None if group.view => {
+                        // A view outside a tabbed group (the module's own tabs) joins its
+                        // enclosing entry, or the module's own at the top level.
+                        match groups.iter().find(|(named, _, _)| named == parent) {
+                            Some((_, index, _)) => *index,
+                            None => *loose.get_or_insert_with(|| {
+                                entries.push(PresettableGroup {
+                                    label: module.title.clone(),
+                                    fields: Vec::new(),
+                                    default_checked: true,
+                                });
+                                entries.len() - 1
+                            }),
+                        }
+                    }
+                    None => {
+                        entries.push(PresettableGroup {
+                            label: format!("{} \u{00b7} {}", module.title, group.label),
+                            fields: Vec::new(),
+                            default_checked: true,
+                        });
+                        entries.len() - 1
+                    }
+                };
+                let absorbs = absorbed.is_some()
+                    || group.view
+                    || group.layout == luxforge_core::ModuleLayout::Tabs;
+                groups.push((path, index, absorbs));
                 continue;
             }
             Control::Number(number) => vec![(&number.action, &number.parameter)],
@@ -190,6 +224,11 @@ fn collect(modules: &[ModuleDescriptor], module: &ModuleDescriptor) -> Vec<Prese
                 .channels
                 .iter()
                 .map(|channel| (curve.action.as_str(), channel.parameter.as_str()))
+                .collect(),
+            // A wheel's fields join the entry of the group that holds it, as a curve's channels do.
+            Control::Wheel(wheel) => wheel
+                .parameters()
+                .map(|parameter| (wheel.action.as_str(), parameter))
                 .collect(),
             // A band's fields are presettable through the number controls that declare them, and
             // no other kind carries a field.
@@ -207,8 +246,8 @@ fn collect(modules: &[ModuleDescriptor], module: &ModuleDescriptor) -> Vec<Prese
         let parent = &path[..path.len() - 1];
         let current = groups
             .iter()
-            .find(|(group, _)| group == parent)
-            .map(|(_, index)| *index);
+            .find(|(group, _, _)| group == parent)
+            .map(|(_, index, _)| *index);
         for (action, parameter) in fields {
             let declared = module
                 .action(action)
