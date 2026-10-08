@@ -678,7 +678,7 @@ impl EditorService {
     /// position, and a missing identity is refused before anything is written.
     ///
     /// `Compose` runs each step exactly as that action would run alone, against the stack the steps
-    /// before it produced: the action must be presettable ([`ModuleRegistry::patch_action`]); the
+    /// before it produced: the action must be a settings key ([`ModuleRegistry::settings_action`]); the
     /// generic check and the module's `parse` take its fields; and the module is asked through the
     /// same [`Self::ask`]. A step carries no mask target, so like an
     /// action sent without one it addresses the global layer: it plans against
