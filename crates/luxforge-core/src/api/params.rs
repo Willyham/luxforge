@@ -274,6 +274,10 @@ pub(crate) mod kind {
         ParameterDescriptor::settings("")
     }
 
+    pub(crate) fn settings_origin() -> ParameterDescriptor {
+        ParameterDescriptor::settings_origin("")
+    }
+
     /// A credential as long as any setting may declare one; the setting's own limit is checked
     /// where the value is stored.
     pub(crate) fn secret() -> ParameterDescriptor {

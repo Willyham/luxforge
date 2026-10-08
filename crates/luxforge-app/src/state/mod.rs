@@ -3892,11 +3892,14 @@ mod tests {
             "one entry per preset that can apply in this build"
         );
         assert_eq!(entries[0].label, "Apply preset: Warm");
-        assert_eq!(entries[0].detail, "edit.apply-preset \u{00b7} User presets");
+        assert_eq!(
+            entries[0].detail,
+            "edit.apply-settings \u{00b7} User presets"
+        );
         assert_eq!(
             entries[0].action,
             crate::state::palette::PaletteAction::Run {
-                action: "apply-preset".into(),
+                action: "apply-settings".into(),
                 preset: row.apply.expect("the row applies"),
             },
             "the palette runs exactly what a click on the row runs"

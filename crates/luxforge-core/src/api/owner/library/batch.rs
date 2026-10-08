@@ -1,12 +1,12 @@
-//! `batch.apply-preset` and `batch.export` on the owner. Each resolves its photographs and checks
+//! `batch.apply-settings` and `batch.export` on the owner. Each resolves its photographs and checks
 //! its request on the owner, then runs as one job on the lane's worker
 //! ([`LibraryLane`](super::LibraryLane)) that takes one photograph at a time through
 //! [`JobContext::commit`], so a cancel between photographs keeps every one finished and does nothing
 //! more:
 //!
-//! - **Apply preset**: each photograph on the owner through exactly the path `edit.apply-preset`
-//!   takes, the module action against the photograph's current revision, announced as that call
-//!   announces it.
+//! - **Apply settings**: each photograph on the owner through exactly the path
+//!   `edit.apply-settings` takes, the module action against the photograph's current revision,
+//!   announced as that call announces it.
 //! - **Export**: each photograph's current entry planned on the owner as `export.jpeg` plans it,
 //!   then rendered, encoded and published on the worker through the export's own steps
 //!   ([`export::write`]), streamed through the owner's tile service with the same reference
@@ -18,22 +18,22 @@
 //! library side is `crate::library::batch`.
 use super::{Call, JobContext, Owner, Task, selected};
 use crate::{
-    AssetId, Error, ErrorKind, JobId, JobStatus, Mutation, MutationOutcome,
+    AssetId, Error, ErrorKind, JobId, JobStatus, Mutation, MutationOutcome, SettingsOrigin,
     api::{ClientId, Origin, announce_once, methods::value, owner::export},
     catalog_types::{
         BatchWritten,
-        api::{BatchApplyPreset, BatchExport, BatchPasteSettings},
-        jobs::{BATCH_EXPORT, BATCH_PASTE, BATCH_PRESET, CatalogJob},
+        api::{BatchApplySettings, BatchExport},
+        jobs::{BATCH_EXPORT, BATCH_SETTINGS},
     },
-    editor::{ExportPlan, library_rows},
+    editor::{ExportPlan, PreparedAction, library_rows},
     library::{
         batch::{self, Applied, Progress, SettingsApply},
         locate::Phase,
         targets,
     },
-    modules::PASTE_SETTINGS,
+    modules::APPLY_SETTINGS,
 };
-use serde_json::Value;
+use serde_json::{Value, json};
 use std::{
     path::PathBuf,
     sync::{
@@ -47,81 +47,86 @@ use std::{
 /// before the photograph is asked for again.
 const PREPARATIONS: usize = 3;
 
-/// `batch.apply-preset`: read the preset from the library once, then start a `batch-preset` job
-/// that applies it to each photograph `targets` names as its own history entry, answering a
+/// `batch.apply-settings`: the inline set and its origin, or a library preset read once, checked
+/// exactly as `edit.apply-settings` checks them — the module's parameters and parse
+/// ([`PreparedAction::new`]) and the composite's rules ([`crate::presets::validate_composite`]), which
+/// leave a step whose module does not apply to a photograph's kind to be skipped there — before a
+/// job is published or any photograph changes. Then a `batch-settings` job applies it to each
+/// photograph `targets` names as its own history entry, answering a
 /// [`BatchReport`](crate::catalog_types::BatchReport).
-pub(in crate::api) fn batch_apply_preset(
+pub(in crate::api) fn batch_apply_settings(
     owner: &mut Owner,
     call: &Call<'_>,
-    params: BatchApplyPreset,
+    params: BatchApplySettings,
 ) -> Result<Value, Error> {
+    let (settings, origin) = match (params.settings, params.preset_id, params.origin) {
+        (Some(settings), None, Some(origin)) => (settings, origin),
+        (Some(_), None, None) => {
+            return Err(Error::validation("origin is required with inline settings"));
+        }
+        (None, Some(preset_id), None) => {
+            let (record, _) = owner.service.preset(&preset_id)?;
+            let origin = SettingsOrigin::Preset {
+                name: record.name,
+                preset_id: Some(record.id),
+            };
+            (record.settings, origin)
+        }
+        (None, Some(_), Some(_)) => {
+            return Err(Error::validation(
+                "a library preset's origin is its name and identity; send origin only with settings",
+            ));
+        }
+        (Some(_), Some(_), _) | (None, None, _) => {
+            return Err(Error::validation(
+                "send exactly one of settings and preset_id",
+            ));
+        }
+    };
+    let registry = owner.service.registry();
+    crate::presets::validate_composite(registry, &settings)?;
+    let input = PreparedAction::new(
+        registry,
+        APPLY_SETTINGS,
+        json!({"settings": settings, "origin": origin}),
+    )?
+    .into_input();
     let assets = targets::assets(&owner.service, &params.targets, || {
         selected(owner, call.client)
     })?;
-    let (record, _) = owner.service.preset(&params.preset_id)?;
-    let preset = Arc::new(SettingsApply::new(
-        record,
+    let set = Arc::new(SettingsApply::new(
+        input.parameters,
+        origin,
         params.mutation.request_id,
         params.mutation.actor,
     ));
-    queue_settings(owner, call, assets, preset, &BATCH_PRESET)
-}
-
-/// Validate the inline set once, before publishing a job or changing any photograph.
-pub(in crate::api) fn batch_paste_settings(
-    owner: &mut Owner,
-    call: &Call<'_>,
-    params: BatchPasteSettings,
-) -> Result<Value, Error> {
-    crate::presets::validate_settings(owner.service.registry(), &params.settings)?;
-    let mut parameters = serde_json::json!({"settings": params.settings, "source": params.source});
-    if let Some(asset) = params.source_asset_id {
-        parameters["source-asset"] = Value::String(asset);
-    }
-    let (module, action) = owner
-        .service
-        .registry()
-        .action(PASTE_SETTINGS)
-        .ok_or_else(|| Error::validation("paste-settings is unavailable"))?;
-    module.descriptor().check_available()?;
-    let checked = crate::check_parameters(action, &parameters)?;
-    let input = module.parse(PASTE_SETTINGS, &checked)?;
-    let parameters = Value::Object(input.parameters);
-    let source = parameters["source"].as_str().unwrap_or_default().to_owned();
-    let assets = targets::assets(&owner.service, &params.targets, || {
-        selected(owner, call.client)
-    })?;
-    let paste = Arc::new(SettingsApply::action(
-        PASTE_SETTINGS,
-        source,
-        parameters,
-        params.mutation.request_id,
-        params.mutation.actor,
-    ));
-    queue_settings(owner, call, assets, paste, &BATCH_PASTE)
+    queue_settings(owner, call, assets, set)
 }
 
 fn queue_settings(
     owner: &mut Owner,
     call: &Call<'_>,
     assets: Vec<(AssetId, crate::catalog_types::AssetRowId)>,
-    preset: Arc<SettingsApply>,
-    kind: &'static CatalogJob,
+    set: Arc<SettingsApply>,
 ) -> Result<Value, Error> {
     let (client, origin) = (call.client, call.origin.clone());
     let tiles = Arc::clone(&owner.tiles);
     let task = Task {
         job_id: JobId::new(),
-        job: kind,
+        job: &BATCH_SETTINGS,
         asset_id: only(&assets),
-        detail: Some(format!("{} · {}", preset.name, photographs(assets.len()))),
+        detail: Some(format!(
+            "{} \u{b7} {}",
+            set.origin.label(),
+            photographs(assets.len())
+        )),
         origin: call.origin.clone(),
         work: Box::new(move |job| {
             let mut progress = Progress::new(job.control, assets.len());
             for (asset, _) in assets {
                 job.pause(Phase::NextPhotograph);
-                let (preset, origin, target) = (preset.clone(), origin.clone(), asset.clone());
-                let applied = apply_on_worker(job, client, &tiles, origin, target, preset);
+                let (set, origin, target) = (set.clone(), origin.clone(), asset.clone());
+                let applied = apply_on_worker(job, client, &tiles, origin, target, set);
                 match applied {
                     Ok(Ok(Applied::Done(settings))) => progress.done(asset, None, settings),
                     Ok(Ok(Applied::Skipped(skip))) => progress.skip(skip),
@@ -141,7 +146,7 @@ enum ApplyAttempt {
     Read(Box<crate::editor::pixels::DeferredRead>),
 }
 
-/// A preset's metadata transaction runs on the owner. Any analysis it asks for is parked and
+/// A settings set's metadata transaction runs on the owner. Any analysis it asks for is parked and
 /// answered by the same tile service as an individual action, with this batch's cancellation.
 /// Its private memo never changes the caller's draft/session memo. Every replay checks currency
 /// before any write, and JobContext's commit gate keeps a cancelled batch from committing late.
@@ -151,16 +156,16 @@ fn apply_on_worker(
     tiles: &Arc<dyn crate::tiles::TileService>,
     origin: Origin,
     asset: AssetId,
-    preset: Arc<SettingsApply>,
+    set: Arc<SettingsApply>,
 ) -> Result<Result<Applied, Error>, Error> {
     let mut memo = crate::editor::pixels::PixelMemo::default();
     let mut key = None;
     for _ in 0..=crate::editor::pixels::MAX_PIXEL_READS {
         job.control.checkpoint()?;
-        let (origin, asset, preset, read_memo, read_key) = (
+        let (origin, asset, set, read_memo, read_key) = (
             origin.clone(),
             asset.clone(),
-            preset.clone(),
+            set.clone(),
             memo.clone(),
             key.clone(),
         );
@@ -173,7 +178,7 @@ fn apply_on_worker(
                 ));
             }
             owner.service.begin_pixel_call(None, read_memo.clone());
-            let result = apply(owner, client, &origin, &asset, &preset);
+            let result = apply(owner, client, &origin, &asset, &set);
             let deferred = owner.service.take_pixel_read();
             owner.service.end_pixel_call();
             match deferred {
@@ -206,11 +211,11 @@ fn apply_on_worker(
         }
     }
     Ok(Err(Error::resource_limit(
-        "preset analysis exceeded the deferred-read limit",
+        "the settings' analysis exceeded the deferred-read limit",
     )))
 }
 
-/// Apply the preset to one photograph as `edit.apply-preset` would, on the owner: left out while it
+/// Apply the set to one photograph as `edit.apply-settings` would, on the owner: left out while it
 /// is in Removed, or while the caller's session holds a draft on it or previews its history;
 /// answered as its first attempt was when this batch's request already applied it, before a
 /// restart; otherwise the module action against its current revision under the request identity
@@ -220,7 +225,7 @@ fn apply(
     client: ClientId,
     origin: &Origin,
     asset: &AssetId,
-    preset: &SettingsApply,
+    set: &SettingsApply,
 ) -> Result<Applied, Error> {
     if let Some(skip) = batch::removed(&owner.service.connection, asset)? {
         return Ok(Applied::Skipped(skip));
@@ -249,26 +254,26 @@ fn apply(
             )));
         }
     }
-    let request_id = batch::request_id(&preset.request_id, asset);
+    let request_id = batch::request_id(&set.request_id, asset);
     if let Some(first) = owner.service.recorded_request(asset, &request_id)? {
-        return Ok(preset.outcome(asset, first));
+        return Ok(set.outcome(asset, first));
     }
     let mutation = Mutation {
         expected_revision: owner.service.revision(asset)?,
         request_id,
-        actor: preset.actor.clone(),
+        actor: set.actor.clone(),
     };
     let result =
         owner
             .service
-            .run_action(asset, mutation, preset.action, preset.parameters.clone())?;
+            .run_action(asset, mutation, APPLY_SETTINGS, set.parameters.clone())?;
     if result.mutation.outcome != MutationOutcome::NoOp && !result.mutation.deduplicated {
         let changed = origin
             .clone()
             .changed(asset.clone(), Some(result.mutation.revision));
         announce_once(&mut owner.announced, &changed);
     }
-    Ok(preset.outcome(asset, result))
+    Ok(set.outcome(asset, result))
 }
 
 /// `batch.export`: check the folder, then start a `batch-export` job that exports each photograph

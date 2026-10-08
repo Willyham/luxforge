@@ -755,8 +755,8 @@ pub struct BatchSkip {
     pub reason: String,
 }
 
-/// A photograph a batch preset was applied to without some of the preset's settings, and which:
-/// the settings `edit.apply-preset` reports skipped because they do not apply to it.
+/// A photograph a batch settings set was applied to without some of its settings, and which: the
+/// settings `edit.apply-settings` reports skipped because they do not apply to it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BatchSettingsSkipped {
@@ -774,7 +774,7 @@ pub struct BatchWritten {
     pub renderer: super::RenderedBy,
 }
 
-/// A `batch.apply-preset` or `batch.export` job's result.
+/// A `batch.apply-settings` or `batch.export` job's result.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct BatchReport {
@@ -784,7 +784,7 @@ pub struct BatchReport {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub written: Vec<BatchWritten>,
     pub skipped: Vec<BatchSkip>,
-    /// Photographs done without some of the preset's settings, with those settings.
+    /// Photographs done without some of the set's settings, with those settings.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub settings_skipped: Vec<BatchSettingsSkipped>,
 }

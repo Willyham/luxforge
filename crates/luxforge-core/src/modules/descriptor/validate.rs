@@ -4,8 +4,8 @@
 use super::types::{
     ActionControl, ActionDescriptor, CanvasInteraction, ChoiceControl, ColorControl, Control,
     CurveControl, EffectStage, GroupControl, MAX_SECRET_LENGTH, ModuleDescriptor, ModuleLayout,
-    NumberControl, PRESET_ID, PRESET_NAME, PRESET_SETTINGS, ParameterDescriptor, ParameterKind,
-    PickerControl, PresetsControl, QueryChoiceControl, RailDecoration, RangeControl, ResetAction,
+    NumberControl, PRESET_SETTINGS, ParameterDescriptor, ParameterKind, PickerControl,
+    PresetsControl, QueryChoiceControl, RailDecoration, RangeControl, ResetAction, SETTINGS_ORIGIN,
     TaskControl, ToggleControl,
 };
 use super::values::check_value;
@@ -802,14 +802,14 @@ impl ModuleDescriptor {
         Ok(())
     }
 
-    /// A presets control submits its action with a preset's settings set, name and library
-    /// identity, and nothing else, so the action declares exactly those parameters with the kinds
-    /// that carry them. A field patch makes every parameter optional, so it cannot require them.
+    /// A presets control submits its action with a preset's settings set and its origin, and
+    /// nothing else, so the action declares exactly those parameters with the kinds that carry
+    /// them. A field patch makes every parameter optional, so it cannot require them.
     fn check_presets_action(&self, action: &ActionDescriptor) -> Result<(), Error> {
         let id = &action.id;
         if action.patch {
             return Err(Error::validation(format!(
-                "presets control action {id} is a field patch, so it cannot require its settings and name"
+                "presets control action {id} is a field patch, so it cannot require its settings and origin"
             )));
         }
         let required = |name: &str, kind: &str, matches: fn(&ParameterKind) -> bool| {
@@ -824,21 +824,16 @@ impl ModuleDescriptor {
         required(PRESET_SETTINGS, "settings", |kind| {
             matches!(kind, ParameterKind::Settings)
         })?;
-        required(PRESET_NAME, "string", |kind| {
-            matches!(kind, ParameterKind::String { .. })
+        required(SETTINGS_ORIGIN, "settings-origin", |kind| {
+            matches!(kind, ParameterKind::SettingsOrigin)
         })?;
-        if let Some(parameter) = action.parameter(PRESET_ID)
-            && (!matches!(parameter.kind, ParameterKind::String { .. }) || parameter.required)
+        if let Some(extra) = action
+            .parameters
+            .iter()
+            .find(|parameter| ![PRESET_SETTINGS, SETTINGS_ORIGIN].contains(&&*parameter.name))
         {
             return Err(Error::validation(format!(
-                "presets control action {id} may declare only an optional string parameter {PRESET_ID}"
-            )));
-        }
-        if let Some(extra) = action.parameters.iter().find(|parameter| {
-            ![PRESET_SETTINGS, PRESET_NAME, PRESET_ID].contains(&&*parameter.name)
-        }) {
-            return Err(Error::validation(format!(
-                "presets control action {id} declares parameter {} beyond {PRESET_SETTINGS}, {PRESET_NAME} and {PRESET_ID}",
+                "presets control action {id} declares parameter {} beyond {PRESET_SETTINGS} and {SETTINGS_ORIGIN}",
                 extra.name
             )));
         }

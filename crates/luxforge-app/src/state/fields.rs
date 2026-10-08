@@ -243,6 +243,11 @@ pub(crate) fn seed_text(parameter: &ParameterDescriptor) -> String {
             .as_ref()
             .map(Value::to_string)
             .unwrap_or_else(|| "{}".into()),
+        ParameterKind::SettingsOrigin => parameter
+            .default
+            .as_ref()
+            .map(Value::to_string)
+            .unwrap_or_else(|| "null".into()),
         // Only a host method declares a structured value, and no panel field edits one.
         ParameterKind::Json => parameter
             .default
@@ -346,6 +351,13 @@ pub(crate) fn parse_field(parameter: &ParameterDescriptor, text: &str) -> Result
                     .map_err(|error| error.detail)
                     .map(|_| value)
             }),
+        ParameterKind::SettingsOrigin => serde_json::from_str::<Value>(text.trim())
+            .map_err(|_| format!("{name} must be a JSON origin object"))
+            .and_then(|value| {
+                check_value(parameter, &value)
+                    .map_err(|error| error.detail)
+                    .map(|_| value)
+            }),
         // No panel widget edits a path: a path is drawn on the canvas, so this exists only so a
         // path a client posted can be shown and read back through the same generic check.
         ParameterKind::Points { .. } => serde_json::from_str::<Value>(text.trim())
@@ -385,6 +397,7 @@ pub(crate) fn value_text(parameter: &ParameterDescriptor, value: &Value) -> Resu
         ParameterKind::Curve { .. }
         | ParameterKind::Points { .. }
         | ParameterKind::Settings
+        | ParameterKind::SettingsOrigin
         | ParameterKind::Json => value.to_string(),
         ParameterKind::String { .. }
         | ParameterKind::Text { .. }

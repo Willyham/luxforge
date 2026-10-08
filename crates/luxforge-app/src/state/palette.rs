@@ -189,12 +189,12 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
         ),
         (
             "Paste settings".into(),
-            "edit.paste-settings / batch.paste-settings".into(),
+            "edit.apply-settings / batch.apply-settings".into(),
             PaletteAction::CopySettings(2),
         ),
         (
             "Paste settings from previous photograph".into(),
-            "preset.capture → edit.paste-settings".into(),
+            "preset.capture → edit.apply-settings".into(),
             PaletteAction::CopySettings(3),
         ),
         (

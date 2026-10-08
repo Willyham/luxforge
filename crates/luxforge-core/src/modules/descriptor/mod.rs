@@ -32,7 +32,7 @@ pub use types::{
     ChoiceControl, ColorControl, ControlVariant, IdentityKind, RangeControl, ResolvedControl,
     ResolvedReset, TaskControl, ToggleControl,
 };
-pub(crate) use types::{MAX_SECRET_LENGTH, PRESET_ID, PRESET_NAME, PRESET_SETTINGS};
+pub(crate) use types::{MAX_SECRET_LENGTH, PRESET_SETTINGS, SETTINGS_ORIGIN};
 pub(crate) use validate::{
     check_declaration, check_parameter_declarations, valid_identity, valid_name,
 };

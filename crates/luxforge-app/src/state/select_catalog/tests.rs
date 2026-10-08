@@ -987,7 +987,7 @@ fn catalog_browse_the_batch_form_reads_what_it_does_not_hold() {
 }
 
 /// Remove from catalog…, Put back and Empty Removed… send what an agent writes, and the batch
-/// requests what an agent's `batch.apply-preset` and `batch.export` are.
+/// requests what an agent's `batch.apply-settings` and `batch.export` are.
 #[test]
 fn catalog_browse_removal_and_batch_requests_are_what_an_agent_writes() {
     let m = mutation();

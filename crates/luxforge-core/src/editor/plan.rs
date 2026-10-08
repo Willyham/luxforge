@@ -26,7 +26,7 @@ use std::sync::Arc;
 
 /// One action request resolved, checked and parsed once: what a commit stores and hashes, and what
 /// a commit and a draft plan through [`EditorService::plan_request`].
-pub(super) struct Prepared<'r> {
+pub(crate) struct Prepared<'r> {
     pub(super) action: ActionRef<'r>,
     /// The durable action identity and the parameters the entry stores and the request hashes: a
     /// module's parse of its checked fields, or a host command's checked parameters, the identities
@@ -48,7 +48,7 @@ impl<'r> Prepared<'r> {
     /// has the host's optional `mask` target taken out before its own parameters are checked, so the
     /// module receives exactly its declared fields and never learns a mask was involved, and is
     /// parsed by its module. A host command's parameters, identities included, are what it stores.
-    pub(super) fn new(
+    pub(crate) fn new(
         registry: &'r ModuleRegistry,
         action_id: &str,
         parameters: Value,
@@ -85,6 +85,14 @@ impl<'r> Prepared<'r> {
                 label: String::new(),
             }),
         }
+    }
+}
+
+impl Prepared<'_> {
+    /// The action identity and parameters the entry would store, for a caller that checks a
+    /// request once before running it many times (`batch.apply-settings`).
+    pub(crate) fn into_input(self) -> ActionInput {
+        self.input
     }
 }
 
@@ -3229,10 +3237,15 @@ mod tests {
                 "set-raw": {"white-balance": "as-shot"},
                 "set-basic": {"exposure": 0.5, "temperature": 10.0}
             },
-            "name": "Both kinds",
+            "origin": {"kind": "preset", "name": "Both kinds"},
         });
         let applied = service
-            .run_action(&asset, mutation(0, "both"), "apply-preset", preset.clone())
+            .run_action(
+                &asset,
+                mutation(0, "both"),
+                "apply-settings",
+                preset.clone(),
+            )
             .unwrap();
         assert_eq!(applied.mutation.outcome, MutationOutcome::Applied);
         assert_eq!(applied.skipped, std::slice::from_ref(&skipped_raw));
@@ -3241,7 +3254,7 @@ mod tests {
             json!([{"action": "set-raw", "reason": "RAW does not apply to a JPEG photo"}])
         );
         let retried = service
-            .run_action(&asset, mutation(0, "both"), "apply-preset", preset)
+            .run_action(&asset, mutation(0, "both"), "apply-settings", preset)
             .unwrap();
         assert!(retried.mutation.deduplicated);
         assert_eq!(retried.skipped, applied.skipped);
@@ -3262,8 +3275,8 @@ mod tests {
             .run_action(
                 &asset,
                 mutation(applied.mutation.revision, "raw-only"),
-                "apply-preset",
-                json!({"settings": {"set-raw": {"tint": 5.0}}, "name": "RAW only"}),
+                "apply-settings",
+                json!({"settings": {"set-raw": {"tint": 5.0}}, "origin": {"kind": "preset", "name": "RAW only"}}),
             )
             .unwrap();
         assert_eq!(only_raw.mutation.outcome, MutationOutcome::NoOp);
@@ -3383,13 +3396,13 @@ mod tests {
             .run_action(
                 &asset,
                 mutation(revision(&service), "preset"),
-                "apply-preset",
+                "apply-settings",
                 json!({
                     "settings": {
                         "set-basic": {"temperature": 0.0, "tint": 0.0, "exposure": 0.25},
                         "set-raw": {"temperature": 5200.0, "tint": 6.0}
                     },
-                    "name": "Both kinds",
+                    "origin": {"kind": "preset", "name": "Both kinds"},
                 }),
             )
             .unwrap();
@@ -3518,18 +3531,18 @@ mod tests {
         let registry = ModuleRegistry::developer();
         let table = [
             (
-                "apply-preset",
-                json!({"name":"Soft film","settings":{"set-basic":{"exposure":1.0}}}),
+                "apply-settings",
+                json!({"origin":{"kind":"preset","name":"Soft film"},"settings":{"set-basic":{"exposure":1.0}}}),
                 "Preset: Soft film",
             ),
             (
-                "apply-preset",
-                json!({"name":"Soft Film","preset-id":"soft","settings":{"set-basic":{"exposure":1.0}}}),
+                "apply-settings",
+                json!({"origin":{"kind":"preset","name":"Soft Film","preset_id":"preset-softfilm01"},"settings":{"set-basic":{"exposure":1.0}}}),
                 "Preset: Soft Film",
             ),
             (
-                "paste-settings",
-                json!({"source":"Source.NEF","source-asset":"source-id","settings":{"set-basic":{"exposure":1.0}}}),
+                "apply-settings",
+                json!({"origin":{"kind":"paste","source":"Source.NEF","source_asset":"asset-source001"},"settings":{"set-basic":{"exposure":1.0}}}),
                 "Paste settings from Source.NEF",
             ),
             (

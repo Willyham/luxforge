@@ -1393,7 +1393,7 @@ mod tests {
     /// no-op and a retry write no stack and validate none.
     #[test]
     fn a_commit_validates_its_stack_once() {
-        use crate::{APPLY_PRESET, editor::validations, mask::commands};
+        use crate::{APPLY_SETTINGS, editor::validations, mask::commands};
         let catalog = temp("validated-once.sqlite");
         let mut service =
             EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
@@ -1409,8 +1409,8 @@ mod tests {
             .apply_action(
                 &asset,
                 mutation(1, "preset"),
-                APPLY_PRESET,
-                json!({"name": "Look", "settings": {"set-basic": {"exposure": 0.5}}}),
+                APPLY_SETTINGS,
+                json!({"origin": {"kind": "preset", "name": "Look"}, "settings": {"set-basic": {"exposure": 0.5}}}),
             )
             .unwrap();
         assert_eq!(validations::take(), 1, "a preset composite");
