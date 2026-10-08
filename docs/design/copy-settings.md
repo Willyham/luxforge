@@ -74,7 +74,7 @@ Paste is disabled while the clipboard is empty ("Nothing copied yet · Copy sett
 
 With no other photograph selected in the filmstrip, `⌘V` pastes into the open photograph at its current entry. It sends `edit.apply-settings` with a `paste` origin, which follows the ordinary action path: one entry labelled **Paste settings from DSC_4471.NEF**, `asset.state`, one preview job and a history merge. The status bar reads the answer's outcome and skipped settings and names what was pasted and anything skipped, with Undo ("Pasted 1 of 2 groups from DSC_4471.NEF · White balance skipped: RAW does not apply to a JPEG photo · Undo ⌘Z"). A copied group counts as skipped when every field it holds was skipped; a skipped field of a group that otherwise applied is still named ("Some settings skipped: …"). A paste that changes nothing makes no entry and says so ("Nothing changed: IMG_2201.JPG already has these settings", or "… already has the settings that apply" beside what was skipped), and one none of whose groups apply says that ("Nothing pasted: none of the copied groups apply to IMG_2201.JPG").
 
-Paste is disabled, with the same reasons the Presets rows give, while a draft is open, during a historical preview, while a request is in flight and with no photograph.
+Paste is disabled, with the same reasons the Presets rows give, while a draft is open, during a historical preview, while a request is in flight and with no photograph. Those reasons about the open photograph stop a paste into that photograph alone; a paste to several selected photographs goes to the batch, which skips any photograph it cannot write and reports it. A paste waiting for its settings request refuses another paste, not an export.
 
 ### Paste from previous (`⌥⌘V`)
 

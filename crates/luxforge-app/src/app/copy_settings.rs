@@ -300,6 +300,9 @@ impl Editor {
         if self.view_state.copy_settings.pending {
             return Some("Waiting for the settings capture".into());
         }
+        if self.view_state.copy_settings.batch_pending {
+            return Some("Waiting for the settings request".into());
+        }
         if previous
             && (self.select.state.shown == Shown::Select
                 || self.view_state.copy_settings.previous.is_none())
@@ -317,6 +320,11 @@ impl Editor {
         }
         if self.select.state.shown == Shown::Select {
             return self.batch_refusal();
+        }
+        // The open photograph's refusal (a historical preview, a gesture) belongs to a paste into
+        // it alone; a batch simply skips a photograph it cannot write and reports it.
+        if self.paste_targets().count() > 1 {
+            return None;
         }
         self.action_refusal("apply-settings")
     }
@@ -384,7 +392,7 @@ impl Editor {
                     .set
                     .as_ref()
                     .map_or(usize::from(self.document.state.is_some()), |set| {
-                        set.selected.len() + usize::from(!set.selected.contains(&set.active))
+                        set.selected_count()
                     })
             },
         }
@@ -399,7 +407,7 @@ impl Editor {
                 names,
                 result,
             } => {
-                self.view_state.copy_settings.pending = false;
+                self.view_state.copy_settings.batch_pending = false;
                 return self.adopt_batch_start(kind, params, count, names, result);
             }
             C::Copy { choose, source } => {
