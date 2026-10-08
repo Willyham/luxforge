@@ -367,6 +367,8 @@ pub(crate) struct Group {
     label: &'static str,
     fields: Vec<&'static str>,
     collapsed: bool,
+    /// The group's values usually belong to one photograph ([`GroupControl::per_photo`]).
+    per_photo: bool,
     /// Controls drawn after the group's own field controls, such as Basic's neutral picker or the
     /// curve control whose channels are the group's curve fields.
     extra: Vec<Control>,
@@ -382,9 +384,16 @@ impl Group {
             label,
             fields: fields.into_iter().collect(),
             collapsed: false,
+            per_photo: false,
             extra: Vec::new(),
             reset_variants: Vec::new(),
         }
+    }
+
+    /// The group's values usually belong to one photograph, as white balance's do.
+    pub(crate) fn per_photo(mut self) -> Self {
+        self.per_photo = true;
+        self
     }
 
     /// The group starts collapsed.
@@ -665,7 +674,8 @@ impl Spec {
                         .map(|field| (field.name().to_owned(), field.default_value().clone()))
                         .collect(),
                 })
-                .collapsed(group.collapsed);
+                .collapsed(group.collapsed)
+                .per_photo(group.per_photo);
                 group
                     .reset_variants
                     .iter()

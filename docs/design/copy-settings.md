@@ -41,7 +41,7 @@ The first delivery carries the **adjustment groups**: the groups of every preset
 One clipboard per desktop window, held in the desktop's view state and lost when the window closes. It holds:
 
 - the settings set `preset.capture` returned, which is values, not a reference;
-- the chosen groups' labels;
+- the chosen groups, as `preset.groups` declares them;
 - the source photograph's display name, asset ID and entry ID, and its kind;
 - the time of the copy.
 
@@ -57,12 +57,12 @@ The values are read **when Copy runs**. A later edit to the source does not chan
 
 - A header names the source photograph, its entry and its kind.
 - A **Check** segmented control offers All, Edited and None, with a count ("10 of 11 groups").
-- Rows are grouped under module headings, in registry order, labelled as the create-preset form labels them (`presettable_groups`). Each row has a checkbox, the group's name and the source's caption for that group: **Custom** in the accent, or **Original**. Edited checks exactly the Custom rows. A module heading checks or clears all its rows and shows a mixed state.
+- Rows are grouped under module headings, in registry order, labelled as the create-preset form labels them, both from `preset.groups`. Each row has a checkbox, the group's name and the source's caption for that group: **Custom** in the accent, or **Original**. Edited checks exactly the Custom rows. A module heading checks or clears all its rows and shows a mixed state.
 - A group that cannot be captured is listed unchecked with the registry's reason, and Copy leaves it out. This covers a group whose module is unavailable, and an `ambiguous` capture where the source has two global layers.
 - The one-line note about what stays with each photograph, and the line about Original groups resetting.
 - Cancel, and Copy (`↩`), which confirms the choice, remembers it and copies.
 
-Escape or a press outside closes it without copying. The captions come from one capture of every group from the source entry, compared with each field's declared default. That is payload work only, with no render. Copy captures again with the checked fields, so an agent's commit while the chooser is open is still read at the moment of the copy.
+Escape or a press outside closes it without copying. The captions come from one `preset.groups` read of the source entry, which captures every group and compares each field with its declared default. That is payload work only, with no render. Copy captures again with the checked groups, so an agent's commit while the chooser is open is still read at the moment of the copy.
 
 **Which photograph is the source.** In Develop it is the open photograph's **displayed** entry, so copying during a historical preview copies that earlier entry. A filmstrip cell's menu copies from that cell's photograph at its current entry, open or not. In Select it is the active photograph. Select over files on disk or on a card has no developed photographs, so Copy there is disabled with the reason "Only developed photographs have settings".
 
@@ -127,11 +127,12 @@ The title bar gains **Copy** and **Paste** icon buttons before Undo, in both wor
 
 ## Programmability
 
-Every gesture is an existing or new command service call, and the desktop holds no logic the core lacks:
+Every gesture is a command service call, and the desktop holds no rule the core lacks:
 
 | Gesture | Request |
 | --- | --- |
-| Copy, quick or chosen | `preset.capture {asset_id, entry_id, fields}` (existing; read-only) |
+| Open the chooser | `preset.groups {asset_id, entry_id}` (read-only): the groups, their captions and refusals |
+| Copy, quick or chosen | `preset.capture {asset_id, entry_id, groups}` (read-only), naming the checked groups' identities |
 | Paste into the open photograph, Paste from previous | `edit.apply-settings {asset_id, settings, origin: {kind: paste, source, source_asset}, mutation}`, after a capture of the previous photograph for Paste from previous |
 | Paste to photographs (filmstrip, cell menu, Select) | `batch.apply-settings {targets, settings, origin: {kind: paste, source, source_asset}, mutation}`, then `job.read` and `job.cancel` |
 
@@ -139,7 +140,9 @@ A paste is the presets module's one action, [`apply-settings`](presets.md#the-pr
 
 **`batch.apply-settings`** takes `targets`, `mutation` and either inline `settings` with their `origin` or a library `preset_id`. It checks the set once exactly as `edit.apply-settings` would, then runs one `batch-settings` job on the library lane, one photograph at a time, each through `edit.apply-settings`'s own path. Request IDs are `<request_id>/<asset_id>`. The skips are removed, `draft-open` and `history-selected`, and the report is `BatchReport {done, skipped, settings_skipped}`, whether the set is a paste or a preset.
 
-An agent copies and pastes with the same two calls. The desktop's clipboard and filmstrip selection are view state, like a collapsed group or a selected tab: they change no recipe or catalog data, and every paste they lead to names its settings and its targets explicitly. A session clipboard on the owner is [later](#later).
+**The groups are the core's.** Which adjustment groups exist, their identities, their titles, the White balance default and Custom or Original are `preset.groups`' answer, derived from the registered modules' control descriptors by the one function the desktop's create form calls over its module listing (`luxforge_core::settings_groups`). A group's `id` is its module's and its label (`luxforge.basic/white-balance`); `default_checked` is false exactly for a group its module declares `per_photo`, which Basic's White balance does. With `asset_id`, each group's `state` is `custom`, `original` or `refused` with capture's own `reason`, captured from that entry exactly as `preset.capture` would capture the group's fields. Each group's `kinds` says what capture reads for it on a photo of each source kind and what applying a set captured there skips on another kind, by the apply rule itself (a module that does not apply to the target, a field a control variant supersedes there), so the confirmation's skip sentence and an agent's prediction come from the same declaration.
+
+An agent copies and pastes with the same calls. The desktop's clipboard and filmstrip selection are view state, like a collapsed group or a selected tab: they change no recipe or catalog data, and every paste they lead to names its settings and its targets explicitly. A session clipboard on the owner is [later](#later).
 
 ## Engineering constraints
 
@@ -158,7 +161,7 @@ An agent copies and pastes with the same two calls. The desktop's clipboard and 
   - an unavailable module refused;
   - undo and restore.
 
-  `batch.apply-settings` yields per-photograph entries and the batch preset report's shape over mixed kinds, a removed photograph, an open draft and a historical selection, with cancellation between photographs. JSON CLI parity: capture, paste, batch paste and undo through `luxforge-json` equal the same edits made with `edit.set-*`.
+  `batch.apply-settings` yields per-photograph entries and the batch preset report's shape over mixed kinds, a removed photograph, an open draft and a historical selection, with cancellation between photographs. `preset.groups` keeps its identities and registry order, leaves only the per-photo White balance unchecked, reads Custom, Original and Refused (an ambiguous stack, an unavailable module) from the named entry, and declares each kind's capture and skips; `preset.capture {groups}` equals capture by the fields those groups name. JSON CLI parity: groups, capture by groups, paste, batch paste and undo through `luxforge-json` equal the same edits made with `edit.set-*`.
 - **Desktop.** Unit and real-owner tests cover:
   - the remembered choice and its default;
   - chooser captions against capture, Edited, mixed module headings, unavailable and ambiguous rows;

@@ -1586,13 +1586,14 @@ impl CopySettingsStep {
 }
 
 /// The create form as a script fills it: the name, the group when it is not the default, and the
-/// labels of exactly the checkboxes to leave checked. Without `submit` the form is left open and
-/// filled, so its frame shows the form itself.
+/// labels of exactly the checkboxes to leave checked, and the identities of the analysis steps to
+/// check (`auto-tone`). Without `submit` the form is left open and filled, so its frame shows the
+/// form itself.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PresetCreateStep {
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub auto_tone: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub analysis: Vec<String>,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
@@ -1607,7 +1608,10 @@ impl PresetCreateStep {
         optional_text(self.group.as_deref(), "preset_create group")?;
         self.groups
             .iter()
-            .try_for_each(|label| text(label, "preset_create groups"))
+            .try_for_each(|label| text(label, "preset_create groups"))?;
+        self.analysis
+            .iter()
+            .try_for_each(|id| text(id, "preset_create analysis"))
     }
 }
 

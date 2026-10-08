@@ -22,8 +22,8 @@ use crate::{
     state::{
         IN_FLIGHT,
         presets::{
-            PresetForm, PresetLibrary, PresetsModel, capture_fields, import_status,
-            presets_control, presettable_groups,
+            PresetForm, PresetLibrary, PresetsModel, import_status, presets_control,
+            settings_groups,
         },
         tools,
     },
@@ -72,17 +72,21 @@ impl Editor {
             }
             PresetMessage::Name(name) => self.presets.form.name = name,
             PresetMessage::Group(group) => self.presets.form.group = group,
-            PresetMessage::Check { label, checked } => {
-                self.presets.form.checked.insert(label, checked);
+            PresetMessage::Check { id, checked } => {
+                self.presets.form.checked.insert(id, checked);
             }
-            PresetMessage::AutoTone(enabled) => {
-                self.presets.form.auto_tone = enabled;
-                if enabled {
-                    for group in presettable_groups(&self.modules, self.developer) {
-                        if group.auto_overwrites() {
-                            self.presets.form.checked.insert(group.label, false);
+            PresetMessage::Analysis { id, checked } => {
+                if checked {
+                    // The groups the step overwrites are cleared, so clearing the step again does
+                    // not bring them back checked.
+                    for group in settings_groups(&self.modules, self.developer).groups {
+                        if group.overwritten_by.contains(&id) {
+                            self.presets.form.checked.insert(group.id, false);
                         }
                     }
+                    self.presets.form.analysis.insert(id);
+                } else {
+                    self.presets.form.analysis.remove(&id);
                 }
             }
             PresetMessage::Cancel => self.presets.form = PresetForm::default(),
@@ -257,12 +261,12 @@ impl Editor {
         if form.group.trim().is_empty() {
             return Err("Name the preset's group before creating it".into());
         }
-        let fields = capture_fields(&presettable_groups(&self.modules, self.developer), form);
-        if fields.is_empty() {
+        let groups = form.capture_ids(&settings_groups(&self.modules, self.developer));
+        if groups.is_empty() {
             return Err("Choose at least one group of settings to keep".into());
         }
         Ok((
-            json!({"asset_id": state.asset.id, "entry_id": entry, "fields": fields}),
+            json!({"asset_id": state.asset.id, "entry_id": entry, "groups": groups}),
             json!({"name": form.name, "group": form.group, "mutation": request()}),
         ))
     }

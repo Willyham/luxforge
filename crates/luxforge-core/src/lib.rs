@@ -119,8 +119,10 @@ pub use modules::{
 pub use modules::{Chord, HOST_CHORDS, host_chord};
 pub use modules::{OriginalContext, OriginalLayer, OriginalPreferences};
 pub use presets::{
-    ImportReport, ImportedPreset, MAX_PRESET_BYTES, MappedSetting, PresetOrigin, PresetRecord,
-    PresetSummary, ReportCounts, ReportedSetting, USER_PRESET_GROUP, inspect_preset,
+    GroupOnKind, GroupState, ImportReport, ImportedPreset, KindSkip, MAX_PRESET_BYTES,
+    MappedSetting, PresetOrigin, PresetRecord, PresetSummary, ReportCounts, ReportedSetting,
+    SettingsAnalysis, SettingsGroup, SettingsGroups, SettingsPhoto, USER_PRESET_GROUP,
+    inspect_preset, settings_groups,
 };
 pub use preview::{
     AssetSelection, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,

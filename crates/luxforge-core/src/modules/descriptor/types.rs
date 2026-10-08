@@ -878,6 +878,12 @@ pub struct GroupControl {
     pub reset: Option<ResetAction>,
     #[serde(default, skip_serializing_if = "is_default")]
     pub collapsed: bool,
+    /// The group's values usually belong to the one photograph they were set on, as its white
+    /// balance does, so a client carrying settings from one photograph to others (a preset's
+    /// create form, Copy settings) leaves the group out unless asked (`preset.groups`'
+    /// `default_checked`). A hint: the host accepts and applies the group's fields either way.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub per_photo: bool,
     /// The group reset another module provides on a photo of one source kind: each variant
     /// carries a `reset` and applies on the global target of a photo of its kind
     /// ([`resolve_group_reset`]). Listed only when declared.
@@ -896,6 +902,11 @@ impl GroupControl {
 
     pub(crate) fn collapsed(self, collapsed: bool) -> Self {
         Self { collapsed, ..self }
+    }
+
+    /// The group's values usually belong to one photograph ([`Self::per_photo`]).
+    pub(crate) fn per_photo(self, per_photo: bool) -> Self {
+        Self { per_photo, ..self }
     }
 
     /// A replacement reset for one source kind ([`ControlVariant::reset`]).
@@ -1315,6 +1326,7 @@ impl Control {
             controls,
             reset: None,
             collapsed: false,
+            per_photo: false,
             variants: Vec::new(),
         }
     }
