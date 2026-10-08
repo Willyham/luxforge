@@ -1,6 +1,7 @@
 # Live-session Rust CLI
 
 Status: implemented ([feature status](../features.md), [user guide](../user-guide.md#the-live-session-command-line)).
+Outstanding: a real desktop launch registering its session is covered by the core's transport test and not yet by a desktop journey, and `session.state` does not report a live session that failed to start or be registered (the desktop's status bar and log do).
 This is the command-line client for people and agents that want to operate the photograph already
 open in Luxforge without writing a custom JSON-lines or TCP client.
 

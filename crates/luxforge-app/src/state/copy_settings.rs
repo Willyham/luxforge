@@ -1,7 +1,8 @@
 //! Per-window settings clipboard and chooser. Captures and pastes use the command service.
-use super::presets::{PresetForm, PresettableGroup};
+use super::presets::PresetForm;
 use luxforge_core::{
-    AssetId, EntryId, MAX_SOURCE_NAME, MutationOutcome, SettingsOrigin, SkippedSetting, SourceTag,
+    AssetId, EntryId, MAX_SOURCE_NAME, MutationOutcome, SettingsGroup, SettingsOrigin,
+    SkippedSetting, SourceTag,
 };
 use serde_json::{Map, Value};
 use std::{collections::BTreeMap, sync::Arc};
@@ -18,8 +19,8 @@ pub(crate) struct Clipboard {
     pub source: Source,
     pub kind: SourceTag,
     pub settings: Map<String, Value>,
-    /// The groups copied, with the fields each captured.
-    pub groups: Vec<PresettableGroup>,
+    /// The settings groups copied, as the core declares them (`preset.groups`).
+    pub groups: Vec<SettingsGroup>,
     pub copied_at: u64,
     pub capture: Value,
 }
@@ -29,7 +30,7 @@ impl Clipboard {
     pub(crate) fn labels(&self) -> Vec<&str> {
         self.groups
             .iter()
-            .map(|group| group.label.as_str())
+            .map(|group| group.title.as_str())
             .collect()
     }
 
@@ -53,10 +54,10 @@ impl Clipboard {
         parameters
     }
 
-    /// The fields a copied group holds in the settings: its own fields as captured, and a
-    /// variant's action whole, as capture resolves the group on a photo of that kind (Basic's White
-    /// balance as the RAW development's).
-    fn captured<'a>(&'a self, group: &'a PresettableGroup) -> Vec<(&'a str, &'a str)> {
+    /// The fields a copied group holds in the settings: what capture reads for it on the source's
+    /// kind, as the core declares it (`kinds[].captures`): named fields, or an action a control
+    /// variant provides there, whole (Basic's White balance as the RAW development's).
+    fn captured<'a>(&'a self, group: &'a SettingsGroup) -> Vec<(&'a str, &'a str)> {
         let held = |action: &'a str| {
             self.settings
                 .get(action)
@@ -66,13 +67,61 @@ impl Clipboard {
                 .map(move |field| (action, field.as_str()))
         };
         group
-            .fields
-            .iter()
-            .flat_map(|(action, parameters)| {
-                held(action).filter(|(_, field)| parameters.iter().any(|name| name == field))
+            .on(self.kind)
+            .into_iter()
+            .flat_map(|on| &on.captures)
+            .flat_map(|(action, requested)| {
+                held(action).filter(move |(_, field)| match requested {
+                    Value::Array(names) => names.iter().any(|name| name == *field),
+                    _ => true,
+                })
             })
-            .chain(group.variants.iter().flat_map(|action| held(action)))
             .collect()
+    }
+
+    /// What the confirmation of a paste to several photographs says it will skip, from the core's
+    /// per-kind rule for each copied group (`preset.groups`' `kinds[].skipped`): the groups a set
+    /// captured on the clipboard's kind skips whole on another kind, and how many of the targets,
+    /// by `kinds`, are of such a kind. Without the targets' kinds, the rule alone. Empty when
+    /// nothing copied is skipped anywhere it is going.
+    pub(crate) fn skip_notice(&self, kinds: Option<&[SourceTag]>) -> String {
+        let skipped_on = |target: SourceTag| -> Vec<&str> {
+            self.groups
+                .iter()
+                .filter(|group| {
+                    group.on(self.kind).is_some_and(|on| {
+                        on.skipped
+                            .iter()
+                            .any(|skip| skip.kind == target && skip.all)
+                    })
+                })
+                .map(|group| group.label.as_str())
+                .collect()
+        };
+        let mut names: Vec<&str> = Vec::new();
+        let mut count = 0;
+        for kind in kinds.unwrap_or(&SourceTag::ALL) {
+            let skipped = skipped_on(*kind);
+            count += usize::from(!skipped.is_empty());
+            for name in skipped {
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+            }
+        }
+        if names.is_empty() {
+            return String::new();
+        }
+        let verb = if names.len() == 1 { "is" } else { "are" };
+        let names = names.join(", ");
+        match kinds {
+            Some(_) => format!(
+                "{names} will be skipped on {count} photographs of a different source kind; they keep their own."
+            ),
+            None => format!(
+                "{names} {verb} skipped on photographs of a different source kind; each keeps its own. The report identifies any skips."
+            ),
+        }
     }
 
     /// What a paste into one photograph did, from its answer: how many of the copied groups it
@@ -102,7 +151,7 @@ impl Clipboard {
                 let captured = self.captured(group);
                 !captured.is_empty() && captured.iter().all(covered)
             })
-            .map(|group| short_label(&group.label))
+            .map(|group| group.label.as_str())
             .collect();
         let mut names: Vec<&str> = Vec::new();
         for name in &skipped_groups {
@@ -158,13 +207,6 @@ impl Clipboard {
     }
 }
 
-/// A group's name without its module: `Basic · White balance` is `White balance`.
-fn short_label(label: &str) -> &str {
-    label
-        .rsplit_once(" \u{b7} ")
-        .map_or(label, |(_, name)| name)
-}
-
 /// A file name as a paste's origin carries it: a control character, which a file name may hold on
 /// some platforms but a history label may not, is shown as U+FFFD, and a name longer than any
 /// platform allows keeps its first characters.
@@ -189,7 +231,7 @@ fn source_name(name: &str) -> String {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Group {
-    pub group: PresettableGroup,
+    pub group: SettingsGroup,
     pub custom: bool,
     pub reason: Option<String>,
 }
@@ -243,6 +285,9 @@ pub(crate) struct CopySettings {
     pub chooser: Option<Chooser>,
     pub confirm: Option<Confirmation>,
     pub pending: bool,
+    /// A Develop paste's `batch.apply-settings` is sent and its job not yet adopted. Separate from
+    /// `pending` (a capture or inspection), which has no reason to refuse an export or preset batch.
+    pub batch_pending: bool,
     /// Late responses cannot reopen a cancelled chooser or replace a newer copy.
     pub serial: u64,
     pub previous: Option<Source>,
@@ -290,58 +335,29 @@ pub(crate) struct CopyModel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::presets::{capture_fields, presettable_groups};
+    use luxforge_core::SettingsGroups;
+
+    fn builtin() -> SettingsGroups {
+        luxforge_core::settings_groups(luxforge_core::ModuleRegistry::builtin().descriptors())
+    }
+
     #[test]
     fn copy_settings_default_choice_remembers_confirmed_groups() {
-        let groups = presettable_groups(
-            &luxforge_core::ModuleRegistry::builtin()
-                .descriptors()
-                .into_iter()
-                .cloned()
-                .collect::<Vec<_>>(),
-            false,
-        );
+        let groups = builtin();
         let mut state = CopySettings::default();
-        let fields = capture_fields(&groups, &state.form());
-        assert!(
-            !fields["set-basic"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|name| name == "temperature" || name == "tint")
-        );
-        assert!(
-            fields["set-basic"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|name| name == "exposure")
-        );
+        let ids = state.form().capture_ids(&groups);
+        assert!(!ids.iter().any(|id| id == "luxforge.basic/white-balance"));
+        assert!(ids.iter().any(|id| id == "luxforge.basic/tone"));
         state.remembered = groups
+            .groups
             .iter()
-            .map(|group| (group.label.clone(), group.label.ends_with("Tone")))
+            .map(|group| (group.id.clone(), group.label == "Tone"))
             .collect();
-        let selected = capture_fields(&groups, &state.form());
-        assert_eq!(selected.len(), 1);
-        assert!(
-            selected["set-basic"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|name| name == "exposure")
-        );
+        assert_eq!(state.form().capture_ids(&groups), ["luxforge.basic/tone"]);
     }
-    fn group(label: &str, action: &str, fields: &[&str], variants: &[&str]) -> PresettableGroup {
-        PresettableGroup {
-            label: label.into(),
-            fields: vec![(
-                action.into(),
-                fields.iter().map(|field| (*field).to_owned()).collect(),
-            )],
-            variants: variants.iter().map(|action| (*action).to_owned()).collect(),
-            default_checked: true,
-            auto_overwritten: false,
-        }
+
+    fn group(id: &str) -> SettingsGroup {
+        builtin().group(id).expect("a built-in group").clone()
     }
 
     /// A clipboard of Tone and White balance copied from a photo of `kind`, holding the settings a
@@ -365,13 +381,8 @@ mod tests {
             kind,
             settings: settings.as_object().unwrap().clone(),
             groups: vec![
-                group("Basic · Tone", "set-basic", &["exposure", "contrast"], &[]),
-                group(
-                    "Basic · White balance",
-                    "set-basic",
-                    &["temperature", "tint"],
-                    &["set-raw"],
-                ),
+                group("luxforge.basic/tone"),
+                group("luxforge.basic/white-balance"),
             ],
             copied_at: 0,
             capture: Value::Null,
@@ -445,6 +456,33 @@ mod tests {
             "Nothing pasted: none of the copied groups apply to IMG.JPG · Tone, White balance \
              skipped: RAW does not apply to a JPEG photo; Basic does not apply"
         );
+    }
+
+    /// The confirmation's skip sentence reads the core's per-kind rule: a RAW white balance is
+    /// skipped on JPEGs and a JPEG's on RAW photographs, Tone nowhere, and a paste to photographs
+    /// of the source's own kind skips nothing.
+    #[test]
+    fn the_skip_notice_counts_targets_of_a_kind_the_copied_groups_skip_on() {
+        use SourceTag::{Jpeg, Raw};
+        let raw = clipboard(Raw);
+        assert_eq!(
+            raw.skip_notice(Some(&[Raw, Jpeg, Jpeg])),
+            "White balance will be skipped on 2 photographs of a different source kind; they keep their own."
+        );
+        assert_eq!(raw.skip_notice(Some(&[Raw, Raw])), "");
+        assert_eq!(
+            clipboard(Jpeg).skip_notice(Some(&[Raw, Jpeg])),
+            "White balance will be skipped on 1 photographs of a different source kind; they keep their own."
+        );
+        assert_eq!(
+            raw.skip_notice(None),
+            "White balance is skipped on photographs of a different source kind; each keeps its own. The report identifies any skips."
+        );
+        let tone_only = Clipboard {
+            groups: vec![group("luxforge.basic/tone")],
+            ..raw
+        };
+        assert_eq!(tone_only.skip_notice(None), "");
     }
 
     /// Any file name a platform allows is the paste's origin as it is; a control character is

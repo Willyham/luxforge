@@ -243,6 +243,7 @@ pub(super) fn descriptor() -> ModuleDescriptor {
             ],
             collapsed: false,
             variants: Vec::new(),
+            per_photo: false,
         })],
         reset: Some(ResetAction {
             action: "set-thing".into(),
@@ -405,6 +406,7 @@ pub(super) fn presets_cases() -> Vec<(&'static str, ModuleDescriptor, &'static s
                         })],
                         collapsed: false,
                         variants: Vec::new(),
+                        per_photo: false,
                     }),
                 ],
                 ..presets_descriptor()
@@ -516,6 +518,7 @@ pub(super) fn controls_descriptor() -> ModuleDescriptor {
             reset: None,
             collapsed: true,
             variants: Vec::new(),
+            per_photo: false,
         }),
     ];
     descriptor.reset = None;
@@ -565,6 +568,7 @@ pub(super) fn two_group_descriptor() -> ModuleDescriptor {
             })],
             collapsed: false,
             variants: Vec::new(),
+            per_photo: false,
         })
     };
     ModuleDescriptor {

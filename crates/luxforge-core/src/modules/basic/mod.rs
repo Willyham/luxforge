@@ -198,6 +198,7 @@ impl FieldPatch for Basic {
             // RAW photo the camera's white balance.
             .group(
                 Group::new("White balance", [TEMPERATURE, TINT])
+                    .per_photo()
                     .extra(Control::picker(NEUTRAL_PICKER_LABEL).variant(raw.picker))
                     .extra(
                         Control::action(SET_BASIC, AS_SHOT_LABEL)
