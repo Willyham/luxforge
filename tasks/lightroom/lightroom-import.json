@@ -119,7 +119,7 @@
         "Camera Matching profiles map to Standard with an approximate note until Match camera exists; Adobe Color and Adobe Standard map to Standard.",
         "The report keeps preset import's shape and adds crop, orientation, lens and look rows, and which rule (value transfer or a calibrated conversion) each mapped row used.",
         "Detail globals and manual perspective remain unsupported by the preset mapping despite both modules being delivered; their mappings need the measured alignment, not delivery of those tools. RAW white balance already has an uncalibrated chromaticity conversion; its calibrated preset conversion lands in the alignment RAW white-balance round.",
-        "apply-preset accepts only presettable field patches and at most 16 steps; crop, orientation, lens and look are not all presettable. Build the importer's bounded one-entry transaction through the shared module planning and validation APIs, without weakening public preset eligibility or claiming apply-preset already supports per-photo actions."
+        "apply-settings accepts only presettable field patches and analysis steps, at most 16 steps; crop, orientation, lens and look are not all presettable. Build the importer's bounded one-entry transaction through the shared module planning and validation APIs, without weakening public preset eligibility or claiming apply-settings already supports per-photo actions."
       ],
       "context_links": [
         {
@@ -313,7 +313,7 @@
         "TASK-005"
       ],
       "extra_context": [
-        "Never automatic. A batch follows batch.apply-preset's job, retry and report rules."
+        "Never automatic. A batch follows batch.apply-settings' job, retry and report rules."
       ],
       "context_links": [
         {
@@ -484,7 +484,7 @@
       "extra_context": [
         "Brush dabs go to the stroke store; density other than 100 is reported. A radial that Lightroom applies outside gets Invert.",
         "AI masks are reported as not imported until model-based Select exists; their adjustments are reported as not applied.",
-        "Import transactions validate every mask and local module action through the shared core APIs; apply-preset is global-only and does not create masks or masked layers. Keep decoded strokes and prepared commits bounded for a photograph with many components."
+        "Import transactions validate every mask and local module action through the shared core APIs; apply-settings is global-only and does not create masks or masked layers. Keep decoded strokes and prepared commits bounded for a photograph with many components."
       ],
       "context_links": [
         {
