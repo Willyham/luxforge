@@ -418,8 +418,10 @@ struct ActionText {
 /// field table and how the fields are grouped and laid out. The descriptor is built from it once.
 ///
 /// A spec is made only by `Spec::new`, which derives what every field-patch module shares and
-/// fixes what none may change: the effect's format is [`crate::EFFECT_FORMAT`], it declares no artifacts,
-/// it is `single` (the module owns one layer per target) and it applies to every source kind.
+/// fixes what none may change: it declares no artifacts, it is `single` (the module owns one layer
+/// per target) and it applies to every source kind. The effect's format starts at
+/// [`crate::EFFECT_FORMAT`]; a module whose payload changed meaning declares its own current
+/// marker with [`Spec::format`], and a stored layer at any other format is refused.
 pub(crate) struct Spec {
     id: &'static str,
     title: &'static str,
@@ -497,6 +499,13 @@ impl Spec {
             developer: false,
             presettable: true,
         }
+    }
+
+    /// The effect's current payload format marker, when it is not [`crate::EFFECT_FORMAT`]: a
+    /// stored layer at any other format is `incompatible` and is never rewritten.
+    pub(crate) fn format(mut self, format: u32) -> Self {
+        self.effect.format = format;
+        self
     }
 
     /// The order the effect takes among layers of its stage.
@@ -1614,8 +1623,9 @@ mod tests {
     }
 
     /// `Spec::new` derives the actions from the id and title, and every effect it makes holds the
-    /// fields no field-patch module may change: the shared format, no artifacts, `single` and every
-    /// source kind. Only the order and the maskable flag are the module's to set.
+    /// fields no field-patch module may change: no artifacts, `single` and every source kind. The
+    /// format starts at the shared marker; the order, the format and the maskable flag are the
+    /// module's to set.
     #[test]
     fn a_spec_derives_its_actions_and_forces_the_effects_shared_fields() {
         let module = module();
@@ -1674,11 +1684,17 @@ mod tests {
             EffectStage::Finish,
         )
         .order(7)
+        .format(3)
         .set_notes("its own words")
         .reset_notes("its own reset");
         assert_eq!(
-            (spec.noun, spec.effect.order, spec.effect.maskable),
-            ("other", 7, false)
+            (
+                spec.noun,
+                spec.effect.order,
+                spec.effect.format,
+                spec.effect.maskable
+            ),
+            ("other", 7, 3, false)
         );
         assert_eq!(
             (spec.set.notes.as_str(), spec.reset.notes.as_str()),

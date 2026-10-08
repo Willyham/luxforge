@@ -3305,7 +3305,7 @@
         "actions": [
           {
             "id": "set-mixer",
-            "notes": "merges the named mixer fields into the stack's one Colour mixer layer, which the host places after Basic by declared order on the first non-neutral value and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op",
+            "notes": "merges the named mixer fields into the stack's one Colour mixer layer, which the host places after Basic by declared order on the first value away from its default and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op. A grading hue, Blending or Balance with every grading saturation and luminance at 0 is kept as a setting but changes no pixel",
             "parameters": [
               {
                 "default": 0.0,
@@ -3618,6 +3618,179 @@
                 "step": 1.0,
                 "unit": null,
                 "zero": 0.0
+              },
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 360.0,
+                "min": 0.0,
+                "name": "grade-shadows-hue",
+                "notes": "the direction of the Shadows tint on the RGB colour wheel (red 0, green 120, blue 240), in degrees; 0 and 360 are the same direction. Kept as a setting at zero saturation, where it changes no pixel",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null
+              },
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": 0.0,
+                "name": "grade-shadows-saturation",
+                "notes": "the strength of the Shadows tint over the shadows range: 0 adds no colour, 100 the strongest tint; greys are tinted too, and black and white stay neutral unless the luminance treatment moves them",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null
+              },
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": -100.0,
+                "name": "grade-shadows-luminance",
+                "notes": "brightens or darkens the shadows range through a bounded gamma on Oklab L; works without any tint",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null,
+                "zero": 0.0
+              },
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 360.0,
+                "min": 0.0,
+                "name": "grade-midtones-hue",
+                "notes": "the direction of the Midtones tint on the RGB colour wheel (red 0, green 120, blue 240), in degrees; 0 and 360 are the same direction. Kept as a setting at zero saturation, where it changes no pixel",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null
+              },
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": 0.0,
+                "name": "grade-midtones-saturation",
+                "notes": "the strength of the Midtones tint over the midtones range: 0 adds no colour, 100 the strongest tint; greys are tinted too, and black and white stay neutral unless the luminance treatment moves them",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null
+              },
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": -100.0,
+                "name": "grade-midtones-luminance",
+                "notes": "brightens or darkens the midtones range through a bounded gamma on Oklab L; works without any tint",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null,
+                "zero": 0.0
+              },
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 360.0,
+                "min": 0.0,
+                "name": "grade-highlights-hue",
+                "notes": "the direction of the Highlights tint on the RGB colour wheel (red 0, green 120, blue 240), in degrees; 0 and 360 are the same direction. Kept as a setting at zero saturation, where it changes no pixel",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null
+              },
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": 0.0,
+                "name": "grade-highlights-saturation",
+                "notes": "the strength of the Highlights tint over the highlights range: 0 adds no colour, 100 the strongest tint; greys are tinted too, and black and white stay neutral unless the luminance treatment moves them",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null
+              },
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": -100.0,
+                "name": "grade-highlights-luminance",
+                "notes": "brightens or darkens the highlights range through a bounded gamma on Oklab L; works without any tint",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null,
+                "zero": 0.0
+              },
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 360.0,
+                "min": 0.0,
+                "name": "grade-global-hue",
+                "notes": "the direction of the Global tint on the RGB colour wheel (red 0, green 120, blue 240), in degrees; 0 and 360 are the same direction. Kept as a setting at zero saturation, where it changes no pixel",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null
+              },
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": 0.0,
+                "name": "grade-global-saturation",
+                "notes": "the strength of the Global tint over every tone, independent of Blending and Balance: 0 adds no colour, 100 the strongest tint; greys are tinted too, and black and white stay neutral unless the luminance treatment moves them",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null
+              },
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": -100.0,
+                "name": "grade-global-luminance",
+                "notes": "brightens or darkens every tone, independent of Blending and Balance through a bounded gamma on Oklab L; works without any tint",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null,
+                "zero": 0.0
+              },
+              {
+                "default": 50.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": 0.0,
+                "name": "grade-blending",
+                "notes": "how much the Shadows, Midtones and Highlights ranges overlap: 0 is the narrowest smooth transition, 100 the widest; does not affect Global",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null
+              },
+              {
+                "default": 0.0,
+                "kind": "number",
+                "max": 100.0,
+                "min": -100.0,
+                "name": "grade-balance",
+                "notes": "moves the split between the tonal ranges: negative extends Shadows, positive extends Highlights; does not affect Global",
+                "precision": 0,
+                "required": false,
+                "step": 1.0,
+                "unit": null,
+                "zero": 0.0
               }
             ],
             "patch": true,
@@ -3625,7 +3798,7 @@
           },
           {
             "id": "reset-mixer",
-            "notes": "returns the stack's one Colour mixer layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
+            "notes": "returns the stack's one Colour mixer layer to its all-default payload, HSL and grading together (Blending 50), keeping its identity and position; a no-op without one and when it is already all default",
             "parameters": [],
             "patch": false,
             "title": "Reset Colour mixer"
@@ -4303,12 +4476,210 @@
                 "yellow-luminance": 0.0
               }
             }
+          },
+          {
+            "collapsed": true,
+            "controls": [
+              {
+                "action": "set-mixer",
+                "kind": "number",
+                "label": "Shadows hue",
+                "parameter": "grade-shadows-hue",
+                "rail": "hue"
+              },
+              {
+                "action": "set-mixer",
+                "kind": "number",
+                "label": "Shadows saturation",
+                "parameter": "grade-shadows-saturation"
+              },
+              {
+                "action": "set-mixer",
+                "kind": "number",
+                "label": "Shadows luminance",
+                "parameter": "grade-shadows-luminance",
+                "rail": {
+                  "gradient": {
+                    "stops": [
+                      [
+                        0,
+                        0,
+                        0
+                      ],
+                      [
+                        128,
+                        128,
+                        128
+                      ],
+                      [
+                        255,
+                        255,
+                        255
+                      ]
+                    ]
+                  }
+                }
+              },
+              {
+                "action": "set-mixer",
+                "kind": "number",
+                "label": "Midtones hue",
+                "parameter": "grade-midtones-hue",
+                "rail": "hue"
+              },
+              {
+                "action": "set-mixer",
+                "kind": "number",
+                "label": "Midtones saturation",
+                "parameter": "grade-midtones-saturation"
+              },
+              {
+                "action": "set-mixer",
+                "kind": "number",
+                "label": "Midtones luminance",
+                "parameter": "grade-midtones-luminance",
+                "rail": {
+                  "gradient": {
+                    "stops": [
+                      [
+                        0,
+                        0,
+                        0
+                      ],
+                      [
+                        128,
+                        128,
+                        128
+                      ],
+                      [
+                        255,
+                        255,
+                        255
+                      ]
+                    ]
+                  }
+                }
+              },
+              {
+                "action": "set-mixer",
+                "kind": "number",
+                "label": "Highlights hue",
+                "parameter": "grade-highlights-hue",
+                "rail": "hue"
+              },
+              {
+                "action": "set-mixer",
+                "kind": "number",
+                "label": "Highlights saturation",
+                "parameter": "grade-highlights-saturation"
+              },
+              {
+                "action": "set-mixer",
+                "kind": "number",
+                "label": "Highlights luminance",
+                "parameter": "grade-highlights-luminance",
+                "rail": {
+                  "gradient": {
+                    "stops": [
+                      [
+                        0,
+                        0,
+                        0
+                      ],
+                      [
+                        128,
+                        128,
+                        128
+                      ],
+                      [
+                        255,
+                        255,
+                        255
+                      ]
+                    ]
+                  }
+                }
+              },
+              {
+                "action": "set-mixer",
+                "kind": "number",
+                "label": "Global hue",
+                "parameter": "grade-global-hue",
+                "rail": "hue"
+              },
+              {
+                "action": "set-mixer",
+                "kind": "number",
+                "label": "Global saturation",
+                "parameter": "grade-global-saturation"
+              },
+              {
+                "action": "set-mixer",
+                "kind": "number",
+                "label": "Global luminance",
+                "parameter": "grade-global-luminance",
+                "rail": {
+                  "gradient": {
+                    "stops": [
+                      [
+                        0,
+                        0,
+                        0
+                      ],
+                      [
+                        128,
+                        128,
+                        128
+                      ],
+                      [
+                        255,
+                        255,
+                        255
+                      ]
+                    ]
+                  }
+                }
+              },
+              {
+                "action": "set-mixer",
+                "kind": "number",
+                "label": "Blending",
+                "parameter": "grade-blending"
+              },
+              {
+                "action": "set-mixer",
+                "kind": "number",
+                "label": "Balance",
+                "parameter": "grade-balance"
+              }
+            ],
+            "kind": "group",
+            "label": "Grading",
+            "reset": {
+              "action": "set-mixer",
+              "preset": {
+                "grade-balance": 0.0,
+                "grade-blending": 50.0,
+                "grade-global-hue": 0.0,
+                "grade-global-luminance": 0.0,
+                "grade-global-saturation": 0.0,
+                "grade-highlights-hue": 0.0,
+                "grade-highlights-luminance": 0.0,
+                "grade-highlights-saturation": 0.0,
+                "grade-midtones-hue": 0.0,
+                "grade-midtones-luminance": 0.0,
+                "grade-midtones-saturation": 0.0,
+                "grade-shadows-hue": 0.0,
+                "grade-shadows-luminance": 0.0,
+                "grade-shadows-saturation": 0.0
+              }
+            }
           }
         ],
         "developer": false,
         "effects": [
           {
-            "format": 1,
+            "format": 2,
             "id": "luxforge.mixer.hsl",
             "maskable": true,
             "order": 10,
@@ -4316,7 +4687,7 @@
             "stage": "color"
           }
         ],
-        "hint": "Hue, saturation and luminance by range",
+        "hint": "Hue, saturation and luminance by range, and colour grading",
         "id": "luxforge.mixer",
         "layout": "tabs",
         "queries": [],
@@ -5094,7 +5465,7 @@
       "edit.reset-mixer": {
         "mutates": true,
         "mutation": "revision",
-        "notes": "returns the stack's one Colour mixer layer to its neutral payload, keeping its identity and position; a no-op without one and when it is already neutral",
+        "notes": "returns the stack's one Colour mixer layer to its all-default payload, HSL and grading together (Blending 50), keeping its identity and position; a no-op without one and when it is already all default",
         "optional": {
           "mask": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target"
         },
@@ -5617,7 +5988,7 @@
       "edit.set-mixer": {
         "mutates": true,
         "mutation": "revision",
-        "notes": "merges the named mixer fields into the stack's one Colour mixer layer, which the host places after Basic by declared order on the first non-neutral value and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op",
+        "notes": "merges the named mixer fields into the stack's one Colour mixer layer, which the host places after Basic by declared order on the first value away from its default and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op. A grading hue, Blending or Balance with every grading saturation and luminance at 0 is kept as a setting but changes no pixel",
         "optional": {
           "aqua-hue": "moves the Aqua range's hues toward a neighbouring range: +100 carries its centre colour 85% of the way to the next range's centre and -100 85% of the way to the previous one; two neighbours driven at each other share one slider's travel",
           "aqua-luminance": "scales Oklab L within the Aqua range through a compressive response with the near-black rule",
@@ -5625,6 +5996,20 @@
           "blue-hue": "moves the Blue range's hues toward a neighbouring range: +100 carries its centre colour 85% of the way to the next range's centre and -100 85% of the way to the previous one; two neighbours driven at each other share one slider's travel",
           "blue-luminance": "scales Oklab L within the Blue range through a compressive response with the near-black rule",
           "blue-saturation": "scales chroma within the Blue range; -100 is exactly neutral grey for that range's own colour and +100 doubles chroma; every saturation slider at -100 makes the whole photo exactly grey",
+          "grade-balance": "moves the split between the tonal ranges: negative extends Shadows, positive extends Highlights; does not affect Global",
+          "grade-blending": "how much the Shadows, Midtones and Highlights ranges overlap: 0 is the narrowest smooth transition, 100 the widest; does not affect Global",
+          "grade-global-hue": "the direction of the Global tint on the RGB colour wheel (red 0, green 120, blue 240), in degrees; 0 and 360 are the same direction. Kept as a setting at zero saturation, where it changes no pixel",
+          "grade-global-luminance": "brightens or darkens every tone, independent of Blending and Balance through a bounded gamma on Oklab L; works without any tint",
+          "grade-global-saturation": "the strength of the Global tint over every tone, independent of Blending and Balance: 0 adds no colour, 100 the strongest tint; greys are tinted too, and black and white stay neutral unless the luminance treatment moves them",
+          "grade-highlights-hue": "the direction of the Highlights tint on the RGB colour wheel (red 0, green 120, blue 240), in degrees; 0 and 360 are the same direction. Kept as a setting at zero saturation, where it changes no pixel",
+          "grade-highlights-luminance": "brightens or darkens the highlights range through a bounded gamma on Oklab L; works without any tint",
+          "grade-highlights-saturation": "the strength of the Highlights tint over the highlights range: 0 adds no colour, 100 the strongest tint; greys are tinted too, and black and white stay neutral unless the luminance treatment moves them",
+          "grade-midtones-hue": "the direction of the Midtones tint on the RGB colour wheel (red 0, green 120, blue 240), in degrees; 0 and 360 are the same direction. Kept as a setting at zero saturation, where it changes no pixel",
+          "grade-midtones-luminance": "brightens or darkens the midtones range through a bounded gamma on Oklab L; works without any tint",
+          "grade-midtones-saturation": "the strength of the Midtones tint over the midtones range: 0 adds no colour, 100 the strongest tint; greys are tinted too, and black and white stay neutral unless the luminance treatment moves them",
+          "grade-shadows-hue": "the direction of the Shadows tint on the RGB colour wheel (red 0, green 120, blue 240), in degrees; 0 and 360 are the same direction. Kept as a setting at zero saturation, where it changes no pixel",
+          "grade-shadows-luminance": "brightens or darkens the shadows range through a bounded gamma on Oklab L; works without any tint",
+          "grade-shadows-saturation": "the strength of the Shadows tint over the shadows range: 0 adds no colour, 100 the strongest tint; greys are tinted too, and black and white stay neutral unless the luminance treatment moves them",
           "green-hue": "moves the Green range's hues toward a neighbouring range: +100 carries its centre colour 85% of the way to the next range's centre and -100 85% of the way to the previous one; two neighbours driven at each other share one slider's travel",
           "green-luminance": "scales Oklab L within the Green range through a compressive response with the near-black rule",
           "green-saturation": "scales chroma within the Green range; -100 is exactly neutral grey for that range's own colour and +100 doubles chroma; every saturation slider at -100 makes the whole photo exactly grey",
@@ -5952,6 +6337,179 @@
             "min": -100.0,
             "name": "magenta-luminance",
             "notes": "scales Oklab L within the Magenta range through a compressive response with the near-black rule",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null,
+            "zero": 0.0
+          },
+          {
+            "default": 0.0,
+            "kind": "number",
+            "max": 360.0,
+            "min": 0.0,
+            "name": "grade-shadows-hue",
+            "notes": "the direction of the Shadows tint on the RGB colour wheel (red 0, green 120, blue 240), in degrees; 0 and 360 are the same direction. Kept as a setting at zero saturation, where it changes no pixel",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null
+          },
+          {
+            "default": 0.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": 0.0,
+            "name": "grade-shadows-saturation",
+            "notes": "the strength of the Shadows tint over the shadows range: 0 adds no colour, 100 the strongest tint; greys are tinted too, and black and white stay neutral unless the luminance treatment moves them",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null
+          },
+          {
+            "default": 0.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": -100.0,
+            "name": "grade-shadows-luminance",
+            "notes": "brightens or darkens the shadows range through a bounded gamma on Oklab L; works without any tint",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null,
+            "zero": 0.0
+          },
+          {
+            "default": 0.0,
+            "kind": "number",
+            "max": 360.0,
+            "min": 0.0,
+            "name": "grade-midtones-hue",
+            "notes": "the direction of the Midtones tint on the RGB colour wheel (red 0, green 120, blue 240), in degrees; 0 and 360 are the same direction. Kept as a setting at zero saturation, where it changes no pixel",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null
+          },
+          {
+            "default": 0.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": 0.0,
+            "name": "grade-midtones-saturation",
+            "notes": "the strength of the Midtones tint over the midtones range: 0 adds no colour, 100 the strongest tint; greys are tinted too, and black and white stay neutral unless the luminance treatment moves them",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null
+          },
+          {
+            "default": 0.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": -100.0,
+            "name": "grade-midtones-luminance",
+            "notes": "brightens or darkens the midtones range through a bounded gamma on Oklab L; works without any tint",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null,
+            "zero": 0.0
+          },
+          {
+            "default": 0.0,
+            "kind": "number",
+            "max": 360.0,
+            "min": 0.0,
+            "name": "grade-highlights-hue",
+            "notes": "the direction of the Highlights tint on the RGB colour wheel (red 0, green 120, blue 240), in degrees; 0 and 360 are the same direction. Kept as a setting at zero saturation, where it changes no pixel",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null
+          },
+          {
+            "default": 0.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": 0.0,
+            "name": "grade-highlights-saturation",
+            "notes": "the strength of the Highlights tint over the highlights range: 0 adds no colour, 100 the strongest tint; greys are tinted too, and black and white stay neutral unless the luminance treatment moves them",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null
+          },
+          {
+            "default": 0.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": -100.0,
+            "name": "grade-highlights-luminance",
+            "notes": "brightens or darkens the highlights range through a bounded gamma on Oklab L; works without any tint",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null,
+            "zero": 0.0
+          },
+          {
+            "default": 0.0,
+            "kind": "number",
+            "max": 360.0,
+            "min": 0.0,
+            "name": "grade-global-hue",
+            "notes": "the direction of the Global tint on the RGB colour wheel (red 0, green 120, blue 240), in degrees; 0 and 360 are the same direction. Kept as a setting at zero saturation, where it changes no pixel",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null
+          },
+          {
+            "default": 0.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": 0.0,
+            "name": "grade-global-saturation",
+            "notes": "the strength of the Global tint over every tone, independent of Blending and Balance: 0 adds no colour, 100 the strongest tint; greys are tinted too, and black and white stay neutral unless the luminance treatment moves them",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null
+          },
+          {
+            "default": 0.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": -100.0,
+            "name": "grade-global-luminance",
+            "notes": "brightens or darkens every tone, independent of Blending and Balance through a bounded gamma on Oklab L; works without any tint",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null,
+            "zero": 0.0
+          },
+          {
+            "default": 50.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": 0.0,
+            "name": "grade-blending",
+            "notes": "how much the Shadows, Midtones and Highlights ranges overlap: 0 is the narrowest smooth transition, 100 the widest; does not affect Global",
+            "precision": 0,
+            "required": false,
+            "step": 1.0,
+            "unit": null
+          },
+          {
+            "default": 0.0,
+            "kind": "number",
+            "max": 100.0,
+            "min": -100.0,
+            "name": "grade-balance",
+            "notes": "moves the split between the tonal ranges: negative extends Shadows, positive extends Highlights; does not affect Global",
             "precision": 0,
             "required": false,
             "step": 1.0,
