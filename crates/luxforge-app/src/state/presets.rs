@@ -20,6 +20,9 @@ use std::collections::BTreeMap;
 /// temperature to the next.
 const PER_PHOTO_FIELDS: [&str; 2] = ["temperature", "tint"];
 
+/// The analysis step the create form's Auto tone row captures.
+const AUTO_TONE: &str = "auto-tone";
+
 /// The preset library as this desktop last read it. It is catalog data the owner holds; this is
 /// the listing `preset.list` answered, replaced whole by every newer answer.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -119,16 +122,14 @@ pub(crate) struct PresettableGroup {
     pub(crate) fields: Vec<(String, Vec<String>)>,
     /// Checked unless the group carries per-photo white balance.
     pub(crate) default_checked: bool,
+    /// Whether the Auto tone step overwrites a field of this group, as its descriptor declares
+    /// (`analysis.writes`), so the form cannot capture both.
+    pub(crate) auto_overwritten: bool,
 }
 
 impl PresettableGroup {
     pub(crate) fn auto_overwrites(&self) -> bool {
-        self.fields.iter().any(|(action, fields)| {
-            action == "set-basic"
-                && fields
-                    .iter()
-                    .any(|field| luxforge_core::auto_tone::FIELDS.contains(&field.as_str()))
-        })
+        self.auto_overwritten
     }
 
     fn add(&mut self, action: &str, parameter: &str) {
@@ -182,11 +183,19 @@ fn declared_groups(
                 .filter(|group: &PresettableGroup| !group.fields.is_empty()),
         );
     }
+    let writes = crate::state::tools::declared_action(modules, AUTO_TONE)
+        .and_then(|action| action.analysis.as_ref())
+        .map(|analysis| &analysis.writes);
     for group in &mut groups {
         group.default_checked = !group.fields.iter().any(|(_, parameters)| {
             parameters
                 .iter()
                 .any(|parameter| PER_PHOTO_FIELDS.contains(&parameter.as_str()))
+        });
+        group.auto_overwritten = group.fields.iter().any(|(action, parameters)| {
+            writes
+                .and_then(|writes| writes.get(action))
+                .is_some_and(|written| parameters.iter().any(|name| written.contains(name)))
         });
     }
     groups
@@ -208,6 +217,7 @@ fn collect(modules: &[ModuleDescriptor], module: &ModuleDescriptor) -> Vec<Prese
                     label: format!("{} \u{00b7} {}", module.title, group.label),
                     fields: Vec::new(),
                     default_checked: true,
+                    auto_overwritten: false,
                 });
                 groups.push((controls.path(), entries.len() - 1));
                 continue;
@@ -253,6 +263,7 @@ fn collect(modules: &[ModuleDescriptor], module: &ModuleDescriptor) -> Vec<Prese
                         label: module.title.clone(),
                         fields: Vec::new(),
                         default_checked: true,
+                        auto_overwritten: false,
                     });
                     entries.len() - 1
                 }),
@@ -270,6 +281,7 @@ pub(crate) fn capture_fields(groups: &[PresettableGroup], form: &PresetForm) -> 
         label: String::new(),
         fields: Vec::new(),
         default_checked: true,
+        auto_overwritten: false,
     };
     for group in groups.iter().filter(|group| form.is_checked(group)) {
         for (action, parameters) in &group.fields {
@@ -289,7 +301,7 @@ pub(crate) fn capture_fields(groups: &[PresettableGroup], form: &PresetForm) -> 
         })
         .collect();
     if form.auto_tone {
-        fields.insert("auto-tone".into(), Value::Bool(true));
+        fields.insert(AUTO_TONE.into(), Value::Bool(true));
     }
     fields
 }

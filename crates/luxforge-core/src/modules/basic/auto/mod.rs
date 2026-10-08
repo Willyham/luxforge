@@ -1,9 +1,17 @@
-//! Basic's analysis action: metadata planning on the owner, actual compiled units on its worker.
+//! Basic's Auto tone: the analysis action and query, planned on the owner from metadata and
+//! answered on the tile service's worker; the solver ([`solve`]) and the forward model it solves
+//! through ([`forward_model`]). The sample grid it reads belongs to the tile layer
+//! ([`crate::tiles::read_grid`]); nothing of Auto is in the grid's identity.
+mod forward;
+mod solve;
+
+pub use forward::{ForwardModel, forward_model};
+pub use solve::*;
+
 use super::{BASIC_EFFECT, BasicModule, SET_BASIC};
 use crate::{
-    ActionDescriptor, ActionInput, ActionPlan, AnalysisAction, CompileStage, EFFECT_FORMAT, Error,
-    LOOK_EFFECT, Processing, StageContext, ToolModule,
-    auto_tone::{self, AutoToneTargets, AutoToneValues},
+    ActionDescriptor, ActionInput, ActionPlan, AnalysisAction, CompileStage, Error, StageContext,
+    ToolModule,
 };
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
@@ -20,10 +28,7 @@ pub(super) fn descriptor() -> ActionDescriptor {
     descriptor.shortcut = Some(crate::Chord::command('U'));
     descriptor.analysis = Some(AnalysisAction {
         query: ID.into(),
-        writes: BTreeMap::from([(
-            SET_BASIC.into(),
-            auto_tone::FIELDS.map(str::to_owned).into(),
-        )]),
+        writes: BTreeMap::from([(SET_BASIC.into(), FIELDS.map(str::to_owned).into())]),
     });
     descriptor
 }
@@ -59,69 +64,23 @@ pub(super) fn plan(input: &ActionInput, context: &StageContext<'_>) -> Result<Ac
 
 pub(super) fn query(context: &StageContext<'_>) -> Result<Value, Error> {
     global(context)?;
-    let existing = context.own_layer(BASIC_EFFECT)?;
-    let index = existing.map_or_else(
+    let index = context.own_layer(BASIC_EFFECT)?.map_or_else(
         || context.insertion_index_for(BASIC_EFFECT),
         |(index, _)| index,
     );
     let stage = CompileStage::exact(context.stage_before(index)?);
-    let input = context.questions.analysis_before(index)?;
+    let input = context.questions.grid_before(index)?;
     // Each evaluation retains one f64 luminance per point and one small RGB chunk. The grid is
     // accounted by its read and retained under the separate 32 MiB sample cap.
     let _scratch = input
         .context
         .scratch()
         .reserve(input.sample.rgb.len() * size_of::<f64>() + 4096 * 12);
-    let payload = existing
-        .and_then(|(_, layer)| layer.payload.as_object())
-        .cloned()
-        .unwrap_or_default();
-    let basic = BasicModule::new();
-    let look = context
-        .layers
-        .iter()
-        .find(|layer| layer.effect_id == LOOK_EFFECT && layer.mask.is_none());
-    let look_unit = look
-        .map(|layer| {
-            let (module, _) = context
-                .registry
-                .effect(LOOK_EFFECT)
-                .ok_or_else(|| Error::incompatible("Auto tone's Look provider is unavailable"))?;
-            module.compile(LOOK_EFFECT, layer.effect_format, &layer.payload, stage)
-        })
-        .transpose()?;
-    let search = if look.is_some_and(|layer| {
-        layer.payload["amount"]
-            .as_f64()
-            .is_some_and(|amount| amount > 100.)
-    }) {
-        auto_tone::ExposureSearch::Exhaustive
-    } else {
-        auto_tone::ExposureSearch::Monotone
-    };
-    let report = auto_tone::solve_with_exposure_search(
-        &input.sample,
-        AutoToneTargets::default(),
-        |values| {
-            let mut payload = payload.clone();
-            payload.extend(values.fields());
-            let Processing::Color(basic) =
-                basic.compile(BASIC_EFFECT, EFFECT_FORMAT, &Value::Object(payload), stage)?
-            else {
-                return Err(Error::internal("Basic did not compile to colour"));
-            };
-            let mut units = vec![basic];
-            if let Some(Processing::Color(look)) = &look_unit {
-                units.push(look.clone());
-            }
-            Ok(units)
-        },
-        search,
-        &input.cancel,
-    )?;
+    let model = forward_model(context.registry, context.layers, index, stage)?;
+    let report = model.solve(&input.sample, AutoToneTargets::default(), &input.cancel)?;
     let values = report.values;
     let summary = format!(
-        "Auto tone · {}\nExposure {:+.2} EV · Contrast {:+.0}\nHighlights {:+.0} · Shadows {:+.0}\nWhites {:+.0} · Blacks {:+.0}\nVibrance {:+.0} · Saturation {:+.0}\n{} usable samples ({} × {}); {} source-white, {} non-finite\nOutput median {:.3}; highlights {:.3}%, shadows {:.3}%\nBounds: {}",
+        "Auto tone · {}\nExposure {:+.2} EV · Contrast {:+.0}\nHighlights {:+.0} · Shadows {:+.0}\nWhites {:+.0} · Blacks {:+.0}\nVibrance {:+.0} · Saturation {:+.0}\n{} usable samples ({} × {}); {} source-clipped, {} non-finite\nOutput median {:.3}; highlights {:.3}%, shadows {:.3}%\nBounds: {}",
         report.algorithm,
         values.exposure,
         values.contrast,
@@ -134,7 +93,7 @@ pub(super) fn query(context: &StageContext<'_>) -> Result<Value, Error> {
         report.sample.usable,
         report.sample.grid[0],
         report.sample.grid[1],
-        report.sample.source_white,
+        report.sample.source_clipped,
         report.sample.non_finite,
         report.output.p50,
         report.output.highlight_clip * 100.,
@@ -146,28 +105,12 @@ pub(super) fn query(context: &StageContext<'_>) -> Result<Value, Error> {
         }
     );
     let mut answer = serde_json::to_value(report).map_err(|e| Error::internal(e.to_string()))?;
-    let mut omitted: BTreeMap<(String, bool), usize> = BTreeMap::new();
-    for layer in &context.layers[index..] {
-        if layer.mask.is_none()
-            && (layer.effect_id == BASIC_EFFECT || layer.effect_id == LOOK_EFFECT)
-        {
-            continue;
-        }
-        *omitted
-            .entry((layer.effect_id.clone(), layer.mask.is_some()))
-            .or_default() += 1;
-    }
     answer["summary"] = json!(summary);
-    answer["forward_model"] = json!({
-        "used": if look.is_some() { vec![BASIC_EFFECT, LOOK_EFFECT] } else { vec![BASIC_EFFECT] },
-        "omitted": omitted.into_iter().map(|((effect, masked), count)| json!({"effect":effect,"masked":masked,"count":count})).collect::<Vec<_>>()
-    });
+    answer["forward_model"] = model.explanation();
     answer["renderer"] = serde_json::to_value(crate::Renderer::from(&input.answered))
         .map_err(|e| Error::internal(e.to_string()))?;
-    answer["source_white_detection"] = json!(match context.kind {
-        crate::SourceTag::Jpeg => "jpeg-code-255",
-        crate::SourceTag::Raw => "sensor-mask-unavailable",
-    });
+    answer["source_clip_detection"] =
+        serde_json::to_value(input.clipping).map_err(|e| Error::internal(e.to_string()))?;
     if serde_json::to_vec(&answer)
         .map_err(|e| Error::internal(e.to_string()))?
         .len()

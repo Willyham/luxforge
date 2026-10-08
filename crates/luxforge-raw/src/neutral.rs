@@ -20,7 +20,7 @@ const PATCH_SIDE: u32 = PATCH_RADIUS * 2 + 1;
 /// sampling is requested.
 const DARK_THRESHOLD: f64 = 0.01;
 /// Samples at or above this normalised value are clipped or too close to clipping.
-const CLIPPED_THRESHOLD: f64 = 0.995;
+pub(crate) const CLIPPED_THRESHOLD: f64 = 0.995;
 
 fn unusable(message: impl Into<String>) -> RawError {
     RawError::NeutralPatch(message.into())
@@ -29,7 +29,7 @@ fn unusable(message: impl Into<String>) -> RawError {
 /// The retained integer mosaic and the calibration that interprets one sensor sample. CFA and
 /// black-repeat coordinates are anchored at sensor `(0, 0)`.
 #[derive(Clone, Copy)]
-struct Mosaic<'a> {
+pub(crate) struct Mosaic<'a> {
     samples: &'a [u16],
     corrections: &'a [MosaicCorrection],
     width: u32,
@@ -39,8 +39,72 @@ struct Mosaic<'a> {
     /// Red, green and blue are 0, 1 and 2.
     cfa: &'a [u8],
     /// The per-site black levels development subtracts.
-    black: BlackLevels<'a>,
+    pub(crate) black: BlackLevels<'a>,
     sensor_white: f32,
+}
+
+impl<'a> Mosaic<'a> {
+    /// The retained mosaic of `raw` and the calibration development reads it with.
+    pub(crate) fn of(raw: &'a RawSource) -> Self {
+        let metadata = &raw.metadata;
+        Self {
+            samples: &raw.mosaic,
+            corrections: &raw.mosaic_corrections,
+            width: metadata.sensor_width,
+            height: metadata.sensor_height,
+            cfa_width: metadata.cfa_width,
+            cfa_height: metadata.cfa_height,
+            cfa: &metadata.cfa,
+            black: BlackLevels::of(metadata),
+            sensor_white: metadata.sensor_white,
+        }
+    }
+
+    /// The sample development reads at sensor site `(x, y)`: its repair, or the retained value.
+    pub(crate) fn sample(&self, x: u32, y: u32) -> u16 {
+        let index = (y as usize) * (self.width as usize) + x as usize;
+        match self
+            .corrections
+            .binary_search_by_key(&(index as u32), |p| p.index)
+        {
+            Ok(repair) => self.corrections[repair].value,
+            Err(_) => self.samples[index],
+        }
+    }
+}
+
+impl RawSource {
+    /// The corrected-sensor point under an upright default-crop pixel, through the default crop
+    /// and the EXIF orientation: the mapping the developed planes' view makes. `None` outside
+    /// the view.
+    pub(crate) fn upright_to_corrected(
+        &self,
+        x: u32,
+        y: u32,
+    ) -> Result<Option<(u32, u32)>, RawError> {
+        let metadata = &self.metadata;
+        let crop = metadata.default_crop;
+        let (out_w, out_h) = if (5..=8).contains(&metadata.exif_orientation) {
+            (crop.height, crop.width)
+        } else {
+            (crop.width, crop.height)
+        };
+        if x >= out_w || y >= out_h {
+            return Ok(None);
+        }
+        let (sx, sy) = match metadata.exif_orientation {
+            1 => (x, y),
+            2 => (crop.width - 1 - x, y),
+            3 => (crop.width - 1 - x, crop.height - 1 - y),
+            4 => (x, crop.height - 1 - y),
+            5 => (y, x),
+            6 => (y, crop.height - 1 - x),
+            7 => (crop.width - 1 - y, crop.height - 1 - x),
+            8 => (crop.width - 1 - y, x),
+            _ => return Err(RawError::InvalidInput("orientation")),
+        };
+        Ok(Some((crop.x + sx, crop.y + sy)))
+    }
 }
 
 impl RawSource {
@@ -59,41 +123,13 @@ impl RawSource {
                 "neutral picker is unavailable for monochrome originals",
             ));
         }
-        let crop = metadata.default_crop;
-        let (out_w, out_h) = if (5..=8).contains(&metadata.exif_orientation) {
-            (crop.height, crop.width)
-        } else {
-            (crop.width, crop.height)
-        };
-        if x >= out_w || y >= out_h {
-            return Err(unusable("neutral picker point outside upright RAW image"));
-        }
-        let (sx, sy) = match metadata.exif_orientation {
-            1 => (x, y),
-            2 => (crop.width - 1 - x, y),
-            3 => (crop.width - 1 - x, crop.height - 1 - y),
-            4 => (x, crop.height - 1 - y),
-            5 => (y, x),
-            6 => (y, crop.height - 1 - x),
-            7 => (crop.width - 1 - y, crop.height - 1 - x),
-            8 => (crop.width - 1 - y, x),
-            _ => return Err(RawError::InvalidInput("orientation")),
-        };
+        let (corrected_x, corrected_y) = self
+            .upright_to_corrected(x, y)?
+            .ok_or_else(|| unusable("neutral picker point outside upright RAW image"))?;
         if metadata.layout == crate::RawLayout::LinearRgb {
-            return linear_neutral(self, crop.x + sx, crop.y + sy);
+            return linear_neutral(self, corrected_x, corrected_y);
         }
-        let mosaic = Mosaic {
-            samples: &self.mosaic,
-            corrections: &self.mosaic_corrections,
-            width: metadata.sensor_width,
-            height: metadata.sensor_height,
-            cfa_width: metadata.cfa_width,
-            cfa_height: metadata.cfa_height,
-            cfa: &metadata.cfa,
-            black: BlackLevels::of(metadata),
-            sensor_white: metadata.sensor_white,
-        };
-        let (corrected_x, corrected_y) = (crop.x + sx, crop.y + sy);
+        let mosaic = Mosaic::of(self);
         if self.dng_correction.is_some() {
             neutral_gains_with_sensor(
                 &mosaic,
@@ -183,16 +219,7 @@ fn neutral_gains_with_sensor(
             let (mapped_x, mapped_y) = map_at(x, y, channel)?;
             let (sample_x, sample_y) = nearest_site(source, mapped_x, mapped_y, channel)?;
             let black = f64::from(source.black.at(sample_x as usize, sample_y as usize));
-            let sample_index = (sample_y as usize) * (source.width as usize) + sample_x as usize;
-            let sample = f64::from(
-                match source
-                    .corrections
-                    .binary_search_by_key(&(sample_index as u32), |p| p.index)
-                {
-                    Ok(index) => source.corrections[index].value,
-                    Err(_) => source.samples[sample_index],
-                },
-            );
+            let sample = f64::from(source.sample(sample_x, sample_y));
             let denominator = f64::from(source.sensor_white) - black;
             let normalized = (sample - black) / denominator;
             if !black.is_finite()

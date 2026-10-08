@@ -584,6 +584,21 @@ impl ToolModule for LookModule {
         })
     }
 
+    /// A look's tone knots never fall, so at an amount up to 100, a blend of the identity and that
+    /// curve with weights that do not go negative, it never lowers luminance as its input rises.
+    /// Past 100 the amount extrapolates the curve away from the identity, which can.
+    fn monotonic_luminance(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &Value,
+    ) -> Result<bool, Error> {
+        Ok(match read(effect_id, format, payload)? {
+            Payload::Neutral => true,
+            Payload::Standard(look) => look.amount <= 100.0,
+        })
+    }
+
     /// The Neutral look and amount 0 compile to no units, the identity path. Every other look is
     /// one unit. In the GPU shape (`CompileStage::gpu_shape`) every look is that one unit, a
     /// Neutral look or amount 0 the unit at amount 0, which is the identity, so an Amount drag to

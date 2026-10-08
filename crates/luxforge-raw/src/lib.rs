@@ -12,6 +12,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+mod clip;
 mod color;
 #[cfg(test)]
 mod corpus_tests;

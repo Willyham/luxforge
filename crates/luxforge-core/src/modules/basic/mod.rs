@@ -19,7 +19,7 @@
 //! The module also answers one read-only query, `neutral-sample`: the neutral picker, which reads a
 //! bounded patch of the stage this layer receives and solves the white balance that makes it
 //! neutral. It commits nothing.
-mod auto;
+pub mod auto;
 mod colour;
 mod exposure;
 mod tone;

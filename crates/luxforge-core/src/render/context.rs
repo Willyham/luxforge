@@ -24,7 +24,7 @@ pub struct RenderContext(Arc<Shared>);
 struct Shared {
     scratch: ScratchBudget,
     spatial: SpatialBudget,
-    analysis: crate::tiles::analysis::SampleCache,
+    grids: crate::tiles::grid::GridCache,
     /// How many stacks [`super::render`] compiled in this context, for the tests that prove a
     /// preview job compiles once per stage it renders at.
     #[cfg(test)]
@@ -65,7 +65,7 @@ impl RenderContext {
         Self(Arc::new(Shared {
             scratch: ScratchBudget::new(scratch),
             spatial: SpatialBudget::new(spatial),
-            analysis: crate::tiles::analysis::SampleCache::default(),
+            grids: crate::tiles::grid::GridCache::default(),
             #[cfg(test)]
             compiles: AtomicU64::new(0),
             #[cfg(test)]
@@ -82,14 +82,15 @@ impl RenderContext {
         &self.0.scratch
     }
 
-    /// Release retained analysis grids when the desktop changes photo or leaves Develop.
-    /// An in-flight read of a previous photo cannot repopulate the cleared cache.
-    pub fn retain_analysis_for(&self, asset: Option<&crate::AssetId>) {
-        self.0.analysis.select(asset);
+    /// Drop the retained sample grids of a photograph the catalog no longer holds; a read of it
+    /// already under way cannot put its grid back.
+    pub fn release_grids(&self, asset: &crate::AssetId) {
+        self.0.grids.release(asset);
     }
 
-    pub(crate) fn analysis_samples(&self) -> &crate::tiles::analysis::SampleCache {
-        &self.0.analysis
+    /// The bounded cache of sample grids every client of this context shares.
+    pub(crate) fn sample_grids(&self) -> &crate::tiles::grid::GridCache {
+        &self.0.grids
     }
 
     /// The spatial budget: the working sets of spatial tiles.

@@ -2277,12 +2277,9 @@ fn auto_tone_gpu_grid_and_values_agree_with_the_reference() {
                 let held = evaluation.clone();
                 let (sender, receiver) = mpsc::sync_channel(1);
                 service.submit(TileCall::caller(client, Cancel::new(), move |reads, cancel| {
-                let sampled = luxforge_core::tiles::read_analysis(&held, prefix, reads, cancel)?;
-                let basic = held.registry().module("luxforge.basic").unwrap();
-                let report = luxforge_core::auto_tone::solve(&sampled.sample, Default::default(), |values| {
-                    let luxforge_core::Processing::Color(unit) = basic.compile(BASIC_EFFECT, luxforge_core::EFFECT_FORMAT, &Value::Object(values.fields()), luxforge_core::CompileStage::exact(luxforge_core::Stage { width: 32, height: 32 }))? else { panic!("Basic is colour"); };
-                    Ok(vec![unit])
-                }, cancel)?;
+                let sampled = luxforge_core::tiles::read_grid(&held, prefix, reads, cancel)?;
+                let model = luxforge_core::auto_tone::forward_model(held.registry(), &held.recipe().layers, prefix, luxforge_core::CompileStage::exact(luxforge_core::Stage { width: 32, height: 32 }))?;
+                let report = model.solve(&sampled.sample, Default::default(), cancel)?;
                 Ok(json!({"renderer": sampled.answered.record, "rgb": sampled.sample.rgb, "values": report.values}))
             }, move |answer| { let _ = sender.send(answer); }));
                 receiver.recv_timeout(HANG).unwrap().unwrap()

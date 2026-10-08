@@ -1,15 +1,16 @@
 //! Deterministic Auto tone statistics and solver. No image IO, catalog or renderer ownership.
-//! Callers supply the actual compiled Basic and Look units and account the bounded scratch.
+//! Callers supply the actual compiled units ([`super::ForwardModel`]) and account the bounded
+//! scratch.
 use crate::{
-    Cancel, ColorOperation, Error,
+    AnalysisRefusal, Cancel, ColorOperation, Error,
     colour::{oklab::to_oklab, srgb::encode},
+    tiles::SampleGrid,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 pub const ALGORITHM: &str = "auto-tone/1";
-pub const MAX_SIDE: u32 = 1024;
-pub const MAX_SAMPLES: usize = MAX_SIDE as usize * MAX_SIDE as usize;
+/// The eight Basic fields Auto sets, which Basic's descriptor declares as what it writes.
 pub const FIELDS: [&str; 8] = [
     "exposure",
     "contrast",
@@ -121,34 +122,6 @@ impl AutoToneTargets {
     }
 }
 
-/// A bounded uniform grid, retaining linear input values and source-white flags independently.
-/// Non-finite values stay countable but never enter a numerical reduction.
-#[derive(Clone, Debug)]
-pub struct AnalysisSample {
-    pub grid: [u32; 2],
-    pub rgb: Vec<[f32; 3]>,
-    pub source_white: Vec<bool>,
-}
-
-impl AnalysisSample {
-    pub fn validate(&self) -> Result<(), Error> {
-        let count = self.rgb.len();
-        if self.grid.contains(&0)
-            || self.grid.iter().any(|&n| n > MAX_SIDE)
-            || count > (self.grid[0] as usize * self.grid[1] as usize)
-            || count > MAX_SAMPLES
-            || count != self.source_white.len()
-        {
-            return Err(Error::validation("invalid Auto tone analysis grid"));
-        }
-        Ok(())
-    }
-
-    pub fn bytes(&self) -> usize {
-        self.rgb.capacity() * size_of::<[f32; 3]>() + self.source_white.capacity()
-    }
-}
-
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Statistics {
     pub p01: f64,
@@ -169,7 +142,8 @@ pub struct SampleReport {
     pub grid: [u32; 2],
     pub count: usize,
     pub usable: usize,
-    pub source_white: usize,
+    /// Points whose source was already clipped: in the statistics, out of the clipping fractions.
+    pub source_clipped: usize,
     pub non_finite: usize,
 }
 
@@ -189,11 +163,7 @@ pub struct AutoToneReport {
 }
 
 fn refusal(reason: &str, message: &str) -> Error {
-    let mut error = Error::validation(format!("Auto tone: {message}"));
-    error.data = Some(Box::new(
-        json!({"analysis_refusal": reason, "auto_tone": {"reason": reason}}),
-    ));
-    error
+    AnalysisRefusal::new(reason, format!("Auto tone: {message}")).into()
 }
 
 fn luminance(rgb: [f32; 3]) -> f64 {
@@ -211,7 +181,7 @@ fn percentile(values: &mut [f64], fraction: f64) -> f64 {
 /// Statistics in scan order and f64, independent of the renderer's or worker pool's thread count.
 /// `linear_input` selects the refusal statistics; output statistics use clamped encoded channels.
 fn statistics(
-    sample: &AnalysisSample,
+    sample: &SampleGrid,
     operations: &[ColorOperation],
     linear_input: bool,
     chroma: bool,
@@ -258,7 +228,7 @@ fn statistics(
             bright += usize::from(y > 0.8);
             dark += usize::from(y < 0.2);
             near_white += usize::from(y >= 0.98);
-            if sample.source_white[chunk_index * CHUNK + offset] {
+            if sample.source_clipped[chunk_index * CHUNK + offset] {
                 continue;
             }
             included += 1;
@@ -295,7 +265,7 @@ fn statistics(
 }
 
 /// Statistics for the fitting rig's rendered samples, through the same output boundary.
-pub fn picture_statistics(sample: &AnalysisSample, cancel: &Cancel) -> Result<Statistics, Error> {
+pub fn picture_statistics(sample: &SampleGrid, cancel: &Cancel) -> Result<Statistics, Error> {
     sample.validate()?;
     statistics(sample, &[], false, true, cancel)
 }
@@ -318,8 +288,10 @@ fn last_true(
     Ok(low)
 }
 
-/// An extrapolated Look can reverse luminance as Exposure rises. Such a model needs the whole
-/// committed grid; the ordinary Basic/Look model permits the monotone search.
+/// A layer after Basic whose luminance response is not monotonic, such as an extrapolated Look,
+/// can reverse luminance as Exposure rises. Such a model needs the whole committed grid; a model
+/// whose every later unit declares a monotonic response permits the monotone search
+/// ([`crate::ToolModule::monotonic_luminance`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ExposureSearch {
@@ -327,10 +299,11 @@ pub enum ExposureSearch {
     Exhaustive,
 }
 
-/// Solve through the modules' compiled pointwise units. The compile closure preserves Basic's
-/// white balance but replaces all eight Auto fields; it appends only the global Look.
+/// Solve through the modules' compiled pointwise units with the monotone Exposure search. The
+/// compile closure preserves Basic's white balance but replaces all eight Auto fields, as
+/// [`super::ForwardModel::compile`] does.
 pub fn solve(
-    sample: &AnalysisSample,
+    sample: &SampleGrid,
     targets: AutoToneTargets,
     compile: impl Fn(AutoToneValues) -> Result<Vec<ColorOperation>, Error>,
     cancel: &Cancel,
@@ -338,9 +311,9 @@ pub fn solve(
     solve_with_exposure_search(sample, targets, compile, ExposureSearch::Monotone, cancel)
 }
 
-/// Solve with an explicit Exposure search contract; extrapolated Looks use `Exhaustive`.
+/// Solve with an explicit Exposure search contract, which [`super::ForwardModel`] chooses.
 pub fn solve_with_exposure_search(
-    sample: &AnalysisSample,
+    sample: &SampleGrid,
     targets: AutoToneTargets,
     compile: impl Fn(AutoToneValues) -> Result<Vec<ColorOperation>, Error>,
     search: ExposureSearch,
@@ -480,7 +453,7 @@ pub fn solve_with_exposure_search(
             grid: sample.grid,
             count: sample.rgb.len(),
             usable,
-            source_white: sample.source_white.iter().filter(|&&flag| flag).count(),
+            source_clipped: sample.source_clipped.iter().filter(|&&flag| flag).count(),
             non_finite: sample.rgb.len() - usable,
         },
     })

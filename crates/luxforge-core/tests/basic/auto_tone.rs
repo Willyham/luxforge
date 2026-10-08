@@ -379,7 +379,8 @@ fn auto_tone_raw_preset_uses_the_new_white_balance_development() {
     .unwrap();
     let white_balanced = entry(&owner, client, &asset);
     let report = prepared(&owner, client, "query.auto-tone", json!({"asset_id":asset})).unwrap();
-    assert_eq!(report["source_white_detection"], "sensor-mask-unavailable");
+    assert_eq!(report["source_clip_detection"], "raw-sensor-white");
+    eprintln!("RAW_AUTO_SAMPLE {}", report["sample"]);
     prepared(
         &owner,
         client,
