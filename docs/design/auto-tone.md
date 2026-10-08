@@ -161,7 +161,7 @@ The constants above are the starting targets. They live in one versioned `AutoTo
 
 **The settings set.**
 
-- A settings set may name the analysis step `"auto-tone": {}`, the one key whose value may be empty. A registry answer beside `patch_action` declares which actions are analysis steps; today that is only Basic's `auto-tone`.
+- A settings set may name the analysis step `"auto-tone": {}`, the one key whose value may be empty. An action declares itself an analysis step (`ActionDescriptor::analysis`), and `ModuleRegistry::settings_action` resolves a settings key through it or, for any other action, through `patch_action`; today the only analysis step is Basic's `auto-tone`.
 - **Order:** the step runs after every field-patch step, whatever the key order, and analyses the intermediate stack those steps produced. A preset's white balance, Detail or Look therefore informs Auto, and the result equals applying the rest of the preset and then Auto.
 - **Planning:** a composite with an analysis step plans through the same deferred read as the single action. Other composites keep planning without rasterizing anything.
 - **Store-time refusal:** a set naming both `auto-tone` and any of its eight fields under `set-basic` is refused when stored, because Auto would overwrite them. Lightroom refuses the same combination.
