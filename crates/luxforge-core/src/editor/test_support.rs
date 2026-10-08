@@ -181,6 +181,7 @@ impl ShrinkModule {
             notes: "test".into(),
             patch: false,
             preset: true,
+            analysis: None,
             parameters: vec![extent("width"), extent("height")],
         };
         let effect = |id: &str| EffectDescriptor {

@@ -1,10 +1,10 @@
-//! The presets module: applies a settings set, named field-patch actions and the fields each one
-//! sets, as one history entry labelled `Preset: <name>`.
+//! The presets module: applies named field patches and per-photo analysis steps as one history
+//! entry labelled `Preset: <name>`.
 //!
 //! It declares no effects, so it never owns a layer and writes nothing itself. Its one action plans
-//! a [`ActionPlan::Compose`] of the other modules' field patches; the host runs each step through
-//! the registry against the stack the steps before it produced and commits the result once. A
-//! field the set does not name keeps its value, because each step is a patch.
+//! a [`ActionPlan::Compose`] of the other modules' settings; the host runs patches first, then
+//! analysis steps, against the intermediate stack and commits once. Every field those steps do
+//! not write keeps its value.
 //!
 //! The request carries the settings rather than a library reference, so the entry, request
 //! deduplication and a copied request each describe exactly what was applied, and the module needs
@@ -59,8 +59,10 @@ impl PresetsModule {
                         ParameterDescriptor::settings(PRESET_SETTINGS)
                             .required(true)
                             .notes(
-                                "the settings set to apply: field-patch action identities, each \
-                                 with a non-empty object of that action's fields",
+                                "the settings set to apply: field-patch action identities with \
+                                 non-empty field objects, or declared analysis actions with empty \
+                                 objects (auto-tone: {}); an analysis step and the fields it \
+                                 overwrites cannot both be included",
                             ),
                         ParameterDescriptor::string(PRESET_NAME, MAX_PRESET_NAME)
                             .required(true)
@@ -75,15 +77,17 @@ impl PresetsModule {
                         "Apply preset",
                         "applies a settings set as one history entry labelled `Preset: \
                              <name>`. Each key of settings names a field-patch action and its \
-                             value the fields to send it; the host runs the actions in key order, \
-                             each against the stack the ones before it produced, exactly as it \
+                             fields, or a declared analysis action and an empty object. The host \
+                             runs patches in key order, then analysis steps such as Auto tone \
+                             separately for this photo, against the intermediate stack, as it \
                              would run that action alone, and commits the result once. Fields the \
                              set does not name keep their values, and a set that changes nothing \
                              is a reported no-op. A step whose module does not apply to the \
                              photo's kind, and a field another control supersedes on the photo's \
                              global target, are skipped and listed under skipped in the result. \
-                             An unknown, non-patch or unavailable action, or a field its action \
-                             refuses, refuses the whole preset and writes nothing.",
+                             Auto without usable tonal range is also skipped. An unknown, \
+                             non-presettable or unavailable action, an overlapping analysis/field \
+                             set or another refused field refuses the whole preset and writes nothing.",
                     )
                 }],
                 queries: Vec::new(),
@@ -133,7 +137,7 @@ impl ToolModule for PresetsModule {
     /// Presence, the mixer and the vignette each update their own module's one layer, which the
     /// host places by a stage and order none of the others shares, so for them the result does not
     /// depend on the order of the steps. Planning reads the request only: the host plans each step.
-    fn plan(&self, input: &ActionInput, _: &StageContext<'_>) -> Result<ActionPlan, Error> {
+    fn plan(&self, input: &ActionInput, context: &StageContext<'_>) -> Result<ActionPlan, Error> {
         let settings = input
             .parameters
             .get(PRESET_SETTINGS)
@@ -142,6 +146,7 @@ impl ToolModule for PresetsModule {
         if settings.is_empty() {
             return Err(Error::validation("preset settings name no action"));
         }
+        crate::presets::validate_composite(context.registry, settings)?;
         settings
             .iter()
             .map(|(action_id, fields)| {

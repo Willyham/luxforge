@@ -31,6 +31,7 @@ fn one_query_identity_resolves_to_one_provider_across_the_registry() {
             notes: "test".into(),
             patch: false,
             preset: true,
+            analysis: None,
             parameters: Vec::new(),
         }];
         TestModule::from_descriptor(descriptor)
@@ -90,7 +91,15 @@ fn queries_and_the_sample_apply_canvas_survive_a_json_round_trip() {
         .0
         .descriptor();
     let encoded = serde_json::to_value(basic).expect("a serializable descriptor");
-    assert_eq!(encoded["queries"][0]["id"], json!("neutral-sample"));
+    assert_eq!(
+        encoded["queries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|query| query["id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["auto-tone", "neutral-sample"]
+    );
     assert_eq!(
         encoded["canvas"],
         json!({

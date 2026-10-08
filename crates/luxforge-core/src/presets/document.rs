@@ -76,12 +76,21 @@ pub(super) fn read(
         let Value::Object(fields) = fields else {
             continue;
         };
+        if fields.is_empty() {
+            mapped.push(MappedSetting {
+                setting: action.clone(),
+                value: "{}".into(),
+                action: action.clone(),
+                field: None,
+                applied: Value::Object(Map::new()),
+            });
+        }
         for (field, applied) in fields {
             mapped.push(MappedSetting {
                 setting: format!("{action}.{field}"),
                 value: bounded(&applied.to_string()),
                 action: action.clone(),
-                field: field.clone(),
+                field: Some(field.clone()),
                 applied: applied.clone(),
             });
         }

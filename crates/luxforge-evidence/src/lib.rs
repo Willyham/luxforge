@@ -456,7 +456,11 @@ impl Step {
                 let mut characters = key.chars();
                 let single = characters.next().is_some_and(char::is_alphanumeric)
                     && characters.next().is_none();
-                if single || key == KEY_ESCAPE || matches!(key.as_str(), "\\" | "|") {
+                if single
+                    || key == KEY_ESCAPE
+                    || key == "Command+U"
+                    || matches!(key.as_str(), "\\" | "|")
+                {
                     Ok(())
                 } else {
                     Err(format!(
@@ -773,10 +777,24 @@ impl DoubleClickStep {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "gesture", rename_all = "lowercase", deny_unknown_fields)]
 pub enum ControlsStep {
+    Action {
+        action: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        background: bool,
+    },
+    AnalysisReady {
+        action: String,
+    },
     #[serde(rename = "query-choice-search")]
-    QueryChoiceSearch { action: String, text: String },
+    QueryChoiceSearch {
+        action: String,
+        text: String,
+    },
     #[serde(rename = "query-choice-page")]
-    QueryChoicePage { action: String, page: u32 },
+    QueryChoicePage {
+        action: String,
+        page: u32,
+    },
     #[serde(rename = "query-choice-shared")]
     QueryChoiceShared {
         action: String,
@@ -784,18 +802,29 @@ pub enum ControlsStep {
         text: String,
     },
     #[serde(rename = "query-choice-select-first")]
-    QueryChoiceSelectFirst { action: String },
+    QueryChoiceSelectFirst {
+        action: String,
+    },
     #[serde(rename = "query-choice-retry")]
-    QueryChoiceRetry { action: String },
+    QueryChoiceRetry {
+        action: String,
+    },
     /// Press the suggestion card's Apply.
     #[serde(rename = "query-choice-apply")]
-    QueryChoiceApply { action: String },
+    QueryChoiceApply {
+        action: String,
+    },
     /// Open or close Change, which reveals the search under a card.
     #[serde(rename = "query-choice-change")]
-    QueryChoiceChange { action: String, open: bool },
+    QueryChoiceChange {
+        action: String,
+        open: bool,
+    },
     /// Press the report link: the run records the page and opens no browser.
     #[serde(rename = "query-choice-report")]
-    QueryChoiceReport { action: String },
+    QueryChoiceReport {
+        action: String,
+    },
     Slider {
         action: String,
         parameter: String,
@@ -813,6 +842,9 @@ pub enum ControlsStep {
 impl ControlsStep {
     fn validate(&self) -> Result<(), String> {
         match self {
+            Self::Action { action, .. } | Self::AnalysisReady { action } => {
+                text(action, "controls action")
+            }
             Self::QueryChoiceSearch {
                 action,
                 text: search,
@@ -1498,6 +1530,8 @@ impl ThemePick {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PresetCreateStep {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub auto_tone: bool,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,

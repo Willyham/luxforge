@@ -555,6 +555,20 @@ pub static SCENARIOS: &[Scenario] = &[
         own: None,
     },
     Scenario {
+        name: "auto-tone",
+        about: "Auto tone through its button, shortcut, query, history and per-photo preset form",
+        launches: &[LaunchSpec {
+            plan: auto_tone_smoke::plan,
+            deadline: Some(Duration::from_secs(310)),
+            ..APP
+        }],
+        verify: auto_tone_smoke::verify,
+        source: Source::Default(&[ORIENTATION_1]),
+        window: Some(PANELLED),
+        note: None,
+        own: None,
+    },
+    Scenario {
         name: "basic",
         about: "The Exposure slider's whole gesture: draft, commit, typed value, undo, reset and an agent's conflicting commit",
         launches: &[LaunchSpec {
@@ -1956,6 +1970,7 @@ mod tests {
             [
                 "visibility-monitoring",
                 "raw-detail",
+                "auto-tone",
                 "performance",
                 "filmstrip",
                 "raw-panel",

@@ -24,6 +24,7 @@ pub struct RenderContext(Arc<Shared>);
 struct Shared {
     scratch: ScratchBudget,
     spatial: SpatialBudget,
+    analysis: crate::tiles::analysis::SampleCache,
     /// How many stacks [`super::render`] compiled in this context, for the tests that prove a
     /// preview job compiles once per stage it renders at.
     #[cfg(test)]
@@ -64,6 +65,7 @@ impl RenderContext {
         Self(Arc::new(Shared {
             scratch: ScratchBudget::new(scratch),
             spatial: SpatialBudget::new(spatial),
+            analysis: crate::tiles::analysis::SampleCache::default(),
             #[cfg(test)]
             compiles: AtomicU64::new(0),
             #[cfg(test)]
@@ -78,6 +80,16 @@ impl RenderContext {
     /// The colour scratch budget: the transient float buffers a colour run streams through.
     pub fn scratch(&self) -> &ScratchBudget {
         &self.0.scratch
+    }
+
+    /// Release retained analysis grids when the desktop changes photo or leaves Develop.
+    /// An in-flight read of a previous photo cannot repopulate the cleared cache.
+    pub fn retain_analysis_for(&self, asset: Option<&crate::AssetId>) {
+        self.0.analysis.select(asset);
+    }
+
+    pub(crate) fn analysis_samples(&self) -> &crate::tiles::analysis::SampleCache {
+        &self.0.analysis
     }
 
     /// The spatial budget: the working sets of spatial tiles.

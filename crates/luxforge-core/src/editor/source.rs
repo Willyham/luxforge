@@ -811,6 +811,38 @@ impl EditorService {
             .map(|_| state))
     }
 
+    /// Metadata-only stale-read guard, also for a preset's uncommitted RAW development. Both
+    /// retained developments are immutable and valid while the original's signature matches.
+    pub(super) fn holds_verified_source(
+        &self,
+        asset: &AssetRecord,
+        wanted: &crate::ProxyIdentity,
+    ) -> Result<bool, Error> {
+        let signature = self.original_signature(asset)?;
+        let cache = self.source_cache.borrow();
+        let Some(cached) = cache
+            .as_ref()
+            .filter(|cached| cached.asset_id == asset.id && cached.signature == signature)
+        else {
+            return Ok(false);
+        };
+        Ok(match &cached.source {
+            PreparedSource::Jpeg(image) => {
+                crate::PreviewSource::Jpeg(image.clone()).identity() == *wanted
+            }
+            PreparedSource::Raw(raw) => {
+                raw.linear.as_ref().is_some_and(|image| {
+                    crate::PreviewSource::Raw {
+                        image: image.clone(),
+                        settings: crate::LinearSettings::default(),
+                    }
+                    .identity()
+                        == *wanted
+                }) || cached.second.matches_identity(wanted)
+            }
+        })
+    }
+
     /// What preparing exactly what `needs` names takes — the asset's original, its RAW development
     /// at the named gains and the named artifacts — and nothing re-derived from the request that
     /// was refused. An original the cache does not hold is prepared and developed at the entry's

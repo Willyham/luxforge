@@ -55,7 +55,7 @@ fn mapped(setting: &str, value: &str, action: &str, field: &str, applied: Value)
         setting: setting.into(),
         value: value.into(),
         action: action.into(),
-        field: field.into(),
+        field: Some(field.into()),
         applied,
     }
 }
@@ -1708,7 +1708,7 @@ fn validate_settings_accepts_presettable_fields_and_refuses_everything_else() {
         (
             json!({"set-basic": 1}),
             ErrorKind::Validation,
-            "parameter settings must give action set-basic a non-empty object of fields",
+            "parameter settings must give action set-basic an object of fields",
         ),
     ] {
         let error = validate_settings(&registry, &object(settings.clone())).unwrap_err();
@@ -1750,6 +1750,7 @@ fn validate_settings_refuses_an_unavailable_provider() {
             notes: "test".into(),
             patch: true,
             preset: true,
+            analysis: None,
             parameters: vec![parameter],
         }],
         queries: vec![],
@@ -2197,4 +2198,68 @@ fn measure_preset_parse_at_the_size_limit() {
             ms.max,
         );
     }
+}
+
+#[test]
+fn auto_tone_import_maps_analysis_and_reports_the_overridden_eight_fields() {
+    let keys = [
+        "Exposure2012",
+        "Contrast2012",
+        "Highlights2012",
+        "Shadows2012",
+        "Whites2012",
+        "Blacks2012",
+        "Vibrance",
+        "Saturation",
+    ];
+    let fields = keys.map(|key| format!("{key} = 12")).join(", ");
+    let template = settings_template(&format!(
+        "ProcessVersion = \"15.4\", AutoTone = true, IncrementalTemperature = 7, {fields}"
+    ));
+    let xmp_fields = keys.map(|key| format!("crs:{key}=\"12\"")).join(" ");
+    let xmp = format!(
+        r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:ProcessVersion="15.4" crs:AutoTone="True" crs:IncrementalTemperature="7" {xmp_fields}/></rdf:RDF></x:xmpmeta>"#
+    );
+    for content in [&template, &xmp] {
+        let preset = parse_preset(content, None, &registry()).unwrap();
+        assert_eq!(
+            preset.settings,
+            object(json!({"auto-tone":{},"set-basic":{"temperature":7}}))
+        );
+        assert_eq!(preset.report.mapped.len(), 2);
+        assert_eq!(preset.report.neutral.len(), 8);
+        assert!(preset.report.neutral.iter().all(|row| {
+            row.reason
+                .as_deref()
+                .unwrap()
+                .contains("overridden by Auto tone")
+        }));
+        let analysis = preset
+            .report
+            .mapped
+            .iter()
+            .find(|row| row.setting == "AutoTone")
+            .unwrap();
+        assert_eq!(analysis.field, None);
+        assert_eq!(analysis.applied, json!({}));
+        assert!(preset.report.refused.is_empty());
+    }
+    let disabled = inspect_preset(
+        &settings_template("ProcessVersion = \"15.4\", AutoTone = false, Exposure2012 = 1"),
+        None,
+        &registry(),
+    )
+    .unwrap();
+    assert_eq!(
+        disabled.settings,
+        object(json!({"set-basic":{"exposure":1}}))
+    );
+    assert_eq!(disabled.report.neutral[0].setting, "AutoTone");
+    let own =
+        json!({"format":"luxforge.preset","version":1,"name":"Auto","settings":{"auto-tone":{}}})
+            .to_string();
+    assert_eq!(
+        parse_preset(&own, None, &registry()).unwrap().settings,
+        object(json!({"auto-tone":{}}))
+    );
 }

@@ -11,6 +11,7 @@
 //! because production evaluates in f32 ([`luxforge_testkit::fixtures::assert_code_near_threshold`]).
 //! Identity stacks, byte sharing and history behaviour are exact with no tolerance at all.
 
+mod auto_tone;
 mod colour;
 mod exposure;
 mod tone;

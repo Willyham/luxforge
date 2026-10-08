@@ -1,3 +1,5 @@
+mod auto_tone_fit;
+mod auto_tone_smoke;
 mod basic_acceptance;
 mod basic_smoke;
 mod capabilities_smoke;
@@ -169,6 +171,7 @@ fn main_result() -> Result {
     let op = args.next().unwrap_or_else(|| "help".into());
     let mut a = Args(args.collect());
     match op.to_str().ok_or("Invalid command")? {
+        "auto-tone-fit" => auto_tone_fit::run(&mut a)?,
         "develop" => {
             let debug = a.flag("--debug");
             let background = a.flag("--background");

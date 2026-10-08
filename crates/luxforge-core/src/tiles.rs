@@ -50,7 +50,9 @@ use std::{
     },
 };
 
+pub(crate) mod analysis;
 mod reference;
+pub use analysis::{AnalysisRead, read as read_analysis};
 
 #[cfg(test)]
 pub(crate) use reference::Hold;
@@ -319,6 +321,12 @@ impl Reply {
 
 /// A service's renderer, as a call reads through it.
 pub trait TileReads {
+    /// Renderer identity for retained analysis samples. Providers without a stable identity do
+    /// not retain samples; a fallback answer is never retained as a GPU answer.
+    fn analysis_renderer(&self) -> Option<RendererRecord> {
+        None
+    }
+
     /// A session over `evaluation`'s stack and source for one call, under `cancel`. What it holds
     /// between reads lives only as long as the call.
     fn session<'a>(
@@ -340,6 +348,80 @@ pub trait TileSession {
         rect: Region,
         values: ReadValues,
     ) -> Result<ReadAnswer, Error>;
+
+    /// Gather at most a 1024-square grid's already-mapped nearest pixels, in caller order.
+    /// The default groups reads into bounded 256-square tiles; the reference overrides this to
+    /// read its held stage directly. Neither path allocates an output-sized frame for the gather.
+    fn gather(
+        &mut self,
+        stage: ReadStage,
+        points: &[[u32; 2]],
+        cancel: &Cancel,
+    ) -> Result<GatherAnswer, Error> {
+        gather_tiles(self, stage, points, cancel)
+    }
+}
+
+/// Gather nearest pixels through bounded tile reads. Providers may retry this whole gather on
+/// their reference fallback so one answer never mixes renderer identities.
+pub fn gather_tiles<T: TileSession + ?Sized>(
+    session: &mut T,
+    stage: ReadStage,
+    points: &[[u32; 2]],
+    cancel: &Cancel,
+) -> Result<GatherAnswer, Error> {
+    if points.len() > 1024 * 1024 {
+        return Err(Error::resource_limit(
+            "analysis grid exceeds 1024 squared points",
+        ));
+    }
+    const SIDE: u32 = 256;
+    let mut order: Vec<usize> = (0..points.len()).collect();
+    order.sort_unstable_by_key(|&index| (points[index][1] / SIDE, points[index][0] / SIDE));
+    let mut linear = vec![[0.; 3]; points.len()];
+    let mut answered = None;
+    let mut from = 0;
+    while from < order.len() {
+        cancel.check()?;
+        let [x, y] = points[order[from]];
+        let (bx, by) = (x / SIDE, y / SIDE);
+        let end = from
+            + order[from..]
+                .partition_point(|&i| points[i][0] / SIDE == bx && points[i][1] / SIDE == by);
+        let answer = session.read(
+            stage,
+            Region {
+                x0: bx * SIDE,
+                y0: by * SIDE,
+                width: SIDE,
+                height: SIDE,
+            },
+            ReadValues::Linear,
+        )?;
+        if answered
+            .as_ref()
+            .is_some_and(|held| *held != answer.answered)
+        {
+            return Err(Error::render(
+                "analysis grid changed renderer during its read",
+            ));
+        }
+        answered = Some(answer.answered.clone());
+        for &index in &order[from..end] {
+            let [x, y] = points[index];
+            linear[index] = answer
+                .linear(x, y)
+                .ok_or_else(|| Error::render("analysis grid point lies outside its stage"))?;
+        }
+        from = end;
+    }
+    Ok(GatherAnswer { linear, answered })
+}
+
+/// A gather's bounded linear values and the renderer that answered every point.
+pub struct GatherAnswer {
+    pub linear: Vec<[f32; 3]>,
+    pub answered: Option<Answered>,
 }
 
 /// Which stage of an evaluation a read reads.

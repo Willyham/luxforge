@@ -269,6 +269,10 @@ fn work(shared: &Shared) {
 pub struct ReferenceReads;
 
 impl TileReads for ReferenceReads {
+    fn analysis_renderer(&self) -> Option<crate::RendererRecord> {
+        Some(crate::RendererRecord::Reference)
+    }
+
     fn session<'a>(
         &'a self,
         evaluation: &'a Evaluation,
@@ -343,6 +347,37 @@ impl<'a> ReferenceSession<'a> {
 }
 
 impl TileSession for ReferenceSession<'_> {
+    fn gather(
+        &mut self,
+        stage: ReadStage,
+        points: &[[u32; 2]],
+        cancel: &Cancel,
+    ) -> Result<super::GatherAnswer, Error> {
+        if points.len() > 1024 * 1024 {
+            return Err(Error::resource_limit(
+                "analysis grid exceeds 1024 squared points",
+            ));
+        }
+        cancel.check()?;
+        let (_, pixels) = self.held(stage)?;
+        let mut linear = Vec::with_capacity(points.len());
+        for chunk in points.chunks(4096) {
+            cancel.check()?;
+            for &[x, y] in chunk {
+                linear.push(
+                    pixels
+                        .linear(x, y)?
+                        .ok_or_else(|| Error::render("analysis grid point lies outside its stage"))?
+                        .map(|c| c as f32),
+                );
+            }
+        }
+        Ok(super::GatherAnswer {
+            linear,
+            answered: Some(Answered::reference(None)),
+        })
+    }
+
     fn read(
         &mut self,
         stage: ReadStage,

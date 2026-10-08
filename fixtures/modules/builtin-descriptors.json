@@ -2118,13 +2118,13 @@
         "actions": [
           {
             "id": "apply-preset",
-            "notes": "applies a settings set as one history entry labelled `Preset: <name>`. Each key of settings names a field-patch action and its value the fields to send it; the host runs the actions in key order, each against the stack the ones before it produced, exactly as it would run that action alone, and commits the result once. Fields the set does not name keep their values, and a set that changes nothing is a reported no-op. A step whose module does not apply to the photo's kind, and a field another control supersedes on the photo's global target, are skipped and listed under skipped in the result. An unknown, non-patch or unavailable action, or a field its action refuses, refuses the whole preset and writes nothing.",
+            "notes": "applies a settings set as one history entry labelled `Preset: <name>`. Each key of settings names a field-patch action and its fields, or a declared analysis action and an empty object. The host runs patches in key order, then analysis steps such as Auto tone separately for this photo, against the intermediate stack, as it would run that action alone, and commits the result once. Fields the set does not name keep their values, and a set that changes nothing is a reported no-op. A step whose module does not apply to the photo's kind, and a field another control supersedes on the photo's global target, are skipped and listed under skipped in the result. Auto without usable tonal range is also skipped. An unknown, non-presettable or unavailable action, an overlapping analysis/field set or another refused field refuses the whole preset and writes nothing.",
             "parameters": [
               {
                 "default": null,
                 "kind": "settings",
                 "name": "settings",
-                "notes": "the settings set to apply: field-patch action identities, each with a non-empty object of that action's fields",
+                "notes": "the settings set to apply: field-patch action identities with non-empty field objects, or declared analysis actions with empty objects (auto-tone: {}); an analysis step and the fields it overwrites cannot both be included",
                 "precision": null,
                 "required": true,
                 "step": null,
@@ -2568,6 +2568,28 @@
             "parameters": [],
             "patch": false,
             "title": "Reset Basic"
+          },
+          {
+            "analysis": {
+              "query": "auto-tone",
+              "writes": {
+                "set-basic": [
+                  "exposure",
+                  "contrast",
+                  "highlights",
+                  "shadows",
+                  "whites",
+                  "blacks",
+                  "vibrance",
+                  "saturation"
+                ]
+              }
+            },
+            "id": "auto-tone",
+            "notes": "Sets Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Vibrance and Saturation absolutely on the global Basic layer in one undoable entry. Leaves white balance and other modules unchanged; repeats are no-ops. Analysis runs off the catalog owner. Refuses mask targets, historical selection, drafts and images without usable tonal range.",
+            "parameters": [],
+            "patch": false,
+            "title": "Auto tone"
           }
         ],
         "availability": {
@@ -2737,6 +2759,13 @@
                 "kind": "number",
                 "label": "Blacks",
                 "parameter": "blacks"
+              },
+              {
+                "action": "auto-tone",
+                "kind": "action",
+                "label": "Auto",
+                "preset": {},
+                "style": "group-header"
               }
             ],
             "kind": "group",
@@ -2794,6 +2823,13 @@
         "id": "luxforge.basic",
         "layout": "stacked",
         "queries": [
+          {
+            "id": "auto-tone",
+            "notes": "Predicts Auto tone's eight global Basic fields from a bounded linear input sample through Basic and the Look. Returns values, statistics, exclusions and omitted layers without committing. Refuses fewer than 1,024 finite samples, a near-black median or less than half a stop of input range.",
+            "parameters": [],
+            "patch": false,
+            "title": "Auto tone"
+          },
           {
             "id": "neutral-sample",
             "notes": "reads a 5x5 patch of the stage the Basic layer receives, centred on the named content pixel and clipped at that stage's edges, and returns the temperature and tint that make its average neutral. It evaluates before the Basic layer, so picking the same patch twice gives the same answer whatever white balance is already set. A clipped, near-black or non-finite patch, a correction outside the representable range and a point outside the stage are each refused with their reason; nothing is guessed, clamped or committed",
@@ -4709,7 +4745,7 @@
       "edit.apply-preset": {
         "mutates": true,
         "mutation": "revision",
-        "notes": "applies a settings set as one history entry labelled `Preset: <name>`. Each key of settings names a field-patch action and its value the fields to send it; the host runs the actions in key order, each against the stack the ones before it produced, exactly as it would run that action alone, and commits the result once. Fields the set does not name keep their values, and a set that changes nothing is a reported no-op. A step whose module does not apply to the photo's kind, and a field another control supersedes on the photo's global target, are skipped and listed under skipped in the result. An unknown, non-patch or unavailable action, or a field its action refuses, refuses the whole preset and writes nothing.",
+        "notes": "applies a settings set as one history entry labelled `Preset: <name>`. Each key of settings names a field-patch action and its fields, or a declared analysis action and an empty object. The host runs patches in key order, then analysis steps such as Auto tone separately for this photo, against the intermediate stack, as it would run that action alone, and commits the result once. Fields the set does not name keep their values, and a set that changes nothing is a reported no-op. A step whose module does not apply to the photo's kind, and a field another control supersedes on the photo's global target, are skipped and listed under skipped in the result. Auto without usable tonal range is also skipped. An unknown, non-presettable or unavailable action, an overlapping analysis/field set or another refused field refuses the whole preset and writes nothing.",
         "optional": {
           "preset-id": "the library preset the settings came from; provenance only, never looked up"
         },
@@ -4718,7 +4754,7 @@
             "default": null,
             "kind": "settings",
             "name": "settings",
-            "notes": "the settings set to apply: field-patch action identities, each with a non-empty object of that action's fields",
+            "notes": "the settings set to apply: field-patch action identities with non-empty field objects, or declared analysis actions with empty objects (auto-tone: {}); an analysis step and the fields it overwrites cannot both be included",
             "precision": null,
             "required": true,
             "step": null,
@@ -4754,6 +4790,31 @@
           "settings",
           "name"
         ]
+      },
+      "edit.auto-tone": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "Sets Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Vibrance and Saturation absolutely on the global Basic layer in one undoable entry. Leaves white balance and other modules unchanged; repeats are no-ops. Analysis runs off the catalog owner. Refuses mask targets, historical selection, drafts and images without usable tonal range.",
+        "optional": {
+          "mask": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target"
+        },
+        "parameters": [],
+        "patch": false,
+        "required": [
+          "asset_id",
+          "mutation"
+        ],
+        "target": {
+          "default": null,
+          "kind": "identity",
+          "name": "mask",
+          "notes": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target",
+          "of": "mask",
+          "precision": null,
+          "required": false,
+          "step": null,
+          "unit": null
+        }
       },
       "edit.crop": {
         "mutates": true,
@@ -8189,6 +8250,29 @@
           "mask",
           "component"
         ]
+      },
+      "query.auto-tone": {
+        "mutates": false,
+        "notes": "Predicts Auto tone's eight global Basic fields from a bounded linear input sample through Basic and the Look. Returns values, statistics, exclusions and omitted layers without committing. Refuses fewer than 1,024 finite samples, a near-black median or less than half a stop of input range.",
+        "optional": {
+          "entry_id": "entry to ask about; default the session's selection",
+          "mask": "the mask whose stack to ask about, as this module's actions take it; omit it to ask about the layer that applies everywhere"
+        },
+        "parameters": [],
+        "required": [
+          "asset_id"
+        ],
+        "target": {
+          "default": null,
+          "kind": "identity",
+          "name": "mask",
+          "notes": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target",
+          "of": "mask",
+          "precision": null,
+          "required": false,
+          "step": null,
+          "unit": null
+        }
       },
       "query.lens-profiles": {
         "mutates": false,
