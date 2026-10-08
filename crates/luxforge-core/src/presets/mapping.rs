@@ -129,11 +129,14 @@ pub(super) enum Rule {
     /// Lightroom's absolute RAW `Temperature` (K) or `Tint`, converted together through the
     /// illuminant chromaticity the pair names onto the RAW development's `field`
     /// ([`crate::lightroom_to_luxforge`]), and refused together when that white is out of range.
-    RawWhiteBalance { field: &'static str },
+    RawWhiteBalance {
+        field: &'static str,
+    },
     /// `WhiteBalance`: `As Shot` is the RAW development's as-shot white balance, and Basic's
     /// relative pair at 0 when the preset holds no incremental value; `Custom` is neutral when the
     /// values it names are mapped and refused otherwise; `Auto` and named modes are refused.
     WhiteBalance,
+    AutoTone,
     /// `CameraProfile` or a nested `Look`: neutral for Lightroom's default profile.
     Profile,
     /// A field of a process version before 2012: neutral in a modern preset, refused in a legacy
@@ -234,7 +237,6 @@ const NO_DEFRINGE: &str = "Luxforge has no defringe";
 const NO_TRANSFORM: &str = "different perspective model";
 const NO_CALIBRATION: &str = "Luxforge has no calibration";
 const NO_PROFILES: &str = "Luxforge has no profiles";
-const NO_AUTO_TONE: &str = "Luxforge has no Auto Tone";
 const NO_MASKS: &str = "Lightroom masks and local corrections are not imported";
 const NO_SPOTS: &str = "Luxforge has no spot removal";
 const NO_RED_EYE: &str = "Luxforge has no red-eye correction";
@@ -977,7 +979,7 @@ pub(super) const ROWS: &[Row] = &[
         CALIBRATION,
     ),
     // Auto Tone, masks, retouching and moiré.
-    unsupported_row("AutoTone", NO_AUTO_TONE, Off, Unless::Nothing, None),
+    row("AutoTone", Rule::AutoTone, None),
     unsupported_row(
         "MaskGroupBasedCorrections",
         NO_MASKS,
@@ -1482,6 +1484,7 @@ pub(super) fn map(
     // The first split-toning setting transferred from a legacy split-toning document, which also
     // carries the later controls' values (`LEGACY_SPLIT_TONING`).
     let mut split_toning: Option<&RawSetting> = None;
+    let auto_tone = by_name.get("AutoTone").and_then(|value| boolean(value)) == Some(true);
     let switches: HashMap<Panel, Switch> = PANELS
         .iter()
         .map(|panel| {
@@ -1541,7 +1544,31 @@ pub(super) fn map(
         }
         match row.rule {
             Rule::Metadata => {}
+            Rule::AutoTone => match boolean(value) {
+                Some(false) => neutral.push(reported(setting, None)),
+                Some(true) => match registry.analysis_action("auto-tone") {
+                    Ok(_) => {
+                        out.insert("auto-tone".into(), Value::Object(Map::new()));
+                        mapped.push(MappedSetting {
+                            setting: setting.name.clone(),
+                            value: report_text(value),
+                            action: "auto-tone".into(),
+                            field: None,
+                            applied: Value::Object(Map::new()),
+                        });
+                    }
+                    Err(error) => refused.push(reported(setting, Some(&error.detail))),
+                },
+                None => refused.push(reported(setting, Some("AutoTone is not a boolean"))),
+            },
             Rule::Transfer { action, field, .. } | Rule::CurveTransfer { action, field } => {
+                if auto_tone && action == BASIC && crate::auto_tone::FIELDS.contains(&field) {
+                    neutral.push(reported(
+                        setting,
+                        Some("overridden by Auto tone, recomputed for each photo"),
+                    ));
+                    continue;
+                }
                 if let Era::Legacy(reason) = &era {
                     refused.push(reported(setting, Some(reason)));
                     continue;
@@ -1574,7 +1601,7 @@ pub(super) fn map(
                             setting: setting.name.clone(),
                             value: report_text(value),
                             action: action.to_owned(),
-                            field: field.to_owned(),
+                            field: Some(field.to_owned()),
                             applied,
                         });
                     }
@@ -1603,7 +1630,7 @@ pub(super) fn map(
                             setting: setting.name.clone(),
                             value: report_text(value),
                             action: RAW.to_owned(),
-                            field: field.to_owned(),
+                            field: Some(field.to_owned()),
                             applied,
                         });
                     }
@@ -1639,7 +1666,7 @@ pub(super) fn map(
                                     setting: setting.name.clone(),
                                     value: report_text(value),
                                     action: action.to_owned(),
-                                    field: field.to_owned(),
+                                    field: Some(field.to_owned()),
                                     applied,
                                 });
                             }
@@ -1705,7 +1732,7 @@ pub(super) fn map(
                 setting: setting.name.clone(),
                 value: report_text(&setting.value),
                 action: MIXER.to_owned(),
-                field: (*field).to_owned(),
+                field: Some((*field).to_owned()),
                 applied,
             });
         }

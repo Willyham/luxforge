@@ -9289,4 +9289,50 @@ mod tests {
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
     }
+    #[test]
+    fn auto_tone_discards_a_late_analysis_when_another_client_commits() {
+        let catalog = temp("auto-tone-conflict.sqlite");
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        let other = owner.register();
+        let state = import_asset(&owner, client, &fixture());
+        let asset = state["asset"]["id"].clone();
+        let (reached, release) = hold_tiles(&owner);
+        std::thread::scope(|scope| {
+            let pending = scope.spawn(|| {
+                send(
+                    &owner,
+                    client,
+                    "auto",
+                    "edit.auto-tone",
+                    json!({"asset_id":asset,"mutation":crate::editor::mutation_json(0,"auto")}),
+                )
+            });
+            reached
+                .recv_timeout(luxforge_testbase::HANG)
+                .expect("Auto is analysing off the owner");
+            ok(
+                &owner,
+                other,
+                "change",
+                "edit.set-basic",
+                json!({"asset_id":asset,"temperature":5,"mutation":crate::editor::mutation_json(0,"other")}),
+            );
+            release.send(()).unwrap();
+            assert_eq!(pending.join().unwrap().error.unwrap().code, "conflict");
+        });
+        let state = ok(
+            &owner,
+            client,
+            "state",
+            "asset.state",
+            json!({"asset_id":asset}),
+        );
+        assert_eq!(state["revision"], 1);
+        assert_ne!(state["current_entry"]["label"], "Auto tone");
+        owner.hold_tiles(None);
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
 }

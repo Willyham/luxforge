@@ -698,7 +698,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "preset.capture",
         PresetCapture,
         preset_capture,
-        "{settings} read from one entry's stack: fields maps field-patch actions to an array of their parameter names or true for all of them; each field takes the value of its module's one layer, or its declared default when the stack has none; two or more layers are validation: ambiguous; reads stored payloads only, so it opens no source and renders nothing; send the result to preset.create"
+        "{settings} read from one entry's stack: fields maps field-patch actions to an array of their parameter names or true for all of them; a declared analysis action accepts true and captures an empty step (auto-tone: {}), without analysing this photo; overlap with fields that step overwrites is refused; each field takes the value of its module's one layer, or its declared default when the stack has none; two or more layers are validation: ambiguous; reads stored payloads only, so it opens no source and renders nothing; send the result to preset.create"
     ),
     mutating!(
         "preset.update",
@@ -1191,7 +1191,14 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "batch.apply-preset",
         crate::catalog_types::api::BatchApplyPreset,
         owner::library::batch::batch_apply_preset,
-        "starts a batch-preset job, answering {job_id, status, deduplicated}, whose result is {done, skipped: [{asset_id, code, reason}], settings_skipped?: [{asset_id, settings: [{action, parameter?, reason}]}]}: the library preset is read once and applied to each photograph targets names, one at a time, exactly as edit.apply-preset applies it (its settings, name and id as preset-id, against the photograph's current revision, by the envelope's actor under the request identity <request_id>/<asset_id>), so each done photograph has its own entry labelled Preset: <name> and records an event naming it and its revision; settings_skipped lists the settings left out of a done photograph because they do not apply to it; skipped names every photograph left out: removed (in Removed), draft-open (the caller holds a draft on it), history-selected (the caller previews its history), not-applicable (none of the preset's settings apply to it), unchanged (it already has them) or the code and message edit.apply-preset refuses it with; a stack that needs its source prepared is prepared first, one photograph at a time; targets are photographs by id, by their originals' paths or index rows, or the photographs selected in the caller's view; an unknown preset or photograph is validation; while it runs job.read's result is the report so far and its progress reads n of N; job.cancel stops it between photographs, keeping every one done; a retry after a restart applies nothing twice; resource-limit past 50,000 photographs or when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id",
+        "starts a batch-preset job, answering {job_id, status, deduplicated}, whose result is {done, skipped: [{asset_id, code, reason}], settings_skipped?: [{asset_id, settings: [{action, parameter?, reason}]}]}: the library preset is read once and applied to each photograph targets names, one at a time, exactly as edit.apply-preset applies it (its settings, name and id as preset-id, against the photograph's current revision, by the envelope's actor under the request identity <request_id>/<asset_id>), analysis steps such as Auto tone run after the field patches and are recomputed per photograph; so each done photograph has its own entry labelled Preset: <name> and records an event naming it and its revision; settings_skipped lists the settings left out of a done photograph because they do not apply to it; skipped names every photograph left out: removed (in Removed), draft-open (the caller holds a draft on it), history-selected (the caller previews its history), not-applicable (none of the preset's settings apply to it), unchanged (it already has them) or the code and message edit.apply-preset refuses it with; a stack that needs its source prepared is prepared first, one photograph at a time; targets are photographs by id, by their originals' paths or index rows, or the photographs selected in the caller's view; an unknown preset or photograph is validation; while it runs job.read's result is the report so far and its progress reads n of N; job.cancel stops it between photographs or during deferred analysis, keeping every one done; a retry after a restart applies nothing twice; resource-limit past 50,000 photographs or when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id",
+        retries: Owner,
+    ),
+    owner!(
+        "batch.paste-settings",
+        crate::catalog_types::api::BatchPasteSettings,
+        owner::library::batch::batch_paste_settings,
+        "starts a batch-paste job with inline settings validated once against the registry; answers {job_id, status, deduplicated}, with the same BatchReport, targets, progress, cancellation, limits and skip rules as batch.apply-preset. Each photograph runs edit.paste-settings with source and optional source_asset_id as source-asset, against its current revision under <request_id>/<asset_id>, writing one entry labelled Paste settings from <source>. Settings contain 1..=16 presettable actions with at most 64 fields each. Unknown, unavailable or non-patch actions refuse the submission. No library preset is created or read; source_asset_id is provenance only. Cancel keeps every finished photograph; job.read reports progress and per-photograph settings_skipped.",
         retries: Owner,
     ),
     owner!(
@@ -1856,6 +1863,7 @@ host_params! {
         // Each spelling is declared as an option, so a client reads the vocabulary from the schema
         // and an unknown one is refused with the vocabulary spelled out.
         mask_overlay: Option<String> = enumeration(MaskOverlayMode::ALL.map(MaskOverlayMode::as_str)).notes("what the canvas draws of the selected mask"),
+        mask_handles: Option<bool> = boolean().notes("show mask gradient handles independently of coverage; on by default"),
         mask_overlay_colour: Option<String> = enumeration(MaskOverlayColour::ALL.map(MaskOverlayColour::as_str)).notes("the tint the mask overlay is drawn in"),
         views: Option<Vec<ViewSelection>> = json("[{module, group, view}], at most 64: the view each named tab row shows; module is a registered module id, group the label path from its top level to a group that declares layout: tabs (empty for the module's own tabs, as module.list's layout says), view the label of one of that row's child groups; each entry replaces that row's choice, others keep theirs, and a row with no choice shows its first view; an unknown module, group or view is refused by name and nothing is written; presentation state only: no recipe field, history entry or frame"),
     }
@@ -1967,6 +1975,33 @@ fn edit_action(
     let mut parameters = params::generated(request)?;
     let asset_id: AssetId = params::take(&mut parameters, "asset_id")?;
     require_current(session, &asset_id)?;
+    if session.draft.is_some()
+        && service
+            .registry()
+            .resolve_action(action_id)
+            .is_some_and(|action| {
+                let declared = action.descriptor();
+                declared.analysis.is_some()
+                    || declared.parameters.iter().any(|parameter| {
+                        matches!(parameter.kind, crate::ParameterKind::Settings)
+                            && parameters
+                                .get(&parameter.name)
+                                .and_then(Value::as_object)
+                                .is_some_and(|settings| {
+                                    settings.keys().any(|id| {
+                                        service
+                                            .registry()
+                                            .action(id)
+                                            .is_some_and(|(_, action)| action.analysis.is_some())
+                                    })
+                                })
+                    })
+            })
+    {
+        return Err(Error::validation(
+            "finish or discard the draft before running an analysis action",
+        ));
+    }
     let mutation: Mutation = params::take(&mut parameters, "mutation")?;
     let result = service.run_action(&asset_id, mutation, action_id, Value::Object(parameters))?;
     Mutated::asset(&result.mutation, &result)
@@ -1991,6 +2026,11 @@ fn module_query(
     let entry_id = params::take_optional(&mut parameters, "entry_id")?;
     let entry_id = selected_entry(service, session, &asset_id, entry_id)?;
     let parameters = Value::Object(parameters);
+    if service.registry().analysis_query(query_id) {
+        return service
+            .query_plan(&asset_id, &entry_id, query_id, parameters)
+            .map(|plan| Planned::Query(Box::new(plan)));
+    }
     let result = service.run_query(&asset_id, &entry_id, query_id, parameters.clone());
     if service.take_pixel_read().is_some() {
         return service
@@ -2438,6 +2478,9 @@ fn workspace_set(
     // selected mask and commits nothing.
     if let Some(mode) = mask_overlay {
         session.workspace.mask_overlay = mode;
+    }
+    if let Some(visible) = p.mask_handles {
+        session.workspace.mask_handles = visible;
     }
     if let Some(colour) = mask_overlay_colour {
         session.workspace.mask_overlay_colour = colour;
@@ -4107,6 +4150,7 @@ mod tests {
                     notes: "test".into(),
                     patch: false,
                     preset: true,
+                    analysis: None,
                     parameters: vec![
                         ParameterDescriptor::number("angle", -45.0, 45.0)
                             .required(true)
@@ -4199,6 +4243,7 @@ mod tests {
                     notes: "test".into(),
                     patch: false,
                     preset: true,
+                    analysis: None,
                     parameters: Vec::new(),
                 }],
                 queries: Vec::new(),
@@ -4626,6 +4671,7 @@ mod tests {
                 "clip_shadows": false,
                 "clip_highlights": false,
                 "mask_overlay": "off",
+                "mask_handles": true,
                 "mask_overlay_colour": "green",
                 "views": [],
             }),
@@ -4635,7 +4681,7 @@ mod tests {
             &mut service,
             &mut session,
             "workspace.set",
-            json!({"state_panel": false, "mode": "luxforge.crop", "thirds": true, "information": true}),
+            json!({"state_panel": false, "mode": "luxforge.crop", "thirds": true, "information": true, "mask_handles": false}),
         );
         assert_eq!(
             set["workspace"],
@@ -4648,6 +4694,7 @@ mod tests {
                 "clip_shadows": false,
                 "clip_highlights": false,
                 "mask_overlay": "off",
+                "mask_handles": false,
                 "mask_overlay_colour": "green",
                 "views": [],
             })

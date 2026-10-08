@@ -356,6 +356,7 @@ fn event_row(
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SetPhoto {
     pub(crate) asset_id: AssetId,
+    pub(crate) kind: Option<luxforge_core::SourceTag>,
     pub(crate) name: String,
 }
 
@@ -372,6 +373,8 @@ pub(crate) struct DevelopSet {
     pub(crate) first: usize,
     /// The view's photographs are still being read into the set.
     pub(crate) reading: bool,
+    /// Other selected indices; the active photograph is always selected implicitly.
+    pub(crate) selected: std::collections::BTreeSet<usize>,
 }
 
 impl DevelopSet {
@@ -383,7 +386,32 @@ impl DevelopSet {
             active,
             first: active,
             reading: false,
+            selected: Default::default(),
         }
+    }
+
+    pub(crate) fn selected(&self, index: usize) -> bool {
+        index < self.photos.len() && (index == self.active || self.selected.contains(&index))
+    }
+
+    pub(crate) fn select(&mut self, index: usize, command: bool, shift: bool) {
+        if index >= self.photos.len() {
+            return;
+        }
+        if shift {
+            self.selected = (self.active.min(index)..=self.active.max(index)).collect();
+        } else if command && index != self.active && !self.selected.remove(&index) {
+            self.selected.insert(index);
+        }
+    }
+
+    pub(crate) fn selected_assets(&self) -> Vec<AssetId> {
+        self.photos
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| self.selected(*index))
+            .map(|(_, photo)| photo.asset_id.clone())
+            .collect()
     }
 
     /// The photograph at `index` of the set.
@@ -425,6 +453,7 @@ pub(crate) fn developed_photos(report: &DevelopReport) -> Vec<SetPhoto> {
         let file = developed.used.as_ref().unwrap_or(&developed.path);
         photos.push(SetPhoto {
             asset_id: developed.asset_id.clone(),
+            kind: None,
             name: file
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
@@ -518,6 +547,9 @@ pub(crate) struct DevelopState {
     pub(crate) developing: Option<Developing>,
     /// The development set, while Develop has one.
     pub(crate) set: Option<DevelopSet>,
+    /// Selected catalog folder; disk/event browsing leaves it available for Develop.
+    pub(crate) folder_query: Option<luxforge_core::catalog_types::ViewQuery>,
+    pub(crate) folder_loading: bool,
     /// The filmstrip is collapsed (`Cmd+Option+F`).
     pub(crate) collapsed: bool,
     /// The photograph being switched to, until its exact render is on screen: its name, for the
@@ -548,6 +580,7 @@ pub(crate) struct StripModel {
     pub(crate) first: usize,
     pub(crate) total: usize,
     pub(crate) active: Option<usize>,
+    pub(crate) selected: Vec<bool>,
     pub(crate) can_previous: bool,
     pub(crate) can_next: bool,
 }
@@ -555,6 +588,7 @@ pub(crate) struct StripModel {
 /// What the confirmation, Develop N, the filmstrip and the status bar draw.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct DevelopModel {
+    pub(crate) can_enter: bool,
     pub(crate) confirm: Option<ConfirmModel>,
     /// Develop N reads busy with the Develop's progress, `(done, total)`.
     pub(crate) busy: Option<(usize, usize)>,
@@ -573,7 +607,12 @@ pub(crate) fn derive(state: &DevelopState, progress: Option<f64>) -> DevelopMode
         let end = (set.first + state.capacity.max(1)).min(set.photos.len());
         StripModel {
             title: "Development set".to_owned(),
-            caption: set.reading.then(|| "Reading the set\u{2026}".to_owned()),
+            caption: if set.reading {
+                Some("Reading the set…".into())
+            } else {
+                let count = set.selected.len() + usize::from(!set.selected.contains(&set.active));
+                (count > 1).then(|| format!("{count} of {} selected", set.photos.len()))
+            },
             cells: set.photos[set.first.min(end)..end]
                 .iter()
                 .map(|photo| photo.asset_id.clone())
@@ -581,11 +620,16 @@ pub(crate) fn derive(state: &DevelopState, progress: Option<f64>) -> DevelopMode
             first: set.first,
             total: set.photos.len(),
             active: Some(set.active),
+            selected: (set.first.min(end)..end)
+                .map(|index| set.selected(index))
+                .collect(),
             can_previous: set.step(-1).is_some(),
             can_next: set.step(1).is_some(),
         }
     });
     DevelopModel {
+        can_enter: state.folder_query.is_some()
+            || state.set.as_ref().is_some_and(|set| !set.photos.is_empty()),
         confirm: state.confirm.as_ref().map(confirm_model),
         busy: state.developing.as_ref().map(|developing| {
             let total = developing.total as usize;

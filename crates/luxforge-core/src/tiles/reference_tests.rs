@@ -29,6 +29,98 @@ const EVERYTHING: Region = Region {
     height: u32::MAX,
 };
 
+#[test]
+fn auto_tone_grid_reads_exact_nearest_input_pixels_after_crop_on_jpeg_and_raw() {
+    let registry = Arc::new(ModuleRegistry::builtin());
+    let context = RenderContext::new();
+    for (_, source) in sources(64, 48).into_iter().take(2) {
+        let recipe = recipe_of(
+            vec![Layer::crop(CropPayload {
+                angle: 0.,
+                x: 0.25,
+                y: 0.25,
+                width: 0.5,
+                height: 0.5,
+            })],
+            vec![],
+        );
+        let evaluation = evaluation(&registry, &context, &source, &recipe);
+        let cancel = Cancel::never();
+        let actual = super::analysis::read(&evaluation, 0, &ReferenceReads, &cancel).unwrap();
+        assert_eq!(actual.sample.grid, [32, 24]);
+        let independent = ReferenceReads
+            .session(&evaluation, &cancel)
+            .read(
+                ReadStage::Before {
+                    layer: 0,
+                    mode: super::MaskInputMode::ColourRun,
+                },
+                EVERYTHING,
+                ReadValues::Linear,
+            )
+            .unwrap();
+        let expected: Vec<_> = (12..36)
+            .flat_map(|y| (16..48).map(move |x| (x, y)))
+            .map(|(x, y)| independent.linear(x, y).unwrap())
+            .collect();
+        assert_eq!(actual.sample.rgb, expected);
+        assert_eq!(actual.answered.record, RendererRecord::Reference);
+    }
+}
+
+#[test]
+fn auto_tone_grid_cache_ignores_basic_and_later_colour_but_tracks_input_and_geometry() {
+    let registry = Arc::new(ModuleRegistry::developer());
+    let context = RenderContext::new();
+    let source = PreviewSource::Jpeg(gradient(64, 48));
+    let base_recipe = recipe_of(vec![basic()], vec![]);
+    let base = evaluation(&registry, &context, &source, &base_recipe);
+    let cancel = Cancel::never();
+    let first = super::analysis::read(&base, 0, &ReferenceReads, &cancel).unwrap();
+    let mut changed = base_recipe.clone();
+    changed.layers[0].payload = json!({"exposure": -2.});
+    changed
+        .layers
+        .push(Layer::new(MIXER_EFFECT, json!({"red-hue": 20.})));
+    let next = |recipe| {
+        Evaluation::new(
+            registry.clone(),
+            context.clone(),
+            source.clone(),
+            base.entry().clone(),
+            recipe,
+            None,
+        )
+    };
+    let second =
+        super::analysis::read(&next(changed.clone()), 0, &ReferenceReads, &cancel).unwrap();
+    assert!(Arc::ptr_eq(&first.sample, &second.sample));
+    changed.layers.push(Layer::crop(CropPayload {
+        angle: 0.,
+        x: 0.25,
+        y: 0.25,
+        width: 0.5,
+        height: 0.5,
+    }));
+    let cropped = super::analysis::read(&next(changed), 0, &ReferenceReads, &cancel).unwrap();
+    assert!(!Arc::ptr_eq(&first.sample, &cropped.sample));
+    assert_eq!(cropped.sample.rgb.len(), 32 * 24);
+    let input_recipe = recipe_of(vec![Layer::pixel(10, 10, [255, 255, 255]), basic()], vec![]);
+    let input =
+        super::analysis::read(&next(input_recipe.clone()), 1, &ReferenceReads, &cancel).unwrap();
+    assert!(!Arc::ptr_eq(&first.sample, &input.sample));
+    let mut replay = input_recipe;
+    replay.layers[0].id = crate::LayerId::new();
+    let replay = super::analysis::read(&next(replay), 1, &ReferenceReads, &cancel).unwrap();
+    assert!(
+        Arc::ptr_eq(&input.sample, &replay.sample),
+        "intermediate composite layer ids are not pixel identity"
+    );
+    context.analysis_samples().select(None);
+    let reopened = super::analysis::read(&base, 0, &ReferenceReads, &cancel).unwrap();
+    assert!(!Arc::ptr_eq(&first.sample, &reopened.sample));
+}
+
 /// `recipe` over `source`, bound for evaluation as the catalog owner binds a saved entry's stack.
 fn evaluation(
     registry: &Arc<ModuleRegistry>,

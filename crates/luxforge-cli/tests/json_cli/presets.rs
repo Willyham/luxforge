@@ -86,3 +86,38 @@ fn a_preset_imports_lists_and_applies_and_a_refused_file_is_an_error_over_the_pi
     client.finish();
     std::fs::remove_file(catalog).expect("the catalog is removed");
 }
+
+#[test]
+fn copy_settings_capture_single_paste_and_batch_share_the_json_contract() {
+    let catalog = paths::temp_catalog("copy-settings-cli");
+    let mut client = JsonProcess::start(
+        env!("CARGO_BIN_EXE_luxforge-json"),
+        &["--catalog", catalog.to_str().unwrap()],
+        "copy-settings",
+    );
+    let asset = client.open(&paths::jpeg().canonicalize().unwrap(), ACTOR)["asset"]["id"].clone();
+    let settings = client.call(
+        "preset.capture",
+        json!({"asset_id": asset, "fields": {"set-basic": ["exposure"]}}),
+    )["settings"]
+        .clone();
+    client.call("edit.set-basic", json!({"asset_id": asset, "exposure": 1, "mutation": {"expected_revision": 0, "request_id": request_id("edit"), "actor": ACTOR}}));
+    let pasted = client.call("edit.paste-settings", json!({"asset_id": asset, "settings": settings, "source": "Original.jpg", "source-asset": asset, "mutation": {"expected_revision": 1, "request_id": request_id("paste"), "actor": ACTOR}}));
+    assert_eq!(pasted["outcome"], "applied");
+    assert_eq!(
+        client.call("history.list", json!({"asset_id": asset, "limit": 10}))["entries"][0]["label"],
+        "Paste settings from Original.jpg"
+    );
+    let started = client.call("batch.paste-settings", json!({"targets": {"kind": "assets", "asset_ids": [asset]}, "settings": settings, "source": "Original.jpg", "source_asset_id": asset, "mutation": request()}));
+    let result = client.settle("job.read", &started["job_id"]);
+    assert_eq!(result["status"], "ready", "{result}");
+    assert_eq!(
+        result["result"]["skipped"].as_array().unwrap().len(),
+        1,
+        "already has the settings: {result}"
+    );
+    let refused = client.error("edit.paste-settings", json!({"asset_id": asset, "settings": {"paste-settings": {}}, "source": "bad", "mutation": {"expected_revision": 2, "request_id": request_id("bad"), "actor": ACTOR}}));
+    assert_eq!(refused["code"], "validation");
+    client.finish();
+    std::fs::remove_file(catalog).unwrap();
+}

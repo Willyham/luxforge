@@ -190,7 +190,8 @@ pub(crate) enum Reread {
 impl Default for Select {
     fn default() -> Self {
         let state = SelectState {
-            home: std::env::var_os("HOME").map(PathBuf::from),
+            home: std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+                .map(PathBuf::from),
             ..SelectState::default()
         };
         let layout = GridLayout::new(Vec::new(), metrics(&state), 0.0);
@@ -665,7 +666,7 @@ impl Editor {
                 self.select.state.indexed_menu = None;
                 self.select.state.forget = None;
             }
-            SelectMessage::Viewed { serial, result } => self.viewed(serial, result),
+            SelectMessage::Viewed { serial, result } => return self.viewed(serial, result),
             SelectMessage::Faceted { serial, result } => {
                 if serial == self.select.serial {
                     // A failure leaves the menus saying the counts are unavailable.
@@ -828,11 +829,7 @@ impl Editor {
             return Task::none();
         }
         if shown == Shown::Develop {
-            self.select.state.menu = None;
-            self.select.state.catalog.close();
-            self.select.state.shown = Shown::Develop;
-            self.select.previews.release();
-            return self.loupe_leave();
+            return self.enter_develop_set();
         }
         if let Some(reason) = self.gesture_refusal(Starting::Workspace) {
             self.status.text = reason;
@@ -841,6 +838,8 @@ impl Editor {
         self.palette.open = false;
         self.view_state.menu = None;
         self.select.state.shown = Shown::Select;
+        self.owner.render_context().retain_analysis_for(None);
+        self.controls.ui.analysis_reports.clear();
         self.status.text = "Showing Select".into();
         if std::mem::take(&mut self.select.check_on_show) {
             self.select.check.offer(());
@@ -853,6 +852,17 @@ impl Editor {
         Task::batch(tasks)
     }
 
+    pub(crate) fn show_develop_workspace(&mut self) -> Task<Message> {
+        self.select.state.menu = None;
+        self.select.state.catalog.close();
+        self.select.state.shown = Shown::Develop;
+        self.owner
+            .render_context()
+            .retain_analysis_for(self.document.state.as_ref().map(|state| &state.asset.id));
+        self.select.previews.release();
+        self.loupe_leave()
+    }
+
     /// Browse a card or a folder on disk: the index lane lists it, a folder with its subfolders,
     /// and reads each file's header (`index.refresh`, a job), and it is viewed once the job has
     /// ended. The status bar says it is reading until then, and a first look that takes a while
@@ -860,6 +870,18 @@ impl Editor {
     /// through the activity board ([`Editor::reading_followed`]); its authoritative `job.wait`
     /// reader adopts the final result independently of presentation visibility.
     pub(crate) fn read_source(&mut self, source: ReadSource) -> Task<Message> {
+        if let ReadSource::Folder(path) = &source
+            && luxforge_core::catalog_types::disk::broad_folder(
+                path,
+                self.select.state.home.as_deref(),
+            )
+        {
+            self.status.text = "Choose a specific subfolder to browse photographs".into();
+            if self.select.state.open.contains(path) {
+                return Task::none();
+            }
+            return self.toggle_disk(path.clone());
+        }
         match &source {
             ReadSource::Folder(path) => self.select.state.folder = Some(path.clone()),
             // Browsing the card its notice offers answers the notice.
@@ -1055,12 +1077,22 @@ impl Editor {
     /// Evaluate `query` into this client's one view: `browse.view` with the whole query and nothing
     /// else, then the session it left, in one owner task; and the chips' `browse.facets` beside it.
     pub(crate) fn evaluate(&mut self, query: ViewQuery) -> Task<Message> {
-        let state = &mut self.select.state;
-        if state
+        self.remember_develop_folder(&query);
+        let changed_source = self
+            .select
+            .state
             .query
             .as_ref()
-            .is_none_or(|held| held.source != query.source)
-        {
+            .is_none_or(|held| held.source != query.source);
+        // A source change can clear the owner's active frame. Show the new grid rather than leaving
+        // an empty loupe over the frames the person needs to choose from.
+        let grid = if changed_source {
+            self.loupe_close()
+        } else {
+            Task::none()
+        };
+        let state = &mut self.select.state;
+        if changed_source {
             state.facets = None;
         }
         self.select.serial += 1;
@@ -1083,15 +1115,19 @@ impl Editor {
             move || facets_now(&owner, client, &counted_query),
             move |result| Message::Select(SelectMessage::Faceted { serial, result }),
         );
-        Task::batch([evaluated, counted])
+        Task::batch([grid, evaluated, counted])
     }
 
     /// Adopt an evaluation that is still the newest: its summary, the session it left, the grid laid
     /// out from its group layout, and a scroll that stays near the active item for the same source
     /// and starts at the top for a new one.
-    fn viewed(&mut self, serial: u64, result: Result<Box<(ViewSummary, ClientSession)>, String>) {
+    fn viewed(
+        &mut self,
+        serial: u64,
+        result: Result<Box<(ViewSummary, ClientSession)>, String>,
+    ) -> Task<Message> {
         if serial != self.select.serial {
-            return;
+            return Task::none();
         }
         self.select.state.loading = false;
         match result {
@@ -1116,6 +1152,7 @@ impl Editor {
                 let was_active = self.session.browse.selection.active;
                 self.adopt(session);
                 let now_active = self.session.browse.selection.active;
+                self.remember_develop_folder(&summary.query);
                 let state = &mut self.select.state;
                 let previous = state.summary.take();
                 let same_source = previous
@@ -1199,6 +1236,18 @@ impl Editor {
                 self.select.anchor = None;
             }
         }
+        // A same-source filter or refresh can remove the active frame too. Wait for the answer
+        // before deciding, so an in-flight refresh never closes a loupe that still has its frame.
+        if self.select.state.loupe.open
+            && crate::state::loupe::subject(
+                self.select.state.summary.as_ref(),
+                &self.session.browse,
+            )
+            .is_none()
+        {
+            return self.loupe_close();
+        }
+        Task::none()
     }
 
     /// Make the grid's blocks from the summary and lay them out at the width the widget reported.

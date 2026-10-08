@@ -308,6 +308,17 @@ host_params! {
 }
 
 host_params! {
+    /// `batch.paste-settings`.
+    pub(crate) struct BatchPasteSettings {
+        targets: Targets = json(TARGETS),
+        settings: serde_json::Map<String, serde_json::Value> = settings(),
+        source: String = string(128).notes("source photograph display name; not empty"),
+        source_asset_id: Option<String> = string(96).notes("source asset provenance only; never looked up"),
+        mutation: MutationRequest,
+    }
+}
+
+host_params! {
     /// `batch.export`.
     pub(crate) struct BatchExport {
         targets: Targets = json(TARGETS),
@@ -467,7 +478,7 @@ mod contract_table {
             "index.refresh",
             "IndexReport",
             &[Validation, SourceUnavailable, FileAccess, ResourceLimit, Cancelled],
-            "lists a source again and reads the headers of new and changed files, reconciling by signature; a job with progress; resource-limit past the file limit",
+            "lists a source again and reads the headers of new and changed files, reconciling by signature; broad disk roots, home directories and user-parent folders are refused: navigate them with disk.folders and choose a specific subfolder; a job with progress; resource-limit past the file limit",
         )
         .starts(&jobs::INDEX_REFRESH),
         method::<NoParams>(
@@ -722,6 +733,13 @@ mod contract_table {
             "applies a preset to each photograph as its own history entry, reporting every one skipped with its reason",
         )
         .starts(&jobs::BATCH_PRESET),
+        method::<BatchPasteSettings>(
+            "batch.paste-settings",
+            "BatchReport",
+            &[Validation, Incompatible, ResourceLimit, Cancelled],
+            "pastes inline settings to each photograph as its own history entry, reporting every skipped photograph and setting",
+        )
+        .starts(&jobs::BATCH_PASTE),
         method::<BatchExport>(
             "batch.export",
             "BatchReport",

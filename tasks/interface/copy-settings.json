@@ -1,0 +1,479 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "copy-settings",
+  "title": "Copy and paste settings between photographs",
+  "objective": "Let a person copy chosen adjustment groups from one photograph into a per-window settings clipboard and paste them onto the open photograph, a Develop filmstrip selection or a Select selection, each photograph getting one undoable history entry, through a new paste-settings action and batch method that agents call identically.",
+  "context_summary": "Implementation and an upstream PR were authorized on 2026-10-08; Auto tone follows in a separate branch. Owner decisions of 2026-10-07: adjustments only (the presettable groups; crop, orientation, lens, perspective, the RAW look and masks are later), every group except White balance checked by default with neutral groups included and the last confirmed choice remembered for quick Cmd+C, multi-selection in Develop's filmstrip, and Paste from previous (Opt+Cmd+V). Everything else in the design is a recorded default the implementer refines within its contract: title-bar placement, labels, confirmation wording, layout and sizes are delegated. Copy reuses the existing read-only preset.capture; the core adds one composite action beside apply-preset and one batch method beside batch.apply-preset sharing its implementation. Core, the clipboard/copy desktop work and the filmstrip selection are independent and run first; Develop paste and Select paste consume them; the rendered scenario and documentation finish. No external inputs: supplied JPEG and RAW fixtures cover every journey. Re-review against current main and use the roadmap's high-tier model minimum. No owner-review, approval or research task is inserted.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Add the paste-settings composite action to luxforge.presets and the batch.paste-settings host method sharing batch.apply-preset's implementation.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "Consumed by TASK-004 and TASK-005. No desktop work here.",
+        "paste-settings is a second action of luxforge.presets, not a field patch, declaring no control: parameters settings (kind settings, required), source (string max_length 128, required, the source photograph's display name) and source-asset (string max_length 96, optional provenance never looked up). parse trims and requires a non-empty source; plan returns Compose with one step per settings key exactly as apply-preset; label is `Paste settings from <source>`. Factor the shared parse/plan rather than copying it.",
+        "batch.paste-settings takes targets, settings, source, optional source_asset_id and the mutation envelope; validates the settings set once against the registry (validate_settings); queues a batch-paste job on the library lane; runs each photograph through paste-settings' own action path with request id <request_id>/<asset_id>; skips removed, draft-open and history-selected photographs; and returns the existing BatchReport with settings_skipped. Generalise the batch preset runner (library/batch.rs PresetApply) to take the action input to run, so both methods share one implementation and one set of skip rules.",
+        "Register the method in api/methods.rs with its schema text beside batch.apply-preset; schema.list must describe both the action (as edit.paste-settings) and the method.",
+        "Bounds are the existing settings bounds (16 actions, 64 fields) and MAX_LIBRARY_BATCH. Answer the performance-rules checklist: payload-only planning, no render beyond the ordinary preview the client requests."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Copy and paste settings design",
+          "target": "docs/design/copy-settings.md",
+          "relevance": "Programmability section: the action, the method, labels, skips and report"
+        },
+        {
+          "kind": "file",
+          "label": "Presets design",
+          "target": "docs/design/presets.md",
+          "relevance": "Settings sets, Compose semantics, skips and the apply-preset contract this mirrors"
+        },
+        {
+          "kind": "file",
+          "label": "Presets module",
+          "target": "crates/luxforge-core/src/modules/presets.rs",
+          "relevance": "apply-preset descriptor, parse, plan and label to share"
+        },
+        {
+          "kind": "file",
+          "label": "Batch runner",
+          "target": "crates/luxforge-core/src/api/owner/library/batch.rs",
+          "relevance": "batch_apply_preset, the per-photograph apply and skip rules to generalise"
+        },
+        {
+          "kind": "file",
+          "label": "Batch tests",
+          "target": "crates/luxforge-core/src/api/owner/library/batch_tests.rs",
+          "relevance": "Existing batch preset tests to mirror for the paste method"
+        },
+        {
+          "kind": "file",
+          "label": "Method table",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "relevance": "batch.* registration, schema text and host_params"
+        },
+        {
+          "kind": "file",
+          "label": "Batch request types",
+          "target": "crates/luxforge-core/src/catalog_types/api.rs",
+          "relevance": "BatchApplyPreset params beside which BatchPasteSettings goes"
+        },
+        {
+          "kind": "file",
+          "label": "JSON CLI preset parity",
+          "target": "crates/luxforge-cli/tests/json_cli/presets.rs",
+          "relevance": "Pattern for the capture/paste/batch parity journey"
+        }
+      ],
+      "acceptance_criteria": [
+        "edit.paste-settings writes one entry whose stack equals apply-preset's for the same settings, labelled `Paste settings from <source>`, storing settings and provenance; identical stacks make no entry.",
+        "Tests cover partial groups keeping untouched target fields, a checked Original group resetting, RAW-to-JPEG and JPEG-to-RAW white balance skipped with reasons, masked layers neither read nor written, an unavailable module refused, nested or non-patch steps refused, undo and restore.",
+        "batch.paste-settings writes each done photograph the entry a single paste writes, reports removed, draft-open and history-selected photographs and per-photograph settings_skipped over mixed kinds, keeps finished photographs on cancel, and shares one runner with batch.apply-preset whose existing tests still pass.",
+        "schema.list lists edit.paste-settings and batch.paste-settings with accurate parameter schemas; a luxforge-json journey captures, pastes, batch-pastes and undoes with stacks and pixels equal to the same edits made with edit.set-*."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add module tests beside the presets module tests and batch tests beside the batch preset tests, with hand-written expected stacks rather than outputs of the code under test.",
+          "Extend the JSON CLI presets journey (or add a sibling) for capture, paste, batch paste and undo."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core presets",
+          "tools/cargo-cached test -p luxforge-core batch",
+          "tools/cargo-cached test -p luxforge-cli --test json_cli presets::"
+        ],
+        "expected_results": [
+          "All new and existing preset and batch tests pass; the parity journey's stacks and pixels match the equivalent edit.set-* edits."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Build the desktop settings clipboard and copy: the per-window clipboard and remembered choice, Copy and Paste title-bar buttons, Cmd+C quick copy, the Shift+Cmd+C chooser, palette entries, and the shared paste confirmation and batch report views.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "Consumed by TASK-004 and TASK-005, which wire paste. Copy needs only the existing preset.capture, so this task does not wait on core work; the confirmation and report views render data shapes that exist today (BatchReport) and are wired to the new method later.",
+        "The clipboard is desktop view state per window: settings set, chosen group labels, source name, asset id, entry id and kind, copy time. The remembered choice starts as every presettable group except Basic's White balance and becomes the last confirmed chooser choice. No system clipboard write, no persistence across windows or restarts.",
+        "Groups come from presettable_groups and capture_fields (state/presets.rs), the create-preset form's source, so labels and RAW white-balance resolution match it. Captions: one capture of every group from the source entry, each field compared with its declared default (Custom or Original); Copy captures again with the checked fields. A group refused by capture (unavailable module, ambiguous) is listed unchecked with the core's reason.",
+        "Source photograph: Develop's displayed entry (including a historical preview), the active photograph in Select photograph views; Select over files/cards disables copy with 'Only developed photographs have settings'. Cmd+C/Shift+Cmd+C bind only when focus is not in a text field; add them to the keymap for both workspaces.",
+        "Title bar: Copy and Paste icon buttons before Undo in both workspaces; Copy opens the chooser; Paste carries the accent dot when holding and a tooltip naming source, time and groups (its press is wired in TASK-004/005). The chooser is a popover with header, All/Edited/None and count, module-grouped rows with mixed module headings, the stays-with-each-photograph note, Cancel and Copy (Return); Escape or an outside press closes it. Palette: Copy settings and Copy settings… with disabled reasons.",
+        "The confirmation sheet (groups, source, per-photograph-entry and no-whole-undo sentences, the kind-dependent skip sentence, Cancel and Paste to N) and the report sheet (left out, without some settings, Copy as JSON) are shared components; reuse the batch preset report layout where it exists. Layout, sizes and wording are delegated within the boards."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Copy and paste settings design",
+          "target": "docs/design/copy-settings.md",
+          "relevance": "Clipboard, remembered choice, Copy, keys and the confirmation/report contract"
+        },
+        {
+          "kind": "file",
+          "label": "Copy board",
+          "target": "docs/design/copy-settings/copy.png",
+          "relevance": "Chooser layout and title-bar buttons"
+        },
+        {
+          "kind": "file",
+          "label": "Components board",
+          "target": "docs/design/copy-settings/components.png",
+          "relevance": "Button states, chooser rows, sentences, palette and report"
+        },
+        {
+          "kind": "file",
+          "label": "Presettable groups",
+          "target": "crates/luxforge-app/src/state/presets.rs",
+          "relevance": "presettable_groups, capture_fields and preset palette entries to reuse"
+        },
+        {
+          "kind": "file",
+          "label": "Keymap",
+          "target": "crates/luxforge-app/src/app/keymap.rs",
+          "relevance": "Develop and Select key tables; no Cmd+C/V bindings exist"
+        },
+        {
+          "kind": "file",
+          "label": "Palette",
+          "target": "crates/luxforge-app/src/state/palette.rs",
+          "relevance": "PaletteAction, host_entries and dispatch"
+        },
+        {
+          "kind": "file",
+          "label": "Menus and dropdowns",
+          "target": "crates/luxforge-ui/src/widgets/dropdown.rs",
+          "relevance": "menu_list and MenuEntry shared helpers"
+        }
+      ],
+      "acceptance_criteria": [
+        "Unit tests: the default choice excludes White balance; a confirmed choice is remembered and used by Cmd+C; Edited checks exactly the Custom rows; module headings show mixed state; unavailable and ambiguous groups are unchecked with reasons; a historical preview copies its entry; Select files/cards disable copy.",
+        "Real-owner tests: quick copy and chooser copy send exactly the preset.capture an independent JSON client sends and fill the clipboard with its result; captions match capture compared with declared defaults; text-field focus keeps the system Cmd+C.",
+        "No capture runs in view(); captures are owner tasks; the clipboard is bounded to one settings set.",
+        "The confirmation and report components render from fixture data in widget tests, including the RAW/JPEG skip sentence."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add state and app tests beside the presets form and palette tests.",
+          "Add widget tests for the chooser rows, confirmation and report."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app copy_settings",
+          "tools/cargo-cached test -p luxforge-app presets",
+          "tools/cargo-cached test -p luxforge-ui"
+        ],
+        "expected_results": [
+          "Clipboard, chooser, keymap and palette tests pass with requests equal to independent JSON client requests."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Add multi-selection to Develop's filmstrip: Cmd-click and Shift-click without opening, Cmd+A, Escape, the selected-count header, selected-cell drawing and a right-press cell menu.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "Consumed by TASK-004, which adds the paste and copy menu items and Cmd+V to the selection. This task delivers the selection and the menu mechanism only, with Select all N and Select only the open photograph as its first items.",
+        "Rules: the open photograph is always selected; plain click opens and selects alone (unchanged); Cmd-click toggles another photograph without opening; Shift-click selects the range from the open photograph without opening; Cmd+A (focus not in a text field) selects the whole set; arrow keys step and select the new photograph alone; Escape selects only the open photograph; the selection clears when the set changes and drops photographs that leave it.",
+        "State lives in DevelopSet/StripModel (state/develop.rs) as view state; it changes no recipe or catalog data and is not on the owner. The filmstrip widget (luxforge-ui widgets/filmstrip.rs) needs modifier-aware presses and a right press publishing the cell and position, like the thumbnail grid's GridContext; draw selected cells with a quiet accent border and tint and keep the open cell's full border.",
+        "The menu follows the Select photo menu and the Develop MenuTarget patterns: on a selected cell it targets the selection; on an unselected cell it targets that photograph and leaves the selection unchanged.",
+        "Stepping must keep its synchronous, allocation-free path (performance rule 12); selection changes do not prepare neighbouring photographs or change the strip caches."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Copy and paste settings design",
+          "target": "docs/design/copy-settings.md",
+          "relevance": "The filmstrip selection table and cell menu"
+        },
+        {
+          "kind": "file",
+          "label": "Filmstrip selection board",
+          "target": "docs/design/copy-settings/paste.png",
+          "relevance": "Selected cells, header count and the cell menu"
+        },
+        {
+          "kind": "file",
+          "label": "Development set state",
+          "target": "crates/luxforge-app/src/state/develop.rs",
+          "relevance": "DevelopSet and StripModel"
+        },
+        {
+          "kind": "file",
+          "label": "Filmstrip widget",
+          "target": "crates/luxforge-ui/src/widgets/filmstrip.rs",
+          "relevance": "Cell presses to extend with modifiers and right press"
+        },
+        {
+          "kind": "file",
+          "label": "Grid context press",
+          "target": "crates/luxforge-ui/src/widgets/thumbnail_grid/input.rs",
+          "relevance": "Existing right-press publication pattern"
+        },
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Development set, filmstrip caches and stepping rules to preserve"
+        }
+      ],
+      "acceptance_criteria": [
+        "State tests cover every rule in the design's selection table, including set changes, photographs leaving the set and the open photograph staying selected.",
+        "Widget tests show modifier presses and right presses publish the right cell and position, and selected and open cells draw distinctly.",
+        "The existing filmstrip and develop-picks scenarios' assertions still hold; stepping keeps its synchronous path and adds no allocation or preparation."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add state tests for the selection rules and widget tests for the filmstrip presses.",
+          "Run the existing filmstrip tests."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app develop",
+          "tools/cargo-cached test -p luxforge-ui filmstrip"
+        ],
+        "expected_results": [
+          "Selection and widget tests pass; existing filmstrip tests are unchanged and pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Wire paste in Develop: Cmd+V into the open photograph or to the filmstrip selection, Paste from previous (Opt+Cmd+V), the Paste button and palette entries, filmstrip menu paste and copy items, confirmation, progress and report.",
+      "status": "completed",
+      "dependencies": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003"
+      ],
+      "extra_context": [
+        "With only the open photograph selected, Cmd+V sends edit.paste-settings through the ordinary action path (asset.state, one preview job, history merge) and the status bar names pasted and skipped groups with Undo; a no-op says nothing changed. With more than one selected, confirm, then send batch.paste-settings with their asset ids; the open photograph is read again by the event sync after the batch, as after a batch preset.",
+        "Paste from previous captures the remembered choice from the photograph this window showed in Develop just before the current one, at its current entry, and pastes into the open photograph only; the clipboard is unchanged; disabled with 'No previous photograph in this window' when none; a photograph no longer in the catalog is refused with the core's reason.",
+        "Disabled reasons match the Presets rows: no photograph, open draft, historical preview, request in flight; an empty clipboard disables Paste with 'Nothing copied yet'. Palette: Paste settings (with target count) and Paste settings from previous photograph.",
+        "Filmstrip menu: on a selected cell Paste settings to N… (Cmd+V), Copy settings from that photograph, Copy settings from that photograph…; on an unselected cell Paste settings to that photograph (a batch of one, no confirmation) and the copies. Copy from a non-open photograph captures at its current entry.",
+        "One batch of this desktop's runs at a time across apply preset, export and paste; progress and Cancel through the status bar and Performance section; the report from TASK-002's component."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Copy and paste settings design",
+          "target": "docs/design/copy-settings.md",
+          "relevance": "Paste into the open photograph, Paste from previous, the filmstrip selection, confirmation and report"
+        },
+        {
+          "kind": "file",
+          "label": "Paste board",
+          "target": "docs/design/copy-settings/paste.png",
+          "relevance": "History label, status sentence, tooltip and cell menu"
+        },
+        {
+          "kind": "file",
+          "label": "Develop workspace design",
+          "target": "docs/design/develop-workspace.md",
+          "relevance": "Action path, disabled states and title bar"
+        },
+        {
+          "kind": "file",
+          "label": "Desktop presets apply",
+          "target": "crates/luxforge-app/src/app/presets.rs",
+          "relevance": "The apply path and completion handling paste mirrors"
+        },
+        {
+          "kind": "file",
+          "label": "Develop set app",
+          "target": "crates/luxforge-app/src/app/develop.rs",
+          "relevance": "Development set messages and the previous photograph"
+        },
+        {
+          "kind": "file",
+          "label": "Batch caller",
+          "target": "crates/luxforge-app/src/app/select_catalog.rs",
+          "relevance": "Existing batch submission, job following and report handling"
+        }
+      ],
+      "acceptance_criteria": [
+        "Real-owner tests: Cmd+V sends edit.paste-settings or batch.paste-settings exactly as an independent JSON client writes them, chosen by the filmstrip selection; history labels, stacks and status sentences match the core's result including skips and no-ops; each disabled reason holds.",
+        "Paste from previous pastes the previous photograph's remembered groups into the open photograph only, leaves the clipboard unchanged, and is disabled or refused with the stated reasons.",
+        "A filmstrip batch confirms, runs as one job with progress and Cancel, reads the open photograph again afterwards and opens its report; a paste to one unselected photograph runs without confirmation.",
+        "Cmd+V and Opt+Cmd+V in a text field keep their text behaviour."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add real-owner app tests over supplied JPEG and RAW fixtures for each paste path and disabled state.",
+          "Assert requests against independently constructed JSON."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app copy_settings",
+          "tools/cargo-cached test -p luxforge-app develop"
+        ],
+        "expected_results": [
+          "Develop paste, previous, selection batch and menu tests pass with correlated history, stacks and status."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Wire copy and paste in Select: Cmd+C/Shift+Cmd+C from the active photograph, Cmd+V and the grid menu pasting to the selection, the Info panel's clipboard card and Paste settings to N, confirmation, progress and report.",
+      "status": "completed",
+      "dependencies": [
+        "TASK-001",
+        "TASK-002"
+      ],
+      "extra_context": [
+        "batch.paste-settings with targets {kind: selection} is sent synchronously in the gesture's update as this desktop's actor, as Apply preset… is, so it names the selection on screen; a stale view's refusal reads the view again. A selection of one pastes without confirmation; more than one confirms first and asks again if the selection changed meanwhile.",
+        "The Info panel's Develop band shows the clipboard card (source grid preview, name, group count, time, entry, group chips) and Paste settings to N before Apply preset… and Export N… only while the clipboard holds settings; an empty clipboard leaves the band as today. The confirmation's skip sentence uses the selected rows' kinds already read for the panel.",
+        "Grid right-press menu gains Copy settings, Copy settings… and Paste settings to N beside Send back and Remove. Over Removed, files or cards, paste is refused or disabled as the other batches are. One batch at a time is shared with apply preset and export.",
+        "After the batch the view is evaluated again so Edited counts the new entries, and the event sync reads any photograph open in Develop, as after a batch preset."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Copy and paste settings design",
+          "target": "docs/design/copy-settings.md",
+          "relevance": "In Select, confirmation and report"
+        },
+        {
+          "kind": "file",
+          "label": "Select board",
+          "target": "docs/design/copy-settings/select-paste.png",
+          "relevance": "Clipboard card, Paste button and confirmation"
+        },
+        {
+          "kind": "file",
+          "label": "Catalog design",
+          "target": "docs/design/catalog.md",
+          "relevance": "Info panel, batch preset and export behaviour, selection targets and staleness"
+        },
+        {
+          "kind": "file",
+          "label": "Select catalog app",
+          "target": "crates/luxforge-app/src/app/select_catalog.rs",
+          "relevance": "Batch preset submission, photo menu and job following"
+        },
+        {
+          "kind": "file",
+          "label": "Select catalog state",
+          "target": "crates/luxforge-app/src/state/select_catalog.rs",
+          "relevance": "PhotoMenu choices and batch_preset_params"
+        },
+        {
+          "kind": "file",
+          "label": "Select catalog view",
+          "target": "crates/luxforge-app/src/view/select_catalog.rs",
+          "relevance": "Info panel and photo menu drawing"
+        }
+      ],
+      "acceptance_criteria": [
+        "Real-owner tests over a seeded catalog: copy from the active photograph, paste to one and to several selected photographs with the confirmation, a stale selection refused and re-read, Removed and file views refused or disabled, each request equal to an independent JSON client's.",
+        "The Info panel shows the clipboard card and Paste button only while holding settings; the confirmation's skip sentence matches the selection's kinds; the report lists left-out and partially applied photographs with the owner's reasons.",
+        "After a batch, Edited counts and catalog counts are read again and a photograph open in Develop that took an entry is read again."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Extend the Select catalog real-owner tests with copy and paste journeys.",
+          "Add view-model tests for the Info panel card and menu choices."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app select",
+          "tools/cargo-cached test -p luxforge-app copy_settings"
+        ],
+        "expected_results": [
+          "Select copy, paste, confirmation, staleness and report tests pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Add the rendered copy-settings smoke scenario, publish current documentation, and run final verification.",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-004",
+        "TASK-005"
+      ],
+      "extra_context": [
+        "Scenario in the hidden background bundle over supplied JPEG and RAW fixtures: copy with Cmd+C and through the chooser, paste into the next photograph in the development set, undo, Paste from previous, paste to a three-photograph filmstrip selection through its confirmation, paste to a Select selection with a RAW-to-JPEG white balance skip, and open the report. Every frame correlates clipboard, selection, revision and entry, history label, stored layer payloads and status sentence; target pixels move in the source's direction. Register it beside the presets scenario and in the rendered tier list.",
+        "Documentation: feature status, user guide, the Develop workspace tool array and keys, the catalog design's Info panel and filmstrip, the presets design's scope line and Later table, development.md's scenario table, and the roadmap and task index statuses; describe delivered behaviour only and keep the design's Later table for what remains.",
+        "No timing run is required: the feature adds no render path. The performance-rules checklist is answered once for the finished change.",
+        "Implementation, documentation, final quick verification and the dedicated native M2/Metal journey over JPEGs and the public Nikon Z6 RAW pass, including Original/Custom captions, changed Select targets, both white-balance skip directions and source preservation. Full headless checks and release acceptance pass. All rendered scenarios have passing evidence; basic-crop, mask-brush, mask-interactions and performance required isolated reruns after failed assertions in the aggregate run. The aggregate rendered tier is not a pass. Its project-wide GPU corpus gate remains unrun without the owner’s manifest and three matching private RAW originals. Keep this final task open for a complete rendered-tier pass; do not describe the missing corpus gate as passed."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Copy and paste settings design",
+          "target": "docs/design/copy-settings.md",
+          "relevance": "Acceptance section and rendered scenario contract"
+        },
+        {
+          "kind": "file",
+          "label": "Development and evidence",
+          "target": "docs/engineering/development.md",
+          "relevance": "Smoke scenarios, background launches and verification tiers"
+        },
+        {
+          "kind": "file",
+          "label": "Evidence scenarios",
+          "target": "crates/luxforge-app/src/app/evidence.rs",
+          "relevance": "Scenario registration beside presets"
+        },
+        {
+          "kind": "file",
+          "label": "Feature status",
+          "target": "docs/features.md",
+          "relevance": "Replace the planned row with verified behaviour"
+        },
+        {
+          "kind": "file",
+          "label": "User guide",
+          "target": "docs/user-guide.md",
+          "relevance": "Document copy and paste with presets"
+        }
+      ],
+      "acceptance_criteria": [
+        "The copy-settings scenario passes in the background bundle with every frame's correlated state and pixel direction checks.",
+        "Documentation describes delivered behaviour only, with no unrun check claimed; plans, indexes and links validate.",
+        "Final quick and rendered verification tiers pass."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Run the new scenario, then the quick and rendered tiers once the feature is complete."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask smoke --scenario copy-settings --output NEW_DIR",
+          "tools/cargo-cached xtask check-repository",
+          "tools/cargo-cached xtask verify --tier quick --output NEW_DIR",
+          "tools/cargo-cached xtask verify --tier rendered --output NEW_DIR"
+        ],
+        "expected_results": [
+          "Scenario, repository checks and both verification tiers pass."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-004",
+        "TASK-005"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-006"
+      ]
+    }
+  ]
+}

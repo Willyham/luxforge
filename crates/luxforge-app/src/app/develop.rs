@@ -33,7 +33,7 @@ use crate::app::{
     Before, Editor,
     gesture::Starting,
     loupe_frames::{self, LoupeFrames, LoupeFramesMessage, Slot, Want},
-    message::{Message, develop::DevelopMessage, select::SelectMessage},
+    message::{Message, develop::DevelopMessage},
     select_previews::{self, Item, SelectPreviewMessage, SelectPreviews, Wanted},
     tasks::{self, call, owner_task, owner_work, request},
     waker::Signal,
@@ -45,7 +45,7 @@ use crate::state::{
         Confirmation, DevelopSet, Developing, SetPhoto, ShownPreview, develop_params,
         developed_photos, developed_sentence,
     },
-    select::{RowsRequest, Shown},
+    select::RowsRequest,
 };
 use iced::{Subscription, Task, widget::image::Handle};
 use luxforge_core::{
@@ -261,6 +261,7 @@ pub(crate) fn set_now(
             if let RowItem::Photo { asset_id } = row.item {
                 photos.push(SetPhoto {
                     asset_id,
+                    kind: Some(row.kind),
                     name: row.file_name,
                 });
             }
@@ -269,6 +270,24 @@ pub(crate) fn set_now(
     }
     let active = (position - start) as usize;
     Ok((photos, active))
+}
+
+pub(crate) fn folder_set_now(
+    owner: &OwnerHandle,
+    query: &luxforge_core::catalog_types::ViewQuery,
+    active: Option<&AssetId>,
+) -> Result<(Vec<SetPhoto>, usize), String> {
+    let client = owner.register();
+    let result = (|| {
+        let summary = super::select::evaluate_now(owner, client, query)?.0;
+        let (photos, _) = set_now(owner, client, summary.revision, summary.count, 0)?;
+        let index = active
+            .and_then(|asset| photos.iter().position(|photo| &photo.asset_id == asset))
+            .unwrap_or(0);
+        Ok((photos, index))
+    })();
+    owner.disconnect(client);
+    result
 }
 
 /// A photograph as the large previews cache names it: its current entry, which `preview.read`
@@ -328,6 +347,28 @@ impl Editor {
             DevelopMessage::Started(result) => return self.develop_started(result),
             DevelopMessage::Ended { job, result } => return self.develop_ended(job, result),
             DevelopMessage::SetRead { serial, result } => self.set_read(serial, result),
+            DevelopMessage::FolderSetRead { serial, result } => {
+                if serial != self.develop.set_serial {
+                    return Task::none();
+                }
+                self.develop.state.folder_loading = false;
+                match result {
+                    Ok((photos, index)) if !photos.is_empty() => {
+                        self.develop.state.set = Some(DevelopSet::new(serial, photos, index));
+                        self.develop.state.collapsed = false;
+                        self.status.text = "Showing Develop".into();
+                        let shown = self.show_develop_workspace();
+                        return Task::batch([shown, self.switch_to(index)]);
+                    }
+                    Ok(_) => {
+                        self.status.text =
+                            "This catalog folder has no photographs to develop".into()
+                    }
+                    Err(error) => {
+                        self.status.text = format!("Could not load the development set: {error}")
+                    }
+                }
+            }
             DevelopMessage::Step(delta) => {
                 let Some(index) = self
                     .develop
@@ -339,6 +380,34 @@ impl Editor {
                     return Task::none();
                 };
                 return self.switch_to(index);
+            }
+            DevelopMessage::Select {
+                index,
+                command,
+                shift,
+            } => {
+                if let Some(set) = &mut self.develop.state.set {
+                    set.select(index, command, shift);
+                }
+            }
+            DevelopMessage::SelectAll => {
+                self.view_state.copy_settings.cell_menu = None;
+                if let Some(set) = &mut self.develop.state.set {
+                    if set.reading {
+                        self.status.text = "Wait for the development set to finish loading".into();
+                    } else {
+                        set.selected = (0..set.photos.len()).collect();
+                    }
+                }
+            }
+            DevelopMessage::SelectOnly => {
+                self.view_state.copy_settings.cell_menu = None;
+                if let Some(set) = &mut self.develop.state.set {
+                    set.selected.clear();
+                }
+            }
+            DevelopMessage::CellMenu { index, at } => {
+                self.view_state.copy_settings.cell_menu = Some((index, (at.x, at.y)));
             }
             DevelopMessage::Show(index) => return self.switch_to(index),
             DevelopMessage::Collapse => {
@@ -572,11 +641,85 @@ impl Editor {
             return Task::none();
         }
         self.develop.set_serial += 1;
+        self.develop.state.folder_query = None;
         self.develop.state.set = Some(DevelopSet::new(self.develop.set_serial, photos, 0));
         self.develop.state.collapsed = false;
-        let shown = self.dispatch(Message::Select(SelectMessage::Switch(Shown::Develop)));
+        let shown = self.show_develop_workspace();
         let opened = self.switch_to(0);
         Task::batch([shown, opened])
+    }
+
+    /// Catalog views select or clear the Develop folder; import browsing preserves it.
+    /// Changing that selection fences an outstanding set read for the previous folder.
+    pub(crate) fn remember_develop_folder(
+        &mut self,
+        query: &luxforge_core::catalog_types::ViewQuery,
+    ) {
+        let folder = match &query.source {
+            luxforge_core::catalog_types::ViewSource::CatalogFolder { .. } => Some(query.clone()),
+            source if source.over_files() => return,
+            _ => None,
+        };
+        if self.develop.state.folder_query != folder {
+            self.develop.set_serial += 1;
+            self.develop.state.folder_loading = false;
+            self.develop.state.folder_query = folder;
+        }
+    }
+
+    /// Enter Develop using the last catalog folder, or the previously loaded set.
+    pub(crate) fn enter_develop_set(&mut self) -> Task<Message> {
+        if self.develop.state.folder_loading {
+            return Task::none();
+        }
+        if let Some(query) = self.develop.state.folder_query.clone() {
+            self.develop.set_serial += 1;
+            let serial = self.develop.set_serial;
+            self.develop.state.folder_loading = true;
+            self.status.text = "Reading the catalog folder for Develop…".into();
+            let (owner, active) = (
+                self.owner.clone(),
+                self.document
+                    .state
+                    .as_ref()
+                    .map(|state| state.asset.id.clone()),
+            );
+            return owner_task(
+                move || folder_set_now(&owner, &query, active.as_ref()),
+                move |result| Message::Develop(DevelopMessage::FolderSetRead { serial, result }),
+            );
+        }
+        if self
+            .develop
+            .state
+            .set
+            .as_ref()
+            .is_some_and(|set| !set.photos.is_empty())
+        {
+            let index = self.develop.state.set.as_ref().unwrap().active;
+            let shown = self.show_develop_workspace();
+            return Task::batch([shown, self.switch_to(index)]);
+        }
+        if let Some(state) = &self.document.state {
+            self.develop.set_serial += 1;
+            self.develop.state.set = Some(DevelopSet::new(
+                self.develop.set_serial,
+                vec![SetPhoto {
+                    asset_id: state.asset.id.clone(),
+                    kind: Some(state.asset.source.tag()),
+                    name: state
+                        .asset
+                        .locator
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                }],
+                0,
+            ));
+            return self.show_develop_workspace();
+        }
+        self.status.text = "Pick a catalog folder or choose images to develop from the grid".into();
+        Task::none()
     }
 
     // -- The development set --------------------------------------------------------------------
@@ -587,6 +730,11 @@ impl Editor {
         let Some(summary) = &self.select.state.summary else {
             return Task::none();
         };
+        self.develop.state.folder_query = matches!(
+            summary.query.source,
+            luxforge_core::catalog_types::ViewSource::CatalogFolder { .. }
+        )
+        .then(|| summary.query.clone());
         let (revision, count) = (summary.revision, summary.count);
         let Some(row) = self.select.state.rows.read(position) else {
             self.status.text = "Reading the photograph\u{2026}".into();
@@ -597,6 +745,7 @@ impl Editor {
         };
         let photo = SetPhoto {
             asset_id: asset_id.clone(),
+            kind: Some(row.kind),
             name: row.file_name.clone(),
         };
         self.develop.set_serial += 1;
@@ -607,7 +756,7 @@ impl Editor {
         self.develop.state.collapsed = false;
         // The grid's wake is the one a client has; Develop is passed it.
         self.select.previews.watch(&self.owner, self.client);
-        let shown = self.dispatch(Message::Select(SelectMessage::Switch(Shown::Develop)));
+        let shown = self.show_develop_workspace();
         let opened = self.switch_to(0);
         let read = if count > 1 {
             let (owner, client) = (self.owner.clone(), self.client);
@@ -645,6 +794,7 @@ impl Editor {
                 if !photos.is_empty() {
                     set.photos = photos;
                     set.active = index;
+                    set.selected.clear();
                     set.first = index;
                     set.reveal(self.develop.state.capacity);
                 }
@@ -656,6 +806,7 @@ impl Editor {
     /// Move to the set's photograph at `index`: the one document is replaced through the open path,
     /// its cached large preview drawn at once when it is decoded. Refused while a draft is open.
     pub(crate) fn switch_to(&mut self, index: usize) -> Task<Message> {
+        self.view_state.copy_settings.cell_menu = None;
         let Some(photo) = self
             .develop
             .state
@@ -679,6 +830,7 @@ impl Editor {
         if (open && self.develop.switch.is_none()) || moving {
             if let Some(set) = &mut self.develop.state.set {
                 set.active = index;
+                set.selected.clear();
                 set.reveal(self.develop.state.capacity);
             }
             return Task::none();
@@ -695,6 +847,7 @@ impl Editor {
         }
         if let Some(set) = &mut self.develop.state.set {
             set.active = index;
+            set.selected.clear();
             set.reveal(self.develop.state.capacity);
         }
         // The open path's own bookkeeping, as opening a file does: one open request, the frames in
@@ -988,6 +1141,9 @@ impl Editor {
     /// move, and, with a photograph open in Develop, its newest requested frame on screen. What an
     /// evidence step settles on; a capture then waits for the photograph's actual GPU draw.
     pub(crate) fn develop_quiet(&self) -> bool {
+        if self.develop.state.folder_loading {
+            return false;
+        }
         let state = &self.develop.state;
         !state.planning
             && state.developing.is_none()
@@ -1020,6 +1176,7 @@ impl Editor {
                 "active": set.active,
                 "first": set.first,
                 "reading": set.reading,
+                "selected": set.selected_assets(),
                 "assets": set.photos.iter().map(|photo| &photo.asset_id).collect::<Vec<_>>(),
                 "names": set.photos.iter().map(|photo| &photo.name).collect::<Vec<_>>(),
             })

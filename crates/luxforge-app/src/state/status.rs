@@ -267,8 +267,11 @@ fn figure(ms: f64) -> String {
 /// screen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Happened {
+    Pasted(String),
     /// A photograph was opened.
-    Opened { file: String },
+    Opened {
+        file: String,
+    },
     /// An action made the entry at `sequence`. `agent` names another client that made it; `None`
     /// is this desktop.
     Applied {
@@ -277,14 +280,25 @@ pub(crate) enum Happened {
         agent: Option<String>,
     },
     /// Undo moved the current state back past the entry labelled `label`.
-    Undid { label: String },
+    Undid {
+        label: String,
+    },
     /// An edit returned its control to where a chain of edits of it began, so auto-collapse hid
     /// the chain's entry, labelled `label`, and the entry at `sequence` is current again.
-    Collapsed { label: String, sequence: u64 },
+    Collapsed {
+        label: String,
+        sequence: u64,
+    },
     /// Redo moved the current state forward to an entry that already existed.
-    Redid { label: String, sequence: u64 },
+    Redid {
+        label: String,
+        sequence: u64,
+    },
     /// A historical preview returned to the current entry.
-    Returned { label: String, sequence: u64 },
+    Returned {
+        label: String,
+        sequence: u64,
+    },
     /// A composite action changed nothing, because nothing it holds applies to the photo.
     NothingApplied,
 }
@@ -347,6 +361,7 @@ impl Happened {
 
     pub(crate) fn sentence(&self) -> String {
         match self {
+            Self::Pasted(sentence) => sentence.clone(),
             Self::Opened { file } => format!("Opened {file}"),
             Self::Applied {
                 label,

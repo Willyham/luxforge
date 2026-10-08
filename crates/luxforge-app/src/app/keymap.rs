@@ -154,6 +154,7 @@ pub(crate) struct KeyContext {
     pub(crate) develop_confirm: bool,
     /// Develop has a development set, so `←` and `→` move through it.
     pub(crate) development_set: bool,
+    pub(crate) copy_settings_modal: u8,
 }
 
 /// One event as one message, or nothing. `status` is Iced's: a key a text field already consumed
@@ -212,6 +213,55 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
             _ => None,
         };
     }
+    if context.copy_settings_modal > 0 {
+        use crate::app::message::copy_settings::CopySettingsMessage as C;
+        return match keyboard {
+            Keys::KeyPressed {
+                key: Key::Named(Named::Escape),
+                ..
+            } => Some(Message::CopySettings(C::Cancel)),
+            Keys::KeyPressed {
+                key: Key::Named(Named::Enter),
+                ..
+            } if status == Status::Ignored && context.copy_settings_modal < 3 => {
+                Some(Message::CopySettings(if context.copy_settings_modal == 2 {
+                    C::Confirm
+                } else {
+                    C::Chosen
+                }))
+            }
+            _ => None,
+        };
+    }
+    if !context.palette_open
+        && status == Status::Ignored
+        && let Keys::KeyPressed { key, modifiers, .. } = keyboard
+        && modifiers.command()
+    {
+        use crate::app::message::copy_settings::CopySettingsMessage as C;
+        if character(key, "c") && !modifiers.alt() {
+            return Some(Message::CopySettings(C::Copy {
+                choose: modifiers.shift(),
+                source: None,
+            }));
+        }
+        if character(key, "v") && !modifiers.shift() {
+            if !modifiers.alt() {
+                return Some(Message::CopySettings(C::Paste));
+            }
+            if !context.select {
+                return Some(Message::CopySettings(C::Previous));
+            }
+        }
+        if character(key, "a")
+            && !context.select
+            && context.development_set
+            && !modifiers.alt()
+            && !modifiers.shift()
+        {
+            return Some(Message::Develop(DevelopMessage::SelectAll));
+        }
+    }
     // The Select workspace has its own keys (`docs/design/catalog.md#keyboard`). None of Develop's
     // reaches it, so nothing acts on a photograph it does not show.
     if context.select {
@@ -252,6 +302,20 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         return None;
     };
     if modifiers.command() {
+        if status == Status::Ignored
+            && character(key, "u")
+            && !modifiers.shift()
+            && !modifiers.alt()
+            && !repeat
+            && !context.select
+        {
+            return Some(Message::Action(
+                crate::app::message::action::ActionMessage::Run {
+                    action: "auto-tone".into(),
+                    preset: serde_json::Map::new(),
+                },
+            ));
+        }
         if character(key, "o") {
             return Some(Message::Sync(SyncMessage::Open));
         }
@@ -449,6 +513,9 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         let leave = context.leave_to.as_deref().unwrap_or(POINTER_MODE);
         return Some(Message::View(ViewMessage::SetMode(leave.into())));
     }
+    if context.development_set && matches!(key, Key::Named(Named::Escape)) {
+        return Some(Message::Develop(DevelopMessage::SelectOnly));
+    }
     // Single-key shortcuts act only when no text field took the key, and only on the first press:
     // holding a letter down must not re-run its command once per repeat.
     if *repeat {
@@ -463,6 +530,9 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     if character(key, "i") {
         return (!context.palette_open && modifiers.is_empty())
             .then_some(Message::View(ViewMessage::ToggleInformation));
+    }
+    if character(key, "h") && context.mask_brush && modifiers.is_empty() {
+        return Some(Message::Mask(MaskMessage::ToggleHandles));
     }
     // O is the mask overlay in Mask mode and the thirds guide elsewhere; modified, it is neither.
     if character(key, "o") {
@@ -659,9 +729,15 @@ fn select_keys(keyboard: &Keys, status: Status, context: &KeyContext) -> Option<
             CatalogMessage::Act(CatalogAction::Remove),
         )));
     }
-    // `Space` or `E` shows the active frame in the loupe.
-    if !context.loupe_open && (matches!(key, Key::Named(Named::Space)) || character(key, "e")) {
-        return Some(Message::Select(SelectMessage::Loupe(LoupeMessage::Open)));
+    // `Space` or `E` toggles between the active frame's loupe and the grid.
+    if matches!(key, Key::Named(Named::Space)) || character(key, "e") {
+        return Some(Message::Select(SelectMessage::Loupe(
+            if context.loupe_open {
+                LoupeMessage::Close
+            } else {
+                LoupeMessage::Open
+            },
+        )));
     }
     None
 }
@@ -729,6 +805,82 @@ mod tests {
     use super::*;
     use iced::keyboard::Modifiers;
 
+    #[test]
+    fn copy_settings_shortcuts_yield_to_fields_and_keep_select_separate() {
+        use crate::app::message::copy_settings::CopySettingsMessage as C;
+        let context = KeyContext {
+            development_set: true,
+            ..KeyContext::default()
+        };
+        for key in ["c", "v", "a"] {
+            assert!(
+                keymap(
+                    &pressed(Key::Character(key.into()), Modifiers::COMMAND),
+                    Status::Captured,
+                    &context
+                )
+                .is_none()
+            );
+        }
+        assert!(matches!(
+            keymap(
+                &pressed(Key::Character("c".into()), Modifiers::COMMAND),
+                Status::Ignored,
+                &context
+            ),
+            Some(Message::CopySettings(C::Copy { choose: false, .. }))
+        ));
+        assert!(matches!(
+            keymap(
+                &pressed(
+                    Key::Character("c".into()),
+                    Modifiers::COMMAND | Modifiers::SHIFT
+                ),
+                Status::Ignored,
+                &context
+            ),
+            Some(Message::CopySettings(C::Copy { choose: true, .. }))
+        ));
+        assert!(matches!(
+            keymap(
+                &pressed(
+                    Key::Character("v".into()),
+                    Modifiers::COMMAND | Modifiers::ALT
+                ),
+                Status::Ignored,
+                &context
+            ),
+            Some(Message::CopySettings(C::Previous))
+        ));
+        let select = KeyContext {
+            select: true,
+            ..context
+        };
+        assert!(!matches!(
+            keymap(
+                &pressed(
+                    Key::Character("v".into()),
+                    Modifiers::COMMAND | Modifiers::ALT
+                ),
+                Status::Ignored,
+                &select
+            ),
+            Some(Message::CopySettings(C::Previous))
+        ));
+        let modal = KeyContext {
+            copy_settings_modal: 2,
+            ..select
+        };
+        assert!(matches!(
+            keymap(
+                &pressed(Key::Named(Named::Escape), Modifiers::empty()),
+                Status::Ignored,
+                &modal
+            ),
+            Some(Message::CopySettings(C::Cancel))
+        ));
+    }
+
     fn pressed(key: Key, modifiers: Modifiers) -> Event {
         held(key, modifiers, false)
     }
@@ -762,6 +914,48 @@ mod tests {
 
     /// Command with plus or minus steps the zoom a stop at a time, whatever has the focus, held
     /// or not; the bare keys and Option are not zoom keys.
+    #[test]
+    fn auto_tone_shortcut_respects_text_focus_workspace_modifiers_and_repeat() {
+        let context = KeyContext::default();
+        let event = pressed(Key::Character("u".into()), Modifiers::COMMAND);
+        assert!(
+            matches!(keymap(&event, Status::Ignored, &context), Some(Message::Action(crate::app::message::action::ActionMessage::Run { action, .. })) if action == "auto-tone")
+        );
+        assert!(keymap(&event, Status::Captured, &context).is_none());
+        assert!(
+            keymap(
+                &event,
+                Status::Ignored,
+                &KeyContext {
+                    select: true,
+                    ..context.clone()
+                }
+            )
+            .is_none()
+        );
+        for modifiers in [
+            Modifiers::COMMAND | Modifiers::SHIFT,
+            Modifiers::COMMAND | Modifiers::ALT,
+        ] {
+            assert!(
+                keymap(
+                    &pressed(Key::Character("u".into()), modifiers),
+                    Status::Ignored,
+                    &context
+                )
+                .is_none()
+            );
+        }
+        assert!(
+            keymap(
+                &held(Key::Character("u".into()), Modifiers::COMMAND, true),
+                Status::Ignored,
+                &context
+            )
+            .is_none()
+        );
+    }
+
     #[test]
     fn command_plus_and_minus_step_the_zoom() {
         let context = KeyContext::default();
@@ -917,6 +1111,7 @@ mod tests {
             loupe_open: false,
             develop_confirm: false,
             development_set: false,
+            copy_settings_modal: 0,
         }
     }
 
@@ -942,6 +1137,37 @@ mod tests {
             *repeat = true;
         }
         assert!(keymap(&repeated, Status::Ignored, &crop).is_none());
+    }
+
+    #[test]
+    fn h_toggles_mask_handles_only_and_respects_focus_modifiers_and_repeat() {
+        let mask = KeyContext {
+            mask_brush: true,
+            ..context()
+        };
+        let h = pressed(letter("h"), Modifiers::empty());
+        assert!(matches!(
+            keymap(&h, Status::Ignored, &mask),
+            Some(Message::Mask(MaskMessage::ToggleHandles))
+        ));
+        assert!(keymap(&h, Status::Ignored, &context()).is_none());
+        assert!(keymap(&h, Status::Captured, &mask).is_none());
+        assert!(
+            keymap(
+                &held(letter("h"), Modifiers::empty(), true),
+                Status::Ignored,
+                &mask
+            )
+            .is_none()
+        );
+        for modifiers in [
+            Modifiers::SHIFT,
+            Modifiers::ALT,
+            Modifiers::CTRL,
+            Modifiers::LOGO,
+        ] {
+            assert!(keymap(&pressed(letter("h"), modifiers), Status::Ignored, &mask).is_none());
+        }
     }
 
     #[test]

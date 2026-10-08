@@ -243,9 +243,50 @@ pub(crate) fn validate_settings(
     registry: &ModuleRegistry,
     settings: &Map<String, Value>,
 ) -> Result<(), Error> {
+    validate_composite(registry, settings)?;
+    for action in settings.keys() {
+        registry.settings_action(action)?;
+    }
+    Ok(())
+}
+
+/// The same shape/overlap rules, leaving availability until an applied step is known to match
+/// the target photo's kind. Store-time validation additionally requires every provider available.
+pub(crate) fn validate_composite(
+    registry: &ModuleRegistry,
+    settings: &Map<String, Value>,
+) -> Result<(), Error> {
     check_settings(PRESET_SETTINGS, settings)?;
     for (action_id, fields) in settings {
-        let (_, action) = registry.patch_action(action_id)?;
+        let (_, action) = match registry.settings_action(action_id) {
+            Ok(action) => action,
+            Err(error) if error.kind == crate::ErrorKind::Incompatible => {
+                registry.action(action_id).ok_or(error)?
+            }
+            Err(error) => return Err(error),
+        };
+        let empty = fields.as_object().is_some_and(Map::is_empty);
+        if action.analysis.is_some() != empty {
+            return Err(Error::validation(format!(
+                "parameter settings must give action {action_id} {}",
+                if action.analysis.is_some() {
+                    "an empty analysis-step object"
+                } else {
+                    "a non-empty object of fields"
+                }
+            )));
+        }
+        if let Some(analysis) = &action.analysis {
+            for (patch, overwritten) in &analysis.writes {
+                if let Some(fields) = settings.get(patch).and_then(Value::as_object)
+                    && let Some(name) = overwritten.iter().find(|name| fields.contains_key(*name))
+                {
+                    return Err(Error::validation(format!(
+                        "{action_id} overwrites {patch}.{name}; a preset cannot carry both"
+                    )));
+                }
+            }
+        }
         check_parameters(action, fields)?;
     }
     Ok(())

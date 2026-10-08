@@ -215,6 +215,10 @@ fn settings_parameters_check_only_the_shape_of_a_settings_set() {
     for (case, accepted) in [
         ("one action", json!({"set-basic": {"exposure": 0.35}})),
         (
+            "empty analysis parameters, whose declaration the host checks",
+            json!({"auto-tone": {}}),
+        ),
+        (
             "an action no module declares, which is the host's to refuse",
             json!({"set-anything": {"any-field": "any value"}}),
         ),
@@ -259,14 +263,9 @@ fn settings_parameters_check_only_the_shape_of_a_settings_set() {
             "parameter settings names invalid action identity Set-Basic",
         ),
         (
-            "an empty field object",
-            json!({"set-basic": {}}),
-            "parameter settings must give action set-basic a non-empty object of fields",
-        ),
-        (
             "fields that are not an object",
             json!({"set-basic": 1}),
-            "parameter settings must give action set-basic a non-empty object of fields",
+            "parameter settings must give action set-basic an object of fields",
         ),
         (
             "sixty-five fields",

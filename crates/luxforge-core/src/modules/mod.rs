@@ -77,12 +77,12 @@ pub use crop::{CROP_EFFECT, CropAspect};
 pub use curve::CURVE_EFFECT;
 pub(crate) use curve::CurveModule;
 pub use descriptor::{
-    ActionControl, ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceStyle,
-    ColorStyle, Control, CurveBackground, CurveChannel, CurveControl, EffectDescriptor,
-    EffectStage, GroupControl, ModuleDescriptor, ModuleLayout, NumberControl, NumberStyle,
-    ParameterDescriptor, ParameterKind, PickerControl, PresetsControl, QueryChoiceControl,
-    RailDecoration, ResetAction, check_parameters, check_value, resolve_control,
-    resolve_group_reset,
+    ActionControl, ActionDescriptor, ActionStyle, AnalysisAction, Availability, CanvasInteraction,
+    ChoiceStyle, ColorStyle, Control, CurveBackground, CurveChannel, CurveControl,
+    EffectDescriptor, EffectStage, GroupControl, ModuleDescriptor, ModuleLayout, NumberControl,
+    NumberStyle, ParameterDescriptor, ParameterKind, PickerControl, PresetsControl,
+    QueryChoiceControl, RailDecoration, ResetAction, check_parameters, check_value,
+    resolve_control, resolve_group_reset,
 };
 pub use descriptor::{
     ChoiceControl, ColorControl, ControlVariant, IdentityKind, RangeControl, ResolvedControl,
@@ -118,7 +118,7 @@ pub(crate) use presence::PresenceModule;
 pub(crate) use presence::gpu_functions as presence_gpu_functions;
 #[cfg(feature = "qualification")]
 pub use presence::qualification as presence_qualification;
-pub(crate) use presets::{APPLY_PRESET, MAX_PRESET_NAME, PresetsModule};
+pub(crate) use presets::{APPLY_PRESET, MAX_PRESET_NAME, PASTE_SETTINGS, PresetsModule};
 pub(crate) use processing::MAX_COLOR_UNITS;
 pub use processing::{
     ColorOperation, CompileStage, OperationIdentity, PointwiseColor, Processing, SamplingScale,
@@ -256,6 +256,16 @@ pub(crate) const MAX_COMPOSE_STEPS: usize = MAX_SETTINGS_ACTIONS;
 /// that reads no pixel never prepares the original, never develops a RAW and never compiles a
 /// prefix evaluation: planning a transform or a RAW white balance asks nothing here but stages.
 pub trait StageQuestions {
+    /// A bounded query answered off the catalog owner, then replayed into action planning.
+    fn query(&self, _id: &str, _parameters: &Map<String, Value>) -> Result<Value, Error> {
+        Err(Error::internal("this stage cannot defer a query"))
+    }
+
+    /// Uniform nearest-point analysis of this input stage over the output geometry.
+    fn analysis_before(&self, _index: usize) -> Result<crate::tiles::AnalysisRead, Error> {
+        Err(Error::internal("this stage cannot read an analysis grid"))
+    }
+
     /// Capture identity and correction status from the cached verified source. No source is
     /// opened here; an unprepared source explicitly refuses the question.
     fn optics(&self) -> Result<crate::SourceOptics, Error> {

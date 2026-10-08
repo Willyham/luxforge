@@ -3790,6 +3790,16 @@ fn cancelled_masked_adjustments_restore_committed_pixels_history_and_coverage() 
         );
 
         let _ = testing::slide(&mut masking.editor, action, parameter, candidate);
+        assert_eq!(
+            masking.editor.session.workspace.mask_overlay,
+            MaskOverlayMode::Tint
+        );
+        assert_eq!(
+            masking.editor.effective_mask_overlay(),
+            MaskOverlayMode::Off
+        );
+        assert!(masking.editor.surfaces().coverage.is_none());
+        assert!(masking.editor.surfaces().region_coverage.is_none());
         let held = masking
             .editor
             .session

@@ -279,3 +279,79 @@ impl RootKind {
             .find(|kind| kind.as_str() == value)
     }
 }
+
+/// Broad filesystem containers are navigable, but must not start a recursive photo scan.
+/// `home` is supplied by the host; known user-parent layouts cover other users and platforms.
+pub fn broad_folder(path: &std::path::Path, home: Option<&std::path::Path>) -> bool {
+    if path.parent().is_none() || home.is_some_and(|home| home.starts_with(path)) {
+        return true;
+    }
+    let spelling = path.to_string_lossy().replace('\\', "/");
+    let parts: Vec<_> = spelling
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect();
+    let parts: Vec<_> = parts.iter().map(|part| part.to_ascii_lowercase()).collect();
+    let parts = parts.as_slice();
+    match parts {
+        [drive] if drive.ends_with(':') => true,
+        [root] if ["users", "home", "root", "volumes"].contains(&root.as_str()) => true,
+        [root, _] if ["users", "home", "volumes"].contains(&root.as_str()) => true,
+        [root, users, _] if root == "home" && users == "users" => true,
+        [drive, users]
+            if drive.ends_with(':')
+                && ["users", "documents and settings"].contains(&users.as_str()) =>
+        {
+            true
+        }
+        [drive, users, _]
+            if drive.ends_with(':')
+                && ["users", "documents and settings"].contains(&users.as_str()) =>
+        {
+            true
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod broad_folder_tests {
+    use super::*;
+    use std::path::Path;
+    #[test]
+    fn roots_and_user_containers_are_navigable_without_recursive_scanning() {
+        for path in [
+            "/",
+            "/Users",
+            "/Users/alice",
+            "/home",
+            "/home/alice",
+            "/home/users",
+            "/home/users/alice",
+            "/root",
+            "/Volumes",
+            "/Volumes/Photos",
+            "C:/",
+            "C:/Users",
+            "C:/Users/Alice",
+            "C:\\Users\\Alice",
+        ] {
+            assert!(broad_folder(Path::new(path), None), "{path}");
+        }
+        for path in [
+            "/Users/alice/Pictures",
+            "/home/alice/trip",
+            "/home/users/alice/trip",
+            "/Volumes/Photos/trip",
+            "C:/Users/Alice/Pictures",
+            "/photos/users",
+            "/tmp/luxforge",
+        ] {
+            assert!(!broad_folder(Path::new(path), None), "{path}");
+        }
+        let home = Path::new("/custom/accounts/alice");
+        assert!(broad_folder(home, Some(home)));
+        assert!(broad_folder(Path::new("/custom/accounts"), Some(home)));
+        assert!(!broad_folder(&home.join("Pictures"), Some(home)));
+    }
+}

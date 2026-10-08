@@ -147,6 +147,7 @@ impl Editor {
                         }
                     }
                     Err(error) => {
+                        self.view_state.copy_settings.paste_request = None;
                         self.status.text = error.clone();
                         // The command may have landed before its read-back failed, and the owner
                         // wakes no client for its own changes: read the log once to find out.
@@ -287,6 +288,9 @@ impl Editor {
             self.status.text = reason;
             return Task::none();
         }
+        self.controls.ui.analysis_serial += 1;
+        self.controls.ui.analysis_pending = None;
+        self.owner.render_context().retain_analysis_for(None);
         self.begin_request();
         if let Some(queued) = &queued {
             self.activity.request_started = queued.started;
@@ -423,6 +427,19 @@ impl Editor {
         if self.superseded(&refresh) {
             return;
         }
+        if self
+            .document
+            .state
+            .as_ref()
+            .is_none_or(|state| state.asset.id != refresh.state.asset.id)
+        {
+            self.controls.ui.analysis_reports.clear();
+            self.controls.ui.analysis_pending = None;
+            self.controls.ui.analysis_serial += 1;
+        }
+        self.owner
+            .render_context()
+            .retain_analysis_for((!self.select_shown()).then_some(&refresh.state.asset.id));
         self.controls.ui.clear_curve_samples();
         self.curve_sampling.requested_source.clear();
         // What happened is read against the state and the history rows held before this one: a
@@ -448,6 +465,49 @@ impl Editor {
             self.status.happened = Some(happened);
         } else if self.status.skipped.is_some() {
             self.status.happened = Some(state::status::Happened::NothingApplied);
+        }
+        if self
+            .view_state
+            .copy_settings
+            .paste_request
+            .as_ref()
+            .is_some_and(|(id, _, _)| Some(id) == refresh.mutation_request.as_ref())
+        {
+            let (_, clipboard, before) =
+                self.view_state.copy_settings.paste_request.take().unwrap();
+            let mut sentence =
+                if before == refresh.state.current_entry.id && !refresh.skipped.is_empty() {
+                    "Nothing changed; the applicable settings already match".into()
+                } else if before == refresh.state.current_entry.id {
+                    format!(
+                        "Nothing changed: {} already has these settings",
+                        refresh
+                            .state
+                            .asset
+                            .locator
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                    )
+                } else {
+                    format!(
+                        "Pasted {} group{} from {} · Undo ⌘Z",
+                        clipboard.groups.len(),
+                        if clipboard.groups.len() == 1 { "" } else { "s" },
+                        clipboard.source.name
+                    )
+                };
+            let mut reasons = Vec::new();
+            for skipped in &refresh.skipped {
+                if !reasons.contains(&skipped.reason.as_str()) {
+                    reasons.push(skipped.reason.as_str());
+                }
+            }
+            if !reasons.is_empty() {
+                sentence.push_str(&format!(" · Skipped: {}", reasons.join("; ")));
+            }
+            self.status.happened = Some(state::status::Happened::Pasted(sentence));
+            self.status.skipped = None;
         }
         if let Some(request) = refresh.request {
             self.read_back(request);

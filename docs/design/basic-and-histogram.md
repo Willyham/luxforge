@@ -124,6 +124,8 @@ Tone, white balance and colour equations, ranges and tolerances were frozen by t
 
 ## Basic controls and interaction
 
+The Tone header declares **Auto**, a parameterless analysis action. `edit.auto-tone` sets the eight tone/colour fields absolutely, preserving white balance; `query.auto-tone` explains the same calculation without a commit. The [Auto tone design](auto-tone.md) owns the solver, bounded worker sample, refusals and preset semantics.
+
 Every Basic control in the table below is implemented — Temperature and Tint, Exposure, the five Tone controls (Contrast, Highlights, Shadows, Whites, Blacks), Vibrance and Saturation — at the ranges, steps and precisions shown, together with the `neutral-sample` picker query behind the White Balance group.
 
 These are the Luxforge ranges and units, taken from the [Lightroom research](../research/lightroom/tone-and-color-tools.md) as the owner decided, not claims of numeric equivalence to Lightroom. Defaults are neutral, zero. The numerical studies confirmed every range against independent references before the controls shipped. Ranges, step, display precision, defaults and descriptions live in the descriptor and the API schema.
@@ -298,7 +300,7 @@ draft}` in the acceptance chapter, which the reference renderer answers.
 
 ## Later scope
 
-Tone curve, Detail, Texture, Clarity, Dehaze, the eight-range colour mixer, presets and masks are delivered. Their remaining scope and qualification are recorded in their designs and the [roadmap](../plan.md). A dedicated B&W mixer, Auto Tone, HDR, red-eye, histogram dragging and additional metadata presentation remain unselected proposals; saturation −100 is not a B&W mixer. Clone/Heal and AI editing have separate plans. JPEG export and Locate are delivered; MCP remains outstanding. No disabled placeholders represent later work.
+Tone curve, Detail, Texture, Clarity, Dehaze, the eight-range colour mixer, presets and masks are delivered. Their remaining scope and qualification are recorded in their designs and the [roadmap](../plan.md). [Auto tone](auto-tone.md) is implemented with its generated Tone-header action, Cmd/Ctrl+U, read-only explanation and per-photo preset step; final qualification is recorded in its own design. A dedicated B&W mixer, Auto white balance, HDR, red-eye, histogram dragging and additional metadata presentation remain unselected proposals; saturation −100 is not a B&W mixer. Clone/Heal and AI editing have separate plans. JPEG export and Locate are delivered; MCP remains outstanding. No disabled placeholders represent later work.
 
 ## Decisions
 

@@ -87,6 +87,13 @@ pub const BATCH_PRESET: CatalogJob = CatalogJob {
     activity: "batch.apply-preset",
     label: "Applying preset",
 };
+/// Pasting captured settings to many photographs (`batch.paste-settings`).
+pub const BATCH_PASTE: CatalogJob = CatalogJob {
+    kind: JobKind::BatchPaste,
+    job_kind: "batch-paste",
+    activity: "batch.paste-settings",
+    label: "Pasting settings",
+};
 /// Exporting many photographs (`batch.export`).
 pub const BATCH_EXPORT: CatalogJob = CatalogJob {
     kind: JobKind::BatchExport,
@@ -96,7 +103,7 @@ pub const BATCH_EXPORT: CatalogJob = CatalogJob {
 };
 
 /// Every catalog job kind.
-pub const CATALOG_JOBS: [CatalogJob; 10] = [
+pub const CATALOG_JOBS: [CatalogJob; 11] = [
     INDEX_REFRESH,
     PREVIEW_EXTRACT,
     PREVIEW_REGION,
@@ -106,6 +113,7 @@ pub const CATALOG_JOBS: [CatalogJob; 10] = [
     SOURCE_FIND,
     SOURCE_LOCATE,
     BATCH_PRESET,
+    BATCH_PASTE,
     BATCH_EXPORT,
 ];
 

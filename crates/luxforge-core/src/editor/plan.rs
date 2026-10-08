@@ -252,13 +252,23 @@ impl EditorService {
         input: &ActionInput,
         mask: Option<&MaskId>,
     ) -> Result<Resolved, Error> {
+        let view = if module
+            .descriptor()
+            .actions
+            .iter()
+            .any(|action| action.id == input.action_id && action.analysis.is_some())
+        {
+            TargetView::Whole
+        } else {
+            TargetView::Own
+        };
         self.ask(
             asset,
             recipe,
             module,
             Some(input),
             mask,
-            TargetView::Own,
+            view,
             |context, bound| {
                 let plan = module.plan(input, context)?;
                 self.resolve_plan(asset, bound, plan, mask)
@@ -400,6 +410,7 @@ impl EditorService {
         // layer, where the global Basic layer's white balance is already applied.
         let view = match mask {
             Some(_) => TargetView::Whole,
+            None if registry.analysis_query(query_id) => TargetView::Whole,
             None => TargetView::Own,
         };
         let answer = self.ask(
@@ -527,9 +538,13 @@ impl EditorService {
         mask: Option<&MaskId>,
         fields: &Map<String, Value>,
     ) -> Result<(), Error> {
-        let Some(ActionRef::Module(module, _)) = self.registry.resolve_action(action_id) else {
+        let Some(ActionRef::Module(module, action)) = self.registry.resolve_action(action_id)
+        else {
             return Ok(());
         };
+        if action.analysis.is_some() {
+            return Err(Error::validation("analysis actions cannot be drafted"));
+        }
         let kind = self.head(asset_id)?.asset.source.tag();
         let input = ActionInput {
             action_id: action_id.to_owned(),
@@ -681,7 +696,7 @@ impl EditorService {
         plan: ActionPlan,
         mask: Option<&MaskId>,
     ) -> Result<Resolved, Error> {
-        let steps = match plan {
+        let mut steps = match plan {
             ActionPlan::Compose(steps) => steps,
             plan => return self.apply_plan(recipe, plan, mask).map(Resolved::exactly),
         };
@@ -698,13 +713,19 @@ impl EditorService {
         }
         let registry = self.registry.clone();
         let kind = asset.source.tag();
+        // Field patches settle the intermediate stack first, independent of JSON key order.
+        steps.sort_by_key(|step| {
+            registry
+                .action(&step.action_id)
+                .is_some_and(|(_, action)| action.analysis.is_some())
+        });
         let mut resolved = recipe.clone();
         let mut skipped = Vec::new();
         for step in steps {
             let action_id = step.action_id.as_str();
             // An unknown or non-patch step is refused outright, but an unavailable module's step is
             // refused only once it is known to apply: one that does not is skipped like any other.
-            let (module, action, unavailable) = match registry.patch_action(action_id) {
+            let (module, action, unavailable) = match registry.settings_action(action_id) {
                 Ok((module, action)) => (module, action, None),
                 Err(refusal) if refusal.kind == ErrorKind::Incompatible => {
                     let (module, action) = registry
@@ -739,7 +760,7 @@ impl EditorService {
                     None => true,
                 },
             );
-            if fields.is_empty() {
+            if fields.is_empty() && action.analysis.is_none() {
                 continue;
             }
             let checked = check_parameters(action, &Value::Object(fields))?;
@@ -750,9 +771,36 @@ impl EditorService {
                 module,
                 Some(&input),
                 None,
-                TargetView::Own,
+                if action.analysis.is_some() {
+                    TargetView::Whole
+                } else {
+                    TargetView::Own
+                },
                 |context, _| module.plan(&input, context),
-            )?;
+            );
+            // RAW WB patches in this uncommitted composite require development at their own
+            // gains; the outer mutation's unchanged entry is not the stack being analysed.
+            let entry = self.current_entry_id(&asset.id)?;
+            let plan = self.needing(Evaluated::exactly(asset, &entry, &resolved), plan);
+            let plan = match plan {
+                Err(error)
+                    if action.analysis.is_some()
+                        && error.kind == ErrorKind::Validation
+                        && error
+                            .data
+                            .as_deref()
+                            .and_then(|data| data.get("analysis_refusal"))
+                            .is_some() =>
+                {
+                    skipped.push(SkippedSetting {
+                        action: action_id.into(),
+                        parameter: None,
+                        reason: error.detail,
+                    });
+                    continue;
+                }
+                result => result?,
+            };
             if let Some(next) = self.apply_plan(&resolved, plan, None)? {
                 resolved = next;
             }
@@ -847,7 +895,7 @@ enum TargetView {
 /// ([`crate::ModuleDescriptor::check_applies_to`]); and a field of `input` whose control another
 /// module provides on this kind's global target ([`check_superseded`]). The one refusal
 /// [`EditorService::ask`] and a draft's [`EditorService::check_draft`] run.
-fn check_askable(
+pub(super) fn check_askable(
     registry: &ModuleRegistry,
     module: Provider<'_>,
     kind: crate::SourceTag,
@@ -1031,6 +1079,43 @@ fn sample_compile_count() -> usize {
 }
 
 impl StageQuestions for HostStage<'_> {
+    fn analysis_before(&self, index: usize) -> Result<crate::tiles::AnalysisRead, Error> {
+        refuse_on_owner()?;
+        let source = super::evaluate::source_of(
+            self.source()?.clone(),
+            self.recipe,
+            RawSettingsMode::Strict,
+        )?;
+        let entry = self.service.entry(
+            &self.asset.id,
+            &self.service.current_entry_id(&self.asset.id)?,
+        )?;
+        let evaluation = crate::Evaluation::new(
+            self.service.registry.clone(),
+            self.service.render_context().clone(),
+            source,
+            entry,
+            self.recipe.clone(),
+            None,
+        );
+        crate::tiles::analysis::read(
+            &evaluation,
+            index,
+            &crate::tiles::ReferenceReads,
+            &crate::Cancel::never(),
+        )
+    }
+
+    fn query(&self, id: &str, parameters: &Map<String, Value>) -> Result<Value, Error> {
+        let source = super::evaluate::source_of(
+            self.source()?.clone(),
+            self.recipe,
+            RawSettingsMode::Strict,
+        )?;
+        self.service
+            .deferred_query(self.asset, self.recipe, source, id, parameters)
+    }
+
     fn optics(&self) -> Result<crate::SourceOptics, Error> {
         Ok(self.source()?.optics())
     }
@@ -1078,9 +1163,12 @@ impl StageQuestions for HostStage<'_> {
             self.recipe,
             preview,
             self.input_wide(&compiled)?,
-            super::pixels::PixelRead { index, x, y },
+            super::pixels::PixelRead::Point { index, x, y },
         )? {
-            return Ok(answer.rgba);
+            return match answer.value {
+                super::pixels::PixelValue::Point { rgba, .. } => Ok(rgba),
+                _ => Err(Error::internal("point read returned a query")),
+            };
         }
         refuse_on_owner()?;
         let context = self.service.render_context();
@@ -1120,9 +1208,12 @@ impl StageQuestions for HostStage<'_> {
             self.recipe,
             preview.clone(),
             self.input_wide(&compiled)?,
-            super::pixels::PixelRead { index, x, y },
+            super::pixels::PixelRead::Point { index, x, y },
         )? {
-            return Ok(answer.linear);
+            return match answer.value {
+                super::pixels::PixelValue::Point { linear, .. } => Ok(linear),
+                _ => Err(Error::internal("point read returned a query")),
+            };
         }
         refuse_on_owner()?;
         let wide = self.input_wide(&compiled)?;
@@ -1152,7 +1243,7 @@ impl StageQuestions for HostStage<'_> {
 /// 5](../../../../docs/engineering/performance-rules.md#rules)): every read made while it serves a
 /// call is deferred to its tile service, so one that reaches the host's own read there is a defect,
 /// answered `internal` rather than paid on the thread every client waits behind.
-fn refuse_on_owner() -> Result<(), Error> {
+pub(super) fn refuse_on_owner() -> Result<(), Error> {
     if std::thread::current().name() == Some(crate::api::OWNER_THREAD) {
         return Err(Error::internal(
             "the catalog owner reads no pixel: a read outside a call it serves reached its thread",
@@ -3437,6 +3528,11 @@ mod tests {
                 "Preset: Soft Film",
             ),
             (
+                "paste-settings",
+                json!({"source":"Source.NEF","source-asset":"source-id","settings":{"set-basic":{"exposure":1.0}}}),
+                "Paste settings from Source.NEF",
+            ),
+            (
                 "set-raw",
                 json!({"temperature":5500.0}),
                 "Temperature 5500 K",
@@ -3491,6 +3587,7 @@ mod tests {
             ),
             ("set-basic", json!({}), "Set Basic"),
             ("reset-basic", json!({}), "Reset Basic"),
+            ("auto-tone", json!({}), "Auto tone"),
             ("set-detail", json!({"sharpening":150.0}), "Sharpening 150"),
             ("set-detail", json!({"sharpening":0.0}), "Sharpening 0"),
             ("set-detail", json!({"radius":1.7}), "Sharpen radius 1.7 px"),

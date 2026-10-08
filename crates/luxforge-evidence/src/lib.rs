@@ -163,6 +163,8 @@ pub enum Step {
     },
     /// Click one library preset's row.
     Preset(PresetPick),
+    /// Settings clipboard gestures through the desktop command paths.
+    CopySettings(CopySettingsStep),
     /// Open the create form, type its name and group, set every checkbox and press Create.
     PresetCreate(PresetCreateStep),
     /// Delete one library preset through its row's context menu.
@@ -430,6 +432,7 @@ impl Step {
             }
             Self::Preset(pick) | Self::PresetDelete(pick) => pick.validate(),
             Self::PresetCreate(step) => step.validate(),
+            Self::CopySettings(step) => step.validate(),
             Self::PresetImport { path } => text(path, "preset_import path"),
             Self::GpuWarmed { quiet_ms, ms } => {
                 if *quiet_ms <= MAX_WAIT_MS && (1..=MAX_WARM_MS).contains(ms) && quiet_ms <= ms {
@@ -456,7 +459,11 @@ impl Step {
                 let mut characters = key.chars();
                 let single = characters.next().is_some_and(char::is_alphanumeric)
                     && characters.next().is_none();
-                if single || key == KEY_ESCAPE || matches!(key.as_str(), "\\" | "|") {
+                if single
+                    || key == KEY_ESCAPE
+                    || key == "Command+U"
+                    || matches!(key.as_str(), "\\" | "|")
+                {
                     Ok(())
                 } else {
                     Err(format!(
@@ -773,10 +780,24 @@ impl DoubleClickStep {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "gesture", rename_all = "lowercase", deny_unknown_fields)]
 pub enum ControlsStep {
+    Action {
+        action: String,
+        #[serde(default, skip_serializing_if = "is_false")]
+        background: bool,
+    },
+    AnalysisReady {
+        action: String,
+    },
     #[serde(rename = "query-choice-search")]
-    QueryChoiceSearch { action: String, text: String },
+    QueryChoiceSearch {
+        action: String,
+        text: String,
+    },
     #[serde(rename = "query-choice-page")]
-    QueryChoicePage { action: String, page: u32 },
+    QueryChoicePage {
+        action: String,
+        page: u32,
+    },
     #[serde(rename = "query-choice-shared")]
     QueryChoiceShared {
         action: String,
@@ -784,18 +805,29 @@ pub enum ControlsStep {
         text: String,
     },
     #[serde(rename = "query-choice-select-first")]
-    QueryChoiceSelectFirst { action: String },
+    QueryChoiceSelectFirst {
+        action: String,
+    },
     #[serde(rename = "query-choice-retry")]
-    QueryChoiceRetry { action: String },
+    QueryChoiceRetry {
+        action: String,
+    },
     /// Press the suggestion card's Apply.
     #[serde(rename = "query-choice-apply")]
-    QueryChoiceApply { action: String },
+    QueryChoiceApply {
+        action: String,
+    },
     /// Open or close Change, which reveals the search under a card.
     #[serde(rename = "query-choice-change")]
-    QueryChoiceChange { action: String, open: bool },
+    QueryChoiceChange {
+        action: String,
+        open: bool,
+    },
     /// Press the report link: the run records the page and opens no browser.
     #[serde(rename = "query-choice-report")]
-    QueryChoiceReport { action: String },
+    QueryChoiceReport {
+        action: String,
+    },
     Slider {
         action: String,
         parameter: String,
@@ -830,6 +862,9 @@ pub enum ControlsStep {
 impl ControlsStep {
     fn validate(&self) -> Result<(), String> {
         match self {
+            Self::Action { action, .. } | Self::AnalysisReady { action } => {
+                text(action, "controls action")
+            }
             Self::QueryChoiceSearch {
                 action,
                 text: search,
@@ -1533,12 +1568,50 @@ impl ThemePick {
     }
 }
 
+/// Copy, chooser, paste and selection gestures. Shortcut variants run through the key table.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum CopySettingsStep {
+    Copy,
+    Chooser,
+    Check {
+        group: String,
+        checked: bool,
+    },
+    None,
+    Chosen,
+    Paste,
+    Previous,
+    Confirm,
+    Cancel,
+    SelectAll,
+    Cell {
+        index: usize,
+        command: bool,
+        shift: bool,
+    },
+    Report,
+}
+impl CopySettingsStep {
+    fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Check { group, .. } => text(group, "copy settings group"),
+            Self::Cell { index, .. } if *index >= 50_000 => {
+                Err("copy settings cell must be below 50000".into())
+            }
+            _ => Ok(()),
+        }
+    }
+}
+
 /// The create form as a script fills it: the name, the group when it is not the default, and the
 /// labels of exactly the checkboxes to leave checked. Without `submit` the form is left open and
 /// filled, so its frame shows the form itself.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PresetCreateStep {
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub auto_tone: bool,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,

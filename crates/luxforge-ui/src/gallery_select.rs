@@ -393,7 +393,7 @@ fn switch_both_ways() -> Element<'static, ()> {
     let bar = |current| {
         title_bar(
             row![
-                workspace_switch(current, Some(|_| ())),
+                workspace_switch(current, Some(|_| Some(()))),
                 Space::new().width(Length::Fill),
                 labelled_button(
                     &LabelledButtonModel {
@@ -626,6 +626,7 @@ fn strip(first: usize, total: usize, active: usize, loading: &[usize]) -> Elemen
             first,
             total,
             active: Some(active),
+            selected: Vec::new(),
         },
         |_| (),
         (active > 0).then_some(()),

@@ -130,7 +130,7 @@ pub use sparkline::SparklineModel;
 pub use stepper::{StepperModel, StepperRail, StepperRailMessages, stepper};
 pub use sub_group_header::{
     GroupRuleModel, SubGroupHeaderModel, group_rule, sub_group_header,
-    sub_group_header_with_actions,
+    sub_group_header_with_actions, sub_group_header_with_controls,
 };
 pub use swatch_slots::{SwatchSlotsModel, swatch_slots};
 pub use tab_row::{Tab, TabRowModel, tab_row};
@@ -154,7 +154,7 @@ pub use thumbnail_grid::{
 // -- end Select: the thumbnail grid's exports.
 
 // -- Select: chrome's exports.
-pub use filmstrip::{FilmstripModel, filmstrip, filmstrip_capacity};
+pub use filmstrip::{FilmstripModel, FilmstripPress, filmstrip, filmstrip_capacity};
 pub use filter_bar::{
     ChipEnd, FilterChipModel, FilterOption, FilterSegmentsModel, SearchFieldModel, filter_action,
     filter_bar, filter_chip, filter_segments, search_field,

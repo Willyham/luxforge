@@ -21,6 +21,7 @@ use crate::{
     },
     state::select::ReadSource,
 };
+use crate::{app::message::select::SelectMessage, state::select::Shown};
 use iced::{
     Size,
     event::Status,
@@ -936,4 +937,123 @@ fn filmstrip_keys_are_the_keyboard_tables() {
         message(&collapse, Status::Ignored, &KeyContext::default()),
         None
     );
+}
+
+#[test]
+fn develop_without_a_folder_or_set_stays_in_select_and_explains_the_choice() {
+    let mut scene = scene("no-set");
+    drop(
+        scene
+            .editor
+            .update(Message::Select(SelectMessage::Switch(Shown::Develop))),
+    );
+    assert!(scene.editor.select_shown());
+    assert!(!scene.editor.workspace.develop.can_enter);
+    assert!(scene.editor.status.text.contains("Pick a catalog folder"));
+    finish(scene);
+}
+
+#[test]
+fn catalog_folder_develop_set_survives_import_browsing() {
+    let (mut scene, assets) = developed("folder-browse");
+    drop(
+        scene
+            .editor
+            .update(Message::Select(SelectMessage::Switch(Shown::Select))),
+    );
+    let folders = scene.client.ok("folder.list", json!({}));
+    let folder = serde_json::from_value(folders["folders"][0]["id"].clone()).unwrap();
+    let source = ViewSource::CatalogFolder {
+        folder_id: folder,
+        subfolders: true,
+    };
+    drop(
+        scene
+            .editor
+            .update(Message::Select(SelectMessage::Source(source))),
+    );
+    evaluate(&mut scene.editor);
+    let query = scene.editor.develop.state.folder_query.clone().unwrap();
+    // Browsing files must not replace the remembered folder or its independent rows.
+    let path = scene.files[0].parent().unwrap().to_path_buf();
+    drop(
+        scene
+            .editor
+            .update(Message::Select(SelectMessage::Source(ViewSource::Folder {
+                path,
+                subfolders: true,
+            }))),
+    );
+    evaluate(&mut scene.editor);
+    assert_eq!(
+        scene.editor.develop.state.folder_query.as_ref(),
+        Some(&query)
+    );
+    let before = scene.editor.session.browse.clone();
+    let active = assets[2].clone();
+    let (photos, index) = folder_set_now(&scene.editor.owner, &query, Some(&active)).unwrap();
+    assert_eq!(photos.len(), assets.len());
+    assert_eq!(photos[index].asset_id, active);
+    assert_eq!(
+        scene.editor.session.browse, before,
+        "the import view's session is preserved"
+    );
+    drop(scene.editor.enter_develop_set());
+    let serial = scene.editor.develop.set_serial;
+    drop(
+        scene
+            .editor
+            .update(Message::Develop(DevelopMessage::FolderSetRead {
+                serial,
+                result: Ok((photos, index)),
+            })),
+    );
+    assert!(!scene.editor.select_shown());
+    assert_eq!(
+        scene
+            .editor
+            .develop
+            .state
+            .set
+            .as_ref()
+            .unwrap()
+            .photos
+            .len(),
+        assets.len()
+    );
+    // Choosing a catalog view without a folder clears that choice and returns to the
+    // previously loaded set, while also fencing an unfinished folder read.
+    drop(scene.editor.enter_develop_set());
+    let stale = scene.editor.develop.set_serial;
+    assert!(scene.editor.develop.state.folder_loading);
+    drop(scene.editor.update(Message::Select(SelectMessage::Source(
+        ViewSource::AllPhotographs,
+    ))));
+    evaluate(&mut scene.editor);
+    assert!(scene.editor.develop.state.folder_query.is_none());
+    assert!(!scene.editor.develop.state.folder_loading);
+    assert_ne!(scene.editor.develop.set_serial, stale);
+    drop(
+        scene
+            .editor
+            .update(Message::Develop(DevelopMessage::FolderSetRead {
+                serial: stale,
+                result: Ok((Vec::new(), 0)),
+            })),
+    );
+    drop(scene.editor.enter_develop_set());
+    assert!(!scene.editor.select_shown());
+    assert_eq!(
+        scene
+            .editor
+            .develop
+            .state
+            .set
+            .as_ref()
+            .unwrap()
+            .photos
+            .len(),
+        assets.len()
+    );
+    finish(scene);
 }

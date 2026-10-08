@@ -26,6 +26,7 @@ The renderer, its GPU and CPU paths, memory and efficiency.
 | --- | --- |
 | [Efficiency](rendering/efficiency.json) | Reference-renderer, preparation and desktop CPU/memory reductions: hardware SHA-256 and build features, source preparation, the 16-bit quantizer, spatial tile buffers and batches, Detail and Presence kernels, the reduced-grid cache retired with the CPU production paths, RAW row reads, the float mosaic through a checked-in librtprocess patch, owner and painting copies, the WAL catalog and desktop derivation, measured once at the end; the `dist` profile is deferred |
 | [GPU-first rendering](rendering/gpu-first.json) | The GPU as the renderer of record for the picture, the histogram, samples and export, with correctness a declared tolerance against a whole-frame CPU reference: every zoom on the GPU, the picture at rest and the histogram on the GPU, per-frame estimates, samples and export through GPU tiles, portability and warm-up, the retirement of the CPU production paths, and one qualification and measurement at the end |
+| [Export settings](rendering/export-settings.json) ([design](../docs/design/export-settings.md)) | Planned Export sheet and `ExportSettings` API: Web, Print and Master presets, JPEG, lossy WebP and 8/16-bit TIFF, resizing, Optimise, file-size limits and metadata levels, then output sharpening, qualification and measurement last; implementation awaits authorization |
 | [GPU memory accounting](rendering/gpu-memory.json) | Measure and bound both GPU devices, including resources outside the 1 GiB aggregate photo slots and separate 2 GiB preview and tile-worker budgets, with resources.read and Performance attribution |
 
 ### RAW (`raw/`)
@@ -36,6 +37,14 @@ RAW development and looks.
 | --- | --- |
 | [RAW looks](raw/raw-looks.json) | New RAW photos start from a Luxforge look: the frozen look units and the corpus-chosen Standard look in the Original with its preference and section (phase 1), then Match camera fitted to the embedded preview off the owner (phase 2), measured once at the end |
 
+### Library (`library/`)
+
+Selection, catalog sources and library operations.
+
+| Plan | Purpose |
+| --- | --- |
+| [HDR exposure merges](library/hdr-merge.json) ([design](../docs/design/hdr-merge.md)) | Planned Import merged and Pick merged, durable float derived sources, result-led stacks, original picks and reversible removal/undo; RAW-only inputs with automatic alignment/deghosting; storage, radiance and alignment tasks are independently ready, implementation is not authorized; panoramas are outside the plan |
+
 ### Editing tools (`editing/`)
 
 One plan per tool module.
@@ -45,6 +54,7 @@ One plan per tool module.
 | [Colour grading](editing/colour-grading.json) | Implemented mixer extension: the remaining handoff evidence (M4 full tier with the GPU gate over the grading recipes, the latency harness's wheel gesture and 24/60 MP measurements) and a Lightroom round for the delivered `grade-align` tooling |
 | [AI editing](editing/ai-editing.json) | Proposed Remove, Select, generative fill and Replace, and optional sky replacement on local, user-downloaded models: the inference port and runtime, the model manager, the analysis cache and picker, the model-selection mask kind, the fill tiers, the remote-provider shape, portability, qualification and documentation |
 | [Corrections](editing/corrections.json) | Proposed offline Clone/Heal, the repair stage, the shared brush and the repair layer's frozen-patch operation; its AI Remove is planned under AI editing |
+| [Auto tone](editing/auto-tone.json) ([design](../docs/design/auto-tone.md)) | Implemented; qualification in progress: deterministic Auto for Lightroom's eight Basic fields from a bounded sample of the stage Basic receives, the action, query and Tone-header button first, Auto in presets and the Lightroom importer, then a fit to Lightroom's Auto on the owner's photos last |
 
 ### Lightroom (`lightroom/`)
 
@@ -59,6 +69,7 @@ Import from and alignment with Lightroom Classic.
 
 | Plan | Purpose |
 | --- | --- |
+| [Copy and paste settings](interface/copy-settings.json) ([design](../docs/design/copy-settings.md)) | Implemented with quick and native M2 / Metal verification; final corpus qualification pending: copy of chosen adjustment groups into a per-window clipboard and paste onto the open photograph, a new Develop filmstrip multi-selection or a Select selection, and Paste from previous, through a `paste-settings` action and batch method |
 | [High-zoom minimap](interface/minimap.json) ([design](../docs/design/minimap.md)) | Planned whole-image overview at percentage zoom ≥200, with owner-chosen click/drag navigation through `view.set`, bounded GPU/reference rendering, working integration first and final qualification/measurement; implementation awaits authorization |
 
 ### Project (`project/`)
@@ -68,10 +79,9 @@ Owner decisions and repository upkeep.
 | Plan | Purpose |
 | --- | --- |
 | [Dependency advisories](project/dependency-advisories.json) | Remove or re-review the two expiring advisory exceptions the dependency audit enforces |
-| [Live-session Rust CLI](project/live-cli.json) ([design](../docs/design/live-cli.md)) | Specified thin client for the authenticated API of an already-open desktop session; implementation awaits owner authorization |
 | [Product decisions](project/product-decisions.json) | Open product questions |
 
-The post-consolidation programme, the Tone curve, Detail and Lens and perspective are complete and their plans are deleted; their outcome lives in the specs, their designs and [feature status](../docs/features.md).
+The post-consolidation programme, the Tone curve, Detail, Lens and perspective and the live-session CLI are complete and their plans are deleted; their outcome lives in the specs, their designs and [feature status](../docs/features.md).
 
 The Efficiency plan runs on the owner's decisions of 2026-10-03 in [decisions](../docs/decisions.md#cpu-and-memory-efficiency). Every feature task is done and measured within the three hours the owner allotted to measurement on 2026-10-04 ([performance](../docs/specs/performance.md#cpu-and-memory-efficiency-measured-on-the-m4)); each change paid for itself where measured, and the workloads not measured are listed there. Its one open task is the `dist` profile, blocked: the owner deferred it until the other plans' outstanding timing runs are recorded, so every plan measures in `release`.
 

@@ -48,6 +48,7 @@ pub enum Icon {
     Export,
     Compare,
     Copy,
+    Paste,
     // The Masks panel: the component kinds, the rows' controls and the overlay modes.
     Linear,
     Radial,
@@ -92,7 +93,7 @@ pub enum Icon {
 
 impl Icon {
     /// Every icon with its name, in the order the gallery's icon board lists them.
-    pub const NAMED: [(&'static str, Icon); 73] = [
+    pub const NAMED: [(&'static str, Icon); 74] = [
         ("rotate-left", Self::RotateLeft),
         ("rotate-right", Self::RotateRight),
         ("flip", Self::Flip),
@@ -130,6 +131,7 @@ impl Icon {
         ("export", Self::Export),
         ("compare", Self::Compare),
         ("copy", Self::Copy),
+        ("paste", Self::Paste),
         // The Masks panel. The kind icons are named after the kinds they draw, so the app looks a
         // kind's icon up by its kind name.
         ("linear", Self::Linear),
@@ -720,6 +722,29 @@ pub(crate) fn draw_icon(frame: &mut canvas::Frame, icon: Icon, size: f32, color:
                 ],
             );
             frame.stroke(&square(5.6, 5.6), stroke);
+        }
+        Icon::Paste => {
+            poly(
+                frame,
+                &[
+                    (5.0, 3.5),
+                    (3.0, 3.5),
+                    (3.0, 14.0),
+                    (13.0, 14.0),
+                    (13.0, 3.5),
+                    (11.0, 3.5),
+                ],
+            );
+            frame.stroke(
+                &canvas::Path::rounded_rectangle(
+                    p(5.0, 1.5),
+                    iced::Size::new(6.0 * s, 4.0 * s),
+                    (1.0 * s).into(),
+                ),
+                stroke,
+            );
+            line(frame, (5.5, 8.0), (10.5, 8.0));
+            line(frame, (5.5, 10.5), (9.5, 10.5));
         }
         // The Masks panel's icons, each drawn from the mask-panels board's glyph.
         // A linear gradient: its line corner to corner, with its two feather ticks at half ink.
