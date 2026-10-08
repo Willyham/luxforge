@@ -4972,8 +4972,17 @@ Both tiers (grid 512 px, large 2048 px) of the corpus's Z 6 and Air 2S under a B
 | The same, a second launch | | (board 467, 451 to 494) | (board 1,170, 1,131 to 1,193) | 3.43 | 24; 2,112.9 MB |
 
 - **A heavy GPU export is now 2.9 to 3.3 times faster than the reference export** at 24 and 60 MP and 2.5 times over the masked stack; at 60 MP 16 times faster than before.
-- **A trivial GPU export misses by 15 to 16 ms**: 101 against 85 ms at 24 MP and 190 against 175 ms at 60 MP, every GPU export slower than every reference export. The GPU's trivial export opens the tile worker's stream and its slot for one pointwise link, which the reference does not, and a pointwise stack's reference render is cheap; not attributed further.
+- **A trivial GPU export misses by 15 to 16 ms**: 101 against 85 ms at 24 MP and 190 against 175 ms at 60 MP, every GPU export slower than every reference export. Attributed below ([the trivial export's first band](#the-trivial-exports-first-band)).
 - The tile worker's peak was 2.11 GB of its 2 GiB (2,147.5 MB) budget on the masked stack.
+
+### The trivial export's first band
+
+Timed in the process, through the owner's export lane as the desktop starts it (`trivial_export_timing_gpu_against_reference`, release, seven alternating samples after one discarded export of each, the generated fixtures with Basic exposure +0.3): **75 against 57 ms at 24 MP and 158 against 137 ms at 60 MP** (2026-10-08, executable of `5e287c5f`, the M4 Pro at one-minute loads of 5 to 9). The desktop's step timing above reads the end on its frame clock, about 8.3 ms a frame, so it shows the same gap coarser.
+
+- **Where the gap is.** The reference renders the pointwise stack across the pool in 7 to 8 ms (18 ms at 60 MP) and then encodes. The GPU's encoder starts at once and waits for the stream's first band, a row of 2048 px tiles: 26 to 28 ms at 24 MP and 40 to 52 ms at 60 MP. After it, the encoder never waits again. The gap is that first band's latency less the reference's render.
+- **What the first band costs.** On the tile worker's thread, timed tile by tile: the band's window of the source uploaded, 4.7 ms for 6000 × 2048 codes; the first tile's wait for the device, 10 to 11 ms, where a later tile of the band waits 1.3 to 2.6 ms; and each tile's readback and copy into the band, about 2.2 ms. A fresh slot does not explain the first tile's wait: keeping the slot across exports left it unchanged.
+- **Tried and not adopted:** 512 px tiles (134 ms at 24 MP: per-tile costs dominate) and 1024 px tiles (93 against 84 ms in the desktop's timing, 184 against 168 ms at 60 MP); a first row of 512 or 1024 rows under 2048 px tiles (at most 3 ms: the second band is then late, the worker taking about 21 ms a band against the encoder's 24); reading a band's last tiles back and sending it before the next band's window is uploaded (73 and 151 ms, but a stream drawn without an encoder, which bounds a heavy export, slower by 7 ms for Detail at 24 MP and 12 ms for the 60 MP drag stack, the device idle during the upload); and copying the mapped readback straight into the band (no change).
+- **What is left.** The window's upload and the device's first-tile latency, each paid per band on the worker's one thread. Closing the gap needs the next band's window uploaded beside the current band's tiles, or a band's window textures kept for the next band of its shape, both changes to what the runner holds at once ([export](../design/export.md)); not built.
 
 ### Ticks, nothing regressed
 
@@ -5045,6 +5054,8 @@ cargo run --release --locked --package xtask -- editor-latency --binary BIN --so
   --mode paint --samples 60|240 --masks 3 --mask-presence --presence --detail [--zoom 100] [--reference-renderer]
 cargo run --release --locked --package xtask -- measure --binary BIN --output NEW_DIR
 # Exports and the cold shader cache: evidence scripts of `api`, `gpu_warmed` and `export` steps.
+# A trivial export timed in the process, GPU against reference (needs cargo xtask generate-fixtures).
+cargo test --release -p luxforge-app --bins -- --ignored trivial_export_timing_gpu_against_reference --nocapture
 [LUXFORGE_BACKGROUND_BUNDLE_SUFFIX=NEW] cargo xtask develop --background --hidden-window \
   --evidence-dir NEW_DIR --evidence-script SCRIPT.json --open /ABSOLUTE/SOURCE
 ```

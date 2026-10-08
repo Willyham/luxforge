@@ -318,9 +318,9 @@ Layers whose effect has no available provider stay in every snapshot and entry u
 
 Each module accepts only its current effect format and payload shape. Unsupported formats fail explicitly without modifying the stored recipe. Breaking shape and algorithm changes are expected during pre-release development; tests target the current contracts.
 
-## Outstanding query attribution
+## Query attribution
 
-The neutral picker's `query.neutral-sample` answer must identify its renderer and reference-fallback reason, as `render.sample` and `mask.sample-input` do (owner, 2026-10-07). This response field is required but not implemented: the current module answer contains Temperature, Tint and patch samples only. A session's renderer alone cannot identify the provider that answered a particular read.
+A module query that reads pixels names the renderer that drew them, as `render.sample` and `mask.sample-input` do (owner, 2026-10-07): the host adds `renderer: {record, reason}` to the module's answer object from the tile service's own answer, so the neutral picker's `query.neutral-sample` and Auto tone's `query.auto-tone` carry it and no module writes it. A session's renderer alone cannot identify the provider that answered a particular read.
 
 ## Resources and external loading
 
