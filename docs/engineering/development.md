@@ -1155,10 +1155,12 @@ Each step is an object with exactly one key.
   same scrollable a Space drag scrolls, and is captured once the offset the scrollable reports has
   reached the session through `view.set`, so `state.surface.view` carries the pan the frame was drawn
   at. At Fit there is no scrollable and the step fails.
-- `key` (`{"key": "w"}`, one letter or digit, or `"Escape"`) presses one key with no text field
-  focused, through the desktop's own key table: a key that enters a canvas mode is captured once the
-  session follows, a Select key (`g` among them) once Select has nothing in flight, any other bound
-  key on the next frame, and a key the table does not bind fails.
+- `key` (`{"key": "w"}`, one letter or digit, `"Escape"`, or a chord written as an action's
+  `shortcut` is, such as `"Command+U"`) presses one key with no text field focused, through the
+  desktop's own key table: a key that enters a canvas mode is captured once the session follows, a
+  module action's chord once its request settles, a Select key (`g` among them) once Select has
+  nothing in flight, any other bound key on the next frame, and a key the table does not bind
+  fails.
 - `select` is one gesture on the Select workspace, sent through the message its control or the key
   table sends: `{"switch": "select"}` or `"develop"` presses the title bar's workspace switch;
   `{"source": "Konstanz · 12–13 Sep"}` presses the source row showing that name, or that name and its

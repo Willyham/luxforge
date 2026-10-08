@@ -216,3 +216,40 @@ fn the_scripted_queries_still_run_their_commands() {
     }
     finish(editor, catalog);
 }
+
+/// An entry shows the chord that runs it without the palette, from the one place the chord is
+/// declared: Auto tone's from Basic's descriptor, the copy and paste commands' from the host table.
+/// An entry nothing binds shows none, and a host command's refusal comes from its table row.
+#[test]
+fn an_entry_shows_its_declared_chord_beside_its_label() {
+    use crate::state::host_commands::HostCommand;
+    let (mut editor, catalog) = opened_with_modules(descriptors(), 3);
+    let shortcut = |editor: &mut Editor, query: &str| {
+        let entries = entries_for(editor, query);
+        let entry = entries
+            .iter()
+            .find(|entry| entry.label == query)
+            .unwrap_or_else(|| panic!("no entry named {query:?}: {entries:?}"));
+        (entry.shortcut.clone(), entry.refusal.clone(), entry.action.clone())
+    };
+    let (auto, _, action) = shortcut(&mut editor, "Basic \u{b7} Auto");
+    assert!(matches!(action, PaletteAction::Run { action, .. } if action == "auto-tone"));
+    assert_eq!(auto.as_deref(), Some("\u{2318}U"));
+    for (label, chord, command) in [
+        ("Copy settings", "\u{2318}C", HostCommand::CopySettings),
+        ("Copy settings\u{2026}", "\u{21e7}\u{2318}C", HostCommand::CopySettingsChoosing),
+        ("Paste settings", "\u{2318}V", HostCommand::PasteSettings),
+        (
+            "Paste settings from previous photograph",
+            "\u{2325}\u{2318}V",
+            HostCommand::PastePrevious,
+        ),
+    ] {
+        let (shown, refusal, action) = shortcut(&mut editor, label);
+        assert_eq!(action, PaletteAction::Host(command));
+        assert_eq!(shown.as_deref(), Some(chord), "{label}");
+        assert_eq!(refusal, command.refusal(&editor.copy_model()), "{label}");
+    }
+    assert_eq!(shortcut(&mut editor, "Fit").0, None);
+    finish(editor, catalog);
+}
