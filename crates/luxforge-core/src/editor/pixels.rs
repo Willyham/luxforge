@@ -604,7 +604,7 @@ impl QueryPlan {
     }
 
     /// Answer the query with `reads`, the tile service's renderer, every read of it through one
-    /// session, here and now. `mask.sample-input` names the renderer that drew its pixel.
+    /// session, here and now. Every answer that read pixels names the renderer that drew them.
     pub(crate) fn evaluate(self, reads: &dyn TileReads, cancel: &Cancel) -> Result<Value, Error> {
         let questions = TileStage::new(&self.evaluation, reads, cancel);
         self.answer(&questions, &|| questions.answered())
@@ -629,12 +629,13 @@ impl QueryPlan {
             }
         };
         let context = self.evaluation.context().clone();
+        let answered = held.1.answered.clone();
         Ok(Step::then(context, move |_cancel| {
             let questions = HeldGrid {
                 evaluation: &self.evaluation,
                 held: RefCell::new(Some(held)),
             };
-            self.answer(&questions, &|| None)
+            self.answer(&questions, &|| Some(answered.clone()))
         }))
     }
 
@@ -650,18 +651,28 @@ impl QueryPlan {
             .resolve_query(&self.query)
             .ok_or_else(|| Error::validation("unknown query"))?
         {
-            QueryRef::Module(module, _) => module.query(
-                &self.query,
-                &self.parameters,
-                &StageContext {
-                    layers: &recipe.layers,
-                    registry,
-                    target: self.mask.as_ref(),
-                    kind: self.kind,
-                    masks: &recipe.masks,
-                    questions,
-                },
-            ),
+            QueryRef::Module(module, _) => {
+                let mut answer = module.query(
+                    &self.query,
+                    &self.parameters,
+                    &StageContext {
+                        layers: &recipe.layers,
+                        registry,
+                        target: self.mask.as_ref(),
+                        kind: self.kind,
+                        masks: &recipe.masks,
+                        questions,
+                    },
+                )?;
+                // A module query that read pixels names the renderer that drew them, as
+                // `mask.sample-input` does: the neutral picker's patch, Auto tone's grid.
+                if let (Some(answered), Some(object)) = (answered(), answer.as_object_mut()) {
+                    let renderer = serde_json::to_value(crate::Renderer::from(&answered))
+                        .map_err(|e| Error::internal(e.to_string()))?;
+                    object.insert("renderer".into(), renderer);
+                }
+                Ok(answer)
+            }
             QueryRef::Host(_) if self.query == crate::mask::commands::SAMPLE_INPUT => {
                 let mask: MaskId = serde_json::from_value(self.parameters["mask"].clone())
                     .map_err(|e| Error::validation(e.to_string()))?;

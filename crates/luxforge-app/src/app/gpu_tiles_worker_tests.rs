@@ -1733,6 +1733,32 @@ fn two_gpu_exports_are_byte_identical() {
     eprintln!("{test}: {} bytes, the same three times", file.len());
 }
 
+/// A module query that reads pixels names the renderer that drew them, as `render.sample` and
+/// `mask.sample-input` do: the neutral picker's patch and Auto tone's grid, each read by the GPU
+/// tile worker the owner serves its reads through.
+#[test]
+fn pixel_reading_queries_name_the_gpu_that_drew_them() {
+    let test = "pixel_reading_queries_name_the_gpu_that_drew_them";
+    let Some(adapter) = host_adapter(test) else {
+        return;
+    };
+    let exports = Exports::new("queries", exporter(&adapter), &generated(900, 600));
+    // The generated photograph's flat grey patch, which the picker can neutralise.
+    for (query, mut params) in [
+        ("query.neutral-sample", json!({"x": 75, "y": 500})),
+        ("query.auto-tone", json!({})),
+    ] {
+        params["asset_id"] = json!(exports.asset);
+        let (answer, _) = owner_call(&exports.owner, exports.client, query, params)
+            .unwrap_or_else(|error| panic!("{query}: {error}"));
+        assert_eq!(
+            answer["renderer"],
+            json!({"record": "gpu", "reason": null}),
+            "{query}: {answer}"
+        );
+    }
+}
+
 /// No export changes the original: GPU exports with and without metadata, the reference export,
 /// and an export to a name already taken, which is refused and replaces nothing. The original's
 /// folder holds nothing new but the exports.
