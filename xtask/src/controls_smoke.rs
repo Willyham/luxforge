@@ -332,7 +332,7 @@ fn control_model<'a>(frame: &'a Value, kind: &str, parameter: &str) -> Option<&'
         .find(|model| model["action"] == ACTION && model["parameter"] == parameter)
 }
 
-fn sidebar_difference(first: &Frame, second: &Frame) -> Result<u32> {
+pub(crate) fn sidebar_difference(first: &Frame, second: &Frame) -> Result<u32> {
     let frame = second;
     let first = first.image()?;
     let second = second.image()?;

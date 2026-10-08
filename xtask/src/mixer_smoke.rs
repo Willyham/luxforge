@@ -251,6 +251,16 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         )?;
     }
 
+    // The HSL tab's nested row shows one property at a time: the Saturation and Luminance views
+    // draw different rails. A row drawn as stacked groups would leave the panel unchanged.
+    ensure(
+        crate::controls_smoke::sidebar_difference(
+            launch.at("saturation-tab")?,
+            launch.at("luminance-tab")?,
+        )? >= 100,
+        "Selecting the Luminance view did not change the tools panel",
+    )?;
+
     checks.write(
         &launch.evidence,
         "mixer",

@@ -4,8 +4,9 @@
 //!
 //! It opens the Grading tab (session state only), drags the Shadows wheel of the 3-way view as one
 //! draft and commits it as one entry, types a luminance, drags through the wheel's centre to keep
-//! the hue at zero saturation, switches to the Global view and back without a frame or an entry,
-//! lets another client set a Global tint, and resets Grading while an HSL edit stays. Its checks
+//! the hue at zero saturation, lets another client restore the saturation and set a Global tint,
+//! switches to the Global view and back without a frame or an entry, and resets Grading while an
+//! HSL edit stays. Its checks
 //! correlate the history, the stored payload, the wheels' models, the session's view selection and
 //! the rendered backdrop's colour.
 use crate::{
@@ -117,13 +118,14 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         )
         .field(ACTION, SHADOWS_HUE, "120")
         .field(ACTION, SHADOWS_SATURATION, "0"),
-        // The tint back, for the reset to undo.
+        // The tint back, for the reset to undo, from another client: the same control again by
+        // the same actor would collapse into the centre entry (auto collapse history).
         Step::new(
             "retint",
-            shadows_wheel(vec![[-0.25, -0.433]], SliderEnd::Release),
+            script::Step::agent(format!("edit.{ACTION}"), json!({SHADOWS_SATURATION: 50.0})),
         )
         .commits(1)
-        .label("Shadows tint"),
+        .label("Shadows saturation 50"),
         // The Global view and back: view state alone.
         view("global-view", grading_view(4)),
         // Another client's Global tint moves the Global wheel.
@@ -244,6 +246,14 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         }),
         "The session did not record the 3-way view",
     )?;
+    // The views draw differently: Global's one large wheel replaces the 3-way view's three, and
+    // back. A tab row drawn as stacked groups would leave the panel unchanged.
+    for (step, before) in [("global-view", "retint"), ("three-way-view", "external")] {
+        ensure(
+            crate::controls_smoke::sidebar_difference(at(before)?, at(step)?)? >= 100,
+            format!("Selecting the view in {step} did not change the tools panel"),
+        )?;
+    }
     for (step, before) in [("grading", "expanded"), ("global-view", "retint")] {
         ensure(
             at(step)?.state()["requested_generation"]
