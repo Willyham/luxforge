@@ -1044,7 +1044,7 @@ const SOURCE_RULES: &[SourceRule] = &[
         types: &["rs"],
         allowed: &[
             "crates/luxforge-testbase/src/distribution.rs",
-            "crates/luxforge-core/src/auto_tone.rs",
+            "crates/luxforge-core/src/modules/basic/auto/solve.rs",
             "crates/luxforge-reference/tests/studies/curve.rs",
             "crates/luxforge-reference/tests/studies/look.rs",
         ],
@@ -4783,7 +4783,7 @@ mod tests {
                     "    let rank = (percent * sorted.len()).div_ceil(100).clamp(1, sorted.len());\n    pub fn percentile(&self, percent: usize) -> f64 {\n",
                 ),
                 (
-                    "crates/luxforge-core/src/auto_tone.rs",
+                    "crates/luxforge-core/src/modules/basic/auto/solve.rs",
                     "fn percentile(values: &mut [f64], fraction: f64) -> f64 {\n",
                 ),
                 (

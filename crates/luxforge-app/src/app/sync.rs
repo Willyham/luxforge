@@ -290,7 +290,6 @@ impl Editor {
         }
         self.controls.ui.analysis_serial += 1;
         self.controls.ui.analysis_pending = None;
-        self.owner.render_context().retain_analysis_for(None);
         self.begin_request();
         if let Some(queued) = &queued {
             self.activity.request_started = queued.started;
@@ -437,9 +436,6 @@ impl Editor {
             self.controls.ui.analysis_pending = None;
             self.controls.ui.analysis_serial += 1;
         }
-        self.owner
-            .render_context()
-            .retain_analysis_for((!self.select_shown()).then_some(&refresh.state.asset.id));
         self.controls.ui.clear_curve_samples();
         self.curve_sampling.requested_source.clear();
         // What happened is read against the state and the history rows held before this one: a

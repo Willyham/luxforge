@@ -71,7 +71,7 @@ What Luxforge takes from this:
 The query answers a bounded report (at most 4 KiB):
 
 - `algorithm` (`auto-tone/1`) and `values`.
-- The sample's dimensions, count and exclusions.
+- The sample's dimensions, count and exclusions, and how source clipping was detected (`source_clip_detection`: `jpeg-code-255` or `raw-sensor-white`).
 - The statistics each value came from: the luminance percentiles, the bright and dark band fractions, the clipping fractions and the mean chroma.
 - The fields that stopped at a bound.
 - The layers the forward model used and the layers it left out.
@@ -80,7 +80,7 @@ The desktop shows the same text in the Auto button's tooltip after a run. The qu
 
 ## Analysis input
 
-Auto reads one bounded **analysis sample**: linear RGB values of the stage the Basic layer receives, at a fixed grid over the **output frame**.
+Auto reads one bounded **analysis sample**: linear RGB values of the stage the Basic layer receives, at a fixed grid over the **output frame**. The grid is the tile layer's generic sample grid (`tiles::grid`, `StageQuestions::grid_before`): it knows nothing of Auto, which owns only what it computes from it.
 
 - **Grid and mapping:**
   - The grid is drawn over the output frame, after lens, perspective, straighten and crop, so the analysis covers what the picture shows.
@@ -91,20 +91,22 @@ Auto reads one bounded **analysis sample**: linear RGB values of the stage the B
 - **Renderer:** the tile service reads the sample, from the GPU's tiles where the GPU draws the stack and from the reference renderer otherwise. It is the same deferred path `render.sample` and the neutral picker use, extended from a patch to a bounded strided grid.
   - The GPU renders the prefix tiles and gathers the grid with no full-frame CPU buffer.
   - The reference shares its per-call stage evaluation. A spatial prefix currently materializes its reference frames, as [performance rule 4](../engineering/performance-rules.md#rules) documents. Auto keeps only the bounded sample after that call.
-- **Exclusions:** samples that are non-finite, or at the source's white in any channel, are flagged. The source's white is code 255 on a JPEG, and sensor saturation on a RAW where the development reports it.
-  - Finite source-white samples count in the luminance statistics. Non-finite samples are counted in the report but excluded from every numerical statistic.
-  - They are left out of the clipping fractions, so Auto never greys out a sky that was already clipped in the file.
-- **Identity:** asset, source fingerprint, the content of the layers before Basic, the geometry after it, grid dimensions, renderer and algorithm.
+- **Exclusions:** samples that are non-finite, or whose source was already clipped, are flagged.
+  - **JPEG:** the source pixel under the point has code 255 in any channel.
+  - **RAW:** a sensor site the pixel develops from is at the sensor's white. The developed planes cannot say so: a Bayer demosaic limits each site after its white-balance gain, X-Trans does not, and the camera matrix mixes the channels before the planes are stored. So the flag reads the retained mosaic, as the neutral picker does (`RawSource::sensor_clipped_at`): the point maps through the default crop and orientation, and a corrected DNG's warp per channel, to where the pixel is read; it is flagged when any site within one site of there, which holds the nearest site of each Bayer colour, is at or above the picker's clip threshold, 0.995 of the range above that site's black level, before white balance and any optical gain, with the DNG's repairs applied. A linear or monochrome layout reads the pixel's own samples. The prepared source carries the sensor to the read, which holds it only for that call.
+  - Finite clipped samples count in the luminance statistics. Non-finite samples are counted in the report but excluded from every numerical statistic.
+  - Clipped samples are left out of the clipping fractions, so Auto never greys out a sky that was already clipped in the file.
+- **Identity:** asset, source fingerprint, the content of the layers before Basic, the geometry after it, grid dimensions, the input mode, how clipping is detected and the renderer. Nothing of Auto is part of it.
   - Basic's own values, the Look and later colour layers are not part of it, so a repeated Auto or a query followed by the action reads the sample once.
-  - Retained samples are capped at 32 MiB in total; there is no per-photo cache beyond that.
-  - Opening another photo, or the asset leaving Develop, releases them.
+  - Retained grids live in one least-recently-used cache per render context, capped at 32 MiB in total and shared by every client, the desktop and API clients alike; a read evicts the least recently used grids before it builds its own.
+  - Removing a photo to Removed, or deleting its records, releases its grids; a read under way then cannot put its grid back.
 - **Cancellation:** a superseded or cancelled request is abandoned at chunk granularity. Its late result cannot commit.
 
 ## The solve (`auto-tone/1`)
 
 The solve runs on a worker, in a pure function in `luxforge-core`, over the sample.
 
-**Forward model.** The global Basic layer at candidate values, followed by the global Look layer when the photo has one, then the output boundary's clamp. It reuses the modules' own compiled pointwise units, so Auto solves through what renders.
+**Forward model.** The global Basic layer at candidate values, keeping its stored white balance, followed by the global Look layers after Basic, then the output boundary's clamp. A Look before Basic is part of the analysed input, so it is not applied again. It reuses the modules' own compiled pointwise units, so Auto solves through what renders. Basic's module builds it once per analysis (`auto_tone::forward_model`, in `modules/basic/auto/` with the solver); the fitting rig, the measurements and the GPU agreement test solve through the same model.
 
 - Leaving out the Tone curve, the mixer, Presence, the vignette and every masked layer is deliberate. Auto sets Basic for the photo as its look renders it, not to undo the person's creative layers.
 - The explanation lists the layers left out.
@@ -121,7 +123,7 @@ The solve runs on a worker, in a pure function in `luxforge-core`, over the samp
 1. **Exposure** `E` within ±4 EV.
    - Find, on the 0.01 EV grid, the `E` whose median `P_50(y)` is closest to `m = 0.46`.
    - Then lower it, if needed, until at most 2% of samples have `y ≥ 0.98`.
-   - The ordinary model uses a monotone search. A Look amount above 100% extrapolates the Look and can reverse luminance; that case evaluates all 801 Exposure values, then takes the nearest lower guard-compliant value. The report names the search. This can be substantially slower; it remains cancellable at every chunk.
+   - The search is monotone when every layer after Basic in the model declares its luminance response monotonic for its payload (`ToolModule::monotonic_luminance`). The Look declares it up to amount 100; above that it extrapolates and can reverse luminance, so the model evaluates all 801 Exposure values, then takes the nearest lower guard-compliant value. The report names the search. This can be substantially slower; it remains cancellable at every chunk.
 2. **Highlights** `H` within −100..0.
    - `H = −min(100, 250 · f_hi)`, where `f_hi` is the fraction with `y > 0.80` at `E`.
 3. **Shadows** `S` within 0..60.
@@ -211,7 +213,7 @@ The owner chose to fit the targets to Lightroom's Auto on their own photos, afte
 
 **Local rig.** `tools/cargo-cached xtask auto-tone-fit --manifest FILE --output NEW_FILE --consent-owner-photos [--rounds 1..6]` reads a manifest with `photos`, each holding a unique `id`, `original`, `lightroom_auto` and `xmp` path relative to the manifest. The optional `lightroom_base` is a separate export without Auto; without it the base gap is unavailable. It requires 40–100 photos and refuses before reading the manifest unless this run carries consent. It keeps at most 100 bounded grids (1,300 MiB at the square maximum) plus the current source/temporary render buffers; its temporary private catalog is removed on exit. Reports retain chosen ids and figures, not images or source paths. XMP must include finite values for all eight sliders.
 
-The fitter sorts ids by SHA-256 and holds out every fourth photo. In fixed coordinate order it tries both directions for all eight targets, halving the steps each round, accepting only strict training improvements. Its objective is the median per-photo weighted absolute picture difference: median ×4, P10/P90 ×2, bright/dark fractions ×1, clipping fractions ×10 and chroma ×4. All clipping statistics in picture comparisons count the exported pixels, including originally clipped ones; the solver itself keeps its source-white exclusions. No Lightroom slider conversions are installed yet, so slider values are informational. The report proposes `auto-tone/2` without adopting it. A synthetic export test perturbs median and spread, checks recovery within 0.025 and 0.04 respectively, and requires held-out error to fall by at least half.
+The fitter sorts ids by SHA-256 and holds out every fourth photo. In fixed coordinate order it tries both directions for all eight targets, halving the steps each round, accepting only strict training improvements. Its objective is the median per-photo weighted absolute picture difference: median ×4, P10/P90 ×2, bright/dark fractions ×1, clipping fractions ×10 and chroma ×4. All clipping statistics in picture comparisons count the exported pixels, including originally clipped ones; the solver itself keeps its source-clipped exclusions. The rig reads its grids without the sensor, so a RAW photo's grid there carries no source-clipped flags (`source_clip_detection` would read `unavailable`). No Lightroom slider conversions are installed yet, so slider values are informational. The report proposes `auto-tone/2` without adopting it. A synthetic export test perturbs median and spread, checks recovery within 0.025 and 0.04 respectively, and requires held-out error to fall by at least half.
 
 **Result.** The owner reviews the fitted `auto-tone/2` on the corpus and their photos. Lightroom's known weaknesses, such as a constant +15 Vibrance or over-lifted shadows, are reported where the fit reproduces them, so the owner can keep a target that differs.
 
@@ -252,11 +254,12 @@ Generated half/float GPU samples with Detail plus crop, straighten, lens and per
 ## Performance-rules review for implementation
 
 - **Source:** only the verified source cache is read. Auto never reads, hashes or decodes the original itself.
-- **Memory:** each grid is at most 13 MiB (RGB and source-white flags) at a 1024-point long side. Retained samples total at most 32 MiB, with eviction before building a replacement. Positions, gather ordering, one 256-square tile, and the solver's f64 luminance array and RGB chunk are charged as scratch before allocation. Auto adds no retained full-frame buffer. A spatial reference prefix uses the reference renderer's existing whole-frame implementation, then releases it with the read; the GPU gathers from bounded prefix tiles. The separate fitting command retains at most 100 grids (1,300 MiB).
+- **Memory:** each grid is at most 13 MiB (RGB and source-clipped flags) at a 1024-point long side. Retained grids total at most 32 MiB in one least-recently-used cache, with eviction before building a replacement. A RAW read holds the prepared source's sensor, which the source cache already retains, only for its call. Positions, gather ordering, one 256-square tile, and the solver's f64 luminance array and RGB chunk are charged as scratch before allocation. Auto adds no retained full-frame buffer. A spatial reference prefix uses the reference renderer's existing whole-frame implementation, then releases it with the read; the GPU gathers from bounded prefix tiles. The separate fitting command retains at most 100 grids (1,300 MiB).
 - **Threads:** nothing runs on the owner or UI thread beyond planning metadata. The sample read and the solve run on the tile service and a worker, with cancellation at chunk granularity.
 - **Timers:** none. No idle timer, polling or per-tick work. Auto runs only on request.
 - **Desktop requests:** the button sends one mutation, then the normal `asset.state`/session refresh and preview. The tooltip requests the same query pinned to the committed entry; it reuses the sample but solves again, off the owner and after the commit. It adds no history-page read. An explanation for a displaced entry is discarded.
-- **Reuse:** a query followed by the action, or a repeated Auto, reuses the grid by asset, verified source/development identity, semantic prefix, output geometry, grid, input mode, algorithm and renderer. Neither the grid nor the small per-request replay memo holds a source or evaluation. Leaving Develop or replacing the photo releases the retained grid; stale fills cannot repopulate it. Solved reports are not cached across requests.
+- **Reuse:** a query followed by the action, or a repeated Auto, reuses the grid by asset, verified source/development identity, semantic prefix, output geometry, grid, input mode, clip detection and renderer, for any client. Neither the grid nor the small per-request replay memo holds a source or evaluation. Removing or deleting the photo releases its grids; stale fills cannot repopulate them. Solved reports are not cached across requests.
+- **RAW clip flags:** at most 27 sensor sites a grid point, read on the tile service's thread with the grid. An indication on 2026-10-08 on the M4 under heavy shared load (load average 38), the three supplied RAWs' full grids of about 700,000 points: 21 to 24 ms on the X100VI, 33 to 35 ms on the Z6 and 48 to 49 ms on the Air 2S DNG, whose warp maps each channel; not a measurement of the click-to-entry budget.
 - **Baseline:** no before/after `editor-performance` improvement is claimed. The dedicated Auto engine measurement isolates its new work; it does not include source preparation, catalog commit or presentation and cannot establish the click-to-entry budget.
 - **Evidence:** exact tests cover the CPU sample and the solver, and declared-tolerance comparisons cover the GPU sample. Measurements follow delivery, once.
 

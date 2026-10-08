@@ -1973,29 +1973,7 @@ fn edit_action(
     let mut parameters = params::generated(request)?;
     let asset_id: AssetId = params::take(&mut parameters, "asset_id")?;
     require_current(session, &asset_id)?;
-    if session.draft.is_some()
-        && service
-            .registry()
-            .resolve_action(action_id)
-            .is_some_and(|action| {
-                let declared = action.descriptor();
-                declared.analysis.is_some()
-                    || declared.parameters.iter().any(|parameter| {
-                        matches!(parameter.kind, crate::ParameterKind::Settings)
-                            && parameters
-                                .get(&parameter.name)
-                                .and_then(Value::as_object)
-                                .is_some_and(|settings| {
-                                    settings.keys().any(|id| {
-                                        service
-                                            .registry()
-                                            .action(id)
-                                            .is_some_and(|(_, action)| action.analysis.is_some())
-                                    })
-                                })
-                    })
-            })
-    {
+    if session.draft.is_some() && service.registry().contains_analysis(action_id, &parameters) {
         return Err(Error::validation(
             "finish or discard the draft before running an analysis action",
         ));

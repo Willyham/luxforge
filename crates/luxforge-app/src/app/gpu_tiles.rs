@@ -1787,7 +1787,7 @@ impl Worker {
 }
 
 impl TileReads for Worker {
-    fn analysis_renderer(&self) -> Option<luxforge_core::RendererRecord> {
+    fn grid_renderer(&self) -> Option<luxforge_core::RendererRecord> {
         self.unavailable()
             .is_none()
             .then_some(luxforge_core::RendererRecord::Gpu)

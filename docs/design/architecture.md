@@ -253,7 +253,7 @@ RAW has its own approved admission contract, the RAW rows of the first table; JP
 
 | Limit | Figure | Enforced by |
 | --- | --- | --- |
-| Auto tone analysis grid | At most 1024 × 1024 points, 13 MiB RGB and source-white flags; retained samples total 32 MiB | `MAX_SIDE`, `MAX_SAMPLES`, `RETAINED_BYTES`, core `auto_tone.rs` and `tiles/analysis.rs` |
+| Sample grid (Auto tone's analysis input) | At most 1024 × 1024 points, 13 MiB RGB and source-clipped flags; retained grids total 32 MiB in one least-recently-used cache per render context, released when a photo is removed or deleted | `MAX_SIDE`, `MAX_POINTS`, `RETAINED_BYTES`, core `tiles/grid.rs` |
 | Evaluated RGBA8 frame (a narrow JPEG frame, a proxy, a linear-to-byte conversion), per buffer | 512 MiB | `MAX_FRAME_BYTES`, `crates/luxforge-core/src/render/limits.rs` |
 | Evaluated RGB16 JPEG spatial frame, per buffer | 512 MiB, checked as width × height × 6 bytes | `ByteFrame::new`, `crates/luxforge-core/src/render/byte.rs` |
 | RAW encoded source | 512 MiB | `MAX_SOURCE_BYTES`, `crates/luxforge-raw/src/limits.rs` |

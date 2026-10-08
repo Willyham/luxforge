@@ -9,7 +9,7 @@ use luxforge_core::{
     tiles::{ReferenceTiles, TileCall, TileService},
 };
 use luxforge_testbase::{Distribution, HANG, paths};
-use serde_json::{Value, json};
+use serde_json::json;
 use std::{
     path::Path,
     sync::{Arc, mpsc},
@@ -65,22 +65,18 @@ fn auto_tone_measure_photo_sized_inputs() -> Result<(), &'static str> {
                 let tiles_before = gpu.figures().tiles;
                 for _ in 0..30 {
                     if cold {
-                        context.retain_analysis_for(None);
+                        context.release_grids(&evaluation.entry().asset_id);
                     }
-                    context.retain_analysis_for(Some(&evaluation.entry().asset_id));
                     let held = evaluation.clone();
                     let (sender, receiver) = mpsc::sync_channel(1);
                     let queued = Instant::now();
                     service.submit(TileCall::caller(client, Cancel::new(), move |reads, cancel| {
                         let read_started = Instant::now();
-                        let sampled = luxforge_core::tiles::read_analysis(&held, 0, reads, cancel)?;
+                        let sampled = luxforge_core::tiles::read_grid(&held, 0, reads, cancel)?;
                         let read_ms = read_started.elapsed().as_secs_f64() * 1000.;
                         let started = Instant::now();
-                        let basic = held.registry().module("luxforge.basic").unwrap();
-                        let report = auto_tone::solve(&sampled.sample, Default::default(), |values| {
-                            let luxforge_core::Processing::Color(unit) = basic.compile(BASIC_EFFECT, luxforge_core::EFFECT_FORMAT, &Value::Object(values.fields()), CompileStage::exact(Stage { width:32, height:32 }))? else { unreachable!() };
-                            Ok(vec![unit])
-                        }, cancel)?;
+                        let model = auto_tone::forward_model(held.registry(), &held.recipe().layers, 0, CompileStage::exact(Stage { width: 32, height: 32 }))?;
+                        let report = model.solve(&sampled.sample, Default::default(), cancel)?;
                         Ok(json!({"read_ms":read_ms,"solve_ms":started.elapsed().as_secs_f64()*1000.,"sample_bytes":sampled.sample.bytes(),"samples":sampled.sample.rgb.len(),"renderer":sampled.answered.record,"values":report.values}))
                     }, move |answer| { let _ = sender.send(answer); }));
                     let mut row = receiver.recv_timeout(HANG).unwrap().unwrap();

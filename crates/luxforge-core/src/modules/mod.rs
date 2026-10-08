@@ -43,6 +43,8 @@ pub static GPU_PROGRAMS: &[&crate::GpuProgram] = &[
 ];
 pub use basic::BASIC_EFFECT;
 pub(crate) use basic::BasicModule;
+/// Basic's Auto tone: its solver and forward model, public for the fitting rig and measurements.
+pub use basic::auto as auto_tone;
 pub(crate) use capabilities_proof::CapabilitiesProofModule;
 #[cfg(test)]
 pub(crate) use capabilities_proof::{
@@ -248,9 +250,10 @@ pub trait StageQuestions {
         Err(Error::internal("this stage cannot defer a query"))
     }
 
-    /// Uniform nearest-point analysis of this input stage over the output geometry.
-    fn analysis_before(&self, _index: usize) -> Result<crate::tiles::AnalysisRead, Error> {
-        Err(Error::internal("this stage cannot read an analysis grid"))
+    /// The bounded nearest-point sample grid of this input stage over the output geometry
+    /// ([`crate::tiles::read_grid`]), read off the catalog owner by the tile service.
+    fn grid_before(&self, _index: usize) -> Result<crate::tiles::GridRead, Error> {
+        Err(Error::internal("this stage cannot read a sample grid"))
     }
 
     /// Capture identity and correction status from the cached verified source. No source is
@@ -568,6 +571,20 @@ pub trait ToolModule: Send + Sync {
     fn neutral_payload(&self, effect_id: &str) -> Value {
         let _ = effect_id;
         Value::Object(Map::new())
+    }
+    /// Whether this colour effect, with this payload, never lowers its output's luminance as its
+    /// input's rises: what lets an analysis that solves through it, as Auto tone solves through
+    /// the Look after Basic, search an earlier layer's value by bisection rather than by trying
+    /// every value. Reading a payload only. The default, `false`, claims nothing, so a module that
+    /// does not answer is searched exhaustively.
+    fn monotonic_luminance(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &Value,
+    ) -> Result<bool, Error> {
+        let _ = (effect_id, format, payload);
+        Ok(false)
     }
     /// Turn a persisted payload into a host processing primitive at its input stage.
     fn compile(

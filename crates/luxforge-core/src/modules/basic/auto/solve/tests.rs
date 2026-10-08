@@ -19,15 +19,15 @@ fn compile(values: AutoToneValues) -> Result<Vec<ColorOperation>, Error> {
     Ok(vec![operation])
 }
 
-fn sample(rgb: impl Iterator<Item = [f32; 3]>) -> AnalysisSample {
-    AnalysisSample {
+fn sample(rgb: impl Iterator<Item = [f32; 3]>) -> SampleGrid {
+    SampleGrid {
         grid: [32, 32],
         rgb: rgb.take(1024).collect(),
-        source_white: vec![false; 1024],
+        source_clipped: vec![false; 1024],
     }
 }
 
-fn ramp() -> AnalysisSample {
+fn ramp() -> SampleGrid {
     sample((0..1024).map(|i| [0.01 + i as f32 * 0.09 / 1023.; 3]))
 }
 
@@ -42,7 +42,7 @@ fn auto_tone_targets_are_the_versioned_design_set() {
 #[test]
 fn auto_tone_statistics_match_an_independent_rank_and_exclusion_oracle() {
     let mut input = sample((0..1024).map(|i| [i as f32 / 1023.; 3]));
-    input.source_white[1023] = true;
+    input.source_clipped[1023] = true;
     let stats = picture_statistics(&input, &Cancel::never()).unwrap();
     for (actual, index) in [
         (stats.p01, 10),
@@ -88,7 +88,12 @@ fn auto_tone_refusals_are_structured_and_cancel_is_not_a_refusal() {
             &Cancel::never(),
         )
         .unwrap_err();
-        assert_eq!(error.data.unwrap()["auto_tone"]["reason"], reason);
+        let refusal = AnalysisRefusal::of(&error).unwrap();
+        assert_eq!(refusal.reason, reason);
+        assert_eq!(
+            error.data.unwrap().as_ref(),
+            &json!({"analysis_refusal": reason})
+        );
     }
     let cancelled = Cancel::new();
     cancelled.cancel();
@@ -100,35 +105,184 @@ fn auto_tone_refusals_are_structured_and_cancel_is_not_a_refusal() {
     );
 }
 
+/// The design's steps 1 to 8 ([auto-tone.md](../../../../../../docs/design/auto-tone.md#the-solve-auto-tone1)),
+/// computed independently of the solver's searches: every search tries every value on its field's
+/// grid, and every formula is written out from the design.
+fn by_the_design(input: &SampleGrid) -> AutoToneValues {
+    let targets = AutoToneTargets::default();
+    let stats = |values: AutoToneValues, chroma: bool| {
+        statistics(
+            input,
+            &compile(values).unwrap(),
+            false,
+            chroma,
+            &Cancel::never(),
+        )
+        .unwrap()
+    };
+    // Step 1: the median nearest the target on the 0.01 EV grid (the lower on a tie), then the
+    // highest Exposure at or below it whose near-white fraction is within the guard.
+    let exposure = |values: AutoToneValues| {
+        let all: Vec<Statistics> = (-400..=400)
+            .map(|e| {
+                stats(
+                    AutoToneValues {
+                        exposure: f64::from(e) / 100.,
+                        ..values
+                    },
+                    false,
+                )
+            })
+            .collect();
+        let error = |i: usize| (all[i].p50 - targets.median).abs();
+        let best = (0..all.len())
+            .reduce(|best, i| if error(i) < error(best) { i } else { best })
+            .unwrap();
+        let guarded = (0..=best)
+            .rev()
+            .find(|&i| all[i].near_white <= targets.bright_guard)
+            .unwrap_or(0);
+        (guarded as f64 - 400.) / 100.
+    };
+    // Steps 5 and 6: the largest Whites and the smallest Blacks meeting the clipping fraction;
+    // an unreachable constraint stops at the bound that clips least.
+    let endpoints = |mut values: AutoToneValues| {
+        values.whites = (-60..=60)
+            .rev()
+            .find(|&n| {
+                stats(
+                    AutoToneValues {
+                        whites: f64::from(n),
+                        ..values
+                    },
+                    false,
+                )
+                .highlight_clip
+                    <= targets.clipping
+            })
+            .map_or(-60., f64::from);
+        values.blacks = (-60..=60)
+            .find(|&n| {
+                stats(
+                    AutoToneValues {
+                        blacks: f64::from(n),
+                        ..values
+                    },
+                    false,
+                )
+                .shadow_clip
+                    <= targets.clipping
+            })
+            .map_or(60., f64::from);
+        values
+    };
+    let mut values = AutoToneValues::default();
+    values.exposure = exposure(values);
+    // Steps 2 and 3.
+    let bands = stats(values, false);
+    values.highlights = (-250. * bands.bright).clamp(-100., 0.).round();
+    values.shadows = (200. * bands.dark).clamp(0., 60.).round();
+    // Step 4.
+    let spread = stats(values, false);
+    values.contrast = (100. * (0.60 - (spread.p90 - spread.p10)))
+        .clamp(-50., 50.)
+        .round();
+    values = endpoints(values);
+    // Step 7: exactly one more sweep of Exposure, Whites and Blacks.
+    values.exposure = exposure(values);
+    values = endpoints(values);
+    // Step 8.
+    let chroma = stats(values, true).mean_chroma;
+    values.vibrance = (60. * (1. - chroma / 0.07)).clamp(0., 25.).round();
+    values.saturation = if chroma > 0.14 {
+        (-60. * (chroma / 0.14 - 1.)).clamp(-15., 0.).round()
+    } else {
+        0.
+    };
+    values
+}
+
+/// A dark neutral ramp: its first Exposure is the analytical solution `log2(t / m)` for the target
+/// median's linear value `t` and the input median `m`, rounded to the 0.01 EV grid, because Basic's
+/// Exposure scales linear light and a neutral ramp's median is its middle sample; it has no chroma,
+/// so Vibrance is its +25 bound and Saturation 0; and every value is the design's.
 #[test]
-fn auto_tone_dark_neutral_ramp_has_hand_computed_first_exposure_and_colour() {
+fn auto_tone_dark_neutral_ramp_equals_the_designs_steps_and_its_analytical_exposure() {
+    let input = ramp();
     let report = solve(
-        &ramp(),
+        &input,
         AutoToneTargets::default(),
         compile,
         &Cancel::never(),
     )
     .unwrap();
-    let input_median = f64::from(ramp().rgb[511][0]);
-    let target_linear = ((0.46_f64 + 0.055) / 1.055).powf(2.4);
-    let ideal = (target_linear / input_median).log2();
-    // First Exposure is within half a field step of the analytical neutral-ramp solution.
-    let measured = ((report.bands.p50 + 0.055) / 1.055).powf(2.4);
-    assert!(((measured / input_median).log2() - ideal).abs() <= 0.0051);
+    let median = f64::from(input.rgb[511][0]);
+    let linear_target = ((0.46_f64 + 0.055) / 1.055).powf(2.4);
+    let first = ((linear_target / median).log2() * 100.).round() / 100.;
+    assert_eq!(
+        report.bands,
+        statistics(
+            &input,
+            &compile(AutoToneValues {
+                exposure: first,
+                ..Default::default()
+            })
+            .unwrap(),
+            false,
+            false,
+            &Cancel::never()
+        )
+        .unwrap(),
+        "the first sweep's Exposure is {first} EV"
+    );
+    assert_eq!(report.values, by_the_design(&input));
     assert_eq!(report.values.highlights, 0.);
     assert_eq!(report.values.vibrance, 25.);
     assert_eq!(report.values.saturation, 0.);
-    for (value, (min, max)) in report.values.array().into_iter().zip(BOUNDS) {
-        assert!((min..=max).contains(&value));
-    }
-    assert_eq!(
-        report.values.exposure * 100.,
-        (report.values.exposure * 100.).round()
-    );
     assert!(
         serde_json::to_vec(&report).unwrap().len() < 3500,
         "leave room for layer provenance in the 4 KiB query"
     );
+}
+
+/// The design's other synthetic cases: bright, low-contrast, high-key, a clipped source and a
+/// saturated one each solve to exactly the values its steps give.
+#[test]
+fn auto_tone_synthetic_cases_equal_the_designs_steps() {
+    let bright = sample((0..1024).map(|i| [0.3 + i as f32 * 1.2 / 1023.; 3]));
+    let low_contrast = sample((0..1024).map(|i| [0.08 + i as f32 * 0.04 / 1023.; 3]));
+    let high_key = sample((0..1024).map(|i| [0.5 + i as f32 * 0.5 / 1023.; 3]));
+    // A quarter of the frame is sky already clipped in the file.
+    let mut clipped = sample((0..1024).map(|i| {
+        if i >= 768 {
+            [1.; 3]
+        } else {
+            [0.02 + i as f32 * 0.3 / 767.; 3]
+        }
+    }));
+    for flag in &mut clipped.source_clipped[768..] {
+        *flag = true;
+    }
+    let saturated = sample((0..1024).map(|i| {
+        let n = 0.02 + i as f32 * 0.3 / 1023.;
+        [n * 3., n * 0.6, n * 0.2]
+    }));
+    for (name, input) in [
+        ("bright", bright),
+        ("low contrast", low_contrast),
+        ("high key", high_key),
+        ("clipped source", clipped),
+        ("saturated", saturated),
+    ] {
+        let report = solve(
+            &input,
+            AutoToneTargets::default(),
+            compile,
+            &Cancel::never(),
+        )
+        .unwrap();
+        assert_eq!(report.values, by_the_design(&input), "{name}");
+    }
 }
 
 #[test]
@@ -175,36 +329,53 @@ fn auto_tone_endpoint_searches_match_exhaustive_constraints_on_neutral_samples()
     assert_eq!(values.blacks, f64::from(*acceptable_black.first().unwrap()));
 }
 
+/// Non-finite samples are counted and left out; a point already clipped in the source is left
+/// out of the clipping fractions, so a clipped sky does not darken the photograph: the same frame
+/// with its sky flagged takes Whites the unflagged frame cannot.
 #[test]
-fn auto_tone_is_deterministic_across_pool_sizes_and_reports_unreachable_clipping() {
+fn auto_tone_counts_exclusions_and_never_darkens_a_sky_clipped_in_the_source() {
     let mut input = ramp();
-    input.rgb[0] = [0.; 3];
     input.rgb[1] = [f32::NAN; 3];
     // Add one finite sample so the grid still has the minimum usable count.
     input.grid = [33, 32];
     input.rgb.push([0.04; 3]);
-    input.source_white.push(false);
-    let runs: Vec<_> = [1, 2, 4]
-        .map(|threads| {
-            rayon::ThreadPoolBuilder::new()
-                .num_threads(threads)
-                .build()
-                .unwrap()
-                .install(|| {
-                    solve(
-                        &input,
-                        AutoToneTargets::default(),
-                        compile,
-                        &Cancel::never(),
-                    )
-                    .unwrap()
-                })
-        })
-        .into();
-    assert_eq!(runs[0], runs[1]);
-    assert_eq!(runs[1], runs[2]);
-    assert_eq!(runs[0].sample.non_finite, 1);
-    assert_eq!(runs[0].sample.usable, 1024);
+    input.source_clipped.push(false);
+    let report = solve(
+        &input,
+        AutoToneTargets::default(),
+        compile,
+        &Cancel::never(),
+    )
+    .unwrap();
+    assert_eq!(report.sample.non_finite, 1);
+    assert_eq!(report.sample.usable, 1024);
+    assert_eq!(report.sample.source_clipped, 0);
+
+    let sky = |flagged: bool| {
+        let mut input = sample((0..1024).map(|i| {
+            if i >= 960 {
+                [4.; 3]
+            } else {
+                [0.02 + i as f32 * 0.2 / 959.; 3]
+            }
+        }));
+        input.source_clipped[960..].fill(flagged);
+        solve(
+            &input,
+            AutoToneTargets::default(),
+            compile,
+            &Cancel::never(),
+        )
+        .unwrap()
+    };
+    let (flagged, unflagged) = (sky(true), sky(false));
+    assert_eq!(flagged.sample.source_clipped, 64);
+    assert_eq!(flagged.tone.highlight_clip, 0.);
+    assert_eq!(flagged.values.whites, 60.);
+    assert!(
+        unflagged.values.whites < flagged.values.whites,
+        "{unflagged:?}"
+    );
 }
 
 #[test]
@@ -309,19 +480,30 @@ fn auto_tone_look_uses_the_actual_compiled_forward_model() {
         else {
             panic!("Look is pointwise");
         };
-        let with_look = |values| {
+        let with_look = |values| -> Result<Vec<ColorOperation>, Error> {
             let mut operations = compile(values)?;
             operations.push(unit.clone());
             Ok(operations)
         };
-        let report = solve_with_exposure_search(
-            &input,
-            AutoToneTargets::default(),
-            with_look,
-            ExposureSearch::Exhaustive,
-            &Cancel::never(),
+        // The production model over Basic and this Look, against the hand-built units above.
+        let layers = [
+            crate::Layer::new(BASIC_EFFECT, json!({})),
+            crate::Layer::new(crate::LOOK_EFFECT, payload.clone()),
+        ];
+        let model = super::super::forward_model(
+            &registry,
+            &layers,
+            0,
+            CompileStage::exact(Stage {
+                width: 32,
+                height: 32,
+            }),
         )
         .unwrap();
+        let report = model
+            .solve(&input, AutoToneTargets::default(), &Cancel::never())
+            .unwrap();
+        assert_eq!(report.exposure_search, ExposureSearch::Exhaustive);
         let plain = solve(
             &input,
             AutoToneTargets::default(),

@@ -1404,6 +1404,12 @@ pub(super) fn map(
     }
     let era = era(&by_name);
     let auto_tone = by_name.get("AutoTone").and_then(|value| boolean(value)) == Some(true);
+    // What the Auto tone step overwrites, as its descriptor declares: the fields a preset
+    // carrying Auto does not import.
+    let auto_writes = registry
+        .action("auto-tone")
+        .and_then(|(_, action)| action.analysis.as_ref())
+        .map(|analysis| &analysis.writes);
     let switches: HashMap<Panel, Switch> = PANELS
         .iter()
         .map(|panel| {
@@ -1481,7 +1487,11 @@ pub(super) fn map(
                 None => refused.push(reported(setting, Some("AutoTone is not a boolean"))),
             },
             Rule::Transfer { action, field, .. } | Rule::CurveTransfer { action, field } => {
-                if auto_tone && action == BASIC && crate::auto_tone::FIELDS.contains(&field) {
+                if auto_tone
+                    && auto_writes
+                        .and_then(|writes| writes.get(action))
+                        .is_some_and(|written| written.iter().any(|name| name == field))
+                {
                     neutral.push(reported(
                         setting,
                         Some("overridden by Auto tone, recomputed for each photo"),
