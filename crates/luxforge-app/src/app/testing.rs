@@ -353,6 +353,7 @@ pub(crate) fn refresh_for(
         .expect("a test preview job"),
         session: ClientSession::default(),
         request: None,
+        mutation_request: None,
         skipped: Vec::new(),
         collapsed: None,
     }

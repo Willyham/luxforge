@@ -92,20 +92,20 @@ pub(crate) fn removed(
     }
 }
 
-/// One preset as every photograph of a batch receives it: the `edit.apply-preset` parameters a
-/// client sends after reading the preset from the library (its `settings`, `name` and `id` as
-/// `preset-id`), and the batch's envelope.
+/// One settings set as every photograph of a batch receives it: the single-photo action and
+/// parameters, plus the batch's envelope. Presets and clipboard pastes share the same runner.
 #[derive(Clone, Debug)]
-pub(crate) struct PresetApply {
+pub(crate) struct SettingsApply {
     pub parameters: Value,
+    pub action: &'static str,
     pub name: String,
     pub request_id: String,
     pub actor: String,
-    /// How many fields the preset sets, over all its actions.
+    /// How many fields the settings set names, over all its actions.
     fields: usize,
 }
 
-/// What applying a preset did to one photograph.
+/// What applying the settings did to one photograph.
 #[derive(Debug)]
 pub(crate) enum Applied {
     /// Its own new entry, and the settings left out because they do not apply to it.
@@ -113,20 +113,38 @@ pub(crate) enum Applied {
     Skipped(BatchSkip),
 }
 
-impl PresetApply {
+impl SettingsApply {
     pub(crate) fn new(preset: PresetRecord, request_id: String, actor: String) -> Self {
-        let fields = preset
-            .settings
-            .values()
-            .map(|fields| fields.as_object().map_or(0, Map::len))
-            .sum();
-        Self {
-            parameters: json!({
+        Self::action(
+            crate::modules::APPLY_PRESET,
+            preset.name.clone(),
+            json!({
                 "settings": preset.settings,
                 "name": preset.name,
                 "preset-id": preset.id,
             }),
-            name: preset.name,
+            request_id,
+            actor,
+        )
+    }
+
+    pub(crate) fn action(
+        action: &'static str,
+        name: String,
+        parameters: Value,
+        request_id: String,
+        actor: String,
+    ) -> Self {
+        let fields = parameters["settings"].as_object().map_or(0, |settings| {
+            settings
+                .values()
+                .map(|fields| fields.as_object().map_or(0, Map::len))
+                .sum()
+        });
+        Self {
+            action,
+            name,
+            parameters,
             request_id,
             actor,
             fields,
@@ -165,11 +183,17 @@ impl PresetApply {
                 ),
             ));
         }
-        Applied::Skipped(skip(
-            asset,
-            UNCHANGED,
-            format!("it already has {}'s settings", self.name),
-        ))
+        let mut reason = format!("it already has {}'s settings", self.name);
+        if !result.skipped.is_empty() {
+            let mut reasons: Vec<&str> = Vec::new();
+            for setting in &result.skipped {
+                if !reasons.contains(&setting.reason.as_str()) {
+                    reasons.push(&setting.reason);
+                }
+            }
+            reason.push_str(&format!("; skipped: {}", reasons.join("; ")));
+        }
+        Applied::Skipped(skip(asset, UNCHANGED, reason))
     }
 
     fn fields_of(&self, action: &str) -> usize {

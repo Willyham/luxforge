@@ -852,3 +852,95 @@ fn a_cancelled_batch_export_keeps_the_files_it_wrote_and_removes_its_temporary_f
     );
     harness.owner.hold_exports(None);
 }
+
+#[test]
+fn batch_paste_settings_reports_skips_and_uses_the_single_paste_path() {
+    let harness = Harness::new("paste-settings");
+    let [target, removed, drafted, previewed, unchanged, alone] = [
+        "Target",
+        "Removed",
+        "Drafted",
+        "Previewed",
+        "Unchanged",
+        "Single",
+    ]
+    .map(|name| harness.photograph("srgb.jpg", &format!("photos/{name}.jpg")));
+    harness.remove(&removed);
+    harness.ok(
+        "draft.begin",
+        json!({"asset_id": drafted, "action": "set-basic"}),
+    );
+    harness.expose(&previewed, 0.25);
+    let original = harness.ok("history.list", json!({"asset_id": previewed}))["entries"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()["id"]
+        .clone();
+    harness.ok(
+        "preview.select",
+        json!({"asset_id": previewed, "entry_id": original}),
+    );
+    harness.expose(&unchanged, 0.5);
+    let settings = json!({"set-basic": {"exposure": 0.5}, "set-raw": {"white-balance": "as-shot"}});
+    let targets = [target.clone(), removed, drafted, previewed, unchanged];
+    let request = json!({"targets": assets(&targets), "settings": settings, "source": "DSC_4471.NEF", "source_asset_id": "provenance", "mutation": envelope("paste-batch")});
+    let started = harness.ok("batch.paste-settings", request.clone());
+    let settled = harness.settle(&started["job_id"]);
+    assert_eq!(settled["status"], "ready", "{settled}");
+    assert_eq!(settled["kind"], "batch-paste");
+    assert_eq!(settled["result"]["done"], json!([target]));
+    let codes: Vec<_> = settled["result"]["skipped"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        codes,
+        ["removed", "draft-open", "history-selected", "unchanged"]
+    );
+    assert_eq!(
+        settled["result"]["settings_skipped"][0]["settings"][0]["action"],
+        "set-raw"
+    );
+    harness.ok("edit.paste-settings", json!({"asset_id": alone, "settings": settings, "source": "DSC_4471.NEF", "source-asset": "provenance", "mutation": {"expected_revision": 0, "request_id": "paste-single", "actor": ACTOR}}));
+    let (batched, single) = (harness.current(&target), harness.current(&alone));
+    assert_eq!(batched["label"], "Paste settings from DSC_4471.NEF");
+    assert_eq!(batched["action_id"], "paste-settings");
+    assert_eq!(batched["parameters"], single["parameters"]);
+    assert_eq!(stack(&batched), stack(&single));
+    assert_eq!(batched["request_id"], format!("paste-batch/{target}"));
+    harness.ok("batch.paste-settings", request);
+    assert_eq!(harness.revision(&target), 1);
+    let bad = harness.refused("batch.paste-settings", json!({"targets": assets(&targets), "settings": {"apply-preset": {"name": "nested"}}, "source": "photo", "mutation": envelope("bad-paste")}));
+    assert_eq!(bad.code, "validation");
+    assert_eq!(harness.revision(&target), 1);
+}
+
+#[test]
+fn cancelled_batch_paste_keeps_finished_photographs() {
+    let harness = Harness::new("paste-cancel");
+    let photos: Vec<_> = ["One", "Two", "Three"]
+        .iter()
+        .map(|name| harness.photograph("srgb.jpg", &format!("{name}.jpg")))
+        .collect();
+    let gate = harness.hold_before_photograph(2);
+    let started = harness.ok("batch.paste-settings", json!({"targets": assets(&photos), "settings": {"set-basic": {"exposure": 0.5}}, "source": "source.jpg", "mutation": envelope("cancel-paste")}));
+    let job = started["job_id"].clone();
+    gate.wait_reached(1, "the paste's second photograph");
+    assert_eq!(
+        harness.ok("job.read", json!({"job_id": job}))["progress"]["message"],
+        "1 of 3"
+    );
+    harness.ok("job.cancel", json!({"job_id": job}));
+    gate.open();
+    assert_eq!(harness.settle(&job)["status"], "cancelled");
+    assert_eq!(
+        photos
+            .iter()
+            .map(|asset| harness.revision(asset))
+            .collect::<Vec<_>>(),
+        [1, 0, 0]
+    );
+}

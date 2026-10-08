@@ -8,6 +8,7 @@ mod catalog_probes;
 #[path = "../../crates/luxforge-core/tests/modules/conformance/mod.rs"]
 mod conformance;
 mod controls_smoke;
+mod copy_settings_smoke;
 mod crop_smoke;
 mod curve_acceptance;
 mod curve_smoke;

@@ -41,12 +41,20 @@ pub(crate) fn palette(model: &PaletteModel) -> Option<Element<'_, Message>> {
                 },
                 leading: String::new(),
                 label: entry.label.clone(),
-                trailing: Some(entry.detail.clone()),
-                dimmed: false,
+                trailing: Some(
+                    entry
+                        .refusal
+                        .clone()
+                        .unwrap_or_else(|| entry.detail.clone()),
+                ),
+                dimmed: entry.refusal.is_some(),
                 tag: None,
-                enabled: true,
+                enabled: entry.refusal.is_none(),
             },
-            Some(Message::Palette(PaletteMessage::RunIndex(index))),
+            entry
+                .refusal
+                .is_none()
+                .then_some(Message::Palette(PaletteMessage::RunIndex(index))),
             None,
         ));
     }

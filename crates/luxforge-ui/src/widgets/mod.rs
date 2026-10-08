@@ -149,7 +149,7 @@ pub use thumbnail_grid::{
 // -- end Select: the thumbnail grid's exports.
 
 // -- Select: chrome's exports.
-pub use filmstrip::{FilmstripModel, filmstrip, filmstrip_capacity};
+pub use filmstrip::{FilmstripModel, FilmstripPress, filmstrip, filmstrip_capacity};
 pub use filter_bar::{
     ChipEnd, FilterChipModel, FilterOption, FilterSegmentsModel, SearchFieldModel, filter_action,
     filter_bar, filter_chip, filter_segments, search_field,

@@ -2155,6 +2155,46 @@
             ],
             "patch": false,
             "title": "Apply preset"
+          },
+          {
+            "id": "paste-settings",
+            "notes": "applies captured settings as one entry labelled Paste settings from <source>; uses the same field patches, skips, refusals and no-op behavior as apply-preset; fields not named keep their values and masked layers are unchanged",
+            "parameters": [
+              {
+                "default": null,
+                "kind": "settings",
+                "name": "settings",
+                "notes": "",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "string",
+                "max_length": 128,
+                "name": "source",
+                "notes": "the source photograph's display name; not empty",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "string",
+                "max_length": 96,
+                "name": "source-asset",
+                "notes": "source asset provenance only; never looked up",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              }
+            ],
+            "patch": false,
+            "title": "Paste settings"
           }
         ],
         "availability": {
@@ -4945,6 +4985,55 @@
         "required": [
           "asset_id",
           "mutation"
+        ]
+      },
+      "edit.paste-settings": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "applies captured settings as one entry labelled Paste settings from <source>; uses the same field patches, skips, refusals and no-op behavior as apply-preset; fields not named keep their values and masked layers are unchanged",
+        "optional": {
+          "source-asset": "source asset provenance only; never looked up"
+        },
+        "parameters": [
+          {
+            "default": null,
+            "kind": "settings",
+            "name": "settings",
+            "notes": "",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "string",
+            "max_length": 128,
+            "name": "source",
+            "notes": "the source photograph's display name; not empty",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "string",
+            "max_length": 96,
+            "name": "source-asset",
+            "notes": "source asset provenance only; never looked up",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          }
+        ],
+        "patch": false,
+        "required": [
+          "asset_id",
+          "mutation",
+          "settings",
+          "source"
         ]
       },
       "edit.pick-raw-neutral": {

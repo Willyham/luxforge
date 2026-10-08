@@ -69,7 +69,7 @@ Import from and alignment with Lightroom Classic.
 
 | Plan | Purpose |
 | --- | --- |
-| [Copy and paste settings](interface/copy-settings.json) ([design](../docs/design/copy-settings.md)) | Planned copy of chosen adjustment groups into a per-window clipboard and paste onto the open photograph, a new Develop filmstrip multi-selection or a Select selection, and Paste from previous, through a `paste-settings` action and batch method; implementation awaits authorization |
+| [Copy and paste settings](interface/copy-settings.json) ([design](../docs/design/copy-settings.md)) | Implementation in progress: copy of chosen adjustment groups into a per-window clipboard and paste onto the open photograph, a new Develop filmstrip multi-selection or a Select selection, and Paste from previous, through a `paste-settings` action and batch method |
 | [High-zoom minimap](interface/minimap.json) ([design](../docs/design/minimap.md)) | Planned whole-image overview at percentage zoom ≥200, with owner-chosen click/drag navigation through `view.set`, bounded GPU/reference rendering, working integration first and final qualification/measurement; implementation awaits authorization |
 
 ### Project (`project/`)

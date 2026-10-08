@@ -9,6 +9,7 @@
 pub(crate) mod action;
 pub(crate) mod capability;
 pub(crate) mod control;
+pub(crate) mod copy_settings;
 pub(crate) mod crop;
 pub(crate) mod develop;
 pub(crate) mod draft;
@@ -60,6 +61,7 @@ pub(crate) enum Message {
     Draft(draft::DraftMessage),
     /// One Presets-section change.
     Preset(preset::PresetMessage),
+    CopySettings(copy_settings::CopySettingsMessage),
     /// A module capability gesture or answer.
     Capability(capability::CapabilityMessage),
     Performance(performance::PerformanceMessage),
@@ -151,6 +153,15 @@ impl Message {
                     | P::Delete(_)
                     | P::CopyReport(_)
                     | P::Export(_)
+            ),
+            Self::CopySettings(message) => matches!(
+                message,
+                copy_settings::CopySettingsMessage::Copy { .. }
+                    | copy_settings::CopySettingsMessage::Chosen
+                    | copy_settings::CopySettingsMessage::Paste
+                    | copy_settings::CopySettingsMessage::PasteTo(_)
+                    | copy_settings::CopySettingsMessage::Previous
+                    | copy_settings::CopySettingsMessage::Confirm
             ),
             Self::Mask(message) => !matches!(
                 message,
