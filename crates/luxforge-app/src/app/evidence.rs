@@ -2745,6 +2745,7 @@ impl Editor {
             && self.slider_gesture().is_none()
             && !self.busy
             && !self.view_state.copy_settings.pending
+            && !self.view_state.copy_settings.batch_pending
             && self.sync.poll.idle()
             && self.select.state.catalog.running().is_none()
             && (!self.select_shown() || self.catalog_quiet())
