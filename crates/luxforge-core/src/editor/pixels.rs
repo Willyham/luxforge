@@ -24,7 +24,7 @@ use super::{
 use crate::{
     AssetId, Cancel, DraftId, EntryId, Error, MaskId, PixelInput, PreviewSource, Recipe, Region,
     modules::{QueryRef, Stage, StageContext, StageQuestions, check_parameters},
-    tiles::{Answered, ReadAnswer, ReadStage, ReadValues, TileReads, TileSession},
+    tiles::{Answered, ReadAnswer, ReadStage, ReadValues, Step, TileReads, TileSession},
 };
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -220,7 +220,9 @@ pub(crate) struct DeferredRead {
 impl DeferredRead {
     /// The tile call that reads this pixel for `client` under `cancel` and hands the answer to
     /// `deliver`, which returns it to the owner: every parked read, the owner's and a batch's, is
-    /// submitted as one of these.
+    /// submitted as one of these. A query that reads a sample grid reads it on the tile service
+    /// and is finished on the analysis worker ([`QueryPlan::evaluate_steps`]), under the same
+    /// `cancel` and answering the same `deliver`.
     pub(crate) fn tile_call(
         self,
         client: crate::ClientId,
@@ -236,48 +238,62 @@ impl DeferredRead {
     }
 
     /// Read the deferred pixel with `reads`, the tile service's renderer: its code and its linear
-    /// value in the stage its layer receives, through one session, so the two are one tile.
+    /// value in the stage its layer receives, through one session, so the two are one tile; or
+    /// the deferred query, whose analysis, if it reads a grid, the analysis worker finishes.
     pub(crate) fn evaluate(
         self,
         reads: &dyn TileReads,
         cancel: &Cancel,
-    ) -> Result<PixelAnswer, Error> {
-        let value = match &self.read {
+    ) -> Result<Step<PixelAnswer>, Error> {
+        let Self {
+            read,
+            key,
+            evaluation,
+        } = self;
+        match read {
             PixelRead::Point { index, x, y } => {
-                let stage = TileStage::new(&self.evaluation, reads, cancel);
-                PixelValue::Point {
-                    rgba: stage.sample_before(*index, *x, *y)?,
-                    linear: stage.input_before(*index, *x, *y)?,
-                }
+                let stage = TileStage::new(&evaluation, reads, cancel);
+                let value = PixelValue::Point {
+                    rgba: stage.sample_before(index, x, y)?,
+                    linear: stage.input_before(index, x, y)?,
+                };
+                Ok(Step::Done(PixelAnswer {
+                    key,
+                    read: PixelRead::Point { index, x, y },
+                    value,
+                }))
             }
             PixelRead::Query { id, parameters } => {
-                let kind = match self.evaluation.source() {
+                let kind = match evaluation.source() {
                     PreviewSource::Jpeg(_) => crate::SourceTag::Jpeg,
                     PreviewSource::Raw { .. } => crate::SourceTag::Raw,
                 };
-                let result = QueryPlan {
-                    evaluation: self.evaluation.clone(),
-                    query: id.clone(),
+                let read = PixelRead::Query {
+                    id: id.clone(),
                     parameters: parameters.clone(),
+                };
+                let plan = QueryPlan {
+                    evaluation,
+                    query: id,
+                    parameters,
                     mask: None,
                     kind,
-                }
-                .evaluate(reads, cancel);
-                PixelValue::Query(match result {
-                    Ok(value) => Ok(value),
-                    Err(error) if error.kind == crate::ErrorKind::Validation => Err(QueryRefusal {
-                        detail: error.detail,
-                        data: error.data,
-                    }),
-                    Err(error) => return Err(error),
+                };
+                Step::map_result(plan.evaluate_steps(reads, cancel), move |result| {
+                    let value = PixelValue::Query(match result {
+                        Ok(value) => Ok(value),
+                        Err(error) if error.kind == crate::ErrorKind::Validation => {
+                            Err(QueryRefusal {
+                                detail: error.detail,
+                                data: error.data,
+                            })
+                        }
+                        Err(error) => return Err(error),
+                    });
+                    Ok(PixelAnswer { key, read, value })
                 })
             }
-        };
-        Ok(PixelAnswer {
-            key: self.key,
-            read: self.read,
-            value,
-        })
+        }
     }
 }
 
@@ -576,10 +592,58 @@ pub(crate) struct QueryPlan {
     kind: crate::SourceTag,
 }
 impl QueryPlan {
+    /// Whether this is a declared analysis query ([`crate::AnalysisAction`]), such as
+    /// `auto-tone`, which its caller can supersede.
+    pub(crate) fn analysis(&self) -> bool {
+        self.evaluation.registry().analysis_query(&self.query)
+    }
+
+    /// The photograph the query reads.
+    pub(crate) fn asset(&self) -> &crate::AssetId {
+        &self.evaluation.entry().asset_id
+    }
+
     /// Answer the query with `reads`, the tile service's renderer, every read of it through one
-    /// session. `mask.sample-input` names the renderer that drew its pixel.
+    /// session, here and now. `mask.sample-input` names the renderer that drew its pixel.
     pub(crate) fn evaluate(self, reads: &dyn TileReads, cancel: &Cancel) -> Result<Value, Error> {
         let questions = TileStage::new(&self.evaluation, reads, cancel);
+        self.answer(&questions, &|| questions.answered())
+    }
+
+    /// Answer the query on the tile service's thread with `reads`, or, when it reads a sample
+    /// grid, read only the grid here and hand the rest of the query — Auto tone's solve — to the
+    /// analysis worker ([`crate::tiles`]), so the service's next call does not wait for it. The
+    /// query is asked again there over the grid read here: planning it again is `O(layers)`, and
+    /// it reads no other pixel after its grid.
+    pub(crate) fn evaluate_steps(
+        self,
+        reads: &dyn TileReads,
+        cancel: &Cancel,
+    ) -> Result<Step<Value>, Error> {
+        let held = {
+            let questions = TileStage::new(&self.evaluation, reads, cancel).holding_grids();
+            let answer = self.answer(&questions, &|| questions.answered());
+            match questions.held.take() {
+                Some(held) => held,
+                None => return answer.map(Step::Done),
+            }
+        };
+        let context = self.evaluation.context().clone();
+        Ok(Step::then(context, move |_cancel| {
+            let questions = HeldGrid {
+                evaluation: &self.evaluation,
+                held: RefCell::new(Some(held)),
+            };
+            self.answer(&questions, &|| None)
+        }))
+    }
+
+    /// The query's answer to `questions`; `answered` names the renderer of its latest read.
+    fn answer(
+        &self,
+        questions: &dyn StageQuestions,
+        answered: &dyn Fn() -> Option<Answered>,
+    ) -> Result<Value, Error> {
         let recipe = self.evaluation.recipe();
         let registry = self.evaluation.registry();
         match registry
@@ -595,7 +659,7 @@ impl QueryPlan {
                     target: self.mask.as_ref(),
                     kind: self.kind,
                     masks: &recipe.masks,
-                    questions: &questions,
+                    questions,
                 },
             ),
             QueryRef::Host(_) if self.query == crate::mask::commands::SAMPLE_INPUT => {
@@ -616,8 +680,7 @@ impl QueryPlan {
                     return Err(outside());
                 }
                 let [r, g, b] = questions.input_before(layer, x, y)?.ok_or_else(outside)?;
-                let renderer = questions
-                    .answered()
+                let renderer = answered()
                     .ok_or_else(|| Error::internal("the sample input was read by no renderer"))?;
                 serde_json::to_value(PixelInput {
                     r,
@@ -647,7 +710,15 @@ pub(crate) struct TileStage<'a> {
     session: RefCell<Box<dyn TileSession + 'a>>,
     /// The renderer that drew the latest read.
     answered: RefCell<Option<Answered>>,
+    /// Whether a grid read is held here for the analysis worker rather than answered
+    /// ([`Self::holding_grids`]), and the grid held.
+    holding: bool,
+    held: RefCell<Option<(usize, crate::tiles::GridRead)>>,
 }
+
+/// What a query's first pass answers in place of the grid it reads when the grid is held for the
+/// analysis worker ([`QueryPlan::evaluate_steps`]): the pass's answer is discarded.
+const GRID_HELD: &str = "sample grid read; its analysis continues on the analysis worker";
 
 impl<'a> TileStage<'a> {
     pub(crate) fn new(
@@ -661,7 +732,16 @@ impl<'a> TileStage<'a> {
             cancel,
             session: RefCell::new(reads.session(evaluation, cancel)),
             answered: RefCell::new(None),
+            holding: false,
+            held: RefCell::new(None),
         }
+    }
+
+    /// These questions, keeping the first sample grid a query reads rather than answering it, so
+    /// the query stops there and is asked again over the grid on the analysis worker.
+    fn holding_grids(mut self) -> Self {
+        self.holding = true;
+        self
     }
 
     /// The renderer that drew the latest read, once one was made.
@@ -704,24 +784,15 @@ impl StageQuestions for TileStage<'_> {
     fn grid_before(&self, index: usize) -> Result<crate::tiles::GridRead, Error> {
         let read = crate::tiles::grid::read(self.evaluation, index, self.reads, self.cancel)?;
         *self.answered.borrow_mut() = Some(read.answered.clone());
+        if self.holding {
+            *self.held.borrow_mut() = Some((index, read));
+            return Err(Error::internal(GRID_HELD));
+        }
         Ok(read)
     }
 
     fn stage_before(&self, index: usize) -> Result<Stage, Error> {
-        let recipe = self.evaluation.recipe();
-        let (width, height) = self.evaluation.source().dimensions();
-        Ok(self
-            .evaluation
-            .registry()
-            .compile_layers(
-                width,
-                height,
-                super::prefix(&recipe.layers, index)?,
-                &recipe.masks,
-                &recipe.strokes,
-                &recipe.artifacts,
-            )?
-            .stage())
+        stage_before(self.evaluation, index)
     }
     fn sample_before(&self, index: usize, x: u32, y: u32) -> Result<Option<[u8; 4]>, Error> {
         Ok(self
@@ -733,6 +804,58 @@ impl StageQuestions for TileStage<'_> {
             .read(index, x, y, ReadValues::Linear)?
             .and_then(|answer| answer.linear(x, y))
             .map(|value| value.map(f64::from)))
+    }
+    fn sensor_neutral(&self, _: u32, _: u32) -> Result<[f32; 3], Error> {
+        Err(Error::internal("sensor neutral reads never defer"))
+    }
+}
+
+/// The stage the layer at `index` receives: its prefix's compilation, `O(layers)`.
+fn stage_before(evaluation: &Evaluation, index: usize) -> Result<Stage, Error> {
+    let recipe = evaluation.recipe();
+    let (width, height) = evaluation.source().dimensions();
+    Ok(evaluation
+        .registry()
+        .compile_layers(
+            width,
+            height,
+            super::prefix(&recipe.layers, index)?,
+            &recipe.masks,
+            &recipe.strokes,
+            &recipe.artifacts,
+        )?
+        .stage())
+}
+
+/// The questions a query is asked again on the analysis worker ([`QueryPlan::evaluate_steps`]):
+/// the sample grid the tile service read for it, once, and stages, which read no pixel. It reads
+/// nothing more.
+struct HeldGrid<'a> {
+    evaluation: &'a Evaluation,
+    held: RefCell<Option<(usize, crate::tiles::GridRead)>>,
+}
+
+impl StageQuestions for HeldGrid<'_> {
+    fn grid_before(&self, index: usize) -> Result<crate::tiles::GridRead, Error> {
+        match self.held.take() {
+            Some((read, grid)) if read == index => Ok(grid),
+            _ => Err(Error::internal(
+                "an analysis asked again for a sample grid the tile service did not read for it",
+            )),
+        }
+    }
+    fn stage_before(&self, index: usize) -> Result<Stage, Error> {
+        stage_before(self.evaluation, index)
+    }
+    fn sample_before(&self, _: usize, _: u32, _: u32) -> Result<Option<[u8; 4]>, Error> {
+        Err(Error::internal(
+            "an analysis reads no pixel after its sample grid",
+        ))
+    }
+    fn input_before(&self, _: usize, _: u32, _: u32) -> Result<Option<[f64; 3]>, Error> {
+        Err(Error::internal(
+            "an analysis reads no pixel after its sample grid",
+        ))
     }
     fn sensor_neutral(&self, _: u32, _: u32) -> Result<[f32; 3], Error> {
         Err(Error::internal("sensor neutral reads never defer"))

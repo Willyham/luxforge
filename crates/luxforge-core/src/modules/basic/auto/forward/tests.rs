@@ -123,8 +123,8 @@ fn the_looks_declared_monotonicity_chooses_the_exposure_search() {
     for (amount, search) in [
         (0., ExposureSearch::Monotone),
         (100., ExposureSearch::Monotone),
-        (100.5, ExposureSearch::Exhaustive),
-        (200., ExposureSearch::Exhaustive),
+        (100.5, ExposureSearch::CoarseToFine),
+        (200., ExposureSearch::CoarseToFine),
     ] {
         let layers = [Layer::new(BASIC_EFFECT, json!({})), look(&registry, amount)];
         let model = forward_model(&registry, &layers, 0, stage()).unwrap();

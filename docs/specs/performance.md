@@ -42,26 +42,34 @@ A single float32 RGBA buffer for 60 MP is about 916 MiB, so unrestricted full-re
 
 ## Auto tone
 
-Native Apple M2 / Metal, 8 GiB, optimized release, 2026-10-08. Thirty samples per case use prepared generated 24 MP and 60 MP JPEGs and a neutral Basic prefix. The engine timer covers the tile-worker queue, grid read and deterministic solver; it excludes original decoding/preparation, catalog commit and preview. Cold and warm refer only to the analysis-sample cache; filesystem, device and shader caches are not purged. This is neither a before/after editor baseline nor the owner's M4 click-to-entry qualification.
+Native Apple M4 Pro (14 cores, 48 GiB) / Metal, optimized release, 2026-10-08, under the host-wide timing lock. This is not the owner's M4 MacBook Pro, and the host was shared with other agents' work: the one-minute load stayed between 3.90 and 7.96 during the run, below the 8.0 threshold, so the figures are recorded as reliable. Thirty samples per case use the prepared generated 24 MP and 60 MP JPEGs and a neutral Basic prefix. The engine timer covers the tile service's queue and grid read, then the solve after it off the tile service's thread (on the test's thread, as the analysis worker runs it; the hand-off itself is not timed); it excludes original decoding and preparation, catalog commit and preview. Cold and warm refer only to the analysis-sample cache; filesystem, device and shader caches are not purged. The model is Basic alone, or Basic then the starting Look at amount 200, which is not monotonic in Exposure and takes the coarse-to-fine search ([design](../design/auto-tone.md#the-solve-auto-tone1)).
 
-| Source | Renderer | Sample cache | Engine ms p50 / p95 | Grid read ms p95 | Solve ms p95 |
-| --- | --- | --- | ---: | ---: | ---: |
-| 24mp | gpu | cold | 3798.29 / 3821.80 | 988.371 | 2850.30 |
-| 24mp | gpu | warm | 2793.72 / 2810.59 | 0.037 | 2810.53 |
-| 24mp | reference | cold | 2804.77 / 2820.99 | 17.060 | 2806.12 |
-| 24mp | reference | warm | 2791.77 / 2808.38 | 0.037 | 2808.33 |
-| 60mp | gpu | cold | 5099.93 / 5150.96 | 2610.000 | 2610.78 |
-| 60mp | gpu | warm | 2500.92 / 2513.52 | 0.034 | 2513.47 |
-| 60mp | reference | cold | 2513.67 / 2529.18 | 13.589 | 2515.94 |
-| 60mp | reference | warm | 2503.67 / 2516.15 | 0.037 | 2516.09 |
+| Source | Model | Renderer | Sample cache | Engine ms p50 / p95 | Grid read ms p95 | Solve ms p95 |
+| --- | --- | --- | --- | ---: | ---: | ---: |
+| 24mp | Basic | gpu | cold | 908.2 / 960.2 | 910.398 | 61.6 |
+| 24mp | Basic | gpu | warm | 39.4 / 40.5 | 0.016 | 40.4 |
+| 24mp | Basic | reference | cold | 50.6 / 54.4 | 11.427 | 43.1 |
+| 24mp | Basic | reference | warm | 39.4 / 40.3 | 0.015 | 40.3 |
+| 24mp | Look 200 | gpu | warm | 310.0 / 320.7 | 0.018 | 320.6 |
+| 24mp | Look 200 | reference | warm | 309.5 / 328.4 | 0.017 | 328.4 |
+| 60mp | Basic | gpu | cold | 2275.5 / 2342.6 | 2268.733 | 77.0 |
+| 60mp | Basic | gpu | warm | 53.7 / 54.7 | 0.016 | 54.6 |
+| 60mp | Basic | reference | cold | 63.8 / 70.8 | 10.136 | 60.9 |
+| 60mp | Basic | reference | warm | 53.6 / 55.7 | 0.015 | 55.7 |
+| 60mp | Look 200 | gpu | warm | 293.2 / 305.2 | 0.017 | 305.2 |
+| 60mp | Look 200 | reference | warm | 292.8 / 322.8 | 0.018 | 322.7 |
 
-The 6000×4000 source uses 698,368 points and 9,078,784 retained bytes (8.66 MiB); the 10000×6000 source uses 628,736 points and 8,173,568 bytes (7.79 MiB). Both are within the 32 MiB retained cap. Warm GPU runs draw no tiles. The read's charged scratch peak is 20.06 MiB; the solver's bounded scratch is 5.38 / 4.84 MiB respectively, calculated separately from its f64 luminance array and RGB chunk. These scopes do not establish a total RSS/GPU memory budget. Both source hashes are unchanged. The host-wide timing lock was held; no build or other verification ran in this worktree, and recorded one-minute host load ranged from 1.44 to 2.95.
+On the same host, binary procedure and fixtures, the solver before the reduction and the analysis worker (solving on the tile thread, every search evaluating the whole sample) took 1,733.6 ms p95 warm at 24 MP and 1,566.6 ms at 60 MP through Basic alone, under a load of 1.79 to 6.28; through a Look above 100 it evaluated all 801 Exposure steps of the whole sample and was not measured. The committed values through Basic are identical before and after on both photographs, and through the Look at 200 they equal an exhaustive check of every Exposure, Whites and Blacks step on the same grids.
 
-The warmed engine alone exceeds the provisional 250 ms / 400 ms click-to-entry budgets by a wide margin. The solver dominates the warm cost. The plan permits delivery with a reported miss; optimization and owner M4 click-to-entry measurements remain outstanding. Reference spatial prefixes, non-neutral Look costs and the exhaustive Exposure search required by Look amounts above 100% are outside these neutral-prefix measurements.
+With the shared pool held to one thread (`RAYON_NUM_THREADS=1`), under a load of 1.84 to 5.45, the same binary's warm solve takes 220.9 ms p95 at 24 MP and 283.2 ms at 60 MP through Basic, and 2.13 s and 2.03 s through the Look at 200, with the same values in every case.
 
-Evidence: `artifacts/auto-tone-measure-01.json` contains every sample; `artifacts/auto-tone-measure-01-host.json` records binary/lockfile/source hashes, scope and host-load/RSS observations. Reproduce with the ignored release test `auto_tone_measure_photo_sized_inputs`, setting `LUXFORGE_GENERATED_FIXTURES` and a fresh `LUXFORGE_AUTO_TONE_OUTPUT`, on an idle native host under the timing lock. [Auto tone](../design/auto-tone.md) records correctness and the remaining corpus/owner qualification.
+The 6000×4000 source uses 698,368 points and 9,078,784 retained bytes (8.66 MiB); the 10000×6000 source uses 628,736 points and 8,173,568 bytes (7.79 MiB). Both are within the 32 MiB retained cap. Warm GPU runs draw no tiles. The read's charged scratch peak is 20.06 MiB; the solver's charged scratch (`auto_tone::scratch_bytes`: the whole sample's and the reduction's `f64` luminances and one 48 KiB RGB chunk for each of the pool's 14 threads) is 6.24 / 5.71 MiB respectively. These scopes do not establish a total RSS/GPU memory budget. Both source hashes are unchanged.
 
-The separate standard timing tier completed functionally, but all four timing components are marked unreliable (starting load 12.44–15.31). Its figures are not a baseline or evidence of improvement. This does not change the low-load scope of the Auto engine distributions above.
+The warm engine through Basic alone is within the provisional 250 ms / 400 ms click-to-entry budgets on this host with room for commit and preview, which are not measured here; through the Look above 100 the 24 MP solve alone exceeds 250 ms. The cold GPU grid read (0.91 s at 24 MP, 2.27 s at 60 MP) dominates a first Auto on a photograph. The owner's M4 click-to-entry qualification, reference spatial prefixes and non-neutral Looks at or below 100 remain unmeasured.
+
+Evidence: `artifacts/auto-tone-measure-02.json` contains every sample, `artifacts/auto-tone-measure-02-one-thread.json` the one-thread run, `artifacts/auto-tone-measure-02-baseline.json` the solver before, and `artifacts/auto-tone-measure-02-host.json` records the commits, binary and source hashes, scope and the load sampled every 10 to 20 s through each run. Reproduce with the ignored release test `auto_tone_measure_photo_sized_inputs`, setting `LUXFORGE_GENERATED_FIXTURES` and a fresh `LUXFORGE_AUTO_TONE_OUTPUT`, on an idle native host under the timing lock. [Auto tone](../design/auto-tone.md) records correctness and the remaining corpus/owner qualification.
+
+The separate standard timing tier last completed functionally with all four timing components marked unreliable (starting load 12.44–15.31); its figures are not a baseline.
 
 ## Code structure consolidation
 

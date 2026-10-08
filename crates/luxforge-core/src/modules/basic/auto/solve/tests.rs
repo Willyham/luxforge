@@ -109,6 +109,14 @@ fn auto_tone_refusals_are_structured_and_cancel_is_not_a_refusal() {
 /// computed independently of the solver's searches: every search tries every value on its field's
 /// grid, and every formula is written out from the design.
 fn by_the_design(input: &SampleGrid) -> AutoToneValues {
+    by_the_design_through(input, compile)
+}
+
+/// [`by_the_design`] through the model `compile` builds.
+fn by_the_design_through(
+    input: &SampleGrid,
+    compile: impl Fn(AutoToneValues) -> Result<Vec<ColorOperation>, Error>,
+) -> AutoToneValues {
     let targets = AutoToneTargets::default();
     let stats = |values: AutoToneValues, chroma: bool| {
         statistics(
@@ -503,7 +511,7 @@ fn auto_tone_look_uses_the_actual_compiled_forward_model() {
         let report = model
             .solve(&input, AutoToneTargets::default(), &Cancel::never())
             .unwrap();
-        assert_eq!(report.exposure_search, ExposureSearch::Exhaustive);
+        assert_eq!(report.exposure_search, ExposureSearch::CoarseToFine);
         let plain = solve(
             &input,
             AutoToneTargets::default(),
@@ -550,5 +558,295 @@ fn auto_tone_look_uses_the_actual_compiled_forward_model() {
             .find(|&i| exhaustive[i].near_white <= 0.02)
             .unwrap_or(0);
         assert_eq!(report.bands, exhaustive[guarded]);
+    }
+}
+
+/// The Look's original payload at `amount`.
+fn look_payload(registry: &crate::ModuleRegistry, amount: f64) -> Value {
+    let mut payload = registry
+        .module("luxforge.look")
+        .unwrap()
+        .original(&crate::OriginalContext {
+            source: crate::SourceTag::Raw,
+            raw: None,
+            header: &crate::catalog_types::HeaderMetadata::default(),
+            preferences: crate::OriginalPreferences::default(),
+        })
+        .unwrap()
+        .unwrap()
+        .payload;
+    payload["amount"] = json!(amount);
+    payload
+}
+
+/// The nested selection finds, at every rank, exactly the value a sort of the whole slice holds
+/// there, with ties, repeated ranks and every length from one.
+#[test]
+fn nested_percentiles_equal_the_sorted_slices_nearest_ranks() {
+    let mut state = 0x9e37_79b9_u32;
+    for length in 1..200 {
+        let values: Vec<f64> = (0..length)
+            .map(|_| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                f64::from(state >> 27) / 4.
+            })
+            .collect();
+        let mut sorted = values.clone();
+        sorted.sort_by(f64::total_cmp);
+        let fractions = [0.01, 0.10, 0.10, 0.50, 0.90, 0.99, 1.];
+        let found = percentiles(&mut values.clone(), fractions);
+        for (fraction, found) in fractions.into_iter().zip(found) {
+            let rank = ((length as f64 * fraction).ceil() as usize).saturating_sub(1);
+            assert_eq!(
+                found,
+                sorted[rank.min(length - 1)],
+                "{length} at {fraction}"
+            );
+        }
+    }
+}
+
+/// The guided search answers exactly what the binary search does for every monotone predicate,
+/// from every guess; for any predicate its answer meets the predicate, or is the low end, and the
+/// next step fails it, or it is the high end.
+#[test]
+fn guided_search_answers_the_binary_search_for_every_monotone_predicate_and_guess() {
+    let (low, high) = (-6, 6);
+    for last in low - 1..=high {
+        for guess in low - 2..=high + 2 {
+            let monotone = |step: i32| Ok(step <= last);
+            assert_eq!(
+                guided_last_true(low, high, guess, monotone).unwrap(),
+                last_true(low, high, monotone).unwrap(),
+                "last {last}, guess {guess}"
+            );
+        }
+    }
+    for pattern in 0..1u32 << 7 {
+        let test = |step: i32| Ok(pattern >> (step + 3) & 1 == 1);
+        for guess in -3..=3 {
+            let found = guided_last_true(-3, 3, guess, test).unwrap();
+            assert!(found == -3 || test(found).unwrap(), "{pattern:b} {guess}");
+            assert!(
+                found == 3 || !test(found + 1).unwrap(),
+                "{pattern:b} {guess}"
+            );
+        }
+    }
+}
+
+/// A deterministic pseudo-random scene of `count` points: log-uniform luminance over seven stops
+/// with mild colour, seeded so every run reads the same sample.
+fn scene(count: usize, seed: u64) -> SampleGrid {
+    let mut state = seed;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        (state >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let rgb: Vec<[f32; 3]> = (0..count)
+        .map(|_| {
+            let base = (next() * 7. - 7.5).exp2();
+            [
+                (base * (0.7 + next() * 0.6)) as f32,
+                base as f32,
+                (base * (0.6 + next() * 0.8)) as f32,
+            ]
+        })
+        .collect();
+    SampleGrid {
+        grid: [128, count.div_ceil(128) as u32],
+        source_clipped: vec![false; rgb.len()],
+        rgb,
+    }
+}
+
+/// Larger synthetic samples whose reductions are big enough to locate on, with every chunk and the
+/// last partial one: a dark ramp, a bright ramp, a saturated ramp, a source-clipped sky, a scene,
+/// a scene with non-finite points, and stripes — dark and bright points alternating in scan order,
+/// on which a plain stride of an even number of points would read only the dark ones.
+fn reduced_cases() -> Vec<(&'static str, SampleGrid)> {
+    let count = 3 * CHUNK + 1000;
+    let ramp = |from: f32, span: f32| SampleGrid {
+        grid: [128, count.div_ceil(128) as u32],
+        rgb: (0..count)
+            .map(|i| [from + i as f32 * span / (count - 1) as f32; 3])
+            .collect(),
+        source_clipped: vec![false; count],
+    };
+    let mut sky = ramp(0.02, 0.4);
+    for (rgb, flag) in sky
+        .rgb
+        .iter_mut()
+        .zip(&mut sky.source_clipped)
+        .skip(count - 900)
+    {
+        *rgb = [1.; 3];
+        *flag = true;
+    }
+    let mut saturated = ramp(0.02, 0.3);
+    for rgb in &mut saturated.rgb {
+        *rgb = [rgb[0] * 3., rgb[1] * 0.6, rgb[2] * 0.2];
+    }
+    let mut holes = scene(count, 0x9e37_79b9_7f4a_7c15);
+    for index in (0..count).step_by(97) {
+        holes.rgb[index] = [f32::NAN; 3];
+    }
+    let mut stripes = ramp(0.02, 0.6);
+    for rgb in stripes.rgb.iter_mut().step_by(2) {
+        *rgb = rgb.map(|c| c * 0.05);
+    }
+    vec![
+        ("stripes", stripes),
+        ("dark ramp", ramp(0.01, 0.09)),
+        ("bright ramp", ramp(0.3, 1.2)),
+        ("saturated", saturated),
+        ("clipped sky", sky),
+        ("scene", scene(count, 0x2545_f491_4f6c_dd1d)),
+        ("scene with holes", holes),
+    ]
+}
+
+/// The reduction only decides where a search looks first: at strides that reduce the sample to
+/// about a quarter, a tenth and the least it locates on, the whole report — every value and every
+/// statistic — equals the solve without a reduction, whose values are the design's own steps tried
+/// over every value of every field's grid ([`by_the_design`]). The design permits a reduction for
+/// repeated evaluation only when it gives the whole sample's fractions and percentiles.
+#[test]
+fn the_reduction_locates_and_the_whole_sample_decides_every_value_and_statistic() {
+    for (name, input) in reduced_cases() {
+        let search = ExposureSearch::Monotone;
+        let whole = |stride| {
+            solve_reduced(
+                &input,
+                AutoToneTargets::default(),
+                compile,
+                search,
+                stride,
+                &Cancel::never(),
+            )
+            .unwrap()
+        };
+        let unreduced = whole(1);
+        assert_eq!(unreduced.values, by_the_design(&input), "{name}");
+        for stride in [4, 10, input.rgb.len() / 1024] {
+            assert!(
+                View::new(&input, stride).usable() >= 1024,
+                "{name} locates at {stride}"
+            );
+            assert_eq!(whole(stride), unreduced, "{name} at stride {stride}");
+        }
+        assert_eq!(
+            unreduced.output,
+            statistics(
+                &input,
+                &compile(unreduced.values).unwrap(),
+                false,
+                true,
+                &Cancel::never()
+            )
+            .unwrap(),
+            "{name}: the reported statistics are the whole sample's"
+        );
+    }
+}
+
+/// The solve is the same on every size of the shared pool: each chunk of the sample is one task,
+/// whose counts and chroma sum are added in chunk order, so neither the values nor any statistic
+/// depends on how many threads evaluate them, through Basic alone and through a Look that needs
+/// the coarse-to-fine Exposure search.
+#[test]
+fn the_solve_is_the_same_on_every_pool_size() {
+    let input = scene(5 * CHUNK + 123, 0x0123_4567_89ab_cdef);
+    let registry = crate::ModuleRegistry::builtin();
+    let layers = [
+        crate::Layer::new(BASIC_EFFECT, json!({})),
+        crate::Layer::new(crate::LOOK_EFFECT, look_payload(&registry, 200.)),
+    ];
+    let model = super::super::forward_model(
+        &registry,
+        &layers,
+        0,
+        CompileStage::exact(Stage {
+            width: 32,
+            height: 32,
+        }),
+    )
+    .unwrap();
+    let solves = |threads: usize| {
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads)
+            .build()
+            .unwrap();
+        pool.install(|| {
+            (
+                solve(
+                    &input,
+                    AutoToneTargets::default(),
+                    compile,
+                    &Cancel::never(),
+                )
+                .unwrap(),
+                model
+                    .solve(&input, AutoToneTargets::default(), &Cancel::never())
+                    .unwrap(),
+            )
+        })
+    };
+    let one = solves(1);
+    assert_eq!(one.1.exposure_search, ExposureSearch::CoarseToFine);
+    assert!(one.0.tone.mean_chroma > 0., "the chroma sum is exercised");
+    for threads in [2, 3, 8] {
+        assert_eq!(solves(threads), one, "{threads} threads");
+    }
+}
+
+/// The global Look at an amount above 100, whose model is not monotonic in Exposure, through the
+/// coarse-to-fine search, without a reduction and reduced to a quarter, a tenth and the least the
+/// solve locates on (about 1,100 points, whose medians miss the whole sample's by up to a third
+/// of a stop here): every value is the exhaustive design's ([`by_the_design_through`]), the
+/// median nearest the target over all 801 steps of the whole sample, then the nearest lower step
+/// within the bright guard. The coarse steps choose the basins; the whole sample finds its
+/// crossing of the target, so the reduction's bias moves no value.
+#[test]
+fn the_coarse_to_fine_exposure_equals_the_exhaustive_design_through_a_look() {
+    let registry = crate::ModuleRegistry::builtin();
+    let look = look_payload(&registry, 200.);
+    let Processing::Color(unit) = registry
+        .module("luxforge.look")
+        .unwrap()
+        .compile(
+            crate::LOOK_EFFECT,
+            EFFECT_FORMAT,
+            &look,
+            CompileStage::exact(Stage {
+                width: 32,
+                height: 32,
+            }),
+        )
+        .unwrap()
+    else {
+        panic!("Look is pointwise");
+    };
+    let with_look = |values| -> Result<Vec<ColorOperation>, Error> {
+        let mut operations = compile(values)?;
+        operations.push(unit.clone());
+        Ok(operations)
+    };
+    for (name, input) in reduced_cases() {
+        let exhaustive = by_the_design_through(&input, with_look);
+        for stride in [1, 4, 10, input.rgb.len() / 1024] {
+            let report = solve_reduced(
+                &input,
+                AutoToneTargets::default(),
+                with_look,
+                ExposureSearch::CoarseToFine,
+                stride,
+                &Cancel::never(),
+            )
+            .unwrap();
+            assert_eq!(report.values, exhaustive, "{name} at stride {stride}");
+        }
     }
 }

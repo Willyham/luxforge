@@ -1,5 +1,6 @@
-//! Basic's Auto tone: the analysis action and query, planned on the owner from metadata and
-//! answered on the tile service's worker; the solver ([`solve`]) and the forward model it solves
+//! Basic's Auto tone: the analysis action and query, planned on the owner from metadata, their
+//! sample grid read by the tile service and their solve run on the analysis worker after it
+//! ([`crate::tiles`]); the solver ([`solve`]) and the forward model it solves
 //! through ([`forward_model`]). The sample grid it reads belongs to the tile layer
 //! ([`crate::tiles::read_grid`]); nothing of Auto is in the grid's identity.
 mod forward;
@@ -70,12 +71,12 @@ pub(super) fn query(context: &StageContext<'_>) -> Result<Value, Error> {
     );
     let stage = CompileStage::exact(context.stage_before(index)?);
     let input = context.questions.grid_before(index)?;
-    // Each evaluation retains one f64 luminance per point and one small RGB chunk. The grid is
-    // accounted by its read and retained under the separate 32 MiB sample cap.
+    // Each evaluation retains one f64 luminance per point and one RGB chunk per pool thread. The
+    // grid is accounted by its read and retained under the separate 32 MiB sample cap.
     let _scratch = input
         .context
         .scratch()
-        .reserve(input.sample.rgb.len() * size_of::<f64>() + 4096 * 12);
+        .reserve(scratch_bytes(input.sample.rgb.len()));
     let model = forward_model(context.registry, context.layers, index, stage)?;
     let report = model.solve(&input.sample, AutoToneTargets::default(), &input.cancel)?;
     let values = report.values;
