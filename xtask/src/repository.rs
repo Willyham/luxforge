@@ -1023,8 +1023,9 @@ const SOURCE_RULES: &[SourceRule] = &[
     // ignored timing tests alike — is read from `luxforge_testbase::Distribution`'s nearest rank,
     // never from a sort-and-index of its own. The tokens are the shapes each hand-written
     // percentile, median or p50/p95 helper took, and a nearest-rank rank computed again. The Tone
-    // curve study's lifted-black noise spread and the RAW look study's corpus figures are the
-    // allowed second homes: they are study figures, not timings, and `luxforge-reference` may
+    // curve study's lifted-black noise spread, the RAW look study's corpus figures and the colour
+    // grading alignment's median response difference are the allowed second homes: they are study
+    // figures, not timings, and `luxforge-reference` may
     // depend on no workspace crate (`independent-references`), so they cannot reach
     // `Distribution`; they use the same nearest rank. Auto's production image solver also
     // cannot depend on test tooling and needs an in-place selection within charged scratch.
@@ -1047,6 +1048,7 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-core/src/auto_tone.rs",
             "crates/luxforge-reference/tests/studies/curve.rs",
             "crates/luxforge-reference/tests/studies/look.rs",
+            "crates/luxforge-reference/src/grade_response.rs",
         ],
         mode: Match::Prefix,
         tests: true,

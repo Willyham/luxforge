@@ -141,19 +141,16 @@ pub fn response_difference(neutral: [f64; 3], first: Response, second: Response)
     delta_e_2000(lab_d65(reach(first)), lab_d65(reach(second)))
 }
 
-/// The median of a set of differences; `NaN` for none.
+/// The median of a set of differences by nearest rank, the definition every figure in the
+/// workspace reads (`luxforge_testbase::Distribution`, which this crate may not depend on): the
+/// `ceil(n / 2)`th smallest. `NaN` for none.
 pub fn median(values: &[f64]) -> f64 {
     if values.is_empty() {
         return f64::NAN;
     }
     let mut sorted = values.to_vec();
     sorted.sort_by(f64::total_cmp);
-    let middle = sorted.len() / 2;
-    if sorted.len().is_multiple_of(2) {
-        (sorted[middle - 1] + sorted[middle]) / 2.0
-    } else {
-        sorted[middle]
-    }
+    sorted[sorted.len().div_ceil(2) - 1]
 }
 
 // -------------------------------------------------------------------------------------------

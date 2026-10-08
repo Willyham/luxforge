@@ -35,6 +35,7 @@ const FULL_COMMANDS: &[&str] = &[
     "preview-error",
     "preview-corpus",
     "gpu-qualification",
+    "grade-align",
     "__hang",
 ];
 
