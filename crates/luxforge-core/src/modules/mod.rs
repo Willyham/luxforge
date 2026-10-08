@@ -86,7 +86,7 @@ pub use descriptor::{
 };
 pub use descriptor::{
     ChoiceControl, ColorControl, ControlVariant, IdentityKind, RangeControl, ResolvedControl,
-    ResolvedReset, TaskControl, ToggleControl,
+    ResolvedReset, TaskControl, ToggleControl, WheelControl, WheelStyle,
 };
 pub(crate) use descriptor::{
     MAX_SECRET_LENGTH, MAX_SETTINGS_ACTIONS, MAX_SETTINGS_FIELDS, valid_identity, valid_name,

@@ -138,6 +138,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             "saturation-tab",
             TabStep {
                 module: MIXER_MODULE.into(),
+                group: Vec::new(),
                 index: 1,
             },
         )
@@ -147,6 +148,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             "luminance-tab",
             TabStep {
                 module: MIXER_MODULE.into(),
+                group: Vec::new(),
                 index: 2,
             },
         )

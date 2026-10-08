@@ -1560,10 +1560,15 @@ fn a_curve_in_a_hidden_tab_queries_no_samples() {
         editor.curve_sampling.requested.is_empty(),
         "the curve's tab is not the one shown"
     );
-    let _ = editor.update(Message::Control(ControlMessage::SelectTab {
-        module_id,
-        index: 1,
-    }));
+    // The session answers a view selection with the tab it now shows.
+    let mut session = editor.session.clone();
+    session.revision += 1;
+    session.workspace.views = vec![luxforge_core::ViewSelection {
+        module: module_id,
+        group: Vec::new(),
+        view: "Curve".into(),
+    }];
+    let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
     assert!(
         editor
             .curve_sampling

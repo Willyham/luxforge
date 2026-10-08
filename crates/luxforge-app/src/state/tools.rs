@@ -31,9 +31,6 @@ use std::{
 pub(crate) struct ControlsUi {
     pub(crate) query_choices: BTreeMap<String, super::query_choice::QueryChoiceUi>,
     pub(crate) group_expanded: BTreeMap<String, bool>,
-    /// The tab selected in a module whose descriptor declares `layout: tabs`, keyed by module id.
-    /// Per-client view state exactly like `group_expanded`: it changes no recipe and is never sent.
-    pub(crate) selected_tab: BTreeMap<String, usize>,
     /// Each generated control's own local state, by the control's key. Only a control that holds
     /// some has an entry.
     controls: BTreeMap<ControlKey, ControlUi>,
@@ -358,6 +355,7 @@ impl SectionModel {
         ShownCurves {
             walk: walk(controls),
             tab: self.visible_tab(),
+            hidden: Vec::new(),
         }
     }
 
@@ -406,6 +404,8 @@ pub(crate) struct ShownCurves<'a> {
     walk: Walk<'a, ControlModel>,
     /// The visible tab of a tabbed section, whose own disclosure does not hide it.
     tab: Option<&'a GroupControl>,
+    /// The views a nested tab row does not show, met before their turn in the walk.
+    hidden: Vec<&'a GroupControl>,
 }
 
 impl<'a> Iterator for ShownCurves<'a> {
@@ -418,10 +418,25 @@ impl<'a> Iterator for ShownCurves<'a> {
                 ControlModel::Group(group) => {
                     let shown = match self.tab {
                         Some(tab) if self.walk.depth() == 1 => std::ptr::eq(group, tab),
-                        _ => group.expanded,
+                        _ => {
+                            group.expanded
+                                && !self
+                                    .hidden
+                                    .iter()
+                                    .any(|hidden| std::ptr::eq(*hidden, group))
+                        }
                     };
                     if !shown {
                         self.walk.skip_children();
+                    } else if let Some(visible) = group.visible_view() {
+                        // A nested tab row shows one child group; the others are not on screen.
+                        self.hidden
+                            .extend(group.controls.iter().filter_map(|child| match child {
+                                ControlModel::Group(child) if !std::ptr::eq(child, visible) => {
+                                    Some(child)
+                                }
+                                _ => None,
+                            }));
                     }
                 }
                 _ => {}
@@ -619,6 +634,70 @@ pub(crate) struct GroupControl {
     /// Every other action's fields are request inputs rather than a mirror of a stored layer, so
     /// "original" would mean nothing there and no caption is shown.
     pub(crate) state: Option<GroupState>,
+    /// The labels from the module's top level to this group: the identity its tab row's view
+    /// selection is keyed by.
+    pub(crate) labels: Vec<String>,
+    /// For a group that declares `layout: tabs`, the index of the child group it shows: the view
+    /// this client's session chose, else the first. `None` for a stacked group.
+    pub(crate) selected: Option<usize>,
+    /// A presentation-only view, drawn as one tab of its parent's row.
+    pub(crate) view: bool,
+}
+
+impl GroupControl {
+    /// The child group a tabbed group shows, when it is tabbed and has one.
+    pub(crate) fn visible_view(&self) -> Option<&GroupControl> {
+        let selected = self.selected?;
+        let mut groups = self.controls.iter().filter_map(|control| match control {
+            ControlModel::Group(group) => Some(group),
+            _ => None,
+        });
+        let first = groups.next()?;
+        Some(match selected {
+            0 => first,
+            selected => groups.nth(selected - 1).unwrap_or(first),
+        })
+    }
+}
+
+/// A hue and saturation wheel: its two fields modelled exactly as their own number fields are, the
+/// luminance rail's field when it declares one, and the reset a double-click runs.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct WheelControl {
+    pub(crate) action: String,
+    pub(crate) label: String,
+    pub(crate) large: bool,
+    pub(crate) hue: SliderControl,
+    pub(crate) saturation: SliderControl,
+    pub(crate) luminance: Option<SliderControl>,
+    pub(crate) reset: Option<ResetRef>,
+    /// The wheel's own gesture is open: the slider gesture keyed by its hue field.
+    pub(crate) dragging: bool,
+    /// The patch the wheel's current hue and saturation are, which its context menu copies.
+    pub(crate) request: Map<String, Value>,
+}
+
+impl WheelControl {
+    /// The wheel's fields: hue, saturation and, when declared, luminance.
+    pub(crate) fn fields(&self) -> impl Iterator<Item = &SliderControl> {
+        [
+            Some(&self.hue),
+            Some(&self.saturation),
+            self.luminance.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+    }
+
+    /// The handle's saturation as a fraction of the rim, the saturation field's declared maximum.
+    pub(crate) fn radius(&self) -> f64 {
+        let max = self.saturation.spec.max;
+        if max > 0.0 {
+            (self.saturation.value / max).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -708,6 +787,8 @@ pub(crate) enum ControlModel {
     Slider(SliderControl),
     /// A two-thumb band over number fields of one action.
     Range(Box<RangeControl>),
+    /// A hue and saturation wheel over number fields of one field-patch action.
+    Wheel(Box<WheelControl>),
     Toggle(ToggleControl),
     Enum(EnumControl),
     QueryChoice(Box<super::query_choice::QueryChoiceModel>),
@@ -749,6 +830,7 @@ impl RevealKey {
             Control::Choice(choice) => (field(&choice.action, &choice.parameter), &choice.label),
             Control::Color(color) => (field(&color.action, &color.parameter), &color.label),
             Control::Range(range) => (field(&range.action, &range.low), &range.label),
+            Control::Wheel(wheel) => (field(&wheel.action, &wheel.hue), &wheel.label),
             Control::Curve(curve) => (
                 field(&curve.action, &curve.channels.first()?.parameter),
                 &curve.label,
@@ -771,6 +853,7 @@ impl ControlModel {
             Self::Enum(choice) => field(&choice.action, &choice.parameter),
             Self::Color(color) => field(&color.action, &color.parameter),
             Self::Range(range) => field(&range.action, &range.low.parameter),
+            Self::Wheel(wheel) => field(&wheel.action, &wheel.hue.parameter),
             Self::Curve(curve) => Some(RevealKey::Field(curve.id.clone())),
             _ => None,
         }
@@ -1069,8 +1152,13 @@ pub(crate) fn headerless_group(module: &ModuleDescriptor) -> Option<&[Control]> 
     if module.layout == luxforge_core::ModuleLayout::Tabs {
         return None;
     }
+    // A group whose children are tabs keeps its header, under which its tab row is drawn.
     match module.controls.as_slice() {
-        [Control::Group(luxforge_core::GroupControl { controls, .. })] => Some(controls),
+        [
+            Control::Group(luxforge_core::GroupControl {
+                controls, layout, ..
+            }),
+        ] if *layout != luxforge_core::ModuleLayout::Tabs => Some(controls),
         _ => None,
     }
 }
@@ -1108,28 +1196,50 @@ fn expanded(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> bool {
         .unwrap_or(!(module.developer || module.collapsed))
 }
 
-/// A tabbed section's selected tab, per client and keyed by module id exactly like a group's
-/// expansion is keyed by its path: 0 unless a client chose otherwise, clamped to the section's
-/// top-level group count so a stale selection from a differently shaped descriptor cannot point
-/// past the end.
+/// A tabbed section's selected tab: the view this client's session chose for the module's own tab
+/// row (`workspace.set`'s `views`, with an empty group path), or the first when it chose none or
+/// names a view the descriptor no longer declares.
 fn section_layout(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionLayout {
     if module.layout != luxforge_core::ModuleLayout::Tabs {
         return SectionLayout::Stacked;
     }
-    let groups = module.controls.len();
-    let selected = inputs
-        .control_ui
-        .selected_tab
-        .get(&module.id)
-        .copied()
-        .unwrap_or(0);
     SectionLayout::Tabs {
-        selected: if groups == 0 {
-            0
-        } else {
-            selected.min(groups - 1)
-        },
+        selected: selected_view(module, &[], inputs),
     }
+}
+
+/// The index of the view the session chose for the tab row of `module` at the label path `group`,
+/// among that row's views; 0 when it chose none or one the row does not declare.
+pub(crate) fn selected_view(
+    module: &ModuleDescriptor,
+    group: &[String],
+    inputs: &Inputs<'_>,
+) -> usize {
+    let Some(chosen) = inputs.session.workspace.view(&module.id, group) else {
+        return 0;
+    };
+    module
+        .views_at(group)
+        .and_then(|views| views.iter().position(|view| *view == chosen))
+        .unwrap_or(0)
+}
+
+/// The labels of the groups an index path passes through in `controls`, the group at the path's
+/// end included: the label path a tab row is keyed by. Stops at the first index that is not a
+/// group.
+pub(crate) fn label_path(controls: &[Control], path: &[usize]) -> Vec<String> {
+    let mut labels = Vec::with_capacity(path.len());
+    let mut level = controls;
+    for index in path {
+        match level.get(*index) {
+            Some(Control::Group(group)) => {
+                labels.push(group.label.clone());
+                level = &group.controls;
+            }
+            _ => break,
+        }
+    }
+    labels
 }
 
 /// This module owns the active canvas mode.
@@ -1285,6 +1395,15 @@ fn resolved_model(
                     control_model(owner, child, inputs, enabled, &child_path)
                 })
                 .collect();
+            let labels = owner
+                .descriptor()
+                .map(|module| label_path(&module.controls, path))
+                .unwrap_or_default();
+            let selected = (group.layout == luxforge_core::ModuleLayout::Tabs).then(|| {
+                owner
+                    .descriptor()
+                    .map_or(0, |module| selected_view(module, &labels, inputs))
+            });
             ControlModel::Group(GroupControl {
                 enabled,
                 unavailable,
@@ -1299,7 +1418,55 @@ fn resolved_model(
                     .unwrap_or(!group.collapsed),
                 state: group_state(&controls, inputs),
                 controls,
+                labels,
+                selected,
+                view: group.view,
             })
+        }
+        Control::Wheel(wheel) => {
+            let action = wheel.action.as_str();
+            // Each bound field is modelled exactly as its own number field is, so the wheel's
+            // values, steps, defaults and invalid text are the fields' own.
+            let mut fields: [Option<SliderControl>; 3] = Default::default();
+            for (slot, parameter) in fields.iter_mut().zip([
+                Some(wheel.hue.as_str()),
+                Some(wheel.saturation.as_str()),
+                wheel.luminance.as_deref(),
+            ]) {
+                let Some(parameter) = parameter else { continue };
+                // A field no number control labels is named after the wheel: `Shadows luminance`.
+                let mut label = owner.field_label(action, parameter);
+                if label == parameter {
+                    label = format!("{} luminance", wheel.label);
+                }
+                match value_model(owner, inputs, action, parameter, &label) {
+                    ControlModel::Slider(field) => *slot = Some(field),
+                    unsupported => return unsupported,
+                }
+            }
+            let [Some(hue), Some(saturation), mut luminance] = fields else {
+                unreachable!("both wheel fields are always modelled or returned early");
+            };
+            // The luminance rail runs dark to light, under its field's own label.
+            if let Some(luminance) = &mut luminance {
+                luminance.rail = RailStyle::Gradient(vec![[0, 0, 0], [255, 255, 255]]);
+            }
+            let dragging = hue.dragging || saturation.dragging;
+            let request = [&hue, &saturation]
+                .into_iter()
+                .map(|field| (field.parameter.clone(), field.spec.value(field.value)))
+                .collect();
+            ControlModel::Wheel(Box::new(WheelControl {
+                request,
+                action: action.to_owned(),
+                label: wheel.label.clone(),
+                large: wheel.style == luxforge_core::WheelStyle::Large,
+                hue,
+                saturation,
+                luminance,
+                reset: ResetRef::of(wheel.reset.as_ref()),
+                dragging,
+            }))
         }
         // A declared field reset is resolved from the descriptors when the reset is asked for, by
         // `fields::field_reset`; the slider itself draws nothing for it.
@@ -1597,6 +1764,9 @@ fn group_state(controls: &[ControlModel], inputs: &Inputs<'_>) -> Option<GroupSt
                 .channels
                 .iter()
                 .all(|channel| patch_field(&curve.action, &channel.parameter)),
+            ControlModel::Wheel(wheel) => wheel
+                .fields()
+                .all(|field| patch_field(&field.action, &field.parameter)),
             _ => true,
         };
         if !all_patch_fields {
@@ -2331,6 +2501,11 @@ pub(crate) fn labelled_control<'a>(
                 .iter()
                 .any(|channel| channel.parameter == parameter))
         .then_some(curve.label.as_str()),
+        // A wheel names the two fields its gesture moves; its luminance rail is a field of its
+        // own.
+        Control::Wheel(wheel) => (wheel.action == action
+            && (wheel.hue == parameter || wheel.saturation == parameter))
+            .then_some(wheel.label.as_str()),
         // A band's fields carry the labels of their own number controls, and no other kind labels
         // a field.
         Control::Group(_)
