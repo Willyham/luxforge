@@ -234,6 +234,38 @@ fn original_byte(root: &Path, (x, y): (u32, u32)) -> Result<[u8; 4]> {
         .ok_or("the point is outside the Original")?)
 }
 
+/// How far `analysis.request`'s answered bins are from the independent reduction's, channel by
+/// channel, by the earth mover's distance in codes, and the recorded limit: refused past it.
+fn analysis_moved(answer: &Value, report: &analysis::Report) -> Result<(Vec<f64>, f64)> {
+    let bins = |name: &str| -> Vec<u64> {
+        answer["result"][name]
+            .as_array()
+            .map(|bins| bins.iter().filter_map(Value::as_u64).collect())
+            .unwrap_or_default()
+    };
+    let moved: Vec<f64> = [
+        (bins("r"), &report.r),
+        (bins("g"), &report.g),
+        (bins("b"), &report.b),
+    ]
+    .iter()
+    .map(
+        |(answered, reduced)| match <[u64; 256]>::try_from(answered.as_slice()) {
+            Ok(answered) => luxforge_reference::tolerance::histogram_emd(&answered, reduced),
+            Err(_) => f64::INFINITY,
+        },
+    )
+    .collect();
+    let limit = luxforge_reference::tolerance::HISTOGRAM_EMD_CODES;
+    ensure(
+        moved.iter().all(|codes| *codes <= limit),
+        format!(
+            "analysis.request's bins are {moved:?} codes from the independent reduction's by the earth mover's distance, past {limit}"
+        ),
+    )?;
+    Ok((moved, limit))
+}
+
 /// The same reduction without the source-sized expectation, for a composition whose crop changes
 /// the output stage.
 fn reduction(root: &Path, recipe: &Recipe) -> Result<analysis::Report> {
@@ -1128,32 +1160,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             answer["identity"]["entry_id"], gpu_release["state"]["histogram"]["identity"]["entry"]
         ),
     )?;
-    let bins = |name: &str| -> Vec<u64> {
-        answer["result"][name]
-            .as_array()
-            .map(|bins| bins.iter().filter_map(Value::as_u64).collect())
-            .unwrap_or_default()
-    };
-    let moved: Vec<f64> = [
-        (bins("r"), &gpu_released.r),
-        (bins("g"), &gpu_released.g),
-        (bins("b"), &gpu_released.b),
-    ]
-    .iter()
-    .map(
-        |(answered, reduced)| match <[u64; 256]>::try_from(answered.as_slice()) {
-            Ok(answered) => luxforge_reference::tolerance::histogram_emd(&answered, reduced),
-            Err(_) => f64::INFINITY,
-        },
-    )
-    .collect();
-    let limit = luxforge_reference::tolerance::HISTOGRAM_EMD_CODES;
-    ensure(
-        moved.iter().all(|codes| *codes <= limit),
-        format!(
-            "analysis.request's bins are {moved:?} codes from the independent reduction's by the earth mover's distance, past {limit}"
-        ),
-    )?;
+    let (moved, limit) = analysis_moved(answer, &gpu_released)?;
     checks.note(
         asked,
         "analysis.request for the current stack is a ready hit on the GPU's report, each channel within the earth mover's distance tolerance",
@@ -1289,6 +1296,170 @@ pub fn verify_crop(run: &mut Run, launches: &[Checked]) -> Result {
         json!({
             "crop_layer": straightened.layer_id(CROP_EFFECT).ok_or("The frame holds no crop layer")?,
             "scope": "Counts against an independent core render and reduction of the displayed stack; placement of the rectangle the editor records drawing, its edges checked against the pixels read back from the renderer",
+        }),
+    )
+}
+
+/// The `hidden-analysis` scenario: a commit while the window is minimised, and another while it is
+/// hidden, each followed by an agent's `analysis.request` for the current stack. Hiding the window
+/// stops no frame: the GPU presents each commit and adopts its tiles' counts while the native fact
+/// still holds, and the request is a ready hit on that report.
+pub const HIDDEN_SCENARIO: &str = "hidden-analysis";
+
+/// Every `hidden-analysis` frame: the open, the window shown, then for each of minimise and hide
+/// the transition, the commit, the request and the restore.
+pub fn hidden_plan(_: &[PathBuf]) -> Plan {
+    let native = |name: &str, action: &str| {
+        Step::new(
+            name,
+            script::Step::WindowVisibility {
+                action: action.into(),
+            },
+        )
+        .commits(0)
+    };
+    let commit = |name: &str, exposure: f64, label: &str| {
+        Step::new(
+            name,
+            script::Step::call("edit.set-basic", json!({"exposure": exposure})),
+        )
+        .commits(1)
+        .label(label)
+        .payload(BASIC_EFFECT, json!({"exposure": exposure}))
+    };
+    let request = |name: &str| {
+        Step::new(
+            name,
+            script::Step::call("analysis.request", json!({"target": {"kind": "current"}})),
+        )
+        .commits(0)
+    };
+    Plan::new(vec![
+        Step::opened("opened"),
+        native("visible", "show_window"),
+        native("minimized", "minimize"),
+        commit("minimized-commit", 1.0, "Exposure +1.00 EV"),
+        request("minimized-analysis"),
+        native("restored", "restore"),
+        native("hidden", "hide_window"),
+        commit("hidden-commit", 0.5, "Exposure +0.50 EV"),
+        request("hidden-analysis"),
+        native("shown", "show_window"),
+    ])
+}
+
+/// Each hidden commit's frame is the GPU's presentation of the committed entry with its counts
+/// within the tolerance of an independent reduction; the GPU's counts were adopted for that entry
+/// while the window's native fact held; and `analysis.request` answered a ready report of that
+/// entry, bin by bin within the tolerance.
+pub fn verify_hidden(run: &mut Run, launches: &[Checked]) -> Result {
+    let launch = only(launches)?;
+    let root = run.root();
+    let mut checks = Checks::new();
+    let mut rows = Vec::new();
+    for (transition, committed, asked, fact) in [
+        (
+            "minimized",
+            "minimized-commit",
+            "minimized-analysis",
+            "minimized",
+        ),
+        (
+            "hidden",
+            "hidden-commit",
+            "hidden-analysis",
+            "window_hidden",
+        ),
+    ] {
+        let hidden = launch.at(transition)?;
+        let committed_frame = launch.at(committed)?;
+        let asked_frame = launch.at(asked)?;
+        for frame in [hidden, committed_frame, asked_frame] {
+            crate::visibility_smoke::native_state(frame, false)?;
+            ensure(
+                frame["state"]["visibility"][fact] == true,
+                format!("{committed}: the frame has no native {fact} fact"),
+            )?;
+        }
+        // The commit's entry: the one its frame displays, which the frame before it did not.
+        let entry = &committed_frame["state"]["stack"]["entry"];
+        ensure(
+            entry.is_string() && hidden["state"]["stack"]["entry"] != *entry,
+            format!("{committed}: the frame displays {entry}, the entry before the commit"),
+        )?;
+        ensure(
+            gpu_counted(committed_frame),
+            format!(
+                "{committed}: the counts are the {}'s, not the GPU's",
+                committed_frame["state"]["histogram"]["source"]
+            ),
+        )?;
+        ensure(
+            committed_frame["state"]["histogram"]["identity"]["entry"] == *entry,
+            format!("{committed}: the counts describe another entry"),
+        )?;
+        let reduced = reduction(root, &displayed_recipe(committed_frame)?)?;
+        let counted = expect_counts(committed_frame, &reduced, committed)?;
+
+        // The GPU's counts for the committed entry were adopted while the window was hidden: the
+        // last visibility callback before the adoption reports the native fact.
+        let adopted = launch
+            .events
+            .iter()
+            .position(|event| {
+                event["event"] == "analysis_adopted"
+                    && event["detail"]["entry_id"] == *entry
+                    && event["detail"]["path"] == "gpu"
+            })
+            .ok_or_else(|| format!("{committed}: no GPU counts were adopted for {entry}"))?;
+        let callback = launch.events[..adopted]
+            .iter()
+            .rev()
+            .find(|event| event["event"] == "window_visibility")
+            .ok_or_else(|| format!("{committed}: no visibility callback precedes the adoption"))?;
+        ensure(
+            callback["detail"][fact] == true && callback["detail"]["sampling_allowed"] == false,
+            format!(
+                "{committed}: the counts were adopted after the callback {}, not while {fact}",
+                callback["detail"]
+            ),
+        )?;
+
+        let answer = &asked_frame["step"]["result"];
+        ensure(
+            answer["status"] == json!("ready"),
+            format!(
+                "{asked}: analysis.request answered {}, not a ready hit",
+                answer["status"]
+            ),
+        )?;
+        ensure(
+            answer["identity"]["entry_id"] == *entry,
+            format!(
+                "{asked}: analysis.request answered entry {}, the commit made {entry}",
+                answer["identity"]["entry_id"]
+            ),
+        )?;
+        let (moved, limit) = analysis_moved(answer, &reduced)?;
+        let detail = json!({
+            "fact": fact, "entry_id": entry, "counts": counted,
+            "adopted": launch.events[adopted]["detail"], "callback": callback["detail"],
+            "status": answer["status"], "emd_codes": moved, "tolerance_codes": limit,
+        });
+        checks.note(
+            asked_frame,
+            "a commit while the window was hidden: the GPU's counts adopted for its entry under the native fact, and analysis.request a ready hit on them within the tolerance",
+            detail.clone(),
+        );
+        rows.push(detail);
+    }
+    checks.write(
+        &launch.evidence,
+        HIDDEN_SCENARIO,
+        json!({
+            "native_platform": "macOS AppKit",
+            "cases": rows,
+            "scope": "Actual minimise and hide transitions on a transparent background-only window. Each commit's frame, its adopted GPU counts and the agent's analysis.request answer are correlated by entry; the counts and bins are checked against an independent core render and reduction of the displayed stack. Windows and Linux visibility facts are unsupported and unqualified.",
         }),
     )
 }

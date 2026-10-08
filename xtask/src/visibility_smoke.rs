@@ -202,7 +202,7 @@ fn number(frame: &Value, section: &str, key: &str) -> Result<u64> {
         .ok_or_else(|| format!("Frame has no {section}.{key} counter").into())
 }
 
-fn native_state(frame: &Value, allowed: bool) -> Result {
+pub(crate) fn native_state(frame: &Value, allowed: bool) -> Result {
     let visibility = &frame["state"]["visibility"];
     ensure(
         visibility["supported"] == true
