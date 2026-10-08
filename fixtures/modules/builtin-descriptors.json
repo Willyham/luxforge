@@ -2248,7 +2248,7 @@
                 "unit": null
               },
               {
-                "default": null,
+                "default": "as-shot",
                 "kind": "enum",
                 "name": "white-balance",
                 "notes": "as-shot returns the development to the camera's own white balance, the Original's; custom names a temperature or tint sent beside it",
@@ -6208,7 +6208,7 @@
             "unit": null
           },
           {
-            "default": null,
+            "default": "as-shot",
             "kind": "enum",
             "name": "white-balance",
             "notes": "as-shot returns the development to the camera's own white balance, the Original's; custom names a temperature or tint sent beside it",

@@ -260,6 +260,15 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         Tolerance::Within(1.5),
     )?;
     if expected["raw"].is_string() {
+        let raw_groups = &launch.at("raw-chooser")?.state()["copy_settings"]["chooser"]["groups"];
+        ensure(
+            raw_groups.as_array().is_some_and(|groups| {
+                groups.iter().any(|group| {
+                    group["label"] == "Basic · White balance" && group["custom"] == false
+                })
+            }),
+            "the RAW source's as-shot white balance was not labelled Original",
+        )?;
         ensure(
             selected_report["settings_skipped"]
                 .as_array()
