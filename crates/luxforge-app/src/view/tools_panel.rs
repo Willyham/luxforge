@@ -451,15 +451,23 @@ fn tabbed_rows<'a>(
         None => tabs,
     };
     let mut rows = vec![PanelRow::Plain(tabs)];
-    rows.extend(control_rows(
-        module_id,
-        enabled,
-        &visible.controls,
-        menu,
-        plot,
-        false,
-        mark,
-    ));
+    // A tab whose own group lays its children out as tabs draws that nested row and its visible
+    // child, as a tabbed group inside a stacked section does: the colour mixer's HSL tab holds
+    // Hue, Saturation and Luminance, and its Grading tab its views.
+    match visible.visible_view() {
+        Some(nested) => rows.extend(nested_tab_rows(
+            module_id, enabled, visible, nested, menu, plot, mark,
+        )),
+        None => rows.extend(control_rows(
+            module_id,
+            enabled,
+            &visible.controls,
+            menu,
+            plot,
+            false,
+            mark,
+        )),
+    }
     for control in &section.controls {
         if !matches!(control, ControlModel::Group(_)) && !drawn_by_range(&section.controls, control)
         {
