@@ -65,6 +65,7 @@ pub(in crate::api) fn batch_apply_preset(
         params.mutation.actor,
     ));
     let (client, origin) = (call.client, call.origin.clone());
+    let tiles = Arc::clone(&owner.tiles);
     let task = Task {
         job_id: JobId::new(),
         job: &BATCH_PRESET,
@@ -76,9 +77,7 @@ pub(in crate::api) fn batch_apply_preset(
             for (asset, _) in assets {
                 job.pause(Phase::NextPhotograph);
                 let (preset, origin, target) = (preset.clone(), origin.clone(), asset.clone());
-                let applied = ask_owner(job, client, move |owner: &mut Owner| {
-                    apply(owner, client, &origin, &target, &preset)
-                });
+                let applied = apply_on_worker(job, client, &tiles, origin, target, preset);
                 match applied {
                     Ok(Ok(Applied::Done(settings))) => progress.done(asset, None, settings),
                     Ok(Ok(Applied::Skipped(skip))) => progress.skip(skip),
@@ -91,6 +90,80 @@ pub(in crate::api) fn batch_apply_preset(
         }),
     };
     value(owner.catalog.library.queue(&mut owner.jobs, task)?)
+}
+
+enum ApplyAttempt {
+    Done(Applied),
+    Read(Box<crate::editor::pixels::DeferredRead>),
+}
+
+/// A preset's metadata transaction runs on the owner. Any analysis it asks for is parked and
+/// answered by the same tile service as an individual action, with this batch's cancellation.
+/// Its private memo never changes the caller's draft/session memo. Every replay checks currency
+/// before any write, and JobContext's commit gate keeps a cancelled batch from committing late.
+fn apply_on_worker(
+    job: &JobContext<'_>,
+    client: ClientId,
+    tiles: &Arc<dyn crate::tiles::TileService>,
+    origin: Origin,
+    asset: AssetId,
+    preset: Arc<PresetApply>,
+) -> Result<Result<Applied, Error>, Error> {
+    let mut memo = crate::editor::pixels::PixelMemo::default();
+    let mut key = None;
+    for _ in 0..=crate::editor::pixels::MAX_PIXEL_READS {
+        job.control.checkpoint()?;
+        let (origin, asset, preset, read_memo, read_key) = (
+            origin.clone(),
+            asset.clone(),
+            preset.clone(),
+            memo.clone(),
+            key.clone(),
+        );
+        let attempt = ask_owner(job, client, move |owner| {
+            if let Some(key) = &read_key
+                && !owner.service.pixel_key_current(key, None)?
+            {
+                return Err(Error::conflict(
+                    "the stack changed while its analysis was read; retry",
+                ));
+            }
+            owner.service.begin_pixel_call(None, read_memo.clone());
+            let result = apply(owner, client, &origin, &asset, &preset);
+            let deferred = owner.service.take_pixel_read();
+            owner.service.end_pixel_call();
+            match deferred {
+                Some(read) => Ok(ApplyAttempt::Read(Box::new(read))),
+                None => result.map(ApplyAttempt::Done),
+            }
+        })?;
+        let read = match attempt {
+            Ok(ApplyAttempt::Done(result)) => return Ok(Ok(result)),
+            Err(error) => return Ok(Err(error)),
+            Ok(ApplyAttempt::Read(read)) => read,
+        };
+        let (send, receive) = sync_channel(1);
+        tiles.submit(crate::tiles::TileCall::pixels(
+            client,
+            job.control.render_cancel().clone(),
+            move |reads, cancel| read.evaluate(reads, cancel),
+            move |result| {
+                let _ = send.send(result);
+            },
+        ));
+        let answer = receive.recv().map_err(|_| job.control.cancelled_error())?;
+        job.control.checkpoint()?;
+        match answer {
+            Ok(answer) => {
+                key = Some(answer.key.clone());
+                memo.insert(answer);
+            }
+            Err(error) => return Ok(Err(error)),
+        }
+    }
+    Ok(Err(Error::resource_limit(
+        "preset analysis exceeded the deferred-read limit",
+    )))
 }
 
 /// Apply the preset to one photograph as `edit.apply-preset` would, on the owner: left out while it

@@ -63,6 +63,9 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered crop workflow and overlay | `cargo xtask smoke --scenario crop --output NEW_DIR`, `--scenario crop-draft` |
 | Rendered image information: key and palette toggles, capture fields, selected/history/live crop dimensions, zoom and hidden panels, without photo uploads | `cargo xtask smoke --scenario information --output NEW_DIR` |
 | Rendered workspace panels, mode, preview, the combined crop section’s transform icon row, an agent's conflicting commit and palette; unavailable-provider notice | `cargo xtask smoke --scenario workspace --output NEW_DIR`, `--scenario unavailable` |
+| Rendered Auto tone: query/button/shortcut/preset parity, all eight displayed fields, repeat, undo, history and Compare refusal; an optional source substitutes a RAW | `cargo xtask smoke --scenario auto-tone --output NEW_DIR [--source RAW]` |
+| Auto tone local Lightroom fitting, with explicit consent for each invocation; figures only, no automatic adoption | `cargo xtask auto-tone-fit --manifest FILE --output NEW_FILE --consent-owner-photos [--rounds 1..6]`; [manifest and interpretation](../design/auto-tone.md#tuning-against-lightrooms-auto) |
+| Auto tone engine distributions on prepared 24 MP and 60 MP JPEGs, native GPU and reference, cold/warm sample cache, 30 samples each; excludes source preparation, commit and preview | `LUXFORGE_GENERATED_FIXTURES=fixtures/generated LUXFORGE_AUTO_TONE_OUTPUT=NEW_FILE cargo test --release -p luxforge-app auto_tone_measure_photo_sized_inputs -- --ignored --nocapture` |
 | Rendered Basic slider gesture: draft, commit, typed value, undo, reset and an agent's conflicting commit | `cargo xtask smoke --scenario basic --output NEW_DIR` |
 | Rendered Basic panel on a JPEG: all three groups, the White balance group's four controls (Temperature, Tint, Neutral picker, As shot) with As shot sending Basic's own 0 and 0, historical values, a group reset, the neutral picker, As shot after a warm drag, and the default screen with Basic expanded and every other section collapsed | `cargo xtask smoke --scenario basic-panel --output NEW_DIR` |
 | Rendered histogram, clipping overlays, a `render.sample` of the edited pixel and a drafted frame, each report held to an independent reduction — the reference's exactly, the GPU's (the Original undone to and an exposure released on the GPU) its clipping counters within 0.1% of the output pixels and `analysis.request`'s bins within a quarter of a code by the earth mover's distance — a GPU drag's counts marked updating, and `analysis.request` a ready hit on the GPU's report | `cargo xtask smoke --scenario histogram --output NEW_DIR` |
@@ -504,7 +507,9 @@ one, and the `test-waits` and `test-gates` rules below refuse one. It also holds
 `Distribution`, a nearest-rank p50/p95 (`sorted[ceil(percent·n/100) − 1]`, always one of the
 samples) that every timing figure is read from: the crates' own ignored timing tests print theirs
 through it, and `xtask`'s timing tools write theirs through it. The `one-distribution` rule refuses
-a second percentile or median definition.
+a second timing percentile or median definition. Auto's production image solver is an explicit
+allowed home: it uses the same nearest rank by in-place selection within charged scratch and
+cannot depend on test tooling. Its measurement and fitting tools still use `Distribution`.
 
 The core holds its own work at a gate through crate-private, `cfg(test)` hooks. A test outside the
 core that needs core work held reaches it through `luxforge-core`'s `test-holds` feature, which

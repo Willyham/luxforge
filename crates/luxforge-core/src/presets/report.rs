@@ -33,7 +33,8 @@ pub struct MappedSetting {
     /// The text as written, at most 256 characters.
     pub value: String,
     pub action: String,
-    pub field: String,
+    /// None for a recomputed analysis step, whose applied value is its empty parameters.
+    pub field: Option<String>,
     /// The value the field receives.
     pub applied: Value,
 }

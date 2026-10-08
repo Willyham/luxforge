@@ -110,6 +110,7 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
                 notes: "test".into(),
                 patch: false,
                 preset: true,
+                analysis: None,
                 parameters: vec![
                     ParameterDescriptor::artifact("tint")
                         .required(true)
@@ -122,6 +123,7 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
                 notes: "test".into(),
                 patch: false,
                 preset: true,
+                analysis: None,
                 parameters: Vec::new(),
             },
         ],

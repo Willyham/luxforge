@@ -657,3 +657,41 @@ fn delete_from_a_rows_menu_lists_the_library_again() {
     );
     library.finish();
 }
+
+#[test]
+fn auto_tone_preset_form_clears_tone_and_colour_but_keeps_white_balance_optional() {
+    let mut library = Library::opened();
+    let editor = &mut library.editor;
+    let _ = editor.update(Message::Preset(PresetMessage::ToggleForm));
+    let _ = editor.update(Message::Preset(PresetMessage::Name("Auto".into())));
+    let _ = editor.update(Message::Preset(PresetMessage::AutoTone(true)));
+    let (capture, _) = editor.preset_create_requests().unwrap();
+    assert_eq!(capture["fields"]["auto-tone"], true);
+    let fields = capture["fields"]["set-basic"].as_array();
+    assert!(fields.is_none_or(|fields| {
+        fields
+            .iter()
+            .all(|field| !luxforge_core::auto_tone::FIELDS.contains(&field.as_str().unwrap()))
+    }));
+    let form = editor.presets_model_now().unwrap().form;
+    assert!(form.auto_tone);
+    assert!(
+        form.checks
+            .iter()
+            .filter(|check| !check.enabled)
+            .all(|check| !check.checked)
+    );
+    assert!(form.checks.iter().any(|check| !check.enabled));
+    let _ = editor.update(Message::Preset(PresetMessage::AutoTone(false)));
+    let (capture, _) = editor.preset_create_requests().unwrap();
+    assert!(capture["fields"].get("auto-tone").is_none());
+    assert!(
+        editor
+            .presets_model_now()
+            .unwrap()
+            .form
+            .checks
+            .iter()
+            .all(|check| check.enabled)
+    );
+}

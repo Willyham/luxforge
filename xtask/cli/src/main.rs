@@ -7,6 +7,7 @@ use std::{
 use xtask_cli::{Args, Result, cargo, cargo_command, check, policy, repository, root};
 
 const FULL_COMMANDS: &[&str] = &[
+    "auto-tone-fit",
     "develop",
     "doctor",
     "fixtures",

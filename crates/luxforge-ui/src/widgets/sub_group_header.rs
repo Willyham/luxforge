@@ -55,7 +55,7 @@ pub fn sub_group_header_with_actions<'a, M: Clone + 'a>(
     on_reset: M,
     actions: Vec<(IconButtonModel, Option<M>)>,
 ) -> Element<'a, M> {
-    header(model, on_toggle, Some(on_reset), actions)
+    header(model, on_toggle, Some(on_reset), actions, Vec::new())
 }
 
 /// Plain data for a group rule: a group header with no disclosure and no reset, whose caption
@@ -100,7 +100,18 @@ pub fn group_rule<'a, M: Clone + 'a>(model: &GroupRuleModel, on_menu: Option<M>)
             )
         })
         .collect();
-    header(&header_model, None, None, actions)
+    header(&header_model, None, None, actions, Vec::new())
+}
+
+/// A group header with compact controls before its reset. The caller owns their requests and
+/// disabled explanations; the header only places them on its existing 24-point row.
+pub fn sub_group_header_with_controls<'a, M: Clone + 'a>(
+    model: &SubGroupHeaderModel,
+    on_toggle: Option<M>,
+    on_reset: M,
+    controls: Vec<Element<'a, M>>,
+) -> Element<'a, M> {
+    header(model, on_toggle, Some(on_reset), Vec::new(), controls)
 }
 
 fn header<'a, M: Clone + 'a>(
@@ -108,6 +119,7 @@ fn header<'a, M: Clone + 'a>(
     on_toggle: Option<M>,
     on_reset: Option<M>,
     actions: Vec<(IconButtonModel, Option<M>)>,
+    controls: Vec<Element<'a, M>>,
 ) -> Element<'a, M> {
     let expanded = model.expanded.unwrap_or(true);
     let leading: Element<'a, M> = match model.expanded {
@@ -175,6 +187,9 @@ fn header<'a, M: Clone + 'a>(
             enabled && key.is_some(),
             move |event| activates(event).then(|| key.clone()).flatten(),
         ));
+    }
+    for control in controls {
+        header = header.push(control);
     }
     if let Some(on_reset) = on_reset.filter(|_| model.reset) {
         let reset = header_icon_button(

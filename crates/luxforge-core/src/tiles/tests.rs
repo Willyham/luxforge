@@ -201,13 +201,15 @@ fn a_pixel_read_returns_its_pixels_or_its_refusal_to_the_owner() {
     };
     let answer = PixelAnswer {
         key,
-        read: PixelRead {
+        read: PixelRead::Point {
             index: 1,
             x: 2,
             y: 3,
         },
-        rgba: Some([1, 2, 3, 255]),
-        linear: Some([0.25, 0.5, 0.75]),
+        value: crate::editor::pixels::PixelValue::Point {
+            rgba: Some([1, 2, 3, 255]),
+            linear: Some([0.25, 0.5, 0.75]),
+        },
     };
     let read = |deliver: std::sync::mpsc::SyncSender<Result<PixelAnswer, Error>>| {
         let pixels = answer.clone();

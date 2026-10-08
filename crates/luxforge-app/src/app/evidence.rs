@@ -470,6 +470,7 @@ enum GeneratedKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Settle {
     QueryChoice,
+    Analysis,
     /// The crop layer's truncated preview must reach the GPU under the open frame, and a Reapply's
     /// rebase must have answered.
     Draft,
@@ -552,6 +553,7 @@ impl Settle {
     fn name(self) -> &'static str {
         match self {
             Self::QueryChoice => "query_choice",
+            Self::Analysis => "analysis",
             Self::Draft => "draft",
             Self::Session => "session",
             Self::Preview => "preview",
@@ -970,6 +972,9 @@ impl Editor {
                 // The screenshot reads back the frame drawn last, so it waits for a frame built
                 // after every update so far; the next frame tick tries again.
                 if !evidence.capture_pending
+                    // The command can finish and present its preview before the independent
+                    // explanation query answers. RequestEnded must not bypass that wait.
+                    || evidence.awaiting == Some(Settle::Analysis)
                     || evidence.saving
                     || !evidence.sync.current()
                     || evidence.sync.cursor.waiting()
@@ -2871,6 +2876,23 @@ impl Editor {
         Task::batch(tasks)
     }
 
+    /// An explanation completion wakes only the evidence step waiting for this action.
+    pub(super) fn analysis_explained(&mut self, action: &str, failure: Option<&str>) {
+        let waiting = self.evidence.as_ref().is_some_and(|evidence| {
+            evidence.awaiting == Some(Settle::Analysis)
+                && evidence
+                    .current
+                    .as_ref()
+                    .is_some_and(|step| step["request"]["controls"]["action"] == action)
+        });
+        if waiting {
+            if let Some(reason) = failure {
+                self.refuse_step(reason);
+            }
+            self.settle_step(Settle::Analysis, "analysis_explained");
+        }
+    }
+
     /// Generated controls publish fractions and typed values, then use the same bounded draft
     /// driver as ordinary pointer input. The `slider` step is the same path, scripted in values.
     fn controls_step(&mut self, step: ControlsStep) -> Task<Message> {
@@ -2878,6 +2900,34 @@ impl Editor {
             return self.fail_step("no photograph is open");
         }
         match step {
+            ControlsStep::Action { action, background } => {
+                self.begin_request();
+                let task = self.update(Message::Action(ActionMessage::Run {
+                    action,
+                    preset: Map::new(),
+                }));
+                if background || !self.busy {
+                    self.capture_next_frame();
+                }
+                task
+            }
+            ControlsStep::AnalysisReady { action } => {
+                let valid = self.controls.ui.analysis_reports.get(&action).is_some_and(
+                    |(asset, entry, _)| {
+                        self.document
+                            .state
+                            .as_ref()
+                            .is_some_and(|state| &state.asset.id == asset)
+                            && self.document.display_entry.as_ref() == Some(entry)
+                    },
+                );
+                if valid {
+                    self.capture_next_frame();
+                } else {
+                    self.await_step(Settle::Analysis);
+                }
+                Task::none()
+            }
             ControlsStep::QueryChoiceSearch { action, text } => {
                 self.query_choice_evidence_input(ControlMessage::QueryChoiceSearch { action, text })
             }
@@ -4048,7 +4098,10 @@ impl Editor {
             Event as KeyEvent, Key, Location, Modifiers,
             key::{Named, NativeCode, Physical},
         };
-        let pressed = if key == luxforge_evidence::KEY_ESCAPE {
+        let command = key == "Command+U";
+        let pressed = if command {
+            Key::Character("u".into())
+        } else if key == luxforge_evidence::KEY_ESCAPE {
             Key::Named(Named::Escape)
         } else {
             Key::Character(key.to_lowercase().into())
@@ -4058,13 +4111,25 @@ impl Editor {
             modified_key: pressed,
             physical_key: Physical::Unidentified(NativeCode::Unidentified),
             location: Location::Standard,
-            modifiers: Modifiers::empty(),
+            modifiers: if command {
+                Modifiers::COMMAND
+            } else {
+                Modifiers::empty()
+            },
             text: None,
             repeat: false,
         });
         let status = iced::event::Status::Ignored;
         match crate::app::keymap::keymap(&event, status, &self.key_context()) {
             None => self.fail_step(format!("the key {key} does nothing here")),
+            Some(Message::Action(_)) => {
+                self.begin_request();
+                let task = self.dispatch(Message::Key(event, status));
+                if !self.busy {
+                    self.capture_next_frame();
+                }
+                task
+            }
             // A per-client view setting goes through `workspace.set`: the step is the session the
             // owner answers, not the next frame, which a picture at rest the GPU presents at once
             // can draw before that answer arrives.
@@ -4519,6 +4584,7 @@ impl Editor {
             let checked = step.groups.contains(&label);
             tasks.push(self.update(Message::Preset(PresetMessage::Check { label, checked })));
         }
+        tasks.push(self.update(Message::Preset(PresetMessage::AutoTone(step.auto_tone))));
         if !step.submit {
             self.capture_next_frame();
             return Task::batch(tasks);

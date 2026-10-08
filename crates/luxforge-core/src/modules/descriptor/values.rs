@@ -260,14 +260,11 @@ pub(crate) fn check_settings(name: &str, actions: &Map<String, Value>) -> Result
                 "parameter {name} names invalid action identity {action}"
             )));
         }
-        let fields = fields
-            .as_object()
-            .filter(|fields| !fields.is_empty())
-            .ok_or_else(|| {
-                Error::validation(format!(
-                    "parameter {name} must give action {action} a non-empty object of fields"
-                ))
-            })?;
+        let fields = fields.as_object().ok_or_else(|| {
+            Error::validation(format!(
+                "parameter {name} must give action {action} an object of fields"
+            ))
+        })?;
         if fields.len() > MAX_SETTINGS_FIELDS {
             return Err(Error::validation(format!(
                 "parameter {name} gives action {action} more than {MAX_SETTINGS_FIELDS} fields"

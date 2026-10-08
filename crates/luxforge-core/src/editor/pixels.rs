@@ -33,11 +33,17 @@ pub(crate) const MAX_PIXEL_READS: usize = 4;
 /// that made it is discarded whatever it answered, and runs again once the pixel is read.
 pub(crate) const DEFERRED: &str = "pixel read deferred to the tile service";
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct PixelRead {
-    pub index: usize,
-    pub x: u32,
-    pub y: u32,
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum PixelRead {
+    Point {
+        index: usize,
+        x: u32,
+        y: u32,
+    },
+    Query {
+        id: String,
+        parameters: Map<String, Value>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -69,8 +75,24 @@ impl PixelReadKey {
 pub(crate) struct PixelAnswer {
     pub key: PixelReadKey,
     pub read: PixelRead,
-    pub rgba: Option<[u8; 4]>,
-    pub linear: Option<[f64; 3]>,
+    pub value: PixelValue,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum PixelValue {
+    Point {
+        rgba: Option<[u8; 4]>,
+        linear: Option<[f64; 3]>,
+    },
+    Query(Result<Value, QueryRefusal>),
+}
+
+/// Only validation refusals can be replayed as module answers. Cancellation and failures abort
+/// the parked call; a composite may skip a documented validation refusal without losing patches.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct QueryRefusal {
+    detail: String,
+    data: Option<Box<Value>>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -93,10 +115,10 @@ impl PixelMemo {
         }
         self.answers.push(answer);
     }
-    pub(crate) fn find(&self, key: &PixelReadKey, read: PixelRead) -> Option<&PixelAnswer> {
+    pub(crate) fn find(&self, key: &PixelReadKey, read: &PixelRead) -> Option<&PixelAnswer> {
         self.answers
             .iter()
-            .find(|held| held.key == *key && held.read == read)
+            .find(|held| held.key == *key && held.read == *read)
     }
     // A successful tick advances its own draft revision without changing the sampled prefix.
     pub(crate) fn advance(&mut self, draft: Option<&crate::Draft>) {
@@ -140,20 +162,96 @@ impl DeferredRead {
         reads: &dyn TileReads,
         cancel: &Cancel,
     ) -> Result<PixelAnswer, Error> {
-        let stage = TileStage::new(&self.evaluation, reads, cancel);
-        let read = self.read;
-        let rgba = stage.sample_before(read.index, read.x, read.y)?;
-        let linear = stage.input_before(read.index, read.x, read.y)?;
+        let value = match &self.read {
+            PixelRead::Point { index, x, y } => {
+                let stage = TileStage::new(&self.evaluation, reads, cancel);
+                PixelValue::Point {
+                    rgba: stage.sample_before(*index, *x, *y)?,
+                    linear: stage.input_before(*index, *x, *y)?,
+                }
+            }
+            PixelRead::Query { id, parameters } => {
+                let kind = match self.evaluation.source() {
+                    PreviewSource::Jpeg(_) => crate::SourceTag::Jpeg,
+                    PreviewSource::Raw { .. } => crate::SourceTag::Raw,
+                };
+                let result = QueryPlan {
+                    evaluation: self.evaluation.clone(),
+                    query: id.clone(),
+                    parameters: parameters.clone(),
+                    mask: None,
+                    kind,
+                }
+                .evaluate(reads, cancel);
+                PixelValue::Query(match result {
+                    Ok(value) => Ok(value),
+                    Err(error) if error.kind == crate::ErrorKind::Validation => Err(QueryRefusal {
+                        detail: error.detail,
+                        data: error.data,
+                    }),
+                    Err(error) => return Err(error),
+                })
+            }
+        };
         Ok(PixelAnswer {
             key: self.key,
-            read,
-            rgba,
-            linear,
+            read: self.read,
+            value,
         })
     }
 }
 
 impl EditorService {
+    pub(super) fn deferred_query(
+        &self,
+        asset: &AssetRecord,
+        recipe: &Recipe,
+        source: PreviewSource,
+        id: &str,
+        parameters: &Map<String, Value>,
+    ) -> Result<Value, Error> {
+        let query = self
+            .registry
+            .resolve_query(id)
+            .ok_or_else(|| Error::validation("unknown deferred query"))?;
+        let parameters = check_parameters(query.descriptor(), &Value::Object(parameters.clone()))?;
+        let read = PixelRead::Query {
+            id: id.into(),
+            parameters: parameters.clone(),
+        };
+        if let Some(answer) = self.deferred_read(asset, recipe, source.clone(), false, read)? {
+            return match answer.value {
+                PixelValue::Query(Ok(value)) => Ok(value),
+                PixelValue::Query(Err(refusal)) => {
+                    let mut error = Error::validation(refusal.detail);
+                    error.data = refusal.data;
+                    Err(error)
+                }
+                _ => Err(Error::internal("query read returned a point")),
+            };
+        }
+        // Direct EditorService callers run on their own thread. The owner always takes the
+        // deferred branch above, including presets, and can never execute this fallback.
+        super::plan::refuse_on_owner()?;
+        let head = self.head(&asset.id)?;
+        let entry = self.entry(&asset.id, &head.current)?;
+        QueryPlan {
+            evaluation: Evaluation::new(
+                self.registry.clone(),
+                self.render_context().clone(),
+                source,
+                entry,
+                recipe.clone(),
+                None,
+            ),
+            query: id.into(),
+            parameters,
+            mask: None,
+            kind: asset.source.tag(),
+        }
+        .evaluate(&crate::tiles::ReferenceReads, &Cancel::never())
+    }
+
     /// Whether `draft`'s plan reads a pixel when it is planned: a stroke drafted with a colour
     /// limit, whose seed it reads. `draft.set` plans such a draft, so its read is parked once,
     /// off the owner, before the draft is accepted, and every preview of it finds the pixel in the
@@ -207,15 +305,17 @@ impl EditorService {
         }
         let head = self.head(&asset.id)?;
         let entry = self.shared_entry(&asset.id, &head.current)?;
-        let prefix = super::prefix(&recipe.layers, read.index)?;
+        let index = match &read {
+            PixelRead::Point { index, .. } => *index,
+            PixelRead::Query { .. } => recipe.layers.len(),
+        };
+        let prefix = super::prefix(&recipe.layers, index)?;
         let mut hash = Sha256::new();
         let prefix_recipe = Recipe {
             layers: prefix.to_vec(),
             ..recipe.clone()
         };
-        hash.update(
-            serde_json::to_vec(&prefix_recipe).map_err(|e| Error::internal(e.to_string()))?,
-        );
+        hash.update(crate::tiles::analysis::content_hash(&prefix_recipe)?);
         let key = PixelReadKey {
             asset_id: asset.id.clone(),
             entry_id: entry.id.clone(),
@@ -223,10 +323,10 @@ impl EditorService {
             draft: self.pixel_reads.borrow().draft.clone(),
             prefix_hash: hash.finalize().into(),
             input_wide,
-            input_mode: crate::render::MaskInputMode::for_layer(&self.registry, recipe, read.index),
+            input_mode: crate::render::MaskInputMode::for_layer(&self.registry, recipe, index),
             source: source.identity(),
         };
-        if let Some(answer) = self.pixel_reads.borrow().memo.find(&key, read) {
+        if let Some(answer) = self.pixel_reads.borrow().memo.find(&key, &read) {
             return Ok(Some(answer.clone()));
         }
         let evaluation = Evaluation::new(
@@ -257,10 +357,7 @@ impl EditorService {
         {
             return Ok(false);
         }
-        let entry = self.shared_entry(&key.asset_id, &head.current)?;
-        let prepared = self.verified_prepared(&head.asset, &entry.snapshot.recipe)?;
-        let source = source_of(prepared, &entry.snapshot.recipe, RawSettingsMode::Strict)?;
-        Ok(source.identity() == key.source)
+        self.holds_verified_source(&head.asset, &key.source)
     }
 
     pub(crate) fn query_plan(
@@ -283,19 +380,41 @@ impl EditorService {
         let checked = check_parameters(query.descriptor(), &parameters)?;
         let state = self.state(asset_id)?;
         let entry = self.entry(asset_id, entry_id)?;
+        if let QueryRef::Module(module, _) = query {
+            super::plan::check_askable(
+                &self.registry,
+                module,
+                state.asset.source.tag(),
+                mask.as_ref(),
+                None,
+            )?;
+        }
+        super::source::validate_source_recipe(
+            &self.registry,
+            &state.asset,
+            &entry.snapshot.recipe,
+        )?;
+        super::masks::resolve_mask_target(&entry.snapshot.recipe, mask.as_ref())?;
         let bound = self.bound(&entry.snapshot.recipe)?;
         let recipe = match query {
-            QueryRef::Module(module, _) if mask.is_none() => recipe_for_target(
-                &self.registry,
-                &bound,
-                module.descriptor().effects.iter().any(|e| e.maskable),
-                None,
-            )
-            .into_owned(),
+            QueryRef::Module(module, _)
+                if mask.is_none() && !self.registry.analysis_query(query_id) =>
+            {
+                recipe_for_target(
+                    &self.registry,
+                    &bound,
+                    module.descriptor().effects.iter().any(|e| e.maskable),
+                    None,
+                )
+                .into_owned()
+            }
             _ => bound.into_owned(),
         };
-        let prepared = self.verified_prepared(&state.asset, &recipe)?;
-        let source = source_of(prepared, &recipe, RawSettingsMode::Strict)?;
+        let source = self.needing(
+            super::source::Evaluated::exactly(&state.asset, &entry.id, &recipe),
+            self.verified_prepared(&state.asset, &recipe)
+                .and_then(|prepared| source_of(prepared, &recipe, RawSettingsMode::Strict)),
+        )?;
         Ok(QueryPlan {
             evaluation: Evaluation::new(
                 self.registry.clone(),
@@ -389,6 +508,8 @@ impl QueryPlan {
 /// A stage's size is its prefix's compilation, `O(layers)`, and reads no pixel.
 pub(crate) struct TileStage<'a> {
     evaluation: &'a Evaluation,
+    reads: &'a dyn TileReads,
+    cancel: &'a Cancel,
     session: RefCell<Box<dyn TileSession + 'a>>,
     /// The renderer that drew the latest read.
     answered: RefCell<Option<Answered>>,
@@ -402,6 +523,8 @@ impl<'a> TileStage<'a> {
     ) -> Self {
         Self {
             evaluation,
+            reads,
+            cancel,
             session: RefCell::new(reads.session(evaluation, cancel)),
             answered: RefCell::new(None),
         }
@@ -444,6 +567,12 @@ impl<'a> TileStage<'a> {
 }
 
 impl StageQuestions for TileStage<'_> {
+    fn analysis_before(&self, index: usize) -> Result<crate::tiles::AnalysisRead, Error> {
+        let read = crate::tiles::analysis::read(self.evaluation, index, self.reads, self.cancel)?;
+        *self.answered.borrow_mut() = Some(read.answered.clone());
+        Ok(read)
+    }
+
     fn stage_before(&self, index: usize) -> Result<Stage, Error> {
         let recipe = self.evaluation.recipe();
         let (width, height) = self.evaluation.source().dimensions();
@@ -503,16 +632,18 @@ mod tests {
         for x in 0..33 {
             memo.insert(PixelAnswer {
                 key: key.clone(),
-                read: PixelRead { index: 1, x, y: 0 },
-                rgba: None,
-                linear: None,
+                read: PixelRead::Point { index: 1, x, y: 0 },
+                value: PixelValue::Point {
+                    rgba: None,
+                    linear: None,
+                },
             });
         }
         assert_eq!(memo.answers.len(), MAX_PIXEL_MEMO);
         assert!(
             memo.find(
                 &key,
-                PixelRead {
+                &PixelRead::Point {
                     index: 1,
                     x: 0,
                     y: 0
@@ -525,19 +656,21 @@ mod tests {
         prefix.prefix_hash = [1; 32];
         memo.insert(PixelAnswer {
             key: prefix.clone(),
-            read: PixelRead {
+            read: PixelRead::Point {
                 index: 2,
                 x: 0,
                 y: 0,
             },
-            rgba: None,
-            linear: None,
+            value: PixelValue::Point {
+                rgba: None,
+                linear: None,
+            },
         });
         assert_eq!(memo.answers.len(), MAX_PIXEL_MEMO);
         assert!(
             memo.find(
                 &prefix,
-                PixelRead {
+                &PixelRead::Point {
                     index: 2,
                     x: 0,
                     y: 0
@@ -549,19 +682,21 @@ mod tests {
         changed.revision += 1;
         memo.insert(PixelAnswer {
             key: changed.clone(),
-            read: PixelRead {
+            read: PixelRead::Point {
                 index: 1,
                 x: 32,
                 y: 0,
             },
-            rgba: None,
-            linear: None,
+            value: PixelValue::Point {
+                rgba: None,
+                linear: None,
+            },
         });
         assert_eq!(memo.answers.len(), 1);
         assert!(
             memo.find(
                 &key,
-                PixelRead {
+                &PixelRead::Point {
                     index: 1,
                     x: 32,
                     y: 0
@@ -572,7 +707,7 @@ mod tests {
         assert!(
             memo.find(
                 &changed,
-                PixelRead {
+                &PixelRead::Point {
                     index: 1,
                     x: 32,
                     y: 0
