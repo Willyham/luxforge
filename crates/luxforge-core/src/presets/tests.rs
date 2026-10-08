@@ -87,7 +87,6 @@ fn expect_error(result: Result<ImportedPreset, Error>, kind: ErrorKind, detail: 
 }
 
 const SHARPENING: &str = "Lightroom sharpening is not mapped to Luxforge Detail";
-const GRADING: &str = "Luxforge has no colour grading";
 const CHANNEL_CURVES: &str = "Luxforge's tone curve has no per-channel curves";
 const PARAMETRIC: &str = "Luxforge has no parametric curve";
 const CURVE_SATURATION: &str = "Luxforge's tone curve changes no saturation";
@@ -236,6 +235,43 @@ fn develop_report(format: &str) -> ImportReport {
                 json!(-20),
             ),
             mapped("Shadows2012", "+25", "set-basic", "shadows", json!(25)),
+            // A Camera Raw 16.0 document: its split toning is Color Grading's, transferred field
+            // by field, the hue kept at zero saturation.
+            mapped(
+                "SplitToningBalance",
+                "0",
+                "set-mixer",
+                "grade-balance",
+                json!(0),
+            ),
+            mapped(
+                "SplitToningHighlightHue",
+                "45",
+                "set-mixer",
+                "grade-highlights-hue",
+                json!(45),
+            ),
+            mapped(
+                "SplitToningHighlightSaturation",
+                "12",
+                "set-mixer",
+                "grade-highlights-saturation",
+                json!(12),
+            ),
+            mapped(
+                "SplitToningShadowHue",
+                "220",
+                "set-mixer",
+                "grade-shadows-hue",
+                json!(220),
+            ),
+            mapped(
+                "SplitToningShadowSaturation",
+                "0",
+                "set-mixer",
+                "grade-shadows-saturation",
+                json!(0),
+            ),
             mapped("Texture", "+15", "set-presence", "texture", json!(15)),
             curve_mapped(
                 "0, 0; 64, 56; 192, 200; 255, 255",
@@ -260,9 +296,6 @@ fn develop_report(format: &str) -> ImportReport {
             ),
             neutral("PostCropVignetteHighlightContrast", "0"),
             neutral("PostCropVignetteStyle", "1"),
-            neutral("SplitToningBalance", "0"),
-            neutral("SplitToningShadowHue", "220"),
-            neutral("SplitToningShadowSaturation", "0"),
             neutral("ToneCurveName2012", "Custom"),
             neutral("ToneCurvePV2012Red", "0, 0; 255, 255"),
             neutral("WhiteBalance", "Custom"),
@@ -272,8 +305,6 @@ fn develop_report(format: &str) -> ImportReport {
             because("SharpenEdgeMasking", "0", SHARPENING),
             because("SharpenRadius", "+1.0", SHARPENING),
             because("Sharpness", "40", SHARPENING),
-            because("SplitToningHighlightHue", "45", GRADING),
-            because("SplitToningHighlightSaturation", "12", GRADING),
             because("SyntheticFutureControl", "3", "not recognised"),
         ],
         refused: vec![],
@@ -292,7 +323,9 @@ fn develop_settings() -> Map<String, Value> {
         },
         "set-mixer": {
             "blue-saturation": -20, "green-luminance": -12.5, "orange-hue": 0,
-            "orange-luminance": 6, "red-hue": 4
+            "orange-luminance": 6, "red-hue": 4, "grade-balance": 0,
+            "grade-highlights-hue": 45, "grade-highlights-saturation": 12,
+            "grade-shadows-hue": 220, "grade-shadows-saturation": 0
         },
         "set-presence": {"clarity": 10, "dehaze": 5, "texture": 15},
         "set-vignette": {"amount": -18, "feather": 60, "midpoint": 40, "roundness": 0}
@@ -319,9 +352,9 @@ fn an_xmp_develop_preset_maps_its_values_and_reports_every_other_setting() {
     assert_eq!(
         preset.report.counts(),
         ReportCounts {
-            mapped: 23,
-            neutral: 16,
-            unsupported: 7,
+            mapped: 28,
+            neutral: 13,
+            unsupported: 5,
             refused: 0
         }
     );
@@ -630,8 +663,6 @@ fn a_template_reads_zstr_curves_nested_tables_and_panel_switches() {
                 neutral("AutoGrayscaleMix", "true"),
                 neutral("ConvertToGrayscale", "false"),
                 neutral("RetouchInfo", ""),
-                neutral("SplitToningHighlightHue", "40"),
-                neutral("SplitToningHighlightSaturation", "18"),
                 neutral("ToneCurveName2012", "Custom \"S\""),
                 neutral("ToneCurvePV2012Blue", "0, 0; 255, 255"),
             ],
@@ -656,6 +687,8 @@ fn a_template_reads_zstr_curves_nested_tables_and_panel_switches() {
                 because("HueAdjustmentAqua", "10", disabled),
                 because("LuminanceAdjustmentGreen", "0", disabled),
                 because("SaturationAdjustmentBlue", "-30", disabled),
+                because("SplitToningHighlightHue", "40", disabled),
+                because("SplitToningHighlightSaturation", "18", disabled),
             ],
         }
     );
@@ -908,9 +941,7 @@ fn panel_switches_gate_their_panels_and_unknown_switches_are_reported() {
 fn qualifying_settings_are_neutral_only_when_the_amount_they_qualify_is() {
     let preset = inspect_preset(
         &settings_template(
-            "ColorGradeMidtoneHue = 30, ColorGradeMidtoneSat = 0, ColorGradeBlending = 70, \
-             SplitToningBalance = 20, SplitToningShadowSaturation = 0, ColorGradeGlobalLum = 0, \
-             ParametricShadowSplit = 30, ParametricShadows = 0, ParametricLights = 5, \
+            "ParametricShadowSplit = 30, ParametricShadows = 0, ParametricLights = 5, \
              PerspectiveScale = 100, UprightVersion = 151388160, PerspectiveUpright = 0, \
              GrayMixerRed = -10, VignetteMidpoint = 40, CameraProfileDigest = \"ABC\", \
              CameraProfile = \"Adobe Color\", DefringePurpleHueLo = 30, \
@@ -927,16 +958,10 @@ fn qualifying_settings_are_neutral_only_when_the_amount_they_qualify_is() {
         vec![
             neutral("CameraProfile", "Adobe Color"),
             neutral("CameraProfileDigest", "ABC"),
-            neutral("ColorGradeBlending", "70"),
-            neutral("ColorGradeGlobalLum", "0"),
-            neutral("ColorGradeMidtoneHue", "30"),
-            neutral("ColorGradeMidtoneSat", "0"),
             neutral("ParametricShadows", "0"),
             neutral("PerspectiveScale", "100"),
             neutral("PerspectiveUpright", "0"),
             neutral("PostCropVignetteHighlightContrast", "20"),
-            neutral("SplitToningBalance", "20"),
-            neutral("SplitToningShadowSaturation", "0"),
             neutral("ToneCurveName2012", "Linear"),
             neutral("UprightVersion", "151388160"),
         ]
@@ -2197,4 +2222,294 @@ fn measure_preset_parse_at_the_size_limit() {
             ms.max,
         );
     }
+}
+
+// -------------------------------------------------------------------------------------------
+// Split toning and colour grading
+// -------------------------------------------------------------------------------------------
+
+const COLOR_GRADE: &str = include_str!("../../../../fixtures/presets/color-grade.xmp");
+const COLOR_GRADE_PARTIAL: &str =
+    include_str!("../../../../fixtures/presets/color-grade-partial.xmp");
+const SPLIT_TONING: &str = include_str!("../../../../fixtures/presets/split-toning.xmp");
+const SPLIT_TONING_UNVERSIONED: &str =
+    include_str!("../../../../fixtures/presets/split-toning-unversioned.xmp");
+const SPLIT_TONING_TEMPLATE: &str =
+    include_str!("../../../../fixtures/presets/split-toning.lrtemplate");
+
+/// An XMP develop preset holding exactly these `crs:` attributes.
+fn xmp(attributes: &str) -> String {
+    format!(
+        "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF \
+         xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description \
+         rdf:about=\"\" xmlns:crs=\"http://ns.adobe.com/camera-raw-settings/1.0/\" \
+         crs:PresetType=\"Normal\" crs:Name=\"G\" {attributes}/></rdf:RDF></x:xmpmeta>"
+    )
+}
+
+/// The mixer fields a settings set holds.
+fn mixer_fields(preset: &ImportedPreset) -> Map<String, Value> {
+    preset
+        .settings
+        .get("set-mixer")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default()
+}
+
+/// What a legacy split-toning document adds beside its own values.
+fn legacy_split_toning() -> Map<String, Value> {
+    object(json!({
+        "grade-blending": 100.0, "grade-shadows-luminance": 0.0, "grade-midtones-hue": 0.0,
+        "grade-midtones-saturation": 0.0, "grade-midtones-luminance": 0.0,
+        "grade-highlights-luminance": 0.0, "grade-global-hue": 0.0,
+        "grade-global-saturation": 0.0, "grade-global-luminance": 0.0
+    }))
+}
+
+/// A Camera Raw 13.2 document is Color Grading: every grading setting transfers onto its own
+/// field as written, Blending and the 360° seam included, beside HSL, and nothing more is added.
+#[test]
+fn a_color_grading_document_transfers_every_grading_setting() {
+    let preset = parse_preset(COLOR_GRADE, Some("color-grade.xmp"), &registry()).unwrap();
+    assert_eq!(
+        mixer_fields(&preset),
+        object(json!({
+            "orange-hue": -6,
+            "grade-shadows-hue": 195, "grade-shadows-saturation": 28,
+            "grade-highlights-hue": 42, "grade-highlights-saturation": 35,
+            "grade-balance": -15,
+            "grade-midtones-hue": 30, "grade-midtones-saturation": 8,
+            "grade-shadows-luminance": -10, "grade-midtones-luminance": 0,
+            "grade-highlights-luminance": 5,
+            "grade-global-hue": 360, "grade-global-saturation": 4,
+            "grade-global-luminance": -3, "grade-blending": 65
+        }))
+    );
+    assert!(
+        preset.report.refused.is_empty(),
+        "{:?}",
+        preset.report.refused
+    );
+    assert!(preset.report.unsupported.is_empty());
+    let fields: Vec<(&str, &str)> = preset
+        .report
+        .mapped
+        .iter()
+        .filter(|entry| entry.field.starts_with("grade-"))
+        .map(|entry| (entry.setting.as_str(), entry.field.as_str()))
+        .collect();
+    assert_eq!(
+        fields,
+        [
+            ("ColorGradeBlending", "grade-blending"),
+            ("ColorGradeGlobalHue", "grade-global-hue"),
+            ("ColorGradeGlobalLum", "grade-global-luminance"),
+            ("ColorGradeGlobalSat", "grade-global-saturation"),
+            ("ColorGradeHighlightLum", "grade-highlights-luminance"),
+            ("ColorGradeMidtoneHue", "grade-midtones-hue"),
+            ("ColorGradeMidtoneLum", "grade-midtones-luminance"),
+            ("ColorGradeMidtoneSat", "grade-midtones-saturation"),
+            ("ColorGradeShadowLum", "grade-shadows-luminance"),
+            ("SplitToningBalance", "grade-balance"),
+            ("SplitToningHighlightHue", "grade-highlights-hue"),
+            (
+                "SplitToningHighlightSaturation",
+                "grade-highlights-saturation"
+            ),
+            ("SplitToningShadowHue", "grade-shadows-hue"),
+            ("SplitToningShadowSaturation", "grade-shadows-saturation"),
+        ]
+    );
+}
+
+/// A sparse Color Grading document is a patch of exactly the fields it holds: luminance without a
+/// saturation, a midtone tint, and nothing about Blending or the other wheels, which keep the
+/// photo's own values when it is applied.
+#[test]
+fn a_partial_color_grading_document_is_a_patch_of_its_own_fields() {
+    let preset = parse_preset(COLOR_GRADE_PARTIAL, None, &registry()).unwrap();
+    assert_eq!(
+        preset.settings,
+        object(json!({"set-mixer": {
+            "grade-midtones-hue": 38, "grade-midtones-saturation": 12,
+            "grade-shadows-luminance": 15
+        }}))
+    );
+    assert_eq!(preset.report.mapped.len(), 3);
+}
+
+/// A document written before Color Grading (Camera Raw 12.4, or any `.lrtemplate`) is split
+/// toning: its Shadows, Highlights and Balance transfer, Blending becomes 100 and every control
+/// Color Grading added is written neutral, so applying it replaces any earlier grade; HSL is kept
+/// as its own fields, and the added values are reported under the first transferred setting.
+#[test]
+fn a_legacy_split_toning_document_becomes_full_blending_split_toning() {
+    let preset = parse_preset(SPLIT_TONING, None, &registry()).unwrap();
+    let mut expected = object(json!({
+        "blue-saturation": -10, "grade-shadows-hue": 220, "grade-shadows-saturation": 25,
+        "grade-highlights-hue": 50, "grade-highlights-saturation": 30, "grade-balance": 20
+    }));
+    expected.extend(legacy_split_toning());
+    assert_eq!(mixer_fields(&preset), expected);
+    let added: Vec<&MappedSetting> = preset
+        .report
+        .mapped
+        .iter()
+        .filter(|entry| legacy_split_toning().contains_key(&entry.field))
+        .collect();
+    assert_eq!(added.len(), legacy_split_toning().len());
+    assert!(
+        added
+            .iter()
+            .all(|entry| entry.setting == added[0].setting
+                && entry.setting.starts_with("SplitToning")),
+        "{added:?}"
+    );
+    assert!(preset.report.refused.is_empty());
+
+    let template = parse_preset(SPLIT_TONING_TEMPLATE, None, &registry()).unwrap();
+    let mut expected = object(json!({
+        "red-hue": 5, "grade-shadows-hue": 210, "grade-shadows-saturation": 18,
+        "grade-highlights-hue": 55, "grade-highlights-saturation": 22, "grade-balance": -30
+    }));
+    expected.extend(legacy_split_toning());
+    assert_eq!(mixer_fields(&template), expected);
+    assert_eq!(template.name, "Cross Split");
+}
+
+/// Where the document does not show which model it was written for, its grading settings are
+/// refused with the reason and nothing is guessed: split toning without a Camera Raw version, Color
+/// Grading settings in a `.lrtemplate` or in a document whose version predates Color Grading. The
+/// other settings still import.
+#[test]
+fn an_ambiguous_grading_document_is_refused_rather_than_guessed() {
+    let unversioned = inspect_preset(SPLIT_TONING_UNVERSIONED, None, &registry()).unwrap();
+    assert_eq!(
+        unversioned.settings,
+        object(json!({"set-basic": {"vibrance": 8}}))
+    );
+    let reason = "no Camera Raw version, so split toning cannot be told from Color Grading";
+    assert_eq!(
+        unversioned.report.refused,
+        vec![
+            because("SplitToningShadowHue", "200", reason),
+            because("SplitToningShadowSaturation", "20", reason),
+        ]
+    );
+
+    let template = inspect_preset(
+        &settings_template(
+            "ProcessVersion = \"6.7\", Exposure2012 = 0.2, ColorGradeMidtoneHue = 30, \
+             SplitToningShadowSaturation = 10",
+        ),
+        None,
+        &registry(),
+    )
+    .unwrap();
+    assert_eq!(
+        template.settings,
+        object(json!({"set-basic": {"exposure": 0.2}}))
+    );
+    let reason = "Color Grading settings in a .lrtemplate preset, which Lightroom wrote only \
+                  before Color Grading existed";
+    assert_eq!(
+        template.report.refused,
+        vec![
+            because("ColorGradeMidtoneHue", "30", reason),
+            because("SplitToningShadowSaturation", "10", reason),
+        ]
+    );
+
+    let early = inspect_preset(
+        &xmp("crs:Version=\"12.4\" crs:ProcessVersion=\"11.0\" crs:ColorGradeGlobalSat=\"10\""),
+        None,
+        &registry(),
+    )
+    .unwrap();
+    assert!(early.settings.is_empty());
+    assert_eq!(
+        early.report.refused,
+        vec![because(
+            "ColorGradeGlobalSat",
+            "10",
+            "Color Grading settings in a document written by Camera Raw 12.4, before Color \
+             Grading existed"
+        )]
+    );
+
+    // Without a version, a Color Grading setting is itself the evidence.
+    let modern = inspect_preset(
+        &xmp(
+            "crs:ProcessVersion=\"11.0\" crs:ColorGradeGlobalSat=\"10\" \
+              crs:SplitToningShadowHue=\"200\"",
+        ),
+        None,
+        &registry(),
+    )
+    .unwrap();
+    assert_eq!(
+        mixer_fields(&modern),
+        object(json!({"grade-global-saturation": 10, "grade-shadows-hue": 200}))
+    );
+}
+
+/// Values outside a grading field's range, or not numbers, are refused and never clamped; a
+/// switched-off split-toning panel refuses every grading setting as disabled.
+#[test]
+fn grading_values_are_refused_out_of_range_and_when_the_panel_is_off() {
+    let preset = inspect_preset(
+        &xmp(
+            "crs:Version=\"15.4\" crs:ProcessVersion=\"11.0\" crs:ColorGradeBlending=\"120\" \
+              crs:SplitToningShadowHue=\"361\" crs:ColorGradeGlobalSat=\"-1\" \
+              crs:ColorGradeMidtoneLum=\"bright\" crs:ColorGradeShadowLum=\"-100\"",
+        ),
+        None,
+        &registry(),
+    )
+    .unwrap();
+    assert_eq!(
+        preset.settings,
+        object(json!({"set-mixer": {"grade-shadows-luminance": -100}}))
+    );
+    assert_eq!(
+        preset.report.refused,
+        vec![
+            because(
+                "ColorGradeBlending",
+                "120",
+                "outside Luxforge's range 0..100"
+            ),
+            because(
+                "ColorGradeGlobalSat",
+                "-1",
+                "outside Luxforge's range 0..100"
+            ),
+            because("ColorGradeMidtoneLum", "bright", "not a number"),
+            because(
+                "SplitToningShadowHue",
+                "361",
+                "outside Luxforge's range 0..360"
+            ),
+        ]
+    );
+
+    let off = inspect_preset(
+        &xmp(
+            "crs:Version=\"15.4\" crs:ProcessVersion=\"11.0\" crs:EnableSplitToning=\"False\" \
+              crs:ColorGradeMidtoneSat=\"20\" crs:Vibrance=\"5\"",
+        ),
+        None,
+        &registry(),
+    )
+    .unwrap();
+    assert_eq!(off.settings, object(json!({"set-basic": {"vibrance": 5}})));
+    assert_eq!(
+        off.report.refused,
+        vec![because(
+            "ColorGradeMidtoneSat",
+            "20",
+            "disabled in the preset"
+        )]
+    );
 }

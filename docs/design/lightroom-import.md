@@ -69,14 +69,14 @@ Each photograph's Lightroom settings become **one history entry**, `Imported fro
 
 | Lightroom | Luxforge | Notes |
 | --- | --- | --- |
-| Global settings presets carry | The [preset mapping](presets.md#mapping), unchanged | Basic, Tone curve, Presence, mixer, vignette, RAW white balance |
+| Global settings presets carry | The [preset mapping](presets.md#mapping), unchanged | Basic, Tone curve, Presence, mixer, colour grading and split toning, vignette, RAW white balance |
 | `CropTop`, `CropLeft`, `CropBottom`, `CropRight`, `CropAngle`, `HasCrop` | Crop's normalized rotated box | Per-photo, so presets exclude it; the conversion is frozen by a study against Lightroom exports of known crops |
 | User orientation (`Adobe_images.orientation`) relative to EXIF | The orientation layer | Quarter-turns and reflections |
 | `LensProfileEnable` | Lens correction on, resolved through Lensfun's own profile | Lightroom's profile name is reported; a lens Lensfun lacks is reported |
 | `PerspectiveVertical`, `PerspectiveHorizontal` | Perspective, after [alignment](lightroom-alignment.md) measures the two models | Unsupported until then ("different perspective model"); Upright is unsupported |
 | `CameraProfile` Adobe Color, Adobe Standard | The Standard look | |
 | `CameraProfile` Camera Matching profiles (Camera Standard, Provia, Velvia…) | The Match camera look once [phase 2](raw-looks.md#phase-2-match-camera) exists; Standard until then | The intent, a camera-like rendering, carries; reported as approximate |
-| Other profiles, monochrome, colour grading, grain, calibration, B&W mix, defringe, spot removal, red eye | Unsupported, reported | Spot removal maps to Clone and Heal once [Corrections](corrections.md) exists |
+| Other profiles, monochrome, grain, calibration, B&W mix, defringe, spot removal, red eye | Unsupported, reported | Spot removal maps to Clone and Heal once [Corrections](corrections.md) exists |
 | Local corrections | [Masks](#masks) | Phase 2 |
 
 The importer applies the alignment's calibrated value conversions where they exist and the preset table's existing rules where they do not, including the uncalibrated RAW white-coordinate conversion; each row of the report says which. Calibrated RAW Kelvin/tint preset import is included in the alignment's RAW white-balance round (owner, 2026-10-07). An imported head has moved beyond Original, so first preparation does not append an automatic lens entry; the importer explicitly maps the Lightroom lens switch.

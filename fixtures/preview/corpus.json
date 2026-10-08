@@ -59,6 +59,50 @@
       ]
     },
     {
+      "id": "mixer-grading",
+      "family": "mixer",
+      "class": "pointwise",
+      "description": "Colour grading in the mixer: all four wheels tinted with luminance moves, Blending 35 and Balance -20, over a moved HSL range, so the HSL and grading programs run in one colour run.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.set-mixer", "params": {"orange-hue": -20, "blue-saturation": 30, "grade-shadows-hue": 190, "grade-shadows-saturation": 45, "grade-shadows-luminance": 20, "grade-midtones-hue": 35, "grade-midtones-saturation": 20, "grade-midtones-luminance": -10, "grade-highlights-hue": 55, "grade-highlights-saturation": 40, "grade-highlights-luminance": -30, "grade-global-hue": 300, "grade-global-saturation": 8, "grade-global-luminance": 10, "grade-blending": 35, "grade-balance": -20}}}
+      ]
+    },
+    {
+      "id": "mixer-grading-split",
+      "family": "mixer",
+      "class": "pointwise",
+      "description": "Split toning as grading: opposing full-strength Shadows and Highlights tints at Blending 100 and Balance +60, the widest overlap and a moved split.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "edit.set-mixer", "params": {"grade-shadows-hue": 20, "grade-shadows-saturation": 100, "grade-highlights-hue": 200, "grade-highlights-saturation": 100, "grade-blending": 100, "grade-balance": 60}}}
+      ]
+    },
+    {
+      "id": "mixer-grading-luminance-masked",
+      "family": "mixer",
+      "class": "pointwise",
+      "description": "A grade bound to a luminance range mask over the middle of the tonal range: the mask reads its own input and the host blends the whole mixer layer once.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "mask.create-luminance-range", "params": {"low": 20.0, "low_feather": 10.0, "high": 80.0, "high_feather": 10.0}}},
+        {"api": {"method": "edit.set-mixer", "params": {"mask": {"name": "Mask 1"}, "grade-midtones-hue": 30, "grade-midtones-saturation": 60, "grade-shadows-luminance": 40, "grade-blending": 0}}}
+      ]
+    },
+    {
+      "id": "mixer-grading-colour-masked",
+      "family": "mixer",
+      "class": "pointwise",
+      "description": "A grade bound to a colour range mask from a mid-grey and a warm sample. A source with no pixel near either sample reports the mask as an empty cell, not as a pass.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"api": {"method": "mask.create-colour-range", "params": {"refine": 50.0}}},
+        {"api": {"method": "mask.add-colour-range-sample", "params": {"mask": {"name": "Mask 1"}, "component": {"name": "Colour range 1"}, "r": 0.18, "g": 0.18, "b": 0.18}}},
+        {"api": {"method": "mask.add-colour-range-sample", "params": {"mask": {"name": "Mask 1"}, "component": {"name": "Colour range 1"}, "r": 0.45, "g": 0.2, "b": 0.12}}},
+        {"api": {"method": "edit.set-mixer", "params": {"mask": {"name": "Mask 1"}, "grade-global-hue": 210, "grade-global-saturation": 50, "grade-highlights-luminance": -60}}}
+      ]
+    },
+    {
       "id": "vignette",
       "family": "vignette",
       "class": "pointwise",

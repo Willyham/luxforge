@@ -18,9 +18,9 @@
 use super::gpu_plan::{program, surface_plan};
 use super::gpu_qualification::{Stream, codes, figures, grid, worst};
 use luxforge_core::{
-    BASIC_EFFECT, CURVE_EFFECT, CompileStage, EFFECT_FORMAT, GPU_PROGRAMS, GpuAnswer,
-    GpuPlanRequest, GpuProgramKind, LOOK_EFFECT, Layer, MIXER_EFFECT, ModuleRegistry,
-    PointwiseColor, Processing, Recipe, Stage, VIGNETTE_EFFECT, gpu_plan,
+    BASIC_EFFECT, CURVE_EFFECT, CompileStage, GPU_PROGRAMS, GpuAnswer, GpuPlanRequest,
+    GpuProgramKind, LOOK_EFFECT, Layer, MIXER_EFFECT, ModuleRegistry, PointwiseColor, Processing,
+    Recipe, Stage, VIGNETTE_EFFECT, gpu_plan,
 };
 use luxforge_gpu::{
     GpuBoundary, GpuPlan, GpuProgram, GpuStep, PositionMap, TexelMap, qualification::Qualifier,
@@ -381,7 +381,7 @@ fn cpu_units(
     match module
         .compile(
             &layer.effect_id,
-            EFFECT_FORMAT,
+            layer.effect_format,
             &layer.payload,
             CompileStage::exact(stage),
         )
@@ -802,6 +802,82 @@ fn gpu_colour_mixer_meets_the_pointwise_limits() {
     qualify(
         "gpu_colour_mixer_meets_the_pointwise_limits",
         "lf_mixer_mixer",
+        cases,
+        GRID,
+    );
+}
+
+/// The grading unit over every range alone at full strength and both luminance extremes, Global,
+/// the hue seam, Blending and Balance extremes, luminance alone, opposing tints and grading over
+/// moved HSL fields, which then runs the HSL program first in the same layer.
+#[test]
+fn gpu_colour_grade_meets_the_pointwise_limits() {
+    let mut cases = Vec::new();
+    for wheel in ["shadows", "midtones", "highlights", "global"] {
+        for (hue, luminance) in [(30, 100), (210, -100)] {
+            cases.push((
+                format!("{wheel} hue {hue}, luminance {luminance:+}"),
+                Layer::new(
+                    MIXER_EFFECT,
+                    json!({
+                        format!("grade-{wheel}-hue"): hue,
+                        format!("grade-{wheel}-saturation"): 100,
+                        format!("grade-{wheel}-luminance"): luminance
+                    }),
+                ),
+            ));
+        }
+    }
+    cases.push((
+        "the seam at 360".to_owned(),
+        Layer::new(
+            MIXER_EFFECT,
+            json!({"grade-midtones-hue": 360, "grade-midtones-saturation": 100}),
+        ),
+    ));
+    for (blending, balance) in [(0, -100), (0, 100), (100, -100), (100, 100)] {
+        cases.push((
+            format!("split toning, blending {blending}, balance {balance:+}"),
+            Layer::new(
+                MIXER_EFFECT,
+                json!({
+                    "grade-shadows-hue": 20, "grade-shadows-saturation": 100,
+                    "grade-highlights-hue": 200, "grade-highlights-saturation": 100,
+                    "grade-blending": blending, "grade-balance": balance
+                }),
+            ),
+        ));
+    }
+    cases.push((
+        "luminance alone".to_owned(),
+        Layer::new(
+            MIXER_EFFECT,
+            json!({
+                "grade-shadows-luminance": 100, "grade-midtones-luminance": -100,
+                "grade-highlights-luminance": 100, "grade-global-luminance": -100,
+                "grade-blending": 0
+            }),
+        ),
+    ));
+    cases.push((
+        "grading over HSL".to_owned(),
+        Layer::new(
+            MIXER_EFFECT,
+            json!({
+                "red-hue": 30, "orange-saturation": -40, "green-saturation": 40,
+                "aqua-hue": -25, "blue-luminance": -30, "magenta-saturation": 25,
+                "grade-shadows-hue": 190, "grade-shadows-saturation": 60,
+                "grade-midtones-hue": 35, "grade-midtones-saturation": 25,
+                "grade-midtones-luminance": 15, "grade-highlights-hue": 55,
+                "grade-highlights-saturation": 60, "grade-highlights-luminance": -45,
+                "grade-global-hue": 300, "grade-global-saturation": 10,
+                "grade-global-luminance": 20, "grade-blending": 35, "grade-balance": -20
+            }),
+        ),
+    ));
+    qualify(
+        "gpu_colour_grade_meets_the_pointwise_limits",
+        "lf_mixer_grade",
         cases,
         GRID,
     );

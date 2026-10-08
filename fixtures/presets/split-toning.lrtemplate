@@ -1,0 +1,21 @@
+s = {
+	id = "5E6F7A8B-9C0D-4E1F-8A2B-3C4D5E6F7A8B",
+	internalName = "Synthetic Split",
+	title = "Cross Split",
+	type = "Develop",
+	-- A synthetic preset written for Luxforge's importer tests, not exported from Lightroom.
+	value = {
+		settings = {
+			EnableSplitToning = true,
+			HueAdjustmentRed = 5,
+			ProcessVersion = "6.7",
+			SplitToningBalance = -30,
+			SplitToningHighlightHue = 55,
+			SplitToningHighlightSaturation = 22,
+			SplitToningShadowHue = 210,
+			SplitToningShadowSaturation = 18,
+		},
+		uuid = "6F7A8B9C-0D1E-4F2A-9B3C-4D5E6F7A8B9C",
+	},
+	version = 0,
+}

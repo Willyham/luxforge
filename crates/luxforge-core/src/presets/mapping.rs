@@ -201,6 +201,8 @@ const fn metadata(name: &'static str) -> Row {
 
 const SIGNED: (f64, f64) = (-100.0, 100.0);
 const UNSIGNED: (f64, f64) = (0.0, 100.0);
+/// A hue in degrees, as Lightroom's split-toning and colour-grading hues are written.
+const HUE: (f64, f64) = (0.0, 360.0);
 const BASIC: &str = "set-basic";
 /// The RAW development's white-balance patch, which Lightroom's absolute white balance maps onto.
 const RAW: &str = "set-raw";
@@ -220,7 +222,6 @@ const CALIBRATION: Option<Panel> = Some(Panel::Calibration);
 const NO_SHARPENING: &str = "Lightroom sharpening is not mapped to Luxforge Detail";
 const NO_NOISE_REDUCTION: &str = "Lightroom noise reduction is not mapped to Luxforge Detail";
 const NO_GRAIN: &str = "Luxforge has no grain";
-const NO_GRADING: &str = "Luxforge has no colour grading";
 const NO_CHANNEL_CURVES: &str = "Luxforge's tone curve has no per-channel curves";
 const NO_PARAMETRIC: &str = "Luxforge has no parametric curve";
 const NO_CURVE_SATURATION: &str = "Luxforge's tone curve changes no saturation";
@@ -250,17 +251,38 @@ const PARAMETRIC_REGIONS: &[&str] = &[
     "ParametricLights",
     "ParametricHighlights",
 ];
-/// Every saturation and luminance amount of colour grading, whose split-toning fields also
-/// carry the shadow and highlight wheels.
-const GRADE_AMOUNTS: &[&str] = &[
-    "SplitToningShadowSaturation",
-    "SplitToningHighlightSaturation",
+/// The settings Lightroom added with Color Grading (Camera Raw 13.0), which an earlier document
+/// cannot hold.
+const COLOR_GRADE: &[&str] = &[
+    "ColorGradeMidtoneHue",
     "ColorGradeMidtoneSat",
+    "ColorGradeGlobalHue",
     "ColorGradeGlobalSat",
     "ColorGradeShadowLum",
     "ColorGradeMidtoneLum",
     "ColorGradeHighlightLum",
     "ColorGradeGlobalLum",
+    "ColorGradeBlending",
+];
+
+/// The Camera Raw version that introduced Color Grading. A document written by an earlier version
+/// holds only split toning.
+const COLOR_GRADING_VERSION: (u32, u32) = (13, 0);
+
+/// What a legacy split-toning document means in today's grading: its Shadows and Highlights hue
+/// and saturation and its Balance, with Blending 100 (split toning's full overlap) and every
+/// control Color Grading added at its neutral value. Written beside the transferred split-toning
+/// values, never over them.
+const LEGACY_SPLIT_TONING: &[(&str, f64)] = &[
+    ("grade-blending", 100.0),
+    ("grade-shadows-luminance", 0.0),
+    ("grade-midtones-hue", 0.0),
+    ("grade-midtones-saturation", 0.0),
+    ("grade-midtones-luminance", 0.0),
+    ("grade-highlights-luminance", 0.0),
+    ("grade-global-hue", 0.0),
+    ("grade-global-saturation", 0.0),
+    ("grade-global-luminance", 0.0),
 ];
 
 use Neutral::{Empty, Equals, Identity, Never, Off, Zero};
@@ -557,103 +579,106 @@ pub(super) const ROWS: &[Row] = &[
         Unless::Nothing,
         CURVE,
     ),
-    // Split toning and colour grading.
-    unsupported_row(
+    // Split toning and colour grading, transferred onto the mixer's grading fields. Which
+    // Lightroom grading model a document was written for is decided once per document
+    // ([`grade_era`]), and a legacy split-toning document gains the later fields' values
+    // ([`LEGACY_SPLIT_TONING`]).
+    transfer(
         "SplitToningShadowHue",
-        NO_GRADING,
-        Never,
-        Unless::Zero("SplitToningShadowSaturation"),
+        MIXER,
+        "grade-shadows-hue",
+        HUE,
         GRADING,
     ),
-    unsupported_row(
+    transfer(
         "SplitToningShadowSaturation",
-        NO_GRADING,
-        Zero,
-        Unless::Nothing,
+        MIXER,
+        "grade-shadows-saturation",
+        UNSIGNED,
         GRADING,
     ),
-    unsupported_row(
+    transfer(
         "SplitToningHighlightHue",
-        NO_GRADING,
-        Never,
-        Unless::Zero("SplitToningHighlightSaturation"),
+        MIXER,
+        "grade-highlights-hue",
+        HUE,
         GRADING,
     ),
-    unsupported_row(
+    transfer(
         "SplitToningHighlightSaturation",
-        NO_GRADING,
-        Zero,
-        Unless::Nothing,
+        MIXER,
+        "grade-highlights-saturation",
+        UNSIGNED,
         GRADING,
     ),
-    unsupported_row(
+    transfer(
         "SplitToningBalance",
-        NO_GRADING,
-        Zero,
-        Unless::AllZero(GRADE_AMOUNTS),
+        MIXER,
+        "grade-balance",
+        SIGNED,
         GRADING,
     ),
-    unsupported_row(
+    transfer(
         "ColorGradeMidtoneHue",
-        NO_GRADING,
-        Never,
-        Unless::Zero("ColorGradeMidtoneSat"),
+        MIXER,
+        "grade-midtones-hue",
+        HUE,
         GRADING,
     ),
-    unsupported_row(
+    transfer(
         "ColorGradeMidtoneSat",
-        NO_GRADING,
-        Zero,
-        Unless::Nothing,
+        MIXER,
+        "grade-midtones-saturation",
+        UNSIGNED,
         GRADING,
     ),
-    unsupported_row(
+    transfer(
         "ColorGradeGlobalHue",
-        NO_GRADING,
-        Never,
-        Unless::Zero("ColorGradeGlobalSat"),
+        MIXER,
+        "grade-global-hue",
+        HUE,
         GRADING,
     ),
-    unsupported_row(
+    transfer(
         "ColorGradeGlobalSat",
-        NO_GRADING,
-        Zero,
-        Unless::Nothing,
+        MIXER,
+        "grade-global-saturation",
+        UNSIGNED,
         GRADING,
     ),
-    unsupported_row(
+    transfer(
         "ColorGradeShadowLum",
-        NO_GRADING,
-        Zero,
-        Unless::Nothing,
+        MIXER,
+        "grade-shadows-luminance",
+        SIGNED,
         GRADING,
     ),
-    unsupported_row(
+    transfer(
         "ColorGradeMidtoneLum",
-        NO_GRADING,
-        Zero,
-        Unless::Nothing,
+        MIXER,
+        "grade-midtones-luminance",
+        SIGNED,
         GRADING,
     ),
-    unsupported_row(
+    transfer(
         "ColorGradeHighlightLum",
-        NO_GRADING,
-        Zero,
-        Unless::Nothing,
+        MIXER,
+        "grade-highlights-luminance",
+        SIGNED,
         GRADING,
     ),
-    unsupported_row(
+    transfer(
         "ColorGradeGlobalLum",
-        NO_GRADING,
-        Zero,
-        Unless::Nothing,
+        MIXER,
+        "grade-global-luminance",
+        SIGNED,
         GRADING,
     ),
-    unsupported_row(
+    transfer(
         "ColorGradeBlending",
-        NO_GRADING,
-        Equals(50.0),
-        Unless::AllZero(GRADE_AMOUNTS),
+        MIXER,
+        "grade-blending",
+        UNSIGNED,
         GRADING,
     ),
     // Detail: sharpening and noise reduction.
@@ -1162,6 +1187,58 @@ fn era(settings: &HashMap<&str, &RawValue>) -> Era {
     }
 }
 
+/// Which Lightroom grading model a document's split-toning and colour-grading settings were
+/// written for, decided from the document's own evidence rather than from a setting it leaves out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum GradeEra {
+    /// Color Grading (Camera Raw 13.0 and later): each setting is a direct transfer of its own
+    /// field, and a field the document leaves out keeps the photo's value.
+    ColorGrading,
+    /// Split toning only: the transferred values gain [`LEGACY_SPLIT_TONING`].
+    SplitToning,
+    /// The document does not show which: every grading setting is refused with this reason.
+    Ambiguous(String),
+}
+
+/// A `.lrtemplate` preset predates Color Grading, since Lightroom stopped writing templates before
+/// Color Grading existed; an XMP document's Camera Raw `Version` says which model it was written
+/// for. A Color Grading setting is itself evidence of the later model, except where the format or
+/// the version says it cannot exist. A document with neither a version nor a Color Grading setting
+/// is ambiguous, because split toning alone is written by both models.
+fn grade_era(format: &str, settings: &HashMap<&str, &RawValue>) -> GradeEra {
+    let color_grade = COLOR_GRADE.iter().any(|name| settings.contains_key(name));
+    if format == super::FORMAT_TEMPLATE {
+        return if color_grade {
+            GradeEra::Ambiguous(
+                "Color Grading settings in a .lrtemplate preset, which Lightroom wrote only \
+                 before Color Grading existed"
+                    .into(),
+            )
+        } else {
+            GradeEra::SplitToning
+        };
+    }
+    let version = settings
+        .get("Version")
+        .map(|value| (report_text(value), value.text().and_then(parse_version)));
+    match version {
+        Some((_, Some(version))) if version >= COLOR_GRADING_VERSION => GradeEra::ColorGrading,
+        Some((written, Some(_))) if color_grade => GradeEra::Ambiguous(format!(
+            "Color Grading settings in a document written by Camera Raw {written}, before Color \
+             Grading existed"
+        )),
+        Some((_, Some(_))) => GradeEra::SplitToning,
+        _ if color_grade => GradeEra::ColorGrading,
+        Some((written, None)) => GradeEra::Ambiguous(format!(
+            "unrecognised Camera Raw version {written}, so split toning cannot be told from \
+             Color Grading"
+        )),
+        None => GradeEra::Ambiguous(
+            "no Camera Raw version, so split toning cannot be told from Color Grading".into(),
+        ),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Switch {
     On,
@@ -1401,6 +1478,10 @@ pub(super) fn map(
         ));
     }
     let era = era(&by_name);
+    let grading = grade_era(format, &by_name);
+    // The first split-toning setting transferred from a legacy split-toning document, which also
+    // carries the later controls' values (`LEGACY_SPLIT_TONING`).
+    let mut split_toning: Option<&RawSetting> = None;
     let switches: HashMap<Panel, Switch> = PANELS
         .iter()
         .map(|panel| {
@@ -1471,6 +1552,12 @@ pub(super) fn map(
                     refused.push(reported(setting, Some(&reason)));
                     continue;
                 }
+                if row.panel == GRADING
+                    && let GradeEra::Ambiguous(reason) = &grading
+                {
+                    refused.push(reported(setting, Some(reason)));
+                    continue;
+                }
                 let applied = match row.rule {
                     Rule::CurveTransfer { .. } => {
                         curve_transfer_value(registry, action, field, value)
@@ -1479,6 +1566,9 @@ pub(super) fn map(
                 };
                 match applied {
                     Ok(applied) => {
+                        if row.panel == GRADING && grading == GradeEra::SplitToning {
+                            split_toning.get_or_insert(setting);
+                        }
                         insert(&mut out, action, field, applied.clone());
                         mapped.push(MappedSetting {
                             setting: setting.name.clone(),
@@ -1605,6 +1695,21 @@ pub(super) fn map(
             }
         }
     }
+    // A legacy split-toning document's transferred values mean split toning: Blending 100 and the
+    // controls Color Grading added at neutral, reported under the first transferred setting.
+    if let Some(setting) = split_toning {
+        for (field, applied) in LEGACY_SPLIT_TONING {
+            let applied = Value::from(*applied);
+            insert(&mut out, MIXER, field, applied.clone());
+            mapped.push(MappedSetting {
+                setting: setting.name.clone(),
+                value: report_text(&setting.value),
+                action: MIXER.to_owned(),
+                field: (*field).to_owned(),
+                applied,
+            });
+        }
+    }
     let process_version = by_name
         .get("ProcessVersion")
         .map(|value| report_text(value));
@@ -1700,8 +1805,9 @@ mod tests {
                 row.name
             );
         }
-        // Basic 10, Presence 3, mixer 24, vignette 4; and the Tone curve's luminance.
-        assert_eq!(transfers, 41);
+        // Basic 10, Presence 3, mixer HSL 24 and grading 14, vignette 4; and the Tone curve's
+        // luminance.
+        assert_eq!(transfers, 55);
         assert_eq!(curves, 1);
     }
 
