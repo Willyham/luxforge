@@ -405,6 +405,11 @@ impl DevelopSet {
         }
     }
 
+    /// How many photographs are selected: the others plus the active one, which is always selected.
+    pub(crate) fn selected_count(&self) -> usize {
+        self.selected.len() + usize::from(!self.selected.contains(&self.active))
+    }
+
     pub(crate) fn selected_assets(&self) -> Vec<AssetId> {
         self.photos
             .iter()
@@ -610,7 +615,7 @@ pub(crate) fn derive(state: &DevelopState, progress: Option<f64>) -> DevelopMode
             caption: if set.reading {
                 Some("Reading the set…".into())
             } else {
-                let count = set.selected.len() + usize::from(!set.selected.contains(&set.active));
+                let count = set.selected_count();
                 (count > 1).then(|| format!("{count} of {} selected", set.photos.len()))
             },
             cells: set.photos[set.first.min(end)..end]

@@ -525,7 +525,7 @@ impl Editor {
     /// Why a batch cannot start for the selection now, as the status bar says it.
     pub(crate) fn batch_refusal(&self) -> Option<String> {
         let state = &self.select.state;
-        if self.view_state.copy_settings.pending {
+        if self.view_state.copy_settings.batch_pending {
             return Some("Waiting for the settings request".into());
         }
         if !state.over_catalog() || self.missing_shown() {
@@ -598,10 +598,12 @@ impl Editor {
         ) {
             return self.start_batch(kind, params);
         }
-        if self.select.state.catalog.running().is_some() || self.view_state.copy_settings.pending {
+        if self.select.state.catalog.running().is_some()
+            || self.view_state.copy_settings.batch_pending
+        {
             return Task::none();
         }
-        self.view_state.copy_settings.pending = true;
+        self.view_state.copy_settings.batch_pending = true;
         let (owner, client) = (self.owner.clone(), self.client);
         let count = targets.count() as u32;
         let names = self
