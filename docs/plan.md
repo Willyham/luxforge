@@ -44,7 +44,7 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 
 [Copy and paste settings](../tasks/interface/copy-settings.json): implemented with quick and native M2 / Metal verification; TASK-006 final rendered qualification remains in progress. Its project-wide GPU corpus gate needs the owner’s private RAW manifest, unavailable in this environment.
 
-Continue these rather than starting them again: [GPU-first rendering](../tasks/rendering/gpu-first.json) TASK-008, portability without a native GPU: prior hosted Linux no-adapter checks pass, but lavapipe stops at `large24` before the required histogram and `gpu-preview` scenarios; the current run fails earlier in the indexed-folder watcher test. TASK-010, 011 and 012 record delivery and wait on it. [RAW looks](../tasks/raw/raw-looks.json) TASK-005 remains in progress: supplied-file journeys pass, but the rendered tier with the owner manifest and the Neutral Amount control remain outstanding. The [Efficiency](../tasks/rendering/efficiency.json) `dist` profile is blocked by the owner's deferral, and the [product decisions](../tasks/project/product-decisions.json) are the owner's to make.
+Continue these rather than starting them again: [GPU-first rendering](../tasks/rendering/gpu-first.json) TASK-008, portability without a native GPU: prior hosted Linux no-adapter checks pass, but lavapipe stops at `large24` before the required histogram and `gpu-preview` scenarios; Linux CI also intermittently fails earlier, in indexed-folder tests. TASK-010, 011 and 012 record delivery and wait on it. [RAW looks](../tasks/raw/raw-looks.json) TASK-005 remains in progress: supplied-file journeys pass, but the rendered tier with the owner manifest and the Neutral Amount control remain outstanding. The [Efficiency](../tasks/rendering/efficiency.json) `dist` profile is blocked by the owner's deferral, and the [product decisions](../tasks/project/product-decisions.json) are the owner's to make.
 
 ## Engineering
 
@@ -65,7 +65,7 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 - A trivial GPU export is slower than the reference export: 75 against 57 ms at 24 MP and 158 against 137 ms at 60 MP timed in the process. The gap is the stream's first band, its window upload and the device's first-tile wait; closing it needs a window uploaded beside the band before it or kept for the next, not built ([performance](specs/performance.md#the-trivial-exports-first-band))
 - Launch to an empty shell (2.07 to 2.11 s) and the uncached 24 MP open (1.21 to 1.25 s) miss their provisional targets; measured beside the 2026-10-02 build on 2026-10-07, about 0.45 s of each since that day's record is the host's, on both builds, and this build adds 0.19 to 0.25 s to a launch, mostly the harness copying and macOS first-checking its larger executable
 - Explicit qualification of the softer `budget-reduced` motion frame at 100%, accepted with that requirement on 2026-10-07
-- Hosted Linux's lavapipe lane stopping at `large24` before histogram and `gpu-preview`, and the current indexed-folder watcher failure before rendered journeys
+- Hosted Linux's lavapipe lane stopping at `large24` before histogram and `gpu-preview`, and intermittent indexed-folder test failures before rendered journeys
 - The native Windows and Linux checks
 
 **CPU and memory efficiency** ([design](design/efficiency.md), [plan](../tasks/rendering/efficiency.json)). Done and measured, except the `dist` build profile, which the owner deferred until the timing runs other plans have outstanding are recorded.
@@ -92,6 +92,7 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 - Native Linux and Windows runs of the folder and volume watchers
 - In the desktop: dragging photographs onto a catalog folder, moving collections between groups, changing a smart collection's query, previews in Missing originals' rows, and Locate original… in export's refusal
 - Background availability checks, and a browse filter for a missing value
+- A move is recognised by file identity alone ([reconciliation](design/catalog.md)). Where the file system reuses a deleted file's inode, as Linux does, a new file at another path is taken for the deleted file moved there, its row carried to the new file: `reconciling_reads_only_what_changed_and_carries_moves` fails so intermittently on Linux. Telling them apart needs more than the inode, such as the birth time; not decided or built
 - **HDR exposure merges** are [planned](design/hdr-merge.md): Import merged creates a saved catalog result and collapsed source stack; Pick merged also appends to the development set by default; originals stay individually pickable and removal/undo retains the result and edits. RAW-only inputs and automatic alignment/deghosting are decided; implementation is not authorized. Panorama stitching remains later and has no plan; the derived-source/merge-kind/stack boundary leaves room for it
 - Catalog portability and backup, carrying each catalog's derived-artifact directory with it (decision pending)
 
@@ -205,7 +206,7 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 **Full-editor verification.** Native M4 handoff of the complete editor, then Windows and Linux.
 
 **Cross-platform builds.**
-- macOS hosted build, reference checks, editor acceptance and packaging pass. Latest Linux CI fails in indexed-folder watching before release/rendered checks; earlier lavapipe loops stop at `large24`. Retain small functional coverage and run every selected scenario before aggregate failure (owner, 2026-10-07; recommended lane change, not implemented). Native Windows/Linux GPU and desktop checks remain separate acceptance; Windows CI is disabled
+- macOS hosted build, reference checks, editor acceptance and packaging pass. Linux CI intermittently fails in indexed-folder tests before release/rendered checks, and its lavapipe loop stops at `large24`. Retain small functional coverage and run every selected scenario before aggregate failure (owner, 2026-10-07; recommended lane change, not implemented). Native Windows/Linux GPU and desktop checks remain separate acceptance; Windows CI is disabled
 - Windows and Linux packaging, checked in real desktop sessions
 - Reproducible Linux VM route
 - Developer guide checked on Windows and Linux

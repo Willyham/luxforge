@@ -31,7 +31,12 @@ fn folder(owner: &OwnerHandle, client: ClientId, path: &Path) -> Value {
 }
 
 /// Add `path` as an indexed folder, wait for its listing, and wait until the lane watches it.
+/// Where the platform keeps no history to resume from (Linux, Windows), the watch begins with a
+/// rescan the lane lists as a job of its own; wait for its end too, so no change the test makes
+/// next races a second listing of the folder.
 fn add_watched(owner: &OwnerHandle, client: ClientId, path: &Path, request: &str) {
+    let before = sequence(owner, client);
+    let replays = luxforge_watch::current_cursor(path).is_some();
     let added = ok(
         owner,
         client,
@@ -42,6 +47,14 @@ fn add_watched(owner: &OwnerHandle, client: ClientId, path: &Path, request: &str
     wait_for("the folder to be watched", || {
         (folder(owner, client, path)["watching"] == true).then_some(())
     });
+    if !replays {
+        wait_for("the watch's first rescan to end", || {
+            events_after(owner, client, before)
+                .iter()
+                .any(|event| event["method"] == "index-watch" && event["job_id"].is_string())
+                .then_some(())
+        });
+    }
 }
 
 /// Make `path` hold `bytes` in one step: written in `staging`, outside every watched folder, then
