@@ -32,6 +32,7 @@ mod gpu_preview_smoke;
 mod gpu_preview_zoom_smoke;
 mod gpu_qualification;
 mod grade_align;
+mod grade_performance;
 mod grading_smoke;
 mod histogram_smoke;
 mod information_smoke;
@@ -393,6 +394,14 @@ fn main_result() -> Result {
             a.done()?;
             editor_acceptance::run(&root, &out)?;
         }
+        "grade-performance" => {
+            let source = absolute(&root, &a.path("--source")?);
+            let out = absolute(&root, &a.path("--output")?);
+            let samples = samples(&mut a, 30)?;
+            a.done()?;
+            let _gate = launch::TimingGate::acquire()?;
+            grade_performance::run(&root, &source, &out, samples)?;
+        }
         "editor-performance" => {
             let source = absolute(&root, &a.path("--source")?);
             let out = absolute(&root, &a.path("--output")?);
@@ -476,8 +485,9 @@ fn main_result() -> Result {
             let control = match a.value("--control")?.as_deref().and_then(OsStr::to_str) {
                 None | Some("slider") => editor_latency::Control::Slider,
                 Some("curve") => editor_latency::Control::Curve,
+                Some("wheel") => editor_latency::Control::Wheel,
                 Some(other) => {
-                    return Err(format!("--control is slider or curve, not {other}").into());
+                    return Err(format!("--control is slider, curve or wheel, not {other}").into());
                 }
             };
             let mode = match a.value("--mode")?.as_deref().and_then(OsStr::to_str) {

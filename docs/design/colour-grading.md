@@ -80,6 +80,17 @@ Per pixel, in Oklab (the conversion the HSL unit already uses):
 
 The tests cover neutral bypass, hue seams, grey tinting, weight continuity and partition, Global independence, luminance-only adjustments, endpoints, opposing tints, monotone luminance, extended RAW input and finite output, against the `f64` reference in linear light (`1e-5 + 1e-5·|reference|`) and through both render paths at the shared code band, and native GPU output against the whole-frame CPU renderer within the declared pointwise limits.
 
+## Measurement tools
+
+The native `editor-latency --control wheel` path measures a two-field wheel gesture in its
+individual Grading view; the default is Shadows, or name a declared hue with `--action` and
+`--parameter`. Scalar HSL and grading fields use the existing slider path. The paired
+`grade-performance` workload compares HSL alone with HSL plus grading through owner commits,
+whole-frame reference rendering, verified pixel samples and serial reference JPEG exports on
+JPEG or RAW. Both use the host timing lock; release figures need a quiet host. Reports retain
+recipes, patches, sample counts, source hashes, resources and load. Native desktop GPU memory
+and gesture RSS are scoped separately from the headless reference costs.
+
 ## Final reference analysis and Lightroom refinement
 
 This stage follows the working feature, and nothing in delivery depends on it. Its reference and tooling now exist; the Lightroom figures await the owner's exports.
