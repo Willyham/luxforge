@@ -102,7 +102,7 @@ The rows are tight enough that a panel of many sliders stays scannable and every
 | Module header | 32 pt band, 1 px border above | 13 pt semibold on the Bar surface, disclosure, title, dot, and the hint (collapsed, truncated with an ellipsis) or the reset (expanded) |
 | Section body | 4 pt top, 12 pt sides, 10 pt bottom | Sliders are separated only by their 2 pt gap; groups by their header's 4 pt margin |
 | Button rows | 22 pt compact buttons in a row that holds a picker, 26 pt otherwise; 4 pt above, 2 pt under a group header | Picker and action buttons inside a group are a row under its sliders; a run of actions that all name an icon is one row of equal icon buttons |
-| Tab row | 24 pt segmented control, 4 pt above and below, semibold labels | Replaces the group headers of a module that declares `layout: tabs`, or sits under the header of a group that declares it; one tab per child group, the selected group's reset at the row's right (a presentation-only view has none) |
+| Tab row | 24 pt segmented control, 4 pt above and below, semibold labels; a row of more than four tabs (the colour mixer's grading views) sizes each tab to its label at the caption size so every label fits the panel | Replaces the group headers of a module that declares `layout: tabs`, or sits under the header of a group that declares it; one tab per child group, the selected group's reset at the row's right (a presentation-only view has none) |
 | Colour rails | Mixed in sRGB, drawn at 85% over the panel | A declared gradient rail replaces the fill |
 | History rows | 26 pt on a 28 pt pitch | Same text sizes; the label truncates with an ellipsis before the actor does |
 
