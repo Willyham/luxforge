@@ -777,6 +777,13 @@ pub struct ActionDescriptor {
     /// overwrites absolutely. Presets use this declaration to refuse overlapping field patches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub analysis: Option<AnalysisAction>,
+    /// The keyboard chord a client binds to this action, which runs it with no parameters on the
+    /// displayed photo, as its control does. Optional, and a hint for clients: it changes nothing
+    /// the host accepts. Registration checks that the chord holds `Command`, that the action needs
+    /// no parameter, that no other action declares it and that the host does not keep it for a
+    /// command of its own ([`super::chord::HOST_CHORDS`]). A query declares none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shortcut: Option<super::chord::Chord>,
     pub parameters: Vec<ParameterDescriptor>,
 }
 
@@ -805,6 +812,7 @@ impl ActionDescriptor {
             patch: false,
             preset: true,
             analysis: None,
+            shortcut: None,
             parameters: Vec::new(),
         }
     }
