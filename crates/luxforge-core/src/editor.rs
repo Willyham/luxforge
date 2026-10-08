@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::{
     cell::RefCell,
+    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::Arc,
     time::{Duration, SystemTime},
@@ -309,6 +310,13 @@ pub struct ActionResult {
     /// reports what it skipped.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skipped: Vec<SkippedSetting>,
+    /// The report of each declared analysis query this call's plans used, by query: what
+    /// `query.<query>` answers for the same stack, such as Auto tone's explanation. Present when
+    /// this call analysed the photo — an analysis action, or a settings composite with an analysis
+    /// step that applied — and never stored with the request, so a deduplicated retry, which
+    /// analyses nothing, answers without it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub analysis: BTreeMap<String, Value>,
 }
 
 /// One setting a composite action did not apply to a photo, and why: the step's action, the field
@@ -331,6 +339,7 @@ impl ActionResult {
             component: None,
             removed_layers: Vec::new(),
             skipped: Vec::new(),
+            analysis: BTreeMap::new(),
         }
     }
 }

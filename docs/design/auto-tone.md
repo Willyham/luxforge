@@ -58,12 +58,12 @@ What Luxforge takes from this:
 
 | Method | Mutates | Result |
 | --- | --- | --- |
-| `edit.auto-tone {asset_id, mutation}` | yes | Basic's `auto-tone` action. Analyses the current revision and commits one `Auto tone` entry, or a no-op. Revision-checked and deduplicated like every action |
+| `edit.auto-tone {asset_id, mutation}` | yes | Basic's `auto-tone` action. Analyses the current revision and commits one `Auto tone` entry, or a no-op. Revision-checked and deduplicated like every action. Answers the mutation result with the [explanation](#explanation) it used as `analysis.auto-tone` |
 | `query.auto-tone {asset_id, entry_id?}` | no | Basic's query: the values Auto would set for the current or named entry, with the [explanation](#explanation), and no commit |
 
 - **Arguments:** `auto-tone` takes no parameters. It is a Basic action, not a field patch, so it is not a draft action and has no Amount.
 - **Pixel reads:** it plans through the host's deferred read path, which a pixel-reading picker already uses: the catalog owner never reads the sample or renders a frame.
-- **Agent use:** an agent can preview with the query and then commit with the action, or commit directly. The action and the query share one function, so they cannot disagree for the same identity.
+- **Agent use:** an agent can preview with the query and then commit with the action, or commit directly and read the report from the action's answer. The action and the query share one function, so they cannot disagree for the same identity.
 - **Collapse:** an `Auto tone` entry never collapses into the slider edits after it. It sets eight controls, and auto-collapse only merges edits of the control the last edit set.
 
 ### Explanation
@@ -76,7 +76,7 @@ The query answers a bounded report (at most 4 KiB):
 - The fields that stopped at a bound.
 - The layers the forward model used and the layers it left out.
 
-The desktop shows the same text in the Auto button's tooltip after a run. The query exists so a person or an agent can see why Auto chose a value.
+`edit.auto-tone` answers the same report as `analysis.auto-tone` beside its mutation result, also on a no-op: the report its values came from, added to the answer after the commit and never stored with the request, so a deduplicated retry, which analyses nothing, carries none. A preset whose Auto step applied answers it the same way. The desktop shows the report's text in the Auto button's tooltip after a run, taken from that answer; it asks no query, so a click analyses and solves once. The query exists so a person or an agent can see why Auto would choose a value without committing.
 
 ## Analysis input
 
@@ -98,11 +98,16 @@ Auto reads one bounded **analysis sample**: linear RGB values of the stage the B
   - Basic's own values, the Look and later colour layers are not part of it, so a repeated Auto or a query followed by the action reads the sample once.
   - Retained samples are capped at 32 MiB in total; there is no per-photo cache beyond that.
   - Opening another photo, or the asset leaving Develop, releases them.
-- **Cancellation:** a superseded or cancelled request is abandoned at chunk granularity. Its late result cannot commit.
+- **Cancellation:** the sample read and the solve run under the request's cancellation and stop within a row, tile or solver chunk; one still waiting in the tile service's queue is answered as soon as its turn comes. The owner cancels a parked `edit.auto-tone` (or preset) read ([detail](detail.md)):
+  - when the same client parks another read for the same method and photo, or opens another photograph (`source.prepare`, which every desktop open sends): the call is answered `cancelled`;
+  - when, after any message, the photo's entry or revision or the client's draft is no longer the one read: the call is replayed as a stale read is, answering `conflict`;
+  - when the client disconnects: the call is dropped unanswered.
+
+  A batch's reads belong to its job, not the client that started it: only cancelling the job stops them. `query.auto-tone` is cancelled only by its client's disconnect. A late result never commits: every replay checks what its read was read from before it writes.
 
 ## The solve (`auto-tone/1`)
 
-The solve runs on a worker, in a pure function in `luxforge-core`, over the sample.
+The solve runs off the owner, in a pure function in `luxforge-core` over the sample, on the tile service's thread right after the sample read (the desktop's GPU tile worker, or the reference service's `luxforge-tiles` thread), so other pixel reads wait behind it.
 
 **Forward model.** The global Basic layer at candidate values, followed by the global Look layer when the photo has one, then the output boundary's clamp. It reuses the modules' own compiled pointwise units, so Auto solves through what renders.
 
@@ -228,7 +233,7 @@ The fitter sorts ids by SHA-256 and holds out every fourth photo. In fixed coord
    - Auto values from the GPU and reference samples agree within 0.02 EV and 2 units on every field for every corpus photo. Any difference is reported.
    - The sample honours crop, straighten, lens and perspective geometry and the RAW and JPEG kinds.
 3. **Command parity.**
-   - `edit.auto-tone` and `query.auto-tone` agree.
+   - `edit.auto-tone` and `query.auto-tone` agree, and the action's `analysis.auto-tone` is the query's report.
    - Auto creates or updates the one global Basic layer with one `Auto tone` entry, keeps white balance, refuses masks, history and drafts, deduplicates retries and is undone in one step.
    - The source checksum is unchanged.
    - An independent JSON client gets the same result as the desktop.
@@ -247,15 +252,17 @@ Final quick and full headless checks pass on M2. All 58 components before the re
 
 On Apple M2 / Metal, generated JPEG and public licensed Nikon Z6 RAW background journeys pass: all eight committed and displayed values match the independent query; the busy button, tooltip explanation, Cmd+U, repeat, undo, history/Compare refusals and per-photo preset form are correlated with captures and logs. The RAW GPU and reference predictions agree exactly on all eight fields. A separate RAW preset test proves that changing white balance and running Auto together equals changing white balance first and then running Auto, with other layers and original bytes preserved.
 
+These journeys predate the tooltip taking the report from the action's answer rather than a second query; core and desktop tests cover that path, and the native journey has not been run again since.
+
 Generated half/float GPU samples with Detail plus crop, straighten, lens and perspective stay within the declared display tolerance and Auto value bounds. Exact CPU grids, cache identities, solver oracles, stale-client refusal, batch per-photo analysis and imports have focused tests. The fitting rig passes synthetic and repository-fixture stand-ins; these are not Lightroom calibration. Owner M4 checks, the full private RAW corpus and native Windows/Linux GPU qualification remain unrun.
 
 ## Performance-rules review for implementation
 
 - **Source:** only the verified source cache is read. Auto never reads, hashes or decodes the original itself.
 - **Memory:** each grid is at most 13 MiB (RGB and source-white flags) at a 1024-point long side. Retained samples total at most 32 MiB, with eviction before building a replacement. Positions, gather ordering, one 256-square tile, and the solver's f64 luminance array and RGB chunk are charged as scratch before allocation. Auto adds no retained full-frame buffer. A spatial reference prefix uses the reference renderer's existing whole-frame implementation, then releases it with the read; the GPU gathers from bounded prefix tiles. The separate fitting command retains at most 100 grids (1,300 MiB).
-- **Threads:** nothing runs on the owner or UI thread beyond planning metadata. The sample read and the solve run on the tile service and a worker, with cancellation at chunk granularity.
+- **Threads:** nothing runs on the owner or UI thread beyond planning metadata. The sample read and the solve both run on the tile service's thread, with cancellation at chunk granularity; a superseded or stale request is cancelled there ([cancellation](#analysis-input)).
 - **Timers:** none. No idle timer, polling or per-tick work. Auto runs only on request.
-- **Desktop requests:** the button sends one mutation, then the normal `asset.state`/session refresh and preview. The tooltip requests the same query pinned to the committed entry; it reuses the sample but solves again, off the owner and after the commit. It adds no history-page read. An explanation for a displaced entry is discarded.
+- **Desktop requests:** the button sends one mutation, then the normal `asset.state`/session refresh and preview. The tooltip shows the report the mutation answered, pinned to the entry the refresh read back, so nothing is read or solved again. It adds no history-page read. An explanation for a displaced entry is discarded.
 - **Reuse:** a query followed by the action, or a repeated Auto, reuses the grid by asset, verified source/development identity, semantic prefix, output geometry, grid, input mode, algorithm and renderer. Neither the grid nor the small per-request replay memo holds a source or evaluation. Leaving Develop or replacing the photo releases the retained grid; stale fills cannot repopulate it. Solved reports are not cached across requests.
 - **Baseline:** no before/after `editor-performance` improvement is claimed. The dedicated Auto engine measurement isolates its new work; it does not include source preparation, catalog commit or presentation and cannot establish the click-to-entry budget.
 - **Evidence:** exact tests cover the CPU sample and the solver, and declared-tolerance comparisons cover the GPU sample. Measurements follow delivery, once.
