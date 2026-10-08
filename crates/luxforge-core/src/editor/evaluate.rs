@@ -39,6 +39,9 @@ use std::{borrow::Cow, sync::Arc};
 pub struct Evaluation<S = PreviewSource> {
     bound: Arc<Bound>,
     source: S,
+    /// The RAW sensor the source was developed from, which a sample grid reads its clipped flags
+    /// from; only a grid read's evaluation holds it, for that call ([`Self::with_sensor`]).
+    sensor: Option<Arc<dyn crate::tiles::SensorClip>>,
 }
 
 struct Bound {
@@ -128,6 +131,7 @@ impl<S> Evaluation<S> {
         Evaluation {
             bound: self.bound,
             source,
+            sensor: self.sensor,
         }
     }
 }
@@ -159,12 +163,26 @@ impl Evaluation {
                 compiled,
             }),
             source,
+            sensor: None,
         }
     }
 
     /// The buffer the stack is evaluated on.
     pub fn source(&self) -> &PreviewSource {
         &self.source
+    }
+
+    /// This evaluation holding the RAW sensor its source was developed from, for a sample grid's
+    /// clipped flags ([`crate::tiles::read_grid`]). The sensor's default crop and orientation are
+    /// the developed planes' view, so it answers in the source's content coordinates.
+    pub(crate) fn with_sensor(mut self, sensor: Option<Arc<dyn crate::tiles::SensorClip>>) -> Self {
+        self.sensor = sensor;
+        self
+    }
+
+    /// The RAW sensor this evaluation holds, when it was given one.
+    pub(crate) fn sensor(&self) -> Option<&dyn crate::tiles::SensorClip> {
+        self.sensor.as_deref()
     }
 
     /// Render the stack at the exact phase under `cancel` from its one compilation, which it
@@ -358,6 +376,7 @@ impl EditorService {
                     compiled,
                 }),
                 source: (),
+                sensor: None,
             },
         })
     }
@@ -697,6 +716,15 @@ impl EditorService {
 /// The buffer a prepared source is evaluated on under `mode`: the decoded JPEG, or the developed
 /// RAW planes with the linear settings `recipe` asks for ([`raw_settings`]). `O(1)`; it reads no
 /// pixel.
+/// The RAW sensor a prepared source was developed from, for a sample grid's clipped flags; `None`
+/// for a JPEG. Shares the retained mosaic.
+pub(super) fn sensor_of(prepared: &PreparedSource) -> Option<Arc<dyn crate::tiles::SensorClip>> {
+    match prepared {
+        PreparedSource::Jpeg(_) => None,
+        PreparedSource::Raw(raw) => Some(raw.sensor.clone() as Arc<dyn crate::tiles::SensorClip>),
+    }
+}
+
 pub(super) fn source_of(
     prepared: PreparedSource,
     recipe: &Recipe,

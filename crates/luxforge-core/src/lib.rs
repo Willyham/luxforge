@@ -4,7 +4,6 @@ pub mod analysis;
 mod api;
 mod artifacts;
 mod atomic_file;
-pub mod auto_tone;
 /// The catalog's browse views, facets and selection over the index and the catalog.
 mod browse;
 mod cancel;
@@ -84,7 +83,7 @@ pub use editor::{
     MutationResult, PixelInput, PixelSample, RawInterpretation, RecipeDescription, SkippedSetting,
     SourceKind, SourceTag, Version,
 };
-pub use error::{Error, ErrorKind, Preparation, PreparationNeeds};
+pub use error::{AnalysisRefusal, Error, ErrorKind, Preparation, PreparationNeeds};
 pub use export::{CaptureInfo, CaptureMetadata};
 pub use mask::MASK_GPU_PROGRAMS;
 pub use model::{
@@ -93,6 +92,8 @@ pub use model::{
     Mutation, MutationRequest, Orientation, PresetId, RECIPE_FORMAT, Recipe, Snapshot, SnapshotId,
     Transform,
 };
+/// Basic's Auto tone solver and forward model, which the fitting rig and the measurements call.
+pub use modules::auto_tone;
 pub use modules::{
     ActionControl, ActionDescriptor, ActionInput, ActionPlan, ActionRef, ActionStyle,
     AnalysisAction, Availability, BASIC_EFFECT, BoxRect, CONTROLS_EFFECT, CROP_EFFECT,

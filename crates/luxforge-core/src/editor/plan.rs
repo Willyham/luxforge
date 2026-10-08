@@ -252,12 +252,7 @@ impl EditorService {
         input: &ActionInput,
         mask: Option<&MaskId>,
     ) -> Result<Resolved, Error> {
-        let view = if module
-            .descriptor()
-            .actions
-            .iter()
-            .any(|action| action.id == input.action_id && action.analysis.is_some())
-        {
+        let view = if self.registry.analysis_step(&input.action_id) {
             TargetView::Whole
         } else {
             TargetView::Own
@@ -538,11 +533,10 @@ impl EditorService {
         mask: Option<&MaskId>,
         fields: &Map<String, Value>,
     ) -> Result<(), Error> {
-        let Some(ActionRef::Module(module, action)) = self.registry.resolve_action(action_id)
-        else {
+        let Some(ActionRef::Module(module, _)) = self.registry.resolve_action(action_id) else {
             return Ok(());
         };
-        if action.analysis.is_some() {
+        if self.registry.contains_analysis(action_id, fields) {
             return Err(Error::validation("analysis actions cannot be drafted"));
         }
         let kind = self.head(asset_id)?.asset.source.tag();
@@ -714,11 +708,7 @@ impl EditorService {
         let registry = self.registry.clone();
         let kind = asset.source.tag();
         // Field patches settle the intermediate stack first, independent of JSON key order.
-        steps.sort_by_key(|step| {
-            registry
-                .action(&step.action_id)
-                .is_some_and(|(_, action)| action.analysis.is_some())
-        });
+        steps.sort_by_key(|step| registry.analysis_step(&step.action_id));
         let mut resolved = recipe.clone();
         let mut skipped = Vec::new();
         for step in steps {
@@ -785,12 +775,7 @@ impl EditorService {
             let plan = match plan {
                 Err(error)
                     if action.analysis.is_some()
-                        && error.kind == ErrorKind::Validation
-                        && error
-                            .data
-                            .as_deref()
-                            .and_then(|data| data.get("analysis_refusal"))
-                            .is_some() =>
+                        && crate::AnalysisRefusal::of(&error).is_some() =>
                 {
                     skipped.push(SkippedSetting {
                         action: action_id.into(),
@@ -1079,8 +1064,9 @@ fn sample_compile_count() -> usize {
 }
 
 impl StageQuestions for HostStage<'_> {
-    fn analysis_before(&self, index: usize) -> Result<crate::tiles::AnalysisRead, Error> {
+    fn grid_before(&self, index: usize) -> Result<crate::tiles::GridRead, Error> {
         refuse_on_owner()?;
+        let sensor = super::evaluate::sensor_of(self.source()?);
         let source = super::evaluate::source_of(
             self.source()?.clone(),
             self.recipe,
@@ -1097,8 +1083,9 @@ impl StageQuestions for HostStage<'_> {
             entry,
             self.recipe.clone(),
             None,
-        );
-        crate::tiles::analysis::read(
+        )
+        .with_sensor(sensor);
+        crate::tiles::grid::read(
             &evaluation,
             index,
             &crate::tiles::ReferenceReads,
@@ -1107,13 +1094,14 @@ impl StageQuestions for HostStage<'_> {
     }
 
     fn query(&self, id: &str, parameters: &Map<String, Value>) -> Result<Value, Error> {
+        let sensor = super::evaluate::sensor_of(self.source()?);
         let source = super::evaluate::source_of(
             self.source()?.clone(),
             self.recipe,
             RawSettingsMode::Strict,
         )?;
         self.service
-            .deferred_query(self.asset, self.recipe, source, id, parameters)
+            .deferred_query(self.asset, self.recipe, (source, sensor), id, parameters)
     }
 
     fn optics(&self) -> Result<crate::SourceOptics, Error> {
@@ -1162,6 +1150,7 @@ impl StageQuestions for HostStage<'_> {
             self.asset,
             self.recipe,
             preview,
+            None,
             self.input_wide(&compiled)?,
             super::pixels::PixelRead::Point { index, x, y },
         )? {
@@ -1207,6 +1196,7 @@ impl StageQuestions for HostStage<'_> {
             self.asset,
             self.recipe,
             preview.clone(),
+            None,
             self.input_wide(&compiled)?,
             super::pixels::PixelRead::Point { index, x, y },
         )? {
