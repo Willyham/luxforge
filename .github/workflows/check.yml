@@ -120,14 +120,23 @@ jobs:
           # Lavapipe is not adopted as the fallback for a host without a hardware adapter
           # (docs/specs/performance.md, "Software adapters"), so the editor refuses the GPU stage
           # on this lane unless asked: every launch passes --software-adapter to draw on it.
-          for scenario in empty load replacement invalid repeated alternating large24 large60 histogram gpu-identity gpu-preview no-gpu-render; do
-            xvfb-run -a cargo xtask smoke --binary artifacts/package/Luxforge/luxforge --scenario "$scenario" --output "artifacts/headless-$scenario" --editor-software-adapter
+          # GPU-stage journeys use small fixtures; the no-gpu-render journey retains its 24 MP
+          # reference-renderer fixture. large24/large60 remain in native rendered verification.
+          # Run every retained scenario even after a failure, then fail the lane in aggregate.
+          status=0
+          for scenario in empty load replacement invalid repeated alternating histogram gpu-identity gpu-preview no-gpu-render; do
+            if xvfb-run -a cargo xtask smoke --binary artifacts/package/Luxforge/luxforge --scenario "$scenario" --output "artifacts/headless-$scenario" --editor-software-adapter; then
+              # Every successful launch must record the software adapter that drew it.
+              if ! jq -e '(.launches | length) > 0 and all(.launches[]; .adapter.device_type == "Cpu")' "artifacts/headless-$scenario/result.json"; then
+                echo "::error::Scenario $scenario did not record only CPU adapters"
+                status=1
+              fi
+            else
+              echo "::error::Scenario $scenario failed"
+              status=1
+            fi
           done
-          # Every launch's result.json records the adapter that drew it; on this lane each must be
-          # the software one.
-          for result in artifacts/headless-*/result.json; do
-            jq -e '(.launches | length) > 0 and all(.launches[]; .adapter.device_type == "Cpu")' "$result"
-          done
+          exit "$status"
         env:
           WGPU_BACKEND: vulkan
           WINIT_UNIX_BACKEND: x11

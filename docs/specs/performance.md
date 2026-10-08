@@ -4611,7 +4611,7 @@ The 24 MP drag with `--idle`: after its release had dissolved from the drag's la
 
 ### Windows and Linux
 
-That qualification ran only on the M4. Later container software checks and actual hosted results are recorded in [development](../engineering/development.md#ci): prior no-adapter checks pass, lavapipe stops at `large24`, and latest Linux CI fails earlier in an indexed-folder watcher test. Native Windows/Linux GPU acceptance remains unrun; a configured lane is not a passing result. Windows CI is disabled.
+That qualification ran only on the M4. Later container software checks and actual hosted results are recorded in [development](../engineering/development.md#ci): Linux no-adapter checks, release acceptance and packaging pass; the retained lavapipe journeys use small GPU-stage fixtures and run to aggregate failure, with a passing hosted result still open. Native Windows/Linux GPU acceptance remains unrun; a configured lane is not a passing result. Windows CI is disabled.
 
 ### The performance-rules checklist
 
