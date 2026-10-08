@@ -24,6 +24,8 @@ pub(super) fn descriptor() -> ActionDescriptor {
         "Auto tone",
         "Sets Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Vibrance and Saturation absolutely on the global Basic layer in one undoable entry. Leaves white balance and other modules unchanged; repeats are no-ops. Analysis runs off the catalog owner. Refuses mask targets, historical selection, drafts and images without usable tonal range.",
     );
+    // Lightroom's Auto chord.
+    descriptor.shortcut = Some(crate::Chord::command('U'));
     descriptor.analysis = Some(AnalysisAction {
         query: ID.into(),
         writes: BTreeMap::from([(SET_BASIC.into(), FIELDS.map(str::to_owned).into())]),

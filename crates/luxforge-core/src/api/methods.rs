@@ -432,7 +432,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "module.list",
         ModuleList,
         module_list,
-        "every registered module descriptor with its effects, actions, parameters, controls and canvas declaration: the mode's title, shortcut letter and optional icon name, from the vocabulary an action control's icon uses. An effect lists the source kinds it may exist on as sources, omitted when it is every kind; a module applies to a photo when any of its effects does or it declares none, and asset_id keeps only the modules that apply to that asset's kind. A number, action or picker control, and a group's reset, may list variants [{source, module, control | reset}]: what another module provides in its place on the global target of a photo of that kind, returned unresolved"
+        "every registered module descriptor with its effects, actions, parameters, controls and canvas declaration: the mode's title, shortcut letter and optional icon name, from the vocabulary an action control's icon uses. An action may declare a shortcut, the chord a client binds to running it with no parameters, written Command+U, Command+Shift+C or Command+Option+V (Command is ⌘ on macOS and Control elsewhere). An effect lists the source kinds it may exist on as sources, omitted when it is every kind; a module applies to a photo when any of its effects does or it declares none, and asset_id keeps only the modules that apply to that asset's kind. A number, action or picker control, and a group's reset, may list variants [{source, module, control | reset}]: what another module provides in its place on the global target of a photo of that kind, returned unresolved"
     ),
     // Module settings are answered by the catalog owner, which holds the capability host: the
     // settings directory and the secret store. They are user-level, outside every catalog, and
@@ -4050,6 +4050,7 @@ mod tests {
                     patch: false,
                     preset: true,
                     analysis: None,
+                    shortcut: None,
                     parameters: vec![
                         ParameterDescriptor::number("angle", -45.0, 45.0)
                             .required(true)
@@ -4143,6 +4144,7 @@ mod tests {
                     patch: false,
                     preset: true,
                     analysis: None,
+                    shortcut: None,
                     parameters: Vec::new(),
                 }],
                 queries: Vec::new(),

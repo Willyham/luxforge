@@ -1358,3 +1358,31 @@ fn presentation_observation_has_a_bounded_measurement_window() {
     assert!(parse(r#"[{"observe":{"settle_ms":1000,"ms":60001}}]"#).is_err());
     assert!(parse(r#"[{"observe":{"settle_ms":0,"ms":30000}}]"#).is_err());
 }
+
+#[test]
+fn a_key_step_takes_a_chord_written_as_an_action_shortcut() {
+    for key in [
+        "Command+U",
+        "Command+Shift+C",
+        "Command+Option+V",
+        "Command+,",
+    ] {
+        let written = write(&[Step::key(key)]);
+        assert_eq!(
+            parse(&written.to_string()).unwrap(),
+            vec![Step::key(key)],
+            "{key}"
+        );
+    }
+    for key in [
+        "Command+u",
+        "Command+",
+        "Shift+Command+U",
+        "Command+Shift+Option+V",
+        "Ctrl+U",
+        "Command+UU",
+    ] {
+        let written = write(&[Step::key(key)]);
+        assert!(parse(&written.to_string()).is_err(), "{key}");
+    }
+}

@@ -71,17 +71,7 @@ impl Editor {
                     Some(PaletteAction::HundredPercent) => {
                         self.dispatch(Message::View(ViewMessage::HundredPercent))
                     }
-                    Some(PaletteAction::CopySettings(kind)) => {
-                        use super::message::copy_settings::CopySettingsMessage as C;
-                        self.dispatch(Message::CopySettings(match kind {
-                            0 | 1 => C::Copy {
-                                choose: kind == 1,
-                                source: None,
-                            },
-                            2 => C::Paste,
-                            _ => C::Previous,
-                        }))
-                    }
+                    Some(PaletteAction::Host(command)) => self.dispatch(command.message()),
                     Some(PaletteAction::Undo) => {
                         self.dispatch(Message::History(HistoryMessage::Undo))
                     }
