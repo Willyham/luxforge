@@ -2,11 +2,12 @@
 //! declared control action, a module reset, a canvas mode, a library preset, a theme or a host
 //! command, so the palette can reach nothing the panels, the title bar and the Settings sheet
 //! cannot.
+use crate::state::host_commands::{HOST_COMMANDS, HostCommand, action_shortcuts, glyphs};
 use crate::state::{
     Inputs,
     tools::{RevealKey, ToolsModel, palette_entries, reveal_entries},
 };
-use luxforge_core::{MASK_MODE, POINTER_MODE};
+use luxforge_core::{Chord, MASK_MODE, POINTER_MODE};
 use serde_json::{Map, Value};
 
 /// The palette's entry for the reference renderer's export, which the title bar's Export menu does
@@ -65,7 +66,8 @@ impl Panel {
 /// entry can reach nothing the panels and the title bar cannot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PaletteAction {
-    CopySettings(u8),
+    /// One of the host's own commands from [`crate::state::host_commands::HOST_COMMANDS`].
+    Host(HostCommand),
     /// Open a section of the tools panel, collapsing the others, and mark it or one of its
     /// controls. Expansion is this client's view state, as a click on a section header is.
     Reveal(RevealTarget),
@@ -107,6 +109,9 @@ pub(crate) struct PaletteEntry {
     pub(crate) detail: String,
     pub(crate) action: PaletteAction,
     pub(crate) refusal: Option<String>,
+    /// The chord that runs the entry without the palette, as the row shows it beside the label:
+    /// a host command's own, or the one its action declares.
+    pub(crate) shortcut: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -154,9 +159,11 @@ pub(crate) fn derive(
     ));
     raw.extend(crate::state::presets::palette_entries(inputs));
     raw.extend(host_entries(inputs));
+    let chords = action_shortcuts(inputs.modules);
     let entries: Vec<PaletteEntry> = filter(raw, &inputs.palette.query)
         .into_iter()
         .map(|(label, detail, action)| PaletteEntry {
+            shortcut: shortcut(&action, &chords).map(glyphs),
             label,
             detail,
             action,
@@ -176,27 +183,17 @@ pub(crate) fn derive(
 /// what it currently does.
 fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
     let workspace = &inputs.session.workspace;
-    let mut entries = vec![
-        (
-            "Copy settings".into(),
-            "preset.capture".into(),
-            PaletteAction::CopySettings(0),
-        ),
-        (
-            "Copy settings…".into(),
-            "preset.capture".into(),
-            PaletteAction::CopySettings(1),
-        ),
-        (
-            "Paste settings".into(),
-            "edit.paste-settings / batch.paste-settings".into(),
-            PaletteAction::CopySettings(2),
-        ),
-        (
-            "Paste settings from previous photograph".into(),
-            "preset.capture → edit.paste-settings".into(),
-            PaletteAction::CopySettings(3),
-        ),
+    let mut entries: Vec<_> = HOST_COMMANDS
+        .iter()
+        .map(|spec| {
+            (
+                spec.label.to_owned(),
+                spec.detail.to_owned(),
+                PaletteAction::Host(spec.command),
+            )
+        })
+        .collect();
+    entries.extend([
         (
             "Pointer".to_owned(),
             "workspace.set".to_owned(),
@@ -245,7 +242,7 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
             "history.restore".to_owned(),
             PaletteAction::Restore,
         ),
-    ];
+    ]);
     entries.extend(
         crate::state::title::EXPORT_ITEMS
             .iter()
@@ -312,6 +309,20 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
     // One entry per theme the library lists, which chooses it as its row does.
     entries.extend(crate::state::themes::palette_entries(inputs.themes));
     entries
+}
+
+/// The chord that runs this entry's action without the palette: a host command's own, or the one a
+/// generated action entry's action declares when the entry runs it as the chord does, with nothing
+/// preset.
+fn shortcut(action: &PaletteAction, chords: &[(Chord, String)]) -> Option<Chord> {
+    match action {
+        PaletteAction::Host(command) => Some(command.chord()),
+        PaletteAction::Run { action, preset } if preset.is_empty() => chords
+            .iter()
+            .find(|(_, declared)| declared == action)
+            .map(|(chord, _)| *chord),
+        _ => None,
+    }
 }
 
 /// What a toggle entry calls itself: it always names the action it would take, not the state it is

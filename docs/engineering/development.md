@@ -63,7 +63,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Rendered crop workflow and overlay | `cargo xtask smoke --scenario crop --output NEW_DIR`, `--scenario crop-draft` |
 | Rendered image information: key and palette toggles, capture fields, selected/history/live crop dimensions, zoom and hidden panels, without photo uploads | `cargo xtask smoke --scenario information --output NEW_DIR` |
 | Rendered workspace panels, mode, preview, the combined crop section’s transform icon row, an agent's conflicting commit and palette; unavailable-provider notice | `cargo xtask smoke --scenario workspace --output NEW_DIR`, `--scenario unavailable` |
-| Rendered Auto tone: query/button/shortcut/preset parity, all eight displayed fields, repeat, undo, history and Compare refusal; an optional source substitutes a RAW | `cargo xtask smoke --scenario auto-tone --output NEW_DIR [--source RAW]` |
+| Rendered Auto tone: query/button/shortcut/preset parity, all eight displayed fields, repeat, undo, history and Compare refusal, and the palette entry with its declared chord; an optional source substitutes a RAW | `cargo xtask smoke --scenario auto-tone --output NEW_DIR [--source RAW]` |
 | Auto tone local Lightroom fitting, with explicit consent for each invocation; figures only, no automatic adoption | `cargo xtask auto-tone-fit --manifest FILE --output NEW_FILE --consent-owner-photos [--rounds 1..6]`; [manifest and interpretation](../design/auto-tone.md#tuning-against-lightrooms-auto) |
 | Auto tone engine distributions on prepared 24 MP and 60 MP JPEGs, native GPU and reference, cold/warm sample cache, 30 samples each; excludes source preparation, commit and preview | `LUXFORGE_GENERATED_FIXTURES=fixtures/generated LUXFORGE_AUTO_TONE_OUTPUT=NEW_FILE cargo test --release -p luxforge-app auto_tone_measure_photo_sized_inputs -- --ignored --nocapture` |
 | Rendered Basic slider gesture: draft, commit, typed value, undo, reset and an agent's conflicting commit | `cargo xtask smoke --scenario basic --output NEW_DIR` |
@@ -1155,10 +1155,12 @@ Each step is an object with exactly one key.
   same scrollable a Space drag scrolls, and is captured once the offset the scrollable reports has
   reached the session through `view.set`, so `state.surface.view` carries the pan the frame was drawn
   at. At Fit there is no scrollable and the step fails.
-- `key` (`{"key": "w"}`, one letter or digit, or `"Escape"`) presses one key with no text field
-  focused, through the desktop's own key table: a key that enters a canvas mode is captured once the
-  session follows, a Select key (`g` among them) once Select has nothing in flight, any other bound
-  key on the next frame, and a key the table does not bind fails.
+- `key` (`{"key": "w"}`, one letter or digit, `"Escape"`, or a chord written as an action's
+  `shortcut` is, such as `"Command+U"`) presses one key with no text field focused, through the
+  desktop's own key table: a key that enters a canvas mode is captured once the session follows, a
+  module action's chord once its request settles, a Select key (`g` among them) once Select has
+  nothing in flight, any other bound key on the next frame, and a key the table does not bind
+  fails.
 - `select` is one gesture on the Select workspace, sent through the message its control or the key
   table sends: `{"switch": "select"}` or `"develop"` presses the title bar's workspace switch;
   `{"source": "Konstanz · 12–13 Sep"}` presses the source row showing that name, or that name and its

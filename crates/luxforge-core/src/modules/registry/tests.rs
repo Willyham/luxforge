@@ -716,6 +716,120 @@ fn one_canvas_shortcut_letter_selects_one_mode_across_the_registry() {
     assert_eq!(error.kind, ErrorKind::Validation);
 }
 
+/// A module whose one action declares `chord` as its shortcut.
+fn chord_module(id: &str, action: &str, chord: &str) -> Arc<dyn ToolModule> {
+    let mut descriptor =
+        TestModule::new(id, &format!("{id}.effect"), action, Availability::Available).0;
+    descriptor.actions[0].shortcut = Some(chord.parse().expect("a chord"));
+    TestModule::from_descriptor(descriptor)
+}
+
+/// An action shortcut is published with its descriptor, one chord runs one action across the
+/// registry, and registration refuses a chord without Command, a chord the host keeps, a chord on an
+/// action that needs a parameter and a chord on a query, each with its reason.
+#[test]
+fn one_action_shortcut_runs_one_action_and_no_module_takes_a_host_chord() {
+    let mut registry = ModuleRegistry::builtin();
+    let (provider, action) = registry.action("auto-tone").expect("Basic's Auto tone");
+    assert_eq!(provider.descriptor().id, "luxforge.basic");
+    assert_eq!(action.shortcut, Some(crate::Chord::command('U')));
+    let error = registry
+        .register(chord_module("test.one", "test-one", "Command+U"))
+        .expect_err("Command+U is Auto tone's");
+    assert_eq!(error.kind, ErrorKind::Validation);
+    assert!(
+        error
+            .detail
+            .contains("shortcut Command+U of action test-one is already claimed by luxforge.basic"),
+        "{error}"
+    );
+    for (chord, reason) in [
+        ("Command+C", "is the host's Copy settings"),
+        (
+            "Command+Option+V",
+            "is the host's Paste settings from the previous photograph",
+        ),
+        ("Shift+U", "must hold Command"),
+    ] {
+        let error = registry
+            .register(chord_module("test.two", "test-two", chord))
+            .expect_err(chord);
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert!(error.detail.contains(reason), "{chord}: {error}");
+    }
+    let mut needs = TestModule::new(
+        "test.three",
+        "test.three.effect",
+        "test-three",
+        Availability::Available,
+    )
+    .0;
+    needs.actions[0].parameters = vec![
+        crate::ParameterDescriptor::integer("x", 0, 9)
+            .required(true)
+            .notes("test"),
+    ];
+    needs.actions[0].shortcut = Some(crate::Chord::command('U').shift());
+    let error = registry
+        .register(TestModule::from_descriptor(needs.clone()))
+        .expect_err("a chord cannot supply x");
+    assert!(error.detail.contains("requires parameter x"), "{error}");
+    needs.actions[0].parameters.clear();
+    needs.actions[0].shortcut = None;
+    needs.queries = vec![ActionDescriptor {
+        shortcut: Some(crate::Chord::command('U').shift()),
+        ..ActionDescriptor::new("test-three-query", "Query", "test")
+    }];
+    let error = registry
+        .register(TestModule::from_descriptor(needs))
+        .expect_err("a query declares no shortcut");
+    assert!(error.detail.contains("only an action can"), "{error}");
+    registry
+        .register(chord_module("test.four", "test-four", "Command+Shift+U"))
+        .expect("a free chord registers");
+    let error = registry
+        .register(chord_module("test.five", "test-five", "Command+Shift+U"))
+        .expect_err("Command+Shift+U is now claimed too");
+    assert!(
+        error.detail.contains("already claimed by test.four"),
+        "{error}"
+    );
+}
+
+/// The written form is the one `module.list` publishes: modifiers in a fixed order and one key, so
+/// every chord has exactly one spelling and parsing it back is the identity.
+#[test]
+fn a_chord_has_one_spelling() {
+    for written in [
+        "Command+U",
+        "Command+Shift+C",
+        "Command+Option+V",
+        "Command+Option+Shift+[",
+        "Command+,",
+        "Command++",
+        "Shift+7",
+    ] {
+        let chord: crate::Chord = written.parse().expect(written);
+        assert_eq!(chord.to_string(), written);
+        assert_eq!(
+            serde_json::to_value(chord).unwrap(),
+            Value::String(written.into())
+        );
+    }
+    for invalid in [
+        "",
+        "Command+",
+        "Command+u",
+        "Shift+Command+U",
+        "Ctrl+U",
+        "Command+UU",
+        "Command+Enter",
+        "Command+Shift+Option+U",
+    ] {
+        assert!(invalid.parse::<crate::Chord>().is_err(), "{invalid:?}");
+    }
+}
+
 /// The one assembly both binaries use: the test modules — the pixel and controls proofs, whose
 /// descriptors declare `developer` — join only a developer run, in their linked places, and the
 /// capability proof only a developer run that names a proof endpoint. `--disable-module` registers
