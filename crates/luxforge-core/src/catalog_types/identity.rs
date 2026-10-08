@@ -100,6 +100,19 @@ impl FileSignature {
     }
 }
 
+/// A file's birth (creation) time in nanoseconds since the Unix epoch, where the file system
+/// records one and the platform's stat reports it (Linux's through `statx`). A rename or a move
+/// within the volume keeps it, and a file given a deleted file's [`FileIdentity`] (Linux's file
+/// systems reuse inodes) has its own: what tells a file moved from another that took its identity.
+pub fn born_ns(metadata: &Metadata) -> Option<i64> {
+    let since = metadata
+        .created()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    Some(since.as_nanos().min(i64::MAX as u128) as i64)
+}
+
 #[cfg(unix)]
 fn identity_of(metadata: &Metadata) -> Option<FileIdentity> {
     use std::os::unix::fs::MetadataExt;

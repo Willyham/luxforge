@@ -91,7 +91,6 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 - Native Linux and Windows runs of the folder and volume watchers
 - In the desktop: dragging photographs onto a catalog folder, moving collections between groups, changing a smart collection's query, previews in Missing originals' rows, and Locate original… in export's refusal
 - Background availability checks, and a browse filter for a missing value
-- A move is recognised by file identity alone ([reconciliation](design/catalog.md)). Where the file system reuses a deleted file's inode, as Linux does, a new file at another path is taken for the deleted file moved there, its row carried to the new file: `reconciling_reads_only_what_changed_and_carries_moves` fails so intermittently on Linux. Telling them apart needs more than the inode, such as the birth time; not decided or built
 - **HDR exposure merges** are [planned](design/hdr-merge.md): Import merged creates a saved catalog result and collapsed source stack; Pick merged also appends to the development set by default; originals stay individually pickable and removal/undo retains the result and edits. RAW-only inputs and automatic alignment/deghosting are decided; implementation is not authorized. Panorama stitching remains later and has no plan; the derived-source/merge-kind/stack boundary leaves room for it
 - Catalog portability and backup, carrying each catalog's derived-artifact directory with it (decision pending)
 

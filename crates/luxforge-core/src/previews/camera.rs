@@ -108,6 +108,7 @@ pub(crate) fn make(
         kind: source.kind,
         header: HeaderState::Pending,
         last_seen_ms: 0,
+        born_ns: None,
     };
     let side = tier_side(tier)?;
     let mut images = FileImages::open(&record, control).inspect_err(|error| {

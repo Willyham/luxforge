@@ -728,6 +728,7 @@ fn select_previews_a_real_owner_answers_and_the_preview_is_decoded() {
             kind: luxforge_core::SourceTag::Jpeg,
             header: HeaderState::Ok(Box::default()),
             last_seen_ms: 0,
+            born_ns: None,
         }])
         .expect("the file");
     seeder.finish().expect("the index");

@@ -539,6 +539,7 @@ mod tests {
             kind: SourceTag::Raw,
             header: HeaderState::Ok(Box::new(header(2))),
             last_seen_ms: 9,
+            born_ns: None,
         };
         let ids = index.files(std::slice::from_ref(&file)).unwrap();
         index.finish().unwrap();
