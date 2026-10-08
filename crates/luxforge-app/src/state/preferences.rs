@@ -9,11 +9,10 @@
 //! changes laid over it, so a change shows at once; the answer that lands confirms it, and a
 //! refusal drops it, which puts the stored value back.
 use crate::coalesce::Coalesce;
-use luxforge_cli::CatalogSelection;
 use luxforge_core::{
     MaskOverlayColour,
     preferences::{
-        BrushPreference, CanvasBackground, INTERFACE_SIZES, RawLook, WindowFrame,
+        BrushPreference, CanvasBackground, CatalogSelection, INTERFACE_SIZES, RawLook, WindowFrame,
         WorkspacePreference,
     },
 };
@@ -305,7 +304,7 @@ const INTERFACE_SIZE_LABELS: [&str; INTERFACE_SIZES.len()] = ["100%", "110%", "1
 pub(crate) const CATALOG_DESCRIPTION: &str = "Luxforge opens the catalog in this folder, creating \
      one if there is none; the current catalog stays where it is.";
 
-pub(crate) use luxforge_cli::CATALOG_FILE;
+pub(crate) use luxforge_core::preferences::CATALOG_FILE;
 
 /// What took precedence over the stored catalog location for this launch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -333,9 +332,9 @@ pub(crate) struct LaunchCatalog {
 }
 
 impl LaunchCatalog {
-    /// The catalog a launch opens: `--catalog`, then an evidence run's own, then the shared
-    /// selection `luxforge-ctl` makes too ([`CatalogSelection`]): the stored location when its
-    /// folder exists, then the default. A stored catalog whose folder is missing, as with an
+    /// The catalog a launch opens: `--catalog`, then an evidence run's own, then the core's
+    /// selection ([`CatalogSelection`]): the stored location when its folder exists, then the
+    /// default. A stored catalog whose folder is missing, as with an
     /// unplugged drive, opens the default and is kept as [`Self::missing`]; a folder without a
     /// catalog gets one, as the default's does. `None` when nothing names a catalog and there is no
     /// configuration directory to hold the default.

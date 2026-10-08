@@ -699,7 +699,10 @@ impl Editor {
             .set_activity(editor.owner.activity());
         // The remembered panels, overlays and brush are in place before the first frame.
         editor.seed_remembered();
-        if editor.live_server.is_none() {
+        // A live session that could not start, or could not be registered, says why.
+        if let Some(problem) = &config.live_problem {
+            editor.status.text = format!("Editor ready; {problem}");
+        } else if editor.live_server.is_none() {
             editor.status.text = "Editor ready; live API unavailable on this host".into();
         }
         // The Catalog row shows the catalog this launch opened, and a stored location whose folder
@@ -726,6 +729,9 @@ impl Editor {
         );
         let launch = editor.renderer.launch();
         editor.event("launch_renderer", || renderer::launch_record(launch));
+        if let Some(problem) = &config.live_problem {
+            editor.event("live_session_problem", || json!({"problem": problem}));
+        }
         if let Some(stored) = &editor.preferences.catalog.missing {
             editor.event(
                 "catalog_folder_missing",

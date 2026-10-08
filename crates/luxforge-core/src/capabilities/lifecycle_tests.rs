@@ -313,7 +313,7 @@ fn only_a_client_registered_with_permission_authority_can_grant() {
             let response: ApiResponse = serde_json::from_str(&answer).unwrap();
             assert_eq!(response.error.unwrap().code, "forbidden");
         }
-        Err(error) if error.detail.contains("Operation not permitted") => {}
+        Err(error) if luxforge_testbase::loopback_forbidden(&error.detail) => {}
         Err(error) => panic!("cannot start the live session: {error}"),
     }
     assert_eq!(
