@@ -549,7 +549,7 @@ impl Workspace {
                                     .collect::<Vec<_>>(),
                             })),
                             tools::ControlModel::Action(action) => Some(json!({
-                                "kind": "action", "label": action.label, "action": action.action,
+                                "kind": "action", "label": action.label, "action": action.action, "runnable": action.runnable, "reason": action.reason, "explanation": action.explanation,
                             })),
                             tools::ControlModel::QueryChoice(choice) => Some(json!({"kind":"query-choice", "label":choice.control.label, "action":choice.control.action, "query":choice.control.query})),
                             tools::ControlModel::Picker(picker) => Some(json!({
@@ -4217,5 +4217,53 @@ mod tests {
             ..thumbnail.clone()
         };
         assert_ne!(copy, thumbnail);
+    }
+    #[test]
+    fn auto_tone_header_explains_every_disabled_state_and_pending_work() {
+        fn action(scene: &Scene) -> tools::ActionControl {
+            let workspace = scene.derive();
+            control_tree::walk(&section(&workspace, "luxforge.basic").controls)
+                .find_map(|control| match control {
+                    ControlModel::Action(action) if action.action == "auto-tone" => {
+                        Some(action.clone())
+                    }
+                    _ => None,
+                })
+                .expect("Auto is declared in Basic's Tone group")
+        }
+        let mut scene = Scene::new(descriptors());
+        assert_eq!(action(&scene).reason.as_deref(), Some(NO_PHOTOGRAPH));
+        scene = scene.opened(vec![]);
+        assert!(action(&scene).runnable);
+        assert_eq!(action(&scene).style, tools::ActionControlStyle::GroupHeader);
+        scene.busy = true;
+        scene.control_ui.analysis_pending = Some("auto-tone".into());
+        assert_eq!(action(&scene).label, "Auto…");
+        assert_eq!(action(&scene).reason.as_deref(), Some(IN_FLIGHT));
+        scene.busy = false;
+        scene.control_ui.analysis_pending = None;
+        scene.slider_draft = Some(("set-basic".into(), "exposure".into(), false));
+        assert!(action(&scene).reason.unwrap().contains("slider draft"));
+        scene.slider_draft = None;
+        testing::show(
+            &mut scene.session,
+            scene.document.state.as_ref(),
+            HistorySelection::Entry(EntryId::new()),
+        );
+        assert_eq!(action(&scene).reason.as_deref(), Some(NOT_CURRENT));
+        testing::show(
+            &mut scene.session,
+            scene.document.state.as_ref(),
+            HistorySelection::Current,
+        );
+        let mut comparing = scene.inputs();
+        comparing.compare_held = true;
+        assert_eq!(
+            tools::analysis_refusal(&comparing).as_deref(),
+            Some(NOT_CURRENT)
+        );
+        scene.session.workspace.mode = luxforge_core::MASK_MODE.into();
+        scene.mask_panel.selected_mask = Some(luxforge_core::MaskId::new());
+        assert!(action(&scene).reason.unwrap().contains("global Basic"));
     }
 }

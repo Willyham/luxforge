@@ -180,7 +180,7 @@ fn checked_actor(actor: &str) -> Result<(), Error> {
 fn unavailable_actions(registry: &ModuleRegistry, settings: &Map<String, Value>) -> Vec<String> {
     settings
         .keys()
-        .filter(|action_id| registry.patch_action(action_id).is_err())
+        .filter(|action_id| registry.settings_action(action_id).is_err())
         .cloned()
         .collect()
 }
@@ -509,6 +509,8 @@ impl EditorService {
 
     /// `preset.capture`: a settings set read from one entry's stack. `fields` maps field-patch
     /// actions to an array of their parameter names or to `true` for all of them.
+    /// A declared analysis action accepts only `true` and captures its empty step, without
+    /// analysing the source. Overlap with fields it overwrites is refused.
     ///
     /// The request names controls as the photo's section shows them, and capture resolves them for
     /// the photo's kind the way the section does ([`crate::resolve_control`]): a field whose control
@@ -548,6 +550,7 @@ impl EditorService {
         // What to capture, per action, once the request is resolved for this photo: `None` for the
         // module's whole settings, or the named fields.
         let mut wanted: Vec<(String, Option<Vec<String>>)> = Vec::new();
+        let mut settings = Map::new();
         let whole = |wanted: &mut Vec<(String, Option<Vec<String>>)>, action: &str| match wanted
             .iter_mut()
             .find(|(id, _)| id == action)
@@ -557,6 +560,15 @@ impl EditorService {
         };
         for (action_id, requested) in fields {
             let (_, action) = self.capture_action(registry, action_id, kind)?;
+            if action.analysis.is_some() {
+                if requested != &Value::Bool(true) {
+                    return Err(Error::validation(format!(
+                        "capture {action_id} requires true"
+                    )));
+                }
+                settings.insert(action_id.clone(), json!({}));
+                continue;
+            }
             let names = requested_names(action_id, action, requested)?;
             let all = matches!(requested, Value::Bool(true));
             let mut kept = Vec::with_capacity(names.len());
@@ -595,7 +607,6 @@ impl EditorService {
                 "fields resolve to more than {MAX_SETTINGS_ACTIONS} actions"
             )));
         }
-        let mut settings = Map::new();
         for (action_id, names) in wanted {
             let (module, action) = self.capture_action(registry, &action_id, kind)?;
             let descriptor = module.descriptor();
@@ -669,7 +680,7 @@ impl EditorService {
         action_id: &str,
         kind: crate::SourceTag,
     ) -> Result<(crate::Provider<'r>, &'r crate::ActionDescriptor), Error> {
-        let (module, action) = registry.patch_action(action_id)?;
+        let (module, action) = registry.settings_action(action_id)?;
         module.descriptor().check_applies_to(kind)?;
         Ok((module, action))
     }

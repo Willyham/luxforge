@@ -739,6 +739,7 @@ impl crate::ToolModule for Colliding {
                     notes: String::new(),
                     patch: false,
                     preset: true,
+                    analysis: None,
                     parameters: Vec::new(),
                 }],
                 queries: Vec::new(),

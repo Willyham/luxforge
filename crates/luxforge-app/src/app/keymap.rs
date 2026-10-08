@@ -302,6 +302,20 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         return None;
     };
     if modifiers.command() {
+        if status == Status::Ignored
+            && character(key, "u")
+            && !modifiers.shift()
+            && !modifiers.alt()
+            && !repeat
+            && !context.select
+        {
+            return Some(Message::Action(
+                crate::app::message::action::ActionMessage::Run {
+                    action: "auto-tone".into(),
+                    preset: serde_json::Map::new(),
+                },
+            ));
+        }
         if character(key, "o") {
             return Some(Message::Sync(SyncMessage::Open));
         }
@@ -900,6 +914,48 @@ mod tests {
 
     /// Command with plus or minus steps the zoom a stop at a time, whatever has the focus, held
     /// or not; the bare keys and Option are not zoom keys.
+    #[test]
+    fn auto_tone_shortcut_respects_text_focus_workspace_modifiers_and_repeat() {
+        let context = KeyContext::default();
+        let event = pressed(Key::Character("u".into()), Modifiers::COMMAND);
+        assert!(
+            matches!(keymap(&event, Status::Ignored, &context), Some(Message::Action(crate::app::message::action::ActionMessage::Run { action, .. })) if action == "auto-tone")
+        );
+        assert!(keymap(&event, Status::Captured, &context).is_none());
+        assert!(
+            keymap(
+                &event,
+                Status::Ignored,
+                &KeyContext {
+                    select: true,
+                    ..context.clone()
+                }
+            )
+            .is_none()
+        );
+        for modifiers in [
+            Modifiers::COMMAND | Modifiers::SHIFT,
+            Modifiers::COMMAND | Modifiers::ALT,
+        ] {
+            assert!(
+                keymap(
+                    &pressed(Key::Character("u".into()), modifiers),
+                    Status::Ignored,
+                    &context
+                )
+                .is_none()
+            );
+        }
+        assert!(
+            keymap(
+                &held(Key::Character("u".into()), Modifiers::COMMAND, true),
+                Status::Ignored,
+                &context
+            )
+            .is_none()
+        );
+    }
+
     #[test]
     fn command_plus_and_minus_step_the_zoom() {
         let context = KeyContext::default();

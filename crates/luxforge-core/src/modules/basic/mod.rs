@@ -19,6 +19,7 @@
 //! The module also answers one read-only query, `neutral-sample`: the neutral picker, which reads a
 //! bounded patch of the stage this layer receives and solves the white balance that makes it
 //! neutral. It commits nothing.
+mod auto;
 mod colour;
 mod exposure;
 mod tone;
@@ -110,6 +111,14 @@ pub(crate) struct Basic;
 pub(crate) type BasicModule = FieldPatchModule<Basic>;
 
 impl FieldPatch for Basic {
+    fn plan_extra(
+        &self,
+        input: &super::ActionInput,
+        context: &StageContext<'_>,
+    ) -> Result<super::ActionPlan, Error> {
+        auto::plan(input, context)
+    }
+
     fn spec() -> Spec {
         let tone = |name, label, notes| Field::slider(name, label, notes);
         // On a RAW photo's global target the White balance group's controls are the source
@@ -204,14 +213,17 @@ impl FieldPatch for Basic {
             .group(Group::new(
                 "Tone",
                 [EXPOSURE, CONTRAST, HIGHLIGHTS, SHADOWS, WHITES, BLACKS],
-            ))
+            ).extra(Control::action(auto::ID, "Auto").action_style(crate::ActionStyle::GroupHeader)))
             .group(Group::new("Colour", [VIBRANCE, SATURATION]))
+            .action(auto::descriptor())
+            .query(ActionDescriptor::new(auto::ID, "Auto tone", "Predicts Auto tone's eight global Basic fields from a bounded linear input sample through Basic and the Look. Returns values, statistics, exclusions and omitted layers without committing. Refuses fewer than 1,024 finite samples, a near-black median or less than half a stop of input range."))
             .query(ActionDescriptor {
                 id: NEUTRAL_SAMPLE.into(),
                 title: "Neutral sample".into(),
                 notes: "reads a 5x5 patch of the stage the Basic layer receives, centred on the named content pixel and clipped at that stage's edges, and returns the temperature and tint that make its average neutral. It evaluates before the Basic layer, so picking the same patch twice gives the same answer whatever white balance is already set. A clipped, near-black or non-finite patch, a correction outside the representable range and a point outside the stage are each refused with their reason; nothing is guessed, clamped or committed".into(),
                 patch: false,
                 preset: true,
+                analysis: None,
                 // The neutral picker's coordinates, in the content stage the Basic layer's input
                 // addresses; a point outside that stage is refused when it is asked.
                 parameters: ["x", "y"]
@@ -292,6 +304,9 @@ impl FieldPatch for Basic {
         parameters: &Map<String, Value>,
         context: &StageContext<'_>,
     ) -> Result<Value, Error> {
+        if query_id == auto::ID {
+            return auto::query(context);
+        }
         if query_id != NEUTRAL_SAMPLE {
             return Err(Error::validation(format!("unknown query {query_id}")));
         }

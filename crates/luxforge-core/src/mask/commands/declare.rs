@@ -237,6 +237,7 @@ fn command(
             // module's label is stored.
             patch,
             preset: false,
+            analysis: None,
             parameters: addressed(mask, component, parameters),
         },
     }
@@ -528,6 +529,7 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
                 .to_owned(),
             patch: false,
             preset: false,
+            analysis: None,
             // Where the stroke lands is the two optional identities: neither draws a new mask,
             // a mask alone puts a further brush on it, and both append to that brush.
             parameters: vec![

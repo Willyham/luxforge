@@ -22,11 +22,11 @@ mod values_tests;
 
 pub(crate) use labels::{label_value, not_applicable, title_case};
 pub use types::{
-    ActionControl, ActionDescriptor, ActionStyle, Availability, CanvasInteraction, ChoiceStyle,
-    ColorStyle, Control, CurveBackground, CurveChannel, CurveControl, EffectDescriptor,
-    EffectStage, GroupControl, ModuleDescriptor, ModuleLayout, NumberControl, NumberStyle,
-    ParameterDescriptor, ParameterKind, PickerControl, PresetsControl, QueryChoiceControl,
-    RailDecoration, ResetAction, resolve_control, resolve_group_reset,
+    ActionControl, ActionDescriptor, ActionStyle, AnalysisAction, Availability, CanvasInteraction,
+    ChoiceStyle, ColorStyle, Control, CurveBackground, CurveChannel, CurveControl,
+    EffectDescriptor, EffectStage, GroupControl, ModuleDescriptor, ModuleLayout, NumberControl,
+    NumberStyle, ParameterDescriptor, ParameterKind, PickerControl, PresetsControl,
+    QueryChoiceControl, RailDecoration, ResetAction, resolve_control, resolve_group_reset,
 };
 pub use types::{
     ChoiceControl, ColorControl, ControlVariant, IdentityKind, RangeControl, ResolvedControl,

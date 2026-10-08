@@ -656,6 +656,17 @@ fn retainable(linear: &LinearImage) -> bool {
 }
 
 impl SecondDevelopment {
+    pub(crate) fn matches_identity(&self, wanted: &crate::ProxyIdentity) -> bool {
+        self.held.as_ref().is_some_and(|(_, image)| {
+            crate::PreviewSource::Raw {
+                image: image.clone(),
+                settings: crate::LinearSettings::default(),
+            }
+            .identity()
+                == *wanted
+        })
+    }
+
     /// Whether this slot holds planes developed at `gains`.
     pub(crate) fn holds(&self, gains: [f32; 3]) -> bool {
         self.held.as_ref().is_some_and(|(held, _)| *held == gains)

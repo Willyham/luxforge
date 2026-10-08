@@ -34,12 +34,13 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 | --- | --- | --- | --- |
 | [Lightroom import](../tasks/lightroom/lightroom-import.json) ([design](design/lightroom-import.md)) | TASK-001 confirm the catalog format against a copy of the owner's catalog | Needs no code; needs the owner's catalog copy | High tier |
 | [Lightroom alignment](../tasks/lightroom/lightroom-alignment.json) ([design](design/lightroom-alignment.md)) | TASK-001 the rig's generator and synthetic targets | Its rounds need the owner to import and export in Lightroom | High tier |
-| [Auto tone](../tasks/editing/auto-tone.json) ([design](design/auto-tone.md)) | TASK-001 the auto-tone/1 solver; TASK-002 the bounded analysis sample | Lightroom's eight sliders, no white balance, Auto in presets and import, and a later fit to Lightroom's Auto chosen; the owner's Lightroom export is needed only by the final fit. Planning only; implementation awaits authorization | High tier |
 | [HDR exposure merges](../tasks/library/hdr-merge.json) ([design](design/hdr-merge.md)) | TASK-001 durable chunked derived sources; TASK-002 RAW exposure resolution/fusion; TASK-003 alignment/deghosting | RAW-only scope and automatic alignment/deghosting are decided; independent foundations, working feature before final quality/timing; implementation awaits authorization | High tier |
 | [Export settings](../tasks/rendering/export-settings.json) ([design](design/export-settings.md)) | TASK-001 settings, presets and API; TASK-002 JPEG options and limit search; TASK-003 WebP and TIFF encoders; TASK-004 resized and 16-bit output | Formats, direct-writing sheet, sharpening after the core and uncapped optimisation with a large-image warning and progress bar chosen; other defaults recorded in the design. Planning only; implementation awaits authorization | High tier |
 | [High-zoom minimap](../tasks/interface/minimap.json) ([design](design/minimap.md)) | TASK-001 shared viewport projection; TASK-002 bounded overview rendering | Inclusive 200% threshold and click/drag navigation chosen; layout remains a proposed default. Planning only; implementation awaits authorization | High tier |
 
 ### In progress
+
+[Auto tone](../tasks/editing/auto-tone.json) is implemented, with owner M4/corpus qualification outstanding: bounded sampling, the solver, API, desktop controls, presets and the local fitting rig. The owner's Lightroom exports and review come after delivery.
 
 [Copy and paste settings](../tasks/interface/copy-settings.json): implemented with quick and native M2 / Metal verification; TASK-006 final rendered qualification remains in progress. Its project-wide GPU corpus gate needs the owner’s private RAW manifest, unavailable in this environment.
 
@@ -154,7 +155,7 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 - The range selections have no photographic corpus: every figure in the [range study](design/range-study.md) is over flat synthetic patches
 - Density, edge-aware refinement, copying masks between photographs and mask presets are out of scope with their reasons recorded; model-based selections are the [AI editing](design/ai-editing.md) proposal's Select
 
-**Auto tone** ([design](design/auto-tone.md), [tasks](../tasks/editing/auto-tone.json)). Planned: an Auto button and `edit.auto-tone` that set Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Vibrance and Saturation on the global Basic layer as one entry, from deterministic statistics and clipping searches over a bounded sample of the stage Basic receives, solved through Basic and the Look. Presets can carry Auto, recomputed per photo, and the Lightroom importer maps `AutoTone`. The solver and the sample can proceed independently; the fit to Lightroom's Auto on the owner's photos follows delivery. The request authorizes planning only.
+**Auto tone** ([design](design/auto-tone.md), [tasks](../tasks/editing/auto-tone.json)). Implemented: an Auto button and `edit.auto-tone` that set Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Vibrance and Saturation on the global Basic layer as one entry, from deterministic statistics and clipping searches over a bounded sample of the stage Basic receives, solved through Basic and the Look. Presets can carry Auto, recomputed per photo, and the Lightroom importer maps `AutoTone`. The local fitting rig is ready; the owner M4/corpus qualification and fit to Lightroom's Auto on the owner's photos remain open. Implementation authorized on 2026-10-08.
 
 **Tuning delivered tools.** Refine the recorded defaults of Presence, the colour mixer and the vignette (decision pending).
 

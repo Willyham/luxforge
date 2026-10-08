@@ -4,6 +4,7 @@ pub mod analysis;
 mod api;
 mod artifacts;
 mod atomic_file;
+pub mod auto_tone;
 /// The catalog's browse views, facets and selection over the index and the catalog.
 mod browse;
 mod cancel;
@@ -93,23 +94,23 @@ pub use model::{
     Transform,
 };
 pub use modules::{
-    ActionControl, ActionDescriptor, ActionInput, ActionPlan, ActionRef, ActionStyle, Availability,
-    BASIC_EFFECT, BoxRect, CONTROLS_EFFECT, CROP_EFFECT, CURVE_EFFECT, CanvasInteraction,
-    CapabilityModule, ChoiceControl, ChoiceStyle, ColorControl, ColorOperation, ColorStyle,
-    CompileStage, Control, ControlVariant, CropAspect, CropPayload, CropStage, CurveBackground,
-    CurveChannel, CurveControl, DETAIL_EFFECT, Edge, EffectDescriptor, EffectStage, ExactGeometry,
-    GPU_PROGRAMS, GroupControl, IdentityKind, LENS_EFFECT, LOOK_EFFECT, LayerEdit, LayerReport,
-    LayerUpdate, MAX_ANGLE, MAX_MASKED_SPATIAL_LAYERS, MIN_ANGLE, MIXER_EFFECT, ModuleDescriptor,
-    ModuleLayout, ModuleRegistry, NewLayer, NumberControl, NumberStyle, ORIENTATION_EFFECT,
-    OperationIdentity, OutputRect, PERSPECTIVE_EFFECT, PIXEL_EFFECT, PRESENCE_EFFECT,
-    PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH, ParameterDescriptor, ParameterKind,
-    PickerControl, PointwiseColor, PresetsControl, Processing, Provider, QueryChoiceControl,
-    QueryRef, RailDecoration, RangeControl, RawModule, RawPayload, Region, RegistryOptions,
-    Resample, ResetAction, ResolvedControl, ResolvedReset, SamplingScale, SpatialOperation, Stage,
-    StageContext, StageQuestions, TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT,
-    WhiteBalanceMode, check_parameters, check_value, controls_module, gains_from_temperature_tint,
-    guide_angle, insertion_index_among, largest_with_ratio_inside, palette_bytes, resolve_control,
-    resolve_group_reset, temperature_tint_from_gains,
+    ActionControl, ActionDescriptor, ActionInput, ActionPlan, ActionRef, ActionStyle,
+    AnalysisAction, Availability, BASIC_EFFECT, BoxRect, CONTROLS_EFFECT, CROP_EFFECT,
+    CURVE_EFFECT, CanvasInteraction, CapabilityModule, ChoiceControl, ChoiceStyle, ColorControl,
+    ColorOperation, ColorStyle, CompileStage, Control, ControlVariant, CropAspect, CropPayload,
+    CropStage, CurveBackground, CurveChannel, CurveControl, DETAIL_EFFECT, Edge, EffectDescriptor,
+    EffectStage, ExactGeometry, GPU_PROGRAMS, GroupControl, IdentityKind, LENS_EFFECT, LOOK_EFFECT,
+    LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE, MAX_MASKED_SPATIAL_LAYERS, MIN_ANGLE,
+    MIXER_EFFECT, ModuleDescriptor, ModuleLayout, ModuleRegistry, NewLayer, NumberControl,
+    NumberStyle, ORIENTATION_EFFECT, OperationIdentity, OutputRect, PERSPECTIVE_EFFECT,
+    PIXEL_EFFECT, PRESENCE_EFFECT, PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH,
+    ParameterDescriptor, ParameterKind, PickerControl, PointwiseColor, PresetsControl, Processing,
+    Provider, QueryChoiceControl, QueryRef, RailDecoration, RangeControl, RawModule, RawPayload,
+    Region, RegistryOptions, Resample, ResetAction, ResolvedControl, ResolvedReset, SamplingScale,
+    SpatialOperation, Stage, StageContext, StageQuestions, TaskControl, ToggleControl, ToolModule,
+    VIGNETTE_EFFECT, WhiteBalanceMode, check_parameters, check_value, controls_module,
+    gains_from_temperature_tint, guide_angle, insertion_index_among, largest_with_ratio_inside,
+    palette_bytes, resolve_control, resolve_group_reset, temperature_tint_from_gains,
 };
 pub use modules::{OriginalContext, OriginalLayer, OriginalPreferences};
 pub use presets::{

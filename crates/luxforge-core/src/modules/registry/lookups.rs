@@ -69,6 +69,17 @@ impl<'r> QueryRef<'r> {
 }
 
 impl ModuleRegistry {
+    pub(crate) fn analysis_query(&self, id: &str) -> bool {
+        self.providers().any(|module| {
+            module.descriptor().actions.iter().any(|action| {
+                action
+                    .analysis
+                    .as_ref()
+                    .is_some_and(|analysis| analysis.query == id)
+            })
+        })
+    }
+
     /// Whether this registry serves the test modules, which only a developer run registers.
     pub(crate) fn serves_test_modules(&self) -> bool {
         self.entries
@@ -126,6 +137,40 @@ impl ModuleRegistry {
         }
         module.descriptor().check_available()?;
         Ok((module, action))
+    }
+
+    /// An explicitly declared global analysis step, separate from a field patch.
+    pub(crate) fn analysis_action(
+        &self,
+        id: &str,
+    ) -> Result<(Provider<'_>, &ActionDescriptor), Error> {
+        let (module, action) = self
+            .action(id)
+            .ok_or_else(|| Error::validation(format!("unknown action {id}")))?;
+        if action.analysis.is_none() || action.patch {
+            return Err(Error::validation(format!(
+                "{id} is not an analysis-step action"
+            )));
+        }
+        if !action.preset {
+            return Err(Error::validation(format!("{id} is not presettable")));
+        }
+        module.descriptor().check_available()?;
+        Ok((module, action))
+    }
+
+    pub(crate) fn settings_action(
+        &self,
+        id: &str,
+    ) -> Result<(Provider<'_>, &ActionDescriptor), Error> {
+        if self
+            .action(id)
+            .is_some_and(|(_, action)| action.analysis.is_some())
+        {
+            self.analysis_action(id)
+        } else {
+            self.patch_action(id)
+        }
     }
 
     /// The one action lookup every caller resolves an action through: a registered module's
