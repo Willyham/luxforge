@@ -1,6 +1,6 @@
 //! `luxforge-ctl` across its process boundary, against a real catalog owner serving a live session
 //! from this test process, as the desktop serves one: schema and state, edits recorded in history,
-//! Auto tone, a conflict with a competing commit, the running session found through the registry,
+//! Auto tone, a batch paste of settings, a conflict with a competing commit, the running session found through the registry,
 //! a batch's drafts on one connection, and jobs followed to their end, left running, or stopped as
 //! their client leaves. Narrow a run with `cargo test -p luxforge-cli live_session_process`.
 
@@ -661,4 +661,99 @@ fn live_session_process_batch_carries_a_draft_across_requests_on_one_connection(
     assert_eq!(finished.status.code(), Some(0));
     assert_eq!(live.revision(&asset), before + 1);
     assert_eq!(live.actors(&asset).last().unwrap(), "luxforge-ctl");
+}
+
+/// A copy of the JPEG fixture at `to` whose bytes differ from every other copy's: a comment
+/// segment naming `to`. A Develop links a file whose bytes a photograph already has, so two
+/// photographs of one fixture are written this way.
+fn distinct_jpeg(to: &Path) -> PathBuf {
+    let bytes = std::fs::read(paths::jpeg()).unwrap();
+    assert!(bytes.starts_with(&[0xff, 0xd8]), "a JPEG fixture");
+    let tag = to.to_string_lossy();
+    let mut copy = bytes[..2].to_vec();
+    copy.extend([0xff, 0xfe]);
+    copy.extend(u16::try_from(tag.len() + 2).unwrap().to_be_bytes());
+    copy.extend(tag.as_bytes());
+    copy.extend(&bytes[2..]);
+    std::fs::write(to, copy).unwrap();
+    to.canonicalize().unwrap()
+}
+
+#[test]
+fn live_session_process_pastes_settings_onto_two_photographs_through_a_waited_batch_job() {
+    let Some(live) = Live::start("ctl-process-batch-paste", None) else {
+        return;
+    };
+    let paths_to_develop =
+        ["first.jpg", "second.jpg"].map(|name| distinct_jpeg(&live.scratch.join(name)));
+    let params = json!({
+        "targets": {"kind": "paths", "paths": paths_to_develop},
+        "into": [],
+        "confirm_removable": true,
+    });
+    let developed = live
+        .ctl(&[
+            "call",
+            "pick.develop",
+            "--params",
+            &params.to_string(),
+            "--wait",
+        ])
+        .printed();
+    assert_eq!(developed["job"]["status"], "ready", "{developed}");
+    let assets: Vec<String> = developed["job"]["result"]["developed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["asset_id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(assets.len(), 2, "{developed}");
+    let before: Vec<u64> = assets.iter().map(|asset| live.revision(asset)).collect();
+    let entries = |asset: &str| -> Vec<Value> {
+        live.ask("history.list", json!({"asset_id": asset, "limit": 50}))["entries"]
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+    let counts: Vec<usize> = assets.iter().map(|asset| entries(asset).len()).collect();
+
+    let params = json!({
+        "targets": {"kind": "assets", "asset_ids": assets},
+        "settings": {"set-basic": {"exposure": 0.5, "contrast": 10}},
+        "origin": {"kind": "paste", "source": "DSC_4471.NEF"},
+    });
+    let pasted = live
+        .ctl(&[
+            "call",
+            "batch.apply-settings",
+            "--params",
+            &params.to_string(),
+            "--wait",
+        ])
+        .printed();
+    let job = &pasted["job"];
+    assert_eq!(job["status"], "ready", "{pasted}");
+    assert_eq!(job["kind"], "batch-settings", "{pasted}");
+    assert_eq!(job["result"]["done"], json!(assets), "{pasted}");
+    assert_eq!(job["result"]["skipped"], json!([]), "{pasted}");
+    assert!(job["result"].get("settings_skipped").is_none(), "{pasted}");
+    for (index, asset) in assets.iter().enumerate() {
+        assert_eq!(live.revision(asset), before[index] + 1, "{asset}");
+        let listed = entries(asset);
+        assert_eq!(listed.len(), counts[index] + 1, "{asset}: one new entry");
+        // History lists the newest entry first.
+        assert_eq!(listed[0]["label"], "Paste settings from DSC_4471.NEF");
+        assert_eq!(listed[0]["action_id"], "apply-settings");
+        assert_eq!(listed[0]["actor"], "luxforge-ctl");
+        let current = live.ask("asset.state", json!({"asset_id": asset}));
+        assert_eq!(current["current_entry"]["id"], listed[0]["id"]);
+        let layers = current["current_entry"]["snapshot"]["recipe"]["layers"]
+            .as_array()
+            .unwrap();
+        let basic = layers
+            .iter()
+            .find(|layer| layer["effect_id"] == "luxforge.basic.adjust")
+            .unwrap_or_else(|| panic!("a Basic layer in {layers:?}"));
+        assert_eq!(basic["payload"], json!({"exposure": 0.5, "contrast": 10.0}));
+    }
 }
