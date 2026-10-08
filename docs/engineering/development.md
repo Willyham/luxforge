@@ -1446,7 +1446,8 @@ frame it first draws, and the desktop logs the stamp as `surface_frame_drawn` wi
 instant on the run's clock, its path, and its draft and revision or the generation of its CPU
 picture; a GPU frame's `evaluation` says what the evaluation in the frame that first drew it did
 (`refits`, `rebinds`, `links_run`, `spatial_passes`, `lights_encoded`, `lights_restored`,
-`window_texels`, `link_texels`), which a slow tick is attributed by. Neither is display scanout: the figures are an upper bound on the editor's own work and a
+`window_texels`, `link_texels`, and `incremental` or `whole` with `reached_texels`, the texels the
+links that ran reached, the window's for a whole evaluation), which a slow tick is attributed by. Neither is display scanout: the figures are an upper bound on the editor's own work and a
 lower bound on what an eye sees. `input_to_presented_frame` pools both paths, which
 `gpu_input_to_presented_frame` and `cpu_input_to_presented_frame` split; `input_to_drawn_frame`
 times both to the surface's first draw; `gpu_tick_to_drawn_frame` runs from the GPU tick's update to that draw.
