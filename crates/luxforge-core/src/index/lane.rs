@@ -371,11 +371,14 @@ fn header_worker(queued: &Mutex<Receiver<Task>>, answers: &SyncSender<Answer>) {
             catch_unwind(AssertUnwindSafe(|| read_file(&task.file))).unwrap_or_else(|_| {
                 HeaderOutcome::Read(Box::new(FileRecord {
                     header: HeaderState::Unreadable("reading its header failed".into()),
-                    ..task.file.pending(crate::catalog_types::FileSignature {
-                        len: 0,
-                        modified_ns: 0,
-                        identity: None,
-                    })
+                    ..task.file.pending(
+                        crate::catalog_types::FileSignature {
+                            len: 0,
+                            modified_ns: 0,
+                            identity: None,
+                        },
+                        None,
+                    )
                 }))
             })
         });
@@ -1209,7 +1212,7 @@ impl Run<'_> {
                 Decision::Unchanged => {}
                 Decision::Identity(id) => self.batch.push(Write::Identity {
                     id,
-                    record: Box::new(task.pending(file.signature)),
+                    record: Box::new(task.pending(file.signature, file.born_ns)),
                 }),
                 Decision::Reread(_) => {
                     self.report.changed += 1;
@@ -1219,7 +1222,7 @@ impl Run<'_> {
                     self.report.moved += 1;
                     self.batch.push(Write::Moved {
                         id,
-                        record: Box::new(task.pending(file.signature)),
+                        record: Box::new(task.pending(file.signature, file.born_ns)),
                         reread,
                     });
                     if reread {
@@ -1228,8 +1231,9 @@ impl Run<'_> {
                 }
                 Decision::New => {
                     self.report.added += 1;
-                    self.batch
-                        .push(Write::File(Box::new(task.pending(file.signature))));
+                    self.batch.push(Write::File(Box::new(
+                        task.pending(file.signature, file.born_ns),
+                    )));
                     self.read(task)?;
                 }
             }

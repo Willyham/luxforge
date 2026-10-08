@@ -50,6 +50,77 @@ fn a_remounted_cards_device_alone_changing_keeps_its_file() {
     ));
 }
 
+/// A file at a new path with the file identity of a row whose file is gone is that file moved only
+/// when the row is its own by birth time: a file system that gives a deleted file's inode to the
+/// next file created (Linux's do) makes a new file of another birth a new row, and the deleted
+/// file's row vanishes. Where either has no birth time, the length and modification time decide.
+#[cfg(unix)]
+#[test]
+fn a_new_file_given_a_deleted_files_identity_is_not_that_file_moved() {
+    let dir = temp_dir("reconcile-reused-identity")
+        .canonicalize()
+        .unwrap();
+    let root = dir.join("photos");
+    std::fs::create_dir_all(root.join("new")).unwrap();
+    let new = root.join("new/f.jpg");
+    std::fs::write(&new, b"image").unwrap();
+    let metadata = new.symlink_metadata().unwrap();
+    let now = FileSignature::of(&metadata);
+    let born = crate::catalog_types::born_ns(&metadata).expect("the file system records births");
+    let (mut index, _) = IndexDb::open(&dir.join("catalog.index"), "catalog").unwrap();
+    let connection = index.connection_mut();
+    let earlier =
+        |born_ns: Option<i64>, modified_ns: i64| (FileSignature { modified_ns, ..now }, born_ns);
+    // Each case plants the gone file's row, lists, and answers whether the row was carried.
+    let mut carried = |(stored, born_ns): (FileSignature, Option<i64>)| {
+        let gone = root.join("c.jpg");
+        let task = FileTask {
+            path: gone.clone(),
+            folder: root.clone(),
+            name: "c.jpg".into(),
+            kind: crate::SourceTag::Jpeg,
+            volume_id: VolumeId::parse("volume-0123456789").unwrap(),
+            seen_ms: 1,
+        };
+        let tx = connection.transaction().unwrap();
+        database::delete_files(
+            &tx,
+            &rows(&tx).into_iter().map(|(_, id)| id).collect::<Vec<_>>(),
+        )
+        .unwrap();
+        let id = database::upsert_file(&tx, &task.pending(stored, born_ns)).unwrap();
+        tx.commit().unwrap();
+        let (tally, _) = list(connection, &root, 2);
+        let moved = row_id(connection, &new) == Some(id);
+        assert_eq!(
+            (tally.moved, tally.new, tally.vanished),
+            if moved { (1, 0, 0) } else { (0, 1, 1) },
+            "{tally:?}"
+        );
+        assert_eq!(row_id(connection, &gone), None);
+        moved
+    };
+    assert!(
+        carried(earlier(Some(born), now.modified_ns)),
+        "its own row, renamed"
+    );
+    assert!(
+        carried(earlier(Some(born), now.modified_ns - 1)),
+        "its own row, moved and changed"
+    );
+    assert!(
+        !carried(earlier(Some(born - 1), now.modified_ns)),
+        "another file's row, born before it"
+    );
+    assert!(carried(earlier(None, now.modified_ns)), "no birth to tell");
+    assert!(
+        !carried(earlier(None, now.modified_ns - 1)),
+        "no birth to tell, and changed"
+    );
+    drop(index);
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
 /// What one listing decided, by kind, and the rows it dropped as vanished.
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Tally {
@@ -95,7 +166,7 @@ fn list(connection: &mut Connection, root: &Path, stamp: i64) -> (Tally, Looks) 
             };
             let record = FileRecord {
                 header: HeaderState::Unreadable("not a photograph".into()),
-                ..task.pending(file.signature)
+                ..task.pending(file.signature, file.born_ns)
             };
             batch.push((decision, record));
             if batch.len() >= INDEX_BATCH {

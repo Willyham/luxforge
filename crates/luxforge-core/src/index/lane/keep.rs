@@ -822,6 +822,7 @@ impl Look<'_> {
                             name: name.to_string_lossy().into_owned(),
                             kind,
                             signature: FileSignature::of(&metadata),
+                            born_ns: crate::catalog_types::born_ns(&metadata),
                         },
                     )
                 }

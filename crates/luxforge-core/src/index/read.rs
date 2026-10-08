@@ -5,7 +5,7 @@
 //! unreadable with the reason.
 use crate::{
     SourceTag,
-    catalog_types::{FileRecord, FileSignature, HeaderState, VolumeId},
+    catalog_types::{FileRecord, FileSignature, HeaderState, VolumeId, born_ns},
     export::metadata::header::{Container, read_header},
 };
 use std::{fs::File, io::ErrorKind, path::PathBuf};
@@ -23,24 +23,29 @@ pub(crate) struct FileTask {
 }
 
 impl FileTask {
-    /// The record of this file before its header is read.
-    pub(crate) fn pending(&self, signature: FileSignature) -> FileRecord {
-        self.record(signature, HeaderState::Pending)
+    /// The record of this file before its header is read, as it was listed: its signature and its
+    /// birth time.
+    pub(crate) fn pending(&self, signature: FileSignature, born_ns: Option<i64>) -> FileRecord {
+        self.record((signature, born_ns), HeaderState::Pending)
     }
 
-    fn record(&self, signature: FileSignature, header: HeaderState) -> FileRecord {
+    fn record(&self, (signature, born_ns): Stat, header: HeaderState) -> FileRecord {
         FileRecord {
             path: self.path.clone(),
             folder: self.folder.clone(),
             name: self.name.clone(),
             volume_id: self.volume_id.clone(),
             signature,
+            born_ns,
             kind: self.kind,
             header,
             last_seen_ms: self.seen_ms,
         }
     }
 }
+
+/// What a stat of the file gives the record: its signature and birth time.
+type Stat = (FileSignature, Option<i64>);
 
 /// What reading one file's header found.
 #[derive(Debug)]
@@ -60,15 +65,15 @@ pub(crate) fn read_file(task: &FileTask) -> HeaderOutcome {
         }
         Err(error) => return unreadable(task, None, &format!("cannot open it: {}", error.kind())),
     };
-    let signature = match file.metadata() {
-        Ok(metadata) => FileSignature::of(&metadata),
+    let stat = match file.metadata() {
+        Ok(metadata) => (FileSignature::of(&metadata), born_ns(&metadata)),
         Err(error) => return unreadable(task, None, &format!("cannot read it: {}", error.kind())),
     };
-    let header = match read_header(&mut file, signature.len) {
+    let header = match read_header(&mut file, stat.0.len) {
         Ok(read) if read.header.container == Container::Unknown => {
             return unreadable(
                 task,
-                Some(signature),
+                Some(stat),
                 "not a JPEG or a RAW container Luxforge reads",
             );
         }
@@ -76,24 +81,27 @@ pub(crate) fn read_file(task: &FileTask) -> HeaderOutcome {
         Err(error) => {
             return unreadable(
                 task,
-                Some(signature),
+                Some(stat),
                 &format!("cannot read its header: {}", error.kind()),
             );
         }
     };
     HeaderOutcome::Read(Box::new(
-        task.record(signature, HeaderState::Ok(Box::new(header))),
+        task.record(stat, HeaderState::Ok(Box::new(header))),
     ))
 }
 
-fn unreadable(task: &FileTask, signature: Option<FileSignature>, reason: &str) -> HeaderOutcome {
-    let signature = signature.unwrap_or(FileSignature {
-        len: 0,
-        modified_ns: 0,
-        identity: None,
-    });
+fn unreadable(task: &FileTask, stat: Option<Stat>, reason: &str) -> HeaderOutcome {
+    let stat = stat.unwrap_or((
+        FileSignature {
+            len: 0,
+            modified_ns: 0,
+            identity: None,
+        },
+        None,
+    ));
     HeaderOutcome::Read(Box::new(
-        task.record(signature, HeaderState::Unreadable(reason.to_owned())),
+        task.record(stat, HeaderState::Unreadable(reason.to_owned())),
     ))
 }
 

@@ -140,6 +140,7 @@ pub fn write(
                 kind: file.kind,
                 header,
                 last_seen_ms,
+                born_ns: None,
             });
             if batch.len() >= BATCH {
                 index.files(&batch)?;

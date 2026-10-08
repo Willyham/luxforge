@@ -28,7 +28,7 @@ use std::{
     time::Duration,
 };
 
-/// Format 6: files with their signatures and header columns, the roots listed with where each
+/// Format 7: files with their signatures, birth times (`born_ns`) and header columns, the roots listed with where each
 /// watched root's change notifications resume (`cursor_volume`, `cursor_event`) and whether a
 /// listing the index lane ran on its own stopped before it ended (`stale`), the preview records of
 /// files and developed photographs — a photograph's rendered tier with whether it is approximate
@@ -36,7 +36,7 @@ use std::{
 /// brightness fingerprints of files' complete grid tiers (`grid_fingerprints`, the preview lane's
 /// bracket check). Any other marker, a database SQLite cannot read, and an index of another
 /// catalog are discarded and recreated.
-pub const INDEX_FORMAT: i64 = 6;
+pub const INDEX_FORMAT: i64 = 7;
 /// The database's file name inside the index directory.
 pub const INDEX_FILE: &str = "index.sqlite";
 /// The preview cache's directory inside the index directory; the preview lane owns its layout.
@@ -78,6 +78,7 @@ const SCHEMA: &str = "
         modified_ns INTEGER NOT NULL,
         device INTEGER,
         inode INTEGER,
+        born_ns INTEGER,
         kind TEXT NOT NULL CHECK (kind IN ('jpeg', 'raw')),
         header_state TEXT NOT NULL CHECK (header_state IN ('ok', 'pending', 'unreadable')),
         header_error TEXT,
@@ -402,10 +403,11 @@ pub(crate) fn upsert_file(tx: &Transaction<'_>, file: &FileRecord) -> Result<Fil
              kind, header_state, header_error, capture_ms, local_text, local_day, offset_minutes,
              latitude, longitude, altitude_m, make, model, body_serial, lens, exposure_time_s,
              f_number, iso, exposure_bias_ev, focal_mm, focal_35mm_mm, width, height, orientation,
-             thumb_offset, thumb_len, thumb_format, thumb_width, thumb_height, last_seen_ms)
+             thumb_offset, thumb_len, thumb_format, thumb_width, thumb_height, last_seen_ms,
+             born_ns)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
              ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35,
-             ?36, ?37)
+             ?36, ?37, ?38)
          ON CONFLICT(path) DO UPDATE SET folder = excluded.folder, name = excluded.name,
              volume_id = excluded.volume_id, byte_len = excluded.byte_len,
              modified_ns = excluded.modified_ns, device = excluded.device, inode = excluded.inode,
@@ -422,7 +424,8 @@ pub(crate) fn upsert_file(tx: &Transaction<'_>, file: &FileRecord) -> Result<Fil
              height = excluded.height, orientation = excluded.orientation,
              thumb_offset = excluded.thumb_offset, thumb_len = excluded.thumb_len,
              thumb_format = excluded.thumb_format, thumb_width = excluded.thumb_width,
-             thumb_height = excluded.thumb_height, last_seen_ms = excluded.last_seen_ms
+             thumb_height = excluded.thumb_height, last_seen_ms = excluded.last_seen_ms,
+             born_ns = excluded.born_ns
          RETURNING id",
         params![
             file.path.to_string_lossy(),
@@ -466,6 +469,7 @@ pub(crate) fn upsert_file(tx: &Transaction<'_>, file: &FileRecord) -> Result<Fil
             thumb_size.map(|size| size.width),
             thumb_size.map(|size| size.height),
             file.last_seen_ms,
+            file.born_ns,
         ],
         |row| row.get(0),
     )?;
@@ -481,7 +485,8 @@ pub(crate) fn file(connection: &Connection, id: FileId) -> Result<Option<FileRec
                  header_state, header_error, capture_ms, local_text, offset_minutes, latitude,
                  longitude, altitude_m, make, model, body_serial, lens, exposure_time_s, f_number,
                  iso, exposure_bias_ev, focal_mm, focal_35mm_mm, width, height, orientation,
-                 thumb_offset, thumb_len, thumb_format, thumb_width, thumb_height, last_seen_ms
+                 thumb_offset, thumb_len, thumb_format, thumb_width, thumb_height, last_seen_ms,
+                 born_ns
              FROM files WHERE id = ?1",
             [id.0],
             |row| {
@@ -516,6 +521,7 @@ pub(crate) fn file(connection: &Connection, id: FileId) -> Result<Option<FileRec
                     thumb: (row.get(30)?, row.get(31)?, row.get(32)?),
                     thumb_size: [row.get(33)?, row.get(34)?],
                     last_seen_ms: row.get(35)?,
+                    born_ns: row.get(36)?,
                 })
             },
         )
@@ -533,6 +539,7 @@ struct StoredFile {
     modified_ns: i64,
     device: Option<i64>,
     inode: Option<i64>,
+    born_ns: Option<i64>,
     kind: String,
     state: String,
     error: Option<String>,
@@ -610,6 +617,7 @@ impl StoredFile {
                 modified_ns: self.modified_ns,
                 identity: FileIdentity::from_columns(self.device, self.inode),
             },
+            born_ns: self.born_ns,
             kind,
             header,
             last_seen_ms: self.last_seen_ms,
@@ -660,11 +668,12 @@ pub(crate) struct KnownFile {
     pub name: String,
     pub volume_id: String,
     pub signature: FileSignature,
+    pub born_ns: Option<i64>,
     pub pending: bool,
 }
 
 const KNOWN_COLUMNS: &str =
-    "id, path, name, volume_id, byte_len, modified_ns, device, inode, header_state";
+    "id, path, name, volume_id, byte_len, modified_ns, device, inode, header_state, born_ns";
 
 fn known(row: &rusqlite::Row<'_>) -> rusqlite::Result<KnownFile> {
     Ok(KnownFile {
@@ -677,6 +686,7 @@ fn known(row: &rusqlite::Row<'_>) -> rusqlite::Result<KnownFile> {
             modified_ns: row.get(5)?,
             identity: FileIdentity::from_columns(row.get(6)?, row.get(7)?),
         },
+        born_ns: row.get(9)?,
         pending: row.get::<_, String>(8)? == "pending",
     })
 }
@@ -764,7 +774,7 @@ pub(crate) fn move_file(
     let identity = record.signature.identity.map(FileIdentity::to_columns);
     tx.prepare_cached(
         "UPDATE files SET path = ?2, folder = ?3, name = ?4, volume_id = ?5, byte_len = ?6,
-             modified_ns = ?7, device = ?8, inode = ?9, last_seen_ms = ?10,
+             modified_ns = ?7, device = ?8, inode = ?9, last_seen_ms = ?10, born_ns = ?12,
              header_state = CASE WHEN ?11 THEN 'pending' ELSE header_state END,
              header_error = CASE WHEN ?11 THEN NULL ELSE header_error END
          WHERE id = ?1",
@@ -782,6 +792,7 @@ pub(crate) fn move_file(
         identity.map(|(_, inode)| inode),
         record.last_seen_ms,
         reread,
+        record.born_ns,
     ])?;
     Ok(())
 }
@@ -1061,9 +1072,9 @@ mod tests {
         assert_eq!(dir, root.canonicalize().unwrap().join("catalog.index"));
         type Spoil = fn(&Path);
         let spoilers: [(&str, Spoil); 3] = [
-            ("index format 7 is not supported", |dir| {
+            ("index format 8 is not supported", |dir| {
                 let connection = Connection::open(dir.join(INDEX_FILE)).unwrap();
-                connection.pragma_update(None, "user_version", 7).unwrap();
+                connection.pragma_update(None, "user_version", 8).unwrap();
             }),
             ("not a database", |dir| {
                 std::fs::write(dir.join(INDEX_FILE), vec![0x5a; 8192]).unwrap();
@@ -1086,6 +1097,7 @@ mod tests {
                     modified_ns: 2,
                     identity: None,
                 },
+                born_ns: None,
                 kind: SourceTag::Jpeg,
                 header: HeaderState::Pending,
                 last_seen_ms: 3,
@@ -1172,6 +1184,7 @@ mod tests {
                     inode: 42,
                 }),
             },
+            born_ns: Some(1_789_200_800_000_000_123),
             kind: SourceTag::Raw,
             header: HeaderState::Ok(Box::new(header)),
             last_seen_ms: 1_789_200_999_000,

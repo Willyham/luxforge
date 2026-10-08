@@ -8,7 +8,11 @@
 //! - A file whose signature changed, or whose header was never read, is **read again** into its row.
 //! - A file at a path the index does not know whose file identity is a row's elsewhere, where that
 //!   file no longer is, has **moved** or been renamed within its volume: the row is carried to the
-//!   new path, keeping its [`FileId`], and read again only if its length or time changed too.
+//!   new path, keeping its [`FileId`], and read again only if its length or time changed too. A
+//!   file system may give a deleted file's identity to the next file created (Linux's do), so the
+//!   row must be the file's own by its birth time too ([`same_file`]): equal where both record one,
+//!   and otherwise the same length and modification time, so a file that took a deleted file's
+//!   identity is new, never that file moved.
 //! - Anything else is **new**, a second hard link to a file whose first is still at its path
 //!   included: every link has its own row. Every link shares its file's identity, so the rows
 //!   with a new file's identity are looked through a page at a time, each once a listing at most
@@ -17,7 +21,7 @@
 //!   complete ([`Reconciler::vanished`]).
 use super::{
     database::{self, KnownFile},
-    walk::ListedFolder,
+    walk::{ListedFile, ListedFolder},
 };
 use crate::{
     Error,
@@ -55,6 +59,20 @@ pub(crate) fn unchanged(stored: &FileSignature, now: &FileSignature, same_volume
     match (stored.identity, now.identity) {
         (Some(was), Some(is)) => was == is || (same_volume && was.inode == is.inode),
         _ => true,
+    }
+}
+
+/// Whether `row`, whose file identity the listed `file` has, is that file's own: their birth times
+/// are equal where both record one, which a rename or a move keeps and a new file given a deleted
+/// file's identity does not; where either has none, the file is unchanged by its length and
+/// modification time too, so a file moved and changed is new there.
+fn same_file(row: &KnownFile, file: &ListedFile) -> bool {
+    match (row.born_ns, file.born_ns) {
+        (Some(was), Some(is)) => was == is,
+        _ => {
+            row.signature.len == file.signature.len
+                && row.signature.modified_ns == file.signature.modified_ns
+        }
     }
 }
 
@@ -139,11 +157,7 @@ impl Reconciler {
                         Decision::Unchanged
                     }
                 }
-                None => match self.moved_from(
-                    connection,
-                    &folder.path.join(&file.name),
-                    &file.signature,
-                )? {
+                None => match self.moved_from(connection, &folder.path.join(&file.name), file)? {
                     Some(row) => {
                         self.seen.insert(row.id);
                         Decision::Moved {
@@ -163,8 +177,9 @@ impl Reconciler {
 
     /// The row a file new at `path` was moved from: the first, in row order, with its file
     /// identity, which the index held when the listing first looked for a moved file, not seen by
-    /// this listing, whose own path no longer holds that file. A second link to the same file,
-    /// still at its path, is not a move.
+    /// this listing, that is the file's own by its birth time ([`same_file`]) and whose own path no
+    /// longer holds that file. A second link to the same file, still at its path, is not a move,
+    /// and nor is a new file given a deleted file's identity.
     ///
     /// Each row is looked at once a listing at most: the rows with the identity are read a page at
     /// a time from the last one looked at, and one found still at its path is passed for good. So
@@ -175,9 +190,9 @@ impl Reconciler {
         &mut self,
         connection: &Connection,
         path: &Path,
-        signature: &FileSignature,
+        file: &ListedFile,
     ) -> Result<Option<KnownFile>, Error> {
-        let Some(identity) = signature.identity else {
+        let Some(identity) = file.signature.identity else {
             return Ok(None);
         };
         let earlier = match self.earlier {
@@ -197,7 +212,7 @@ impl Reconciler {
             let last = page.len() < IDENTITY_PAGE;
             for row in page {
                 after = row.id;
-                if row.path == path || self.seen.contains(&row.id) {
+                if row.path == path || self.seen.contains(&row.id) || !same_file(&row, file) {
                     continue;
                 }
                 #[cfg(test)]

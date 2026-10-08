@@ -322,6 +322,7 @@ fn a_refused_cancel_says_why_in_the_status_line() {
         kind: SourceTag::Jpeg,
         header: HeaderState::Ok(Box::default()),
         last_seen_ms: 0,
+        born_ns: None,
     };
     let mut seeder = IndexSeeder::create(&catalog, &catalog_id).unwrap();
     let files = seeder

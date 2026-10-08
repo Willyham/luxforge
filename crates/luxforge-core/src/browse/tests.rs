@@ -1752,6 +1752,7 @@ fn browse_works_at_the_design_scale() {
                 kind: SourceTag::Raw,
                 header: HeaderState::Ok(Box::new(header(n * 5))),
                 last_seen_ms: 1,
+                born_ns: None,
             }
         })
         .collect();
