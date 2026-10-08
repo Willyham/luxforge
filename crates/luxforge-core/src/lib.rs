@@ -4,7 +4,6 @@ pub mod analysis;
 mod api;
 mod artifacts;
 mod atomic_file;
-pub mod auto_tone;
 /// The catalog's browse views, facets and selection over the index and the catalog.
 mod browse;
 mod cancel;
@@ -66,11 +65,12 @@ pub mod tiles;
 pub use activity::ActivitySnapshot;
 pub use api::{
     ApiEvent, ApiFailure, ApiRequest, ApiResponse, ClientAuthority, ClientId, ClientSession,
-    EventWake, EventsResult, JobMonitorStats, LocalServer, LocalSessionInfo, MASK_MODE,
+    Envelope, EventWake, EventsResult, JobMonitorStats, LIVE_SESSIONS_DIR, LiveSessionEntry,
+    LocalServer, LocalSessionInfo, MASK_MODE, MAX_EVENT_WAIT_MS, MAX_REQUEST_BYTES,
     MAX_VIEW_SELECTIONS, MaskOverlayColour, MaskOverlayMode, OwnerHandle, PIXEL_READ_REQUIRED,
     POINTER_MODE, PROTOCOL, PreviewRenderIntent, PreviewRequest, PreviewSelection, PreviewStack,
-    Renderer, RendererReason, RendererRecord, ViewSelection, WorkspaceState, live_session_file,
-    schemas, serve_json_lines_with,
+    Renderer, RendererReason, RendererRecord, RevisionOf, RunningSession, ViewSelection,
+    WorkspaceState, live_session_file, running_sessions, schemas, serve_json_lines_with,
 };
 pub use artifacts::{ArtifactId, ArtifactTable, PreparedArtifact};
 pub use cancel::{Cancel, ProgressCounts};
@@ -85,7 +85,7 @@ pub use editor::{
     MutationResult, PixelInput, PixelSample, RawInterpretation, RecipeDescription, SkippedSetting,
     SourceKind, SourceTag, Version,
 };
-pub use error::{Error, ErrorKind, Preparation, PreparationNeeds};
+pub use error::{AnalysisRefusal, Error, ErrorKind, Preparation, PreparationNeeds};
 pub use export::{CaptureInfo, CaptureMetadata};
 pub use mask::MASK_GPU_PROGRAMS;
 pub use model::{
@@ -94,6 +94,8 @@ pub use model::{
     Mutation, MutationRequest, Orientation, PresetId, RECIPE_FORMAT, Recipe, Snapshot, SnapshotId,
     Transform,
 };
+/// Basic's Auto tone solver and forward model, which the fitting rig and the measurements call.
+pub use modules::auto_tone;
 pub use modules::{
     ActionControl, ActionDescriptor, ActionInput, ActionPlan, ActionRef, ActionStyle,
     AnalysisAction, Availability, BASIC_EFFECT, BoxRect, CONTROLS_EFFECT, CROP_EFFECT,
@@ -101,24 +103,27 @@ pub use modules::{
     ColorOperation, ColorStyle, CompileStage, Control, ControlVariant, CropAspect, CropPayload,
     CropStage, CurveBackground, CurveChannel, CurveControl, DETAIL_EFFECT, Edge, EffectDescriptor,
     EffectStage, ExactGeometry, GPU_PROGRAMS, GroupControl, IdentityKind, LENS_EFFECT, LOOK_EFFECT,
-    LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE, MAX_MASKED_SPATIAL_LAYERS, MIN_ANGLE,
-    MIXER_EFFECT, MIXER_EFFECT_FORMAT, ModuleDescriptor, ModuleLayout, ModuleRegistry, NewLayer,
-    NumberControl, NumberStyle, ORIENTATION_EFFECT, OperationIdentity, OutputRect,
+    LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE, MAX_MASKED_SPATIAL_LAYERS, MAX_SOURCE_NAME,
+    MIN_ANGLE, MIXER_EFFECT, MIXER_EFFECT_FORMAT, ModuleDescriptor, ModuleLayout, ModuleRegistry,
+    NewLayer, NumberControl, NumberStyle, ORIENTATION_EFFECT, OperationIdentity, OutputRect,
     PERSPECTIVE_EFFECT, PIXEL_EFFECT, PRESENCE_EFFECT, PROOF_GENERATE_PATH, PROOF_PALETTE,
     PROOF_PALETTE_PATH, ParameterDescriptor, ParameterKind, PickerControl, PointwiseColor,
     PresetsControl, Processing, Provider, QueryChoiceControl, QueryRef, RailDecoration,
     RangeControl, RawModule, RawPayload, Region, RegistryOptions, Resample, ResetAction,
-    ResolvedControl, ResolvedReset, SamplingScale, SpatialOperation, Stage, StageContext,
-    StageQuestions, TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT, WheelControl,
-    WheelStyle, WhiteBalanceMode, check_parameters, check_value, controls_module,
+    ResolvedControl, ResolvedReset, SamplingScale, SettingsOrigin, SpatialOperation, Stage,
+    StageContext, StageQuestions, TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT,
+    WheelControl, WheelStyle, WhiteBalanceMode, check_parameters, check_value, controls_module,
     current_effect_format, gains_from_temperature_tint, guide_angle, insertion_index_among,
     largest_with_ratio_inside, palette_bytes, resolve_control, resolve_group_reset,
     temperature_tint_from_gains,
 };
+pub use modules::{Chord, HOST_CHORDS, host_chord};
 pub use modules::{OriginalContext, OriginalLayer, OriginalPreferences};
 pub use presets::{
-    ImportReport, ImportedPreset, MAX_PRESET_BYTES, MappedSetting, PresetOrigin, PresetRecord,
-    PresetSummary, ReportCounts, ReportedSetting, USER_PRESET_GROUP, inspect_preset,
+    GroupOnKind, GroupState, ImportReport, ImportedPreset, KindSkip, MAX_PRESET_BYTES,
+    MappedSetting, PresetOrigin, PresetRecord, PresetSummary, ReportCounts, ReportedSetting,
+    SettingsAnalysis, SettingsGroup, SettingsGroups, SettingsPhoto, USER_PRESET_GROUP,
+    inspect_preset, settings_groups,
 };
 pub use preview::{
     AssetSelection, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,
@@ -850,6 +855,6 @@ pub(crate) use activity::ActivityBoard;
 pub(crate) use model::MASK_BYTES_PER_RECIPE;
 #[cfg(test)]
 pub(crate) use modules::{
-    APPLY_PRESET, BasicModule, CapabilitiesProofModule, MAX_COLOR_UNITS, PROOF_PALETTE_GAINS,
+    APPLY_SETTINGS, BasicModule, CapabilitiesProofModule, MAX_COLOR_UNITS, PROOF_PALETTE_GAINS,
     PresenceModule,
 };

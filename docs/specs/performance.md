@@ -42,26 +42,34 @@ A single float32 RGBA buffer for 60 MP is about 916 MiB, so unrestricted full-re
 
 ## Auto tone
 
-Native Apple M2 / Metal, 8 GiB, optimized release, 2026-10-08. Thirty samples per case use prepared generated 24 MP and 60 MP JPEGs and a neutral Basic prefix. The engine timer covers the tile-worker queue, grid read and deterministic solver; it excludes original decoding/preparation, catalog commit, tooltip query and preview. Cold and warm refer only to the analysis-sample cache; filesystem, device and shader caches are not purged. This is neither a before/after editor baseline nor the owner's M4 click-to-entry qualification.
+Native Apple M4 Pro (14 cores, 48 GiB) / Metal, optimized release, 2026-10-08, under the host-wide timing lock. This is not the owner's M4 MacBook Pro, and the host was shared with other agents' work: the one-minute load stayed between 3.90 and 7.96 during the run, below the 8.0 threshold, so the figures are recorded as reliable. Thirty samples per case use the prepared generated 24 MP and 60 MP JPEGs and a neutral Basic prefix. The engine timer covers the tile service's queue and grid read, then the solve after it off the tile service's thread (on the test's thread, as the analysis worker runs it; the hand-off itself is not timed); it excludes original decoding and preparation, catalog commit and preview. Cold and warm refer only to the analysis-sample cache; filesystem, device and shader caches are not purged. The model is Basic alone, or Basic then the starting Look at amount 200, which is not monotonic in Exposure and takes the coarse-to-fine search ([design](../design/auto-tone.md#the-solve-auto-tone1)).
 
-| Source | Renderer | Sample cache | Engine ms p50 / p95 | Grid read ms p95 | Solve ms p95 |
-| --- | --- | --- | ---: | ---: | ---: |
-| 24mp | gpu | cold | 3798.29 / 3821.80 | 988.371 | 2850.30 |
-| 24mp | gpu | warm | 2793.72 / 2810.59 | 0.037 | 2810.53 |
-| 24mp | reference | cold | 2804.77 / 2820.99 | 17.060 | 2806.12 |
-| 24mp | reference | warm | 2791.77 / 2808.38 | 0.037 | 2808.33 |
-| 60mp | gpu | cold | 5099.93 / 5150.96 | 2610.000 | 2610.78 |
-| 60mp | gpu | warm | 2500.92 / 2513.52 | 0.034 | 2513.47 |
-| 60mp | reference | cold | 2513.67 / 2529.18 | 13.589 | 2515.94 |
-| 60mp | reference | warm | 2503.67 / 2516.15 | 0.037 | 2516.09 |
+| Source | Model | Renderer | Sample cache | Engine ms p50 / p95 | Grid read ms p95 | Solve ms p95 |
+| --- | --- | --- | --- | ---: | ---: | ---: |
+| 24mp | Basic | gpu | cold | 908.2 / 960.2 | 910.398 | 61.6 |
+| 24mp | Basic | gpu | warm | 39.4 / 40.5 | 0.016 | 40.4 |
+| 24mp | Basic | reference | cold | 50.6 / 54.4 | 11.427 | 43.1 |
+| 24mp | Basic | reference | warm | 39.4 / 40.3 | 0.015 | 40.3 |
+| 24mp | Look 200 | gpu | warm | 310.0 / 320.7 | 0.018 | 320.6 |
+| 24mp | Look 200 | reference | warm | 309.5 / 328.4 | 0.017 | 328.4 |
+| 60mp | Basic | gpu | cold | 2275.5 / 2342.6 | 2268.733 | 77.0 |
+| 60mp | Basic | gpu | warm | 53.7 / 54.7 | 0.016 | 54.6 |
+| 60mp | Basic | reference | cold | 63.8 / 70.8 | 10.136 | 60.9 |
+| 60mp | Basic | reference | warm | 53.6 / 55.7 | 0.015 | 55.7 |
+| 60mp | Look 200 | gpu | warm | 293.2 / 305.2 | 0.017 | 305.2 |
+| 60mp | Look 200 | reference | warm | 292.8 / 322.8 | 0.018 | 322.7 |
 
-The 6000×4000 source uses 698,368 points and 9,078,784 retained bytes (8.66 MiB); the 10000×6000 source uses 628,736 points and 8,173,568 bytes (7.79 MiB). Both are within the 32 MiB retained cap. Warm GPU runs draw no tiles. The read's charged scratch peak is 20.06 MiB; the solver's bounded scratch is 5.38 / 4.84 MiB respectively, calculated separately from its f64 luminance array and RGB chunk. These scopes do not establish a total RSS/GPU memory budget. Both source hashes are unchanged. The host-wide timing lock was held; no build or other verification ran in this worktree, and recorded one-minute host load ranged from 1.44 to 2.95.
+On the same host, binary procedure and fixtures, the solver before the reduction and the analysis worker (solving on the tile thread, every search evaluating the whole sample) took 1,733.6 ms p95 warm at 24 MP and 1,566.6 ms at 60 MP through Basic alone, under a load of 1.79 to 6.28; through a Look above 100 it evaluated all 801 Exposure steps of the whole sample and was not measured. The committed values through Basic are identical before and after on both photographs, and through the Look at 200 they equal an exhaustive check of every Exposure, Whites and Blacks step on the same grids.
 
-The warmed engine alone exceeds the provisional 250 ms / 400 ms click-to-entry budgets by a wide margin. The solver dominates the warm cost. The plan permits delivery with a reported miss; optimization and owner M4 click-to-entry measurements remain outstanding. Reference spatial prefixes, non-neutral Look costs and the exhaustive Exposure search required by Look amounts above 100% are outside these neutral-prefix measurements.
+With the shared pool held to one thread (`RAYON_NUM_THREADS=1`), under a load of 1.84 to 5.45, the same binary's warm solve takes 220.9 ms p95 at 24 MP and 283.2 ms at 60 MP through Basic, and 2.13 s and 2.03 s through the Look at 200, with the same values in every case.
 
-Evidence: `artifacts/auto-tone-measure-01.json` contains every sample; `artifacts/auto-tone-measure-01-host.json` records binary/lockfile/source hashes, scope and host-load/RSS observations. Reproduce with the ignored release test `auto_tone_measure_photo_sized_inputs`, setting `LUXFORGE_GENERATED_FIXTURES` and a fresh `LUXFORGE_AUTO_TONE_OUTPUT`, on an idle native host under the timing lock. [Auto tone](../design/auto-tone.md) records correctness and the remaining corpus/owner qualification.
+The 6000×4000 source uses 698,368 points and 9,078,784 retained bytes (8.66 MiB); the 10000×6000 source uses 628,736 points and 8,173,568 bytes (7.79 MiB). Both are within the 32 MiB retained cap. Warm GPU runs draw no tiles. The read's charged scratch peak is 20.06 MiB; the solver's charged scratch (`auto_tone::scratch_bytes`: the whole sample's and the reduction's `f64` luminances and one 48 KiB RGB chunk for each of the pool's 14 threads) is 6.24 / 5.71 MiB respectively. These scopes do not establish a total RSS/GPU memory budget. Both source hashes are unchanged.
 
-The separate standard timing tier completed functionally, but all four timing components are marked unreliable (starting load 12.44–15.31). Its figures are not a baseline or evidence of improvement. This does not change the low-load scope of the Auto engine distributions above.
+The warm engine through Basic alone is within the provisional 250 ms / 400 ms click-to-entry budgets on this host with room for commit and preview, which are not measured here; through the Look above 100 the 24 MP solve alone exceeds 250 ms. The cold GPU grid read (0.91 s at 24 MP, 2.27 s at 60 MP) dominates a first Auto on a photograph. The owner's M4 click-to-entry qualification, reference spatial prefixes and non-neutral Looks at or below 100 remain unmeasured.
+
+Evidence: `artifacts/auto-tone-measure-02.json` contains every sample, `artifacts/auto-tone-measure-02-one-thread.json` the one-thread run, `artifacts/auto-tone-measure-02-baseline.json` the solver before, and `artifacts/auto-tone-measure-02-host.json` records the commits, binary and source hashes, scope and the load sampled every 10 to 20 s through each run. Reproduce with the ignored release test `auto_tone_measure_photo_sized_inputs`, setting `LUXFORGE_GENERATED_FIXTURES` and a fresh `LUXFORGE_AUTO_TONE_OUTPUT`, on an idle native host under the timing lock. [Auto tone](../design/auto-tone.md) records correctness and the remaining corpus/owner qualification.
+
+The separate standard timing tier last completed functionally with all four timing components marked unreliable (starting load 12.44–15.31); its figures are not a baseline.
 
 ## Code structure consolidation
 
@@ -4603,7 +4611,7 @@ The 24 MP drag with `--idle`: after its release had dissolved from the drag's la
 
 ### Windows and Linux
 
-That qualification ran only on the M4. Later container software checks and actual hosted results are recorded in [development](../engineering/development.md#ci): prior no-adapter checks pass, lavapipe stops at `large24`, and latest Linux CI fails earlier in an indexed-folder watcher test. Native Windows/Linux GPU acceptance remains unrun; a configured lane is not a passing result. Windows CI is disabled.
+That qualification ran only on the M4. Later container software checks and actual hosted results are recorded in [development](../engineering/development.md#ci): Linux no-adapter checks, release acceptance and packaging pass; the retained lavapipe journeys use small GPU-stage fixtures and run to aggregate failure, with a passing hosted result still open. Native Windows/Linux GPU acceptance remains unrun; a configured lane is not a passing result. Windows CI is disabled.
 
 ### The performance-rules checklist
 
@@ -4680,6 +4688,20 @@ Reported, not gated; the frame a drag draws at each view against the picture at 
 
 - **At 100%** every cell is within its limits, and the drag's frame is the picture at rest's to the bit, both the region plan over the same window cut from the source.
 - **At Fit, 33% and 50%** 462 of the 783 cells are past a limit, the same cells against the picture at rest and against the reference: 209 of 318 pointwise cells and 253 of 465 spatial ones. The drag's frame processes a source reduced to the view's size, where the picture at rest and the reference reduce the processed frame, so detail beyond the view's resolution, and every neighbourhood and estimate a spatial unit takes, meets the stack's arithmetic after the reduction in one and before it in the other. Every source has cells past the limits (the Air 2S 105, the zone plate 92, the Z6 75, the 24 MP JPEG 62, the 60 MP JPEG 55, the X100VI 31, the Presence fixture 24 and the lens zone plate 18); the Presence fixture none at Fit, where it is drawn at its own size and the reference is not reduced. The largest figures, up to 32.2 / 52.9 / 64.4 / 40.1, are all on the zone plates and the lens zone plate: under crops, warps and the luminance range, and for the spatial units under Dehaze, whose light is the whole stage's at full resolution while its transmission is taken over the reduced stage. Gated by either `--gate-motion` reading, these 462 cells fail it.
+
+### The softer frame at 100%
+
+The frame a drag draws at 100% where the region's slot would pass the GPU-preview budget beside the source (`budget-reduced`, "Softer while dragging"), which the owner accepted on 2026-10-07 subject to explicit qualification. `gpu-qualification` measures it on every 100% cell and reports it, never gated: the stack planned whole at the reduced stage of the view's area, `GpuView::Fit` at the region's displayed size as the desktop plans it, drawn on the GPU and magnified to the region bilinearly in linear light, standing in for the photo surface's sampler, which the headless surface does not run. Each cell records whether a drag there would draw it by the budget (`natural`) or it was drawn to qualify it (`forced`). Run on 2026-10-08 at 100% alone, built from `3ba5b282` with the softer frame added, the `Apple M4 Pro` adapter, the corpus and the owner's RAW manifest; `artifacts/softer-qualification-1/` in that worktree.
+
+| Class | Measured | Natural | Against the picture at rest: within / past | Largest | Against the reference: within / past | Largest | The reduced frame against the reference reduced: within / past | Largest |
+| --- | ---: | ---: | --- | --- | --- | --- | --- | --- |
+| pointwise | 106 | 0 | 21 / 85 | 14.0 / 26.5 / 61.1 / 13.2 | 21 / 85 | 14.0 / 26.5 / 61.1 / 13.2 | 45 / 61 | 8.45 / 16.4 / 31.7 / 7.51 |
+| spatial | 171 | 0 | 26 / 145 | 16.7 / 38.5 / 62.5 / 12.7 | 26 / 145 | 16.7 / 38.6 / 62.5 / 12.7 | 80 / 91 | 21.9 / 46.2 / 68.2 / −28.1 |
+
+- **No corpus cell draws it by the budget**: every region's slot fits the 2 GiB budget beside its source, as the design says. It is reached past the corpus: Detail beside Presence's three fields in a window about 1.4 times the owner's display's, or more than five masked Presence layers in the centred view ([at 100% and above](../design/gpu-preview.md#at-100-and-above)).
+- **It is soft, as accepted.** Against the reference's region, the mean ΔE00 is 0.67 at the median pointwise cell and 0.58 at the median spatial cell, and about 12 at the 90th percentile of both, the largest on the generated detail and texture sources, where magnifying a frame of the view's size loses the fine detail the region holds. 230 of the 277 cells are past the motion limits. It is as far from the picture at rest it settles to as from the reference, because the picture at rest is within the at-rest limits on every one of these cells.
+- **The reduced frame itself** is as far from the reference reduced to its size as the Fit motion frame above is: it processes a source reduced to the view's size, the same proxy.
+- The at-rest gate at 100% in the same run: every cell within its limits.
 
 ### The GPU export against the reference export
 
@@ -4964,8 +4986,17 @@ Both tiers (grid 512 px, large 2048 px) of the corpus's Z 6 and Air 2S under a B
 | The same, a second launch | | (board 467, 451 to 494) | (board 1,170, 1,131 to 1,193) | 3.43 | 24; 2,112.9 MB |
 
 - **A heavy GPU export is now 2.9 to 3.3 times faster than the reference export** at 24 and 60 MP and 2.5 times over the masked stack; at 60 MP 16 times faster than before.
-- **A trivial GPU export misses by 15 to 16 ms**: 101 against 85 ms at 24 MP and 190 against 175 ms at 60 MP, every GPU export slower than every reference export. The GPU's trivial export opens the tile worker's stream and its slot for one pointwise link, which the reference does not, and a pointwise stack's reference render is cheap; not attributed further.
+- **A trivial GPU export misses by 15 to 16 ms**: 101 against 85 ms at 24 MP and 190 against 175 ms at 60 MP, every GPU export slower than every reference export. Attributed below ([the trivial export's first band](#the-trivial-exports-first-band)).
 - The tile worker's peak was 2.11 GB of its 2 GiB (2,147.5 MB) budget on the masked stack.
+
+### The trivial export's first band
+
+Timed in the process, through the owner's export lane as the desktop starts it (`trivial_export_timing_gpu_against_reference`, release, seven alternating samples after one discarded export of each, the generated fixtures with Basic exposure +0.3): **75 against 57 ms at 24 MP and 158 against 137 ms at 60 MP** (2026-10-08, executable of `5e287c5f`, the M4 Pro at one-minute loads of 5 to 9). The desktop's step timing above reads the end on its frame clock, about 8.3 ms a frame, so it shows the same gap coarser.
+
+- **Where the gap is.** The reference renders the pointwise stack across the pool in 7 to 8 ms (18 ms at 60 MP) and then encodes. The GPU's encoder starts at once and waits for the stream's first band, a row of 2048 px tiles: 26 to 28 ms at 24 MP and 40 to 52 ms at 60 MP. After it, the encoder never waits again. The gap is that first band's latency less the reference's render.
+- **What the first band costs.** On the tile worker's thread, timed tile by tile: the band's window of the source uploaded, 4.7 ms for 6000 × 2048 codes; the first tile's wait for the device, 10 to 11 ms, where a later tile of the band waits 1.3 to 2.6 ms; and each tile's readback and copy into the band, about 2.2 ms. A fresh slot does not explain the first tile's wait: keeping the slot across exports left it unchanged.
+- **Tried and not adopted:** 512 px tiles (134 ms at 24 MP: per-tile costs dominate) and 1024 px tiles (93 against 84 ms in the desktop's timing, 184 against 168 ms at 60 MP); a first row of 512 or 1024 rows under 2048 px tiles (at most 3 ms: the second band is then late, the worker taking about 21 ms a band against the encoder's 24); reading a band's last tiles back and sending it before the next band's window is uploaded (73 and 151 ms, but a stream drawn without an encoder, which bounds a heavy export, slower by 7 ms for Detail at 24 MP and 12 ms for the 60 MP drag stack, the device idle during the upload); and copying the mapped readback straight into the band (no change).
+- **What is left.** The window's upload and the device's first-tile latency, each paid per band on the worker's one thread. Closing the gap needs the next band's window uploaded beside the current band's tiles, or a band's window textures kept for the next band of its shape, both changes to what the runner holds at once ([export](../design/export.md)); not built.
 
 ### Ticks, nothing regressed
 
@@ -4983,8 +5014,12 @@ Both tiers (grid 512 px, large 2048 px) of the corpus's Z 6 and Air 2S under a B
 
 240 positions over the masked stack at 100% on the Air 2S, two launches: **8.1 / 24.0 ms, worst 58.1** (233 drawn, load 3.12) and **8.2 / 22.5 ms, worst 24.5** (235 drawn, load 3.92); before 8.2 / 23.7, worst 50.4. **Still a miss at p95.** At Fit 60 positions drew at 7.8 to 8.0 / 8.6 to 9.0 ms in five launches.
 
-- **Every slow tick does the same work as a fast one** (`surface_frame_drawn`'s `evaluation`, joined to each input by its draft revision): 5 links run, 52 spatial passes, a window of 6.39 MP and 31.9 M link texels, no refit and no rebind. So the tail is not the word and block buffers regrowing (the hypothesis H1 of step 8, which would show rebinds), and step 8's fix does not apply.
+- **The same links, no refit and no rebind** (`surface_frame_drawn`'s `evaluation`, joined to each input by its draft revision): 5 links run, 52 spatial passes, a window of 6.39 MP and 31.9 M link texels on every tick. So the tail is not the word and block buffers regrowing (the hypothesis H1 of step 8, which would show rebinds), and step 8's fix does not apply. The 52 passes are not the same work, though: `spatial_passes` counts a pass dispatched over nothing too (below).
 - **When they come.** In the first launch the first four ticks, 51 to 58 ms, ran while the warm-up for the 100% view compiled 6 sequences over 392 ms, ending 181 ms into the stroke. Past that, and in the second launch whose warm-up had finished 72 ms before the stroke, the slow ticks come in runs of consecutive positions, 4 to 13 at a time (33 of 233 and 16 of 235), each presented on the third display frame after its input, 22 to 25 ms, with the same work as the ticks around them drawn in one frame. The tools time frames, not each tick's GPU work, so what lengthens those runs, the GPU's own time against the frame or other work queued beside it (the coverage grid each tick asks for), is not separated.
+
+- **Not whole re-evaluations, and not their reach** (2026-10-08, one launch of 240 positions on the release build after `b849b851` with the evaluation's new `incremental`, `whole` and `reached_texels` figures; load 9.9 to 14.0, so the figures place the tail but are not a quiet-host record): **8.0 / 23.7 ms, worst 24.6**, 237 drawn. Every tick of the stroke ran incrementally, the slow ones among them: none ran its links over the whole window. The texels a tick's links reached, 7.4 to 20.7 M of the chain's 31.9 M, are spread the same over slow and fast ticks. The coverage worker's completions fall as often within a slow tick as a fast one (1.26 against 1.28 a tick). A tick is presented 8, 15 or 24 ms after its input, one, two or three frames of the 120 Hz display, and nothing in between. What is left is the tick's GPU time against the frame and the presentation queue behind a missed frame, and the histogram's count pass each tick runs.
+- **The tail is the GPU time of the ticks that do spatial work** (2026-10-08, six launches of 240 positions on the release build after `fc2170c9` with the evaluation's new `spatial_texels` and `refilled` figures, load 2.95 to 6.91; `editor-latency --warm 4000` in four of them, so the 100% view's warm-up and picture at rest are done before the stroke). About two thirds of the frames do no spatial work at all: the stroke changes the plan only where a new dab lands. The frames that do write 20 to 60 M texels in their spatial passes (p50 39 to 41 M, the largest 225 M), several times the 6.39 MP window: three masked Presence links of 13 passes each, every pass over the change grown by the links' chained halos. Every slow position of two launches, 29 and 24 of 240, was such a frame, 18 and 13 of them in the third of the frames with the most spatial work. The surface's pass clock, an upper bound with up to a frame's wait for the next submit in it, read 10 to 33 ms for those ticks against about 1 ms for the others. A tick whose GPU work passes one or two 120 Hz frames is presented on the second or third. A smaller window draws the same stroke within the target: at `--window 1000x700`, a 3.53 MP window, **7.7 / 8.8 ms** (10 of 240 past 12 ms, load 2.98).
+- **Not the picture at rest, a refill, or time since the zoom.** The picture at rest's tiles, at 100% drawn for their counts alone, are not handed while a gesture is open; no tick of any launch refilled a link over the whole window (`refilled` 0), a masked link's planes holding what its mask needs from the first tick on; and with the stroke 4.3 s after the zoom the slow positions still came in runs (36 to 95 in one launch). How many there are varies from launch to launch over the same stroke: **8.2 / 23.6 ms** (no wait, load 2.95), **8.2 / 23.7**, **7.9 / 10.5**, **8.0 / 23.8**, **8.0 / 23.3 ms** (waited, load 3.55 to 6.91). Meeting 16 ms at p95 here needs less spatial work a tick at 100%, which is not designed.
 
 ### Launch and the uncached 24 MP open
 
@@ -5037,6 +5072,8 @@ cargo run --release --locked --package xtask -- editor-latency --binary BIN --so
   --mode paint --samples 60|240 --masks 3 --mask-presence --presence --detail [--zoom 100] [--reference-renderer]
 cargo run --release --locked --package xtask -- measure --binary BIN --output NEW_DIR
 # Exports and the cold shader cache: evidence scripts of `api`, `gpu_warmed` and `export` steps.
+# A trivial export timed in the process, GPU against reference (needs cargo xtask generate-fixtures).
+cargo test --release -p luxforge-app --bins -- --ignored trivial_export_timing_gpu_against_reference --nocapture
 [LUXFORGE_BACKGROUND_BUNDLE_SUFFIX=NEW] cargo xtask develop --background --hidden-window \
   --evidence-dir NEW_DIR --evidence-script SCRIPT.json --open /ABSOLUTE/SOURCE
 ```

@@ -355,7 +355,9 @@ pub(crate) fn refresh_for(
         request: None,
         mutation_request: None,
         skipped: Vec::new(),
+        outcome: None,
         collapsed: None,
+        analysis: Default::default(),
     }
 }
 

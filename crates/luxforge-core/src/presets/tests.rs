@@ -1776,6 +1776,7 @@ fn validate_settings_refuses_an_unavailable_provider() {
             patch: true,
             preset: true,
             analysis: None,
+            shortcut: None,
             parameters: vec![parameter],
         }],
         queries: vec![],

@@ -17,6 +17,7 @@ path = "src/ctl.rs"
 [dependencies]
 luxforge-core = { path = "../luxforge-core" }
 luxforge-net = { path = "../luxforge-net" }
+serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
 
@@ -24,9 +25,9 @@ uuid.workspace = true
 luxforge-reference = { path = "../luxforge-reference" }
 luxforge-testbase = { path = "../luxforge-testbase" }
 luxforge-testkit = { path = "../luxforge-testkit" }
-# The core with the disk flush skipped, for this crate's tests only (luxforge-core's
-# `test-skip-disk-flush`).
-luxforge-core = { path = "../luxforge-core", features = ["test-skip-disk-flush"] }
+# The core with the disk flush skipped and its source worker holdable, for this crate's tests only
+# (luxforge-core's `test-skip-disk-flush` and `test-holds`).
+luxforge-core = { path = "../luxforge-core", features = ["test-skip-disk-flush", "test-holds"] }
 
 [lints]
 workspace = true

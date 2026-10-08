@@ -15,7 +15,7 @@ use super::{
     MAX_VIEW_ROWS, MissingGrouping, Month, PixelRect, PositionRange, PreviewItem, PreviewPriority,
     PreviewTier, RelinkPair, SelectionMode, Targets, ViewFilter, ViewQuery, ViewSort, ViewSource,
 };
-use crate::{AssetId, PresetId, api::params::host_params};
+use crate::{AssetId, PresetId, SettingsOrigin, api::params::host_params};
 use std::path::PathBuf;
 
 /// What a target list is, as every `targets` parameter's notes say.
@@ -299,21 +299,13 @@ host_params! {
 }
 
 host_params! {
-    /// `batch.apply-preset`.
-    pub(crate) struct BatchApplyPreset {
+    /// `batch.apply-settings`: exactly one of `settings` and `preset_id`; `origin` with `settings`
+    /// only, because a library preset's comes from its record.
+    pub(crate) struct BatchApplySettings {
         targets: Targets = json(TARGETS),
-        preset_id: PresetId = preset(),
-        mutation: MutationRequest,
-    }
-}
-
-host_params! {
-    /// `batch.paste-settings`.
-    pub(crate) struct BatchPasteSettings {
-        targets: Targets = json(TARGETS),
-        settings: serde_json::Map<String, serde_json::Value> = settings(),
-        source: String = string(128).notes("source photograph display name; not empty"),
-        source_asset_id: Option<String> = string(96).notes("source asset provenance only; never looked up"),
+        settings: Option<serde_json::Map<String, serde_json::Value>> = settings().notes("the settings set to apply, inline, as edit.apply-settings takes it; exactly one of settings and preset_id"),
+        preset_id: Option<PresetId> = preset().notes("a library preset whose settings to apply, read once; exactly one of settings and preset_id"),
+        origin: Option<SettingsOrigin> = settings_origin().notes("{kind: preset, name, preset_id?} or {kind: paste, source, source_asset?}, as edit.apply-settings takes it; required with settings and refused with preset_id, whose origin is the library preset's name and identity"),
         mutation: MutationRequest,
     }
 }
@@ -726,20 +718,13 @@ mod contract_table {
             &[Validation, SourceUnavailable, Conflict, ResourceLimit, CatalogError],
             "commits verified pairs in one transaction as one library change, updating each photograph's source folder; a file changed since it was verified is refused",
         ),
-        method::<BatchApplyPreset>(
-            "batch.apply-preset",
-            "BatchReport",
-            &[Validation, ResourceLimit, Cancelled],
-            "applies a preset to each photograph as its own history entry, reporting every one skipped with its reason",
-        )
-        .starts(&jobs::BATCH_PRESET),
-        method::<BatchPasteSettings>(
-            "batch.paste-settings",
+        method::<BatchApplySettings>(
+            "batch.apply-settings",
             "BatchReport",
             &[Validation, Incompatible, ResourceLimit, Cancelled],
-            "pastes inline settings to each photograph as its own history entry, reporting every skipped photograph and setting",
+            "applies a settings set, inline or a library preset's, to each photograph as its own history entry, reporting every skipped photograph and setting",
         )
-        .starts(&jobs::BATCH_PASTE),
+        .starts(&jobs::BATCH_SETTINGS),
         method::<BatchExport>(
             "batch.export",
             "BatchReport",

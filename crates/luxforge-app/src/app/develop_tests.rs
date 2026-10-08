@@ -1057,3 +1057,52 @@ fn catalog_folder_develop_set_survives_import_browsing() {
     );
     finish(scene);
 }
+
+/// The open photograph's refusal (here a request in flight) stops a paste into that photograph
+/// alone. A paste to several photographs goes to the batch, which skips what it cannot write and
+/// reports it. A pending paste request refuses another paste, not an export or a preset batch.
+#[test]
+fn copy_settings_the_open_photographs_refusal_stops_only_a_single_photo_paste() {
+    use crate::state::copy_settings::{Clipboard, Source};
+    let (mut scene, set) = developed("paste-refusal");
+    let editor = &mut scene.editor;
+    editor.view_state.copy_settings.clipboard = Some(std::sync::Arc::new(Clipboard {
+        source: Source {
+            asset: set[3].clone(),
+            entry: None,
+            name: "IMG_0003.JPG".into(),
+        },
+        kind: luxforge_core::SourceTag::Jpeg,
+        settings: Default::default(),
+        groups: Vec::new(),
+        copied_at: 0,
+        capture: Value::Null,
+    }));
+    assert_eq!(editor.paste_refusal(false), None);
+    editor.busy = true;
+    assert!(editor.paste_refusal(false).is_some(), "one photograph");
+    editor
+        .develop
+        .state
+        .set
+        .as_mut()
+        .expect("a set")
+        .select(2, true, false);
+    assert_eq!(editor.paste_targets().count(), 2);
+    assert_eq!(editor.paste_refusal(false), None, "the batch reports skips");
+    editor.busy = false;
+
+    editor.view_state.copy_settings.batch_pending = true;
+    assert!(editor.paste_refusal(false).is_some());
+    assert!(editor.batch_refusal().is_some());
+    editor.view_state.copy_settings.batch_pending = false;
+    editor.view_state.copy_settings.pending = true;
+    assert!(editor.paste_refusal(false).is_some());
+    assert_ne!(
+        editor.batch_refusal().as_deref(),
+        Some("Waiting for the settings request"),
+        "a capture in flight is no reason to refuse an export or a preset batch"
+    );
+    editor.view_state.copy_settings.pending = false;
+    finish(scene);
+}

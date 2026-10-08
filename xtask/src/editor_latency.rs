@@ -1275,9 +1275,10 @@ pub struct Options<'a> {
     /// exports run beside their next edit, and read the lane's windows back with `activity.list`
     /// after the release.
     pub contend: Option<usize>,
-    /// Drag mode only: leave the editor alone this many milliseconds after the preconditions and
-    /// before the gesture, so the GPU programs the committed stack's warm list names finish
-    /// compiling off the interface thread, as they would before a person's next drag.
+    /// Drag and paint modes only: leave the editor alone this many milliseconds after the
+    /// preconditions (and a paint run's zoom) and before the gesture, so the GPU programs the
+    /// committed stack's warm list names finish compiling off the interface thread, and the
+    /// picture at rest of the view is drawn, as they would be before a person's next gesture.
     pub warm_ms: Option<u64>,
     /// Drag, commit and paint modes only: launch the editor with `--no-gpu-render`, which refuses
     /// the photo surface's GPU stage, so the reference renderer draws every frame: the same
@@ -1561,6 +1562,7 @@ fn paint_script(options: &Options, path: Vec<[f64; 2]>) -> Vec<script::Step> {
     }
     steps.extend(paint_precondition(options));
     steps.extend(zoom_step(options));
+    steps.extend(options.warm_ms.map(|ms| script::Step::Wait { ms }));
     steps.push(script::Step::Mask(MaskStep::Stroke {
         points: path,
         release: true,
@@ -2974,9 +2976,10 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     )?;
     if let Some(ms) = options.warm_ms {
         ensure(
-            options.mode == Mode::Drag && (1..=script::MAX_WAIT_MS).contains(&ms),
+            matches!(options.mode, Mode::Drag | Mode::Paint)
+                && (1..=script::MAX_WAIT_MS).contains(&ms),
             format!(
-                "--warm waits 1 to {} ms before a drag; pass --mode drag",
+                "--warm waits 1 to {} ms before a drag or a stroke; pass --mode drag or paint",
                 script::MAX_WAIT_MS
             ),
         )?;

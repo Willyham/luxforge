@@ -5,6 +5,7 @@
 //! resolution among them; `validate` the rules a descriptor is registered against; `values` the
 //! checks a request's values meet against their declarations, the settings check among them; and
 //! `labels` how a label or a refusal names a value.
+mod chord;
 mod labels;
 #[cfg(test)]
 mod labels_tests;
@@ -20,6 +21,7 @@ mod values;
 #[cfg(test)]
 mod values_tests;
 
+pub use chord::{Chord, HOST_CHORDS, host_chord};
 pub(crate) use labels::{label_value, not_applicable, title_case};
 pub use types::{
     ActionControl, ActionDescriptor, ActionStyle, AnalysisAction, Availability, CanvasInteraction,
@@ -32,7 +34,7 @@ pub use types::{
     ChoiceControl, ColorControl, ControlVariant, IdentityKind, RangeControl, ResolvedControl,
     ResolvedReset, TaskControl, ToggleControl, WheelControl, WheelStyle,
 };
-pub(crate) use types::{MAX_SECRET_LENGTH, PRESET_ID, PRESET_NAME, PRESET_SETTINGS};
+pub(crate) use types::{MAX_SECRET_LENGTH, PRESET_SETTINGS, SETTINGS_ORIGIN};
 pub(crate) use validate::{
     check_declaration, check_parameter_declarations, valid_identity, valid_name,
 };

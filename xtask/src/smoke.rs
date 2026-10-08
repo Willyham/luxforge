@@ -120,7 +120,8 @@ impl Scenario {
     /// Whether `verify --tier rendered` runs it: everything a checkout can open.
     pub fn rendered(&self) -> bool {
         !matches!(self.source, Source::Supplied { .. })
-            && (self.name != visibility::SCENARIO || cfg!(target_os = "macos"))
+            && (![visibility::SCENARIO, histogram::HIDDEN_SCENARIO].contains(&self.name)
+                || cfg!(target_os = "macos"))
     }
 
     /// Whether `--source` may replace what it opens.
@@ -643,6 +644,21 @@ pub static SCENARIOS: &[Scenario] = &[
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(PANELLED),
         note: None,
+        own: None,
+    },
+    Scenario {
+        name: histogram::HIDDEN_SCENARIO,
+        about: "A commit while the window is minimised or hidden, then analysis.request, correlated by entry",
+        launches: &[LaunchSpec {
+            plan: histogram::hidden_plan,
+            ..APP
+        }],
+        verify: histogram::verify_hidden,
+        source: Source::Fixtures(&[ORIENTATION_1]),
+        window: Some(PANELLED),
+        note: Some(
+            "Actual AppKit minimise and hide transitions on a transparent background-only window; no foreground activation. Native visibility qualification is macOS-only.",
+        ),
         own: None,
     },
     Scenario {
@@ -1428,24 +1444,8 @@ fn plain_checks(scenario: &str, launch: &Checked) -> Result {
             ensure(uploaded || reused, "Missing current photograph readiness")?;
             if reused {
                 let first = launch.frames[0].state();
-                let (gpu, first_gpu) = (&state["surface"]["gpu"], &first["surface"]["gpu"]);
-                // The unchanged picture is drawn: where the GPU draws it at rest, the view plan
-                // over the boundary the first open drew, ready and with no CPU frame under it;
-                // otherwise the CPU frame of the unchanged version.
-                let drawn = if gpu["drawing_path"] == json!("gpu") {
-                    !gpu["drawn_gpu_boundary"].is_null()
-                        && gpu["drawn_gpu_boundary"] == first_gpu["drawn_gpu_boundary"]
-                        && gpu["gpu_ready_boundary"] == gpu["drawn_gpu_boundary"]
-                        && gpu["drawn_full_version"].is_null()
-                } else {
-                    gpu["drawn_full_version"] == state["surface"]["version"]
-                };
                 ensure(
-                    state["surface"]["version"] == first["surface"]["version"]
-                        && gpu["upload_bytes"] == first_gpu["upload_bytes"]
-                        && drawn
-                        && state["surface"]["gpu"]["drawn_photo_blank"] == json!(false)
-                        && state["surface"]["gpu"]["drawn_stale_photo"] == json!(false),
+                    reused_picture_current(state, first),
                     "Reopening reused pixels without the unchanged current photograph drawn",
                 )?;
             }
@@ -1790,9 +1790,64 @@ pub fn expect_render_times<F: Borrow<Value>>(events: &[Value], frames: &[F]) -> 
     Ok(json!({"bound_ms":RENDER_MS_BOUND,"preview_displayed":displayed,"status_bar":shown}))
 }
 
+/// Reopening retains the same source and pixels. The first capture can still show the reference
+/// while the GPU compiles; later captures may draw its resident boundary without uploading again.
+fn reused_picture_current(state: &Value, first: &Value) -> bool {
+    let (gpu, first_gpu) = (&state["surface"]["gpu"], &first["surface"]["gpu"]);
+    let drawn = if gpu["drawing_path"] == json!("gpu") {
+        !gpu["drawn_gpu_boundary"].is_null()
+            && gpu["drawn_gpu_boundary"] == first_gpu["gpu_preview"]["resident"]["version"]
+            && gpu["gpu_ready_boundary"] == gpu["drawn_gpu_boundary"]
+            && gpu["drawn_full_version"].is_null()
+    } else {
+        gpu["drawn_full_version"] == state["surface"]["version"]
+    };
+    state["surface"]["version"] == first["surface"]["version"]
+        && gpu["upload_bytes"] == first_gpu["upload_bytes"]
+        && drawn
+        && gpu["drawn_photo_blank"] == json!(false)
+        && gpu["drawn_stale_photo"] == json!(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A cold first capture draws the reference while its resident GPU boundary compiles.
+    /// Reopens may draw that same boundary, but never another source or an unready/blank frame.
+    #[test]
+    fn repeated_open_accepts_the_reference_to_gpu_handoff() {
+        let first = json!({"surface": {"version": 1, "gpu": {
+            "drawing_path": "cpu", "drawn_full_version": 1,
+            "drawn_gpu_boundary": null, "gpu_ready_boundary": null,
+            "gpu_preview": {"resident": {"version": 2}},
+            "upload_bytes": 617604, "drawn_photo_blank": false, "drawn_stale_photo": false
+        }}});
+        assert!(reused_picture_current(&first, &first));
+        let mut ready = first.clone();
+        let gpu = &mut ready["surface"]["gpu"];
+        gpu["drawing_path"] = json!("gpu");
+        gpu["drawn_full_version"] = Value::Null;
+        gpu["drawn_gpu_boundary"] = json!(2);
+        gpu["gpu_ready_boundary"] = json!(2);
+        assert!(reused_picture_current(&ready, &first));
+        assert!(reused_picture_current(&ready, &ready));
+        for (field, value) in [
+            ("drawn_gpu_boundary", json!(3)),
+            ("gpu_ready_boundary", Value::Null),
+            ("drawn_full_version", json!(1)),
+            ("upload_bytes", json!(1234567)),
+            ("drawn_photo_blank", json!(true)),
+            ("drawn_stale_photo", json!(true)),
+        ] {
+            let mut wrong = ready.clone();
+            wrong["surface"]["gpu"][field] = value;
+            assert!(!reused_picture_current(&wrong, &first), "{field}");
+        }
+        let mut other = ready.clone();
+        other["surface"]["version"] = json!(3);
+        assert!(!reused_picture_current(&other, &first));
+    }
 
     /// The render-time check accepts a presented frame's own figure in the editor's wording and
     /// refuses what the status bar used to show: a figure that is the time since the last request,

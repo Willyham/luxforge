@@ -1,9 +1,9 @@
 use super::{INVALID_SESSION, NO_SESSION, UNSUPPORTED_PROTOCOL, USAGE, failure};
-use crate::{CatalogSelection, Paths};
+use crate::Paths;
 use luxforge_core::{
-    ApiFailure, LocalSessionInfo, PROTOCOL, live_session_file, preferences::LaunchPreferences,
+    ApiFailure, LocalSessionInfo, PROTOCOL, RunningSession, live_session_file, running_sessions,
 };
-use serde_json::json;
+use serde_json::{Value, json};
 use std::{
     fmt,
     io::Read,
@@ -14,26 +14,72 @@ use std::{
 /// The most a live-session file may hold; the desktop writes well under it.
 pub const SESSION_FILE_LIMIT: usize = 4 * 1024;
 
-/// The catalog a live client attaches to: `explicit`, else the catalog the desktop's ordinary
-/// launch opens with the configuration under `paths` ([`CatalogSelection`]). Reading the stored
-/// location creates nothing.
-pub fn target_catalog(
-    explicit: Option<PathBuf>,
+/// The live session a client attaches to: `explicit`'s, read from the session file beside it, else
+/// the one running desktop's, from the per-user registry of running sessions under `paths`
+/// ([`Paths::live_sessions`]). No running session is [`NO_SESSION`]; several is a [`USAGE`]
+/// failure listing them, since the client never guesses which one is meant. Finding creates
+/// nothing, and only removes registry entries whose process has gone.
+pub fn find_session(
+    explicit: Option<&Path>,
     paths: Option<&Paths>,
-) -> Result<PathBuf, ApiFailure> {
-    let stored = match (&explicit, paths) {
-        (None, Some(paths)) => LaunchPreferences::read(Some(paths.config.clone())).catalog,
-        _ => None,
+) -> Result<LiveSession, ApiFailure> {
+    if let Some(catalog) = explicit {
+        return LiveSession::discover(catalog);
+    }
+    let Some(paths) = paths else {
+        return Err(failure(
+            USAGE,
+            "no configuration directory to find a running Luxforge in; pass --catalog",
+            None,
+        ));
     };
-    CatalogSelection::select(explicit, paths.map(Paths::default_catalog), stored)
-        .map(|selection| selection.path)
-        .ok_or_else(|| {
-            failure(
+    let registry = paths.live_sessions();
+    let running = running_sessions(&registry).map_err(|error| {
+        failure(
+            INVALID_SESSION,
+            error.detail,
+            Some(json!({"registry": registry})),
+        )
+    })?;
+    match running.as_slice() {
+        [] => Err(failure(
+            NO_SESSION,
+            format!(
+                "Luxforge is not running with a live session (none is registered in {}); open \
+                 Luxforge, or pass --catalog for a desktop started with --data-root",
+                registry.display()
+            ),
+            Some(json!({"registry": registry})),
+        )),
+        [running] => LiveSession::registered(running),
+        several => {
+            let sessions: Vec<Value> = several.iter().map(describe).collect();
+            let catalogs: Vec<String> = several
+                .iter()
+                .map(|running| match &running.entry {
+                    Ok(entry) => entry.catalog.display().to_string(),
+                    Err(_) => running.file.display().to_string(),
+                })
+                .collect();
+            Err(failure(
                 USAGE,
-                "no configuration directory to find the desktop's catalog in; pass --catalog",
-                None,
-            )
-        })
+                format!(
+                    "{} Luxforge live sessions are running; name one with --catalog: {}",
+                    several.len(),
+                    catalogs.join(", ")
+                ),
+                Some(json!({"sessions": sessions})),
+            ))
+        }
+    }
+}
+
+/// One running session as a failure listing several names it.
+fn describe(running: &RunningSession) -> Value {
+    match &running.entry {
+        Ok(entry) => json!({"catalog": entry.catalog, "pid": entry.pid}),
+        Err(problem) => json!({"entry": running.file, "problem": problem}),
+    }
 }
 
 /// An open catalog's live session, read from the session file beside it.
@@ -74,8 +120,8 @@ impl LiveSession {
                 return Err(failure(
                     NO_SESSION,
                     format!(
-                        "Luxforge does not have the catalog {} open; open it in Luxforge or pass \
-                         --catalog",
+                        "Luxforge does not have the catalog {} open; open it in Luxforge, or leave \
+                         out --catalog to use the running Luxforge's",
                         catalog.display()
                     ),
                     data(),
@@ -120,5 +166,40 @@ impl LiveSession {
             address,
             token: info.token,
         })
+    }
+
+    /// The session a registry entry names: its protocol this client's and its session file the
+    /// one beside its catalog, then that file read as [`Self::discover`] reads it.
+    fn registered(running: &RunningSession) -> Result<Self, ApiFailure> {
+        let data = || Some(json!({"entry": running.file}));
+        let entry = running.entry.as_ref().map_err(|problem| {
+            failure(
+                INVALID_SESSION,
+                format!("the running Luxforge's registry entry cannot be read: {problem}"),
+                data(),
+            )
+        })?;
+        if entry.protocol != PROTOCOL {
+            return Err(failure(
+                UNSUPPORTED_PROTOCOL,
+                format!(
+                    "the running Luxforge speaks {}; this luxforge-ctl speaks {PROTOCOL}",
+                    entry.protocol
+                ),
+                data(),
+            ));
+        }
+        if entry.session_file != live_session_file(&entry.catalog) {
+            return Err(failure(
+                INVALID_SESSION,
+                format!(
+                    "the running Luxforge's registry entry names {} as the session file of {}",
+                    entry.session_file.display(),
+                    entry.catalog.display()
+                ),
+                data(),
+            ));
+        }
+        Self::discover(&entry.catalog)
     }
 }

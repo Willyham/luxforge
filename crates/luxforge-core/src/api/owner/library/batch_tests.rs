@@ -182,17 +182,16 @@ impl Harness {
             .clone()
     }
 
-    /// `edit.apply-preset` of `preset` on one photograph, as a client sends it after reading the
+    /// `edit.apply-settings` of `preset` on one photograph, as a client sends it after reading the
     /// preset from the library.
     fn apply(&self, asset: &AssetId, preset: &Value, request_id: &str) -> ApiResponse {
         self.send(
-            "edit.apply-preset",
+            "edit.apply-settings",
             json!({
                 "asset_id": asset,
                 "mutation": {"expected_revision": self.revision(asset), "request_id": request_id, "actor": ACTOR},
                 "settings": preset["settings"],
-                "name": preset["name"],
-                "preset-id": preset["id"],
+                "origin": {"kind": "preset", "name": preset["name"], "preset_id": preset["id"]},
             }),
         )
     }
@@ -293,7 +292,7 @@ fn names(folder: &Path) -> Vec<String> {
     names
 }
 
-/// Each photograph of a batch preset gets exactly the entry `edit.apply-preset` gives it: its
+/// Each photograph of a batch preset gets exactly the entry `edit.apply-settings` gives it: its
 /// action, label, parameters, actor, revisions and stack, over an earlier edit too, with the
 /// settings that do not apply to it reported as the single call reports them, and one event naming
 /// it and its new revision. Its request identity names the batch.
@@ -322,13 +321,13 @@ fn a_batch_preset_writes_each_photograph_the_entry_a_single_call_writes() {
 
     let before = harness.sequence();
     let started = harness.ok(
-        "batch.apply-preset",
+        "batch.apply-settings",
         json!({"targets": assets(&batch), "preset_id": preset["id"], "mutation": envelope("batch-1")}),
     );
     assert_eq!(started["deduplicated"], json!(false));
     let settled = harness.settle(&started["job_id"]);
     assert_eq!(settled["status"], "ready", "{settled}");
-    assert_eq!(settled["kind"], "batch-preset");
+    assert_eq!(settled["kind"], "batch-settings");
     let report = &settled["result"];
     assert_eq!(report["done"], json!(batch));
     assert_eq!(report["skipped"], json!([]));
@@ -369,7 +368,7 @@ fn a_batch_preset_writes_each_photograph_the_entry_a_single_call_writes() {
         );
     }
     let events: Vec<(Value, Value)> = harness
-        .events(before, "batch.apply-preset")
+        .events(before, "batch.apply-settings")
         .into_iter()
         .map(|event| (event["asset_id"].clone(), event["revision"].clone()))
         .collect();
@@ -419,7 +418,7 @@ fn a_batch_preset_reports_every_photograph_it_leaves_out() {
 
     let targets = [&applied, &removed, &drafted, &previewed, &unchanged].map(Clone::clone);
     let started = harness.ok(
-        "batch.apply-preset",
+        "batch.apply-settings",
         json!({"targets": assets(&targets), "preset_id": warm["id"], "mutation": envelope("skips")}),
     );
     let settled = harness.settle(&started["job_id"]);
@@ -449,7 +448,7 @@ fn a_batch_preset_reports_every_photograph_it_leaves_out() {
 
     // Every setting of a RAW-only preset is left out of a JPEG.
     let started = harness.ok(
-        "batch.apply-preset",
+        "batch.apply-settings",
         json!({"targets": assets(std::slice::from_ref(&applied)), "preset_id": as_shot["id"], "mutation": envelope("as-shot")}),
     );
     let settled = harness.settle(&started["job_id"]);
@@ -484,7 +483,7 @@ fn a_batch_preset_reports_every_photograph_it_leaves_out() {
         .unwrap();
     assert_eq!(refusal.code, "incompatible");
     let started = harness.ok(
-        "batch.apply-preset",
+        "batch.apply-settings",
         json!({"targets": assets(std::slice::from_ref(&applied)), "preset_id": vignette["id"], "mutation": envelope("vignette")}),
     );
     let settled = harness.settle(&started["job_id"]);
@@ -493,7 +492,7 @@ fn a_batch_preset_reports_every_photograph_it_leaves_out() {
         json!([{"asset_id": applied, "code": refusal.code, "reason": refusal.message}])
     );
     let unknown = harness.refused(
-        "batch.apply-preset",
+        "batch.apply-settings",
         json!({"targets": assets(std::slice::from_ref(&applied)), "preset_id": crate::PresetId::new(), "mutation": envelope("unknown")}),
     );
     assert_eq!(unknown.code, "validation");
@@ -512,7 +511,7 @@ fn a_cancelled_batch_preset_keeps_the_photographs_it_finished_and_showed_its_pro
     let warm = harness.preset("Warm", json!({"set-basic": {"exposure": 0.5}}));
     let gate = harness.hold_before_photograph(2);
     let started = harness.ok(
-        "batch.apply-preset",
+        "batch.apply-settings",
         json!({"targets": assets(&photographs), "preset_id": warm["id"], "mutation": envelope("cancel")}),
     );
     let job = started["job_id"].clone();
@@ -529,9 +528,9 @@ fn a_cancelled_batch_preset_keeps_the_photographs_it_finished_and_showed_its_pro
         "the report so far"
     );
     let activity = harness.activity(&job);
-    assert_eq!(activity["kind"], "batch.apply-preset");
-    assert_eq!(activity["label"], "Applying preset");
-    assert_eq!(activity["detail"], "Warm · 3 photographs");
+    assert_eq!(activity["kind"], "batch.apply-settings");
+    assert_eq!(activity["label"], "Applying settings");
+    assert_eq!(activity["detail"], "Preset: Warm · 3 photographs");
     assert_eq!(activity["progress"]["message"], "1 of 3");
 
     harness.ok("job.cancel", json!({"job_id": job}));
@@ -562,17 +561,17 @@ fn a_retried_batch_is_answered_once() {
         .collect();
     let warm = harness.preset("Warm", json!({"set-basic": {"exposure": 0.5}}));
     let request = json!({"targets": assets(&photographs), "preset_id": warm["id"], "mutation": envelope("retry-1")});
-    let first = harness.ok("batch.apply-preset", request.clone());
+    let first = harness.ok("batch.apply-settings", request.clone());
     assert_eq!(harness.settle(&first["job_id"])["status"], "ready");
     let sequence = harness.sequence();
-    let retried = harness.ok("batch.apply-preset", request.clone());
+    let retried = harness.ok("batch.apply-settings", request.clone());
     assert_eq!(retried["deduplicated"], json!(true));
     assert_eq!(retried["job_id"], first["job_id"]);
     assert_eq!(harness.sequence(), sequence, "the retry records nothing");
 
     let harness = harness.restart(ModuleRegistry::builtin());
     let sequence = harness.sequence();
-    let again = harness.ok("batch.apply-preset", request);
+    let again = harness.ok("batch.apply-settings", request);
     let settled = harness.settle(&again["job_id"]);
     assert_eq!(settled["status"], "ready", "{settled}");
     assert_eq!(settled["result"]["done"], json!(photographs));
@@ -890,7 +889,7 @@ fn auto_tone_batch_analyses_each_photo_and_matches_individual_actions() {
         "different photos need different Auto results"
     );
     let preset = harness.preset("Auto", json!({"auto-tone":{}}));
-    let started = harness.ok("batch.apply-preset", json!({"targets":assets(&batch),"preset_id":preset["id"],"mutation":envelope("auto-batch")}));
+    let started = harness.ok("batch.apply-settings", json!({"targets":assets(&batch),"preset_id":preset["id"],"mutation":envelope("auto-batch")}));
     let settled = harness.settle(&started["job_id"]);
     assert_eq!(settled["status"], "ready", "{settled}");
     assert_eq!(settled["result"]["done"], json!(batch), "{settled}");
@@ -924,13 +923,70 @@ fn auto_tone_batch_cancel_during_analysis_cannot_commit_a_late_result() {
     harness
         .owner
         .hold_tiles(Some(Arc::new(move || held.pass())));
-    let started = harness.ok("batch.apply-preset", json!({"targets":assets(std::slice::from_ref(&asset)),"preset_id":preset["id"],"mutation":envelope("cancel-auto")}));
+    let started = harness.ok("batch.apply-settings", json!({"targets":assets(std::slice::from_ref(&asset)),"preset_id":preset["id"],"mutation":envelope("cancel-auto")}));
     gate.wait_reached(1, "Auto's analysis read");
+    let active = harness
+        .owner
+        .pixel_read_state()
+        .2
+        .expect("the analysis read is active");
+    assert!(!active.is_cancelled());
     harness.ok("job.cancel", json!({"job_id":started["job_id"]}));
+    assert!(
+        active.is_cancelled(),
+        "the job's cancel trips the read the tile service is answering"
+    );
     gate.open();
     let settled = harness.settle(&started["job_id"]);
     assert_eq!(settled["status"], "cancelled", "{settled}");
     assert_eq!(harness.revision(&asset), 0);
+    harness.owner.hold_tiles(None);
+}
+
+/// A batch belongs to no client, and so do its reads: the client that started it disconnecting
+/// while the tile service answers its Auto analysis cancels nothing, and the batch commits.
+#[test]
+fn auto_tone_batch_reads_outlive_the_client_that_started_it() {
+    let harness = Harness::new("auto-tone-disconnect");
+    let asset = harness.photograph("orientation-1.jpg", "disconnect.jpg");
+    let preset = harness.preset("Auto", json!({"auto-tone":{}}));
+    let gate = Arc::new(Gate::new());
+    gate.shut();
+    let held = gate.clone();
+    harness
+        .owner
+        .hold_tiles(Some(Arc::new(move || held.pass())));
+    let starter = harness.owner.register();
+    let started = harness
+        .owner
+        .call(
+            starter,
+            ApiRequest {
+                id: "start".into(),
+                method: "batch.apply-settings".into(),
+                params: json!({"targets":assets(std::slice::from_ref(&asset)),"preset_id":preset["id"],"mutation":envelope("disconnect-auto")}),
+                token: None,
+            },
+        )
+        .unwrap()
+        .result
+        .expect("the batch started");
+    gate.wait_reached(1, "Auto's analysis read");
+    let active = harness
+        .owner
+        .pixel_read_state()
+        .2
+        .expect("the analysis read is active");
+    harness.owner.disconnect(starter);
+    assert!(
+        !active.is_cancelled(),
+        "the starting client's disconnect leaves the batch's read"
+    );
+    gate.open();
+    let settled = harness.settle(&started["job_id"]);
+    assert_eq!(settled["status"], "ready", "{settled}");
+    assert_eq!(settled["result"]["done"], json!([asset]), "{settled}");
+    assert_eq!(harness.revision(&asset), 1);
     harness.owner.hold_tiles(None);
 }
 
@@ -965,11 +1021,12 @@ fn batch_paste_settings_reports_skips_and_uses_the_single_paste_path() {
     harness.expose(&unchanged, 0.5);
     let settings = json!({"set-basic": {"exposure": 0.5}, "set-raw": {"white-balance": "as-shot"}});
     let targets = [target.clone(), removed, drafted, previewed, unchanged];
-    let request = json!({"targets": assets(&targets), "settings": settings, "source": "DSC_4471.NEF", "source_asset_id": "provenance", "mutation": envelope("paste-batch")});
-    let started = harness.ok("batch.paste-settings", request.clone());
+    let origin = json!({"kind": "paste", "source": "DSC_4471.NEF", "source_asset": alone});
+    let request = json!({"targets": assets(&targets), "settings": settings, "origin": origin, "mutation": envelope("paste-batch")});
+    let started = harness.ok("batch.apply-settings", request.clone());
     let settled = harness.settle(&started["job_id"]);
     assert_eq!(settled["status"], "ready", "{settled}");
-    assert_eq!(settled["kind"], "batch-paste");
+    assert_eq!(settled["kind"], "batch-settings");
     assert_eq!(settled["result"]["done"], json!([target]));
     let codes: Vec<_> = settled["result"]["skipped"]
         .as_array()
@@ -985,18 +1042,96 @@ fn batch_paste_settings_reports_skips_and_uses_the_single_paste_path() {
         settled["result"]["settings_skipped"][0]["settings"][0]["action"],
         "set-raw"
     );
-    harness.ok("edit.paste-settings", json!({"asset_id": alone, "settings": settings, "source": "DSC_4471.NEF", "source-asset": "provenance", "mutation": {"expected_revision": 0, "request_id": "paste-single", "actor": ACTOR}}));
+    harness.ok("edit.apply-settings", json!({"asset_id": alone, "settings": settings, "origin": origin, "mutation": {"expected_revision": 0, "request_id": "paste-single", "actor": ACTOR}}));
     let (batched, single) = (harness.current(&target), harness.current(&alone));
     assert_eq!(batched["label"], "Paste settings from DSC_4471.NEF");
-    assert_eq!(batched["action_id"], "paste-settings");
+    assert_eq!(batched["action_id"], "apply-settings");
     assert_eq!(batched["parameters"], single["parameters"]);
     assert_eq!(stack(&batched), stack(&single));
     assert_eq!(batched["request_id"], format!("paste-batch/{target}"));
-    harness.ok("batch.paste-settings", request);
+    harness.ok("batch.apply-settings", request);
     assert_eq!(harness.revision(&target), 1);
-    let bad = harness.refused("batch.paste-settings", json!({"targets": assets(&targets), "settings": {"apply-preset": {"name": "nested"}}, "source": "photo", "mutation": envelope("bad-paste")}));
-    assert_eq!(bad.code, "validation");
+    let paste = json!({"kind": "paste", "source": "photo"});
+    let preset = harness.preset("Warm", json!({"set-basic": {"exposure": 0.5}}));
+    for (case, params, fragment) in [
+        (
+            "a nested settings action",
+            json!({"targets": assets(&targets), "settings": {"apply-settings": {"origin": "nested"}}, "origin": paste, "mutation": envelope("bad-nested")}),
+            "apply-settings",
+        ),
+        (
+            "settings without an origin",
+            json!({"targets": assets(&targets), "settings": settings, "mutation": envelope("bad-origin")}),
+            "origin is required with inline settings",
+        ),
+        (
+            "settings and a preset",
+            json!({"targets": assets(&targets), "settings": settings, "preset_id": preset["id"], "origin": paste, "mutation": envelope("bad-both")}),
+            "send exactly one of settings and preset_id",
+        ),
+        (
+            "neither settings nor a preset",
+            json!({"targets": assets(&targets), "origin": paste, "mutation": envelope("bad-neither")}),
+            "send exactly one of settings and preset_id",
+        ),
+        (
+            "a preset with an origin",
+            json!({"targets": assets(&targets), "preset_id": preset["id"], "origin": paste, "mutation": envelope("bad-preset-origin")}),
+            "send origin only with settings",
+        ),
+        (
+            "a blank source",
+            json!({"targets": assets(&targets), "settings": settings, "origin": {"kind": "paste", "source": " "}, "mutation": envelope("bad-source")}),
+            "source must not be empty",
+        ),
+        (
+            "an analysis step beside a field it overwrites",
+            json!({"targets": assets(&targets), "settings": {"auto-tone": {}, "set-basic": {"exposure": 0.5}}, "origin": paste, "mutation": envelope("bad-overlap")}),
+            "overwrites set-basic.exposure",
+        ),
+    ] {
+        let bad = harness.refused("batch.apply-settings", params);
+        assert_eq!(bad.code, "validation", "{case}");
+        assert!(bad.message.contains(fragment), "{case}: {}", bad.message);
+    }
     assert_eq!(harness.revision(&target), 1);
+}
+
+/// The batch checks a set exactly as the single call does: a step whose module is unavailable
+/// does not refuse the submission when it does not apply to the photographs, which skip it and keep
+/// the rest, as `edit.apply-settings` skips it for each of them.
+#[test]
+fn a_batch_skips_an_unavailable_step_the_photographs_do_not_take_as_the_single_call_does() {
+    let registry = ModuleRegistry::assemble(&RegistryOptions {
+        disabled: &["luxforge.raw".to_owned()],
+        ..RegistryOptions::default()
+    })
+    .unwrap();
+    let harness = Harness::new("unavailable-step").restart(registry);
+    let [batched, alone] =
+        ["Batched", "Single"].map(|name| harness.photograph("srgb.jpg", &format!("{name}.jpg")));
+    let settings = json!({"set-basic": {"exposure": 0.5}, "set-raw": {"white-balance": "as-shot"}});
+    let origin = json!({"kind": "paste", "source": "DSC_4471.NEF"});
+    let started = harness.ok(
+        "batch.apply-settings",
+        json!({"targets": assets(std::slice::from_ref(&batched)), "settings": settings, "origin": origin, "mutation": envelope("unavailable")}),
+    );
+    let settled = harness.settle(&started["job_id"]);
+    assert_eq!(settled["status"], "ready", "{settled}");
+    assert_eq!(settled["result"]["done"], json!([batched]));
+    let single = harness.ok(
+        "edit.apply-settings",
+        json!({"asset_id": alone, "settings": settings, "origin": origin, "mutation": {"expected_revision": 0, "request_id": "unavailable-single", "actor": ACTOR}}),
+    );
+    assert_eq!(
+        settled["result"]["settings_skipped"][0]["settings"],
+        single["skipped"]
+    );
+    assert_eq!(single["skipped"][0]["action"], "set-raw");
+    assert_eq!(
+        stack(&harness.current(&batched)),
+        stack(&harness.current(&alone))
+    );
 }
 
 #[test]
@@ -1007,7 +1142,7 @@ fn cancelled_batch_paste_keeps_finished_photographs() {
         .map(|name| harness.photograph("srgb.jpg", &format!("{name}.jpg")))
         .collect();
     let gate = harness.hold_before_photograph(2);
-    let started = harness.ok("batch.paste-settings", json!({"targets": assets(&photos), "settings": {"set-basic": {"exposure": 0.5}}, "source": "source.jpg", "mutation": envelope("cancel-paste")}));
+    let started = harness.ok("batch.apply-settings", json!({"targets": assets(&photos), "settings": {"set-basic": {"exposure": 0.5}}, "origin": {"kind": "paste", "source": "source.jpg"}, "mutation": envelope("cancel-paste")}));
     let job = started["job_id"].clone();
     gate.wait_reached(1, "the paste's second photograph");
     assert_eq!(

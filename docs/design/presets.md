@@ -9,14 +9,14 @@ A preset is a named, reusable set of adjustment settings. Applying one changes o
 In scope:
 
 - **Settings sets and composite actions.** A settings set names field-patch actions and the fields each one sets. The host applies the steps of a composite action in order and commits the result once.
-- **The presets module.** `luxforge.presets` declares `apply-preset`, which applies a settings set as one entry labelled `Preset: <name>`.
+- **The presets module.** `luxforge.presets` declares `apply-settings`, which applies a settings set as one entry labelled by where the set came from: `Preset: <name>` for a preset, `Paste settings from <source>` for [copied settings](copy-settings.md).
 - **A preset library in the catalog.** List, read, create, capture from a photo, update, delete, export and import, all through `preset.*` methods.
 - **Import.** Lightroom Classic XMP develop presets, legacy `.lrtemplate` presets and Luxforge's own preset document, with a per-setting report. A dry run returns the same report without saving anything.
 - **A desktop Presets section.** The grouped library, apply on click, a create form, a file import and a delete command.
 
-Not in scope, with no placeholder controls: an Amount slider, a hover preview, writing Lightroom XMP, DNG presets, Lightroom profiles, named white balances, and reading Lightroom's settings folders automatically. [Later](#later) lists each of these with what it needs. Applying a library preset to several developed photographs is `batch.apply-preset` ([the catalog](catalog.md#the-catalog)), which applies it to each through `edit.apply-preset`'s own path.
+Not in scope, with no placeholder controls: an Amount slider, a hover preview, writing Lightroom XMP, DNG presets, Lightroom profiles, named white balances, and reading Lightroom's settings folders automatically. [Later](#later) lists each of these with what it needs. Applying a library preset to several developed photographs is `batch.apply-settings` with its `preset_id` ([the catalog](catalog.md#the-catalog)), which applies it to each through `edit.apply-settings`'s own path.
 
-Copy and paste settings is a separate [desktop clipboard](copy-settings.md) using `preset.capture`, `edit.paste-settings` and the same batch runner.
+Copy and paste settings is a separate [desktop clipboard](copy-settings.md) using `preset.capture` and the same two methods with a `paste` origin.
 
 ## Settings sets
 
@@ -30,7 +30,7 @@ A settings set is a JSON object whose keys name presettable field-patch actions 
 }
 ```
 
-**Presettable actions.** Any action a registered, available module declares with `patch: true` can be named. One registry method, `ModuleRegistry::patch_action`, answers whether an action is presettable, for validation, the `unavailable` list, capture, apply and the Lightroom mapping alike, and refuses the rest with `validation: unknown action X`, `validation: X is not a field-patch action` or `incompatible: unavailable module M`. It does not depend on the photo: whether the module applies to the photo's kind is checked on top of it by capture and apply. Today that is `set-basic`, `set-raw`, `set-curve`, `set-detail`, `set-presence`, `set-mixer` and `set-vignette`, plus `set-controls` in developer mode. `set-curve`'s one field, `luminance`, is a point list, so a set carries the Tone curve's points as `{"set-curve": {"luminance": [[x, y], …]}}`. A field patch updates one module's single layer, which is exactly a portable setting. `set-raw` is the RAW development's white balance: `{white-balance: as-shot}` applies each photo's own camera white balance, and `{temperature, tint}` a custom one. Everything else is excluded: RAW's explicit gains and sensor pick are per-capture, transforms and crop are per-photo geometry, and the pixel proof is a test tool.
+**Presettable actions.** Any action a registered, available module declares with `patch: true` (and not `preset: false`) can be named, and so can a declared analysis step. One registry method, `ModuleRegistry::settings_action`, answers whether an action may be a settings key, for validation, the `unavailable` list, capture and apply alike: a declared analysis step through `analysis_action`, every other action through `patch_action`, the two answers the Lightroom mapping asks directly. It refuses the rest with `validation: unknown action X`, `validation: X is not a field-patch action`, `validation: X is not presettable` or `incompatible: unavailable module M`. It does not depend on the photo: whether the module applies to the photo's kind is checked on top of it by capture and apply. Today that is `set-basic`, `set-raw`, `set-curve`, `set-detail`, `set-presence`, `set-mixer` and `set-vignette`, plus `set-controls` in developer mode. `set-curve`'s one field, `luminance`, is a point list, so a set carries the Tone curve's points as `{"set-curve": {"luminance": [[x, y], …]}}`. A field patch updates one module's single layer, which is exactly a portable setting. `set-raw` is the RAW development's white balance: `{white-balance: as-shot}` applies each photo's own camera white balance, and `{temperature, tint}` a custom one. Everything else is excluded: RAW's explicit gains and sensor pick are per-capture, transforms and crop are per-photo geometry, and the pixel proof is a test tool.
 
 **Each kind's white balance.** A JPEG's white balance is Basic's relative `temperature` and `tint`; a RAW photo's is the development's `set-raw`, and on its global target Basic's pair is superseded ([source-kind controls](source-controls.md)). A set may carry both, as a Lightroom preset may, and nothing converts between Kelvin and the relative scale in either direction. Exposure is `set-basic.exposure` on every kind. Lightroom Classic excludes crop from develop presets for the same reason ([preset formats](../research/lightroom/presets.md#what-a-preset-can-contain)).
 
@@ -67,26 +67,26 @@ A draft of a composite action resolves the same way. `EditorService::draft_recip
 | --- | --- |
 | `id`, `title`, `hint` | `luxforge.presets`, `Presets`, `Saved and imported settings` |
 | `collapsed` | `true`, so Basic still leads the panel |
-| `actions` | `apply-preset`, titled `Apply preset`, `patch: false` |
-| `controls` | One `presets {action: "apply-preset"}` control |
+| `actions` | `apply-settings`, titled `Apply settings`, `patch: false` |
+| `controls` | One `presets {action: "apply-settings"}` control |
 
-`apply-preset` takes three parameters:
+`apply-settings`, generated as `edit.apply-settings`, takes two parameters:
 
 | Parameter | Kind | Required | Meaning |
 | --- | --- | --- | --- |
-| `settings` | `settings` | yes | The settings set to apply |
-| `name` | `string {max_length: 128}` | yes | The history label and the provenance of the entry |
-| `preset-id` | `string {max_length: 96}` | no | The library preset the settings came from. This is provenance only; the host does not look it up. The name is hyphenated because module parameter names are hyphenated words; host methods keep `preset_id` beside `asset_id` |
+| `settings` | `settings` | yes | The settings set to apply, inline. Analysis steps such as `{"auto-tone": {}}` are accepted |
+| `origin` | `settings-origin` | yes | Where the set came from, which labels the entry: `{kind: "preset", name, preset_id?}` or `{kind: "paste", source, source_asset?}`. `name` is 1 to 128 characters; `source`, the source photograph's file name, 1 to 255, so any file name a platform allows fits. Neither may be blank or hold a control character. `preset_id` and `source_asset` are typed identities kept as provenance only; the host does not look them up |
 
-`parse` checks that `name` is non-empty after trimming (the generic check has already refused control characters), then stores `{settings, name, preset-id?}` as sent. `plan` returns `Compose` with one step per settings key, in key order. `label` returns `Preset: <name>`. Like every action, `apply-preset` is refused with `incompatible: unavailable module luxforge.presets` when its own module is registered as unavailable; a module with no effects has nothing the commit-time compile could refuse, so the host checks the requested module's availability before planning any action.
+The generic check reads the origin whole (the `settings-origin` kind), so `parse` has nothing left to refuse and stores `{settings, origin}` exactly as sent, untrimmed. `plan` returns `Compose` with one step per settings key, in key order. `label` reads the origin: `Preset: <name>`, or `Paste settings from <source>` with a source over 64 characters shortened in the middle, keeping its start and its extension. Like every action, `apply-settings` is refused with `incompatible: unavailable module luxforge.presets` when its own module is registered as unavailable; a module with no effects has nothing the commit-time compile could refuse, so the host checks the requested module's availability before planning any action.
 
-The request carries the settings rather than an ID for three reasons. The entry, request deduplication and Copy as JSON request each describe exactly what was applied. A later edit or deletion of the library preset cannot change what an entry means. And the module needs no access to the catalog. A client reads the library preset (`preset.list` or `preset.read`) and sends its `settings`, `name` and `id` as `preset-id`.
+The request carries the settings rather than an ID for three reasons. The entry, request deduplication and Copy as JSON request each describe exactly what was applied. A later edit or deletion of the library preset cannot change what an entry means. And the module needs no access to the catalog. A client reads the library preset (`preset.list` or `preset.read`) and sends its `settings` with `origin: {kind: "preset", name, preset_id}`. `edit.apply-settings` therefore takes no `preset_id` of its own: resolving one would take the catalog into the generic action path every module action shares. `batch.apply-settings`, a host method, does take one, and reads the preset once for the whole batch.
 
 ### Descriptor additions
 
 - **`string {max_length}` parameter kind.** Implemented as the [UI components](ui-components.md#parameter-kinds-and-hints) design specifies it: UTF-8 text of at most `max_length` characters, with `max_length` at most 256 and no control characters. The `text` control remains the second slice, because nothing here needs one.
 - **`settings` parameter kind.** The generic check validates only the shape: an object of 1 to 16 keys, each a valid action identity, each value a non-empty object of at most 64 keys, each a valid parameter name. It is the one shape check: the library runs it too, under the parameter's name (`parameter settings must name 1..=16 actions`). The host checks each step against its action when the set is applied or stored.
-- **`presets {action}` control.** The host renders its preset library here. Choosing a preset submits `action` once with that preset's `settings`, `name` and `preset-id`. Registration requires the action to be declared by the same module, not as a field patch, with a required `settings` parameter of kind `settings` and a required `name` of kind `string`, neither with a default, an optional `preset-id` of kind `string` and nothing else. A module declares at most one such control. A client that cannot render it shows the explicit unsupported-control message.
+- **`settings-origin` parameter kind.** One object saying where a settings set came from, `{kind: preset, name, preset_id?}` or `{kind: paste, source, source_asset?}`, with no other field. The generic check reads it whole, bounds, blank names, control characters and identities included, so a module receives a well-formed origin. `batch.apply-settings` declares its `origin` with the same kind.
+- **`presets {action}` control.** The host renders its preset library here. Choosing a preset submits `action` once with that preset's `settings` and `origin: {kind: preset, name, preset_id}`. Registration requires the action to be declared by the same module, not as a field patch, with a required `settings` parameter of kind `settings` and a required `origin` of kind `settings-origin`, neither with a default, and nothing else. A module declares at most one such control. A client that cannot render it shows the explicit unsupported-control message.
 
 ## Library
 
@@ -124,14 +124,30 @@ Every method is a host method listed by `schema.list`. The four mutating methods
 | `preset.list` | no | none | `{presets: [record without source_text, report reduced to counts]}` sorted by group, then name, ignoring case |
 | `preset.read` | no | `preset_id` | `{preset: record with the full report and source_text}` |
 | `preset.create` | yes | `name`, `settings`, `mutation`; optional `group` | `{preset, deduplicated}` |
-| `preset.capture` | no | `asset_id`, `fields`; optional `entry_id` (default: the session's selection) | `{settings}` read from that entry's stack |
+| `preset.groups` | no | optional `asset_id`, `entry_id` (default: the session's selection) | `{groups, analysis, photo?}`: the [settings groups](#settings-groups) and, with `asset_id`, each one on that entry |
+| `preset.capture` | no | `asset_id`, and `fields` or `groups`; optional `entry_id` (default: the session's selection) | `{settings}` read from that entry's stack |
 | `preset.update` | yes | `preset_id`, `mutation`; optional `name`, `group`, `settings` | `{outcome, preset, deduplicated}`, with `outcome: no-op` when nothing changes |
 | `preset.delete` | yes | `preset_id`, `mutation` | `{outcome, deleted, deduplicated}`, with `outcome: no-op` and `deleted: false` when the preset is absent |
 | `preset.export` | no | `preset_id` | `{file_name, content}`, a Luxforge preset document |
 | `preset.inspect` | no | `content`; optional `file_name` | `{preset, report}` as an import would create them; nothing is stored |
 | `preset.import` | yes | `content`, `mutation`; optional `file_name`, `name`, `group` | `{preset, report, deduplicated}` |
 
-`preset.create`, `preset.update` and `preset.import` validate the set against the registry, without a stack: the `settings` parameter's shape check, every action presettable and every field passing its action's parameter check. An empty set is refused. Applying a preset is `edit.apply-preset`; the library has no second apply path.
+`preset.create`, `preset.update` and `preset.import` validate the set against the registry, without a stack: the `settings` parameter's shape check, every action presettable and every field passing its action's parameter check. An empty set is refused. Applying a preset is `edit.apply-settings`, or `batch.apply-settings` for several photographs; the library has no other apply path.
+
+### Settings groups
+
+`preset.groups` answers which groups of settings a preset or Copy settings can carry, derived from the registered modules' control descriptors by one core function (`settings_groups`), which the desktop's create form and Copy chooser also call over the modules it lists, so a client offers the same groups under the same identities and defaults. A group is one control group whose value controls belong to a presettable field patch, or a module's patch controls outside any group, in registry order:
+
+- `id`: `<module id>/<group label as a slug>` (`luxforge.basic/tone`), or the module id for its loose controls; `module`, `module_title`, `label` and `title` (`Basic · Tone`).
+- `fields`: the `preset.capture` `fields` value naming its controls.
+- `per_photo` and `default_checked`: a module declares a group `per_photo` when its values usually belong to one photograph; Basic's White balance is the one, so it alone starts unchecked.
+- `unavailable`: the registry's refusal, for a module registered unavailable.
+- `kinds`: per source kind, what capture reads for the group there (`captures`, a `fields` value; Basic's White balance is `{"set-raw": true}` on a RAW photo), why capture refuses it there (`refused`), and per other kind, what applying a set captured here skips there (`skipped: [{kind, all, reasons}]`), by the apply rule: a module that does not apply to the target and a field a control variant supersedes on it.
+- `overwritten_by`: the analysis steps that write one of its fields.
+
+`analysis` lists each declared analysis step a set may carry, `{id, module, module_title, label, title, writes, overwrites}`, `overwrites` naming the groups a set carrying it cannot carry. With `asset_id`, `photo` is `{asset_id, entry_id, kind}`, each group adds `state` — `custom` when a field capture reads there differs from its declared default, `original`, or `refused` — with capture's own `reason`, and each step a `reason` when capture would refuse it. Each group is captured exactly as `preset.capture` with its `fields` would capture it, from one read of the entry: payloads only, no source opened and nothing rendered.
+
+`preset.capture {groups}` names group and analysis-step identities instead of `fields`: each group is read as its `fields`, merged per action in the order named, and each step as `true`. An unknown or repeated identity, more than 64, or both `fields` and `groups` is `validation`.
 
 **Auto tone.** A settings set can carry `"auto-tone": {}`. A set also naming any of its eight overwritten `set-basic` fields is refused when stored. `preset.capture` accepts `{"auto-tone": true}` to capture the step rather than the photograph's numbers. Every target, including a batch target, is analysed separately. [Auto tone](auto-tone.md#presets-and-import) records the full contract.
 
@@ -250,8 +266,8 @@ A qualifying rule applies only when the preset holds the amount it depends on. A
 The Presets section is generated from the `presets` control and follows Crop in the tools panel, collapsed until opened:
 
 - **Library.** Group headings in the order `preset.list` returns them, each followed by one row per preset. A partial preset shows a `Partial` badge whose tooltip gives the report's four counts, and a preset with unavailable actions shows why it cannot apply. Rows are disabled while the editor is busy, while a draft is open and during a historical preview. The whole section, Import and the form included, is disabled while no photo is open, like every other section.
-- **Apply.** Clicking a row submits `edit.apply-preset` once with that preset's `settings`, `name` and `preset-id`. The ordinary completion path follows: `asset.state`, one preview job and a history merge.
-- **Create.** A `+` button opens a form with the name, the group (default `User presets`) and one checkbox per group of presettable controls, labelled `Module · Group` and taken from the descriptors, all checked except white balance. Auto tone is a separate unchecked choice; checking it clears and disables Basic Tone and Colour. Create calls `preset.capture` for the displayed entry with the checked groups' parameters and `auto-tone: true` when selected, then `preset.create`.
+- **Apply.** Clicking a row submits `edit.apply-settings` once with that preset's `settings` and `origin: {kind: preset, name, preset_id}`. The ordinary completion path follows: `asset.state`, one preview job and a history merge.
+- **Create.** A `+` button opens a form with the name, the group (default `User presets`) and one checkbox per available [settings group](#settings-groups), labelled by its title and checked by its `default_checked`, so all but white balance. Each declared analysis step is a separate unchecked choice, `Basic · Auto tone (per photo)`, placed before the first group it overwrites; checking it clears and disables the groups it overwrites, Basic Tone and Colour. Create calls `preset.capture` for the displayed entry with the checked group and step identities, then `preset.create`.
 - **Import.** An Import button opens the native file dialog, filtered to `.xmp`, `.lrtemplate` and `.lfpreset`. The file is read in the dialog's task, refused over 1 MiB or when it is not UTF-8, and sent to `preset.import`. The status bar reports the result, for example `Imported "Soft film": 18 mapped, 2 unsupported, 1 refused`; the neutral count is in the badge's tooltip. A duplicate name, or a file that maps nothing, appears as the error it is.
 - **Row menu.** Right-clicking a row offers Export…, which writes the `preset.export` document through a native save dialog; Copy import report, for an imported preset, which copies the full report as JSON from `preset.read`; and Delete, which calls `preset.delete`.
 - **Palette.** The command palette lists `Apply preset: <name>` for each library preset that can apply in this build.
@@ -272,16 +288,16 @@ The owner asked for this work to proceed without blocking. These are proposals t
 
 1. Presets are catalog data (see [versions and lineage](versions-and-lineage.md#storage-catalog-format-13)), not files in a settings folder. Sharing goes through export and import of the `.lfpreset` document.
 2. Only field-patch actions are presettable, so RAW's explicit gains and sensor pick, transforms and crop are excluded. The RAW white balance (`set-raw`) is presettable, and a preset carries each kind's white balance separately (owner decision 6, [source-kind controls](source-controls.md#decisions)).
-3. `apply-preset` carries the settings, not a library reference.
+3. `edit.apply-settings` carries the settings, not a library reference; a preset and a paste share it and differ only in their origin.
 4. Imports are value transfers for the controls Luxforge has, and Lightroom's absolute `Temperature` and `Tint` a value conversion through the white they name (owner decision 5). Nothing is clamped.
 5. The Presets section is the first tools-panel section, collapsed, in the "what can I do" panel. Lightroom Classic puts presets on the left instead.
-6. The create form leaves white balance unchecked by default, because white balance is usually per photo.
+6. The create form leaves white balance unchecked by default, because white balance is usually per photo. Basic declares its White balance group `per_photo`, so the default is the descriptor's, not a list of field names.
 
 ## Later
 
 | Item | Needs |
 | --- | --- |
 | Amount slider | A per-field scaling rule from each module; Lightroom scales only presets that declare `SupportsAmount` |
-| Hover preview | A draft of `apply-preset` drawn as a drag's frames are, on the GPU within the slider latency budget, with warm-up coverage for the hovered stack's program combinations within the existing warm-list bound. The current warm list already includes first drags of available absent modules, but not every multi-layer preset combination; a cold combination uses the declared compiling hold and reference fallback |
+| Hover preview | A draft of `apply-settings` drawn as a drag's frames are, on the GPU within the slider latency budget, with warm-up coverage for the hovered stack's program combinations within the existing warm-list bound. The current warm list already includes first drags of available absent modules, but not every multi-layer preset combination; a cold combination uses the declared compiling hold and reference fallback |
 | DNG presets and profiles | Reading an embedded XMP packet from binary content; a profile system |
 | Writing Lightroom XMP | An exporter for the mapped fields only, with the same value-transfer caveat |

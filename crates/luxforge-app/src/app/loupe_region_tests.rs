@@ -212,6 +212,7 @@ fn loupe_region_a_real_owner_cuts_the_region_at_full_size() {
             kind: luxforge_core::SourceTag::Jpeg,
             header: HeaderState::Ok(Box::default()),
             last_seen_ms: 0,
+            born_ns: None,
         }])
         .expect("the file");
     seeder.finish().expect("the index");

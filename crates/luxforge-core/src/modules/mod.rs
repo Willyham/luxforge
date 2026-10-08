@@ -55,6 +55,8 @@ pub fn current_effect_format(effect_id: &str) -> u32 {
 
 pub use basic::BASIC_EFFECT;
 pub(crate) use basic::BasicModule;
+/// Basic's Auto tone: its solver and forward model, public for the fitting rig and measurements.
+pub use basic::auto as auto_tone;
 pub(crate) use capabilities_proof::CapabilitiesProofModule;
 #[cfg(test)]
 pub(crate) use capabilities_proof::{
@@ -87,6 +89,7 @@ pub use descriptor::{
     ChoiceControl, ColorControl, ControlVariant, IdentityKind, RangeControl, ResolvedControl,
     ResolvedReset, TaskControl, ToggleControl, WheelControl, WheelStyle,
 };
+pub use descriptor::{Chord, HOST_CHORDS, host_chord};
 pub(crate) use descriptor::{
     MAX_SECRET_LENGTH, MAX_SETTINGS_ACTIONS, MAX_SETTINGS_FIELDS, valid_identity, valid_name,
 };
@@ -117,7 +120,8 @@ pub(crate) use presence::PresenceModule;
 pub(crate) use presence::gpu_functions as presence_gpu_functions;
 #[cfg(feature = "qualification")]
 pub use presence::qualification as presence_qualification;
-pub(crate) use presets::{APPLY_PRESET, MAX_PRESET_NAME, PASTE_SETTINGS, PresetsModule};
+pub(crate) use presets::{APPLY_SETTINGS, MAX_PRESET_NAME, PresetsModule};
+pub use presets::{MAX_SOURCE_NAME, SettingsOrigin};
 pub(crate) use processing::MAX_COLOR_UNITS;
 pub use processing::{
     ColorOperation, CompileStage, OperationIdentity, PointwiseColor, Processing, SamplingScale,
@@ -128,7 +132,6 @@ pub(crate) use raw::lightroom_white_balance::lightroom_to_luxforge;
 pub use raw::white_balance::{gains_from_temperature_tint, temperature_tint_from_gains};
 pub use raw::{RawModule, RawPayload, WhiteBalanceMode};
 pub(crate) use raw::{is_raw_development, white_balance_variants};
-pub(crate) use registry::Superseded;
 #[cfg(test)]
 pub(crate) use registry::linked_modules;
 #[cfg(test)]
@@ -140,6 +143,7 @@ pub(crate) use registry::tests::{
 };
 pub use registry::{ActionRef, QueryRef};
 pub use registry::{ModuleRegistry, Provider, RegistryOptions, insertion_index_among};
+pub(crate) use registry::{Superseded, settings_action_in, superseded_in, superseded_refusal_in};
 pub(crate) use spatial::{
     ESTIMATE_REDUCTION, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes,
     PlanesMut, Reduction, SPATIAL_BUDGET_BYTES, SpatialUnit,
@@ -260,9 +264,10 @@ pub trait StageQuestions {
         Err(Error::internal("this stage cannot defer a query"))
     }
 
-    /// Uniform nearest-point analysis of this input stage over the output geometry.
-    fn analysis_before(&self, _index: usize) -> Result<crate::tiles::AnalysisRead, Error> {
-        Err(Error::internal("this stage cannot read an analysis grid"))
+    /// The bounded nearest-point sample grid of this input stage over the output geometry
+    /// ([`crate::tiles::read_grid`]), read off the catalog owner by the tile service.
+    fn grid_before(&self, _index: usize) -> Result<crate::tiles::GridRead, Error> {
+        Err(Error::internal("this stage cannot read a sample grid"))
     }
 
     /// Capture identity and correction status from the cached verified source. No source is
@@ -580,6 +585,20 @@ pub trait ToolModule: Send + Sync {
     fn neutral_payload(&self, effect_id: &str) -> Value {
         let _ = effect_id;
         Value::Object(Map::new())
+    }
+    /// Whether this colour effect, with this payload, never lowers its output's luminance as its
+    /// input's rises: what lets an analysis that solves through it, as Auto tone solves through
+    /// the Look after Basic, search an earlier layer's value by bisection rather than by trying
+    /// every value. Reading a payload only. The default, `false`, claims nothing, so a module that
+    /// does not answer is searched exhaustively.
+    fn monotonic_luminance(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &Value,
+    ) -> Result<bool, Error> {
+        let _ = (effect_id, format, payload);
+        Ok(false)
     }
     /// Turn a persisted payload into a host processing primitive at its input stage.
     fn compile(

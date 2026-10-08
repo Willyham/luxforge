@@ -198,6 +198,14 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
                 Error::validation(format!("parameter {name} must be a settings object"))
             })?,
         )?,
+        ParameterKind::SettingsOrigin => {
+            crate::SettingsOrigin::read(value).map_err(|error| {
+                Error::validation(format!(
+                    "parameter {name} is not a usable origin: {}",
+                    error.detail
+                ))
+            })?;
+        }
         ParameterKind::Endpoint { classes } => {
             let text = value
                 .as_str()

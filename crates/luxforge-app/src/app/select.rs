@@ -838,7 +838,6 @@ impl Editor {
         self.palette.open = false;
         self.view_state.menu = None;
         self.select.state.shown = Shown::Select;
-        self.owner.render_context().retain_analysis_for(None);
         self.controls.ui.analysis_reports.clear();
         self.status.text = "Showing Select".into();
         if std::mem::take(&mut self.select.check_on_show) {
@@ -856,9 +855,6 @@ impl Editor {
         self.select.state.menu = None;
         self.select.state.catalog.close();
         self.select.state.shown = Shown::Develop;
-        self.owner
-            .render_context()
-            .retain_analysis_for(self.document.state.as_ref().map(|state| &state.asset.id));
         self.select.previews.release();
         self.loupe_leave()
     }

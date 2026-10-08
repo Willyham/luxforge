@@ -17,12 +17,13 @@ pub(crate) enum PresetMessage {
     Name(String),
     /// The create form's group text.
     Group(String),
-    /// One create-form checkbox, by its label.
-    Check { label: String, checked: bool },
+    /// One create-form checkbox, by its settings-group identity.
+    Check { id: String, checked: bool },
     /// Capture the checked groups from the displayed entry and store them as a new preset.
     Create,
-    /// Recompute Auto for every photo the preset is applied to.
-    AutoTone(bool),
+    /// Check or clear one declared analysis step, by identity, which recomputes its fields on
+    /// every photo the preset is applied to.
+    Analysis { id: String, checked: bool },
     /// Close the create form and forget what was typed.
     Cancel,
     /// `preset.capture`, `preset.create` and the listing after them answered.

@@ -308,6 +308,19 @@ pub struct EvaluationFigures {
     /// that ran: what the frame's links drew.
     pub window_texels: u64,
     pub link_texels: u64,
+    /// Evaluations that ran each link only where the plan's change reached, and those that ran
+    /// every link over the whole window; and the texels the links that ran reached, the window's
+    /// for a whole evaluation's.
+    pub incremental: u32,
+    pub whole: u32,
+    pub reached_texels: u64,
+    /// Links that, on an incremental evaluation, ran every pass over the whole window once because
+    /// their planes did not hold what their mask now needs: a painted mask grown past where its
+    /// planes were written.
+    pub refilled: u32,
+    /// The texels the spatial passes that ran wrote, each over its own rectangle of its plane: the
+    /// spatial work, where [`Self::spatial_passes`] counts passes dispatched over nothing too.
+    pub spatial_texels: u64,
 }
 
 impl EvaluationFigures {
@@ -321,6 +334,11 @@ impl EvaluationFigures {
         self.lights_restored += other.lights_restored;
         self.window_texels += other.window_texels;
         self.link_texels += other.link_texels;
+        self.incremental += other.incremental;
+        self.whole += other.whole;
+        self.reached_texels += other.reached_texels;
+        self.refilled += other.refilled;
+        self.spatial_texels += other.spatial_texels;
     }
 }
 

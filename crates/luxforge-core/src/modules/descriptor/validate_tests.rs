@@ -241,6 +241,7 @@ fn descriptors_reject_malformed_identities_duplicates_and_invalid_controls() {
             layout: ModuleLayout::Stacked,
             view: false,
             variants: Vec::new(),
+            per_photo: false,
         })],
         ..sample_descriptor()
     };
@@ -587,6 +588,7 @@ fn descriptors_reject_malformed_identities_duplicates_and_invalid_controls() {
                     layout: ModuleLayout::Stacked,
                     view: false,
                     variants: Vec::new(),
+                    per_photo: false,
                 })],
                 ..descriptor()
             },
@@ -605,6 +607,7 @@ fn descriptors_reject_malformed_identities_duplicates_and_invalid_controls() {
                     layout: ModuleLayout::Stacked,
                     view: false,
                     variants: Vec::new(),
+                    per_photo: false,
                 })],
                 ..descriptor()
             },
@@ -821,6 +824,7 @@ fn descriptors_reject_malformed_identities_duplicates_and_invalid_controls() {
                         layout: ModuleLayout::Stacked,
                         view: false,
                         variants: Vec::new(),
+                        per_photo: false,
                     }),
                 ],
                 ..sample_descriptor()
@@ -936,12 +940,6 @@ fn descriptors_reject_malformed_identities_duplicates_and_invalid_controls() {
 fn a_presets_control_needs_its_own_action_with_exactly_the_preset_parameters() {
     let valid = presets_descriptor();
     valid.validate().expect("the presets shape is accepted");
-    assert!(
-        presets_with(vec![settings("settings"), string("name", 128, true)])
-            .validate()
-            .is_ok(),
-        "the library identity is optional"
-    );
     let nested = ModuleDescriptor {
         controls: vec![Control::Group(GroupControl {
             label: "Library".into(),
@@ -953,6 +951,7 @@ fn a_presets_control_needs_its_own_action_with_exactly_the_preset_parameters() {
             layout: ModuleLayout::Stacked,
             view: false,
             variants: Vec::new(),
+            per_photo: false,
         })],
         ..presets_descriptor()
     };

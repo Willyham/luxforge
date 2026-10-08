@@ -14,7 +14,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         })
     };
     let form = |submit| PresetCreateStep {
-        auto_tone: true,
+        analysis: vec!["auto-tone".into()],
         name: "Auto per photo".into(),
         group: None,
         groups: vec![],
@@ -76,6 +76,8 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             .commits(1)
             .label("Preset: Auto per photo"),
         Step::new("predicted-again", script::Step::api("query.auto-tone")).commits(0),
+        // The palette lists Auto with the chord Basic's descriptor declares beside its label.
+        Step::new("palette", script::PaletteStep::Query("auto".into())).commits(0),
     ])
 }
 
@@ -140,7 +142,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     )?;
     let form = &launch.at("form")?.state()["presets"]["form"];
     ensure(
-        form["auto_tone"] == true && form["checked"] == json!([]),
+        form["analysis"] == json!(["auto-tone"]) && form["checked"] == json!([]),
         "Auto preset form also captured concrete fields",
     )?;
     ensure(

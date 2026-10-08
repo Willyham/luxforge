@@ -6,13 +6,16 @@ use super::{
 };
 use crate::state::{
     copy_settings::{Chooser, Clipboard, Confirmation, CopyModel, Group, Source, Targets},
-    presets::{PresetForm, PresettableGroup, capture_fields, copyable_groups},
+    presets::{PresetForm, settings_groups},
     select::{SelectionModel, Shown},
     select_catalog::BatchKind,
 };
 use iced::Task;
-use luxforge_core::{ClientId, EditorState, ModuleDescriptor, OwnerHandle, catalog_types::RowItem};
-use serde_json::{Map, Value, json};
+use luxforge_core::{
+    ClientId, EditorState, GroupState, OwnerHandle, SettingsGroups, SourceTag,
+    catalog_types::RowItem,
+};
+use serde_json::{Value, json};
 use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -47,19 +50,20 @@ fn read_source(
     Ok((source, state.asset.source.tag()))
 }
 
+/// Copy: the checked groups captured by identity from the source's entry, read when Copy runs.
 pub(crate) fn capture_now(
     owner: &OwnerHandle,
     client: ClientId,
     source: Source,
-    groups: &[PresettableGroup],
+    groups: &SettingsGroups,
     form: &PresetForm,
 ) -> Result<Arc<Clipboard>, String> {
-    let fields = capture_fields(groups, form);
-    if fields.is_empty() {
+    let ids = form.capture_ids(groups);
+    if ids.is_empty() {
         return Err("Choose at least one group of settings".into());
     }
     let (source, kind) = read_source(owner, client, source)?;
-    let params = json!({"asset_id": source.asset, "entry_id": source.entry, "fields": fields});
+    let params = json!({"asset_id": source.asset, "entry_id": source.entry, "groups": ids});
     let (captured, _) = call(owner, client, "preset.capture", params.clone())?;
     let settings = captured["settings"]
         .as_object()
@@ -71,9 +75,10 @@ pub(crate) fn capture_now(
         kind,
         settings,
         groups: groups
+            .groups
             .iter()
-            .filter(|group| form.is_checked(group))
-            .map(|group| group.label.clone())
+            .filter(|group| ids.contains(&group.id))
+            .cloned()
             .collect(),
         copied_at: SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -82,138 +87,38 @@ pub(crate) fn capture_now(
     }))
 }
 
-fn same_value(left: &Value, right: &Value) -> bool {
-    match (left, right) {
-        (Value::Number(a), Value::Number(b)) => a.as_f64() == b.as_f64(),
-        (Value::Array(a), Value::Array(b)) => {
-            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same_value(a, b))
-        }
-        (Value::Object(a), Value::Object(b)) => {
-            a.len() == b.len()
-                && a.iter()
-                    .all(|(key, a)| b.get(key).is_some_and(|b| same_value(a, b)))
-        }
-        _ => left == right,
-    }
-}
-
-fn custom(
-    settings: &Map<String, Value>,
-    fields: &Map<String, Value>,
-    modules: &[ModuleDescriptor],
-) -> bool {
-    settings.iter().any(|(action, values)| {
-        let declared = modules.iter().find_map(|module| module.action(action));
-        values.as_object().is_some_and(|values| {
-            values.iter().any(|(name, value)| {
-                let included = fields.get(action).is_none_or(|names| {
-                    names == &Value::Bool(true)
-                        || names
-                            .as_array()
-                            .is_some_and(|names| names.iter().any(|field| field == name))
-                });
-                included
-                    && declared
-                        .and_then(|action| action.parameter(name))
-                        .is_none_or(|parameter| {
-                            parameter
-                                .default
-                                .as_ref()
-                                .is_none_or(|default| !same_value(default, value))
-                        })
-            })
-        })
-    })
-}
-
+/// The chooser: one `preset.groups` read of the source's entry, which says for every group whether
+/// it is Custom or Original there, or why capture refuses it. A refused group starts unchecked.
 pub(crate) fn inspect_now(
     owner: &OwnerHandle,
     client: ClientId,
     source: Source,
-    groups: Vec<PresettableGroup>,
     mut form: PresetForm,
-    modules: &[ModuleDescriptor],
 ) -> Result<Chooser, String> {
     let (resolved, kind) = read_source(owner, client, source.clone())?;
-    let all = PresetForm {
-        checked: groups
-            .iter()
-            .map(|group| (group.label.clone(), true))
-            .collect(),
-        ..PresetForm::default()
-    };
-    let capture = |fields: Map<String, Value>| -> Result<Map<String, Value>, String> {
-        let (value, _) = call(
-            owner,
-            client,
-            "preset.capture",
-            json!({"asset_id": resolved.asset, "entry_id": resolved.entry, "fields": fields}),
-        )?;
-        value["settings"]
-            .as_object()
-            .cloned()
-            .ok_or("Capture returned no settings".into())
-    };
-    let captured = capture(capture_fields(&groups, &all));
-    let mut rows = Vec::new();
-    for group in groups {
-        let fields = capture_fields(std::slice::from_ref(&group), &all);
-        // A successful whole capture supplies ordinary fields. Kind-resolved controls and a
-        // refused whole capture get a narrow read, so the chooser can name each affected group.
-        let local = match &captured {
-            Ok(settings)
-                if fields.iter().all(|(action, names)| {
-                    names.as_array().is_some_and(|names| {
-                        names.iter().all(|name| {
-                            settings
-                                .get(action)
-                                .and_then(|values| values.get(name.as_str().unwrap_or_default()))
-                                .is_some()
-                        })
-                    })
-                }) =>
-            {
-                let selected: Map<String, Value> = fields
-                    .iter()
-                    .filter_map(|(action, names)| {
-                        settings
-                            .get(action)
-                            .and_then(Value::as_object)
-                            .map(|values| {
-                                (
-                                    action.clone(),
-                                    Value::Object(
-                                        values
-                                            .iter()
-                                            .filter(|(name, _)| {
-                                                names.as_array().is_some_and(|names| {
-                                                    names.iter().any(|field| field == name.as_str())
-                                                })
-                                            })
-                                            .map(|(name, value)| (name.clone(), value.clone()))
-                                            .collect(),
-                                    ),
-                                )
-                            })
-                    })
-                    .collect();
-                Ok(selected)
+    let (answer, _) = call(
+        owner,
+        client,
+        "preset.groups",
+        json!({"asset_id": resolved.asset, "entry_id": resolved.entry}),
+    )?;
+    let answer: SettingsGroups =
+        serde_json::from_value(answer).map_err(|error| error.to_string())?;
+    let rows = answer
+        .groups
+        .into_iter()
+        .map(|group| {
+            let reason = group.reason.clone().or_else(|| group.unavailable.clone());
+            if reason.is_some() {
+                form.checked.insert(group.id.clone(), false);
             }
-            _ => capture(fields.clone()),
-        };
-        let (custom, reason) = match local {
-            Ok(settings) => (custom(&settings, &fields, modules), None),
-            Err(reason) => {
-                form.checked.insert(group.label.clone(), false);
-                (false, Some(reason))
+            Group {
+                custom: group.state == Some(GroupState::Custom),
+                reason,
+                group,
             }
-        };
-        rows.push(Group {
-            group,
-            custom,
-            reason,
-        });
-    }
+        })
+        .collect();
     Ok(Chooser {
         source,
         inspected_entry: resolved.entry.unwrap(),
@@ -300,6 +205,9 @@ impl Editor {
         if self.view_state.copy_settings.pending {
             return Some("Waiting for the settings capture".into());
         }
+        if self.view_state.copy_settings.batch_pending {
+            return Some("Waiting for the settings request".into());
+        }
         if previous
             && (self.select.state.shown == Shown::Select
                 || self.view_state.copy_settings.previous.is_none())
@@ -307,7 +215,10 @@ impl Editor {
             return Some("No previous photograph in this window".into());
         }
         if !previous && self.view_state.copy_settings.clipboard.is_none() {
-            return Some("Nothing copied yet · Copy settings ⇧⌘C".into());
+            return Some(format!(
+                "Nothing copied yet · Copy settings {}",
+                crate::state::host_commands::HostCommand::CopySettingsChoosing.glyphs()
+            ));
         }
         if let Some(batch) = self.select.state.catalog.running() {
             return Some(format!("Waiting for the batch: {}", batch.running()));
@@ -315,7 +226,12 @@ impl Editor {
         if self.select.state.shown == Shown::Select {
             return self.batch_refusal();
         }
-        self.action_refusal("paste-settings")
+        // The open photograph's refusal (a historical preview, a gesture) belongs to a paste into
+        // it alone; a batch simply skips a photograph it cannot write and reports it.
+        if self.paste_targets().count() > 1 {
+            return None;
+        }
+        self.action_refusal("apply-settings")
     }
 
     pub(crate) fn copy_model(&self) -> CopyModel {
@@ -381,7 +297,7 @@ impl Editor {
                     .set
                     .as_ref()
                     .map_or(usize::from(self.document.state.is_some()), |set| {
-                        set.selected.len() + usize::from(!set.selected.contains(&set.active))
+                        set.selected_count()
                     })
             },
         }
@@ -396,7 +312,7 @@ impl Editor {
                 names,
                 result,
             } => {
-                self.view_state.copy_settings.pending = false;
+                self.view_state.copy_settings.batch_pending = false;
                 return self.adopt_batch_start(kind, params, count, names, result);
             }
             C::Copy { choose, source } => {
@@ -433,14 +349,14 @@ impl Editor {
                     return self.capture_settings(source, false, true, None);
                 }
             }
-            C::Check { label, checked } => {
+            C::Check { id, checked } => {
                 if let Some(chooser) = &mut self.view_state.copy_settings.chooser
                     && chooser
                         .groups
                         .iter()
-                        .any(|group| group.group.label == label && group.reason.is_none())
+                        .any(|group| group.group.id == id && group.reason.is_none())
                 {
-                    chooser.form.checked.insert(label, checked);
+                    chooser.form.checked.insert(id, checked);
                 }
             }
             C::CheckMany {
@@ -450,11 +366,12 @@ impl Editor {
             } => {
                 if let Some(chooser) = &mut self.view_state.copy_settings.chooser {
                     for group in &chooser.groups {
-                        if module.as_ref().is_none_or(|module| {
-                            group.group.label.split(" · ").next() == Some(module)
-                        }) {
+                        if module
+                            .as_ref()
+                            .is_none_or(|module| &group.group.module == module)
+                        {
                             chooser.form.checked.insert(
-                                group.group.label.clone(),
+                                group.group.id.clone(),
                                 group.reason.is_none() && checked && (!edited || group.custom),
                             );
                         }
@@ -521,10 +438,11 @@ impl Editor {
                         }
                         self.view_state.copy_settings.request = Some(clipboard.capture.clone());
                         self.status.text = format!(
-                            "Copied {} group{} from {} · Paste ⌘V",
+                            "Copied {} group{} from {} · Paste {}",
                             clipboard.groups.len(),
                             if clipboard.groups.len() == 1 { "" } else { "s" },
-                            clipboard.source.name
+                            clipboard.source.name,
+                            crate::state::host_commands::HostCommand::PasteSettings.glyphs()
                         );
                         self.view_state.copy_settings.clipboard = Some(clipboard);
                     }
@@ -547,7 +465,7 @@ impl Editor {
                     return Task::none();
                 };
                 if targets.count() > 1 {
-                    let skip = self.white_balance_notice(&clipboard);
+                    let skip = self.skip_notice(&clipboard);
                     self.view_state.copy_settings.confirm = Some(Confirmation {
                         clipboard,
                         targets,
@@ -575,59 +493,32 @@ impl Editor {
         Task::none()
     }
 
-    fn white_balance_notice(&self, clipboard: &Clipboard) -> String {
-        if !clipboard.settings.values().any(|values| {
-            values.get("temperature").is_some()
-                || values.get("tint").is_some()
-                || values.get("white-balance").is_some()
-        }) {
-            return String::new();
-        }
-        if self.select.state.shown == Shown::Select {
+    /// What the confirmation says a paste to the selected photographs will skip
+    /// ([`Clipboard::skip_notice`]), over their kinds when this window holds them.
+    fn skip_notice(&self, clipboard: &Clipboard) -> String {
+        let kinds: Option<Vec<SourceTag>> = if self.select.state.shown == Shown::Select {
             let selection = SelectionModel::of(&self.session.browse, self.select.state.revision());
-            if let Some(rows) =
-                crate::state::select_catalog::selected_rows(&self.select.state, &selection)
-            {
-                let count = rows.iter().filter(|row| row.kind != clipboard.kind).count();
-                return if count == 0 {
-                    String::new()
-                } else {
-                    format!(
-                        "White balance will be skipped on {count} photographs of a different source kind; they keep their own."
-                    )
-                };
-            }
-        }
-        if self.select.state.shown != Shown::Select
-            && let Some(set) = &self.develop.state.set
-        {
-            let kinds: Option<Vec<_>> = set
-                .photos
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| set.selected(*index))
-                .map(|(_, photo)| photo.kind)
-                .collect();
-            if let Some(kinds) = kinds {
-                let count = kinds.iter().filter(|kind| **kind != clipboard.kind).count();
-                return if count == 0 {
-                    String::new()
-                } else {
-                    format!(
-                        "White balance will be skipped on {count} photographs of a different source kind; they keep their own."
-                    )
-                };
-            }
-        }
-        "White balance is skipped on photographs of a different source kind; each keeps its own. The report identifies any skips.".into()
+            crate::state::select_catalog::selected_rows(&self.select.state, &selection)
+                .map(|rows| rows.iter().map(|row| row.kind).collect())
+        } else {
+            self.develop.state.set.as_ref().and_then(|set| {
+                set.photos
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| set.selected(*index))
+                    .map(|(_, photo)| photo.kind)
+                    .collect()
+            })
+        };
+        clipboard.skip_notice(kinds.as_deref())
     }
 
     pub(crate) fn copy_settings_summary(&self) -> Value {
         let state = &self.view_state.copy_settings;
         json!({
             "pending": state.pending,
-            "clipboard": state.clipboard.as_ref().map(|clip| json!({"asset": clip.source.asset, "entry": clip.source.entry, "name": clip.source.name, "kind": clip.kind, "groups": clip.groups, "settings": clip.settings, "copied_at": clip.copied_at})),
-            "chooser": state.chooser.as_ref().map(|chooser| json!({"name": chooser.source.name, "entry": chooser.inspected_entry, "kind": chooser.kind, "groups": chooser.groups.iter().map(|row| json!({"label":row.group.label,"custom":row.custom,"reason":row.reason,"checked":chooser.form.is_checked(&row.group)})).collect::<Vec<_>>() })),
+            "clipboard": state.clipboard.as_ref().map(|clip| json!({"asset": clip.source.asset, "entry": clip.source.entry, "name": clip.source.name, "kind": clip.kind, "groups": clip.labels(), "settings": clip.settings, "copied_at": clip.copied_at})),
+            "chooser": state.chooser.as_ref().map(|chooser| json!({"name": chooser.source.name, "entry": chooser.inspected_entry, "kind": chooser.kind, "groups": chooser.groups.iter().map(|row| json!({"id":row.group.id,"label":row.group.title,"custom":row.custom,"reason":row.reason,"checked":chooser.form.is_checked(&row.group)})).collect::<Vec<_>>() })),
             "confirmation": state.confirm.as_ref().map(|confirm| json!({"count": confirm.targets.count(),"source":confirm.clipboard.source.name,"skip":confirm.skip})),
             "previous": state.previous.as_ref().map(|source| &source.asset),
             "request": state.request,
@@ -645,21 +536,20 @@ impl Editor {
         if self.view_state.copy_settings.pending {
             return Task::none();
         }
-        let groups = copyable_groups(&self.modules, self.developer);
+        let groups = settings_groups(&self.modules, self.developer);
         let form = form.unwrap_or_else(|| self.view_state.copy_settings.form());
         self.view_state.copy_settings.serial += 1;
         self.view_state.copy_settings.pending = true;
         let serial = self.view_state.copy_settings.serial;
         let (owner, client) = (self.owner.clone(), self.client);
         if choose {
-            let modules = self.modules.clone();
             owner_task(
-                move || inspect_now(&owner, client, source, groups, form, &modules),
+                move || inspect_now(&owner, client, source, form),
                 move |result| message(C::Inspected { serial, result }),
             )
         } else {
             self.view_state.copy_settings.request = Some(
-                json!({"method": "preset.capture", "params": {"asset_id": source.asset, "entry_id": source.entry, "fields": capture_fields(&groups, &form)}}),
+                json!({"method": "preset.capture", "params": {"asset_id": source.asset, "entry_id": source.entry, "groups": form.capture_ids(&groups)}}),
             );
             owner_task(
                 move || capture_now(&owner, client, source, &groups, &form),
@@ -675,23 +565,17 @@ impl Editor {
     }
 
     fn paste_single(&mut self, clipboard: &Clipboard) -> Task<Message> {
-        if let Some(reason) = self.action_refusal("paste-settings") {
+        if let Some(reason) = self.action_refusal("apply-settings") {
             self.status.text = reason;
             return Task::none();
         }
-        match self.request("paste-settings", &clipboard.parameters()) {
+        match self.request("apply-settings", &clipboard.parameters()) {
             Ok((method, params)) => {
                 self.view_state.copy_settings.request =
                     Some(json!({"method": method, "params": params}));
-                if let (Some(request_id), Some(state)) = (
-                    params["mutation"]["request_id"].as_str(),
-                    self.document.state.as_ref(),
-                ) {
-                    self.view_state.copy_settings.paste_request = Some((
-                        request_id.into(),
-                        Arc::new(clipboard.clone()),
-                        state.current_entry.id.clone(),
-                    ));
+                if let Some(request_id) = params["mutation"]["request_id"].as_str() {
+                    self.view_state.copy_settings.paste_request =
+                        Some((request_id.into(), Arc::new(clipboard.clone())));
                 }
                 self.command(method, params)
             }
@@ -714,7 +598,7 @@ impl Editor {
         {
             return self.paste_single(&clipboard);
         }
-        let params = json!({"targets": targets.params(), "settings": clipboard.settings, "source": clipboard.source.name, "source_asset_id": clipboard.source.asset, "mutation": request()});
+        let params = json!({"targets": targets.params(), "settings": clipboard.settings, "origin": clipboard.origin(), "mutation": request()});
         self.start_settings_batch(
             BatchKind::Paste {
                 source: clipboard.source.name.clone(),
@@ -730,8 +614,24 @@ mod tests {
     use super::*;
     use crate::app::testing::import_and_adopt;
     use luxforge_testbase::paths;
+    /// The built-in settings group capturing `action`'s `field`.
+    fn group_with(action: &str, field: &str) -> luxforge_core::SettingsGroup {
+        luxforge_core::settings_groups(luxforge_core::ModuleRegistry::builtin().descriptors())
+            .groups
+            .into_iter()
+            .find(|group| {
+                group
+                    .fields
+                    .get(action)
+                    .is_some_and(|fields| fields.iter().any(|f| f == field))
+            })
+            .unwrap_or_else(|| panic!("a group capturing {action}.{field}"))
+    }
+
+    /// A paste's status reads its answer: the outcome and the skipped settings say how many of the
+    /// copied groups applied and which were skipped, and a no-op says nothing changed.
     #[test]
-    fn copy_settings_status_correlates_the_mutation_and_keeps_no_op_skips() {
+    fn copy_settings_status_correlates_the_mutation_and_reads_applied_and_skipped_groups() {
         use crate::app::{message::sync::SyncMessage, tasks, testing};
         let catalog = paths::temp_catalog("copy-settings-status");
         let (mut editor, asset, _) = testing::real_photo_at(&catalog, &paths::jpeg());
@@ -746,18 +646,31 @@ mod tests {
                 .as_object()
                 .unwrap()
                 .clone(),
-            groups: vec!["Basic · Tone".into(), "Basic · White balance".into()],
+            groups: vec![
+                group_with("set-basic", "exposure"),
+                group_with("set-basic", "temperature"),
+            ],
             copied_at: 0,
             capture: Value::Null,
         };
+        let target = paths::jpeg()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         for unchanged in [false, true] {
             let _ = editor.paste_single(&clipboard);
             let sent = editor.view_state.copy_settings.request.clone().unwrap();
+            assert_eq!(sent["method"], "edit.apply-settings");
+            assert_eq!(
+                sent["params"]["origin"],
+                json!({"kind": "paste", "source": "source.NEF", "source_asset": asset})
+            );
             let refresh = tasks::command_now(
                 &editor.owner,
                 editor.client,
                 asset.clone(),
-                "edit.paste-settings",
+                "edit.apply-settings",
                 sent["params"].clone(),
                 None,
             )
@@ -770,6 +683,7 @@ mod tests {
                 refresh.mutation_request, refresh.request,
                 "transport and mutation identities are distinct"
             );
+            let reason = refresh.skipped[0].reason.clone();
             let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
             let Some(crate::state::status::Happened::Pasted(sentence)) = &editor.status.happened
             else {
@@ -778,19 +692,71 @@ mod tests {
                     editor.status.happened
                 );
             };
-            assert!(sentence.contains("Skipped:"), "{sentence}");
-            if unchanged {
-                assert!(sentence.starts_with("Nothing changed"), "{sentence}");
-                assert!(!sentence.contains("Undo"), "{sentence}");
+            let expected = if unchanged {
+                format!(
+                    "Nothing changed: {target} already has the settings that apply \u{b7} White balance skipped: {reason}"
+                )
             } else {
-                assert!(
-                    sentence.contains("source.NEF") && sentence.contains("Undo"),
-                    "{sentence}"
-                );
-            }
+                format!(
+                    "Pasted 1 of 2 groups from source.NEF \u{b7} White balance skipped: {reason} \u{b7} Undo \u{2318}Z"
+                )
+            };
+            assert_eq!(sentence, &expected);
             assert_eq!(editor.document.state.as_ref().unwrap().revision, 1);
             assert!(editor.view_state.copy_settings.paste_request.is_none());
         }
+        testing::finish(editor, catalog);
+    }
+
+    /// Pasting from a photograph whose file name is as long as a platform allows works, and the
+    /// history label shortens the name in the middle.
+    #[test]
+    fn copy_settings_pastes_from_a_source_with_the_longest_file_name() {
+        use crate::app::{tasks, testing};
+        let catalog = paths::temp_catalog("copy-settings-long-name");
+        let (mut editor, asset, _) = testing::real_photo_at(&catalog, &paths::jpeg());
+        let name = format!("{}.NEF", "a".repeat(251));
+        assert_eq!(name.len(), 255, "the longest file name a platform allows");
+        let clipboard = Clipboard {
+            source: Source {
+                asset: asset.clone(),
+                entry: None,
+                name: name.clone(),
+            },
+            kind: luxforge_core::SourceTag::Raw,
+            settings: json!({"set-basic":{"exposure":0.6}})
+                .as_object()
+                .unwrap()
+                .clone(),
+            groups: vec![group_with("set-basic", "exposure")],
+            copied_at: 0,
+            capture: Value::Null,
+        };
+        let _ = editor.paste_single(&clipboard);
+        let sent = editor.view_state.copy_settings.request.clone().unwrap();
+        assert_eq!(sent["params"]["origin"]["source"], json!(name));
+        tasks::command_now(
+            &editor.owner,
+            editor.client,
+            asset.clone(),
+            "edit.apply-settings",
+            sent["params"].clone(),
+            None,
+        )
+        .expect("a 255-byte file name pastes");
+        let (state, _) = call(
+            &editor.owner,
+            editor.client,
+            "asset.state",
+            json!({"asset_id": asset}),
+        )
+        .unwrap();
+        let label = state["current_entry"]["label"].as_str().unwrap();
+        assert!(
+            label.starts_with("Paste settings from aaaa") && label.ends_with("aaa.NEF"),
+            "{label}"
+        );
+        assert!(label.contains('\u{2026}'), "{label}");
         testing::finish(editor, catalog);
     }
 
@@ -803,12 +769,8 @@ mod tests {
         let (state, _) = call(&owner, client, "asset.state", json!({"asset_id": asset})).unwrap();
         let original = serde_json::from_value(state["current_entry"]["id"].clone()).unwrap();
         call(&owner, client, "edit.set-basic", json!({"asset_id": asset, "exposure": 1, "mutation": {"expected_revision": 0, "request_id": "expose", "actor": "copy-test"}})).unwrap();
-        let modules = luxforge_core::ModuleRegistry::builtin()
-            .descriptors()
-            .into_iter()
-            .cloned()
-            .collect::<Vec<_>>();
-        let groups = copyable_groups(&modules, false);
+        let groups =
+            luxforge_core::settings_groups(luxforge_core::ModuleRegistry::builtin().descriptors());
         let source = Source {
             asset: asset.clone(),
             entry: None,
@@ -823,24 +785,51 @@ mod tests {
         )
         .unwrap();
         assert_eq!(copied.settings["set-basic"]["exposure"].as_f64(), Some(1.0));
-        let (independent, _) = call(&owner, client, "preset.capture", json!({"asset_id": asset, "entry_id": copied.source.entry, "fields": capture_fields(&groups, &PresetForm::default())})).unwrap();
+        let (independent, _) = call(&owner, client, "preset.capture", json!({"asset_id": asset, "entry_id": copied.source.entry, "groups": PresetForm::default().capture_ids(&groups)})).unwrap();
         assert_eq!(independent["settings"], json!(copied.settings));
-        let chooser = inspect_now(
-            &owner,
-            client,
-            source.clone(),
-            groups.clone(),
-            PresetForm::default(),
-            &modules,
-        )
-        .unwrap();
+        let chooser = inspect_now(&owner, client, source.clone(), PresetForm::default()).unwrap();
         assert!(
             chooser
                 .groups
                 .iter()
-                .find(|row| row.group.label == "Basic · Tone")
+                .find(|row| row.group.id == "luxforge.basic/tone")
                 .unwrap()
                 .custom
+        );
+        // Parity: the desktop's groups over its module listing are what `preset.groups` answers,
+        // and the chooser's rows are exactly an independent client's answer for that entry.
+        let (listed, _) = call(&owner, client, "module.list", json!({})).unwrap();
+        let listed: Vec<luxforge_core::ModuleDescriptor> =
+            serde_json::from_value(listed["modules"].clone()).unwrap();
+        let (answer, _) = call(&owner, client, "preset.groups", json!({})).unwrap();
+        assert_eq!(
+            serde_json::to_value(settings_groups(&listed, false)).unwrap(),
+            answer
+        );
+        let (described, _) = call(
+            &owner,
+            client,
+            "preset.groups",
+            json!({"asset_id": asset, "entry_id": chooser.inspected_entry}),
+        )
+        .unwrap();
+        let described: SettingsGroups = serde_json::from_value(described).unwrap();
+        assert_eq!(
+            chooser
+                .groups
+                .iter()
+                .map(|row| row.group.clone())
+                .collect::<Vec<_>>(),
+            described.groups
+        );
+        assert_eq!(
+            chooser
+                .groups
+                .iter()
+                .filter(|row| row.custom)
+                .map(|row| row.group.id.as_str())
+                .collect::<Vec<_>>(),
+            ["luxforge.basic/tone"]
         );
         let historic = Source {
             entry: Some(original),

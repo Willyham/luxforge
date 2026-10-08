@@ -13,7 +13,7 @@ use super::{
     ClientSession, MASK_MODE, MAX_VIEW_SELECTIONS, MaskOverlayColour, MaskOverlayMode,
     POINTER_MODE, PROTOCOL, ViewSelection,
     owner::{self, Call, Owner},
-    params::{self, Envelope, HostParams, NoParams, ParamSchema, host_params, parse},
+    params::{self, Envelope, HostParams, NoParams, ParamSchema, RevisionOf, host_params, parse},
 };
 #[cfg(test)]
 use crate::ErrorKind;
@@ -350,7 +350,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         JOB_READ,
         owner::JobParams,
         owner::job_read,
-        "{job_id, kind, status, progress: {fraction?, message?}, asset_id?, module_id?, resource_id?, identity?, result?, error?: {code, message, data?}, request_id?} for a job of any kind: prepare, develop, artifacts and collect (source work), analysis, install, remove and task (capability work) or export; status is queued, running, ready, failed, cancelled or superseded; result is present only when ready: the prepared asset's state, a collection's counts, the analysis report, the capability job's value or the written export; a source or analysis job is read by the clients that requested it, and a capability or export job by any client; the owner keeps the last 64 finished source jobs, 32 of each other kind and 8 analysis reports"
+        "{job_id, kind, status, ownership, progress: {fraction?, message?}, asset_id?, module_id?, resource_id?, identity?, result?, error?: {code, message, data?}, request_id?} for a job of any kind: prepare, develop, artifacts and collect (source work), analysis, install, remove and task (capability work), export, or the catalog's long-running work (listing, previews, developing picks, checking and finding originals, and batches); status is queued, running, ready, failed, cancelled or superseded; result is present only when ready: the prepared asset's state, a collection's counts, the analysis report, the capability job's value or the written export; ownership is clients for a job that belongs to the clients that requested it (source work, an analysis, a shared preview read or render): only they read it, and it stops when the last of them still interested cancels it or disconnects, so a client that closes its connection stops such a job unless another client still wants it; ownership is catalog for every other job: any client reads and cancels it, and no disconnect touches it; the owner keeps the last 64 finished source jobs, 32 of each other kind and 8 analysis reports"
     ),
     // The activity board belongs to the catalog owner, whose workers publish to it, so the owner
     // answers from it: one lock and a copy, nothing rendered or read.
@@ -433,7 +433,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "module.list",
         ModuleList,
         module_list,
-        "every registered module descriptor with its effects, actions, parameters, controls and canvas declaration: the mode's title, shortcut letter and optional icon name, from the vocabulary an action control's icon uses. An effect lists the source kinds it may exist on as sources, omitted when it is every kind; a module applies to a photo when any of its effects does or it declares none, and asset_id keeps only the modules that apply to that asset's kind. A number, action or picker control, and a group's reset, may list variants [{source, module, control | reset}]: what another module provides in its place on the global target of a photo of that kind, returned unresolved"
+        "every registered module descriptor with its effects, actions, parameters, controls and canvas declaration: the mode's title, shortcut letter and optional icon name, from the vocabulary an action control's icon uses. An action may declare a shortcut, the chord a client binds to running it with no parameters, written Command+U, Command+Shift+C or Command+Option+V (Command is ⌘ on macOS and Control elsewhere). An effect lists the source kinds it may exist on as sources, omitted when it is every kind; a module applies to a photo when any of its effects does or it declares none, and asset_id keeps only the modules that apply to that asset's kind. A number, action or picker control, and a group's reset, may list variants [{source, module, control | reset}]: what another module provides in its place on the global target of a photo of that kind, returned unresolved"
     ),
     // Module settings are answered by the catalog owner, which holds the capability host: the
     // settings directory and the secret store. They are user-level, outside every catalog, and
@@ -674,7 +674,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "saved versions in creation order with their entry sequence"
     ),
     // The preset library is catalog data beside history. None of these methods renders, opens a
-    // source or hashes pixels; applying a preset is edit.apply-preset.
+    // source or hashes pixels; applying a preset is edit.apply-settings or batch.apply-settings.
     service!(
         "preset.list",
         NoParams,
@@ -695,10 +695,16 @@ pub(super) const METHODS: &[MethodSpec] = &[
         retries: Owner,
     ),
     service!(
+        "preset.groups",
+        PresetGroups,
+        preset_groups,
+        "{groups, analysis, photo?}: the settings groups a preset or Copy settings carries, derived from the registered modules' controls in registry order, and the analysis steps a set may carry. A group is {id, module, module_title, label, title, fields, per_photo, default_checked, unavailable?, kinds, overwritten_by?}: id is <module id>/<group label as a slug> (luxforge.basic/tone), or the module id for its controls outside any group; fields is the preset.capture fields value naming its controls; per_photo is the module's declaration that its values usually belong to one photograph (white balance), so default_checked is false for it and true for every other group; unavailable is the registry's refusal; kinds is, per source kind, {kind, captures, refused?, skipped?}: what capture reads for the group on a photo of that kind (a field a control variant supersedes there is captured as the variant's action, whole: {set-raw: true} for White balance on RAW), why capture refuses it there, and, per other target kind, {kind, all, reasons} for what applying a set captured there skips, by the apply rule (a module that does not apply to the target, a field superseded on it). overwritten_by names the analysis steps writing one of its fields. An analysis step is {id, module, module_title, label, title, writes, overwrites, unavailable?}, overwrites naming the groups a set carrying it cannot carry. With asset_id, photo is {asset_id, entry_id, kind} and each group adds state custom (a captured field differs from its declared default), original or refused, with reason, captured as preset.capture would capture its fields from that entry, and each step adds reason when capture would refuse it; reads stored payloads only, so it opens no source and renders nothing"
+    ),
+    service!(
         "preset.capture",
         PresetCapture,
         preset_capture,
-        "{settings} read from one entry's stack: fields maps field-patch actions to an array of their parameter names or true for all of them; a declared analysis action accepts true and captures an empty step (auto-tone: {}), without analysing this photo; overlap with fields that step overwrites is refused; each field takes the value of its module's one layer, or its declared default when the stack has none; two or more layers are validation: ambiguous; reads stored payloads only, so it opens no source and renders nothing; send the result to preset.create"
+        "{settings} read from one entry's stack: fields maps field-patch actions to an array of their parameter names or true for all of them, or groups names preset.groups group and analysis-step ids, resolved to the same fields (exactly one of the two); a declared analysis action accepts true and captures an empty step (auto-tone: {}), without analysing this photo; overlap with fields that step overwrites is refused; each field takes the value of its module's one layer, or its declared default when the stack has none; two or more layers are validation: ambiguous; reads stored payloads only, so it opens no source and renders nothing; send the result to preset.create"
     ),
     mutating!(
         "preset.update",
@@ -1186,26 +1192,19 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "permanently deletes the catalog records of the removed photographs, at most 50,000 a call, earliest removed first, in one transaction, answering {outcome, deleted, remaining, deduplicated} (remaining: removed photographs left for another call; no-op when none is removed): each one's history entries, state, requests, versions, capture row, collection memberships, artifact references and asset row, then the strokes and artifact rows no remaining entry names (the artifacts' files are removed by a collect job it queues); records one event and marks every client's view stale; not a library change, never undone, and the journal is kept, so an undo naming a deleted photograph is conflict; files on disk are never touched; forbidden to a client without permission authority (only the desktop's own client and luxforge-json --permission-authority have it); records one event",
         retries: Owner,
     ),
-    // Batch preset and export.
+    // Batch settings and export.
     owner!(
-        "batch.apply-preset",
-        crate::catalog_types::api::BatchApplyPreset,
-        owner::library::batch::batch_apply_preset,
-        "starts a batch-preset job, answering {job_id, status, deduplicated}, whose result is {done, skipped: [{asset_id, code, reason}], settings_skipped?: [{asset_id, settings: [{action, parameter?, reason}]}]}: the library preset is read once and applied to each photograph targets names, one at a time, exactly as edit.apply-preset applies it (its settings, name and id as preset-id, against the photograph's current revision, by the envelope's actor under the request identity <request_id>/<asset_id>), analysis steps such as Auto tone run after the field patches and are recomputed per photograph; so each done photograph has its own entry labelled Preset: <name> and records an event naming it and its revision; settings_skipped lists the settings left out of a done photograph because they do not apply to it; skipped names every photograph left out: removed (in Removed), draft-open (the caller holds a draft on it), history-selected (the caller previews its history), not-applicable (none of the preset's settings apply to it), unchanged (it already has them) or the code and message edit.apply-preset refuses it with; a stack that needs its source prepared is prepared first, one photograph at a time; targets are photographs by id, by their originals' paths or index rows, or the photographs selected in the caller's view; an unknown preset or photograph is validation; while it runs job.read's result is the report so far and its progress reads n of N; job.cancel stops it between photographs or during deferred analysis, keeping every one done; a retry after a restart applies nothing twice; resource-limit past 50,000 photographs or when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id",
-        retries: Owner,
-    ),
-    owner!(
-        "batch.paste-settings",
-        crate::catalog_types::api::BatchPasteSettings,
-        owner::library::batch::batch_paste_settings,
-        "starts a batch-paste job with inline settings validated once against the registry; answers {job_id, status, deduplicated}, with the same BatchReport, targets, progress, cancellation, limits and skip rules as batch.apply-preset. Each photograph runs edit.paste-settings with source and optional source_asset_id as source-asset, against its current revision under <request_id>/<asset_id>, writing one entry labelled Paste settings from <source>. Settings contain 1..=16 presettable actions with at most 64 fields each. Unknown, unavailable or non-patch actions refuse the submission. No library preset is created or read; source_asset_id is provenance only. Cancel keeps every finished photograph; job.read reports progress and per-photograph settings_skipped.",
+        "batch.apply-settings",
+        crate::catalog_types::api::BatchApplySettings,
+        owner::library::batch::batch_apply_settings,
+        "starts a batch-settings job, answering {job_id, status, deduplicated}, whose result is {done, skipped: [{asset_id, code, reason}], settings_skipped?: [{asset_id, settings: [{action, parameter?, reason}]}]}: the set is either inline settings with their origin ({kind: preset, name, preset_id?} or {kind: paste, source, source_asset?}) or a library preset_id, read once, whose origin is {kind: preset, name, preset_id}; exactly one of settings and preset_id, and origin only with settings; it is checked once as edit.apply-settings checks it, so an unknown, non-presettable or overlapping action or a refused field refuses the submission, and a step whose module does not apply to a photograph's kind is skipped for that photograph; then it is applied to each photograph targets names, one at a time, exactly as edit.apply-settings applies it (against the photograph's current revision, by the envelope's actor under the request identity <request_id>/<asset_id>), analysis steps such as Auto tone running after the field patches and recomputed per photograph; so each done photograph has its own entry labelled by the origin (Preset: <name> or Paste settings from <source>) and records an event naming it and its revision; settings_skipped lists the settings left out of a done photograph because they do not apply to it; skipped names every photograph left out: removed (in Removed), draft-open (the caller holds a draft on it), history-selected (the caller previews its history), not-applicable (none of the set's settings apply to it), unchanged (it already has them) or the code and message edit.apply-settings refuses it with; a stack that needs its source prepared is prepared first, one photograph at a time; targets are photographs by id, by their originals' paths or index rows, or the photographs selected in the caller's view; an unknown preset or photograph is validation; the job's detail is the entry label and the photograph count; while it runs job.read's result is the report so far and its progress reads n of N; job.cancel stops it between photographs or during deferred analysis, keeping every one done; a retry after a restart applies nothing twice; resource-limit past 50,000 photographs or when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id",
         retries: Owner,
     ),
     owner!(
         "batch.export",
         crate::catalog_types::api::BatchExport,
         owner::library::batch::batch_export,
-        "starts a batch-export job, answering {job_id, status, deduplicated}, whose result is {done, written: [{asset_id, path, renderer}], skipped: [{asset_id, code, reason}]}: each photograph targets names, one at a time, has its current entry exported exactly as export.jpeg exports it (baseline quality-90 sRGB, keep_metadata as there, through the GPU tile service or the reference renderer) into destination, an existing absolute folder, named by the export's rule from its original's name (<name>-edited.jpg, else -edited-2.jpg and so on, at most 64 names read) and never replacing a file; each written file names the renderer that rendered it as export.jpeg's result does ({record: gpu, reason: null}, or {record: reference, reason} with why the GPU did not, no reason on an owner with no GPU provider) and records an event under the request; skipped names every photograph left out: removed (in Removed), or the code and message export.jpeg refuses it with, such as source-unavailable for a missing or offline original and conflict when every name is taken; a source that is not prepared is prepared first through the one preparation path, one photograph at a time, replacing the editor's prepared source; targets as batch.apply-preset's; a relative path or a file as destination is validation and a folder that is not there read-error; while it runs job.read's result is the report so far and its progress reads n of N; job.cancel stops it between photographs, or within the one being exported, whose temporary file is removed, keeping every file written; resource-limit past 50,000 photographs or when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id",
+        "starts a batch-export job, answering {job_id, status, deduplicated}, whose result is {done, written: [{asset_id, path, renderer}], skipped: [{asset_id, code, reason}]}: each photograph targets names, one at a time, has its current entry exported exactly as export.jpeg exports it (baseline quality-90 sRGB, keep_metadata as there, through the GPU tile service or the reference renderer) into destination, an existing absolute folder, named by the export's rule from its original's name (<name>-edited.jpg, else -edited-2.jpg and so on, at most 64 names read) and never replacing a file; each written file names the renderer that rendered it as export.jpeg's result does ({record: gpu, reason: null}, or {record: reference, reason} with why the GPU did not, no reason on an owner with no GPU provider) and records an event under the request; skipped names every photograph left out: removed (in Removed), or the code and message export.jpeg refuses it with, such as source-unavailable for a missing or offline original and conflict when every name is taken; a source that is not prepared is prepared first through the one preparation path, one photograph at a time, replacing the editor's prepared source; targets as batch.apply-settings'; a relative path or a file as destination is validation and a folder that is not there read-error; while it runs job.read's result is the report so far and its progress reads n of N; job.cancel stops it between photographs, or within the one being exported, whose temporary file is removed, keeping every file written; resource-limit past 50,000 photographs or when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id",
         retries: Owner,
     ),
     // Views: events, browsing and the selection.
@@ -1239,6 +1238,46 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::views::browse_select,
         "changes the caller's selection in its view and answers the session, whose browse.selection holds disjoint ascending position ranges, their count and the active position: the union of items, range and all is replaced, added, removed or toggled by mode (replace by default); without items, range or all only active moves, and {all: false} selects none; conflict when revision names another view; writes nothing"
     ),
+];
+
+/// The host methods whose effect lives only in the calling client's session, which ends with its
+/// connection, so a call of one on a connection of its own changes nothing that outlasts it: a
+/// draft, a previewed entry or comparison, the session's view and workspace state, a selection in
+/// its browse view or the rows of that view, and adopting its own preparation. `schema.list` marks
+/// each `session_scoped`, so a one-request client such as `luxforge-ctl call` can refuse it and point
+/// to a client that keeps one connection. A method that also answers something useful on its own,
+/// such as `browse.view`'s counts or `render.sample`'s pixel, is not listed.
+const SESSION_SCOPED: &[&str] = &[
+    "draft.begin",
+    "draft.set",
+    "draft.read",
+    "draft.reapply",
+    "draft.cancel",
+    "draft.commit",
+    "preview.select",
+    "preview.compare",
+    "preview.return-current",
+    "view.set",
+    "workspace.set",
+    "browse.select",
+    "browse.rows",
+    "job.adopt",
+];
+
+/// What each host method with a `revision` envelope checks its `expected_revision` against, as
+/// `schema.list` publishes it in `revision_of`; an action's is always its asset's. A test holds
+/// this list to exactly the host methods with that envelope.
+const HOST_REVISIONS: &[(&str, RevisionOf)] = &[
+    ("history.undo", RevisionOf::Asset),
+    ("history.redo", RevisionOf::Asset),
+    ("history.restore", RevisionOf::Asset),
+    ("draft.commit", RevisionOf::Draft),
+    ("module.settings.set", RevisionOf::ModuleSettings),
+    ("module.settings.set-secret", RevisionOf::ModuleSettings),
+    ("module.settings.clear-secret", RevisionOf::ModuleSettings),
+    ("module.settings.reset", RevisionOf::ModuleSettings),
+    ("module.profile.create", RevisionOf::ModuleSettings),
+    ("module.profile.remove", RevisionOf::ModuleSettings),
 ];
 
 /// A resolved method: a host method from the static table, or one generated from an action, query
@@ -1282,6 +1321,24 @@ impl Method {
 
     pub(super) fn mutates(&self) -> bool {
         self.envelope() != Envelope::None
+    }
+
+    /// What a `revision` envelope's `expected_revision` is checked against: an action's asset, or
+    /// what [`HOST_REVISIONS`] declares for a host method. `None` for any other envelope.
+    pub(super) fn revision_of(&self) -> Option<RevisionOf> {
+        match self {
+            Self::Host(spec) => HOST_REVISIONS
+                .iter()
+                .find(|(name, _)| *name == spec.name)
+                .map(|(_, of)| *of),
+            Self::Action(_) => Some(RevisionOf::Asset),
+            Self::Task(_) | Self::Query(_) => None,
+        }
+    }
+
+    /// Whether the method's effect lives only in the caller's session ([`SESSION_SCOPED`]).
+    pub(super) fn session_scoped(&self) -> bool {
+        matches!(self, Self::Host(spec) if SESSION_SCOPED.contains(&spec.name))
     }
 
     /// Who answers a retry of the method: what a host method's entry declares. An action — a
@@ -1452,6 +1509,12 @@ fn method_schema(
     if let Some(name) = envelope.name() {
         schema["mutation"] = json!(name);
     }
+    if let Some(of) = method.revision_of() {
+        schema["revision_of"] = json!(of);
+    }
+    if method.session_scoped() {
+        schema["session_scoped"] = json!(true);
+    }
     if let Some(patch) = patch {
         schema["patch"] = json!(patch);
     }
@@ -1539,11 +1602,22 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
             if maskable {
                 optional.insert(target.name.clone(), json!(target.notes));
             }
+            // An analysis action's answer carries the report its plan used.
+            let notes = match &action.analysis {
+                Some(analysis) => format!(
+                    "{} Returns the mutation result with analysis.{query}: the report query.{query} \
+                     answers for the stack this call analysed, the one its values came from, also \
+                     on a no-op; a deduplicated retry analyses nothing and carries none.",
+                    action.notes,
+                    query = analysis.query
+                ),
+                None => action.notes.clone(),
+            };
             let mut schema = method_schema(
                 &Method::Action(action.id.clone()),
                 vec![json!("asset_id"), json!("mutation")],
                 optional,
-                &action.notes,
+                &notes,
                 Some(&action.parameters),
                 Some(action.patch),
             );
@@ -1657,11 +1731,15 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
             "export_reasons": crate::RendererReason::EXPORT.map(crate::RendererReason::as_str),
             "notes": "session.state's renderer is {record, reason}, the same for every client of this owner. record gpu: the desktop's photo surface draws on its GPU, and reason is null; software is true when that GPU is the platform's software adapter (lavapipe on Linux, WARP on Windows), a rasterizer on the CPU, and is omitted otherwise. record reference: the CPU reference renderer draws the desktop's picture, slower, and reason says why: surface-pending before the desktop has drawn a photograph, which is when its photo surface checks its GPU stage; no-adapter when the GPU stage cannot run on this graphics device, when the host offers only a software adapter, which is not adopted and the desktop was not launched with --software-adapter, or when the desktop was launched with --no-gpu-render, which refuses it the same way; device-lost when the graphics device was lost, which nothing waits to recover. record reference with a null reason is an owner that draws nothing, such as luxforge-json, whose renderer is always the reference. The desktop reports it from its photo surface and the session reports it; no method sets it. A ready export's job.read result names the renderer that rendered its file in the same shape: record gpu with a null reason, or record reference with a null reason on an owner with no GPU, such as luxforge-json, and otherwise one of the reasons, one of export_reasons or the GPU plan's own code: requested when export.jpeg asked for reference: true; surface-pending before the desktop has named the adapter its window draws with to its GPU tile worker, which it does once its photo surface has checked its GPU stage; no-adapter when the tile worker found no adapter or device it can render on; refused when the desktop was launched with --no-gpu-render; device-lost when the tile worker's device was lost, before or during the export, which then starts again on the reference; adapter-mismatch when the tile worker's adapter is not the one the window draws with; tiles-budget when the export's tiles would hold more than the tile worker's GPU budget; or the code of the GPU plan or stage that cannot draw the stack, such as pixel-stage for a layer no GPU program replaces, or pipeline-failed.",
         },
+        // A method whose effect lives only in the caller's session marks itself `session_scoped`.
+        "session": {
+            "notes": "A method marked session_scoped: true acts only on the calling client's session, such as its draft, previewed entry, view, workspace or browse selection, which ends when the client's connection closes: call it on a connection that also sends what depends on it, never on a connection of its own.",
+        },
         // Every mutating method names its envelope in its own `mutation` field.
         "mutation": {
             "revision": Envelope::Revision.fields(),
             "request": Envelope::Request.fields(),
-            "notes": "Every mutating method carries a mutation envelope. A method that changes an asset or a module's settings, which have a revision, carries revision: expected_revision must be that revision or the request is a conflict. Every other mutating method carries request. request_id and actor are 1..128 characters. A retry with the same request_id and the same input returns the first answer, marked deduplicated: true, and emits no event; the same request_id with different input is a conflict. An asset change's request_id is unique per asset and is remembered durably with the change; every other request_id, a settings write's included, is unique per method family, the method name without its last segment, and is remembered for the owner's lifetime, bounded to the most recent requests, after which a settings write's retry conflicts on its revision.",
+            "notes": "Every mutating method carries a mutation envelope. A method that changes an asset or a module's settings, which have a revision, carries revision: expected_revision must be that revision or the request is a conflict, and the method's revision_of says whose revision it is: asset, the asset its asset_id names, as asset.state answers it; draft, the asset its draft_id's draft is bound to; module-settings, the settings of the module its module_id names, as module.settings.read answers them. Every other mutating method carries request. request_id and actor are 1..128 characters. A retry with the same request_id and the same input returns the first answer, marked deduplicated: true, and emits no event; the same request_id with different input is a conflict. An asset change's request_id is unique per asset and is remembered durably with the change; every other request_id, a settings write's included, is unique per method family, the method name without its last segment, and is remembered for the owner's lifetime, bounded to the most recent requests, after which a settings write's retry conflicts on its revision.",
         },
     })
 }
@@ -1785,8 +1863,16 @@ host_params! {
 host_params! {
     pub(super) struct PresetCapture {
         asset_id: AssetId = asset(),
-        fields: Map<String, Value> = json("{action: [field, ...] or true}: the fields of each field-patch action to read, true for all of them"),
+        fields: Option<Map<String, Value>> = json("{action: [field, ...] or true}: the fields of each field-patch action to read, true for all of them; give this or groups"),
+        groups: Option<Vec<String>> = json("[id, ...]: 1 to 64 preset.groups group or analysis-step ids, each group read as its fields and each step as true; give this or fields"),
         entry_id: Option<EntryId> = entry().notes("entry to read; default the session's selection"),
+    }
+}
+
+host_params! {
+    pub(super) struct PresetGroups {
+        asset_id: Option<AssetId> = asset().notes("describe each group on this photograph's entry; default no photograph"),
+        entry_id: Option<EntryId> = entry().notes("entry to read, with asset_id; default the session's selection"),
     }
 }
 
@@ -1975,29 +2061,7 @@ fn edit_action(
     let mut parameters = params::generated(request)?;
     let asset_id: AssetId = params::take(&mut parameters, "asset_id")?;
     require_current(session, &asset_id)?;
-    if session.draft.is_some()
-        && service
-            .registry()
-            .resolve_action(action_id)
-            .is_some_and(|action| {
-                let declared = action.descriptor();
-                declared.analysis.is_some()
-                    || declared.parameters.iter().any(|parameter| {
-                        matches!(parameter.kind, crate::ParameterKind::Settings)
-                            && parameters
-                                .get(&parameter.name)
-                                .and_then(Value::as_object)
-                                .is_some_and(|settings| {
-                                    settings.keys().any(|id| {
-                                        service
-                                            .registry()
-                                            .action(id)
-                                            .is_some_and(|(_, action)| action.analysis.is_some())
-                                    })
-                                })
-                    })
-            })
-    {
+    if session.draft.is_some() && service.registry().contains_analysis(action_id, &parameters) {
         return Err(Error::validation(
             "finish or discard the draft before running an analysis action",
         ));
@@ -2124,8 +2188,37 @@ fn preset_capture(
     session: &mut ClientSession,
     p: PresetCapture,
 ) -> Result<Value, Error> {
+    let fields = match (p.fields, p.groups) {
+        (Some(fields), None) => fields,
+        (None, Some(groups)) => {
+            crate::settings_groups(service.registry().descriptors()).capture_fields(&groups)?
+        }
+        _ => {
+            return Err(Error::validation(
+                "preset.capture takes exactly one of fields and groups",
+            ));
+        }
+    };
     let entry_id = selected_entry(service, session, &p.asset_id, p.entry_id)?;
-    Ok(json!({"settings": service.capture_preset(&p.asset_id, &entry_id, &p.fields)?}))
+    Ok(json!({"settings": service.capture_preset(&p.asset_id, &entry_id, &fields)?}))
+}
+
+/// The settings groups, and with a photograph, each group on the entry the caller names or the
+/// session's selection, exactly as capture resolves it.
+fn preset_groups(
+    service: &mut EditorService,
+    session: &mut ClientSession,
+    p: PresetGroups,
+) -> Result<Value, Error> {
+    let photo = match (p.asset_id, p.entry_id) {
+        (Some(asset_id), entry_id) => {
+            let entry_id = selected_entry(service, session, &asset_id, entry_id)?;
+            Some((asset_id, entry_id))
+        }
+        (None, Some(_)) => return Err(Error::validation("entry_id needs asset_id")),
+        (None, None) => None,
+    };
+    value(service.preset_groups(photo.as_ref().map(|(asset, entry)| (asset, entry)))?)
 }
 
 fn preset_update(
@@ -3169,6 +3262,16 @@ mod tests {
                 .unwrap()
             )
         );
+        // Every method the two declared lists name is a host method.
+        for name in SESSION_SCOPED
+            .iter()
+            .chain(HOST_REVISIONS.iter().map(|(name, _)| name))
+        {
+            assert!(
+                METHODS.iter().any(|spec| spec.name == *name),
+                "{name} is not a host method"
+            );
+        }
         for (name, method) in listed {
             let resolved = find(&service, name).expect("every listed method resolves");
             // A method mutates exactly when it names an envelope, and the schema describes it.
@@ -3181,6 +3284,22 @@ mod tests {
                     "{name}: its envelope {envelope} is described"
                 );
             }
+            // Whose revision a revision envelope carries is published, and only for that envelope.
+            assert_eq!(
+                method.get("revision_of").is_some(),
+                envelope == Some(&json!("revision")),
+                "{name}: revision_of names whose revision its revision envelope carries"
+            );
+            assert_eq!(
+                method.get("revision_of").cloned(),
+                resolved.revision_of().map(|of| json!(of)),
+                "{name}"
+            );
+            assert_eq!(
+                method.get("session_scoped").cloned(),
+                resolved.session_scoped().then_some(json!(true)),
+                "{name}"
+            );
             assert_eq!(
                 resolved.retries() != Retries::None,
                 resolved.mutates(),
@@ -4151,6 +4270,7 @@ mod tests {
                     patch: false,
                     preset: true,
                     analysis: None,
+                    shortcut: None,
                     parameters: vec![
                         ParameterDescriptor::number("angle", -45.0, 45.0)
                             .required(true)
@@ -4244,6 +4364,7 @@ mod tests {
                     patch: false,
                     preset: true,
                     analysis: None,
+                    shortcut: None,
                     parameters: Vec::new(),
                 }],
                 queries: Vec::new(),
@@ -5085,8 +5206,8 @@ mod tests {
         )
     }
 
-    /// `edit.apply-preset` takes its settings, name and library identity as top-level fields beside
-    /// the envelope, and any registered field patch is presettable: the test patch module's action
+    /// `edit.apply-settings` takes its settings and origin as top-level fields beside the envelope,
+    /// and any registered field patch is presettable: the test patch module's action
     /// is applied in the same entry as Basic's. A second identical call is a no-op that emits no
     /// event, and a refused step is the same structured error the action gives alone.
     #[test]
@@ -5097,24 +5218,23 @@ mod tests {
         let (applied, changed) = mutated(
             &mut service,
             &mut session,
-            "edit.apply-preset",
+            "edit.apply-settings",
             json!({
                 "asset_id": asset,
                 "mutation": mutation_json(0, "preset"),
                 "settings": settings,
-                "name": "Warm",
-                "preset-id": "preset-7",
+                "origin": {"kind": "preset", "name": "Warm", "preset_id": "preset-000000007"},
             }),
         );
         assert_eq!(applied["outcome"], json!("applied"));
         assert_eq!(applied["revision"], json!(1));
         assert_eq!(changed, Changed::Something { revision: Some(1) });
         let entry = entry_of(&mut service, &mut session, &asset, &applied);
-        assert_eq!(entry["action_id"], json!("apply-preset"));
+        assert_eq!(entry["action_id"], json!("apply-settings"));
         assert_eq!(entry["label"], json!("Preset: Warm"));
         assert_eq!(
             entry["parameters"],
-            json!({"settings": settings, "name": "Warm", "preset-id": "preset-7"})
+            json!({"settings": settings, "origin": {"kind": "preset", "name": "Warm", "preset_id": "preset-000000007"}})
         );
         let rows = described(&mut service, &mut session, &asset);
         assert_eq!(
@@ -5135,12 +5255,12 @@ mod tests {
         let (again, changed) = mutated(
             &mut service,
             &mut session,
-            "edit.apply-preset",
+            "edit.apply-settings",
             json!({
                 "asset_id": asset,
                 "mutation": mutation_json(1, "again"),
                 "settings": settings,
-                "name": "Warm",
+                "origin": {"kind": "preset", "name": "Warm"},
             }),
         );
         assert_eq!(again["outcome"], json!("no-op"));
@@ -5150,12 +5270,12 @@ mod tests {
         let refused = call(
             &mut service,
             &mut session,
-            "edit.apply-preset",
+            "edit.apply-settings",
             json!({
                 "asset_id": asset,
                 "mutation": mutation_json(1, "refused"),
                 "settings": {"set-patch": {"red": 300}},
-                "name": "Too red",
+                "origin": {"kind": "preset", "name": "Too red"},
             }),
         );
         let error = refused.error.expect("a refused step");

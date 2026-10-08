@@ -46,7 +46,7 @@ fn auto_tone_grid_reads_exact_nearest_input_pixels_after_crop_on_jpeg_and_raw() 
         );
         let evaluation = evaluation(&registry, &context, &source, &recipe);
         let cancel = Cancel::never();
-        let actual = super::analysis::read(&evaluation, 0, &ReferenceReads, &cancel).unwrap();
+        let actual = super::grid::read(&evaluation, 0, &ReferenceReads, &cancel).unwrap();
         assert_eq!(actual.sample.grid, [32, 24]);
         let independent = ReferenceReads
             .session(&evaluation, &cancel)
@@ -76,7 +76,7 @@ fn auto_tone_grid_cache_ignores_basic_and_later_colour_but_tracks_input_and_geom
     let base_recipe = recipe_of(vec![basic()], vec![]);
     let base = evaluation(&registry, &context, &source, &base_recipe);
     let cancel = Cancel::never();
-    let first = super::analysis::read(&base, 0, &ReferenceReads, &cancel).unwrap();
+    let first = super::grid::read(&base, 0, &ReferenceReads, &cancel).unwrap();
     let mut changed = base_recipe.clone();
     changed.layers[0].payload = json!({"exposure": -2.});
     changed
@@ -92,8 +92,7 @@ fn auto_tone_grid_cache_ignores_basic_and_later_colour_but_tracks_input_and_geom
             None,
         )
     };
-    let second =
-        super::analysis::read(&next(changed.clone()), 0, &ReferenceReads, &cancel).unwrap();
+    let second = super::grid::read(&next(changed.clone()), 0, &ReferenceReads, &cancel).unwrap();
     assert!(Arc::ptr_eq(&first.sample, &second.sample));
     changed.layers.push(Layer::crop(CropPayload {
         angle: 0.,
@@ -102,23 +101,97 @@ fn auto_tone_grid_cache_ignores_basic_and_later_colour_but_tracks_input_and_geom
         width: 0.5,
         height: 0.5,
     }));
-    let cropped = super::analysis::read(&next(changed), 0, &ReferenceReads, &cancel).unwrap();
+    let cropped = super::grid::read(&next(changed), 0, &ReferenceReads, &cancel).unwrap();
     assert!(!Arc::ptr_eq(&first.sample, &cropped.sample));
     assert_eq!(cropped.sample.rgb.len(), 32 * 24);
     let input_recipe = recipe_of(vec![Layer::pixel(10, 10, [255, 255, 255]), basic()], vec![]);
     let input =
-        super::analysis::read(&next(input_recipe.clone()), 1, &ReferenceReads, &cancel).unwrap();
+        super::grid::read(&next(input_recipe.clone()), 1, &ReferenceReads, &cancel).unwrap();
     assert!(!Arc::ptr_eq(&first.sample, &input.sample));
     let mut replay = input_recipe;
     replay.layers[0].id = crate::LayerId::new();
-    let replay = super::analysis::read(&next(replay), 1, &ReferenceReads, &cancel).unwrap();
+    let replay = super::grid::read(&next(replay), 1, &ReferenceReads, &cancel).unwrap();
     assert!(
         Arc::ptr_eq(&input.sample, &replay.sample),
         "intermediate composite layer ids are not pixel identity"
     );
-    context.analysis_samples().select(None);
-    let reopened = super::analysis::read(&base, 0, &ReferenceReads, &cancel).unwrap();
+    context.release_grids(&base.entry().asset_id);
+    let reopened = super::grid::read(&base, 0, &ReferenceReads, &cancel).unwrap();
     assert!(!Arc::ptr_eq(&first.sample, &reopened.sample));
+}
+
+/// A sensor stand-in saturated on a fixed lattice of upright content pixels.
+struct Lattice;
+
+impl super::SensorClip for Lattice {
+    fn clipped_at(&self, x: u32, y: u32) -> bool {
+        (x + 2 * y).is_multiple_of(7)
+    }
+}
+
+/// Each grid point's clipped flag is the source's under the content pixel it maps to through the
+/// crop: a JPEG's code 255 in any channel, a RAW's sensor when the read holds it, and nothing on a
+/// RAW without one. How clipping was detected is part of the grid's identity.
+#[test]
+fn a_grids_clipped_flags_read_the_source_under_each_point_through_the_crop() {
+    let registry = Arc::new(ModuleRegistry::builtin());
+    let context = RenderContext::new();
+    let recipe = recipe_of(
+        vec![Layer::crop(CropPayload {
+            angle: 0.,
+            x: 0.25,
+            y: 0.25,
+            width: 0.5,
+            height: 0.5,
+        })],
+        vec![],
+    );
+    // The crop shows content x 16..48 and y 12..36, one grid point per pixel.
+    let points: Vec<(u32, u32)> = (12..36)
+        .flat_map(|y| (16..48).map(move |x| (x, y)))
+        .collect();
+    let cancel = Cancel::never();
+    let mut jpeg = gradient(64, 48);
+    let mut rgba = jpeg.rgba.to_vec();
+    for &(x, y) in points.iter().step_by(5) {
+        rgba[((y * 64 + x) * 4 + 1) as usize] = 255;
+    }
+    jpeg.rgba = rgba.clone().into();
+    let read = super::grid::read(
+        &evaluation(&registry, &context, &PreviewSource::Jpeg(jpeg), &recipe),
+        0,
+        &ReferenceReads,
+        &cancel,
+    )
+    .unwrap();
+    let expected: Vec<bool> = points
+        .iter()
+        .map(|&(x, y)| rgba[((y * 64 + x) * 4) as usize..][..3].contains(&255))
+        .collect();
+    assert!(expected.iter().filter(|&&flag| flag).count() >= points.len() / 5);
+    assert_eq!(read.sample.source_clipped, expected);
+    assert_eq!(read.clipping, super::ClipDetection::JpegCode255);
+
+    let raw = PreviewSource::Raw {
+        image: varied(64, 48),
+        settings: LinearSettings::default(),
+    };
+    let without = evaluation(&registry, &context, &raw, &recipe);
+    let with = without.clone().with_sensor(Some(Arc::new(Lattice)));
+    let sensed = super::grid::read(&with, 0, &ReferenceReads, &cancel).unwrap();
+    assert_eq!(
+        sensed.sample.source_clipped,
+        points
+            .iter()
+            .map(|&(x, y)| (x + 2 * y).is_multiple_of(7))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(sensed.clipping, super::ClipDetection::RawSensorWhite);
+    let unsensed = super::grid::read(&without, 0, &ReferenceReads, &cancel).unwrap();
+    assert!(!Arc::ptr_eq(&sensed.sample, &unsensed.sample));
+    assert!(unsensed.sample.source_clipped.iter().all(|&flag| !flag));
+    assert_eq!(unsensed.clipping, super::ClipDetection::Unavailable);
+    assert_eq!(sensed.sample.rgb, unsensed.sample.rgb);
 }
 
 /// `recipe` over `source`, bound for evaluation as the catalog owner binds a saved entry's stack.

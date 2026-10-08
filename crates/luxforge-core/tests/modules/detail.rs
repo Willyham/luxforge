@@ -321,8 +321,8 @@ fn detail_native_preset_round_trips_all_eight_fields_and_zero_strengths() {
     );
     let head = s.owner.head(s.client, &s.asset).unwrap();
     s.mutate(
-        "edit.apply-preset",
-        json!({"name":"Detail imported","settings":imported["preset"]["settings"]}),
+        "edit.apply-settings",
+        json!({"origin":{"kind":"preset","name":"Detail imported"},"settings":imported["preset"]["settings"]}),
     );
     assert_eq!(s.owner.head(s.client, &s.asset).unwrap(), head + 1);
     assert_eq!(s.settings(), ancillary());

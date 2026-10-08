@@ -1,12 +1,13 @@
-//! Batch preset and export (`docs/design/catalog.md`, "The catalog"): a preset applied to many
-//! photographs, or many photographs exported into one folder, as N single calls would do it, one
-//! photograph at a time, with one report ([`BatchReport`]) that names every photograph left out and
-//! why.
+//! Batch settings and export (`docs/design/catalog.md`, "The catalog"): a settings set applied to
+//! many photographs, or many photographs exported into one folder, as N single calls would do it,
+//! one photograph at a time, with one report ([`BatchReport`]) that names every photograph left out
+//! and why.
 //!
-//! - **Apply preset** applies a library preset to each photograph through exactly the path
-//!   `edit.apply-preset` takes, so each gets the one entry, `Preset: <name>`, a single call would
-//!   write, under a request identity derived from the batch's and the photograph's
-//!   ([`request_id`]), so a retry never applies it twice.
+//! - **Apply settings** applies a settings set, inline or a library preset's, to each photograph
+//!   through exactly the path `edit.apply-settings` takes, so each gets the one entry a single call
+//!   would write, labelled by the set's origin (`Preset: <name>`, `Paste settings from <source>`),
+//!   under a request identity derived from the batch's and the photograph's ([`request_id`]), so a
+//!   retry never applies it twice.
 //! - **Export** writes each photograph's current entry as `export.jpeg` writes it, into one
 //!   existing folder, under the name the export's naming rule gives it there ([`destination`]),
 //!   never replacing a file.
@@ -14,13 +15,12 @@
 //! What is common to both lives here; the owner's half (the job, and the calls on the owner) is
 //! `api/owner/library/batch.rs`.
 use crate::{
-    AssetId, Error, MutationOutcome, SkippedSetting,
+    AssetId, Error, MutationOutcome, SettingsOrigin, SkippedSetting,
     atomic_file::file_error,
     catalog_types::{BatchReport, BatchSettingsSkipped, BatchSkip, BatchWritten},
     editor::{ActionResult, library_rows},
     export::publish::{self, Destination},
     jobs::JobControl,
-    presets::PresetRecord,
 };
 use rusqlite::Connection;
 use serde_json::{Map, Value, json};
@@ -36,9 +36,9 @@ pub(crate) const REMOVED: &str = "removed";
 pub(crate) const DRAFT_OPEN: &str = "draft-open";
 /// A photograph whose history the caller's session is previewing.
 pub(crate) const HISTORY_SELECTED: &str = "history-selected";
-/// A photograph none of the preset's settings apply to.
+/// A photograph none of the set's settings apply to.
 pub(crate) const NOT_APPLICABLE: &str = "not-applicable";
-/// A photograph that already has every setting of the preset that applies to it.
+/// A photograph that already has every setting of the set that applies to it.
 pub(crate) const UNCHANGED: &str = "unchanged";
 
 /// The longest request identity an envelope carries.
@@ -92,13 +92,13 @@ pub(crate) fn removed(
     }
 }
 
-/// One settings set as every photograph of a batch receives it: the single-photo action and
-/// parameters, plus the batch's envelope. Presets and clipboard pastes share the same runner.
+/// One settings set as every photograph of a batch receives it: `edit.apply-settings`'s parameters,
+/// checked and parsed once, where the set came from, and the batch's envelope.
 #[derive(Clone, Debug)]
 pub(crate) struct SettingsApply {
+    /// `{settings, origin}` as the presets module parsed them.
     pub parameters: Value,
-    pub action: &'static str,
-    pub name: String,
+    pub origin: SettingsOrigin,
     pub request_id: String,
     pub actor: String,
     /// How many fields the settings set names, over all its actions.
@@ -114,27 +114,13 @@ pub(crate) enum Applied {
 }
 
 impl SettingsApply {
-    pub(crate) fn new(preset: PresetRecord, request_id: String, actor: String) -> Self {
-        Self::action(
-            crate::modules::APPLY_PRESET,
-            preset.name.clone(),
-            json!({
-                "settings": preset.settings,
-                "name": preset.name,
-                "preset-id": preset.id,
-            }),
-            request_id,
-            actor,
-        )
-    }
-
-    pub(crate) fn action(
-        action: &'static str,
-        name: String,
-        parameters: Value,
+    pub(crate) fn new(
+        parameters: Map<String, Value>,
+        origin: SettingsOrigin,
         request_id: String,
         actor: String,
     ) -> Self {
+        let parameters = Value::Object(parameters);
         let fields = parameters["settings"].as_object().map_or(0, |settings| {
             settings
                 .values()
@@ -142,17 +128,16 @@ impl SettingsApply {
                 .sum()
         });
         Self {
-            action,
-            name,
             parameters,
+            origin,
             request_id,
             actor,
             fields,
         }
     }
 
-    /// What one `edit.apply-preset` answer means for the batch: a new entry is done; a no-op is
-    /// left out, as `not-applicable` when every setting of the preset was skipped for this
+    /// What one `edit.apply-settings` answer means for the batch: a new entry is done; a no-op is
+    /// left out, as `not-applicable` when every setting of the set was skipped for this
     /// photograph and `unchanged` when it already had the ones that apply.
     pub(crate) fn outcome(&self, asset: &AssetId, result: ActionResult) -> Applied {
         if result.mutation.outcome != MutationOutcome::NoOp {
@@ -178,12 +163,12 @@ impl SettingsApply {
                 NOT_APPLICABLE,
                 format!(
                     "none of {}'s settings apply to it: {}",
-                    self.name,
+                    self.origin.name(),
                     reasons.join("; ")
                 ),
             ));
         }
-        let mut reason = format!("it already has {}'s settings", self.name);
+        let mut reason = format!("it already has {}'s settings", self.origin.name());
         if !result.skipped.is_empty() {
             let mut reasons: Vec<&str> = Vec::new();
             for setting in &result.skipped {

@@ -36,7 +36,7 @@ use crate::{
         control_tree::walk,
         fields,
         number::{NumberSpec, number_text},
-        presets::{PresetRow, presettable_groups},
+        presets::{PresetRow, settings_groups},
         tools::crop_frame,
     },
     view,
@@ -2808,6 +2808,7 @@ impl Editor {
             && self.slider_gesture().is_none()
             && !self.busy
             && !self.view_state.copy_settings.pending
+            && !self.view_state.copy_settings.batch_pending
             && self.sync.poll.idle()
             && self.select.state.catalog.running().is_none()
             && (!self.select_shown() || self.catalog_quiet())
@@ -4199,39 +4200,37 @@ impl Editor {
         use crate::app::message::{
             copy_settings::CopySettingsMessage as C, develop::DevelopMessage as D,
         };
-        use iced::keyboard::{
-            Event as E, Key, Location, Modifiers,
-            key::{NativeCode, Physical},
-        };
+        use crate::state::host_commands::HostCommand as H;
         use luxforge_evidence::CopySettingsStep as S;
+        // The host commands press the chord their table declares.
         let shortcut = match &step {
-            S::Copy => Some(("c", Modifiers::COMMAND)),
-            S::Chooser => Some(("c", Modifiers::COMMAND | Modifiers::SHIFT)),
-            S::Paste => Some(("v", Modifiers::COMMAND)),
-            S::Previous => Some(("v", Modifiers::COMMAND | Modifiers::ALT)),
-            S::SelectAll => Some(("a", Modifiers::COMMAND)),
+            S::Copy => Some(H::CopySettings.chord()),
+            S::Chooser => Some(H::CopySettingsChoosing.chord()),
+            S::Paste => Some(H::PasteSettings.chord()),
+            S::Previous => Some(H::PastePrevious.chord()),
+            S::SelectAll => Some(luxforge_core::Chord::command('A')),
             _ => None,
         };
-        let message = if let Some((key, modifiers)) = shortcut {
-            let key = Key::Character(key.into());
-            Message::Key(
-                iced::Event::Keyboard(E::KeyPressed {
-                    key: key.clone(),
-                    modified_key: key,
-                    physical_key: Physical::Unidentified(NativeCode::Unidentified),
-                    location: Location::Standard,
-                    modifiers,
-                    text: None,
-                    repeat: false,
-                }),
-                iced::event::Status::Ignored,
-            )
+        let message = if let Some(chord) = shortcut {
+            Message::Key(chord_pressed(chord), iced::event::Status::Ignored)
         } else {
             match step {
-                S::Check { group, checked } => Message::CopySettings(C::Check {
-                    label: group,
-                    checked,
-                }),
+                // The script names a chooser row by the label it shows.
+                S::Check { group, checked } => {
+                    let Some(id) = self
+                        .view_state
+                        .copy_settings
+                        .chooser
+                        .as_ref()
+                        .and_then(|chooser| {
+                            chooser.groups.iter().find(|row| row.group.title == group)
+                        })
+                        .map(|row| row.group.id.clone())
+                    else {
+                        return self.fail_step(format!("no chooser row is labelled {group}"));
+                    };
+                    Message::CopySettings(C::Check { id, checked })
+                }
                 S::None => Message::CopySettings(C::CheckMany {
                     module: None,
                     edited: false,
@@ -4266,27 +4265,31 @@ impl Editor {
             Event as KeyEvent, Key, Location, Modifiers,
             key::{Named, NativeCode, Physical},
         };
-        let command = key == "Command+U";
-        let pressed = if command {
-            Key::Character("u".into())
-        } else if key == luxforge_evidence::KEY_ESCAPE {
-            Key::Named(Named::Escape)
+        // A chord the script names is pressed as written; whether anything answers it is the key
+        // table's, which a declared action shortcut or a host command reaches.
+        let event = if let Some(chord) =
+            luxforge_evidence::is_chord(&key).then(|| key.parse::<luxforge_core::Chord>())
+        {
+            match chord {
+                Ok(chord) => chord_pressed(chord),
+                Err(reason) => return self.fail_step(reason),
+            }
         } else {
-            Key::Character(key.to_lowercase().into())
-        };
-        let event = iced::Event::Keyboard(KeyEvent::KeyPressed {
-            key: pressed.clone(),
-            modified_key: pressed,
-            physical_key: Physical::Unidentified(NativeCode::Unidentified),
-            location: Location::Standard,
-            modifiers: if command {
-                Modifiers::COMMAND
+            let pressed = if key == luxforge_evidence::KEY_ESCAPE {
+                Key::Named(Named::Escape)
             } else {
-                Modifiers::empty()
-            },
-            text: None,
-            repeat: false,
-        });
+                Key::Character(key.to_lowercase().into())
+            };
+            iced::Event::Keyboard(KeyEvent::KeyPressed {
+                key: pressed.clone(),
+                modified_key: pressed,
+                physical_key: Physical::Unidentified(NativeCode::Unidentified),
+                location: Location::Standard,
+                modifiers: Modifiers::empty(),
+                text: None,
+                repeat: false,
+            })
+        };
         let status = iced::event::Status::Ignored;
         match crate::app::keymap::keymap(&event, status, &self.key_context()) {
             None => self.fail_step(format!("the key {key} does nothing here")),
@@ -4401,7 +4404,7 @@ impl Editor {
             PaletteAction::TogglePerformance => self.arm_performance_settle(),
             PaletteAction::Settings(_) => self.arm_settings_settle(),
             PaletteAction::Theme(id) => self.arm_theme_settle(id),
-            PaletteAction::CopySettings(_) => self.await_step(Settle::Quiet),
+            PaletteAction::Host(_) => self.await_step(Settle::Quiet),
             // A reveal is local view state, unless it has to show the tools panel first.
             PaletteAction::Reveal(_) if !self.session.workspace.tools_panel => {
                 self.await_step(Settle::Session)
@@ -4734,12 +4737,27 @@ impl Editor {
         if self.document.state.is_none() {
             return self.fail_step("no photograph is open");
         }
-        let labels: Vec<String> = presettable_groups(&self.modules, self.developer)
+        // The script names groups by the labels the form shows, and steps by identity.
+        let offered = settings_groups(&self.modules, self.developer);
+        let groups: Vec<(String, String)> = offered
+            .groups
             .into_iter()
-            .map(|group| group.label)
+            .filter(|group| group.unavailable.is_none())
+            .map(|group| (group.id, group.title))
             .collect();
-        if let Some(unknown) = step.groups.iter().find(|label| !labels.contains(label)) {
+        if let Some(unknown) = step
+            .groups
+            .iter()
+            .find(|label| !groups.iter().any(|(_, title)| title == *label))
+        {
             return self.fail_step(format!("no create-form group is labelled {unknown}"));
+        }
+        if let Some(unknown) = step
+            .analysis
+            .iter()
+            .find(|id| !offered.analysis.iter().any(|step| &step.id == *id))
+        {
+            return self.fail_step(format!("no create-form analysis step is {unknown}"));
         }
         let mut tasks = Vec::new();
         if !self.presets.form.open {
@@ -4749,11 +4767,17 @@ impl Editor {
         if let Some(group) = step.group {
             tasks.push(self.update(Message::Preset(PresetMessage::Group(group))));
         }
-        for label in labels {
-            let checked = step.groups.contains(&label);
-            tasks.push(self.update(Message::Preset(PresetMessage::Check { label, checked })));
+        for (id, title) in groups {
+            let checked = step.groups.contains(&title);
+            tasks.push(self.update(Message::Preset(PresetMessage::Check { id, checked })));
         }
-        tasks.push(self.update(Message::Preset(PresetMessage::AutoTone(step.auto_tone))));
+        for analysis in offered.analysis {
+            let checked = step.analysis.contains(&analysis.id);
+            tasks.push(self.update(Message::Preset(PresetMessage::Analysis {
+                id: analysis.id,
+                checked,
+            })));
+        }
         if !step.submit {
             self.capture_next_frame();
             return Task::batch(tasks);
@@ -5504,6 +5528,34 @@ pub(crate) fn envelope_free(method: &str) -> Option<HostStep> {
 /// What the crop angle's stepper sends for one scripted angle step, naming the crop action's
 /// declared `action` and `parameter`: a rail drag's fractions and its release, one press of the −
 /// or + button, or a press on the box, the angle typed into it and Enter.
+/// One press of `chord`, with no text field focused, as the keyboard delivers it.
+fn chord_pressed(chord: luxforge_core::Chord) -> iced::Event {
+    use iced::keyboard::{
+        Event as KeyEvent, Key, Location, Modifiers,
+        key::{NativeCode, Physical},
+    };
+    let key = Key::Character(chord.key.to_ascii_lowercase().to_string().into());
+    let mut modifiers = Modifiers::empty();
+    for (held, modifier) in [
+        (chord.command, Modifiers::COMMAND),
+        (chord.option, Modifiers::ALT),
+        (chord.shift, Modifiers::SHIFT),
+    ] {
+        if held {
+            modifiers |= modifier;
+        }
+    }
+    iced::Event::Keyboard(KeyEvent::KeyPressed {
+        key: key.clone(),
+        modified_key: key,
+        physical_key: Physical::Unidentified(NativeCode::Unidentified),
+        location: Location::Standard,
+        modifiers,
+        text: None,
+        repeat: false,
+    })
+}
+
 fn angle_messages(step: &DraftStep, action: &str, parameter: &str) -> Vec<Message> {
     let (action, parameter) = (action.to_owned(), parameter.to_owned());
     let messages = match step {
@@ -6935,7 +6987,7 @@ mod tests {
             "a settings write carries the settings revision the desktop holds"
         );
         assert_eq!(envelope_free("history.undo"), None);
-        assert_eq!(envelope_free("edit.apply-preset"), None);
+        assert_eq!(envelope_free("edit.apply-settings"), None);
         assert_eq!(envelope_free("no.such-method"), None);
 
         let (mut editor, catalog, _, _) = scripted(r#"[{"api":{"method":"preset.list"}}]"#);
@@ -7027,7 +7079,7 @@ mod tests {
             .filter(|(_, on)| **on)
             .map(|(label, _)| label.as_str())
             .collect();
-        assert_eq!(checked, ["Basic \u{00b7} Tone"]);
+        assert_eq!(checked, ["luxforge.basic/tone"]);
         assert!(!editor.presets.library.pending);
         // Submitted: Create runs and the step waits for the library's answer.
         let _ = editor.next_step();

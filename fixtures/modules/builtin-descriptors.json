@@ -2117,14 +2117,14 @@
       {
         "actions": [
           {
-            "id": "apply-preset",
-            "notes": "applies a settings set as one history entry labelled `Preset: <name>`. Each key of settings names a field-patch action and its fields, or a declared analysis action and an empty object. The host runs patches in key order, then analysis steps such as Auto tone separately for this photo, against the intermediate stack, as it would run that action alone, and commits the result once. Fields the set does not name keep their values, and a set that changes nothing is a reported no-op. A step whose module does not apply to the photo's kind, and a field another control supersedes on the photo's global target, are skipped and listed under skipped in the result. Auto without usable tonal range is also skipped. An unknown, non-presettable or unavailable action, an overlapping analysis/field set or another refused field refuses the whole preset and writes nothing.",
+            "id": "apply-settings",
+            "notes": "applies a settings set as one history entry labelled by its origin: `Preset: <name>`, or `Paste settings from <source>` with a source over 64 characters shortened in the middle. Each key of settings names a field-patch action and its fields, or a declared analysis action and an empty object. The host runs patches in key order, then analysis steps such as Auto tone separately for this photo, against the intermediate stack, as it would run that action alone, and commits the result once. Fields the set does not name keep their values, masked layers are unchanged, and a set that changes nothing is a reported no-op. A step whose module does not apply to the photo's kind, and a field another control supersedes on the photo's global target, are skipped and listed under skipped in the result. Auto without usable tonal range is also skipped. An unknown, non-presettable or unavailable action, an overlapping analysis/field set or another refused field refuses the whole set and writes nothing.",
             "parameters": [
               {
                 "default": null,
                 "kind": "settings",
                 "name": "settings",
-                "notes": "the settings set to apply: field-patch action identities with non-empty field objects, or declared analysis actions with empty objects (auto-tone: {}); an analysis step and the fields it overwrites cannot both be included",
+                "notes": "the settings set to apply, inline (a library preset's settings are read with preset.read or preset.list): field-patch action identities with non-empty field objects, or declared analysis actions with empty objects, such as {\"auto-tone\": {}}, which run for this photo after the patches; an analysis step and the fields it overwrites cannot both be included",
                 "precision": null,
                 "required": true,
                 "step": null,
@@ -2132,69 +2132,17 @@
               },
               {
                 "default": null,
-                "kind": "string",
-                "max_length": 128,
-                "name": "name",
-                "notes": "the preset's name, which labels the history entry; not empty",
+                "kind": "settings-origin",
+                "name": "origin",
+                "notes": "where the set came from, which labels the history entry: {kind: preset, name, preset_id?} or {kind: paste, source, source_asset?}; name is 1..=128 characters and source, the source photograph's file name, 1..=255, neither blank nor holding a control character; preset_id and source_asset are provenance only, never looked up",
                 "precision": null,
                 "required": true,
-                "step": null,
-                "unit": null
-              },
-              {
-                "default": null,
-                "kind": "string",
-                "max_length": 96,
-                "name": "preset-id",
-                "notes": "the library preset the settings came from; provenance only, never looked up",
-                "precision": null,
-                "required": false,
                 "step": null,
                 "unit": null
               }
             ],
             "patch": false,
-            "title": "Apply preset"
-          },
-          {
-            "id": "paste-settings",
-            "notes": "applies captured settings as one entry labelled Paste settings from <source>; uses the same field patches, skips, refusals and no-op behavior as apply-preset; fields not named keep their values and masked layers are unchanged",
-            "parameters": [
-              {
-                "default": null,
-                "kind": "settings",
-                "name": "settings",
-                "notes": "",
-                "precision": null,
-                "required": true,
-                "step": null,
-                "unit": null
-              },
-              {
-                "default": null,
-                "kind": "string",
-                "max_length": 128,
-                "name": "source",
-                "notes": "the source photograph's display name; not empty",
-                "precision": null,
-                "required": true,
-                "step": null,
-                "unit": null
-              },
-              {
-                "default": null,
-                "kind": "string",
-                "max_length": 96,
-                "name": "source-asset",
-                "notes": "source asset provenance only; never looked up",
-                "precision": null,
-                "required": false,
-                "step": null,
-                "unit": null
-              }
-            ],
-            "patch": false,
-            "title": "Paste settings"
+            "title": "Apply settings"
           }
         ],
         "availability": {
@@ -2204,7 +2152,7 @@
         "collapsed": true,
         "controls": [
           {
-            "action": "apply-preset",
+            "action": "apply-settings",
             "kind": "presets"
           }
         ],
@@ -2629,6 +2577,7 @@
             "notes": "Sets Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Vibrance and Saturation absolutely on the global Basic layer in one undoable entry. Leaves white balance and other modules unchanged; repeats are no-ops. Analysis runs off the catalog owner. Refuses mask targets, historical selection, drafts and images without usable tonal range.",
             "parameters": [],
             "patch": false,
+            "shortcut": "Command+U",
             "title": "Auto tone"
           }
         ],
@@ -2742,6 +2691,7 @@
             ],
             "kind": "group",
             "label": "White balance",
+            "per_photo": true,
             "reset": {
               "action": "set-basic",
               "preset": {
@@ -2865,14 +2815,14 @@
         "queries": [
           {
             "id": "auto-tone",
-            "notes": "Predicts Auto tone's eight global Basic fields from a bounded linear input sample through Basic and the Look. Returns values, statistics, exclusions and omitted layers without committing. Refuses fewer than 1,024 finite samples, a near-black median or less than half a stop of input range.",
+            "notes": "Predicts Auto tone's eight global Basic fields from a bounded linear input sample through Basic and the Look. Returns values, statistics, exclusions, omitted layers and the renderer that drew the sample, as renderer {record, reason}, without committing. Refuses fewer than 1,024 finite samples, a near-black median or less than half a stop of input range.",
             "parameters": [],
             "patch": false,
             "title": "Auto tone"
           },
           {
             "id": "neutral-sample",
-            "notes": "reads a 5x5 patch of the stage the Basic layer receives, centred on the named content pixel and clipped at that stage's edges, and returns the temperature and tint that make its average neutral. It evaluates before the Basic layer, so picking the same patch twice gives the same answer whatever white balance is already set. A clipped, near-black or non-finite patch, a correction outside the representable range and a point outside the stage are each refused with their reason; nothing is guessed, clamped or committed",
+            "notes": "reads a 5x5 patch of the stage the Basic layer receives, centred on the named content pixel and clipped at that stage's edges, and returns the temperature and tint that make its average neutral. It evaluates before the Basic layer, so picking the same patch twice gives the same answer whatever white balance is already set. A clipped, near-black or non-finite patch, a correction outside the representable range and a point outside the stage are each refused with their reason; nothing is guessed, clamped or committed. The answer names the renderer that drew the patch as renderer {record, reason}, as render.sample does",
             "parameters": [
               {
                 "default": null,
@@ -5275,19 +5225,17 @@
   },
   "schema.list": {
     "methods": {
-      "edit.apply-preset": {
+      "edit.apply-settings": {
         "mutates": true,
         "mutation": "revision",
-        "notes": "applies a settings set as one history entry labelled `Preset: <name>`. Each key of settings names a field-patch action and its fields, or a declared analysis action and an empty object. The host runs patches in key order, then analysis steps such as Auto tone separately for this photo, against the intermediate stack, as it would run that action alone, and commits the result once. Fields the set does not name keep their values, and a set that changes nothing is a reported no-op. A step whose module does not apply to the photo's kind, and a field another control supersedes on the photo's global target, are skipped and listed under skipped in the result. Auto without usable tonal range is also skipped. An unknown, non-presettable or unavailable action, an overlapping analysis/field set or another refused field refuses the whole preset and writes nothing.",
-        "optional": {
-          "preset-id": "the library preset the settings came from; provenance only, never looked up"
-        },
+        "notes": "applies a settings set as one history entry labelled by its origin: `Preset: <name>`, or `Paste settings from <source>` with a source over 64 characters shortened in the middle. Each key of settings names a field-patch action and its fields, or a declared analysis action and an empty object. The host runs patches in key order, then analysis steps such as Auto tone separately for this photo, against the intermediate stack, as it would run that action alone, and commits the result once. Fields the set does not name keep their values, masked layers are unchanged, and a set that changes nothing is a reported no-op. A step whose module does not apply to the photo's kind, and a field another control supersedes on the photo's global target, are skipped and listed under skipped in the result. Auto without usable tonal range is also skipped. An unknown, non-presettable or unavailable action, an overlapping analysis/field set or another refused field refuses the whole set and writes nothing.",
+        "optional": {},
         "parameters": [
           {
             "default": null,
             "kind": "settings",
             "name": "settings",
-            "notes": "the settings set to apply: field-patch action identities with non-empty field objects, or declared analysis actions with empty objects (auto-tone: {}); an analysis step and the fields it overwrites cannot both be included",
+            "notes": "the settings set to apply, inline (a library preset's settings are read with preset.read or preset.list): field-patch action identities with non-empty field objects, or declared analysis actions with empty objects, such as {\"auto-tone\": {}}, which run for this photo after the patches; an analysis step and the fields it overwrites cannot both be included",
             "precision": null,
             "required": true,
             "step": null,
@@ -5295,23 +5243,11 @@
           },
           {
             "default": null,
-            "kind": "string",
-            "max_length": 128,
-            "name": "name",
-            "notes": "the preset's name, which labels the history entry; not empty",
+            "kind": "settings-origin",
+            "name": "origin",
+            "notes": "where the set came from, which labels the history entry: {kind: preset, name, preset_id?} or {kind: paste, source, source_asset?}; name is 1..=128 characters and source, the source photograph's file name, 1..=255, neither blank nor holding a control character; preset_id and source_asset are provenance only, never looked up",
             "precision": null,
             "required": true,
-            "step": null,
-            "unit": null
-          },
-          {
-            "default": null,
-            "kind": "string",
-            "max_length": 96,
-            "name": "preset-id",
-            "notes": "the library preset the settings came from; provenance only, never looked up",
-            "precision": null,
-            "required": false,
             "step": null,
             "unit": null
           }
@@ -5321,13 +5257,14 @@
           "asset_id",
           "mutation",
           "settings",
-          "name"
-        ]
+          "origin"
+        ],
+        "revision_of": "asset"
       },
       "edit.auto-tone": {
         "mutates": true,
         "mutation": "revision",
-        "notes": "Sets Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Vibrance and Saturation absolutely on the global Basic layer in one undoable entry. Leaves white balance and other modules unchanged; repeats are no-ops. Analysis runs off the catalog owner. Refuses mask targets, historical selection, drafts and images without usable tonal range.",
+        "notes": "Sets Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Vibrance and Saturation absolutely on the global Basic layer in one undoable entry. Leaves white balance and other modules unchanged; repeats are no-ops. Analysis runs off the catalog owner. Refuses mask targets, historical selection, drafts and images without usable tonal range. Returns the mutation result with analysis.auto-tone: the report query.auto-tone answers for the stack this call analysed, the one its values came from, also on a no-op; a deduplicated retry analyses nothing and carries none.",
         "optional": {
           "mask": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target"
         },
@@ -5337,6 +5274,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "target": {
           "default": null,
           "kind": "identity",
@@ -5427,7 +5365,8 @@
           "y",
           "width",
           "height"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "edit.crop-fit": {
         "mutates": true,
@@ -5527,7 +5466,8 @@
         "required": [
           "asset_id",
           "mutation"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "edit.crop-reset": {
         "mutates": true,
@@ -5539,56 +5479,8 @@
         "required": [
           "asset_id",
           "mutation"
-        ]
-      },
-      "edit.paste-settings": {
-        "mutates": true,
-        "mutation": "revision",
-        "notes": "applies captured settings as one entry labelled Paste settings from <source>; uses the same field patches, skips, refusals and no-op behavior as apply-preset; fields not named keep their values and masked layers are unchanged",
-        "optional": {
-          "source-asset": "source asset provenance only; never looked up"
-        },
-        "parameters": [
-          {
-            "default": null,
-            "kind": "settings",
-            "name": "settings",
-            "notes": "",
-            "precision": null,
-            "required": true,
-            "step": null,
-            "unit": null
-          },
-          {
-            "default": null,
-            "kind": "string",
-            "max_length": 128,
-            "name": "source",
-            "notes": "the source photograph's display name; not empty",
-            "precision": null,
-            "required": true,
-            "step": null,
-            "unit": null
-          },
-          {
-            "default": null,
-            "kind": "string",
-            "max_length": 96,
-            "name": "source-asset",
-            "notes": "source asset provenance only; never looked up",
-            "precision": null,
-            "required": false,
-            "step": null,
-            "unit": null
-          }
         ],
-        "patch": false,
-        "required": [
-          "asset_id",
-          "mutation",
-          "settings",
-          "source"
-        ]
+        "revision_of": "asset"
       },
       "edit.pick-raw-neutral": {
         "mutates": true,
@@ -5628,6 +5520,7 @@
           "x",
           "y"
         ],
+        "revision_of": "asset",
         "sources": [
           "raw"
         ]
@@ -5645,6 +5538,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "target": {
           "default": null,
           "kind": "identity",
@@ -5670,6 +5564,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "target": {
           "default": null,
           "kind": "identity",
@@ -5695,6 +5590,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "target": {
           "default": null,
           "kind": "identity",
@@ -5717,7 +5613,8 @@
         "required": [
           "asset_id",
           "mutation"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "edit.reset-look": {
         "mutates": true,
@@ -5730,6 +5627,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "sources": [
           "raw"
         ]
@@ -5747,6 +5645,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "target": {
           "default": null,
           "kind": "identity",
@@ -5769,7 +5668,8 @@
         "required": [
           "asset_id",
           "mutation"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "edit.reset-presence": {
         "mutates": true,
@@ -5784,6 +5684,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "target": {
           "default": null,
           "kind": "identity",
@@ -5806,7 +5707,8 @@
         "required": [
           "asset_id",
           "mutation"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "edit.select-lens-profile": {
         "mutates": true,
@@ -5856,7 +5758,8 @@
           "asset_id",
           "mutation",
           "profile"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "edit.set-basic": {
         "mutates": true,
@@ -6014,6 +5917,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "target": {
           "default": null,
           "kind": "identity",
@@ -6063,6 +5967,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "target": {
           "default": null,
           "kind": "identity",
@@ -6200,6 +6105,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "target": {
           "default": null,
           "kind": "identity",
@@ -6253,6 +6159,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "sources": [
           "raw"
         ]
@@ -6794,6 +6701,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "target": {
           "default": null,
           "kind": "identity",
@@ -6844,7 +6752,8 @@
         "required": [
           "asset_id",
           "mutation"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "edit.set-presence": {
         "mutates": true,
@@ -6902,6 +6811,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "target": {
           "default": null,
           "kind": "identity",
@@ -6968,6 +6878,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "sources": [
           "raw"
         ]
@@ -6998,6 +6909,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "sources": [
           "raw"
         ]
@@ -7028,6 +6940,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "sources": [
           "raw"
         ]
@@ -7098,7 +7011,8 @@
         "required": [
           "asset_id",
           "mutation"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "edit.transform": {
         "mutates": true,
@@ -7128,7 +7042,8 @@
           "asset_id",
           "mutation",
           "transform"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.add-colour-range": {
         "mutates": true,
@@ -7185,7 +7100,8 @@
           "mutation",
           "mask",
           "mode"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.add-colour-range-sample": {
         "mutates": true,
@@ -7270,7 +7186,8 @@
           "r",
           "g",
           "b"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.add-linear": {
         "mutates": true,
@@ -7375,7 +7292,8 @@
           "y0",
           "x1",
           "y1"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.add-luminance-range": {
         "mutates": true,
@@ -7475,7 +7393,8 @@
           "mutation",
           "mask",
           "mode"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.add-radial": {
         "mutates": true,
@@ -7610,7 +7529,8 @@
           "radius_y",
           "angle",
           "feather"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.add-stroke": {
         "mutates": true,
@@ -7754,7 +7674,8 @@
           "feather",
           "flow",
           "erase"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.create-colour-range": {
         "mutates": true,
@@ -7783,7 +7704,8 @@
         "required": [
           "asset_id",
           "mutation"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.create-linear": {
         "mutates": true,
@@ -7860,7 +7782,8 @@
           "y0",
           "x1",
           "y1"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.create-luminance-range": {
         "mutates": true,
@@ -7932,7 +7855,8 @@
         "required": [
           "asset_id",
           "mutation"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.create-radial": {
         "mutates": true,
@@ -8039,7 +7963,8 @@
           "radius_y",
           "angle",
           "feather"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.delete": {
         "mutates": true,
@@ -8064,7 +7989,8 @@
           "asset_id",
           "mutation",
           "mask"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.delete-colour-range-sample": {
         "mutates": true,
@@ -8114,7 +8040,8 @@
           "mask",
           "component",
           "index"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.delete-component": {
         "mutates": true,
@@ -8151,7 +8078,8 @@
           "mutation",
           "mask",
           "component"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.delete-stroke": {
         "mutates": true,
@@ -8200,7 +8128,8 @@
           "mask",
           "component",
           "stroke"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.duplicate": {
         "mutates": true,
@@ -8225,7 +8154,8 @@
           "asset_id",
           "mutation",
           "mask"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.list": {
         "mutates": false,
@@ -8273,7 +8203,8 @@
           "mutation",
           "mask",
           "name"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.rename-component": {
         "mutates": true,
@@ -8322,7 +8253,8 @@
           "mask",
           "component",
           "name"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.reorder": {
         "mutates": true,
@@ -8360,7 +8292,8 @@
           "mutation",
           "mask",
           "index"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.reorder-component": {
         "mutates": true,
@@ -8410,7 +8343,8 @@
           "mask",
           "component",
           "index"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.sample-input": {
         "mutates": false,
@@ -8498,7 +8432,8 @@
           "mutation",
           "mask",
           "amount"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.set-colour-range": {
         "mutates": true,
@@ -8551,7 +8486,8 @@
           "mutation",
           "mask",
           "component"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.set-component-invert": {
         "mutates": true,
@@ -8599,7 +8535,8 @@
           "mask",
           "component",
           "invert"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.set-component-mode": {
         "mutates": true,
@@ -8652,7 +8589,8 @@
           "mask",
           "component",
           "mode"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.set-invert": {
         "mutates": true,
@@ -8688,7 +8626,8 @@
           "mutation",
           "mask",
           "invert"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.set-linear": {
         "mutates": true,
@@ -8790,7 +8729,8 @@
           "mutation",
           "mask",
           "component"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.set-luminance-range": {
         "mutates": true,
@@ -8886,7 +8826,8 @@
           "mutation",
           "mask",
           "component"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.set-radial": {
         "mutates": true,
@@ -9018,11 +8959,12 @@
           "mutation",
           "mask",
           "component"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "query.auto-tone": {
         "mutates": false,
-        "notes": "Predicts Auto tone's eight global Basic fields from a bounded linear input sample through Basic and the Look. Returns values, statistics, exclusions and omitted layers without committing. Refuses fewer than 1,024 finite samples, a near-black median or less than half a stop of input range.",
+        "notes": "Predicts Auto tone's eight global Basic fields from a bounded linear input sample through Basic and the Look. Returns values, statistics, exclusions, omitted layers and the renderer that drew the sample, as renderer {record, reason}, without committing. Refuses fewer than 1,024 finite samples, a near-black median or less than half a stop of input range.",
         "optional": {
           "entry_id": "entry to ask about; default the session's selection",
           "mask": "the mask whose stack to ask about, as this module's actions take it; omit it to ask about the layer that applies everywhere"
@@ -9106,7 +9048,7 @@
       },
       "query.neutral-sample": {
         "mutates": false,
-        "notes": "reads a 5x5 patch of the stage the Basic layer receives, centred on the named content pixel and clipped at that stage's edges, and returns the temperature and tint that make its average neutral. It evaluates before the Basic layer, so picking the same patch twice gives the same answer whatever white balance is already set. A clipped, near-black or non-finite patch, a correction outside the representable range and a point outside the stage are each refused with their reason; nothing is guessed, clamped or committed",
+        "notes": "reads a 5x5 patch of the stage the Basic layer receives, centred on the named content pixel and clipped at that stage's edges, and returns the temperature and tint that make its average neutral. It evaluates before the Basic layer, so picking the same patch twice gives the same answer whatever white balance is already set. A clipped, near-black or non-finite patch, a correction outside the representable range and a point outside the stage are each refused with their reason; nothing is guessed, clamped or committed. The answer names the renderer that drew the patch as renderer {record, reason}, as render.sample does",
         "optional": {
           "entry_id": "entry to ask about; default the session's selection",
           "mask": "the mask whose stack to ask about, as this module's actions take it; omit it to ask about the layer that applies everywhere"

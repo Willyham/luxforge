@@ -903,10 +903,11 @@ impl EditorService {
 
     /// A committed write deleted this photograph's records: nothing cached answers for it any
     /// more, neither its head and entries ([`EntryCache::forget`](super::entries::EntryCache::forget))
-    /// nor its prepared source, nor what its Develop kept of its file.
+    /// nor its prepared source, nor what its Develop kept of its file, nor its sample grids.
     fn forget_deleted(&self, asset_id: &AssetId) {
         self.entries.borrow_mut().forget(asset_id);
         self.forget_read(asset_id);
+        self.render_context().release_grids(asset_id);
         let cached = self
             .source_cache
             .borrow()

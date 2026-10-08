@@ -61,7 +61,7 @@ pub(crate) fn buttons(model: &CopyModel) -> Element<'_, Message> {
                         .unwrap_or_default()
                         .as_secs()
                         .saturating_sub(clipboard.copied_at),
-                    clipboard.groups.join(", ")
+                    clipboard.labels().join(", ")
                 )
             })
             .unwrap_or_default()
@@ -143,17 +143,13 @@ fn chooser(model: &Chooser) -> Element<'_, Message> {
     let mut rows = column![].spacing(8).width(Length::Fill);
     let mut module = "";
     for group in &model.groups {
-        let (heading, label) = group
-            .group
-            .label
-            .split_once(" · ")
-            .unwrap_or((&group.group.label, &group.group.label));
-        if module != heading {
-            module = heading;
+        let (heading, label) = (&group.group.module_title, &group.group.label);
+        if module != group.group.module {
+            module = &group.group.module;
             let members: Vec<_> = model
                 .groups
                 .iter()
-                .filter(|row| row.group.label.split(" · ").next() == Some(heading))
+                .filter(|row| row.group.module == group.group.module)
                 .collect();
             let selected = members
                 .iter()
@@ -162,27 +158,27 @@ fn chooser(model: &Chooser) -> Element<'_, Message> {
             let caption = if selected > 0 && selected < members.len() {
                 format!("− {heading}")
             } else {
-                heading.to_owned()
+                heading.clone()
             };
             rows = rows.push(button(
                 &caption,
                 C::CheckMany {
-                    module: Some(heading.into()),
+                    module: Some(group.group.module.clone()),
                     edited: false,
                     checked: selected != members.len(),
                 },
             ));
         }
         let mut check = checkbox(model.form.is_checked(&group.group))
-            .label(label.to_owned())
+            .label(label.clone())
             .text_size(theme::SIZE_CONTROL)
             .size(14)
             .width(Length::Shrink);
         if group.reason.is_none() {
-            let label = group.group.label.clone();
+            let id = group.group.id.clone();
             check = check.on_toggle(move |checked| {
                 msg(C::Check {
-                    label: label.clone(),
+                    id: id.clone(),
                     checked,
                 })
             });
@@ -242,7 +238,7 @@ pub(crate) fn confirmation(model: &CopyModel) -> Option<Element<'_, Message>> {
     let body = column![
         text(format!("Paste settings to {count} photographs?")).size(theme::SIZE_TITLE),
         text(format!("Settings from {}", confirm.clipboard.source.name)),
-        text(confirm.clipboard.groups.join(" · ")).size(theme::SIZE_CAPTION),
+        text(confirm.clipboard.labels().join(" · ")).size(theme::SIZE_CAPTION),
         text("Each photograph gets its own history entry. Undo in each photograph’s history; there is no undo for the whole paste."),
         text(confirm.skip.clone()).size(theme::SIZE_CAPTION),
         row![button("Cancel", C::Cancel), text_button(&format!("Paste to {count}"), ButtonTone::Primary, ButtonSize::Compact, Some(msg(C::Confirm)))].spacing(8),
@@ -294,7 +290,7 @@ pub(crate) fn card(model: &CopyModel) -> Element<'_, Message> {
                     .saturating_sub(clipboard.copied_at)
             ))
             .size(theme::SIZE_CAPTION),
-            text(clipboard.groups.join(" · ")).size(theme::SIZE_CAPTION),
+            text(clipboard.labels().join(" · ")).size(theme::SIZE_CAPTION),
             text_button(
                 &format!("Paste settings to {}", model.targets),
                 ButtonTone::Primary,

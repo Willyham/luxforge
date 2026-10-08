@@ -375,6 +375,9 @@ impl Field {
 pub(crate) struct Group {
     label: &'static str,
     fields: Vec<&'static str>,
+    collapsed: bool,
+    /// The group's values usually belong to one photograph ([`GroupControl::per_photo`]).
+    per_photo: bool,
     /// Controls drawn after the group's own field controls, such as Basic's neutral picker or the
     /// curve control whose channels are the group's curve fields.
     extra: Vec<Control>,
@@ -397,6 +400,8 @@ impl Group {
         Self {
             label,
             fields: fields.into_iter().collect(),
+            collapsed: false,
+            per_photo: false,
             extra: Vec::new(),
             reset_variants: Vec::new(),
             layout: ModuleLayout::Stacked,
@@ -409,6 +414,19 @@ impl Group {
     /// The group shows its child groups — its views and subgroups — as one tab row.
     pub(crate) fn tabs(mut self) -> Self {
         self.layout = ModuleLayout::Tabs;
+        self
+    }
+
+    /// The group's values usually belong to one photograph, as white balance's do.
+    pub(crate) fn per_photo(mut self) -> Self {
+        self.per_photo = true;
+        self
+    }
+
+    /// The group starts collapsed.
+    #[allow(dead_code)]
+    pub(crate) fn collapsed(mut self) -> Self {
+        self.collapsed = true;
         self
     }
 
@@ -908,7 +926,9 @@ impl Spec {
         controls.extend(group.extra.iter().cloned());
         let control = Control::group(group.label, controls)
             .reset(self.defaults_of(&group.members()))
-            .group_layout(group.layout);
+            .group_layout(group.layout)
+            .collapsed(group.collapsed)
+            .per_photo(group.per_photo);
         group
             .reset_variants
             .iter()

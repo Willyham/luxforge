@@ -240,7 +240,8 @@ pub enum Step {
         ms: u64,
     },
     /// One key pressed with no text field focused, answered by the desktop's own key table exactly
-    /// as the keyboard is: one letter or digit (`w`), or `Escape`.
+    /// as the keyboard is: one letter or digit (`w`), `Escape`, or a chord written as a module
+    /// action's `shortcut` is ([`is_chord`], `Command+U`).
     Key {
         key: String,
     },
@@ -461,13 +462,14 @@ impl Step {
                     && characters.next().is_none();
                 if single
                     || key == KEY_ESCAPE
-                    || key == "Command+U"
+                    || is_chord(key)
                     || matches!(key.as_str(), "\\" | "|")
                 {
                     Ok(())
                 } else {
                     Err(format!(
-                        "key takes one letter or digit, a comparison key, or {KEY_ESCAPE}, not {key:?}"
+                        "key takes one letter or digit, a comparison key, {KEY_ESCAPE}, or a chord \
+                         such as Command+U, not {key:?}"
                     ))
                 }
             }
@@ -482,6 +484,26 @@ impl Step {
             Self::Develop(step) => step.validate(),
         }
     }
+}
+
+/// Whether `key` is written as a chord: `Command+`, then `Option+` and `Shift+` when they are held,
+/// then one key, as a module's action declares its shortcut (`Command+U`). The editor parses it and
+/// presses it through the same key table the keyboard reaches, where a chord nothing answers fails
+/// the step.
+pub fn is_chord(key: &str) -> bool {
+    let Some(mut rest) = key.strip_prefix("Command+") else {
+        return false;
+    };
+    for modifier in ["Option+", "Shift+"] {
+        if let Some(after) = rest
+            .strip_prefix(modifier)
+            .filter(|after| !after.is_empty())
+        {
+            rest = after;
+        }
+    }
+    let mut keys = rest.chars();
+    matches!((keys.next(), keys.next()), (Some(key), None) if key.is_ascii_graphic() && !key.is_ascii_lowercase())
 }
 
 /// A name a step needs, which may not be blank.
@@ -1605,13 +1627,14 @@ impl CopySettingsStep {
 }
 
 /// The create form as a script fills it: the name, the group when it is not the default, and the
-/// labels of exactly the checkboxes to leave checked. Without `submit` the form is left open and
-/// filled, so its frame shows the form itself.
+/// labels of exactly the checkboxes to leave checked, and the identities of the analysis steps to
+/// check (`auto-tone`). Without `submit` the form is left open and filled, so its frame shows the
+/// form itself.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PresetCreateStep {
-    #[serde(default, skip_serializing_if = "is_false")]
-    pub auto_tone: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub analysis: Vec<String>,
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group: Option<String>,
@@ -1626,7 +1649,10 @@ impl PresetCreateStep {
         optional_text(self.group.as_deref(), "preset_create group")?;
         self.groups
             .iter()
-            .try_for_each(|label| text(label, "preset_create groups"))
+            .try_for_each(|label| text(label, "preset_create groups"))?;
+        self.analysis
+            .iter()
+            .try_for_each(|id| text(id, "preset_create analysis"))
     }
 }
 

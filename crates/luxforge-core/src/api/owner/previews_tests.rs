@@ -760,6 +760,7 @@ fn missing(index: &mut IndexDb, root: &Path, count: usize) -> Vec<FileId> {
                 kind: SourceTag::Jpeg,
                 header: HeaderState::Pending,
                 last_seen_ms: 0,
+                born_ns: None,
             };
             upsert_file(&tx, &record).unwrap()
         })
