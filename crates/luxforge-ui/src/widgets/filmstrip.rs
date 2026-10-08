@@ -44,12 +44,18 @@ pub struct FilmstripPress {
     pub context: Option<iced::Point>,
 }
 
-struct CellPress<'a, M> {
-    index: usize,
-    publish: Box<dyn Fn(FilmstripPress) -> M + 'a>,
+/// The modifier keys as the strip last saw them, shared by the strip and its cells in one view.
+type SharedModifiers = std::rc::Rc<std::cell::Cell<iced::keyboard::Modifiers>>;
+
+/// Wraps the row of cells and holds the modifier keys in its own tree state, which outlives the
+/// cells: a cell created after the strip's size changes would otherwise start with none held until
+/// the next modifier change. Each event first publishes the held modifiers to the cells' shared
+/// cell, before the cells see it, since a mouse press carries no modifiers of its own.
+struct HoldModifiers {
+    shared: SharedModifiers,
 }
 impl<'a, M: 'a, Theme, Renderer: iced::advanced::renderer::Renderer>
-    super::decorator::Decoration<'a, M, Theme, Renderer> for CellPress<'a, M>
+    super::decorator::Decoration<'a, M, Theme, Renderer> for HoldModifiers
 {
     type State = iced::keyboard::Modifiers;
     fn update(
@@ -64,9 +70,45 @@ impl<'a, M: 'a, Theme, Renderer: iced::advanced::renderer::Renderer>
         shell: &mut iced::advanced::Shell<'_, M>,
         viewport: &iced::Rectangle,
     ) {
+        let held = tree.state.downcast_mut::<Self::State>();
         if let iced::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers)) = event {
-            *tree.state.downcast_mut::<Self::State>() = *modifiers;
+            *held = *modifiers;
         }
+        self.shared.set(*held);
+        content.as_widget_mut().update(
+            &mut tree.children[0],
+            event,
+            layout,
+            cursor,
+            renderer,
+            clipboard,
+            shell,
+            viewport,
+        );
+    }
+}
+
+struct CellPress<'a, M> {
+    index: usize,
+    modifiers: SharedModifiers,
+    publish: Box<dyn Fn(FilmstripPress) -> M + 'a>,
+}
+impl<'a, M: 'a, Theme, Renderer: iced::advanced::renderer::Renderer>
+    super::decorator::Decoration<'a, M, Theme, Renderer> for CellPress<'a, M>
+{
+    type State = ();
+    fn update(
+        &mut self,
+        content: &mut iced::Element<'a, M, Theme, Renderer>,
+        tree: &mut iced::advanced::widget::Tree,
+        event: &iced::Event,
+        layout: iced::advanced::Layout<'_>,
+        cursor: iced::mouse::Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn iced::advanced::Clipboard,
+        shell: &mut iced::advanced::Shell<'_, M>,
+        viewport: &iced::Rectangle,
+    ) {
         if let iced::Event::Mouse(iced::mouse::Event::ButtonPressed(button)) = event
             && matches!(
                 button,
@@ -74,7 +116,7 @@ impl<'a, M: 'a, Theme, Renderer: iced::advanced::renderer::Renderer>
             )
             && let Some(at) = cursor.position_over(layout.bounds())
         {
-            let modifiers = *tree.state.downcast_ref::<Self::State>();
+            let modifiers = self.modifiers.get();
             let context = (*button == iced::mouse::Button::Right
                 || (cfg!(target_os = "macos") && modifiers.control()))
             .then_some(at);
@@ -133,6 +175,7 @@ pub fn filmstrip<'a, M: Clone + 'a>(
                 .style(theme::ink(Token::TextIdentity)),
         );
     }
+    let modifiers = SharedModifiers::default();
     let cells = Row::with_children(model.cells.iter().enumerate().map(|(offset, cell)| {
         let index = model.first + offset;
         let active = model.active == Some(index);
@@ -144,6 +187,8 @@ pub fn filmstrip<'a, M: Clone + 'a>(
             ))
             .center(Length::Fill),
         )
+        // Enabled only for its hover and pressed look and its pointer cursor: iced draws a button
+        // without a message as disabled. `CellPress` takes every press first, with the modifiers.
         .on_press(on_select(FilmstripPress {
             index,
             command: false,
@@ -168,12 +213,14 @@ pub fn filmstrip<'a, M: Clone + 'a>(
             cell,
             CellPress {
                 index,
+                modifiers: modifiers.clone(),
                 publish: Box::new(move |press| on_select(press)),
             },
         )
     }))
     .spacing(theme::FILMSTRIP_CELL_SPACING)
     .align_y(Alignment::Center);
+    let cells = super::decorator::decorate(cells, HoldModifiers { shared: modifiers });
     let strip = column![
         container(Space::new())
             .width(Length::Fill)
@@ -256,45 +303,76 @@ pub fn filmstrip_capacity(width: f32) -> usize {
 mod tests {
     use super::*;
 
-    #[test]
-    fn copy_settings_filmstrip_presses_keep_modifiers_and_secondary_position() {
+    /// A strip of one cell, as `filmstrip` builds them, over the shared modifiers `shared`.
+    fn strip(
+        shared: &SharedModifiers,
+    ) -> super::super::decorator::Decorated<'static, FilmstripPress, HoldModifiers, iced::Theme, ()>
+    {
         use super::super::decorator::Decorated;
-        use iced::advanced::{Layout, Shell, Widget, layout, widget::Tree};
-        use iced::{
-            Event, Point, Rectangle, Size,
-            keyboard::{Event as K, Modifiers},
-            mouse::{Button, Cursor, Event as Mouse},
-        };
-        let mut widget: Decorated<'_, FilmstripPress, _, iced::Theme, ()> = Decorated {
+        let cell = iced::Element::new(Decorated {
             content: iced::Element::new(Space::new().width(78).height(54)),
             decoration: CellPress {
                 index: 7,
+                modifiers: shared.clone(),
                 publish: Box::new(|press| press),
             },
-        };
-        let mut tree = Tree::new(&widget as &dyn Widget<FilmstripPress, iced::Theme, ()>);
+        });
+        Decorated {
+            content: cell,
+            decoration: HoldModifiers {
+                shared: shared.clone(),
+            },
+        }
+    }
+
+    fn send(
+        widget: &mut (impl iced::advanced::Widget<FilmstripPress, iced::Theme, ()> + ?Sized),
+        tree: &mut iced::advanced::widget::Tree,
+        event: iced::Event,
+        at: iced::Point,
+    ) -> Vec<FilmstripPress> {
+        use iced::advanced::{Layout, Shell, layout};
+        use iced::{Rectangle, Size, mouse::Cursor};
         let node = layout::Node::new(Size::new(78.0, 54.0));
-        let mut send = |event: Event, at: Point| {
-            let mut messages = Vec::new();
-            widget.update(
-                &mut tree,
-                &event,
-                Layout::new(&node),
-                Cursor::Available(at),
-                &(),
-                &mut iced::advanced::clipboard::Null,
-                &mut Shell::new(&mut messages),
-                &Rectangle::new(Point::ORIGIN, Size::new(78.0, 54.0)),
-            );
-            messages
+        let mut messages = Vec::new();
+        widget.update(
+            tree,
+            &event,
+            Layout::new(&node),
+            Cursor::Available(at),
+            &(),
+            &mut iced::advanced::clipboard::Null,
+            &mut Shell::new(&mut messages),
+            &Rectangle::new(iced::Point::ORIGIN, Size::new(78.0, 54.0)),
+        );
+        messages
+    }
+
+    #[test]
+    fn copy_settings_filmstrip_presses_keep_modifiers_and_secondary_position() {
+        use iced::advanced::{Widget, widget::Tree};
+        use iced::{
+            Event, Point,
+            keyboard::{Event as K, Modifiers},
+            mouse::{Button, Event as Mouse},
         };
+        let shared = SharedModifiers::default();
+        let mut widget = strip(&shared);
+        let mut tree = Tree::new(&widget as &dyn Widget<FilmstripPress, iced::Theme, ()>);
         let at = Point::new(20.0, 20.0);
         send(
+            &mut widget,
+            &mut tree,
             Event::Keyboard(K::ModifiersChanged(Modifiers::COMMAND | Modifiers::SHIFT)),
             at,
         );
         assert_eq!(
-            send(Event::Mouse(Mouse::ButtonPressed(Button::Left)), at),
+            send(
+                &mut widget,
+                &mut tree,
+                Event::Mouse(Mouse::ButtonPressed(Button::Left)),
+                at
+            ),
             [FilmstripPress {
                 index: 7,
                 command: true,
@@ -302,9 +380,19 @@ mod tests {
                 context: None
             }]
         );
-        send(Event::Keyboard(K::ModifiersChanged(Modifiers::empty())), at);
+        send(
+            &mut widget,
+            &mut tree,
+            Event::Keyboard(K::ModifiersChanged(Modifiers::empty())),
+            at,
+        );
         assert_eq!(
-            send(Event::Mouse(Mouse::ButtonPressed(Button::Right)), at),
+            send(
+                &mut widget,
+                &mut tree,
+                Event::Mouse(Mouse::ButtonPressed(Button::Right)),
+                at
+            ),
             [FilmstripPress {
                 index: 7,
                 command: false,
@@ -314,11 +402,44 @@ mod tests {
         );
         assert!(
             send(
+                &mut widget,
+                &mut tree,
                 Event::Mouse(Mouse::ButtonPressed(Button::Left)),
                 Point::new(100.0, 100.0)
             )
             .is_empty()
         );
+    }
+
+    /// A cell built after the strip's size changes belongs to a new view with a new shared cell;
+    /// the strip's own state still holds the modifiers, so the cell does not start without them.
+    #[test]
+    fn a_cell_created_after_a_resize_still_sees_the_held_modifiers() {
+        use iced::advanced::{Widget, widget::Tree};
+        use iced::{
+            Event, Point,
+            keyboard::{Event as K, Modifiers},
+            mouse::{Button, Event as Mouse},
+        };
+        let at = Point::new(20.0, 20.0);
+        let mut widget = strip(&SharedModifiers::default());
+        let mut tree = Tree::new(&widget as &dyn Widget<FilmstripPress, iced::Theme, ()>);
+        send(
+            &mut widget,
+            &mut tree,
+            Event::Keyboard(K::ModifiersChanged(Modifiers::COMMAND)),
+            at,
+        );
+        let mut rebuilt = strip(&SharedModifiers::default());
+        let [press] = send(
+            &mut rebuilt,
+            &mut tree,
+            Event::Mouse(Mouse::ButtonPressed(Button::Left)),
+            at,
+        )[..] else {
+            panic!("one press");
+        };
+        assert!(press.command && !press.shift);
     }
 
     fn model(caption: Option<&str>, active: Option<usize>) -> FilmstripModel {

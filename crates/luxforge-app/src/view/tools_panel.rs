@@ -820,20 +820,33 @@ fn preset_form_view(form: &PresetFormModel) -> Element<'_, Message> {
     }
     let mut block =
         column![name, group, caption("Keep these settings"),].spacing(theme::SPACING / 2.0);
+    // Each analysis step sits just before the first group it overwrites; one that overwrites none
+    // follows the groups.
+    let step = |step: &crate::state::presets::AnalysisCheck| {
+        let id = step.id.clone();
+        toggle(
+            &ToggleModel {
+                label: step.label.clone(),
+                on: step.checked,
+                enabled: form.enabled,
+            },
+            move |checked| {
+                Message::Preset(PresetMessage::Analysis {
+                    id: id.clone(),
+                    checked,
+                })
+            },
+        )
+    };
     for check in &form.checks {
-        if check.fields.iter().any(|(action, fields)| {
-            action == "set-basic" && fields.iter().any(|field| field == "exposure")
-        }) {
-            block = block.push(toggle(
-                &ToggleModel {
-                    label: "Basic · Auto tone (per photo)".into(),
-                    on: form.auto_tone,
-                    enabled: form.enabled,
-                },
-                |enabled| Message::Preset(PresetMessage::AutoTone(enabled)),
-            ));
+        for analysis in form
+            .analysis
+            .iter()
+            .filter(|analysis| analysis.before.as_ref() == Some(&check.id))
+        {
+            block = block.push(step(analysis));
         }
-        let label = check.label.clone();
+        let id = check.id.clone();
         block = block.push(toggle(
             &ToggleModel {
                 label: check.label.clone(),
@@ -842,11 +855,18 @@ fn preset_form_view(form: &PresetFormModel) -> Element<'_, Message> {
             },
             move |checked| {
                 Message::Preset(PresetMessage::Check {
-                    label: label.clone(),
+                    id: id.clone(),
                     checked,
                 })
             },
         ));
+    }
+    for analysis in form
+        .analysis
+        .iter()
+        .filter(|analysis| analysis.before.is_none())
+    {
+        block = block.push(step(analysis));
     }
     if let Some(error) = &form.error {
         block = block.push(error_caption(error.clone()));

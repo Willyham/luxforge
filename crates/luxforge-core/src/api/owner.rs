@@ -10,6 +10,7 @@ use super::{
 };
 #[cfg(test)]
 use crate::ErrorKind;
+use crate::editor::pixels::Replay;
 use crate::{
     AnalysisPlan, AnalysisSelection, AssetId, DraftId, EditorService, EditorState, EntryId, Error,
     HostConfig, JobId, JobStatus, MaskOverlayColour, ModuleRegistry, Preparation, PreparationNeeds,
@@ -23,6 +24,7 @@ use crate::{
     preferences::{CanvasBackground, RawLook},
     source::PlaneGate,
 };
+use parked::{AnalysisQuery, ParkedRead, PixelsRead};
 use requests::{RequestKey, RequestTable};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -60,6 +62,7 @@ mod first_open_tests;
 pub(super) mod library;
 #[cfg(test)]
 mod original_tests;
+mod parked;
 #[cfg(test)]
 mod preferences_tests;
 pub(super) mod previews;
@@ -76,8 +79,8 @@ pub(super) mod views;
 pub(crate) const OWNER_THREAD: &str = "luxforge-owner";
 
 const EVENT_CAPACITY: usize = 256;
-/// The longest an `events.wait` may be asked to wait, and what it waits when it names no time.
-const MAX_EVENT_WAIT_MS: i64 = 30_000;
+/// The longest an `events.wait` or a `job.wait` may be asked to hold, in milliseconds.
+pub const MAX_EVENT_WAIT_MS: i64 = 30_000;
 const DEFAULT_EVENT_WAIT_MS: u64 = 10_000;
 const SOURCE_QUEUE_CAPACITY: usize = 8;
 /// Pending developments, with file preparations holding the sensor a Develop read, may pin one
@@ -100,27 +103,6 @@ impl ClientId {
 /// collides with one. Attached to the collection [`launch`] queues on its own, which no client
 /// asked for and none can read through `job.read`.
 const SYSTEM_CLIENT: ClientId = ClientId(0);
-
-/// A mutation parked on the owner while a pixel read is answered off the owner: the call, replayed
-/// once the read comes back, what the read was read from, and how many of the call's reads it is.
-struct ParkedRead {
-    call: OwnerCall,
-    key: crate::editor::pixels::PixelReadKey,
-    reads: usize,
-}
-
-/// The answer to a parked read, by its ticket, which the tile service hands back to the owner.
-type PixelsRead = (u64, Result<crate::editor::pixels::PixelAnswer, Error>);
-
-/// Which pass of a call the owner serves: its first, or a replay once a parked read was answered —
-/// with the pixel in its memo, the call's `n`th read, or without it because what the pixel was
-/// read from changed meanwhile.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Replay {
-    First,
-    Read(usize),
-    Stale,
-}
 
 struct OwnerCall {
     client: ClientId,
@@ -188,9 +170,16 @@ enum OwnerMessage {
     /// stop calling it.
     #[cfg(test)]
     HoldTiles(Option<crate::tiles::Hold>),
+    /// Have the analysis worker of the owner's render context call this before it runs each
+    /// piece of work, or stop calling it.
+    #[cfg(test)]
+    HoldAnalysis(Option<crate::tiles::Hold>),
     /// How many calls wait behind the one the owner's own reference tile service is answering.
     #[cfg(test)]
     TilesWaiting(SyncSender<usize>),
+    /// How many pieces of work wait behind the one the analysis worker runs.
+    #[cfg(test)]
+    AnalysisWaiting(SyncSender<usize>),
     /// Parked reads, the calls waiting in the owner's own reference tile service and the
     /// cancellation of the one it is answering.
     #[cfg(test)]
@@ -824,13 +813,13 @@ fn queue_work(
 
 /// Where a test holds the source worker: after a task's activity has begun and before any of its
 /// work, so the test can read the task as running for as long as it needs to, or panic there as the
-/// task's work could. Outside tests it is empty and holds nothing.
+/// task's work could. Outside tests and the `test-holds` feature it is empty and holds nothing.
 #[derive(Clone, Default)]
-struct SourceHold(#[cfg(test)] Option<Arc<dyn Fn() + Send + Sync>>);
+struct SourceHold(#[cfg(any(test, feature = "test-holds"))] Option<Arc<dyn Fn() + Send + Sync>>);
 
 impl SourceHold {
     fn wait(&self) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-holds"))]
         if let Some(hold) = &self.0 {
             hold();
         }
@@ -1064,6 +1053,24 @@ impl OwnerHandle {
         )
     }
 
+    /// [`Self::start`] with the source worker calling `hold` after each task's activity begins and
+    /// before its work, so a test outside the core acts while a source job runs whatever the
+    /// host's load: `luxforge-ctl`'s, through the `test-holds` feature, which only
+    /// `[dev-dependencies]` turn on.
+    #[cfg(any(test, feature = "test-holds"))]
+    pub fn start_holding_sources(
+        catalog: &Path,
+        hold: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<(Self, JoinHandle<()>), Error> {
+        Self::launch(
+            catalog,
+            Arc::new(ModuleRegistry::builtin()),
+            HostConfig::unconfigured(),
+            ActivityBoard::new(),
+            SourceHold(Some(hold)),
+        )
+    }
+
     /// [`Self::start_with`] publishing to a board the test supplies, usually one whose recent
     /// threshold is zero so a small fixture's short work is kept, and with the source worker
     /// calling `hold` after each task's activity begins and before its work.
@@ -1228,6 +1235,15 @@ impl OwnerHandle {
             .expect("the owner is running");
     }
 
+    /// Have the analysis worker of the owner's render context call `hold` before it runs each
+    /// piece of work, or stop calling it.
+    #[cfg(test)]
+    pub(crate) fn hold_analysis(&self, hold: Option<crate::tiles::Hold>) {
+        self.sender
+            .send(OwnerMessage::HoldAnalysis(hold))
+            .expect("the owner is running");
+    }
+
     /// Have the owner call `fault` with what it is about to serve ([`Fault`]), or stop calling it.
     #[cfg(test)]
     pub(crate) fn fault(&self, fault: Option<Fault>) {
@@ -1252,6 +1268,17 @@ impl OwnerHandle {
         let (reply, answer) = sync_channel(1);
         self.sender
             .send(OwnerMessage::TilesWaiting(reply))
+            .expect("the owner is running");
+        answer.recv().expect("the owner answered")
+    }
+
+    /// How many pieces of work wait behind the one the analysis worker of the owner's render
+    /// context runs.
+    #[cfg(test)]
+    pub(crate) fn analysis_waiting(&self) -> usize {
+        let (reply, answer) = sync_channel(1);
+        self.sender
+            .send(OwnerMessage::AnalysisWaiting(reply))
             .expect("the owner is running");
         answer.recv().expect("the owner answered")
     }
@@ -1501,6 +1528,7 @@ fn owner_loop(
         pixel_answers,
         answered_pixels,
         parked_reads: HashMap::new(),
+        analysis_queries: Vec::new(),
         next_pixel_ticket: 0,
         watchers: HashMap::new(),
         notified: 0,
@@ -1555,6 +1583,14 @@ fn owner_loop(
                     if let Some(tiles) = &owner.reference_tiles {
                         tiles.hold(hold);
                     }
+                }
+                #[cfg(test)]
+                OwnerMessage::HoldAnalysis(hold) => {
+                    owner.service.render_context().analysis().hold(hold);
+                }
+                #[cfg(test)]
+                OwnerMessage::AnalysisWaiting(reply) => {
+                    let _ = reply.send(owner.service.render_context().analysis().waiting());
                 }
                 #[cfg(test)]
                 OwnerMessage::TilesWaiting(reply) => {
@@ -1651,6 +1687,9 @@ fn owner_loop(
         }
         owner.notify_watchers(caller);
         owner.wake_event_waits();
+        // A parked read whose stack or draft this message moved on is cancelled: its replay would
+        // find it stale whatever it read.
+        owner.cancel_stale_reads();
         // Every parked read the tile service has answered, after every message: its wake may not
         // have fitted in the channel, and a read refused as it was submitted is answered on this
         // thread, which never waits on its own channel.
@@ -1813,6 +1852,9 @@ pub(super) struct Owner {
     pixel_answers: Sender<PixelsRead>,
     answered_pixels: Receiver<PixelsRead>,
     parked_reads: HashMap<u64, ParkedRead>,
+    /// The analysis queries handed to the tile service and not yet answered, each under a
+    /// cancellation of its own ([`parked`]).
+    analysis_queries: Vec<AnalysisQuery>,
     next_pixel_ticket: u64,
     /// The clients that asked to be woken by other clients' changes ([`OwnerHandle::watch_events`]).
     watchers: HashMap<ClientId, EventWake>,
@@ -1890,11 +1932,10 @@ impl Owner {
         if replay == Replay::First && call.request.method == "draft.reapply" {
             before.pixel_memo.clear();
         }
-        self.service
-            .begin_pixel_call(session.draft.as_ref(), before.pixel_memo.clone());
-        let result = self.answer(client, &mut call.request);
-        let deferred = self.service.take_pixel_read();
-        self.service.end_pixel_call();
+        let (result, deferred) =
+            self.pixel_pass(Some(client), before.pixel_memo.clone(), |owner| {
+                owner.answer(client, &mut call.request)
+            });
         if let Some(read) = deferred {
             // No draft/session change survives an unanswered pass, and the request table records
             // only its final answer. The service defers before any catalog write is planned.
@@ -1918,26 +1959,13 @@ impl Owner {
                     )
                     .with_data(json!({ "reason": PIXEL_READ_REQUIRED })),
                 ),
-                Replay::First => self.park(call, read, 1),
-                // The read it parked for is in its memo, so its plans ask for another, such as a
-                // collapse planning against the entry's parent: parked again, a bounded number of
-                // times.
-                Replay::Read(reads) if reads < crate::editor::pixels::MAX_PIXEL_READS => {
-                    self.park(call, read, reads + 1)
-                }
-                Replay::Read(_) => self.refuse(
-                    call,
-                    Error::resource_limit(format!(
-                        "the plan read more than {} pixels",
-                        crate::editor::pixels::MAX_PIXEL_READS
-                    )),
-                ),
-                // What its read was read from changed while it was read, and the replay needs a
+                // Parked as its next read, or answered `resource-limit` past the bound and
+                // `conflict` when what its last read was read from changed and the replay needs a
                 // pixel again.
-                Replay::Stale => self.refuse(
-                    call,
-                    Error::conflict("the stack changed while its pixels were read; retry"),
-                ),
+                replay => match replay.park() {
+                    Ok(reads) => self.park(call, read, reads),
+                    Err(refused) => self.refuse(call, refused),
+                },
             }
             return;
         }
@@ -1990,6 +2018,9 @@ impl Owner {
                 move |reads, cancel| methods::sample_value(plan.read(reads, cancel)?),
                 deliver,
             )),
+            Ok(Planned::Query(plan)) if plan.analysis() => {
+                self.submit_analysis_query(client, &call.request.method, plan, deliver);
+            }
             Ok(Planned::Query(plan)) => self.tiles.submit(crate::tiles::TileCall::caller(
                 client,
                 crate::Cancel::new(),
@@ -2008,88 +2039,6 @@ impl Owner {
             self.log.sequence,
             error,
         ));
-    }
-
-    /// Park `call` until the tile service has read `read`, which it is handed now. At most one
-    /// call more than [`crate::tiles::TILE_QUEUE_CAPACITY`] is parked — the one being read and
-    /// those waiting behind it — past which a call is refused with `resource-limit`. The read's answer comes back through the owner's own channel of them,
-    /// which never blocks whoever hands it back, this thread included when the service refuses
-    /// the read as it is submitted.
-    fn park(&mut self, call: OwnerCall, read: crate::editor::pixels::DeferredRead, reads: usize) {
-        if self.parked_reads.len() > crate::tiles::TILE_QUEUE_CAPACITY {
-            self.refuse(
-                call,
-                Error::resource_limit(
-                    "calls that read pixels are already waiting; retry after one is answered",
-                ),
-            );
-            return;
-        }
-        self.next_pixel_ticket = self.next_pixel_ticket.wrapping_add(1);
-        let ticket = self.next_pixel_ticket;
-        let client = call.client;
-        let key = read.key.clone();
-        self.parked_reads
-            .insert(ticket, ParkedRead { call, key, reads });
-        let (answers, wake) = (self.pixel_answers.clone(), self.pixel_completions.clone());
-        self.tiles.submit(crate::tiles::TileCall::pixels(
-            client,
-            crate::Cancel::new(),
-            move |reads, cancel| read.evaluate(reads, cancel),
-            move |result| {
-                if answers.send((ticket, result)).is_ok() {
-                    // A full channel already holds messages, after each of which the owner takes
-                    // every answer waiting.
-                    let _ = wake.try_send(OwnerMessage::PixelsRead);
-                }
-            },
-        ));
-    }
-
-    /// Take every parked read the tile service has answered and replay its call once: with the
-    /// pixel in the session's memo when what it was read from is still current, and without it
-    /// when the stack, the draft or the source changed while it was read, so a replay that needs
-    /// the pixel again answers `conflict` and one that no longer does — a retry its request log
-    /// answers — answers as it would have. A read that failed answers its call with the failure. A
-    /// panic while replaying one is contained as a call's is.
-    fn pixels_read(&mut self) {
-        while let Ok((ticket, result)) = self.answered_pixels.try_recv() {
-            let Some(parked) = self.parked_reads.remove(&ticket) else {
-                continue;
-            };
-            let client = parked.call.client;
-            let owed = Owed::Call(parked.call.request.id.clone(), parked.call.response.clone());
-            let replayed = catch_unwind(AssertUnwindSafe(|| self.replay(parked, result)));
-            if replayed.is_err() {
-                self.contained(owed);
-            }
-            self.notify_watchers(Some(client));
-            self.wake_event_waits();
-        }
-    }
-
-    fn replay(
-        &mut self,
-        parked: ParkedRead,
-        result: Result<crate::editor::pixels::PixelAnswer, Error>,
-    ) {
-        let answer = match result {
-            Ok(answer) => answer,
-            Err(error) => return self.refuse(parked.call, error),
-        };
-        let session = self.sessions.entry(parked.call.client).or_default();
-        let current = self
-            .service
-            .pixel_key_current(&parked.key, session.draft.as_ref())
-            .unwrap_or(false);
-        let replay = if current {
-            session.pixel_memo.insert(answer);
-            Replay::Read(parked.reads)
-        } else {
-            session.pixel_memo.clear();
-            Replay::Stale
-        };
-        self.call_round(parked.call, replay);
     }
 
     /// `request` is the call's own, which a service handler may take values out of rather than copy
@@ -2460,8 +2409,7 @@ impl Owner {
                 proxy,
             ),
         };
-        let deferred = self.service.take_pixel_read();
-        self.service.end_pixel_call();
+        let deferred = self.service.finish_pixel_call();
         if deferred.is_some() {
             return Err(Error::conflict(
                 "the draft's pixel inputs changed; set or reapply the draft before previewing it",
@@ -2567,8 +2515,7 @@ impl Owner {
         }
         self.latest_preparation.remove(&client);
         self.tiles.disconnect(client);
-        self.parked_reads
-            .retain(|_, parked| parked.call.client != client);
+        self.drop_parked_reads(client);
         self.watchers.remove(&client);
         // A gone client's waits are dropped unanswered: each receiver reports the owner gone.
         self.source_waiters.retain(|waiter| waiter.client != client);
@@ -2874,6 +2821,9 @@ pub(super) fn source_prepare(
         &needs,
     )?;
     owner.latest_preparation.insert(call.client, id.clone());
+    // This client's photograph is now this one: a read it parked for another is not wanted.
+    owner.supersede_parked_reads(call.client, |parked| parked.asset() != &params.asset_id);
+    owner.supersede_analysis_queries(call.client, |query| query.asset() != &params.asset_id);
     // A photograph whose original the verified cache already holds is ready at once.
     let status = owner
         .jobs
@@ -6796,6 +6746,10 @@ mod tests {
             }
             ParameterKind::Artifact => (json!(format!("artifact-{}", "0".repeat(64))), json!("x")),
             ParameterKind::Settings => (json!({"set-basic": {"exposure": 0.5}}), json!({})),
+            ParameterKind::SettingsOrigin => (
+                json!({"kind": "paste", "source": "x".repeat(crate::modules::MAX_SOURCE_NAME)}),
+                json!({"kind": "paste", "source": "x".repeat(crate::modules::MAX_SOURCE_NAME + 1)}),
+            ),
             ParameterKind::Json | ParameterKind::Secret { .. } => return None,
             other => panic!("no host method declares a {} parameter", other.name()),
         })
@@ -6930,8 +6884,16 @@ mod tests {
         assert_eq!(
             exercised.into_iter().collect::<Vec<_>>(),
             [
-                "artifact", "boolean", "enum", "identity", "integer", "number", "settings",
-                "string", "text"
+                "artifact",
+                "boolean",
+                "enum",
+                "identity",
+                "integer",
+                "number",
+                "settings",
+                "settings-origin",
+                "string",
+                "text"
             ],
             "every kind a host method declares, but json and secret, is exercised"
         );
@@ -9299,6 +9261,7 @@ mod tests {
         let asset = state["asset"]["id"].clone();
         let (reached, release) = hold_tiles(&owner);
         std::thread::scope(|scope| {
+            let _release_on_exit = ReleaseTiles(release.clone());
             let pending = scope.spawn(|| {
                 send(
                     &owner,
@@ -9311,6 +9274,11 @@ mod tests {
             reached
                 .recv_timeout(luxforge_testbase::HANG)
                 .expect("Auto is analysing off the owner");
+            let active = owner
+                .pixel_read_state()
+                .2
+                .expect("the analysis read is active");
+            assert!(!active.is_cancelled());
             ok(
                 &owner,
                 other,
@@ -9318,7 +9286,13 @@ mod tests {
                 "edit.set-basic",
                 json!({"asset_id":asset,"temperature":5,"mutation":crate::editor::mutation_json(0,"other")}),
             );
+            // The owner replies to the commit before it cancels stale reads at the end of the
+            // message turn. The caller may resume between those two steps.
+            luxforge_testbase::wait_until("the commit to cancel the stale Auto read", || {
+                active.is_cancelled()
+            });
             release.send(()).unwrap();
+            // Replayed as a stale read that finished would be: it needs the analysis again.
             assert_eq!(pending.join().unwrap().error.unwrap().code, "conflict");
         });
         let state = ok(
@@ -9330,6 +9304,383 @@ mod tests {
         );
         assert_eq!(state["revision"], 1);
         assert_ne!(state["current_entry"]["label"], "Auto tone");
+        owner.hold_tiles(None);
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// A client that opens another photograph (`source.prepare`, which every desktop open sends)
+    /// no longer wants the Auto it parked on the first: the read's own token is tripped while the
+    /// tile service is answering it, and the call is answered `cancelled`, committing nothing. A
+    /// read of the photograph's state in between supersedes nothing.
+    #[test]
+    fn opening_another_photograph_cancels_a_parked_auto_tone_read() {
+        let catalog = temp("auto-tone-superseded-open.sqlite");
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        // The second first, so the photograph Auto analyses is the one whose source is prepared.
+        let second = import_asset(
+            &owner,
+            client,
+            &luxforge_testbase::paths::fixture("s0/orientation-3.jpg"),
+        )["asset"]["id"]
+            .clone();
+        let first = import_asset(&owner, client, &fixture())["asset"]["id"].clone();
+        assert_ne!(first, second);
+        let (reached, release) = hold_tiles(&owner);
+        std::thread::scope(|scope| {
+            let _release_on_exit = ReleaseTiles(release.clone());
+            let pending = scope.spawn(|| {
+                send(
+                    &owner,
+                    client,
+                    "auto",
+                    "edit.auto-tone",
+                    json!({"asset_id":first,"mutation":crate::editor::mutation_json(0,"auto")}),
+                )
+            });
+            reached
+                .recv_timeout(luxforge_testbase::HANG)
+                .expect("Auto is analysing off the owner");
+            let active = owner
+                .pixel_read_state()
+                .2
+                .expect("the analysis read is active");
+            ok(
+                &owner,
+                client,
+                "state",
+                "asset.state",
+                json!({"asset_id":first}),
+            );
+            assert!(!active.is_cancelled(), "a state read supersedes nothing");
+            ok(
+                &owner,
+                client,
+                "open",
+                "source.prepare",
+                json!({"asset_id":second}),
+            );
+            assert!(
+                active.is_cancelled(),
+                "opening another photograph trips the parked read's own token"
+            );
+            release.send(()).unwrap();
+            let answer = pending
+                .join()
+                .unwrap()
+                .error
+                .expect("the Auto is superseded");
+            assert_eq!(answer.code, "cancelled", "{answer:?}");
+            assert!(answer.message.contains("superseded"), "{answer:?}");
+            assert_eq!(owner.pixel_read_state().0, 0, "nothing stays parked");
+        });
+        let state = ok(
+            &owner,
+            client,
+            "state",
+            "asset.state",
+            json!({"asset_id":first}),
+        );
+        assert_eq!(
+            state["revision"], 0,
+            "the superseded Auto committed nothing"
+        );
+        owner.hold_tiles(None);
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// The same client's newer Auto on the same photograph supersedes the one it parked before:
+    /// the older read's token is tripped while it is being answered and that call is answered
+    /// `cancelled`; the newer one is read and commits. Another client's Auto on the same
+    /// photograph is not this client's request and supersedes nothing.
+    #[test]
+    fn a_newer_auto_tone_from_the_same_client_supersedes_the_parked_one() {
+        let catalog = temp("auto-tone-superseded-again.sqlite");
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        let other = owner.register();
+        let asset = import_asset(&owner, client, &fixture())["asset"]["id"].clone();
+        let (reached, release) = hold_tiles(&owner);
+        std::thread::scope(|scope| {
+            let _release_on_exit = ReleaseTiles(release.clone());
+            let auto = |client: ClientId, request: &'static str| {
+                let (owner, asset) = (&owner, &asset);
+                scope.spawn(move || {
+                    send(
+                        owner,
+                        client,
+                        request,
+                        "edit.auto-tone",
+                        json!({"asset_id":asset,"mutation":crate::editor::mutation_json(0,request)}),
+                    )
+                })
+            };
+            let older = auto(client, "older");
+            reached
+                .recv_timeout(luxforge_testbase::HANG)
+                .expect("the older Auto is analysing off the owner");
+            let active = owner
+                .pixel_read_state()
+                .2
+                .expect("the older read is active");
+            let elsewhere = auto(other, "elsewhere");
+            luxforge_testbase::wait_until("the other client's Auto to park", || {
+                owner.pixel_read_state().0 == 2
+            });
+            assert!(!active.is_cancelled(), "another client supersedes nothing");
+            let newer = auto(client, "newer");
+            luxforge_testbase::wait_until("the newer Auto to park", || {
+                owner.pixel_read_state().0 == 3
+            });
+            assert!(
+                active.is_cancelled(),
+                "the newer request trips the older read's own token"
+            );
+            release.send(()).unwrap();
+            let older = older
+                .join()
+                .unwrap()
+                .error
+                .expect("the older Auto is superseded");
+            assert_eq!(older.code, "cancelled", "{older:?}");
+            // The two remaining reads are answered in order; whichever commits first leaves the
+            // other's revision stale, so exactly one of them commits.
+            for _ in 0..2 {
+                reached.recv_timeout(luxforge_testbase::HANG).unwrap();
+                release.send(()).unwrap();
+            }
+            let answers = [elsewhere.join().unwrap(), newer.join().unwrap()];
+            assert_eq!(
+                answers
+                    .iter()
+                    .filter(|answer| answer.error.is_none())
+                    .count(),
+                1,
+                "{answers:?}"
+            );
+        });
+        let state = ok(
+            &owner,
+            client,
+            "state",
+            "asset.state",
+            json!({"asset_id":asset}),
+        );
+        assert_eq!(state["revision"], 1);
+        assert_eq!(state["current_entry"]["label"], "Auto tone");
+        owner.hold_tiles(None);
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// Hold the analysis worker of the owner's render context before it runs each piece of work:
+    /// `reached` receives once per piece it takes, and each send on `release` lets one go.
+    fn hold_analysis(owner: &OwnerHandle) -> (std::sync::mpsc::Receiver<()>, SyncSender<()>) {
+        let (reached, reaches) = std::sync::mpsc::channel();
+        let (release, released) = sync_channel::<()>(64);
+        let reached = std::sync::Mutex::new(reached);
+        let released = std::sync::Mutex::new(released);
+        owner.hold_analysis(Some(Arc::new(move || {
+            let _ = reached.lock().unwrap().send(());
+            let _ = released.lock().unwrap().recv();
+        })));
+        (reaches, release)
+    }
+
+    /// Auto's sample grid is read by the tile service and its solve runs on the analysis worker:
+    /// while the solve waits there, the tile service is free and answers another client's
+    /// `render.sample` at once, and another client's `query.auto-tone` reads its grid and waits
+    /// behind the solve, in order. Both answer the same values.
+    #[test]
+    fn auto_tones_solve_runs_on_the_analysis_worker_while_the_tile_service_answers_others() {
+        let catalog = temp("auto-tone-analysis-worker.sqlite");
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        let other = owner.register();
+        let asset = import_asset(&owner, client, &fixture())["asset"]["id"].clone();
+        let (reached, release) = hold_analysis(&owner);
+        std::thread::scope(|scope| {
+            let _release_on_exit = ReleaseTiles(release.clone());
+            let auto = scope.spawn(|| {
+                send(
+                    &owner,
+                    client,
+                    "auto",
+                    "edit.auto-tone",
+                    json!({"asset_id":asset,"mutation":crate::editor::mutation_json(0,"auto")}),
+                )
+            });
+            reached
+                .recv_timeout(luxforge_testbase::HANG)
+                .expect("Auto's solve waits on the analysis worker");
+            assert_eq!(owner.pixel_read_state().0, 1, "the Auto is parked");
+            assert_eq!(
+                owner.tiles_waiting(),
+                0,
+                "nothing waits for the tile service"
+            );
+            ok(
+                &owner,
+                other,
+                "sample",
+                "render.sample",
+                json!({"asset_id":asset,"x":0,"y":0}),
+            );
+            let query = scope.spawn(|| {
+                send(
+                    &owner,
+                    other,
+                    "query",
+                    "query.auto-tone",
+                    json!({"asset_id":asset}),
+                )
+            });
+            // A query whose client disconnects while it waits on the analysis worker is
+            // cancelled there, not solved.
+            let gone = owner.register();
+            let (owner, asset) = (&owner, &asset);
+            let disconnected = scope.spawn(move || {
+                owner.call(
+                    gone,
+                    ApiRequest {
+                        id: "gone".into(),
+                        method: "query.auto-tone".into(),
+                        params: json!({"asset_id":asset}),
+                        token: None,
+                    },
+                )
+            });
+            luxforge_testbase::wait_until("both queries to wait on the analysis worker", || {
+                owner.analysis_waiting() == 2
+            });
+            owner.disconnect(gone);
+            for _ in 0..2 {
+                release.send(()).unwrap();
+                reached
+                    .recv_timeout(luxforge_testbase::HANG)
+                    .expect("the queries' solves follow the Auto's, in order");
+            }
+            release.send(()).unwrap();
+            let auto = auto.join().unwrap();
+            assert!(auto.error.is_none(), "{:?}", auto.error);
+            let query = query.join().unwrap();
+            assert!(query.error.is_none(), "{:?}", query.error);
+            assert_eq!(
+                auto.result.unwrap()["analysis"]["auto-tone"]["values"],
+                query.result.unwrap()["values"]
+            );
+            let disconnected = disconnected
+                .join()
+                .unwrap()
+                .expect("answered from the worker");
+            assert_eq!(disconnected.error.expect("not solved").code, "cancelled");
+        });
+        owner.hold_analysis(None);
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// `query.auto-tone` reads under a cancellation of its own, by the parked reads' rules: the
+    /// same client's newer query for the same photograph supersedes it, and so does opening
+    /// another photograph (`source.prepare`); each superseded query is answered `cancelled`.
+    /// Another client's query supersedes nothing, and neither does another client's disconnect;
+    /// its own client's disconnect cancels it.
+    #[test]
+    fn a_newer_auto_tone_query_or_another_photograph_supersedes_the_query() {
+        let catalog = temp("auto-tone-query-superseded.sqlite");
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let client = owner.register();
+        let other = owner.register();
+        let second = import_asset(
+            &owner,
+            client,
+            &luxforge_testbase::paths::fixture("s0/orientation-3.jpg"),
+        )["asset"]["id"]
+            .clone();
+        let first = import_asset(&owner, client, &fixture())["asset"]["id"].clone();
+        let (reached, release) = hold_tiles(&owner);
+        std::thread::scope(|scope| {
+            let _release_on_exit = ReleaseTiles(release.clone());
+            let query = |client: ClientId, request: &'static str| {
+                let (owner, first) = (&owner, &first);
+                scope.spawn(move || {
+                    send(
+                        owner,
+                        client,
+                        request,
+                        "query.auto-tone",
+                        json!({"asset_id":first}),
+                    )
+                })
+            };
+            let older = query(client, "older");
+            reached
+                .recv_timeout(luxforge_testbase::HANG)
+                .expect("the older query is read");
+            let active = owner
+                .pixel_read_state()
+                .2
+                .expect("the older query is active");
+            let elsewhere = query(other, "elsewhere");
+            luxforge_testbase::wait_until("the other client's query to wait", || {
+                owner.tiles_waiting() == 1
+            });
+            assert!(!active.is_cancelled(), "another client supersedes nothing");
+            let newer = query(client, "newer");
+            luxforge_testbase::wait_until("the newer query to wait", || owner.tiles_waiting() == 2);
+            assert!(
+                active.is_cancelled(),
+                "the newer query trips the older one's own token"
+            );
+            release.send(()).unwrap();
+            let older = older
+                .join()
+                .unwrap()
+                .error
+                .expect("the older is superseded");
+            assert_eq!(older.code, "cancelled", "{older:?}");
+            for _ in 0..2 {
+                reached.recv_timeout(luxforge_testbase::HANG).unwrap();
+                release.send(()).unwrap();
+            }
+            let (elsewhere, newer) = (elsewhere.join().unwrap(), newer.join().unwrap());
+            assert!(elsewhere.error.is_none(), "{:?}", elsewhere.error);
+            assert!(newer.error.is_none(), "{:?}", newer.error);
+            assert_eq!(
+                elsewhere.result.unwrap()["values"],
+                newer.result.unwrap()["values"]
+            );
+
+            let opened = query(client, "opened");
+            reached
+                .recv_timeout(luxforge_testbase::HANG)
+                .expect("the query is read");
+            let active = owner.pixel_read_state().2.expect("the query is active");
+            ok(
+                &owner,
+                client,
+                "open",
+                "source.prepare",
+                json!({"asset_id":second}),
+            );
+            assert!(
+                active.is_cancelled(),
+                "opening another photograph trips the query's own token"
+            );
+            release.send(()).unwrap();
+            let opened = opened
+                .join()
+                .unwrap()
+                .error
+                .expect("superseded by the open");
+            assert_eq!(opened.code, "cancelled", "{opened:?}");
+        });
         owner.hold_tiles(None);
         owner.stop();
         join.join().unwrap();

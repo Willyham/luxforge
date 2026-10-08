@@ -116,7 +116,7 @@ pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
     if session_file.exists() {
         let _ = std::fs::remove_file(&session_file);
     }
-    let live_server = LocalServer::start(owner.clone(), &session_file).ok();
+    let live_server = start_live_session(&mut config, &owner, &catalog, &session_file);
     // Queue only the first command-line file. The source worker can read and decode it while
     // Iced/AppKit initializes, without making the window thread read the image or changing the
     // normal adoption, history and error path. Evidence mode opens later files in order as usual.
@@ -177,6 +177,35 @@ pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
         .default_font(luxforge_ui::theme::FONT)
         .run()
         .map_err(|error| error.to_string())
+}
+
+/// Serve the live session on loopback and register it in the per-user registry of running
+/// sessions (`<config>/live-sessions`), so `luxforge-ctl` finds this catalog without being told
+/// it. A session that cannot start leaves the editor without one; one that cannot be registered is
+/// still served and found with `--catalog`. Either problem is kept in
+/// [`Config::live_problem`] for the status bar and the log, never dropped.
+fn start_live_session(
+    config: &mut Config,
+    owner: &OwnerHandle,
+    catalog: &std::path::Path,
+    session_file: &std::path::Path,
+) -> Option<LocalServer> {
+    let mut server = match LocalServer::start(owner.clone(), session_file) {
+        Ok(server) => server,
+        Err(error) => {
+            config.live_problem = Some(format!("live API unavailable: {}", error.detail));
+            return None;
+        }
+    };
+    if let Some(paths) = &config.paths
+        && let Err(error) = server.register(&paths.live_sessions(), catalog)
+    {
+        config.live_problem = Some(format!(
+            "live session not registered for luxforge-ctl: {}",
+            error.detail
+        ));
+    }
+    Some(server)
 }
 
 impl Editor {

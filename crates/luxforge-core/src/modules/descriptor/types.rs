@@ -14,11 +14,10 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// The parameters a `presets` control submits its action with: the settings set, the preset's name
-/// and, optionally, the library identity it came from.
+/// The parameters a `presets` control submits its action with: the settings set and where it came
+/// from ([`ParameterKind::SettingsOrigin`]).
 pub(crate) const PRESET_SETTINGS: &str = "settings";
-pub(crate) const PRESET_NAME: &str = "name";
-pub(crate) const PRESET_ID: &str = "preset-id";
+pub(crate) const SETTINGS_ORIGIN: &str = "origin";
 
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
     value == &T::default()
@@ -193,6 +192,10 @@ pub enum ParameterKind {
     /// non-empty objects of that action's fields. The generic check validates only this shape; the
     /// host checks every action and field against its own descriptor when the set is applied.
     Settings,
+    /// Where a settings set came from, as one object: `{kind: preset, name, preset_id?}` or
+    /// `{kind: paste, source, source_asset?}` ([`crate::SettingsOrigin`]). The generic check reads
+    /// it whole, bounds and all, so the module that declares it receives a well-formed origin.
+    SettingsOrigin,
     /// A network destination: a URL of at most `MAX_ENDPOINT_BYTES` that the capability
     /// transport's policy accepts as one of `classes`. Only a module setting declares one, and only
     /// a provider profile's, because only the host contacts anything and a destination is the
@@ -313,6 +316,7 @@ impl ParameterKind {
             Self::Curve { .. } => "curve",
             Self::String { .. } => "string",
             Self::Settings => "settings",
+            Self::SettingsOrigin => "settings-origin",
             Self::Endpoint { .. } => "endpoint",
             Self::Secret { .. } => "secret",
             Self::Identity { .. } => "identity",
@@ -458,6 +462,10 @@ impl ParameterDescriptor {
 
     pub(crate) fn settings(name: impl Into<String>) -> Self {
         Self::new(name, ParameterKind::Settings)
+    }
+
+    pub(crate) fn settings_origin(name: impl Into<String>) -> Self {
+        Self::new(name, ParameterKind::SettingsOrigin)
     }
 
     pub(crate) fn endpoint(
@@ -777,6 +785,13 @@ pub struct ActionDescriptor {
     /// overwrites absolutely. Presets use this declaration to refuse overlapping field patches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub analysis: Option<AnalysisAction>,
+    /// The keyboard chord a client binds to this action, which runs it with no parameters on the
+    /// displayed photo, as its control does. Optional, and a hint for clients: it changes nothing
+    /// the host accepts. Registration checks that the chord holds `Command`, that the action needs
+    /// no parameter, that no other action declares it and that the host does not keep it for a
+    /// command of its own ([`super::chord::HOST_CHORDS`]). A query declares none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shortcut: Option<super::chord::Chord>,
     pub parameters: Vec<ParameterDescriptor>,
 }
 
@@ -805,6 +820,7 @@ impl ActionDescriptor {
             patch: false,
             preset: true,
             analysis: None,
+            shortcut: None,
             parameters: Vec::new(),
         }
     }
@@ -876,6 +892,12 @@ pub struct GroupControl {
     /// reset groups attributes its fields to the group that holds it. Serialized only when true.
     #[serde(default, skip_serializing_if = "is_default")]
     pub view: bool,
+    /// The group's values usually belong to the one photograph they were set on, as its white
+    /// balance does, so a client carrying settings from one photograph to others (a preset's
+    /// create form, Copy settings) leaves the group out unless asked (`preset.groups`'
+    /// `default_checked`). A hint: the host accepts and applies the group's fields either way.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub per_photo: bool,
     /// The group reset another module provides on a photo of one source kind: each variant
     /// carries a `reset` and applies on the global target of a photo of its kind
     /// ([`resolve_group_reset`]). Listed only when declared.
@@ -900,6 +922,15 @@ impl GroupControl {
             reset: Some(reset),
             ..self
         }
+    }
+
+    pub(crate) fn collapsed(self, collapsed: bool) -> Self {
+        Self { collapsed, ..self }
+    }
+
+    /// The group's values usually belong to one photograph ([`Self::per_photo`]).
+    pub(crate) fn per_photo(self, per_photo: bool) -> Self {
+        Self { per_photo, ..self }
     }
 
     /// A replacement reset for one source kind ([`ControlVariant::reset`]).
@@ -1415,6 +1446,7 @@ impl Control {
             collapsed: false,
             layout: ModuleLayout::Stacked,
             view: false,
+            per_photo: false,
             variants: Vec::new(),
         }
     }

@@ -22,13 +22,18 @@ use crate::{
 };
 use serde_json::Value;
 
-/// `asset.remove`: move the photographs `targets` names to Removed as one library change.
+/// `asset.remove`: move the photographs `targets` names to Removed as one library change. Their
+/// retained sample grids are released with it.
 pub(in crate::api) fn asset_remove(
     owner: &mut Owner,
     call: &Call<'_>,
     params: AssetTargets,
 ) -> Result<Value, Error> {
+    let context = owner.service.render_context().clone();
     targeted(owner, call, &params, |assets| {
+        for (asset, _) in &assets {
+            context.release_grids(asset);
+        }
         remove::remove(assets, now_ms())
     })
 }

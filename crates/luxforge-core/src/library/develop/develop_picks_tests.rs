@@ -243,6 +243,7 @@ pub(crate) fn record(path: &Path, volume: &VolumeId) -> FileRecord {
         },
         header: HeaderState::Ok(Box::new(header)),
         last_seen_ms: 1,
+        born_ns: None,
     }
 }
 

@@ -27,7 +27,9 @@ impl Editor {
                     return Task::none();
                 }
                 self.controls.ui.analysis_pending = None;
-                let target = result
+                // The explanation is the report the action's own answer carried, pinned to the
+                // entry it left current: the analysis is not run again for the tooltip.
+                let explained = result
                     .as_ref()
                     .ok()
                     .filter(|refresh| !self.superseded(refresh))
@@ -35,46 +37,14 @@ impl Editor {
                         (
                             refresh.state.asset.id.clone(),
                             refresh.state.current_entry.id.clone(),
+                            refresh.analysis.get(&query).cloned(),
                         )
                     });
                 let refreshed = self.dispatch(Message::Sync(
                     super::message::sync::SyncMessage::Refreshed(result),
                 ));
-                let Some((asset, entry)) = target else {
-                    return refreshed;
-                };
-                let owner = self.owner.clone();
-                let client = self.client;
-                let read_asset = asset.clone();
-                let read_entry = entry.clone();
-                let explanation = super::tasks::owner_task(
-                    move || {
-                        super::tasks::call(
-                            &owner,
-                            client,
-                            &format!("query.{query}"),
-                            json!({"asset_id":read_asset,"entry_id":read_entry}),
-                        )
-                        .map(|(answer, _)| answer)
-                    },
-                    move |result| {
-                        Message::Action(ActionMessage::Explained {
-                            action: action.clone(),
-                            asset: asset.clone(),
-                            entry: entry.clone(),
-                            result,
-                        })
-                    },
-                );
-                return Task::batch([refreshed, explanation]);
-            }
-            ActionMessage::Explained {
-                action,
-                asset,
-                entry,
-                result,
-            } => {
-                if !self.select_shown()
+                if let Some((asset, entry, report)) = explained
+                    && !self.select_shown()
                     && self
                         .document
                         .state
@@ -82,20 +52,22 @@ impl Editor {
                         .is_some_and(|state| state.asset.id == asset)
                     && self.document.display_entry.as_ref() == Some(&entry)
                 {
-                    match result {
-                        Ok(report) => {
+                    match report {
+                        Some(report) => {
                             self.analysis_explained(&action, None);
                             self.controls
                                 .ui
                                 .analysis_reports
                                 .insert(action, (asset, entry, report));
                         }
-                        Err(error) => {
+                        None => {
+                            let error = format!("the action's answer carried no {query} report");
                             self.analysis_explained(&action, Some(&error));
                             self.event("analysis_explanation_failed", || json!({"error":error}))
                         }
                     }
                 }
+                return refreshed;
             }
 
             ActionMessage::CopyRequest {

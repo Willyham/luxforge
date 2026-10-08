@@ -9,6 +9,7 @@ pub(crate) mod develop;
 pub(crate) mod document;
 pub(crate) mod fields;
 pub(crate) mod histogram;
+pub(crate) mod host_commands;
 pub(crate) mod information;
 pub(crate) mod long_work;
 pub(crate) mod loupe;
@@ -3899,11 +3900,14 @@ mod tests {
             "one entry per preset that can apply in this build"
         );
         assert_eq!(entries[0].label, "Apply preset: Warm");
-        assert_eq!(entries[0].detail, "edit.apply-preset \u{00b7} User presets");
+        assert_eq!(
+            entries[0].detail,
+            "edit.apply-settings \u{00b7} User presets"
+        );
         assert_eq!(
             entries[0].action,
             crate::state::palette::PaletteAction::Run {
-                action: "apply-preset".into(),
+                action: "apply-settings".into(),
                 preset: row.apply.expect("the row applies"),
             },
             "the palette runs exactly what a click on the row runs"
@@ -3933,7 +3937,7 @@ mod tests {
         scene.preset_form.name = "Tone only".into();
         assert!(form(&scene).can_create);
         for check in &opened.checks {
-            scene.preset_form.checked.insert(check.label.clone(), false);
+            scene.preset_form.checked.insert(check.id.clone(), false);
         }
         assert!(
             !form(&scene).can_create,
@@ -3942,7 +3946,7 @@ mod tests {
         scene
             .preset_form
             .checked
-            .insert("Basic \u{00b7} Tone".into(), true);
+            .insert("luxforge.basic/tone".into(), true);
         assert!(form(&scene).can_create);
         scene.busy = true;
         assert!(!form(&scene).can_create);

@@ -1,24 +1,20 @@
 //! The Presets section's model: the preset library as `preset.list` last answered it, grouped in
-//! the order the list returns, and the create form, whose checkboxes are derived from the
-//! registered modules' field-patch groups. Nothing here calls the owner: the app layer loads the
-//! library and owns the form's text, and this turns both into plain data the view draws.
+//! the order the list returns, and the create form, whose checkboxes are the core's settings
+//! groups and analysis steps (`preset.groups`). Nothing here calls the owner: the app layer loads
+//! the library and owns the form's text, and this turns both into plain data the view draws.
 //!
 //! The section applies a library preset through the module's own `presets` control, so the one
 //! request it can send is that control's action with the preset's settings, name and identity.
-//! The parameter names are read from the action's descriptor by kind, and the only module-specific
-//! rule here is the create form's white-balance default.
-use crate::state::{Inputs, control_tree::walk, palette::PaletteAction, tools::is_patch};
+//! The parameter names are read from the action's descriptor by kind. Which groups exist, their
+//! defaults and which an analysis step overwrites are the core's ([`luxforge_core::settings_groups`]),
+//! so no module-specific rule lives here.
+use crate::state::{Inputs, control_tree::walk, palette::PaletteAction};
 use luxforge_core::{
     ActionDescriptor, Control, ModuleDescriptor, ParameterKind, PresetSummary, ReportCounts,
-    USER_PRESET_GROUP,
+    SettingsGroup, SettingsGroups, SettingsOrigin, USER_PRESET_GROUP,
 };
 use serde_json::{Map, Value, json};
-use std::collections::BTreeMap;
-
-/// A group holding a field-patch parameter of one of these names is per-photo white balance, so
-/// the create form leaves it unchecked: a look rarely means to carry one photograph's colour
-/// temperature to the next.
-const PER_PHOTO_FIELDS: [&str; 2] = ["temperature", "tint"];
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The preset library as this desktop last read it. It is catalog data the owner holds; this is
 /// the listing `preset.list` answered, replaced whole by every newer answer.
@@ -75,9 +71,12 @@ pub(crate) struct PresetForm {
     pub(crate) open: bool,
     pub(crate) name: String,
     pub(crate) group: String,
-    /// The checkboxes the person changed, by label. Every other one keeps its derived default.
+    /// The checkboxes the person changed, by settings-group identity. Every other one keeps the
+    /// group's `default_checked`.
     pub(crate) checked: BTreeMap<String, bool>,
-    pub(crate) auto_tone: bool,
+    /// The analysis steps checked, by identity: each recomputes its fields on every photo the
+    /// preset is applied to, so the groups it overwrites are cleared and disabled.
+    pub(crate) analysis: BTreeSet<String>,
     /// The last create's refusal, shown in the form until the next attempt.
     pub(crate) error: Option<String>,
 }
@@ -89,248 +88,60 @@ impl Default for PresetForm {
             name: String::new(),
             group: USER_PRESET_GROUP.into(),
             checked: BTreeMap::new(),
-            auto_tone: false,
+            analysis: BTreeSet::new(),
             error: None,
         }
     }
 }
 
 impl PresetForm {
-    /// Whether this group's checkbox is on: the person's choice, else the group's default.
-    pub(crate) fn is_checked(&self, group: &PresettableGroup) -> bool {
-        if self.auto_tone && group.auto_overwrites() {
-            return false;
-        }
-        self.checked
-            .get(&group.label)
-            .copied()
-            .unwrap_or(group.default_checked)
-    }
-}
-
-/// One checkbox of the create form: a group of controls whose action is a field patch, and the
-/// parameters capturing it names, per action.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct PresettableGroup {
-    /// `<Module title> · <Group label>`, or the module title alone for the patch controls a module
-    /// declares outside any group.
-    pub(crate) label: String,
-    /// The parameters this group captures, per field-patch action, in declaration order.
-    pub(crate) fields: Vec<(String, Vec<String>)>,
-    /// Checked unless the group carries per-photo white balance.
-    pub(crate) default_checked: bool,
-}
-
-impl PresettableGroup {
-    pub(crate) fn auto_overwrites(&self) -> bool {
-        self.fields.iter().any(|(action, fields)| {
-            action == "set-basic"
-                && fields
-                    .iter()
-                    .any(|field| luxforge_core::auto_tone::FIELDS.contains(&field.as_str()))
-        })
+    /// Whether this group's checkbox is on: never while a checked analysis step overwrites it,
+    /// else the person's choice, else the group's default.
+    pub(crate) fn is_checked(&self, group: &SettingsGroup) -> bool {
+        !self.overwritten(group)
+            && self
+                .checked
+                .get(&group.id)
+                .copied()
+                .unwrap_or(group.default_checked)
     }
 
-    fn add(&mut self, action: &str, parameter: &str) {
-        match self.fields.iter_mut().find(|(named, _)| named == action) {
-            Some((_, parameters)) => {
-                if !parameters.iter().any(|named| named == parameter) {
-                    parameters.push(parameter.to_owned());
-                }
-            }
-            None => self
-                .fields
-                .push((action.to_owned(), vec![parameter.to_owned()])),
-        }
-    }
-}
-
-/// Every presettable group the registered modules declare, in registry order: one per control
-/// group whose value controls belong to a field-patch action, and one per module for such controls
-/// declared outside any group. Unavailable modules offer none, and developer modules only when the
-/// run lists them, exactly as their sections are listed.
-pub(crate) fn presettable_groups(
-    modules: &[ModuleDescriptor],
-    developer: bool,
-) -> Vec<PresettableGroup> {
-    declared_groups(modules, developer, false)
-}
-
-/// Copy shows unavailable groups with their refusal instead of silently omitting them.
-pub(crate) fn copyable_groups(
-    modules: &[ModuleDescriptor],
-    developer: bool,
-) -> Vec<PresettableGroup> {
-    declared_groups(modules, developer, true)
-}
-
-fn declared_groups(
-    modules: &[ModuleDescriptor],
-    developer: bool,
-    unavailable: bool,
-) -> Vec<PresettableGroup> {
-    let mut groups = Vec::new();
-    for module in modules
-        .iter()
-        .filter(|module| unavailable || module.is_available())
-        .filter(|module| developer || !module.developer)
-    {
-        let entries = collect(modules, module);
-        groups.extend(
-            entries
-                .into_iter()
-                .filter(|group: &PresettableGroup| !group.fields.is_empty()),
-        );
-    }
-    for group in &mut groups {
-        group.default_checked = !group.fields.iter().any(|(_, parameters)| {
-            parameters
-                .iter()
-                .any(|parameter| PER_PHOTO_FIELDS.contains(&parameter.as_str()))
-        });
-    }
-    groups
-}
-
-/// One module's entries, one per capture group in declaration order. A value control belongs to
-/// the entry of its enclosing group, or, at the module's top level, to the module's own entry,
-/// which is added where the first such control is.
-///
-/// A group that declares `layout: tabs` is one capture group with everything under it: its tabs
-/// are parallel presentations of its fields, so neither a presentation-only view nor a nested tab
-/// is a checkbox of its own, and a field several views show is captured once.
-fn collect(modules: &[ModuleDescriptor], module: &ModuleDescriptor) -> Vec<PresettableGroup> {
-    let mut entries = Vec::new();
-    let mut loose = None;
-    // Each group's path, its entry's index, and whether its descendants join that entry.
-    let mut groups: Vec<(Vec<usize>, usize, bool)> = Vec::new();
-    let mut controls = walk(&module.controls);
-    while let Some(control) = controls.next() {
-        let fields: Vec<(&str, &str)> = match control {
-            Control::Group(group) => {
-                let path = controls.path();
-                let parent = &path[..path.len() - 1];
-                let absorbed = groups
-                    .iter()
-                    .find(|(named, _, absorbs)| named == parent && *absorbs)
-                    .map(|(_, index, _)| *index);
-                let index = match absorbed {
-                    Some(index) => index,
-                    None if group.view => {
-                        // A view outside a tabbed group (the module's own tabs) joins its
-                        // enclosing entry, or the module's own at the top level.
-                        match groups.iter().find(|(named, _, _)| named == parent) {
-                            Some((_, index, _)) => *index,
-                            None => *loose.get_or_insert_with(|| {
-                                entries.push(PresettableGroup {
-                                    label: module.title.clone(),
-                                    fields: Vec::new(),
-                                    default_checked: true,
-                                });
-                                entries.len() - 1
-                            }),
-                        }
-                    }
-                    None => {
-                        entries.push(PresettableGroup {
-                            label: format!("{} \u{00b7} {}", module.title, group.label),
-                            fields: Vec::new(),
-                            default_checked: true,
-                        });
-                        entries.len() - 1
-                    }
-                };
-                let absorbs = absorbed.is_some()
-                    || group.view
-                    || group.layout == luxforge_core::ModuleLayout::Tabs;
-                groups.push((path, index, absorbs));
-                continue;
-            }
-            Control::Number(number) => vec![(&number.action, &number.parameter)],
-            Control::Toggle(toggle) => vec![(&toggle.action, &toggle.parameter)],
-            Control::Choice(choice) => vec![(&choice.action, &choice.parameter)],
-            Control::Color(color) => vec![(&color.action, &color.parameter)],
-            Control::Curve(curve) => curve
-                .channels
-                .iter()
-                .map(|channel| (curve.action.as_str(), channel.parameter.as_str()))
-                .collect(),
-            // A wheel's fields join the entry of the group that holds it, as a curve's channels do.
-            Control::Wheel(wheel) => wheel
-                .parameters()
-                .map(|parameter| (wheel.action.as_str(), parameter))
-                .collect(),
-            // A band's fields are presettable through the number controls that declare them, and
-            // no other kind carries a field.
-            Control::Range(_)
-            | Control::Action(_)
-            | Control::Picker(_)
-            | Control::Task(_)
-            | Control::Presets(_)
-            | Control::QueryChoice(_) => Vec::new(),
-        };
-        if fields.is_empty() {
-            continue;
-        }
-        let path = controls.path();
-        let parent = &path[..path.len() - 1];
-        let current = groups
+    /// A checked analysis step overwrites a field of this group, so the form cannot carry both.
+    pub(crate) fn overwritten(&self, group: &SettingsGroup) -> bool {
+        group
+            .overwritten_by
             .iter()
-            .find(|(group, _, _)| group == parent)
-            .map(|(_, index, _)| *index);
-        for (action, parameter) in fields {
-            let declared = module
-                .action(action)
-                .is_some_and(|declared| declared.preset && declared.parameter(parameter).is_some());
-            if !declared || !is_patch(modules, action) {
-                continue;
-            }
-            let index = match current {
-                Some(index) => index,
-                None => *loose.get_or_insert_with(|| {
-                    entries.push(PresettableGroup {
-                        label: module.title.clone(),
-                        fields: Vec::new(),
-                        default_checked: true,
-                    });
-                    entries.len() - 1
-                }),
-            };
-            entries[index].add(action, parameter);
-        }
+            .any(|step| self.analysis.contains(step))
     }
-    entries
+
+    /// The identities a `preset.capture {groups}` request names for this form: every checked group
+    /// the registry can capture, in registry order, then every checked analysis step it offers.
+    pub(crate) fn capture_ids(&self, groups: &SettingsGroups) -> Vec<String> {
+        groups
+            .groups
+            .iter()
+            .filter(|group| group.unavailable.is_none() && self.is_checked(group))
+            .map(|group| group.id.clone())
+            .chain(
+                groups
+                    .analysis
+                    .iter()
+                    .filter(|step| step.unavailable.is_none() && self.analysis.contains(&step.id))
+                    .map(|step| step.id.clone()),
+            )
+            .collect()
+    }
 }
 
-/// The `fields` a `preset.capture` request names for the checked groups: each action's parameters
-/// as an array, the union over every checked group in declaration order.
-pub(crate) fn capture_fields(groups: &[PresettableGroup], form: &PresetForm) -> Map<String, Value> {
-    let mut merged = PresettableGroup {
-        label: String::new(),
-        fields: Vec::new(),
-        default_checked: true,
-    };
-    for group in groups.iter().filter(|group| form.is_checked(group)) {
-        for (action, parameters) in &group.fields {
-            for parameter in parameters {
-                merged.add(action, parameter);
-            }
-        }
-    }
-    let mut fields: Map<String, Value> = merged
-        .fields
-        .into_iter()
-        .map(|(action, parameters)| {
-            (
-                action,
-                Value::Array(parameters.into_iter().map(Value::from).collect()),
-            )
-        })
-        .collect();
-    if form.auto_tone {
-        fields.insert("auto-tone".into(), Value::Bool(true));
-    }
-    fields
+/// The settings groups and analysis steps this desktop offers, from the core's one derivation over
+/// the listed modules, which `preset.groups` answers too. Developer modules count only when the run
+/// lists them, exactly as their sections are listed.
+pub(crate) fn settings_groups(modules: &[ModuleDescriptor], developer: bool) -> SettingsGroups {
+    luxforge_core::settings_groups(
+        modules
+            .iter()
+            .filter(|module| developer || !module.developer),
+    )
 }
 
 /// The module that declares the `presets` control and the action that control submits.
@@ -346,30 +157,28 @@ pub(crate) fn presets_control(modules: &[ModuleDescriptor]) -> Option<(&ModuleDe
 }
 
 /// The fields a `presets` control's action carries for one library preset, under the names its
-/// descriptor declares: the `settings` parameter, the required `string` (the name) and the
-/// optional `string` (the library identity). Registration guarantees exactly those three.
+/// descriptor declares: the `settings` parameter and the `settings-origin` one, the preset's name and
+/// library identity. Registration guarantees exactly those two.
 pub(crate) fn apply_fields(
     action: &ActionDescriptor,
     preset: &PresetSummary,
 ) -> Option<Map<String, Value>> {
-    let settings = action
-        .parameters
-        .iter()
-        .find(|parameter| matches!(parameter.kind, ParameterKind::Settings))?;
-    let name = action.parameters.iter().find(|parameter| {
-        matches!(parameter.kind, ParameterKind::String { .. }) && parameter.required
-    })?;
+    let named = |kind: fn(&ParameterKind) -> bool| {
+        action
+            .parameters
+            .iter()
+            .find(|parameter| kind(&parameter.kind))
+            .map(|parameter| parameter.name.clone())
+    };
+    let settings = named(|kind| matches!(kind, ParameterKind::Settings))?;
+    let origin = named(|kind| matches!(kind, ParameterKind::SettingsOrigin))?;
     let mut fields = Map::new();
-    fields.insert(
-        settings.name.clone(),
-        Value::Object(preset.settings.clone()),
-    );
-    fields.insert(name.name.clone(), Value::from(preset.name.clone()));
-    if let Some(id) = action.parameters.iter().find(|parameter| {
-        matches!(parameter.kind, ParameterKind::String { .. }) && !parameter.required
-    }) {
-        fields.insert(id.name.clone(), Value::from(preset.id.as_str()));
-    }
+    fields.insert(settings, Value::Object(preset.settings.clone()));
+    let origin_value = SettingsOrigin::Preset {
+        name: preset.name.clone(),
+        preset_id: Some(preset.id.clone()),
+    };
+    fields.insert(origin, serde_json::to_value(origin_value).ok()?);
     Some(fields)
 }
 
@@ -423,19 +232,29 @@ pub(crate) struct PresetGroupModel {
     pub(crate) rows: Vec<PresetRow>,
 }
 
-/// One create-form checkbox.
+/// One create-form checkbox: a settings group, by its identity and its title.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PresetCheck {
+    pub(crate) id: String,
     pub(crate) enabled: bool,
     pub(crate) label: String,
     pub(crate) checked: bool,
-    /// The parameters this checkbox captures, per action.
-    pub(crate) fields: Vec<(String, Vec<String>)>,
+}
+
+/// One analysis step the create form offers, drawn before the first group it overwrites
+/// (`before`), or after every group when it overwrites none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AnalysisCheck {
+    pub(crate) id: String,
+    /// `<Module> · <step> (per photo)`: the step recomputes on every photo the preset reaches.
+    pub(crate) label: String,
+    pub(crate) checked: bool,
+    pub(crate) before: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PresetFormModel {
-    pub(crate) auto_tone: bool,
+    pub(crate) analysis: Vec<AnalysisCheck>,
     pub(crate) enabled: bool,
     pub(crate) open: bool,
     pub(crate) name: String,
@@ -490,7 +309,7 @@ impl PresetsModel {
                 "enabled": row.enabled,
             })).collect::<Vec<_>>(),
             "form": {
-                "auto_tone": self.form.auto_tone,
+                "analysis": self.form.analysis.iter().filter(|step| step.checked).map(|step| &step.id).collect::<Vec<_>>(),
                 "disabled": self.form.checks.iter().filter(|check| !check.enabled).map(|check| &check.label).collect::<Vec<_>>(),
                 "enabled": self.form.enabled,
                 "open": self.form.open,
@@ -552,13 +371,33 @@ pub(crate) fn presets_model(
         }
     }
     let form = inputs.preset_form;
-    let checks: Vec<PresetCheck> = presettable_groups(inputs.modules, inputs.developer)
-        .into_iter()
+    // A preset carries only what this registry can capture, so an unavailable module's groups and
+    // steps are not offered.
+    let offered = settings_groups(inputs.modules, inputs.developer);
+    let checks: Vec<PresetCheck> = offered
+        .groups
+        .iter()
+        .filter(|group| group.unavailable.is_none())
         .map(|group| PresetCheck {
-            enabled: !form.auto_tone || !group.auto_overwrites(),
-            checked: form.is_checked(&group),
-            label: group.label,
-            fields: group.fields,
+            id: group.id.clone(),
+            enabled: !form.overwritten(group),
+            checked: form.is_checked(group),
+            label: group.title.clone(),
+        })
+        .collect();
+    let analysis: Vec<AnalysisCheck> = offered
+        .analysis
+        .iter()
+        .filter(|step| step.unavailable.is_none())
+        .map(|step| AnalysisCheck {
+            id: step.id.clone(),
+            label: format!("{} (per photo)", step.title),
+            checked: form.analysis.contains(&step.id),
+            before: step
+                .overwrites
+                .iter()
+                .find(|group| checks.iter().any(|check| &check.id == *group))
+                .cloned(),
         })
         .collect();
     let can_create = can_manage
@@ -568,7 +407,7 @@ pub(crate) fn presets_model(
         && !library.pending
         && !form.name.trim().is_empty()
         && !form.group.trim().is_empty()
-        && (form.auto_tone || checks.iter().any(|check| check.checked));
+        && (analysis.iter().any(|step| step.checked) || checks.iter().any(|check| check.checked));
     PresetsModel {
         action: action.to_owned(),
         empty: library.presets.as_ref().is_some_and(Vec::is_empty),
@@ -576,7 +415,7 @@ pub(crate) fn presets_model(
         error: library.error.clone(),
         groups,
         form: PresetFormModel {
-            auto_tone: form.auto_tone,
+            analysis,
             enabled: can_manage,
             open: form.open,
             name: form.name.clone(),
@@ -630,18 +469,26 @@ pub(crate) fn palette_entries(inputs: &Inputs<'_>) -> Vec<(String, String, Palet
 mod tests {
     use super::*;
     use crate::state::testing::{descriptors, listed};
-    use luxforge_core::ParameterDescriptor;
 
-    fn labels(groups: &[PresettableGroup]) -> Vec<&str> {
-        groups.iter().map(|group| group.label.as_str()).collect()
-    }
-
+    /// The form offers exactly the core's groups for the modules this run lists, under their
+    /// titles, with the core's defaults: a developer module's groups only in a developer run.
     #[test]
-    fn every_field_patch_group_is_one_checkbox_in_registry_order() {
+    fn the_form_offers_the_cores_groups_for_the_listed_modules() {
         let modules = descriptors();
-        let groups = presettable_groups(&modules, false);
+        let ordinary = settings_groups(&modules, false);
+        let builtin =
+            luxforge_core::settings_groups(luxforge_core::ModuleRegistry::builtin().descriptors());
         assert_eq!(
-            labels(&groups),
+            ordinary, builtin,
+            "a developer module adds nothing outside a developer run"
+        );
+        let titles: Vec<&str> = ordinary
+            .groups
+            .iter()
+            .map(|group| group.title.as_str())
+            .collect();
+        assert_eq!(
+            titles,
             [
                 "Basic \u{00b7} White balance",
                 "Basic \u{00b7} Tone",
@@ -656,194 +503,46 @@ mod tests {
             ],
             "RAW, transforms, crop and the pixel proof declare no field patch; Perspective's patch is not presettable"
         );
-        assert!(
-            modules
-                .iter()
-                .any(|module| module.id == "luxforge.perspective")
-        );
-        assert!(
-            groups
-                .iter()
-                .flat_map(|group| &group.fields)
-                .all(|(action, _)| action != "set-perspective")
-        );
-        // The mixer's HSL and Grading tabs are one checkbox each: HSL's nested Hue, Saturation
-        // and Luminance tabs and Grading's views are presentation, and a field several views show
-        // (a wheel and its own numbers) is captured once.
-        for (label, count) in [
-            ("Colour mixer \u{00b7} HSL", 24),
-            ("Colour mixer \u{00b7} Grading", 14),
-        ] {
-            let group = groups
-                .iter()
-                .find(|group| group.label == label)
-                .expect("a mixer capture group");
-            let [(action, fields)] = group.fields.as_slice() else {
-                panic!("{label} captures one action: {:?}", group.fields);
-            };
-            assert_eq!(action, "set-mixer");
-            assert_eq!(fields.len(), count, "{label}: {fields:?}");
-            let unique: std::collections::BTreeSet<&String> = fields.iter().collect();
-            assert_eq!(unique.len(), count, "{label} captures a field twice");
-        }
-        let tone = &groups[1];
-        assert_eq!(
-            tone.fields,
-            [(
-                "set-basic".to_owned(),
-                [
-                    "exposure",
-                    "contrast",
-                    "highlights",
-                    "shadows",
-                    "whites",
-                    "blacks"
-                ]
-                .map(str::to_owned)
-                .to_vec()
-            )]
-        );
-        // Each checkbox carries only its own group's fields: the picker in White balance adds none.
-        assert_eq!(
-            groups[0].fields,
-            [(
-                "set-basic".to_owned(),
-                vec!["temperature".to_owned(), "tint".to_owned()]
-            )]
-        );
-        for (group, fields) in [
-            (
-                4,
-                ["sharpening", "radius", "sharpen-detail", "sharpen-masking"],
-            ),
-            (
-                5,
-                ["luminance", "luminance-detail", "colour", "colour-detail"],
-            ),
-        ] {
+        assert_eq!(ordinary.groups[1].id, "luxforge.basic/tone");
+        for (id, count) in [("luxforge.mixer/hsl", 24), ("luxforge.mixer/grading", 14)] {
+            let group = ordinary.group(id).expect("mixer capture group");
+            let fields = &group.fields["set-mixer"];
+            assert_eq!(fields.len(), count);
             assert_eq!(
-                groups[group].fields,
-                [("set-detail".to_owned(), fields.map(str::to_owned).to_vec())]
+                fields
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len(),
+                count
             );
         }
-        // The white-balance rule is the only default: every other group starts checked.
-        let unchecked: Vec<_> = groups
-            .iter()
-            .filter(|group| !group.default_checked)
-            .map(|group| group.label.as_str())
-            .collect();
-        assert_eq!(unchecked, ["Basic \u{00b7} White balance"]);
     }
 
     #[test]
-    fn groups_come_from_descriptors_not_from_module_names() {
-        // A module with patch controls outside any group gets one checkbox named for the module; a
-        // group holding a `tint` field of a patch action is unchecked by default whatever its
-        // module is called; a group of request inputs is no checkbox at all.
-        let number = |name: &str, min: f64| {
-            ParameterDescriptor::number(name, min, 1.0)
-                .default(0.0)
-                .notes("n")
-        };
-        let module = ModuleDescriptor {
-            id: "fixture.look".into(),
-            title: "Look".into(),
-            actions: vec![
-                ActionDescriptor {
-                    patch: true,
-                    parameters: vec![
-                        number("amount", -1.0),
-                        number("tint", -1.0),
-                        number("glow", 0.0),
-                    ],
-                    ..ActionDescriptor::new("set-look", "Set look", "patch")
-                },
-                ActionDescriptor {
-                    parameters: vec![number("x", 0.0)],
-                    ..ActionDescriptor::new("place", "Place", "request")
-                },
-            ],
-            controls: vec![
-                Control::number("set-look", "amount", "Amount").into(),
-                Control::group(
-                    "Cast",
-                    vec![Control::number("set-look", "tint", "Tint").into()],
-                )
-                .into(),
-                Control::group("Where", vec![Control::number("place", "x", "X").into()]).into(),
-                Control::number("set-look", "glow", "Glow").into(),
-            ],
-            ..ModuleDescriptor::default()
-        };
-        module.validate().expect("a valid fixture descriptor");
-        let groups = presettable_groups(std::slice::from_ref(&module), false);
-        assert_eq!(labels(&groups), ["Look", "Look \u{00b7} Cast"]);
-        assert_eq!(
-            groups[0].fields,
-            [(
-                "set-look".to_owned(),
-                vec!["amount".to_owned(), "glow".to_owned()]
-            )]
-        );
-        assert!(groups[0].default_checked);
-        assert!(!groups[1].default_checked, "a tint field is per-photo");
-        // An unavailable module offers nothing to capture.
-        let unavailable = ModuleDescriptor {
-            availability: luxforge_core::Availability::Unavailable {
-                reason: "test".into(),
-            },
-            ..module
-        };
-        assert!(presettable_groups(&[unavailable], false).is_empty());
-    }
-
-    #[test]
-    fn the_checked_groups_become_exactly_the_capture_fields() {
-        let modules = descriptors();
-        let groups = presettable_groups(&modules, false);
+    fn the_checked_groups_and_steps_become_exactly_the_capture_ids() {
+        let groups = settings_groups(&descriptors(), false);
         let mut form = PresetForm::default();
-        // By default everything but white balance.
-        let fields = capture_fields(&groups, &form);
-        assert_eq!(
-            fields["set-basic"],
-            json!([
-                "exposure",
-                "contrast",
-                "highlights",
-                "shadows",
-                "whites",
-                "blacks",
-                "vibrance",
-                "saturation"
-            ])
-        );
-        assert!(fields.contains_key("set-presence"));
-        assert!(fields.contains_key("set-mixer"));
-        assert!(fields.contains_key("set-vignette"));
+        // By default everything but white balance, and no analysis step.
+        let ids = form.capture_ids(&groups);
+        assert_eq!(ids.len(), groups.groups.len() - 1);
+        assert!(!ids.iter().any(|id| id == "luxforge.basic/white-balance"));
         // Tone alone, as the smoke scenario creates it.
-        for group in &groups {
+        for group in &groups.groups {
             form.checked
-                .insert(group.label.clone(), group.label == "Basic \u{00b7} Tone");
+                .insert(group.id.clone(), group.id == "luxforge.basic/tone");
         }
-        assert_eq!(
-            Value::Object(capture_fields(&groups, &form)),
-            json!({"set-basic": ["exposure", "contrast", "highlights", "shadows", "whites", "blacks"]})
-        );
-        // Checking white balance adds its two fields to the same action, in declaration order.
+        assert_eq!(form.capture_ids(&groups), ["luxforge.basic/tone"]);
+        // Auto tone overwrites Tone, so checking it clears Tone and adds the step.
+        form.analysis.insert("auto-tone".into());
+        let tone = groups.group("luxforge.basic/tone").unwrap();
+        assert!(form.overwritten(tone) && !form.is_checked(tone));
+        assert_eq!(form.capture_ids(&groups), ["auto-tone"]);
+        // White balance stays optional beside it.
         form.checked
-            .insert("Basic \u{00b7} White balance".into(), true);
+            .insert("luxforge.basic/white-balance".into(), true);
         assert_eq!(
-            capture_fields(&groups, &form)["set-basic"],
-            json!([
-                "temperature",
-                "tint",
-                "exposure",
-                "contrast",
-                "highlights",
-                "shadows",
-                "whites",
-                "blacks"
-            ])
+            form.capture_ids(&groups),
+            ["luxforge.basic/white-balance", "auto-tone"]
         );
     }
 
@@ -859,8 +558,7 @@ mod tests {
             Value::Object(fields),
             json!({
                 "settings": {"set-basic": {"exposure": 0.5}},
-                "name": "Warm",
-                "preset-id": preset.id.as_str(),
+                "origin": {"kind": "preset", "name": "Warm", "preset_id": preset.id.as_str()},
             })
         );
     }

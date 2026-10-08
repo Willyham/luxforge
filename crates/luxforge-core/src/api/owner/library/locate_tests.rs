@@ -816,6 +816,7 @@ fn a_check_finds_a_same_volume_move_by_identity_and_nothing_else() {
             kind: crate::SourceTag::Jpeg,
             header: HeaderState::Pending,
             last_seen_ms: 1,
+            born_ns: None,
         }
     };
     let mut seeder = IndexSeeder::create(&catalog, &catalog_id).unwrap();

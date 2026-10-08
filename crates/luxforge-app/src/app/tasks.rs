@@ -27,6 +27,7 @@ use luxforge_core::{
 };
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     io::Read,
     path::{Path, PathBuf},
     sync::{
@@ -80,9 +81,16 @@ pub(crate) struct Refresh {
     /// What the composite action this refresh read back left out because it does not apply to
     /// the photo, as its answer listed it; empty for every other change.
     pub(crate) skipped: Vec<luxforge_core::SkippedSetting>,
+    /// The outcome the command's answer named, `None` when no command of this desktop's was read
+    /// back.
+    pub(crate) outcome: Option<luxforge_core::MutationOutcome>,
     /// The entry this desktop's own edit collapsed, as its answer named it: its row leaves the
     /// loaded page. `None` for every other change.
     pub(crate) collapsed: Option<EntryId>,
+    /// The report of each declared analysis the action this refresh read back used, by query, as
+    /// its answer carried it (`analysis`): what an analysis action's tooltip shows, with no query
+    /// of its own. Empty for every other change.
+    pub(crate) analysis: BTreeMap<String, Value>,
 }
 
 /// What a refresh reads back, by what the change before it could have touched. Every scope reads
@@ -806,7 +814,9 @@ pub(crate) fn refresh(
         request: None,
         mutation_request: None,
         skipped: Vec::new(),
+        outcome: None,
         collapsed: None,
+        analysis: BTreeMap::new(),
     })
 }
 
@@ -1038,15 +1048,23 @@ pub(crate) fn command_now(
     proxy: impl Into<Drawn>,
 ) -> Result<Refresh, String> {
     let mutation_request = params["mutation"]["request_id"].as_str().map(str::to_owned);
-    let (answer, request) = call_own(owner, client, method, params)?;
+    let (mut answer, request) = call_own(owner, client, method, params)?;
     let scope = Scope::after(method, &answer);
     let mut refreshed = refresh(owner, client, asset_id, scope, proxy)?;
     refreshed.request = Some(request);
     refreshed.mutation_request = mutation_request;
     refreshed.collapsed = collapsed(&answer);
-    // A composite's skips are part of its answer, not of any state read back afterwards.
+    // A composite's skips and its outcome are part of its answer, not of any state read back
+    // afterwards.
     if let Some(skipped) = answer.get("skipped") {
         refreshed.skipped = parse(skipped.clone())?;
+    }
+    // So is the report of the analysis it ran.
+    if let Some(analysis) = answer.get_mut("analysis") {
+        refreshed.analysis = parse(analysis.take())?;
+    }
+    if let Some(outcome) = answer.get("outcome") {
+        refreshed.outcome = Some(parse(outcome.clone())?);
     }
     Ok(refreshed)
 }

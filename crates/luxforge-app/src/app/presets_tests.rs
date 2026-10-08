@@ -212,16 +212,15 @@ fn a_rows_click_sends_exactly_the_apply_request_and_commits_one_entry() {
     assert_eq!(
         without_request_id(request.clone()),
         json!({
-            "method": "edit.apply-preset",
+            "method": "edit.apply-settings",
             "params": {
                 "asset_id": library.asset,
                 "mutation": {"expected_revision": revision, "actor": "desktop"},
                 "settings": settings,
-                "name": "Soft film",
-                "preset-id": row.id,
+                "origin": {"kind": "preset", "name": "Soft film", "preset_id": row.id},
             }
         }),
-        "the settings, the name and the library identity, and nothing else"
+        "the settings and their origin, the name and the library identity, and nothing else"
     );
     // The palette entry runs the very message the row's click sends.
     let _ = library
@@ -252,12 +251,12 @@ fn a_rows_click_sends_exactly_the_apply_request_and_commits_one_entry() {
         preset: fields,
     }));
     assert!(library.editor.busy, "the command was sent");
-    assert_eq!(library.editor.status.text, "Running edit.apply-preset…");
+    assert_eq!(library.editor.status.text, "Running edit.apply-settings…");
     // The same request, sent as the task sends it, commits one entry labelled by the preset.
     let (outcome, _) = call(
         &library.owner(),
         library.editor.client,
-        "edit.apply-preset",
+        "edit.apply-settings",
         request["params"].clone(),
     )
     .unwrap();
@@ -282,7 +281,7 @@ fn a_preset_that_skips_settings_says_so_in_the_status_bar() {
     let mut library = Library::opened();
     let action = library.presets().action.clone();
     fn apply(library: &mut Library, action: &str, settings: Value, name: &str) {
-        let fields = json!({"settings": settings, "name": name})
+        let fields = json!({"settings": settings, "origin": {"kind": "preset", "name": name}})
             .as_object()
             .cloned()
             .expect("an object");
@@ -354,12 +353,12 @@ fn create_captures_exactly_the_checked_groups_of_the_displayed_entry() {
     .unwrap();
     library.refresh();
     let entry = library.editor.displayed_entry().expect("a displayed entry");
-    let labels: Vec<String> = library
+    let ids: Vec<String> = library
         .presets()
         .form
         .checks
         .iter()
-        .map(|check| check.label.clone())
+        .map(|check| check.id.clone())
         .collect();
     let _ = library
         .editor
@@ -367,11 +366,11 @@ fn create_captures_exactly_the_checked_groups_of_the_displayed_entry() {
     let _ = library
         .editor
         .update(Message::Preset(PresetMessage::Name("Tone only".into())));
-    for label in labels {
-        let checked = label == "Basic \u{00b7} Tone";
+    for id in ids {
+        let checked = id == "luxforge.basic/tone";
         let _ = library
             .editor
-            .update(Message::Preset(PresetMessage::Check { label, checked }));
+            .update(Message::Preset(PresetMessage::Check { id, checked }));
     }
     assert!(library.presets().form.open && library.presets().form.can_create);
     let (capture, create) = library.editor.preset_create_requests().unwrap();
@@ -380,9 +379,9 @@ fn create_captures_exactly_the_checked_groups_of_the_displayed_entry() {
         json!({
             "asset_id": library.asset,
             "entry_id": entry,
-            "fields": {"set-basic": ["exposure", "contrast", "highlights", "shadows", "whites", "blacks"]},
+            "groups": ["luxforge.basic/tone"],
         }),
-        "the Tone group's fields, of the entry on screen"
+        "the Tone group, of the entry on screen"
     );
     assert_eq!(
         create["mutation"]["actor"],
@@ -664,27 +663,54 @@ fn auto_tone_preset_form_clears_tone_and_colour_but_keeps_white_balance_optional
     let editor = &mut library.editor;
     let _ = editor.update(Message::Preset(PresetMessage::ToggleForm));
     let _ = editor.update(Message::Preset(PresetMessage::Name("Auto".into())));
-    let _ = editor.update(Message::Preset(PresetMessage::AutoTone(true)));
+    let auto = |checked| {
+        Message::Preset(PresetMessage::Analysis {
+            id: "auto-tone".into(),
+            checked,
+        })
+    };
+    let _ = editor.update(auto(true));
     let (capture, _) = editor.preset_create_requests().unwrap();
-    assert_eq!(capture["fields"]["auto-tone"], true);
-    let fields = capture["fields"]["set-basic"].as_array();
+    let groups = capture["groups"].as_array().unwrap();
+    assert!(groups.contains(&json!("auto-tone")));
+    assert!(!groups.contains(&json!("luxforge.basic/tone")));
+    assert!(!groups.contains(&json!("luxforge.basic/colour")));
+    // The capture by these groups holds no field Auto tone writes.
+    let (captured, _) =
+        call(&editor.owner, editor.client, "preset.capture", capture).expect("a capture");
+    let fields = captured["settings"]["set-basic"].as_object();
     assert!(fields.is_none_or(|fields| {
         fields
-            .iter()
-            .all(|field| !luxforge_core::auto_tone::FIELDS.contains(&field.as_str().unwrap()))
+            .keys()
+            .all(|field| !luxforge_core::auto_tone::FIELDS.contains(&field.as_str()))
     }));
+    assert_eq!(captured["settings"]["auto-tone"], json!({}));
     let form = editor.presets_model_now().unwrap().form;
-    assert!(form.auto_tone);
+    let step = &form.analysis[0];
+    assert!(step.checked);
+    assert_eq!(step.label, "Basic \u{00b7} Auto tone (per photo)");
+    assert_eq!(step.before.as_deref(), Some("luxforge.basic/tone"));
+    let disabled: Vec<&str> = form
+        .checks
+        .iter()
+        .filter(|check| !check.enabled)
+        .map(|check| check.id.as_str())
+        .collect();
+    assert_eq!(disabled, ["luxforge.basic/tone", "luxforge.basic/colour"]);
     assert!(
         form.checks
             .iter()
             .filter(|check| !check.enabled)
             .all(|check| !check.checked)
     );
-    assert!(form.checks.iter().any(|check| !check.enabled));
-    let _ = editor.update(Message::Preset(PresetMessage::AutoTone(false)));
+    let _ = editor.update(auto(false));
     let (capture, _) = editor.preset_create_requests().unwrap();
-    assert!(capture["fields"].get("auto-tone").is_none());
+    assert!(
+        !capture["groups"]
+            .as_array()
+            .unwrap()
+            .contains(&json!("auto-tone"))
+    );
     assert!(
         editor
             .presets_model_now()

@@ -305,6 +305,7 @@ impl LookModule {
                         patch: true,
                         preset: false,
                         analysis: None,
+                        shortcut: None,
                         parameters: vec![
                             ParameterDescriptor::enumeration(LOOK, [STANDARD, NEUTRAL]).notes(
                                 "standard writes the current Standard look's resolved knots, \
@@ -580,6 +581,21 @@ impl ToolModule for LookModule {
                 payload: Payload::Standard(Resolved::standard(100.0)).to_value(),
             }),
             RawLook::Neutral => None,
+        })
+    }
+
+    /// A look's tone knots never fall, so at an amount up to 100, a blend of the identity and that
+    /// curve with weights that do not go negative, it never lowers luminance as its input rises.
+    /// Past 100 the amount extrapolates the curve away from the identity, which can.
+    fn monotonic_luminance(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &Value,
+    ) -> Result<bool, Error> {
+        Ok(match read(effect_id, format, payload)? {
+            Payload::Neutral => true,
+            Payload::Standard(look) => look.amount <= 100.0,
         })
     }
 

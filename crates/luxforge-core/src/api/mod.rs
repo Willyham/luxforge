@@ -5,17 +5,22 @@ pub(crate) mod params;
 mod response;
 #[cfg(test)]
 pub(crate) use methods::host_envelope;
+mod live_sessions;
 mod owner;
 mod transport;
 
 pub use methods::schemas;
 pub use owner::{
-    ClientId, EventWake, JobMonitorStats, OwnerHandle, PIXEL_READ_REQUIRED, PreviewRenderIntent,
-    PreviewRequest, PreviewSelection, PreviewStack,
+    ClientId, EventWake, JobMonitorStats, MAX_EVENT_WAIT_MS, OwnerHandle, PIXEL_READ_REQUIRED,
+    PreviewRenderIntent, PreviewRequest, PreviewSelection, PreviewStack,
 };
 pub(crate) use owner::{OWNER_THREAD, SourceFlightKey};
 
-pub use transport::{LocalServer, LocalSessionInfo, live_session_file, serve_json_lines_with};
+pub use live_sessions::{LIVE_SESSIONS_DIR, LiveSessionEntry, RunningSession, running_sessions};
+pub use params::{Envelope, RevisionOf};
+pub use transport::{
+    LocalServer, LocalSessionInfo, MAX_REQUEST_BYTES, live_session_file, serve_json_lines_with,
+};
 
 use crate::{
     AssetId, Draft, DraftId, Error, JobId, PreviewSession, catalog_types::LibraryChangeSeq,

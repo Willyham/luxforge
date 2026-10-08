@@ -9,7 +9,7 @@ use luxforge_core::{
     tiles::{ReferenceTiles, TileCall, TileService},
 };
 use luxforge_testbase::{Distribution, HANG, paths};
-use serde_json::{Value, json};
+use serde_json::json;
 use std::{
     path::Path,
     sync::{Arc, mpsc},
@@ -47,43 +47,86 @@ fn auto_tone_measure_photo_sized_inputs() -> Result<(), &'static str> {
         };
         let context = RenderContext::new();
         let evaluation = Evaluation::new(
-            registry,
+            registry.clone(),
             context.clone(),
             source,
             entry(&AssetId::new(), 0, None),
             recipe,
             None,
         );
+        // The starting Look a RAW takes, at amount 200: above 100 it is not monotonic in
+        // Exposure, so it is solved coarse to fine.
+        let mut look = registry
+            .module("luxforge.look")
+            .unwrap()
+            .original(&luxforge_core::OriginalContext {
+                source: luxforge_core::SourceTag::Raw,
+                raw: None,
+                header: &luxforge_core::catalog_types::HeaderMetadata::default(),
+                preferences: luxforge_core::OriginalPreferences::default(),
+            })
+            .unwrap()
+            .unwrap()
+            .payload;
+        look["amount"] = json!(200.);
+        let models = [
+            ("neutral", vec![Layer::new(BASIC_EFFECT, json!({}))]),
+            (
+                "look-200",
+                vec![
+                    Layer::new(BASIC_EFFECT, json!({})),
+                    Layer::new(luxforge_core::LOOK_EFFECT, look),
+                ],
+            ),
+        ];
         let gpu = GpuTiles::new(Some((backend.clone(), name.clone())), false);
         let reference = ReferenceTiles::new();
         for (renderer, service) in [
             ("gpu", &gpu as &dyn TileService),
             ("reference", &reference as &dyn TileService),
         ] {
-            for cold in [true, false] {
+            for ((model_name, layers), cold) in
+                [(&models[0], true), (&models[0], false), (&models[1], false)]
+            {
                 let mut rows = Vec::new();
                 let tiles_before = gpu.figures().tiles;
                 for _ in 0..30 {
                     if cold {
-                        context.retain_analysis_for(None);
+                        context.release_grids(&evaluation.entry().asset_id);
                     }
-                    context.retain_analysis_for(Some(&evaluation.entry().asset_id));
                     let held = evaluation.clone();
                     let (sender, receiver) = mpsc::sync_channel(1);
+                    let (grids, grid) = mpsc::sync_channel(1);
                     let queued = Instant::now();
+                    // The tile service reads the grid; the solve runs after it off the service's
+                    // thread, here as on the core's analysis worker.
                     service.submit(TileCall::caller(client, Cancel::new(), move |reads, cancel| {
                         let read_started = Instant::now();
-                        let sampled = luxforge_core::tiles::read_analysis(&held, 0, reads, cancel)?;
+                        let sampled = luxforge_core::tiles::read_grid(&held, 0, reads, cancel)?;
                         let read_ms = read_started.elapsed().as_secs_f64() * 1000.;
-                        let started = Instant::now();
-                        let basic = held.registry().module("luxforge.basic").unwrap();
-                        let report = auto_tone::solve(&sampled.sample, Default::default(), |values| {
-                            let luxforge_core::Processing::Color(unit) = basic.compile(BASIC_EFFECT, luxforge_core::EFFECT_FORMAT, &Value::Object(values.fields()), CompileStage::exact(Stage { width:32, height:32 }))? else { unreachable!() };
-                            Ok(vec![unit])
-                        }, cancel)?;
-                        Ok(json!({"read_ms":read_ms,"solve_ms":started.elapsed().as_secs_f64()*1000.,"sample_bytes":sampled.sample.bytes(),"samples":sampled.sample.rgb.len(),"renderer":sampled.answered.record,"values":report.values}))
+                        let row = json!({"read_ms":read_ms,"sample_bytes":sampled.sample.bytes(),"samples":sampled.sample.rgb.len(),"renderer":sampled.answered.record});
+                        let _ = grids.send(sampled);
+                        Ok(row)
                     }, move |answer| { let _ = sender.send(answer); }));
                     let mut row = receiver.recv_timeout(HANG).unwrap().unwrap();
+                    let sampled = grid.recv_timeout(HANG).unwrap();
+                    let started = Instant::now();
+                    let model = auto_tone::forward_model(
+                        evaluation.registry(),
+                        layers,
+                        0,
+                        CompileStage::exact(Stage {
+                            width: 32,
+                            height: 32,
+                        }),
+                    )
+                    .unwrap();
+                    let report = model
+                        .solve(&sampled.sample, Default::default(), &sampled.cancel)
+                        .unwrap();
+                    row["exposure_search"] = json!(report.exposure_search);
+                    row["solve_ms"] = json!(started.elapsed().as_secs_f64() * 1000.);
+                    row["values"] = json!(report.values);
                     row["engine_ms"] = json!(queued.elapsed().as_secs_f64() * 1000.);
                     assert_eq!(row["renderer"], renderer);
                     rows.push(row);
@@ -94,8 +137,8 @@ fn auto_tone_measure_photo_sized_inputs() -> Result<(), &'static str> {
                     let distribution = Distribution::of(numbers).expect("thirty runs");
                     summary[field] = json!({"p50":distribution.p50,"p95":distribution.p95});
                 }
-                let case = json!({"source":filename,"renderer":renderer,"sample_cache":if cold {"cold"} else {"warm"},"samples":30,"sample_bytes":rows[0]["sample_bytes"],"grid_points":rows[0]["samples"],"grid_scratch_peak_bytes":context.scratch().peak(),"solver_scratch_bytes":rows[0]["samples"].as_u64().unwrap()*8+4096*12,"gpu_tiles":gpu.figures().tiles-tiles_before,"summary":summary,"runs":rows});
-                eprintln!("{filename} {renderer} cold={cold}: {summary}");
+                let case = json!({"source":filename,"model":model_name,"renderer":renderer,"sample_cache":if cold {"cold"} else {"warm"},"samples":30,"sample_bytes":rows[0]["sample_bytes"],"grid_points":rows[0]["samples"],"grid_scratch_peak_bytes":context.scratch().peak(),"solver_scratch_bytes":auto_tone::scratch_bytes(rows[0]["samples"].as_u64().unwrap() as usize),"pool_threads":std::thread::available_parallelism().map_or(0, |n| n.get()),"gpu_tiles":gpu.figures().tiles-tiles_before,"summary":summary,"runs":rows});
+                eprintln!("{filename} {model_name} {renderer} cold={cold}: {summary}");
                 cases.push(case);
             }
         }
@@ -104,6 +147,6 @@ fn auto_tone_measure_photo_sized_inputs() -> Result<(), &'static str> {
     owner.stop();
     join.join().unwrap();
     let _ = std::fs::remove_file(catalog);
-    serde_json::to_writer_pretty(file, &json!({"scope":"native headless release; prepared JPEG; neutral Basic prefix; engine includes worker queue, grid and solver; excludes source preparation, catalog commit and preview; cold means sample cache only, GPU device remains warm after its first call","adapter":name,"cases":cases})).unwrap();
+    serde_json::to_writer_pretty(file, &json!({"scope":"native headless release; prepared JPEG; neutral Basic prefix; the model Basic alone, cold and warm, and Basic then the starting Look at amount 200, warm; engine includes the tile queue, the grid read on the tile service and the solve after it off the tile service's thread; excludes the analysis worker's hand-off, source preparation, catalog commit and preview; cold means sample cache only, GPU device remains warm after its first call","adapter":name,"cases":cases})).unwrap();
     Ok(())
 }

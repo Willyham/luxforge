@@ -25,7 +25,7 @@
 //! - **The batch form** reads the selection's rows the desktop does not hold near the screen
 //!   (`browse.rows`, at most [`model::MAX_SELECTION_ROWS`]), so its folder and collection chips
 //!   count every selected photograph; a larger selection is organized all the same.
-//! - **Apply preset… and Export…** start `batch.apply-preset` and `batch.export` of the selection,
+//! - **Apply preset… and Export…** start `batch.apply-settings` and `batch.export` of the selection,
 //!   sent synchronously in the update of the choice (the owner resolves the selection on screen and
 //!   queues the job; the work runs on the library lane's worker). One batch of this desktop's runs
 //!   at a time. Its progress is the activity board's entry for its job, read whenever long-running
@@ -181,7 +181,7 @@ pub(crate) fn presets_now(
     Ok(model::preset_choices(&presets))
 }
 
-/// One batch request of this desktop's — `batch.apply-preset` or `batch.export` of the selection —
+/// One batch request of this desktop's — `batch.apply-settings` or `batch.export` of the selection —
 /// sent synchronously, answered with the job it started and the whole answer, or its refusal.
 pub(crate) fn batch_call(
     owner: &OwnerHandle,
@@ -525,7 +525,7 @@ impl Editor {
     /// Why a batch cannot start for the selection now, as the status bar says it.
     pub(crate) fn batch_refusal(&self) -> Option<String> {
         let state = &self.select.state;
-        if self.view_state.copy_settings.pending {
+        if self.view_state.copy_settings.batch_pending {
             return Some("Waiting for the settings request".into());
         }
         if !state.over_catalog() || self.missing_shown() {
@@ -568,7 +568,7 @@ impl Editor {
         )
     }
 
-    /// Start a batch of the selection: `batch.apply-preset` or `batch.export`, sent synchronously
+    /// Start a batch of the selection: `batch.apply-settings` or `batch.export`, sent synchronously
     /// in this update as this desktop's actor, so it names the selection on screen. The job it
     /// starts is observed immediately by its authoritative subscription.
     fn start_batch(&mut self, kind: BatchKind, params: Value) -> Task<Message> {
@@ -577,8 +577,7 @@ impl Editor {
             return Task::none();
         }
         let method = match kind {
-            BatchKind::Preset { .. } => "batch.apply-preset",
-            BatchKind::Paste { .. } => "batch.paste-settings",
+            BatchKind::Preset { .. } | BatchKind::Paste { .. } => "batch.apply-settings",
             BatchKind::Export { .. } => "batch.export",
         };
         let selection = self.catalog_selection();
@@ -599,10 +598,12 @@ impl Editor {
         ) {
             return self.start_batch(kind, params);
         }
-        if self.select.state.catalog.running().is_some() || self.view_state.copy_settings.pending {
+        if self.select.state.catalog.running().is_some()
+            || self.view_state.copy_settings.batch_pending
+        {
             return Task::none();
         }
-        self.view_state.copy_settings.pending = true;
+        self.view_state.copy_settings.batch_pending = true;
         let (owner, client) = (self.owner.clone(), self.client);
         let count = targets.count() as u32;
         let names = self
@@ -619,7 +620,7 @@ impl Editor {
             .unwrap_or_default();
         let sent = params.clone();
         owner_task(
-            move || batch_call(&owner, client, "batch.paste-settings", sent),
+            move || batch_call(&owner, client, "batch.apply-settings", sent),
             move |result| {
                 Message::CopySettings(
                     crate::app::message::copy_settings::CopySettingsMessage::BatchStarted {
@@ -643,8 +644,7 @@ impl Editor {
         result: Result<(String, Value), CallError>,
     ) -> Task<Message> {
         let method = match kind {
-            BatchKind::Preset { .. } => "batch.apply-preset",
-            BatchKind::Paste { .. } => "batch.paste-settings",
+            BatchKind::Preset { .. } | BatchKind::Paste { .. } => "batch.apply-settings",
             BatchKind::Export { .. } => "batch.export",
         };
         self.select.catalog.batch_request = Some(json!({

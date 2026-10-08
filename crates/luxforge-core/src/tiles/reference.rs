@@ -269,7 +269,7 @@ fn work(shared: &Shared) {
 pub struct ReferenceReads;
 
 impl TileReads for ReferenceReads {
-    fn analysis_renderer(&self) -> Option<crate::RendererRecord> {
+    fn grid_renderer(&self) -> Option<crate::RendererRecord> {
         Some(crate::RendererRecord::Reference)
     }
 

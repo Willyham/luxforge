@@ -231,6 +231,9 @@ pub struct FileRecord {
     pub name: String,
     pub volume_id: VolumeId,
     pub signature: FileSignature,
+    /// Its birth time ([`born_ns`](super::born_ns)), where the file system records one: what
+    /// tells this file moved from a file new with this file's identity once this file is gone.
+    pub born_ns: Option<i64>,
     pub kind: SourceTag,
     pub header: HeaderState,
     /// When a listing last wrote its row: found it new, changed or moved. An unchanged file's row

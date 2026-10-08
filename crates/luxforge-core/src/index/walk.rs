@@ -12,7 +12,11 @@
 //! Memory is one folder's supported files and the stack of folders still to visit.
 use super::exclude::{Exclusions, kind_of};
 use crate::file_metadata::hidden;
-use crate::{Error, SourceTag, atomic_file::file_error, catalog_types::FileSignature};
+use crate::{
+    Error, SourceTag,
+    atomic_file::file_error,
+    catalog_types::{FileSignature, born_ns},
+};
 use std::{
     fs::Metadata,
     path::{Path, PathBuf},
@@ -34,6 +38,8 @@ pub(crate) struct ListedFile {
     pub name: String,
     pub kind: SourceTag,
     pub signature: FileSignature,
+    /// Its birth time, where the file system records one ([`born_ns`]).
+    pub born_ns: Option<i64>,
 }
 
 /// One folder of the walk, with its supported files in name order.
@@ -183,6 +189,7 @@ impl<'a> Walk<'a> {
                         name: name.to_string_lossy().into_owned(),
                         kind,
                         signature: FileSignature::of(&metadata),
+                        born_ns: born_ns(&metadata),
                     });
                 }
                 // Symbolic links, and anything that is neither a file nor a directory, are never

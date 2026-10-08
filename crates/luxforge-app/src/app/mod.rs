@@ -701,7 +701,10 @@ impl Editor {
             .set_activity(editor.owner.activity());
         // The remembered panels, overlays and brush are in place before the first frame.
         editor.seed_remembered();
-        if editor.live_server.is_none() {
+        // A live session that could not start, or could not be registered, says why.
+        if let Some(problem) = &config.live_problem {
+            editor.status.text = format!("Editor ready; {problem}");
+        } else if editor.live_server.is_none() {
             editor.status.text = "Editor ready; live API unavailable on this host".into();
         }
         // The Catalog row shows the catalog this launch opened, and a stored location whose folder
@@ -728,6 +731,9 @@ impl Editor {
         );
         let launch = editor.renderer.launch();
         editor.event("launch_renderer", || renderer::launch_record(launch));
+        if let Some(problem) = &config.live_problem {
+            editor.event("live_session_problem", || json!({"problem": problem}));
+        }
         if let Some(stored) = &editor.preferences.catalog.missing {
             editor.event(
                 "catalog_folder_missing",
@@ -972,18 +978,9 @@ impl Editor {
         workspace.derive(&inputs);
         workspace.copy_settings = self.copy_model();
         for entry in &mut workspace.palette.entries {
-            if let state::palette::PaletteAction::CopySettings(kind) = entry.action {
-                entry.refusal = match kind {
-                    0 | 1 => workspace.copy_settings.copy_refusal.clone(),
-                    2 => workspace.copy_settings.paste_refusal.clone(),
-                    _ => workspace.copy_settings.previous_refusal.clone(),
-                };
-                if kind == 2 && workspace.copy_settings.targets > 1 {
-                    entry.label = format!(
-                        "Paste settings to {} photographs",
-                        workspace.copy_settings.targets
-                    );
-                }
+            if let state::palette::PaletteAction::Host(command) = entry.action {
+                entry.refusal = command.refusal(&workspace.copy_settings);
+                entry.label = command.label(&workspace.copy_settings);
             }
         }
         for job in &mut workspace.performance.jobs {
@@ -1365,16 +1362,17 @@ impl Editor {
             develop_confirm: self.develop.state.confirm.is_some(),
             development_set: self.develop.state.set.is_some(),
             copy_settings_modal: if self.view_state.copy_settings.confirm.is_some() {
-                2
+                Some(keymap::CopySettingsModal::Confirm)
             } else if self.view_state.copy_settings.chooser.is_some() {
-                1
+                Some(keymap::CopySettingsModal::Chooser)
             } else if self.view_state.copy_settings.cell_menu.is_some()
                 || self.select.state.catalog.report
             {
-                3
+                Some(keymap::CopySettingsModal::Menu)
             } else {
-                0
+                None
             },
+            actions: state::host_commands::action_shortcuts(&self.modules),
         }
     }
 

@@ -1045,7 +1045,7 @@ const SOURCE_RULES: &[SourceRule] = &[
         types: &["rs"],
         allowed: &[
             "crates/luxforge-testbase/src/distribution.rs",
-            "crates/luxforge-core/src/auto_tone.rs",
+            "crates/luxforge-core/src/modules/basic/auto/solve.rs",
             "crates/luxforge-reference/tests/studies/curve.rs",
             "crates/luxforge-reference/tests/studies/look.rs",
             "crates/luxforge-reference/src/grade_response.rs",
@@ -1065,13 +1065,14 @@ const SOURCE_RULES: &[SourceRule] = &[
         types: &["rs"],
         allowed: &[
             // The core: the source worker and the owner loop, the API transport's accept and
-            // connection threads, the job table's lanes, the latest-job worker and the reference
-            // tile worker.
+            // connection threads, the job table's lanes, the latest-job worker, the reference
+            // tile worker and the analysis worker after the tile service.
             "crates/luxforge-core/src/api/owner.rs",
             "crates/luxforge-core/src/api/transport.rs",
             "crates/luxforge-core/src/jobs.rs",
             "crates/luxforge-core/src/latest.rs",
             "crates/luxforge-core/src/tiles/reference.rs",
+            "crates/luxforge-core/src/tiles/analysis.rs",
             // The catalog's bounded workers: the index lane and its watchers, the preview lane,
             // and the develop lane (`docs/design/catalog.md`, "Architecture").
             "crates/luxforge-core/src/index",
@@ -4785,7 +4786,7 @@ mod tests {
                     "    let rank = (percent * sorted.len()).div_ceil(100).clamp(1, sorted.len());\n    pub fn percentile(&self, percent: usize) -> f64 {\n",
                 ),
                 (
-                    "crates/luxforge-core/src/auto_tone.rs",
+                    "crates/luxforge-core/src/modules/basic/auto/solve.rs",
                     "fn percentile(values: &mut [f64], fraction: f64) -> f64 {\n",
                 ),
                 (

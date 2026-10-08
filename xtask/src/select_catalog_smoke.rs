@@ -18,13 +18,13 @@
 //! selection) and the add undone with `Cmd+Z`; and the folder renamed and nested in Travel
 //! (`folder.rename`, `folder.move`) from its menu. Then the batch: five photographs selected, the
 //! library preset [`PRESET`] (made by the setup with `preset.create`) applied from the Develop band
-//! (`batch.apply-preset` of the selection), its report opened from the status bar, and the five
-//! exported into a scratch folder of the run's (`batch.export`), each checked against the job's
-//! own `job.read` record. Then sending back: an edited photograph clicked, its Info panel's Send
-//! back refused with the core's reason, and an unedited one right-clicked, its menu's Send back
-//! sending `asset.send-back` of the selection, checked against `catalog.info` and, after the run,
-//! the file picked again and the core's own refusal of each edited photograph. And removing: one
-//! photograph removed from its Info panel
+//! (`batch.apply-settings` of the selection with its `preset_id`), its report opened from the
+//! status bar, and the five exported into a scratch folder of the run's (`batch.export`), each
+//! checked against the job's own `job.read` record. Then sending back: an edited photograph
+//! clicked, its Info panel's Send back refused with the core's reason, and an unedited one
+//! right-clicked, its menu's Send back sending `asset.send-back` of the selection, checked against
+//! `catalog.info` and, after the run, the file picked again and the core's own refusal of each
+//! edited photograph. And removing: one photograph removed from its Info panel
 //! (`asset.remove` of the selection, after its confirmation) and the removal undone, two removed
 //! with ⌫, Removed viewed, one put back (`asset.restore`), and Removed emptied after its
 //! confirmation (`catalog.empty-removed`), each checked against `catalog.info`'s counts. After the
@@ -754,10 +754,10 @@ pub fn verify(
     let sent = batch_sent(
         frame,
         "catalog-preset",
-        "batch.apply-preset",
+        "batch.apply-settings",
         json!({"targets": {"kind": "selection"}, "preset_id": expected["preset"]["id"]}),
     )?;
-    let preset = batch_ended(frame, "catalog-preset", "batch-preset")?;
+    let preset = batch_ended(frame, "catalog-preset", "batch-settings")?;
     let done = preset["done"].as_array().cloned().unwrap_or_default();
     ensure(
         done.len() == 5

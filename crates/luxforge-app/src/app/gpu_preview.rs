@@ -639,7 +639,10 @@ pub(crate) fn evaluation_record(figures: &luxforge_gpu::EvaluationFigures) -> Va
     json!({"refits": figures.refits, "rebinds": figures.rebinds,
         "links_run": figures.links_run, "spatial_passes": figures.spatial_passes,
         "lights_encoded": figures.lights_encoded, "lights_restored": figures.lights_restored,
-        "window_texels": figures.window_texels, "link_texels": figures.link_texels})
+        "window_texels": figures.window_texels, "link_texels": figures.link_texels,
+        "incremental": figures.incremental, "whole": figures.whole,
+        "reached_texels": figures.reached_texels, "refilled": figures.refilled,
+        "spatial_texels": figures.spatial_texels})
 }
 
 /// What a picture at rest's tiles did, as evidence records it beside its timing: their
@@ -1100,7 +1103,7 @@ pub(crate) enum GpuAsk {
     /// At a percentage zoom of 100% or more: this region of the output stage at full scale, drawn
     /// at this many physical pixels an output pixel, with its draft planned at the reduced stage
     /// of the view's area too where the region's own figures pass these bytes
-    /// ([`luxforge_core::PreviewRequest::reduce_regions_after`]).
+    /// ([`luxforge_core::PreviewRequest::gpu_region_reducing`]).
     Region(Region, f64, u64),
 }
 

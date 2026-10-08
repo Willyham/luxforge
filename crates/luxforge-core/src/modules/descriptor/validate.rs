@@ -1,11 +1,12 @@
 //! The rules a descriptor is registered against: identities, declared parameters and their hints,
 //! controls and their bindings, resets, canvas interactions and the presets control, for a module
 //! and, with the host's three differences, for the host's own descriptors.
+use super::chord::{Chord, host_chord};
 use super::types::{
     ActionControl, ActionDescriptor, CanvasInteraction, ChoiceControl, ColorControl, Control,
     CurveControl, EffectStage, GroupControl, MAX_SECRET_LENGTH, ModuleDescriptor, ModuleLayout,
-    NumberControl, PRESET_ID, PRESET_NAME, PRESET_SETTINGS, ParameterDescriptor, ParameterKind,
-    PickerControl, PresetsControl, QueryChoiceControl, RailDecoration, RangeControl, ResetAction,
+    NumberControl, PRESET_SETTINGS, ParameterDescriptor, ParameterKind, PickerControl,
+    PresetsControl, QueryChoiceControl, RailDecoration, RangeControl, ResetAction, SETTINGS_ORIGIN,
     TaskControl, ToggleControl, WheelControl,
 };
 use super::values::check_value;
@@ -129,6 +130,25 @@ impl ModuleDescriptor {
                 return Err(Error::validation(
                     "a query cannot declare an analysis action",
                 ));
+            }
+            if query.shortcut.is_some() {
+                return Err(Error::validation(format!(
+                    "query {} declares a shortcut; only an action can",
+                    query.id
+                )));
+            }
+        }
+        let mut chords = HashSet::new();
+        for action in &self.actions {
+            let Some(chord) = action.shortcut else {
+                continue;
+            };
+            check_shortcut(action, chord)?;
+            if !chords.insert(chord) {
+                return Err(Error::validation(format!(
+                    "shortcut {chord} of action {} is declared twice in module {}",
+                    action.id, self.id
+                )));
             }
         }
         for action in &self.actions {
@@ -956,14 +976,14 @@ impl ModuleDescriptor {
         Ok(())
     }
 
-    /// A presets control submits its action with a preset's settings set, name and library
-    /// identity, and nothing else, so the action declares exactly those parameters with the kinds
-    /// that carry them. A field patch makes every parameter optional, so it cannot require them.
+    /// A presets control submits its action with a preset's settings set and its origin, and
+    /// nothing else, so the action declares exactly those parameters with the kinds that carry
+    /// them. A field patch makes every parameter optional, so it cannot require them.
     fn check_presets_action(&self, action: &ActionDescriptor) -> Result<(), Error> {
         let id = &action.id;
         if action.patch {
             return Err(Error::validation(format!(
-                "presets control action {id} is a field patch, so it cannot require its settings and name"
+                "presets control action {id} is a field patch, so it cannot require its settings and origin"
             )));
         }
         let required = |name: &str, kind: &str, matches: fn(&ParameterKind) -> bool| {
@@ -978,21 +998,16 @@ impl ModuleDescriptor {
         required(PRESET_SETTINGS, "settings", |kind| {
             matches!(kind, ParameterKind::Settings)
         })?;
-        required(PRESET_NAME, "string", |kind| {
-            matches!(kind, ParameterKind::String { .. })
+        required(SETTINGS_ORIGIN, "settings-origin", |kind| {
+            matches!(kind, ParameterKind::SettingsOrigin)
         })?;
-        if let Some(parameter) = action.parameter(PRESET_ID)
-            && (!matches!(parameter.kind, ParameterKind::String { .. }) || parameter.required)
+        if let Some(extra) = action
+            .parameters
+            .iter()
+            .find(|parameter| ![PRESET_SETTINGS, SETTINGS_ORIGIN].contains(&&*parameter.name))
         {
             return Err(Error::validation(format!(
-                "presets control action {id} may declare only an optional string parameter {PRESET_ID}"
-            )));
-        }
-        if let Some(extra) = action.parameters.iter().find(|parameter| {
-            ![PRESET_SETTINGS, PRESET_NAME, PRESET_ID].contains(&&*parameter.name)
-        }) {
-            return Err(Error::validation(format!(
-                "presets control action {id} declares parameter {} beyond {PRESET_SETTINGS}, {PRESET_NAME} and {PRESET_ID}",
+                "presets control action {id} declares parameter {} beyond {PRESET_SETTINGS} and {SETTINGS_ORIGIN}",
                 extra.name
             )));
         }
@@ -1166,6 +1181,36 @@ fn check_declared<'a>(
         )));
     }
     declared_parameters(declarer, kind, &declared.id, &declared.parameters)
+}
+
+/// An action's shortcut holds `Command`, so it never takes a letter a canvas mode or a text field
+/// answers; runs the action with no parameters, so the action needs none; and is not a chord the
+/// host keeps for its own commands ([`super::chord::HOST_CHORDS`]).
+fn check_shortcut(action: &ActionDescriptor, chord: Chord) -> Result<(), Error> {
+    if !chord.command {
+        return Err(Error::validation(format!(
+            "shortcut {chord} of action {} must hold Command",
+            action.id
+        )));
+    }
+    if let Some(parameter) = action
+        .parameters
+        .iter()
+        .find(|parameter| parameter.required)
+    {
+        return Err(Error::validation(format!(
+            "action {} declares shortcut {chord} but requires parameter {}, which a chord cannot \
+             supply",
+            action.id, parameter.name
+        )));
+    }
+    if let Some(command) = host_chord(chord) {
+        return Err(Error::validation(format!(
+            "shortcut {chord} of action {} is the host's {command}",
+            action.id
+        )));
+    }
+    Ok(())
 }
 
 /// Who declares a descriptor, which decides the three things only the host may declare

@@ -543,10 +543,20 @@ impl EditorService {
                 fields.len()
             )));
         }
-        let registry = self.registry();
         let kind = self.state(asset_id)?.asset.source.tag();
         let entry = self.entry(asset_id, entry_id)?;
-        let layers = &entry.snapshot.recipe.layers;
+        self.capture_from(kind, &entry.snapshot.recipe.layers, fields)
+    }
+
+    /// [`Self::capture_preset`] from a stack already read: one photo's kind and one entry's
+    /// layers, so `preset.groups` captures every group of one entry with one read of it.
+    pub(super) fn capture_from(
+        &self,
+        kind: crate::SourceTag,
+        layers: &[crate::Layer],
+        fields: &Map<String, Value>,
+    ) -> Result<Map<String, Value>, Error> {
+        let registry = self.registry();
         // What to capture, per action, once the request is resolved for this photo: `None` for the
         // module's whole settings, or the named fields.
         let mut wanted: Vec<(String, Option<Vec<String>>)> = Vec::new();
@@ -674,7 +684,7 @@ impl EditorService {
 
     /// The presettable action a capture reads ([`ModuleRegistry::patch_action`]), from a module
     /// that applies to the photo.
-    fn capture_action<'r>(
+    pub(super) fn capture_action<'r>(
         &self,
         registry: &'r ModuleRegistry,
         action_id: &str,

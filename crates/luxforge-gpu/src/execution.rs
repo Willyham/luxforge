@@ -1047,6 +1047,13 @@ pub struct SpatialSlot {
     schedule: spatial::Schedule,
     /// How many passes the slot has dispatched.
     dispatched: u64,
+    /// How many incremental ticks ran every pass over the whole boundary, the planes not holding
+    /// what the applies needed: a mask that grew past where they were written.
+    refilled: u32,
+    /// The texels the passes it dispatched wrote, each pass's rectangle of its own plane: the
+    /// work a tick's passes did, where their count says only how many ran, an empty one among
+    /// them.
+    texels: u64,
     /// The rectangle of the boundary over which the planes hold what the schedule says they do:
     /// a masked step's passes run only over its mask's bounds grown by its halo, so outside it they
     /// hold an earlier tick's values. `None` before anything is written.
@@ -1061,6 +1068,8 @@ impl SpatialSlot {
             groups: None,
             schedule: spatial::Schedule::new(pool),
             dispatched: 0,
+            refilled: 0,
+            texels: 0,
             valid: None,
         }
     }
@@ -1181,6 +1190,7 @@ impl SpatialSlot {
                     .schedule
                     .run(steps, words, blocks, input, &self.planes.key, pool);
                 self.valid = Some(whole);
+                self.refilled += 1;
                 vec![whole; run.len()]
             } else if !changed {
                 return (0, Some(dirty));
@@ -1238,6 +1248,7 @@ impl SpatialSlot {
             let places = groups.places_each(&rects);
             self.planes.write_parameters(queue, steps, &places);
             let dispatched = groups.encode(encoder, compiled, programs, &run, &places);
+            self.texels += written(&run, &places);
             self.dispatched += dispatched;
             // Only the planes the applies read hold their values past this tick's rectangles: the
             // link's kept textures, never the pool's.
@@ -1273,9 +1284,24 @@ impl SpatialSlot {
         let places = groups.places(over);
         self.planes.write_parameters(queue, steps, &places);
         let dispatched = groups.encode(encoder, compiled, programs, &run, &places);
+        self.texels += written(&run, &places);
         self.dispatched += dispatched;
         (dispatched, dirty.map(|_| whole))
     }
+}
+
+/// The texels the passes that `run` writes over their `places`, those dispatched over nothing,
+/// and a pass of one workgroup, whose rectangle is unlimited, left out.
+fn written(run: &[bool], places: &[spatial::Place]) -> u64 {
+    let unlimited = spatial::Rect::whole((spatial::UNLIMITED, spatial::UNLIMITED));
+    run.iter()
+        .zip(places)
+        .filter(|(run, place)| **run && !place.dispatch.contains(&0) && place.limit != unlimited)
+        .map(|(_, place)| {
+            let limit = place.limit;
+            u64::from(limit.x1 - limit.x0) * u64::from(limit.y1 - limit.y0)
+        })
+        .sum()
 }
 
 /// What a slot is allocated for.
@@ -2832,6 +2858,16 @@ impl Executor {
         // The links that encode passes, for the evaluation's figures.
         let mut links_run = 0u32;
         let mut spatial_passes = 0u64;
+        let window = u64::from(size.0) * u64::from(size.1);
+        let texels = |rect: Option<spatial::Rect>| {
+            rect.map_or(window, |rect| {
+                u64::from(rect.x1.saturating_sub(rect.x0))
+                    * u64::from(rect.y1.saturating_sub(rect.y0))
+            })
+        };
+        let mut reached_texels = 0u64;
+        let mut refilled = 0u32;
+        let mut spatial_texels = 0u64;
         for (index, steps) in chain.links.iter().enumerate() {
             let (compiled, id) = &pipelines[index];
             chain::pack_words(plan.texels, (0, 0), steps, link_words);
@@ -2857,6 +2893,12 @@ impl Executor {
             )? {
                 link.forget(&mut slot.pool);
             }
+            let work = |link: &chain::LinkSlot| {
+                link.spatial
+                    .as_deref()
+                    .map_or((0, 0), |spatial| (spatial.refilled, spatial.texels))
+            };
+            let before = work(link);
             let (ran, dispatched, reached) = link.encode(
                 device,
                 queue,
@@ -2874,8 +2916,14 @@ impl Executor {
             dirty = incremental
                 .zip(reached)
                 .map(|(changed, reached)| changed.union(&reached));
+            let after = work(link);
+            refilled += after.0 - before.0;
+            spatial_texels += after.1 - before.1;
             encoded |= ran;
             links_run += u32::from(ran);
+            if ran {
+                reached_texels += texels(dirty);
+            }
             spatial_passes += dispatched;
             self.figures
                 .preview
@@ -2906,6 +2954,7 @@ impl Executor {
             // input: only the passes this tick changes, over what its mask needs.
             let mut reached = dirty;
             if let Some(spatial) = slot.spatial.as_mut() {
+                let (before, texels_before) = (spatial.refilled, spatial.texels);
                 let (dispatched, over) = spatial.tick(
                     device,
                     queue,
@@ -2920,12 +2969,15 @@ impl Executor {
                     dirty,
                 );
                 reached = dirty.zip(over).map(|(dirty, over)| dirty.union(&over));
+                refilled += spatial.refilled - before;
+                spatial_texels += spatial.texels - texels_before;
                 spatial_passes += dispatched;
                 self.figures
                     .preview
                     .spatial_passes
                     .fetch_add(dispatched, Ordering::Relaxed);
             }
+            reached_texels += texels(reached);
             let groups = slot.spatial.as_ref().and_then(|spatial| spatial.groups());
             let planes = groups.and_then(|groups| groups.fragment.as_ref());
             // The frame and, where the bucket has room, one more column and row: the edge
@@ -3047,8 +3099,15 @@ impl Executor {
         slot.evaluated_serial = change.map(|change| (change.serial, plan.boundary.version));
         if changed || encoded {
             let figures = &mut surface.evaluation;
-            let window = u64::from(size.0) * u64::from(size.1);
             figures.links_run += links_run;
+            if incremental.is_some() {
+                figures.incremental += 1;
+            } else {
+                figures.whole += 1;
+            }
+            figures.reached_texels += reached_texels;
+            figures.refilled += refilled;
+            figures.spatial_texels += spatial_texels;
             figures.spatial_passes += spatial_passes;
             figures.window_texels = window;
             figures.link_texels += window * u64::from(links_run);

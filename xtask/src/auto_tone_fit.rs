@@ -3,7 +3,8 @@ use crate::*;
 use luxforge_core::{
     BASIC_EFFECT, Cancel, ColorOperation, CompileStage, EffectStage, LOOK_EFFECT, Layer,
     ModuleRegistry, OwnerHandle, PreviewRequest, Stage,
-    auto_tone::{self, AnalysisSample, AutoToneTargets, AutoToneValues, Statistics},
+    auto_tone::{self, AutoToneTargets, AutoToneValues, ForwardModel, Statistics, forward_model},
+    tiles::SampleGrid,
 };
 use luxforge_testkit::client;
 use serde::Deserialize;
@@ -51,8 +52,10 @@ struct Photo {
 
 struct Prepared {
     id: String,
-    sample: Arc<AnalysisSample>,
-    look: Option<Layer>,
+    sample: Arc<SampleGrid>,
+    /// The original's stack and where Basic goes in it, which the forward model is built from.
+    layers: Vec<Layer>,
+    basic: usize,
     target: Statistics,
     base: Statistics,
     lightroom_base: Option<Statistics>,
@@ -91,45 +94,27 @@ impl Drop for Scratch {
     }
 }
 
-fn compile(
-    registry: &ModuleRegistry,
-    look: Option<&Layer>,
-    values: AutoToneValues,
-) -> std::result::Result<Vec<ColorOperation>, luxforge_core::Error> {
-    let stage = CompileStage::exact(Stage {
-        width: 32,
-        height: 32,
-    });
-    let basic = registry
-        .module("luxforge.basic")
-        .ok_or_else(|| luxforge_core::Error::incompatible("Basic is unavailable"))?;
-    let luxforge_core::Processing::Color(unit) = basic.compile(
-        BASIC_EFFECT,
-        luxforge_core::EFFECT_FORMAT,
-        &Value::Object(values.fields()),
-        stage,
-    )?
-    else {
-        return Err(luxforge_core::Error::internal("Basic is not pointwise"));
-    };
-    let mut units = vec![unit];
-    if let Some(layer) = look {
-        let provider = registry
-            .module("luxforge.look")
-            .ok_or_else(|| luxforge_core::Error::incompatible("Look is unavailable"))?;
-        let luxforge_core::Processing::Color(unit) =
-            provider.compile(LOOK_EFFECT, layer.effect_format, &layer.payload, stage)?
-        else {
-            return Err(luxforge_core::Error::internal("Look is not pointwise"));
-        };
-        units.push(unit);
-    }
-    Ok(units)
+/// The production forward model of `layers` with Basic at `basic`: the same Basic and later Look
+/// units, and the same Exposure search, the action solves through.
+fn model<'a>(
+    registry: &'a ModuleRegistry,
+    layers: &[Layer],
+    basic: usize,
+) -> std::result::Result<ForwardModel<'a>, luxforge_core::Error> {
+    forward_model(
+        registry,
+        layers,
+        basic,
+        CompileStage::exact(Stage {
+            width: 32,
+            height: 32,
+        }),
+    )
 }
 
-fn rendered_statistics(sample: &AnalysisSample, units: &[ColorOperation]) -> Result<Statistics> {
+fn rendered_statistics(sample: &SampleGrid, units: &[ColorOperation]) -> Result<Statistics> {
     let mut output = sample.clone();
-    output.source_white.fill(false);
+    output.source_clipped.fill(false);
     for chunk in output.rgb.chunks_mut(4096) {
         for operation in units {
             for unit in operation.units() {
@@ -151,10 +136,10 @@ fn exported(path: &Path) -> Result<Statistics> {
             ((u64::from(side) * 1024) / u64::from(longest)).max(1) as u32
         }
     });
-    let mut sample = AnalysisSample {
+    let mut sample = SampleGrid {
         grid,
         rgb: Vec::with_capacity((grid[0] * grid[1]) as usize),
-        source_white: Vec::with_capacity((grid[0] * grid[1]) as usize),
+        source_clipped: Vec::with_capacity((grid[0] * grid[1]) as usize),
     };
     for y in 0..grid[1] {
         for x in 0..grid[0] {
@@ -167,7 +152,7 @@ fn exported(path: &Path) -> Result<Statistics> {
                 luxforge_core::colour::srgb::decode_table()[image.rgba[at + channel] as usize]
             }));
             // Clipping in a rendered export is an output statistic, never a source exclusion.
-            sample.source_white.push(false);
+            sample.source_clipped.push(false);
         }
     }
     Ok(auto_tone::picture_statistics(&sample, &Cancel::never())?)
@@ -262,7 +247,7 @@ fn prepare(manifest: &Manifest, base: &Path) -> Result<Vec<Prepared>> {
             }),
             "fit originals may carry the starting Look but no creative colour edits",
         )?;
-        let read = luxforge_core::tiles::read_analysis(
+        let read = luxforge_core::tiles::read_grid(
             evaluation,
             index_basic,
             &luxforge_core::tiles::ReferenceReads,
@@ -273,19 +258,15 @@ fn prepare(manifest: &Manifest, base: &Path) -> Result<Vec<Prepared>> {
             retained <= MAX_RETAINED,
             "fitting samples exceed their aggregate memory bound",
         )?;
-        let look = recipe
-            .layers
-            .iter()
-            .find(|layer| layer.effect_id == LOOK_EFFECT)
-            .cloned();
         let base_stats = rendered_statistics(
             &read.sample,
-            &compile(&registry, look.as_ref(), AutoToneValues::default())?,
+            &model(&registry, &recipe.layers, index_basic)?.compile(AutoToneValues::default())?,
         )?;
         prepared.push(Prepared {
             id: photo.id.clone(),
             sample: read.sample,
-            look,
+            layers: recipe.layers.clone(),
+            basic: index_basic,
             target: exported(&base.join(&photo.lightroom_auto))?,
             base: base_stats,
             lightroom_base: photo
@@ -341,26 +322,9 @@ fn evaluate(
     registry: &ModuleRegistry,
     targets: AutoToneTargets,
 ) -> Result<auto_tone::AutoToneReport> {
-    let search = if photo.look.as_ref().is_some_and(|layer| {
-        layer.payload["amount"]
-            .as_f64()
-            .is_some_and(|amount| amount > 100.)
-    }) {
-        auto_tone::ExposureSearch::Exhaustive
-    } else {
-        auto_tone::ExposureSearch::Monotone
-    };
-    let mut report = auto_tone::solve_with_exposure_search(
-        &photo.sample,
-        targets,
-        |values| compile(registry, photo.look.as_ref(), values),
-        search,
-        &Cancel::never(),
-    )?;
-    report.output = rendered_statistics(
-        &photo.sample,
-        &compile(registry, photo.look.as_ref(), report.values)?,
-    )?;
+    let model = model(registry, &photo.layers, photo.basic)?;
+    let mut report = model.solve(&photo.sample, targets, &Cancel::never())?;
+    report.output = rendered_statistics(&photo.sample, &model.compile(report.values)?)?;
     Ok(report)
 }
 fn objective(
@@ -520,7 +484,7 @@ mod tests {
             .encode_image(&image)
             .unwrap();
             let decoded = luxforge_core::open_source(&original).unwrap();
-            let mut sample = AnalysisSample {
+            let mut sample = SampleGrid {
                 grid: [64, 48],
                 rgb: decoded
                     .rgba
@@ -531,16 +495,11 @@ mod tests {
                         })
                     })
                     .collect(),
-                source_white: vec![false; 64 * 48],
+                source_clipped: vec![false; 64 * 48],
             };
-            let report = auto_tone::solve(
-                &sample,
-                known,
-                |values| compile(&registry, None, values),
-                &Cancel::never(),
-            )
-            .unwrap();
-            for operation in compile(&registry, None, report.values).unwrap() {
+            let model = model(&registry, &[], 0).unwrap();
+            let report = model.solve(&sample, known, &Cancel::never()).unwrap();
+            for operation in model.compile(report.values).unwrap() {
                 for unit in operation.units() {
                     unit.apply_row(0, 0, &mut sample.rgb);
                 }

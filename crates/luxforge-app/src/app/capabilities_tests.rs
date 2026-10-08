@@ -896,6 +896,7 @@ fn job_at(job: &str, status: &str, fraction: Option<f64>) -> JobRecord {
         "job_id": job,
         "kind": "task",
         "status": status,
+        "ownership": "catalog",
         "progress": fraction.map_or(json!({}), |fraction| json!({"fraction": fraction})),
         "module_id": MODULE,
     }))

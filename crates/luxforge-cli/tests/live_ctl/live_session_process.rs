@@ -1,14 +1,21 @@
+//! `luxforge-ctl` across its process boundary, against a real catalog owner serving a live session
+//! from this test process, as the desktop serves one: schema and state, edits recorded in history,
+//! Auto tone, a batch paste of settings, a conflict with a competing commit, the running session found through the registry,
+//! a batch's drafts on one connection, and jobs followed to their end, left running, or stopped as
+//! their client leaves. Narrow a run with `cargo test -p luxforge-cli live_session_process`.
+
 use luxforge_core::{
     ApiRequest, ClientAuthority, ClientId, LocalServer, LocalSessionInfo, OwnerHandle,
     live_session_file,
 };
-use luxforge_testbase::{paths, wait_for};
+use luxforge_testbase::{Gate, paths, wait_for, wait_until};
 use serde_json::{Value, json};
 use std::{
     io::{BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
+    sync::Arc,
     thread::JoinHandle,
 };
 
@@ -22,19 +29,25 @@ struct Live {
     person: ClientId,
     server: Option<LocalServer>,
     join: Option<JoinHandle<()>>,
+    /// The gate every source job passes before its work, open unless a test shuts it.
+    sources: Arc<Gate>,
 }
 
 impl Live {
     /// Start the owner and its session, the session file at `session_file` (beside the catalog
-    /// when `None`). `None` where the host forbids a loopback listener.
+    /// when `None`). `None` where the host forbids a loopback listener and the run declares it
+    /// ([`luxforge_testbase::loopback_forbidden`]).
     fn start(label: &str, session_file: Option<&Path>) -> Option<Self> {
         let scratch = paths::temp_dir(label);
         let catalog = scratch.join("catalog.sqlite");
-        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let sources = Arc::new(Gate::new());
+        let hold = sources.clone();
+        let (owner, join) =
+            OwnerHandle::start_holding_sources(&catalog, Arc::new(move || hold.pass())).unwrap();
         let file = session_file.map_or_else(|| live_session_file(&catalog), Path::to_path_buf);
         let server = match LocalServer::start(owner.clone(), &file) {
             Ok(server) => server,
-            Err(error) if error.detail.contains("Operation not permitted") => {
+            Err(error) if luxforge_testbase::loopback_forbidden(&error.detail) => {
                 owner.stop();
                 join.join().unwrap();
                 return None;
@@ -49,11 +62,12 @@ impl Live {
             person,
             server: Some(server),
             join: Some(join),
+            sources,
         })
     }
 
-    /// The person's own call, as the desktop makes one.
-    fn ask(&self, method: &str, params: Value) -> Value {
+    /// The person's own call, as the desktop makes one, answering its result or its failure.
+    fn try_ask(&self, method: &str, params: Value) -> Result<Value, Value> {
         let response = self
             .owner
             .call(
@@ -66,29 +80,27 @@ impl Live {
                 },
             )
             .unwrap();
-        assert!(response.error.is_none(), "{method}: {:?}", response.error);
-        response.result.unwrap()
+        match response.error {
+            Some(error) => Err(serde_json::to_value(error).unwrap()),
+            None => Ok(response.result.unwrap()),
+        }
+    }
+
+    fn ask(&self, method: &str, params: Value) -> Value {
+        self.try_ask(method, params)
+            .unwrap_or_else(|error| panic!("{method}: {error}"))
     }
 
     /// Run `luxforge-ctl --catalog CATALOG args...` to its end.
     fn ctl(&self, args: &[&str]) -> Ran {
-        let output = Command::new(BINARY)
-            .arg("--catalog")
-            .arg(&self.catalog)
-            .args(args)
-            .output()
-            .unwrap();
-        Ran {
-            status: output.status.code(),
-            stdout: String::from_utf8(output.stdout).unwrap(),
-            stderr: String::from_utf8(output.stderr).unwrap(),
-        }
+        let mut command = Command::new(BINARY);
+        command.arg("--catalog").arg(&self.catalog).args(args);
+        Ran::of(command, "")
     }
 
-    /// Develop a copy of the JPEG fixture and prepare its photograph, as the desktop prepares the
-    /// photograph it opens, each through `luxforge-ctl ... --wait`, answering the copy's path and the
-    /// new photograph's identity.
-    fn develop(&self) -> (PathBuf, String) {
+    /// Develop a copy of the JPEG fixture through `luxforge-ctl ... --wait`, answering the copy's
+    /// path and the new photograph's identity. Its source is not prepared yet.
+    fn develop_only(&self) -> (PathBuf, String) {
         let original = self.scratch.join("original.jpg");
         std::fs::copy(paths::jpeg(), &original).unwrap();
         let params = json!({
@@ -110,6 +122,13 @@ impl Live {
             .as_str()
             .unwrap()
             .to_owned();
+        (original, asset)
+    }
+
+    /// Develop a copy of the JPEG fixture and prepare its photograph, as the desktop prepares the
+    /// photograph it opens, each through `luxforge-ctl ... --wait`.
+    fn develop(&self) -> (PathBuf, String) {
+        let (original, asset) = self.develop_only();
         let params = json!({"asset_id": asset}).to_string();
         let prepared = self
             .ctl(&["call", "source.prepare", "--params", &params, "--wait"])
@@ -136,10 +155,19 @@ impl Live {
         actors.reverse();
         actors
     }
+
+    /// Wait until every live client of the session has gone, each having told the owner it left.
+    fn clients_gone(&self) {
+        let server = self.server.as_ref().unwrap();
+        wait_until("every live client to disconnect", || {
+            server.connected() == 0
+        });
+    }
 }
 
 impl Drop for Live {
     fn drop(&mut self) {
+        self.sources.open();
         drop(self.server.take());
         self.owner.stop();
         if let Some(join) = self.join.take() {
@@ -156,6 +184,27 @@ struct Ran {
 }
 
 impl Ran {
+    fn of(mut command: Command, stdin: &str) -> Self {
+        let mut child = command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(stdin.as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        Self {
+            status: output.status.code(),
+            stdout: String::from_utf8(output.stdout).unwrap(),
+            stderr: String::from_utf8(output.stderr).unwrap(),
+        }
+    }
+
     fn printed(&self) -> Value {
         assert_eq!(
             (self.status, self.stderr.as_str()),
@@ -166,10 +215,11 @@ impl Ran {
         serde_json::from_str(&self.stdout).unwrap()
     }
 
-    fn failed(&self) -> Value {
+    /// The failure on standard error, with nothing on standard output and exit status `status`.
+    fn failed(&self, status: i32) -> Value {
         assert_eq!(
             (self.status, self.stdout.as_str()),
-            (Some(1), ""),
+            (Some(status), ""),
             "{}",
             self.stderr
         );
@@ -189,7 +239,14 @@ fn live_session_process_reads_schema_and_state_and_fails_without_a_session() {
     );
     assert_eq!(status["catalog"]["counts"]["photographs"], 0);
     let entry = live.ctl(&["schema", "edit.set-basic"]).printed();
-    assert_eq!(entry["mutation"], "revision");
+    assert_eq!(
+        (&entry["mutation"], &entry["revision_of"]),
+        (&json!("revision"), &json!("asset"))
+    );
+    assert_eq!(
+        live.ctl(&["schema", "draft.begin"]).printed()["session_scoped"],
+        true
+    );
     assert!(
         live.ctl(&["schema"]).printed()["methods"]
             .as_object()
@@ -204,7 +261,7 @@ fn live_session_process_reads_schema_and_state_and_fails_without_a_session() {
             "--params",
             r#"{"module_id": "m", "capability": "download", "scope": {}}"#,
         ])
-        .failed();
+        .failed(1);
     assert_eq!(refused["error"]["code"], "forbidden", "{refused}");
     // The same catalog after its owner has gone: no session, and nothing starts one.
     let catalog = live.catalog.clone();
@@ -215,11 +272,82 @@ fn live_session_process_reads_schema_and_state_and_fails_without_a_session() {
         .unwrap();
     assert_eq!(
         (ran.status.code(), ran.stdout.as_slice()),
-        (Some(1), &b""[..])
+        (Some(3), &b""[..])
     );
     let error: Value = serde_json::from_slice(&ran.stderr).unwrap();
     assert_eq!(error["error"]["code"], "no-session", "{error}");
     assert!(!catalog.exists(), "no owner was started for the catalog");
+}
+
+/// Where `luxforge-ctl`, run with `home` as its home directory and every platform's configuration
+/// variable under it, finds the registry of running live sessions: the configuration directory
+/// `luxforge_cli::Paths` resolves there.
+fn home_registry(command: &mut Command, home: &Path) -> PathBuf {
+    command
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .env("XDG_CONFIG_HOME", home.join("xdg"))
+        .env("APPDATA", home.join("roaming"))
+        .env("LOCALAPPDATA", home.join("local"));
+    let config = if cfg!(target_os = "macos") {
+        home.join("Library/Application Support/Luxforge")
+    } else if cfg!(windows) {
+        home.join("roaming").join("Luxforge")
+    } else {
+        home.join("xdg").join("luxforge")
+    };
+    config.join(luxforge_core::LIVE_SESSIONS_DIR)
+}
+
+#[test]
+fn live_session_process_finds_the_running_session_without_a_catalog() {
+    let Some(mut live) = Live::start("ctl-process-registry", None) else {
+        return;
+    };
+    let home = live.scratch.join("home");
+    let command = || {
+        let mut command = Command::new(BINARY);
+        let registry = home_registry(&mut command, &home);
+        command.arg("status");
+        (command, registry)
+    };
+    // Nothing registered: no session, whatever catalog a launch would open.
+    let (unregistered, registry) = command();
+    let error = Ran::of(unregistered, "").failed(3);
+    assert_eq!(error["error"]["code"], "no-session", "{error}");
+    live.server
+        .as_mut()
+        .unwrap()
+        .register(&registry, &live.catalog)
+        .unwrap();
+    // catalog.info names the catalog by its canonical path.
+    let catalog = json!(std::fs::canonicalize(&live.catalog).unwrap());
+    let status = Ran::of(command().0, "").printed();
+    assert_eq!(status["catalog"]["path"], catalog, "{status}");
+    // A second running desktop, on another catalog, is never guessed between.
+    let mut other = Live::start("ctl-process-registry-other", None).unwrap();
+    let other_catalog = other.catalog.clone();
+    other
+        .server
+        .as_mut()
+        .unwrap()
+        .register(&registry, &other_catalog)
+        .unwrap();
+    let several = Ran::of(command().0, "").failed(2);
+    assert_eq!(several["error"]["code"], "usage", "{several}");
+    assert_eq!(
+        several["error"]["data"]["sessions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+    // A desktop that quits removes its entry with its session.
+    drop(other);
+    assert_eq!(
+        Ran::of(command().0, "").printed()["catalog"]["path"],
+        catalog
+    );
 }
 
 #[test]
@@ -276,12 +404,36 @@ fn live_session_process_edits_join_history_and_export_through_a_waited_job() {
         ])
         .printed();
     assert_eq!(exported["job"]["status"], "ready", "{exported}");
+    assert_eq!(exported["job"]["ownership"], "catalog", "{exported}");
     assert!(destination.is_file());
     assert_eq!(
         std::fs::read(&original).unwrap(),
         source,
         "the original is untouched"
     );
+}
+
+#[test]
+fn live_session_process_applies_auto_tone_as_one_entry_in_history() {
+    let Some(live) = Live::start("ctl-process-auto-tone", None) else {
+        return;
+    };
+    let (original, asset) = live.develop();
+    let source = std::fs::read(&original).unwrap();
+    let before = live.revision(&asset);
+    let applied = live
+        .ctl(&["call", "edit.auto-tone", "--asset", &asset])
+        .printed();
+    assert_eq!(applied["outcome"], "applied", "{applied}");
+    assert_eq!(live.revision(&asset), before + 1, "one undoable entry");
+    assert_eq!(live.actors(&asset).last().unwrap(), "luxforge-ctl");
+    // Auto tone sets its fields absolutely, so the same request again changes nothing.
+    let repeated = live
+        .ctl(&["call", "edit.auto-tone", "--asset", &asset])
+        .printed();
+    assert_eq!(repeated["outcome"], "no-op", "{repeated}");
+    assert_eq!(live.revision(&asset), before + 1);
+    assert_eq!(std::fs::read(&original).unwrap(), source);
 }
 
 #[test]
@@ -360,7 +512,7 @@ fn live_session_process_conflicts_with_a_competing_commit_and_never_retries() {
             "--params",
             r#"{"exposure": 0.5}"#,
         ])
-        .failed();
+        .failed(1);
     assert_eq!(error["error"]["code"], "conflict", "{error}");
     assert_eq!(
         forwarding.join().unwrap(),
@@ -386,14 +538,15 @@ fn request_for(method: &str, params: Value) -> ApiRequest {
 }
 
 #[test]
-fn live_session_process_leaves_a_job_running_when_it_disconnects() {
+fn live_session_process_leaves_a_catalog_job_running_when_it_disconnects() {
     let Some(live) = Live::start("ctl-process-disconnect", None) else {
         return;
     };
     let (_, asset) = live.develop();
     let destination = live.scratch.join("left-running.jpg");
     let params = json!({"asset_id": asset, "destination": destination});
-    // Without --wait the process ends, closing its connection, as soon as the job is accepted.
+    // Without --wait the process ends, closing its connection, as soon as the job is accepted. An
+    // export belongs to the catalog, so nothing warns that it will be released.
     let started = live
         .ctl(&["call", "export.jpeg", "--params", &params.to_string()])
         .printed();
@@ -402,6 +555,205 @@ fn live_session_process_leaves_a_job_running_when_it_disconnects() {
         let read = live.ask("job.read", json!({"job_id": job}));
         (!matches!(read["status"].as_str(), Some("queued" | "running"))).then_some(read)
     });
-    assert_eq!(finished["status"], "ready", "{finished}");
+    assert_eq!(
+        (&finished["status"], &finished["ownership"]),
+        (&json!("ready"), &json!("catalog")),
+        "{finished}"
+    );
     assert!(destination.is_file());
+}
+
+#[test]
+fn live_session_process_stops_a_job_its_clients_own_when_it_exits() {
+    let Some(live) = Live::start("ctl-process-released", None) else {
+        return;
+    };
+    let (_, asset) = live.develop_only();
+    let params = json!({"asset_id": asset}).to_string();
+    // The preparation is held before its work, so it is still running when luxforge-ctl exits.
+    live.sources.shut();
+    let ran = live.ctl(&["call", "source.prepare", "--params", &params]);
+    assert_eq!(ran.status, Some(0), "{}", ran.stderr);
+    let started: Value = serde_json::from_str(&ran.stdout).unwrap();
+    let job = started["job_id"].as_str().unwrap().to_owned();
+    let warning: Value = serde_json::from_str(&ran.stderr).unwrap();
+    assert_eq!(warning["warning"]["code"], "job-released", "{warning}");
+    assert_eq!(warning["warning"]["data"]["ownership"], "clients");
+    live.clients_gone();
+    // A later client cannot read it: it belonged to the client that left.
+    let unread = live
+        .try_ask("job.read", json!({"job_id": job}))
+        .unwrap_err();
+    assert_eq!(unread["code"], "validation", "{unread}");
+    // Nobody wants it any more, so it stopped and no longer joins: the same request starts a new
+    // job, which a second request while it runs joins.
+    let renewed = live.ask("source.prepare", json!({"asset_id": asset}));
+    let renewed_job = renewed["job_id"].as_str().unwrap();
+    assert_ne!(renewed_job, job, "the released job was not joined");
+    let joined = live.ask("source.prepare", json!({"asset_id": asset}));
+    assert_eq!(joined["job_id"], renewed_job, "a wanted job is joined");
+    live.sources.open();
+    let finished = wait_for("the person's own preparation", || {
+        let read = live.ask("job.read", json!({"job_id": renewed_job}));
+        (!matches!(read["status"].as_str(), Some("queued" | "running"))).then_some(read)
+    });
+    assert_eq!(
+        (&finished["status"], &finished["ownership"]),
+        (&json!("ready"), &json!("clients")),
+        "{finished}"
+    );
+}
+
+#[test]
+fn live_session_process_batch_carries_a_draft_across_requests_on_one_connection() {
+    let Some(live) = Live::start("ctl-process-batch", None) else {
+        return;
+    };
+    let (_, asset) = live.develop();
+    let before = live.revision(&asset);
+    // A draft lives in its client's session, so a single call cannot use one.
+    let refused = live
+        .ctl(&[
+            "call",
+            "draft.begin",
+            "--params",
+            &json!({"asset_id": asset, "action": "set-basic"}).to_string(),
+        ])
+        .failed(2);
+    assert_eq!(refused["error"]["code"], "usage", "{refused}");
+    // The draft's identity is the owner's, so a script names it once it knows it: here the batch
+    // is fed one line at a time through a pipe, reading each answer before writing the next.
+    let mut child = Command::new(BINARY)
+        .arg("--catalog")
+        .arg(&live.catalog)
+        .arg("batch")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut input = child.stdin.take().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    let mut send = |line: Value| -> Value {
+        writeln!(input, "{line}").unwrap();
+        input.flush().unwrap();
+        let mut answer = String::new();
+        output.read_line(&mut answer).unwrap();
+        serde_json::from_str(&answer).unwrap()
+    };
+    let begun = send(json!({"id": "begin", "method": "draft.begin",
+                            "params": {"asset_id": asset, "action": "set-basic"}}));
+    assert_eq!(begun["id"], "begin", "{begun}");
+    let draft = begun["result"]["draft_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no draft identity in {begun}"))
+        .to_owned();
+    let set = send(json!({"method": "draft.set",
+                          "params": {"draft_id": draft, "fields": {"exposure": 0.75}}}));
+    assert!(set.get("error").is_none(), "{set}");
+    let committed = send(
+        json!({"method": "draft.commit", "params": {"draft_id": draft},
+                                "expected_revision": before}),
+    );
+    assert!(committed.get("error").is_none(), "{committed}");
+    drop(input);
+    let finished = child.wait_with_output().unwrap();
+    assert_eq!(finished.status.code(), Some(0));
+    assert_eq!(live.revision(&asset), before + 1);
+    assert_eq!(live.actors(&asset).last().unwrap(), "luxforge-ctl");
+}
+
+/// A copy of the JPEG fixture at `to` whose bytes differ from every other copy's: a comment
+/// segment naming `to`. A Develop links a file whose bytes a photograph already has, so two
+/// photographs of one fixture are written this way.
+fn distinct_jpeg(to: &Path) -> PathBuf {
+    let bytes = std::fs::read(paths::jpeg()).unwrap();
+    assert!(bytes.starts_with(&[0xff, 0xd8]), "a JPEG fixture");
+    let tag = to.to_string_lossy();
+    let mut copy = bytes[..2].to_vec();
+    copy.extend([0xff, 0xfe]);
+    copy.extend(u16::try_from(tag.len() + 2).unwrap().to_be_bytes());
+    copy.extend(tag.as_bytes());
+    copy.extend(&bytes[2..]);
+    std::fs::write(to, copy).unwrap();
+    to.canonicalize().unwrap()
+}
+
+#[test]
+fn live_session_process_pastes_settings_onto_two_photographs_through_a_waited_batch_job() {
+    let Some(live) = Live::start("ctl-process-batch-paste", None) else {
+        return;
+    };
+    let paths_to_develop =
+        ["first.jpg", "second.jpg"].map(|name| distinct_jpeg(&live.scratch.join(name)));
+    let params = json!({
+        "targets": {"kind": "paths", "paths": paths_to_develop},
+        "into": [],
+        "confirm_removable": true,
+    });
+    let developed = live
+        .ctl(&[
+            "call",
+            "pick.develop",
+            "--params",
+            &params.to_string(),
+            "--wait",
+        ])
+        .printed();
+    assert_eq!(developed["job"]["status"], "ready", "{developed}");
+    let assets: Vec<String> = developed["job"]["result"]["developed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["asset_id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(assets.len(), 2, "{developed}");
+    let before: Vec<u64> = assets.iter().map(|asset| live.revision(asset)).collect();
+    let entries = |asset: &str| -> Vec<Value> {
+        live.ask("history.list", json!({"asset_id": asset, "limit": 50}))["entries"]
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+    let counts: Vec<usize> = assets.iter().map(|asset| entries(asset).len()).collect();
+
+    let params = json!({
+        "targets": {"kind": "assets", "asset_ids": assets},
+        "settings": {"set-basic": {"exposure": 0.5, "contrast": 10}},
+        "origin": {"kind": "paste", "source": "DSC_4471.NEF"},
+    });
+    let pasted = live
+        .ctl(&[
+            "call",
+            "batch.apply-settings",
+            "--params",
+            &params.to_string(),
+            "--wait",
+        ])
+        .printed();
+    let job = &pasted["job"];
+    assert_eq!(job["status"], "ready", "{pasted}");
+    assert_eq!(job["kind"], "batch-settings", "{pasted}");
+    assert_eq!(job["result"]["done"], json!(assets), "{pasted}");
+    assert_eq!(job["result"]["skipped"], json!([]), "{pasted}");
+    assert!(job["result"].get("settings_skipped").is_none(), "{pasted}");
+    for (index, asset) in assets.iter().enumerate() {
+        assert_eq!(live.revision(asset), before[index] + 1, "{asset}");
+        let listed = entries(asset);
+        assert_eq!(listed.len(), counts[index] + 1, "{asset}: one new entry");
+        // History lists the newest entry first.
+        assert_eq!(listed[0]["label"], "Paste settings from DSC_4471.NEF");
+        assert_eq!(listed[0]["action_id"], "apply-settings");
+        assert_eq!(listed[0]["actor"], "luxforge-ctl");
+        let current = live.ask("asset.state", json!({"asset_id": asset}));
+        assert_eq!(current["current_entry"]["id"], listed[0]["id"]);
+        let layers = current["current_entry"]["snapshot"]["recipe"]["layers"]
+            .as_array()
+            .unwrap();
+        let basic = layers
+            .iter()
+            .find(|layer| layer["effect_id"] == "luxforge.basic.adjust")
+            .unwrap_or_else(|| panic!("a Basic layer in {layers:?}"));
+        assert_eq!(basic["payload"], json!({"exposure": 0.5, "contrast": 10.0}));
+    }
 }
