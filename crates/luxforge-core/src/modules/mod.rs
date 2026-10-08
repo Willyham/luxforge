@@ -47,11 +47,10 @@ pub static GPU_PROGRAMS: &[&crate::GpuProgram] = &[
 /// and the colour mixer). What [`crate::Layer::new`] stamps on a layer it builds directly;
 /// `current_effect_formats_match_the_builtin_descriptors` holds it to the registry's descriptors.
 pub fn current_effect_format(effect_id: &str) -> u32 {
-    match effect_id {
-        MIXER_EFFECT => mixer::MIXER_EFFECT_FORMAT,
-        raw::RAW_EFFECT => raw::RAW_EFFECT_FORMAT,
-        _ => crate::EFFECT_FORMAT,
+    if effect_id == MIXER_EFFECT {
+        return mixer::MIXER_EFFECT_FORMAT;
     }
+    raw::current_format(effect_id).unwrap_or(crate::EFFECT_FORMAT)
 }
 
 pub use basic::BASIC_EFFECT;

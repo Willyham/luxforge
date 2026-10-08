@@ -25,6 +25,12 @@ pub(super) const RAW_EFFECT: &str = "luxforge.raw";
 /// rewritten.
 pub(super) const RAW_EFFECT_FORMAT: u32 = 2;
 
+/// The RAW development's current format when `effect_id` is its effect, for
+/// [`super::current_effect_format`].
+pub(super) fn current_format(effect_id: &str) -> Option<u32> {
+    (effect_id == RAW_EFFECT).then_some(RAW_EFFECT_FORMAT)
+}
+
 /// The RAW module's identity, which Basic's control variants name.
 pub(crate) const RAW_MODULE: &str = "luxforge.raw";
 

@@ -720,7 +720,7 @@
     {
       "id": "TASK-009",
       "description": "Hand off the working feature with native verification, measurements and current documentation.",
-      "status": "in_progress",
+      "status": "pending",
       "dependencies": [
         "TASK-008"
       ],
@@ -731,7 +731,7 @@
         "Documentation reflects current delivered contracts and scoped evidence only. Native Windows/Linux, screen-reader and calibrated-display claims need native evidence; skips remain incomplete.",
         "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step.",
         "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence.",
-        "In progress: the integrated feature is delivered with targeted tests, clippy and an M2 native GPU comparison. Outstanding: the full tier with the supported RAW manifest and the GPU gate over the grading recipes on the owner's M4, the latency harness's wheel gesture and the 24/60 MP grading-versus-HSL measurements, and the performance checklist's measured figures."
+        "Started ahead of TASK-008's last item: the integrated feature is delivered with targeted tests, clippy and an M2 native GPU comparison. Outstanding: the full tier with the supported RAW manifest and the GPU gate over the grading recipes on the owner's M4, the latency harness's wheel gesture and the 24/60 MP grading-versus-HSL measurements, and the performance checklist's measured figures."
       ],
       "context_links": [
         {
