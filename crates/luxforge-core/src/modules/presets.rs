@@ -408,12 +408,12 @@ mod tests {
             (
                 "a blank name",
                 json!({"kind": "preset", "name": "\u{3000}"}),
-                "parameter origin: name must not be empty",
+                "parameter origin is not a usable origin: name must not be empty",
             ),
             (
                 "a blank source",
                 json!({"kind": "paste", "source": "  "}),
-                "parameter origin: source must not be empty",
+                "parameter origin is not a usable origin: source must not be empty",
             ),
             (
                 "a name over 128 characters",

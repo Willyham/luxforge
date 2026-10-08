@@ -6934,8 +6934,16 @@ mod tests {
         assert_eq!(
             exercised.into_iter().collect::<Vec<_>>(),
             [
-                "artifact", "boolean", "enum", "identity", "integer", "number", "settings",
-                "string", "text"
+                "artifact",
+                "boolean",
+                "enum",
+                "identity",
+                "integer",
+                "number",
+                "settings",
+                "settings-origin",
+                "string",
+                "text"
             ],
             "every kind a host method declares, but json and secret, is exercised"
         );

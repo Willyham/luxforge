@@ -200,7 +200,10 @@ pub fn check_value(parameter: &ParameterDescriptor, value: &Value) -> Result<(),
         )?,
         ParameterKind::SettingsOrigin => {
             crate::SettingsOrigin::read(value).map_err(|error| {
-                Error::validation(format!("parameter {name}: {}", error.detail))
+                Error::validation(format!(
+                    "parameter {name} is not a usable origin: {}",
+                    error.detail
+                ))
             })?;
         }
         ParameterKind::Endpoint { classes } => {

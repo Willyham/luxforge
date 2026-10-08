@@ -396,15 +396,15 @@ fn an_empty_or_blank_name_is_refused() {
     for (origin, expected) in [
         (
             json!({"kind": "preset", "name": ""}),
-            "parameter origin: name must not be empty",
+            "parameter origin is not a usable origin: name must not be empty",
         ),
         (
             json!({"kind": "preset", "name": "  "}),
-            "parameter origin: name must not be empty",
+            "parameter origin is not a usable origin: name must not be empty",
         ),
         (
             json!({"kind": "paste", "source": "\u{3000}"}),
-            "parameter origin: source must not be empty",
+            "parameter origin is not a usable origin: source must not be empty",
         ),
     ] {
         let error = apply_preset(
