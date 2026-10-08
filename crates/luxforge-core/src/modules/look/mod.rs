@@ -304,6 +304,7 @@ impl LookModule {
                     ActionDescriptor {
                         patch: true,
                         preset: false,
+                        analysis: None,
                         parameters: vec![
                             ParameterDescriptor::enumeration(LOOK, [STANDARD, NEUTRAL]).notes(
                                 "standard writes the current Standard look's resolved knots, \

@@ -120,6 +120,24 @@ There is one plan path. `EditorService::ask` asks a module one question about on
 
 Every action — a module's and a host `mask.*` command alike — resolves through the registry's one action lookup, `ModuleRegistry::resolve_action`, as `ActionRef::Module(module, action)` or `ActionRef::Host(command)`, and runs through one path, `EditorService::run_action`: `Prepared::new` resolves it, takes a module action's host `mask` field out through the one target check a module query's `mask` also takes (`take_mask_target`) and checks its parameters with the one generic check (a module then parses them); the request identity is built once; `EditorService::plan_request` plans it — a module action through `plan_action` above, a mask command through `plan_mask_command`, which rewrites the mask table and reads a pixel only for a stroke limited to a colour — and `mutate` admits and commits it. A draft's effective recipe is prepared and planned through the same two functions with the request its commit will send, so a draft equals its commit by construction for both. Queries resolve the same way (`resolve_query`, `QueryRef::{Module, Host}`), and `run_query` answers the host's `mask.list` and `mask.sample-input` beside a module's.
 
+### Analysis actions
+
+An action button with `style: group-header` appears as a compact button before its enclosing
+group's reset, including while that group is collapsed. Basic declares Auto in its Tone header.
+
+An action may declare `analysis: {query, writes}`. The query belongs to its module; `writes` maps
+its field-patch actions to the fields the analysis replaces. Registration checks those names and
+refuses parameters, a patch declaration, duplicate fields or an undeclared query. Basic's
+`auto-tone` is the first analysis action. It cannot be drafted. A direct analysis action or a
+settings composite containing one refuses an open draft.
+
+The owner defers the entire declared query to its tile worker, then replays the small answer during
+planning only while the asset revision, source identity and draft state still match. The query
+and action therefore share the same analysis without frame work on the owner. Batch presets use
+the same replay on their library worker, with their job's cancellation checked before commit.
+Analysis settings are empty objects and execute after every patch; overlapping written fields are
+refused at store. See [Auto tone](auto-tone.md) for its sample, cache and report bounds.
+
 ### Field patches
 
 An action may declare `patch: true`. The generic check then validates the fields the caller sent and fills no declared default, so the module receives exactly those fields and merges them over the state it already holds; omitted fields are preserved by that merge, unknown fields are still rejected, and every parameter is optional however it is declared (`schema.list` lists them all as optional). The history entry stores the patch as sent, not the merged payload, request deduplication covers the patch as sent, and a patch that changes nothing is a no-op with no entry. Defaults stay declared on patch parameters because clients seed and reset fields from them.

@@ -854,6 +854,87 @@ fn a_cancelled_batch_export_keeps_the_files_it_wrote_and_removes_its_temporary_f
 }
 
 #[test]
+fn auto_tone_batch_analyses_each_photo_and_matches_individual_actions() {
+    let harness = Harness::new("auto-tone");
+    let mut batch = Vec::new();
+    for (index, bright) in [false, true].into_iter().enumerate() {
+        let path = harness.dir.join(format!("auto-{index}.jpg"));
+        let picture = image::RgbImage::from_fn(96, 64, |x, y| {
+            let code = if bright {
+                80 + x * 160 / 95
+            } else {
+                10 + x * 100 / 95 + y / 4
+            } as u8;
+            image::Rgb([code, code, code])
+        });
+        image::codecs::jpeg::JpegEncoder::new_with_quality(fs::File::create(&path).unwrap(), 100)
+            .encode_image(&picture)
+            .unwrap();
+        batch.push(
+            serde_json::from_value(super::opening::import(
+                &harness.owner,
+                harness.client,
+                &path,
+            ))
+            .unwrap(),
+        );
+    }
+    let expected: Vec<_> = batch
+        .iter()
+        .map(|asset| {
+            harness.prepared("query.auto-tone", json!({"asset_id":asset}))["values"].clone()
+        })
+        .collect();
+    assert_ne!(
+        expected[0], expected[1],
+        "different photos need different Auto results"
+    );
+    let preset = harness.preset("Auto", json!({"auto-tone":{}}));
+    let started = harness.ok("batch.apply-preset", json!({"targets":assets(&batch),"preset_id":preset["id"],"mutation":envelope("auto-batch")}));
+    let settled = harness.settle(&started["job_id"]);
+    assert_eq!(settled["status"], "ready", "{settled}");
+    assert_eq!(settled["result"]["done"], json!(batch), "{settled}");
+    for (asset, values) in batch.iter().zip(expected) {
+        let entry = harness.current(asset);
+        assert_eq!(entry["label"], "Preset: Auto");
+        let basic = entry["snapshot"]["recipe"]["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|layer| layer["effect_id"] == crate::BASIC_EFFECT)
+            .unwrap();
+        for field in crate::auto_tone::FIELDS {
+            assert_eq!(
+                basic["payload"][field].as_f64().unwrap_or(0.),
+                values[field].as_f64().unwrap(),
+                "{field}"
+            );
+        }
+    }
+}
+
+#[test]
+fn auto_tone_batch_cancel_during_analysis_cannot_commit_a_late_result() {
+    let harness = Harness::new("auto-tone-cancel");
+    let asset = harness.photograph("orientation-1.jpg", "cancel.jpg");
+    let preset = harness.preset("Auto", json!({"auto-tone":{}}));
+    let gate = Arc::new(Gate::new());
+    gate.shut();
+    let held = gate.clone();
+    harness
+        .owner
+        .hold_tiles(Some(Arc::new(move || held.pass())));
+    let started = harness.ok("batch.apply-preset", json!({"targets":assets(std::slice::from_ref(&asset)),"preset_id":preset["id"],"mutation":envelope("cancel-auto")}));
+    gate.wait_reached(1, "Auto's analysis read");
+    harness.ok("job.cancel", json!({"job_id":started["job_id"]}));
+    gate.open();
+    let settled = harness.settle(&started["job_id"]);
+    assert_eq!(settled["status"], "cancelled", "{settled}");
+    assert_eq!(harness.revision(&asset), 0);
+    harness.owner.hold_tiles(None);
+}
+
+#[test]
 fn batch_paste_settings_reports_skips_and_uses_the_single_paste_path() {
     let harness = Harness::new("paste-settings");
     let [target, removed, drafted, previewed, unchanged, alone] = [

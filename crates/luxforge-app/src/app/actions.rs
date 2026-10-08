@@ -17,6 +17,87 @@ impl Editor {
     /// Run a declared action, or copy the request one would send.
     pub(super) fn action_update(&mut self, message: ActionMessage) -> Task<Message> {
         match message {
+            ActionMessage::Analysed {
+                action,
+                query,
+                serial,
+                result,
+            } => {
+                if self.controls.ui.analysis_serial != serial {
+                    return Task::none();
+                }
+                self.controls.ui.analysis_pending = None;
+                let target = result
+                    .as_ref()
+                    .ok()
+                    .filter(|refresh| !self.superseded(refresh))
+                    .map(|refresh| {
+                        (
+                            refresh.state.asset.id.clone(),
+                            refresh.state.current_entry.id.clone(),
+                        )
+                    });
+                let refreshed = self.dispatch(Message::Sync(
+                    super::message::sync::SyncMessage::Refreshed(result),
+                ));
+                let Some((asset, entry)) = target else {
+                    return refreshed;
+                };
+                let owner = self.owner.clone();
+                let client = self.client;
+                let read_asset = asset.clone();
+                let read_entry = entry.clone();
+                let explanation = super::tasks::owner_task(
+                    move || {
+                        super::tasks::call(
+                            &owner,
+                            client,
+                            &format!("query.{query}"),
+                            json!({"asset_id":read_asset,"entry_id":read_entry}),
+                        )
+                        .map(|(answer, _)| answer)
+                    },
+                    move |result| {
+                        Message::Action(ActionMessage::Explained {
+                            action: action.clone(),
+                            asset: asset.clone(),
+                            entry: entry.clone(),
+                            result,
+                        })
+                    },
+                );
+                return Task::batch([refreshed, explanation]);
+            }
+            ActionMessage::Explained {
+                action,
+                asset,
+                entry,
+                result,
+            } => {
+                if !self.select_shown()
+                    && self
+                        .document
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.asset.id == asset)
+                    && self.document.display_entry.as_ref() == Some(&entry)
+                {
+                    match result {
+                        Ok(report) => {
+                            self.analysis_explained(&action, None);
+                            self.controls
+                                .ui
+                                .analysis_reports
+                                .insert(action, (asset, entry, report));
+                        }
+                        Err(error) => {
+                            self.analysis_explained(&action, Some(&error));
+                            self.event("analysis_explanation_failed", || json!({"error":error}))
+                        }
+                    }
+                }
+            }
+
             ActionMessage::CopyRequest {
                 action,
                 parameter,
@@ -89,6 +170,27 @@ impl Editor {
                 // make for it and not only an argument about one builder.
                 if luxforge_core::mask::commands::find(&action).is_some() {
                     self.mask_panel.last_request = Some((method.clone(), request.clone()));
+                }
+                if let Some(analysis) = tools::declared_action(&self.modules, &action)
+                    .and_then(|declared| declared.analysis.as_ref())
+                {
+                    let query = analysis.query.clone();
+                    self.controls.ui.analysis_serial += 1;
+                    let serial = self.controls.ui.analysis_serial;
+                    self.controls.ui.analysis_pending = Some(action.clone());
+                    return self
+                        .command(method, request)
+                        .map(move |message| match message {
+                            Message::Sync(super::message::sync::SyncMessage::Refreshed(result)) => {
+                                Message::Action(ActionMessage::Analysed {
+                                    action: action.clone(),
+                                    query: query.clone(),
+                                    serial,
+                                    result,
+                                })
+                            }
+                            other => other,
+                        });
                 }
                 return self.command(method, request);
             }
@@ -191,6 +293,13 @@ impl Editor {
     /// generated `mask.*` control is refused as the Masks panel's own commands are, since it would
     /// move the stack out from under the open gesture's draft.
     pub(crate) fn action_refusal(&self, action: &str) -> Option<String> {
+        if tools::declared_action(&self.modules, action)
+            .is_some_and(|declared| declared.analysis.is_some())
+            && let Some(reason) = tools::analysis_refusal(&self.inputs())
+        {
+            return Some(reason);
+        }
+
         self.gesture_refusal(if luxforge_core::mask::commands::find(action).is_some() {
             Starting::MaskCommand
         } else {

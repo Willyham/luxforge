@@ -2238,3 +2238,95 @@ fn code_structure_export_measurement() {
         );
     }
 }
+
+#[test]
+fn auto_tone_gpu_grid_and_values_agree_with_the_reference() {
+    let Some((backend, name)) =
+        host_adapter("auto_tone_gpu_grid_and_values_agree_with_the_reference")
+    else {
+        return;
+    };
+    assert!(install_output_encoding());
+    let gpu = GpuTiles::new(Some((backend, name)), false);
+    let reference = ReferenceTiles::new();
+    let client = clients(1)[0];
+    for format in [BoundaryFormat::Half, BoundaryFormat::Float] {
+        let source = source(format);
+        for (prefix, layers) in [
+            (0, vec![Layer::new(BASIC_EFFECT, json!({}))]),
+            (
+                1,
+                vec![
+                    Layer::new(DETAIL_EFFECT, json!({"sharpening": 60., "luminance": 30.})),
+                    Layer::new(BASIC_EFFECT, json!({})),
+                    luxforge_core::qualification::lens_layer(-0.06, (WIDTH, HEIGHT)),
+                    Layer::new(
+                        luxforge_core::PERSPECTIVE_EFFECT,
+                        json!({"horizontal":25,"vertical":-15}),
+                    ),
+                    Layer::new(
+                        luxforge_core::CROP_EFFECT,
+                        json!({"x":0.1,"y":0.1,"width":0.8,"height":0.8,"angle":3.}),
+                    ),
+                ],
+            ),
+        ] {
+            let recipe = super::gpu_tiles_tests::recipe(layers, vec![]);
+            let evaluation = stack(&source, &recipe);
+            let analyse = |service: &dyn TileService| {
+                let held = evaluation.clone();
+                let (sender, receiver) = mpsc::sync_channel(1);
+                service.submit(TileCall::caller(client, Cancel::new(), move |reads, cancel| {
+                let sampled = luxforge_core::tiles::read_analysis(&held, prefix, reads, cancel)?;
+                let basic = held.registry().module("luxforge.basic").unwrap();
+                let report = luxforge_core::auto_tone::solve(&sampled.sample, Default::default(), |values| {
+                    let luxforge_core::Processing::Color(unit) = basic.compile(BASIC_EFFECT, luxforge_core::EFFECT_FORMAT, &Value::Object(values.fields()), luxforge_core::CompileStage::exact(luxforge_core::Stage { width: 32, height: 32 }))? else { panic!("Basic is colour"); };
+                    Ok(vec![unit])
+                }, cancel)?;
+                Ok(json!({"renderer": sampled.answered.record, "rgb": sampled.sample.rgb, "values": report.values}))
+            }, move |answer| { let _ = sender.send(answer); }));
+                receiver.recv_timeout(HANG).unwrap().unwrap()
+            };
+            let gpu_result = analyse(&gpu);
+            let reference_result = analyse(&reference);
+            assert_eq!(gpu_result["renderer"], "gpu", "{gpu_result}");
+            let pixels = |value: &Value| {
+                serde_json::from_value::<Vec<[f32; 3]>>(value["rgb"].clone()).unwrap()
+            };
+            let ours = pixels(&gpu_result);
+            let theirs = pixels(&reference_result);
+            assert_eq!(ours.len(), theirs.len());
+            let mut delta_e = Vec::new();
+            let mut delta_l = Vec::new();
+            for (ours, theirs) in ours.iter().zip(&theirs) {
+                let ours = lab_from_srgb8(ours.map(code));
+                let theirs = lab_from_srgb8(theirs.map(code));
+                delta_e.push(ciede2000(ours, theirs));
+                delta_l.push(ours[0] - theirs[0]);
+            }
+            let errors = statistics_of(ours.len(), 1, &delta_e, &delta_l).unwrap();
+            let limits = if prefix == 0 {
+                Class::Pointwise
+            } else {
+                Class::Spatial
+            }
+            .limits();
+            assert!(
+                errors.mean <= limits.mean
+                    && errors.max <= limits.worst_block // Also bounds every possible 16 × 16 mean, including a clipped grid.
+                    && errors.p99 <= limits.p99
+                    && errors.mean_delta_l.abs() <= limits.mean_delta_l
+            );
+            eprintln!("Auto grid {format:?}, prefix {prefix}: {errors:?}");
+            for field in luxforge_core::auto_tone::FIELDS {
+                let difference = (gpu_result["values"][field].as_f64().unwrap()
+                    - reference_result["values"][field].as_f64().unwrap())
+                .abs();
+                assert!(
+                    difference <= if field == "exposure" { 0.0200001 } else { 2. },
+                    "{field}: {difference}"
+                );
+            }
+        }
+    }
+}

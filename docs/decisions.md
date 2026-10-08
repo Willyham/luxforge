@@ -529,7 +529,7 @@ The owner requested a plan for an Auto tone feature that sets the Basic values a
 - **Auto in presets**, recomputed for each photo, and the Lightroom importer maps `AutoTone` instead of refusing it. Per-slider Auto and a desktop Auto on a selection are not in scope.
 - **Tuning by fitting** the targets to Lightroom's Auto on the owner's photos, after the working feature is delivered, followed by owner review.
 
-The deterministic algorithm, analysis before Basic with a forward model through Basic and the Look, the starting targets, caps, button placement and Cmd+U are recorded defaults in the design. This request authorizes planning only.
+The deterministic algorithm, analysis before Basic with a forward model through Basic and the Look, the starting targets, caps, button placement and Cmd+U are recorded defaults in the design. The owner authorized implementation on 2026-10-08 after copy/paste settings. Lightroom fitting still requires the later export, per-run consent and owner review.
 
 ## High-zoom minimap planning
 

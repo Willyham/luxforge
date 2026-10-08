@@ -125,6 +125,37 @@ impl ModuleDescriptor {
         let mut queries = HashSet::with_capacity(self.queries.len());
         for query in &self.queries {
             check_declared(declarer, query, "query", &mut queries)?;
+            if query.analysis.is_some() {
+                return Err(Error::validation(
+                    "a query cannot declare an analysis action",
+                ));
+            }
+        }
+        for action in &self.actions {
+            let Some(analysis) = &action.analysis else {
+                continue;
+            };
+            if action.patch || !action.parameters.is_empty() || analysis.writes.is_empty() {
+                return Err(Error::validation(
+                    "an analysis action has no parameters, is not a patch and declares the fields it writes",
+                ));
+            }
+            self.declared_query(&analysis.query)?;
+            for (patch, fields) in &analysis.writes {
+                let patch = self.declared_action(patch)?;
+                if !patch.patch || fields.is_empty() {
+                    return Err(Error::validation(
+                        "analysis writes must name non-empty field patches",
+                    ));
+                }
+                let mut unique = HashSet::new();
+                for field in fields {
+                    self.declared_parameter(patch, field)?;
+                    if !unique.insert(field) {
+                        return Err(Error::validation("analysis writes a field more than once"));
+                    }
+                }
+            }
         }
         // Settings, capabilities, resources and tasks refer to each other and to the
         // actions above, so they are checked together once those are known to be sound.
