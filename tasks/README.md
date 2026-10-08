@@ -51,7 +51,7 @@ One plan per tool module.
 
 | Plan | Purpose |
 | --- | --- |
-| [Colour grading](editing/colour-grading.json) | Implemented mixer extension: the remaining handoff evidence (M4 full tier with the GPU gate over the grading recipes, the latency harness's wheel gesture and 24/60 MP measurements) and a Lightroom round for the delivered `grade-align` tooling |
+| [Colour grading](editing/colour-grading.json) | Implemented mixer extension, native M4 full-tier component coverage and 30-sample wheel/scalar and paired HSL/grade measurements at 24/60 MP and Nikon Z6 RAW ([scope and misses](../docs/specs/performance.md#colour-grading-qualified-and-measured-on-the-m4)); a Lightroom round remains for the delivered `grade-align` tooling |
 | [AI editing](editing/ai-editing.json) | Proposed Remove, Select, generative fill and Replace, and optional sky replacement on local, user-downloaded models: the inference port and runtime, the model manager, the analysis cache and picker, the model-selection mask kind, the fill tiers, the remote-provider shape, portability, qualification and documentation |
 | [Corrections](editing/corrections.json) | Proposed offline Clone/Heal, the repair stage, the shared brush and the repair layer's frozen-patch operation; its AI Remove is planned under AI editing |
 | [Auto tone](editing/auto-tone.json) ([design](../docs/design/auto-tone.md)) | Implemented; qualification in progress: deterministic Auto for Lightroom's eight Basic fields from a bounded sample of the stage Basic receives, the action, query and Tone-header button first, Auto in presets and the Lightroom importer, then a fit to Lightroom's Auto on the owner's photos last |
