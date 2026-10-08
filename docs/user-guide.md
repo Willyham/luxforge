@@ -230,8 +230,6 @@ Presets follows Crop in the tools panel, collapsed until you open it. A preset i
 
 Choose + to save the displayed entry's settings as a preset. Give it a name and a group (User presets unless you type another), and tick the groups of settings it should hold. Every group starts ticked except White balance, because white balance usually belongs to one photo; tick it to include it. On a RAW photo, White balance saves the development's white balance: As shot is saved as As shot, so the preset applies each photo's own camera white balance, and a custom or picked one as its Temperature and Tint in kelvin. A preset saves every value of the groups you tick, including those at their defaults, so applying it resets them. Names are unique within a group, ignoring case.
 
-[Copy and paste settings](design/copy-settings.md) between photographs is planned: copying chosen groups from one photograph and pasting them onto others, each as one history entry. It is not available yet.
-
 With a photo open, choose Import to add a preset file: a Lightroom Classic develop preset (`.xmp`), a legacy Lightroom template (`.lrtemplate`) or a Luxforge preset (`.lfpreset`), up to 1 MiB. The status bar reports how many of the file's settings were carried over and how many were not; Copy copies the message. Lightroom settings are carried over as values on the Luxforge controls with the same name, range and direction, such as Exposure, Contrast, Clarity, the colour mixer and the post-crop vignette. Lightroom's point tone curve carries over to the Tone curve as the same points, rescaled from Lightroom's 0–255 to 0–1; Lightroom applies that curve to each colour channel and Luxforge to luminance, so the tonal shape carries over and the colours are Luxforge's own. The numbers transfer, but Luxforge's processing is its own, so an imported preset looks similar, not identical. A preset whose settings could not all be carried over shows **Partial**; its tooltip gives the counts, and right-click › Copy import report gives every setting with the reason. Luxforge does not carry over:
 
 - tools it does not have: per-channel (red, green and blue) and parametric tone curves, colour grading, sharpening, noise reduction, grain, lens corrections, profiles, masks and crop;
@@ -243,6 +241,16 @@ With a photo open, choose Import to add a preset file: a Lightroom Classic devel
 Lightroom's RAW Temperature and Tint are converted together to Luxforge's kelvin and tint through the white they name, and apply only to RAW photos; this carries the value, not Adobe's rendering of it. Its relative Temperature and Tint for JPEGs carry over to Basic's. Settings at their neutral value, such as grain at 0, lose nothing and are listed separately. Lightroom profiles and files with nothing Luxforge can apply are refused. The imported file is kept in the catalog, so nothing in it is lost.
 
 Right-click a preset to delete it or to export it as a `.lfpreset` file that another Luxforge catalog can import. Cmd+K lists "Apply preset: <name>" for every preset. Presets live in the catalog beside history, so a new catalog starts with none.
+
+### Copy and paste settings
+
+Use **Copy settings…** in the title bar or `⇧⌘C` to choose adjustment groups. **All**, **Edited** and **None** set the checkboxes; **Custom** and **Original** describe the source values. A checked Original group resets that group on the target. White balance starts unchecked. `⌘C` copies immediately using your last confirmed choice in this window. Copy in Develop reads the displayed history entry; copy in Select reads the active photograph.
+
+`⌘V` pastes onto the open photograph or the selected photographs. In Develop, `⌘`-click adds or removes filmstrip photographs without opening them, Shift-click selects a range from the open photograph, and `⌘A` selects the whole set. The open photograph always stays selected. Escape selects only it; clicking another photograph or stepping with the arrows opens it and selects it alone. Right-click a filmstrip cell for copy, paste and selection commands. In Select, the Info panel shows the held settings and **Paste settings to N**; the grid menu offers the same operations.
+
+Pasting to several photographs asks for confirmation. Each gets its own history entry, undone in that photograph's history; there is no whole-batch undo. The status bar opens the report, which names every skipped photograph or setting and offers **Copy report JSON**. A RAW white balance stays RAW and a JPEG white balance stays JPEG: a paste between kinds skips white balance and says so.
+
+`⌥⌘V` pastes from the previous photograph opened in this window, reading its current settings with your remembered group choice. It leaves the clipboard alone. Crop, orientation, lens correction, perspective, RAW look and masks stay with each photograph. The clipboard is a snapshot of values, lives only in this window, and disappears when it closes. Text fields retain their ordinary copy, paste and select-all shortcuts.
 
 ### Look
 

@@ -4,6 +4,7 @@
 pub(crate) mod canvas;
 pub(crate) mod capabilities;
 pub(crate) mod control_tree;
+pub(crate) mod copy_settings;
 pub(crate) mod develop;
 pub(crate) mod document;
 pub(crate) mod fields;
@@ -219,6 +220,7 @@ pub(crate) struct ViewState {
     /// so the thumb is seen to move.
     pub(crate) zoom_reveal: u64,
     pub(crate) menu: Option<MenuTarget>,
+    pub(crate) copy_settings: copy_settings::CopySettings,
     /// The developer components gallery page shown instead of the workspace, or `None` for the
     /// editor. The owner does not hold it.
     pub(crate) gallery: Option<usize>,
@@ -247,6 +249,7 @@ impl ViewState {
             zoom_editing: false,
             zoom_reveal: 0,
             menu: None,
+            copy_settings: Default::default(),
             gallery: None,
             picker_open: false,
             local_pan: (0.0, 0.0),
@@ -432,6 +435,7 @@ impl Inputs<'_> {
 /// The whole screen as plain data, derived again after every message.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Workspace {
+    pub(crate) copy_settings: copy_settings::CopyModel,
     pub(crate) title: title::TitleBarModel,
     pub(crate) panel: panel::StatePanelModel,
     pub(crate) canvas: canvas::CanvasModel,

@@ -36,6 +36,7 @@ step_from! {
     CompareStep => Compare,
     PaletteStep => Palette,
     PresetCreateStep => PresetCreate,
+    CopySettingsStep => CopySettings,
     CapabilityStep => Capability,
     MaskStep => Mask,
     ExportStep => Export,

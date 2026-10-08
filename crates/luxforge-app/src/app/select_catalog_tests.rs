@@ -1346,3 +1346,109 @@ fn catalog_browse_removes_puts_back_and_empties_removed_on_a_real_owner() {
     );
     finish(editor, catalog);
 }
+
+#[test]
+fn copy_settings_select_confirmation_rechecks_selection_and_uses_the_shared_batch() {
+    use crate::{
+        app::message::copy_settings::CopySettingsMessage as C,
+        state::{
+            copy_settings::Clipboard,
+            presets::{PresetForm, copyable_groups},
+        },
+    };
+    let (mut editor, catalog, agent) = catalog_editor();
+    editor.modules = luxforge_core::ModuleRegistry::builtin()
+        .descriptors()
+        .into_iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    let _ = editor.update(Message::Select(SelectMessage::Source(
+        luxforge_core::catalog_types::ViewSource::AllPhotographs,
+    )));
+    let _ = editor.update(Message::Select(SelectMessage::Viewport(Size::new(
+        1000.0, 700.0,
+    ))));
+    settle(&mut editor);
+    press(&mut editor, 0, false);
+    let source = editor.copy_source().unwrap();
+    let groups = copyable_groups(&editor.modules, false);
+    let captured = crate::app::copy_settings::capture_now(
+        &editor.owner,
+        editor.client,
+        source.clone(),
+        &groups,
+        &PresetForm::default(),
+    )
+    .unwrap();
+    assert_eq!(captured.source.asset, source.asset);
+    let clipboard = std::sync::Arc::new(Clipboard {
+        settings: json!({"set-basic":{"exposure":0.6}})
+            .as_object()
+            .unwrap()
+            .clone(),
+        groups: vec!["Basic · Tone".into()],
+        ..(*captured).clone()
+    });
+    editor.view_state.copy_settings.clipboard = Some(clipboard.clone());
+    press(&mut editor, 2, true);
+    let _ = editor.update(Message::CopySettings(C::Paste));
+    assert_eq!(
+        editor
+            .view_state
+            .copy_settings
+            .confirm
+            .as_ref()
+            .unwrap()
+            .targets
+            .count(),
+        3
+    );
+    assert!(editor.select.state.catalog.batch.is_none());
+    // A selection changed by another gesture never receives the first confirmation's approval.
+    press(&mut editor, 3, true);
+    let _ = editor.update(Message::CopySettings(C::Confirm));
+    assert!(editor.select.state.catalog.batch.is_none());
+    assert_eq!(
+        editor
+            .view_state
+            .copy_settings
+            .confirm
+            .as_ref()
+            .unwrap()
+            .targets
+            .count(),
+        4
+    );
+    let _ = editor.update(Message::CopySettings(C::Confirm));
+    let (method, params) = batch_sent(&editor);
+    assert_eq!(method, "batch.paste-settings");
+    assert_eq!(
+        params,
+        json!({"targets":{"kind":"selection"},"settings":clipboard.settings,"source":clipboard.source.name,"source_asset_id":clipboard.source.asset})
+    );
+    settle(&mut editor);
+    let job = editor
+        .select
+        .state
+        .catalog
+        .batch
+        .as_ref()
+        .unwrap()
+        .job
+        .clone();
+    let report = ask(&editor, agent, "job.read", json!({"job_id":job}));
+    assert_eq!(report["status"], "ready");
+    assert_eq!(
+        report["result"]["done"].as_array().unwrap().len(),
+        4,
+        "{report}"
+    );
+    // Clipboard values remain a snapshot even when the source was among the edited targets.
+    assert_eq!(editor.view_state.copy_settings.clipboard, Some(clipboard));
+    let _ = editor.update(Message::Select(SelectMessage::Source(
+        luxforge_core::catalog_types::ViewSource::Removed,
+    )));
+    settle(&mut editor);
+    assert!(editor.paste_refusal(false).is_some());
+    finish(editor, catalog);
+}
