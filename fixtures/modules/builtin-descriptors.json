@@ -2629,6 +2629,7 @@
             "notes": "Sets Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Vibrance and Saturation absolutely on the global Basic layer in one undoable entry. Leaves white balance and other modules unchanged; repeats are no-ops. Analysis runs off the catalog owner. Refuses mask targets, historical selection, drafts and images without usable tonal range.",
             "parameters": [],
             "patch": false,
+            "shortcut": "Command+U",
             "title": "Auto tone"
           }
         ],
