@@ -375,7 +375,6 @@ impl Field {
 pub(crate) struct Group {
     label: &'static str,
     fields: Vec<&'static str>,
-    collapsed: bool,
     /// Controls drawn after the group's own field controls, such as Basic's neutral picker or the
     /// curve control whose channels are the group's curve fields.
     extra: Vec<Control>,
@@ -398,7 +397,6 @@ impl Group {
         Self {
             label,
             fields: fields.into_iter().collect(),
-            collapsed: false,
             extra: Vec::new(),
             reset_variants: Vec::new(),
             layout: ModuleLayout::Stacked,
@@ -406,12 +404,6 @@ impl Group {
             views: Vec::new(),
             wheels: Vec::new(),
         }
-    }
-
-    /// The group starts collapsed.
-    pub(crate) fn collapsed(mut self) -> Self {
-        self.collapsed = true;
-        self
     }
 
     /// The group shows its child groups — its views and subgroups — as one tab row.
@@ -916,7 +908,6 @@ impl Spec {
         controls.extend(group.extra.iter().cloned());
         let control = Control::group(group.label, controls)
             .reset(self.defaults_of(&group.members()))
-            .collapsed(group.collapsed)
             .group_layout(group.layout);
         group
             .reset_variants

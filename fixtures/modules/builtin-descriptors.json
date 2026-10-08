@@ -3813,848 +3813,970 @@
           {
             "controls": [
               {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Red",
-                "parameter": "red-hue",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        255,
-                        0,
-                        255
-                      ],
-                      [
-                        255,
-                        0,
-                        0
-                      ],
-                      [
-                        255,
-                        128,
-                        0
-                      ]
-                    ]
+                "controls": [
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Red",
+                    "parameter": "red-hue",
+                    "rail": {
+                      "gradient": {
+                        "stops": [
+                          [
+                            255,
+                            0,
+                            255
+                          ],
+                          [
+                            255,
+                            0,
+                            0
+                          ],
+                          [
+                            255,
+                            128,
+                            0
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Orange",
+                    "parameter": "orange-hue",
+                    "rail": {
+                      "gradient": {
+                        "stops": [
+                          [
+                            255,
+                            0,
+                            0
+                          ],
+                          [
+                            255,
+                            128,
+                            0
+                          ],
+                          [
+                            255,
+                            255,
+                            0
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Yellow",
+                    "parameter": "yellow-hue",
+                    "rail": {
+                      "gradient": {
+                        "stops": [
+                          [
+                            255,
+                            128,
+                            0
+                          ],
+                          [
+                            255,
+                            255,
+                            0
+                          ],
+                          [
+                            0,
+                            255,
+                            0
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Green",
+                    "parameter": "green-hue",
+                    "rail": {
+                      "gradient": {
+                        "stops": [
+                          [
+                            255,
+                            255,
+                            0
+                          ],
+                          [
+                            0,
+                            255,
+                            0
+                          ],
+                          [
+                            0,
+                            255,
+                            255
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Aqua",
+                    "parameter": "aqua-hue",
+                    "rail": {
+                      "gradient": {
+                        "stops": [
+                          [
+                            0,
+                            255,
+                            0
+                          ],
+                          [
+                            0,
+                            255,
+                            255
+                          ],
+                          [
+                            0,
+                            0,
+                            255
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Blue",
+                    "parameter": "blue-hue",
+                    "rail": {
+                      "gradient": {
+                        "stops": [
+                          [
+                            0,
+                            255,
+                            255
+                          ],
+                          [
+                            0,
+                            0,
+                            255
+                          ],
+                          [
+                            128,
+                            0,
+                            255
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Purple",
+                    "parameter": "purple-hue",
+                    "rail": {
+                      "gradient": {
+                        "stops": [
+                          [
+                            0,
+                            0,
+                            255
+                          ],
+                          [
+                            128,
+                            0,
+                            255
+                          ],
+                          [
+                            255,
+                            0,
+                            255
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Magenta",
+                    "parameter": "magenta-hue",
+                    "rail": {
+                      "gradient": {
+                        "stops": [
+                          [
+                            128,
+                            0,
+                            255
+                          ],
+                          [
+                            255,
+                            0,
+                            255
+                          ],
+                          [
+                            255,
+                            0,
+                            0
+                          ]
+                        ]
+                      }
+                    }
+                  }
+                ],
+                "kind": "group",
+                "label": "Hue",
+                "reset": {
+                  "action": "set-mixer",
+                  "preset": {
+                    "aqua-hue": 0.0,
+                    "blue-hue": 0.0,
+                    "green-hue": 0.0,
+                    "magenta-hue": 0.0,
+                    "orange-hue": 0.0,
+                    "purple-hue": 0.0,
+                    "red-hue": 0.0,
+                    "yellow-hue": 0.0
                   }
                 }
               },
               {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Orange",
-                "parameter": "orange-hue",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        255,
-                        0,
-                        0
-                      ],
-                      [
-                        255,
-                        128,
-                        0
-                      ],
-                      [
-                        255,
-                        255,
-                        0
-                      ]
-                    ]
+                "controls": [
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Red",
+                    "parameter": "red-saturation",
+                    "rail": {
+                      "gradient": {
+                        "stops": [
+                          [
+                            128,
+                            128,
+                            128
+                          ],
+                          [
+                            255,
+                            0,
+                            0
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Orange",
+                    "parameter": "orange-saturation",
+                    "rail": {
+                      "gradient": {
+                        "stops": [
+                          [
+                            128,
+                            128,
+                            128
+                          ],
+                          [
+                            255,
+                            128,
+                            0
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Yellow",
+                    "parameter": "yellow-saturation",
+                    "rail": {
+                      "gradient": {
+                        "stops": [
+                          [
+                            128,
+                            128,
+                            128
+                          ],
+                          [
+                            255,
+                            255,
+                            0
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Green",
+                    "parameter": "green-saturation",
+                    "rail": {
+                      "gradient": {
+                        "stops": [
+                          [
+                            128,
+                            128,
+                            128
+                          ],
+                          [
+                            0,
+                            255,
+                            0
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Aqua",
+                    "parameter": "aqua-saturation",
+                    "rail": {
+                      "gradient": {
+                        "stops": [
+                          [
+                            128,
+                            128,
+                            128
+                          ],
+                          [
+                            0,
+                            255,
+                            255
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Blue",
+                    "parameter": "blue-saturation",
+                    "rail": {
+                      "gradient": {
+                        "stops": [
+                          [
+                            128,
+                            128,
+                            128
+                          ],
+                          [
+                            0,
+                            0,
+                            255
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Purple",
+                    "parameter": "purple-saturation",
+                    "rail": {
+                      "gradient": {
+                        "stops": [
+                          [
+                            128,
+                            128,
+                            128
+                          ],
+                          [
+                            128,
+                            0,
+                            255
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Magenta",
+                    "parameter": "magenta-saturation",
+                    "rail": {
+                      "gradient": {
+                        "stops": [
+                          [
+                            128,
+                            128,
+                            128
+                          ],
+                          [
+                            255,
+                            0,
+                            255
+                          ]
+                        ]
+                      }
+                    }
+                  }
+                ],
+                "kind": "group",
+                "label": "Saturation",
+                "reset": {
+                  "action": "set-mixer",
+                  "preset": {
+                    "aqua-saturation": 0.0,
+                    "blue-saturation": 0.0,
+                    "green-saturation": 0.0,
+                    "magenta-saturation": 0.0,
+                    "orange-saturation": 0.0,
+                    "purple-saturation": 0.0,
+                    "red-saturation": 0.0,
+                    "yellow-saturation": 0.0
                   }
                 }
               },
               {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Yellow",
-                "parameter": "yellow-hue",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        255,
-                        128,
-                        0
-                      ],
-                      [
-                        255,
-                        255,
-                        0
-                      ],
-                      [
-                        0,
-                        255,
-                        0
-                      ]
-                    ]
+                "controls": [
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Red",
+                    "parameter": "red-luminance",
+                    "rail": {
+                      "gradient": {
+                        "stops": [
+                          [
+                            63,
+                            0,
+                            0
+                          ],
+                          [
+                            255,
+                            0,
+                            0
+                          ],
+                          [
+                            255,
+                            153,
+                            153
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Orange",
+                    "parameter": "orange-luminance",
+                    "rail": {
+                      "gradient": {
+                        "stops": [
+                          [
+                            63,
+                            32,
+                            0
+                          ],
+                          [
+                            255,
+                            128,
+                            0
+                          ],
+                          [
+                            255,
+                            204,
+                            153
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Yellow",
+                    "parameter": "yellow-luminance",
+                    "rail": {
+                      "gradient": {
+                        "stops": [
+                          [
+                            63,
+                            63,
+                            0
+                          ],
+                          [
+                            255,
+                            255,
+                            0
+                          ],
+                          [
+                            255,
+                            255,
+                            153
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Green",
+                    "parameter": "green-luminance",
+                    "rail": {
+                      "gradient": {
+                        "stops": [
+                          [
+                            0,
+                            63,
+                            0
+                          ],
+                          [
+                            0,
+                            255,
+                            0
+                          ],
+                          [
+                            153,
+                            255,
+                            153
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Aqua",
+                    "parameter": "aqua-luminance",
+                    "rail": {
+                      "gradient": {
+                        "stops": [
+                          [
+                            0,
+                            63,
+                            63
+                          ],
+                          [
+                            0,
+                            255,
+                            255
+                          ],
+                          [
+                            153,
+                            255,
+                            255
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Blue",
+                    "parameter": "blue-luminance",
+                    "rail": {
+                      "gradient": {
+                        "stops": [
+                          [
+                            0,
+                            0,
+                            63
+                          ],
+                          [
+                            0,
+                            0,
+                            255
+                          ],
+                          [
+                            153,
+                            153,
+                            255
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Purple",
+                    "parameter": "purple-luminance",
+                    "rail": {
+                      "gradient": {
+                        "stops": [
+                          [
+                            32,
+                            0,
+                            63
+                          ],
+                          [
+                            128,
+                            0,
+                            255
+                          ],
+                          [
+                            204,
+                            153,
+                            255
+                          ]
+                        ]
+                      }
+                    }
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Magenta",
+                    "parameter": "magenta-luminance",
+                    "rail": {
+                      "gradient": {
+                        "stops": [
+                          [
+                            63,
+                            0,
+                            63
+                          ],
+                          [
+                            255,
+                            0,
+                            255
+                          ],
+                          [
+                            255,
+                            153,
+                            255
+                          ]
+                        ]
+                      }
+                    }
                   }
-                }
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Green",
-                "parameter": "green-hue",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        255,
-                        255,
-                        0
-                      ],
-                      [
-                        0,
-                        255,
-                        0
-                      ],
-                      [
-                        0,
-                        255,
-                        255
-                      ]
-                    ]
-                  }
-                }
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Aqua",
-                "parameter": "aqua-hue",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        0,
-                        255,
-                        0
-                      ],
-                      [
-                        0,
-                        255,
-                        255
-                      ],
-                      [
-                        0,
-                        0,
-                        255
-                      ]
-                    ]
-                  }
-                }
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Blue",
-                "parameter": "blue-hue",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        0,
-                        255,
-                        255
-                      ],
-                      [
-                        0,
-                        0,
-                        255
-                      ],
-                      [
-                        128,
-                        0,
-                        255
-                      ]
-                    ]
-                  }
-                }
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Purple",
-                "parameter": "purple-hue",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        0,
-                        0,
-                        255
-                      ],
-                      [
-                        128,
-                        0,
-                        255
-                      ],
-                      [
-                        255,
-                        0,
-                        255
-                      ]
-                    ]
-                  }
-                }
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Magenta",
-                "parameter": "magenta-hue",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        128,
-                        0,
-                        255
-                      ],
-                      [
-                        255,
-                        0,
-                        255
-                      ],
-                      [
-                        255,
-                        0,
-                        0
-                      ]
-                    ]
+                ],
+                "kind": "group",
+                "label": "Luminance",
+                "reset": {
+                  "action": "set-mixer",
+                  "preset": {
+                    "aqua-luminance": 0.0,
+                    "blue-luminance": 0.0,
+                    "green-luminance": 0.0,
+                    "magenta-luminance": 0.0,
+                    "orange-luminance": 0.0,
+                    "purple-luminance": 0.0,
+                    "red-luminance": 0.0,
+                    "yellow-luminance": 0.0
                   }
                 }
               }
             ],
             "kind": "group",
-            "label": "Hue",
+            "label": "HSL",
+            "layout": "tabs",
             "reset": {
               "action": "set-mixer",
               "preset": {
                 "aqua-hue": 0.0,
-                "blue-hue": 0.0,
-                "green-hue": 0.0,
-                "magenta-hue": 0.0,
-                "orange-hue": 0.0,
-                "purple-hue": 0.0,
-                "red-hue": 0.0,
-                "yellow-hue": 0.0
-              }
-            }
-          },
-          {
-            "collapsed": true,
-            "controls": [
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Red",
-                "parameter": "red-saturation",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        128,
-                        128,
-                        128
-                      ],
-                      [
-                        255,
-                        0,
-                        0
-                      ]
-                    ]
-                  }
-                }
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Orange",
-                "parameter": "orange-saturation",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        128,
-                        128,
-                        128
-                      ],
-                      [
-                        255,
-                        128,
-                        0
-                      ]
-                    ]
-                  }
-                }
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Yellow",
-                "parameter": "yellow-saturation",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        128,
-                        128,
-                        128
-                      ],
-                      [
-                        255,
-                        255,
-                        0
-                      ]
-                    ]
-                  }
-                }
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Green",
-                "parameter": "green-saturation",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        128,
-                        128,
-                        128
-                      ],
-                      [
-                        0,
-                        255,
-                        0
-                      ]
-                    ]
-                  }
-                }
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Aqua",
-                "parameter": "aqua-saturation",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        128,
-                        128,
-                        128
-                      ],
-                      [
-                        0,
-                        255,
-                        255
-                      ]
-                    ]
-                  }
-                }
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Blue",
-                "parameter": "blue-saturation",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        128,
-                        128,
-                        128
-                      ],
-                      [
-                        0,
-                        0,
-                        255
-                      ]
-                    ]
-                  }
-                }
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Purple",
-                "parameter": "purple-saturation",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        128,
-                        128,
-                        128
-                      ],
-                      [
-                        128,
-                        0,
-                        255
-                      ]
-                    ]
-                  }
-                }
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Magenta",
-                "parameter": "magenta-saturation",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        128,
-                        128,
-                        128
-                      ],
-                      [
-                        255,
-                        0,
-                        255
-                      ]
-                    ]
-                  }
-                }
-              }
-            ],
-            "kind": "group",
-            "label": "Saturation",
-            "reset": {
-              "action": "set-mixer",
-              "preset": {
+                "aqua-luminance": 0.0,
                 "aqua-saturation": 0.0,
+                "blue-hue": 0.0,
+                "blue-luminance": 0.0,
                 "blue-saturation": 0.0,
+                "green-hue": 0.0,
+                "green-luminance": 0.0,
                 "green-saturation": 0.0,
+                "magenta-hue": 0.0,
+                "magenta-luminance": 0.0,
                 "magenta-saturation": 0.0,
+                "orange-hue": 0.0,
+                "orange-luminance": 0.0,
                 "orange-saturation": 0.0,
+                "purple-hue": 0.0,
+                "purple-luminance": 0.0,
                 "purple-saturation": 0.0,
+                "red-hue": 0.0,
+                "red-luminance": 0.0,
                 "red-saturation": 0.0,
+                "yellow-hue": 0.0,
+                "yellow-luminance": 0.0,
                 "yellow-saturation": 0.0
               }
             }
           },
           {
-            "collapsed": true,
             "controls": [
               {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Red",
-                "parameter": "red-luminance",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        63,
-                        0,
-                        0
-                      ],
-                      [
-                        255,
-                        0,
-                        0
-                      ],
-                      [
-                        255,
-                        153,
-                        153
-                      ]
-                    ]
+                "controls": [
+                  {
+                    "action": "set-mixer",
+                    "hue": "grade-midtones-hue",
+                    "kind": "wheel",
+                    "label": "Midtones",
+                    "luminance": "grade-midtones-luminance",
+                    "reset": {
+                      "action": "set-mixer",
+                      "preset": {
+                        "grade-midtones-hue": 0.0,
+                        "grade-midtones-luminance": 0.0,
+                        "grade-midtones-saturation": 0.0
+                      }
+                    },
+                    "saturation": "grade-midtones-saturation"
+                  },
+                  {
+                    "action": "set-mixer",
+                    "hue": "grade-shadows-hue",
+                    "kind": "wheel",
+                    "label": "Shadows",
+                    "luminance": "grade-shadows-luminance",
+                    "reset": {
+                      "action": "set-mixer",
+                      "preset": {
+                        "grade-shadows-hue": 0.0,
+                        "grade-shadows-luminance": 0.0,
+                        "grade-shadows-saturation": 0.0
+                      }
+                    },
+                    "saturation": "grade-shadows-saturation"
+                  },
+                  {
+                    "action": "set-mixer",
+                    "hue": "grade-highlights-hue",
+                    "kind": "wheel",
+                    "label": "Highlights",
+                    "luminance": "grade-highlights-luminance",
+                    "reset": {
+                      "action": "set-mixer",
+                      "preset": {
+                        "grade-highlights-hue": 0.0,
+                        "grade-highlights-luminance": 0.0,
+                        "grade-highlights-saturation": 0.0
+                      }
+                    },
+                    "saturation": "grade-highlights-saturation"
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Blending",
+                    "parameter": "grade-blending"
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Balance",
+                    "parameter": "grade-balance"
                   }
-                }
+                ],
+                "kind": "group",
+                "label": "3-way",
+                "reset": null,
+                "view": true
               },
               {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Orange",
-                "parameter": "orange-luminance",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        63,
-                        32,
-                        0
-                      ],
-                      [
-                        255,
-                        128,
-                        0
-                      ],
-                      [
-                        255,
-                        204,
-                        153
-                      ]
-                    ]
+                "controls": [
+                  {
+                    "action": "set-mixer",
+                    "hue": "grade-shadows-hue",
+                    "kind": "wheel",
+                    "label": "Shadows",
+                    "luminance": "grade-shadows-luminance",
+                    "reset": {
+                      "action": "set-mixer",
+                      "preset": {
+                        "grade-shadows-hue": 0.0,
+                        "grade-shadows-luminance": 0.0,
+                        "grade-shadows-saturation": 0.0
+                      }
+                    },
+                    "saturation": "grade-shadows-saturation",
+                    "style": "large"
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Shadows hue",
+                    "parameter": "grade-shadows-hue",
+                    "style": "field"
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Shadows saturation",
+                    "parameter": "grade-shadows-saturation",
+                    "style": "field"
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Blending",
+                    "parameter": "grade-blending"
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Balance",
+                    "parameter": "grade-balance"
                   }
-                }
+                ],
+                "kind": "group",
+                "label": "Shadows",
+                "reset": null,
+                "view": true
               },
               {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Yellow",
-                "parameter": "yellow-luminance",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        63,
-                        63,
-                        0
-                      ],
-                      [
-                        255,
-                        255,
-                        0
-                      ],
-                      [
-                        255,
-                        255,
-                        153
-                      ]
-                    ]
+                "controls": [
+                  {
+                    "action": "set-mixer",
+                    "hue": "grade-midtones-hue",
+                    "kind": "wheel",
+                    "label": "Midtones",
+                    "luminance": "grade-midtones-luminance",
+                    "reset": {
+                      "action": "set-mixer",
+                      "preset": {
+                        "grade-midtones-hue": 0.0,
+                        "grade-midtones-luminance": 0.0,
+                        "grade-midtones-saturation": 0.0
+                      }
+                    },
+                    "saturation": "grade-midtones-saturation",
+                    "style": "large"
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Midtones hue",
+                    "parameter": "grade-midtones-hue",
+                    "style": "field"
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Midtones saturation",
+                    "parameter": "grade-midtones-saturation",
+                    "style": "field"
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Blending",
+                    "parameter": "grade-blending"
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Balance",
+                    "parameter": "grade-balance"
                   }
-                }
+                ],
+                "kind": "group",
+                "label": "Midtones",
+                "reset": null,
+                "view": true
               },
               {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Green",
-                "parameter": "green-luminance",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        0,
-                        63,
-                        0
-                      ],
-                      [
-                        0,
-                        255,
-                        0
-                      ],
-                      [
-                        153,
-                        255,
-                        153
-                      ]
-                    ]
+                "controls": [
+                  {
+                    "action": "set-mixer",
+                    "hue": "grade-highlights-hue",
+                    "kind": "wheel",
+                    "label": "Highlights",
+                    "luminance": "grade-highlights-luminance",
+                    "reset": {
+                      "action": "set-mixer",
+                      "preset": {
+                        "grade-highlights-hue": 0.0,
+                        "grade-highlights-luminance": 0.0,
+                        "grade-highlights-saturation": 0.0
+                      }
+                    },
+                    "saturation": "grade-highlights-saturation",
+                    "style": "large"
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Highlights hue",
+                    "parameter": "grade-highlights-hue",
+                    "style": "field"
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Highlights saturation",
+                    "parameter": "grade-highlights-saturation",
+                    "style": "field"
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Blending",
+                    "parameter": "grade-blending"
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Balance",
+                    "parameter": "grade-balance"
                   }
-                }
+                ],
+                "kind": "group",
+                "label": "Highlights",
+                "reset": null,
+                "view": true
               },
               {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Aqua",
-                "parameter": "aqua-luminance",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        0,
-                        63,
-                        63
-                      ],
-                      [
-                        0,
-                        255,
-                        255
-                      ],
-                      [
-                        153,
-                        255,
-                        255
-                      ]
-                    ]
+                "controls": [
+                  {
+                    "action": "set-mixer",
+                    "hue": "grade-global-hue",
+                    "kind": "wheel",
+                    "label": "Global",
+                    "luminance": "grade-global-luminance",
+                    "reset": {
+                      "action": "set-mixer",
+                      "preset": {
+                        "grade-global-hue": 0.0,
+                        "grade-global-luminance": 0.0,
+                        "grade-global-saturation": 0.0
+                      }
+                    },
+                    "saturation": "grade-global-saturation",
+                    "style": "large"
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Global hue",
+                    "parameter": "grade-global-hue",
+                    "style": "field"
+                  },
+                  {
+                    "action": "set-mixer",
+                    "kind": "number",
+                    "label": "Global saturation",
+                    "parameter": "grade-global-saturation",
+                    "style": "field"
                   }
-                }
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Blue",
-                "parameter": "blue-luminance",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        0,
-                        0,
-                        63
-                      ],
-                      [
-                        0,
-                        0,
-                        255
-                      ],
-                      [
-                        153,
-                        153,
-                        255
-                      ]
-                    ]
-                  }
-                }
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Purple",
-                "parameter": "purple-luminance",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        32,
-                        0,
-                        63
-                      ],
-                      [
-                        128,
-                        0,
-                        255
-                      ],
-                      [
-                        204,
-                        153,
-                        255
-                      ]
-                    ]
-                  }
-                }
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Magenta",
-                "parameter": "magenta-luminance",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        63,
-                        0,
-                        63
-                      ],
-                      [
-                        255,
-                        0,
-                        255
-                      ],
-                      [
-                        255,
-                        153,
-                        255
-                      ]
-                    ]
-                  }
-                }
-              }
-            ],
-            "kind": "group",
-            "label": "Luminance",
-            "reset": {
-              "action": "set-mixer",
-              "preset": {
-                "aqua-luminance": 0.0,
-                "blue-luminance": 0.0,
-                "green-luminance": 0.0,
-                "magenta-luminance": 0.0,
-                "orange-luminance": 0.0,
-                "purple-luminance": 0.0,
-                "red-luminance": 0.0,
-                "yellow-luminance": 0.0
-              }
-            }
-          },
-          {
-            "collapsed": true,
-            "controls": [
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Shadows hue",
-                "parameter": "grade-shadows-hue",
-                "rail": "hue"
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Shadows saturation",
-                "parameter": "grade-shadows-saturation"
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Shadows luminance",
-                "parameter": "grade-shadows-luminance",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        0,
-                        0,
-                        0
-                      ],
-                      [
-                        128,
-                        128,
-                        128
-                      ],
-                      [
-                        255,
-                        255,
-                        255
-                      ]
-                    ]
-                  }
-                }
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Midtones hue",
-                "parameter": "grade-midtones-hue",
-                "rail": "hue"
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Midtones saturation",
-                "parameter": "grade-midtones-saturation"
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Midtones luminance",
-                "parameter": "grade-midtones-luminance",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        0,
-                        0,
-                        0
-                      ],
-                      [
-                        128,
-                        128,
-                        128
-                      ],
-                      [
-                        255,
-                        255,
-                        255
-                      ]
-                    ]
-                  }
-                }
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Highlights hue",
-                "parameter": "grade-highlights-hue",
-                "rail": "hue"
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Highlights saturation",
-                "parameter": "grade-highlights-saturation"
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Highlights luminance",
-                "parameter": "grade-highlights-luminance",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        0,
-                        0,
-                        0
-                      ],
-                      [
-                        128,
-                        128,
-                        128
-                      ],
-                      [
-                        255,
-                        255,
-                        255
-                      ]
-                    ]
-                  }
-                }
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Global hue",
-                "parameter": "grade-global-hue",
-                "rail": "hue"
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Global saturation",
-                "parameter": "grade-global-saturation"
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Global luminance",
-                "parameter": "grade-global-luminance",
-                "rail": {
-                  "gradient": {
-                    "stops": [
-                      [
-                        0,
-                        0,
-                        0
-                      ],
-                      [
-                        128,
-                        128,
-                        128
-                      ],
-                      [
-                        255,
-                        255,
-                        255
-                      ]
-                    ]
-                  }
-                }
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Blending",
-                "parameter": "grade-blending"
-              },
-              {
-                "action": "set-mixer",
-                "kind": "number",
-                "label": "Balance",
-                "parameter": "grade-balance"
+                ],
+                "kind": "group",
+                "label": "Global",
+                "reset": null,
+                "view": true
               }
             ],
             "kind": "group",
             "label": "Grading",
+            "layout": "tabs",
             "reset": {
               "action": "set-mixer",
               "preset": {

@@ -206,5 +206,5 @@ fn a_known_hue_rotation_is_recovered() {
         assert!(point.residual < 1.0, "{point:?}");
     }
     assert!(grade_response::tint_angle(&at_hue(0.0)).is_some());
-    assert!(grade_response::tint_angle(&vec![Response::default(); 3]).is_none());
+    assert!(grade_response::tint_angle(&[Response::default(); 3]).is_none());
 }

@@ -494,9 +494,11 @@ fn with_neutral(
     effect: &str,
     mask: Option<MaskId>,
 ) -> Recipe {
-    let payload = registry.effect(effect).map_or_else(
-        || json!({}),
-        |(provider, _)| provider.neutral_payload(effect),
+    // The layer the first commit would insert: the module's neutral payload at its effect's
+    // current format.
+    let (payload, format) = registry.effect(effect).map_or_else(
+        || (json!({}), EFFECT_FORMAT),
+        |(provider, descriptor)| (provider.neutral_payload(effect), descriptor.format),
     );
     let mut planned = recipe.clone();
     planned.layers.insert(
@@ -504,7 +506,7 @@ fn with_neutral(
         Layer {
             id: LayerId::new(),
             effect_id: effect.to_owned(),
-            effect_format: EFFECT_FORMAT,
+            effect_format: format,
             payload,
             mask,
             artifacts: Vec::new(),

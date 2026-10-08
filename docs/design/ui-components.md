@@ -52,7 +52,7 @@ The closed set a module may declare. Names are the JSON `kind` in `controls[]`. 
 
 A module declares at most one `picker`, a `picker` needs a pick canvas (a `crop-frame` takes the whole photograph over and has its own controls, so it is not a pick), and a module that declares a pick canvas declares exactly one `picker`, so no pick mode is reachable only by its letter. Registration refuses each of the three.
 
-`text` is specified here so the vocabulary is closed, but it is the second slice: no current built-in module needs it. The `wheel` and nested tab rows are delivered for the developer controls proof; the colour mixer still uses ranged sliders under module-level tabs. A two-axis pad other than a hue and saturation wheel is not part of the vocabulary. The core's `string` kind carries the presets module's name and library identity, which a client sends from the library rather than a text field. Build them only for an accepted consumer ([decision 2](#decisions)).
+`text` is specified here so the vocabulary is closed, but it is the second slice: no current built-in module needs it. The `wheel` and nested tab rows are delivered: the colour mixer's Grading tab draws its four wheels through them, beside its HSL tab's nested Hue, Saturation and Luminance row, and the developer controls proof exercises them without changing pixels. A two-axis pad other than a hue and saturation wheel is not part of the vocabulary. The core's `string` kind carries the presets module's name and library identity, which a client sends from the library rather than a text field. Build them only for an accepted consumer ([decision 2](#decisions)).
 
 Kinds deliberately left out, with the reason:
 

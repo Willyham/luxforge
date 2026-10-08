@@ -2,7 +2,7 @@
 
 Status: implemented and verified on the M4 Mac. The owner authorized implementation on 2026-09-22 on the recorded defaults; the three modules, the host stages, the spatial primitive and the acceptance and rendered evidence are delivered, and [performance](../specs/performance.md#presence-colour-mixer-and-vignette-qualification) records the measurements and the missed slider targets. The [proposals](#proposals-with-recorded-defaults) at the end carry those defaults so the plan runs to completion on agent judgement; each is the owner's to refine, as the Basic defaults were. It builds on the delivered [Basic adjustments](basic-and-histogram.md) integration contract (field patches, the draft lifecycle, pointwise colour runs), the [module and API contract](modules-and-api.md), the [UI components](ui-components.md) vocabulary and the [Develop workspace](develop-workspace.md) tool array.
 
-[Colour grading](colour-grading.md) is a decided, implementation-ready extension of the delivered mixer, with its own [task plan](../../tasks/editing/colour-grading.json). Tonal/Global wheels, shared view controls and direct grading preset mappings ship before final reference/Lightroom refinement; none is built yet.
+[Colour grading](colour-grading.md) extends the delivered mixer: the same layer, now at its own format 2, adds fourteen grading fields compiled to a second pointwise unit after the HSL unit, under a Grading tab beside HSL. What this design says of the mixer's HSL controls still holds; their groups now sit inside the HSL tab.
 
 ## Outcome and scope
 
@@ -78,7 +78,7 @@ The mixer is one `PointwiseColor` unit in the existing colour run, so it joins t
 
 These are frozen, with their constants, property proofs, fixtures and tolerance, in the [colour mixer study](mixer-study.md).
 
-Twenty-four `number` parameters, one field-patch action `set-mixer` and a non-patch `reset-mixer`, with labels of the form `Red hue +20` and group resets `Reset Hue`, `Reset Saturation`, `Reset Luminance`.
+Twenty-four HSL `number` parameters, beside the fourteen [grading](colour-grading.md) ones, one field-patch action `set-mixer` and a non-patch `reset-mixer`, with labels of the form `Red hue +20` and group resets `Reset Hue`, `Reset Saturation`, `Reset Luminance` and `Reset HSL`.
 
 ### Vignette: one positional unit
 
@@ -98,7 +98,7 @@ All three sections render from descriptors with the delivered vocabulary; no new
 | Section | Registry position and initial state | Groups and controls |
 | --- | --- | --- |
 | Presence | After Basic, collapsed | One group: Texture, Clarity, Dehaze sliders, zero at 0; module reset |
-| Colour mixer | After Presence, collapsed | Hue, Saturation and Luminance groups, each with the eight colour sliders in the order red, orange, yellow, green, aqua, blue, purple, magenta and its own reset. Rails use the `gradient` hint: a hue rail runs from the previous to the next range colour through this one, a saturation rail from grey to the colour, a luminance rail from the dark to the light version of the colour. Hue starts expanded; Saturation and Luminance start collapsed |
+| Colour mixer | After Presence, collapsed | HSL and Grading tabs. HSL holds Hue, Saturation and Luminance as a nested tab row, each with the eight colour sliders in the order red, orange, yellow, green, aqua, blue, purple, magenta and its own reset. Rails use the `gradient` hint: a hue rail runs from the previous to the next range colour through this one, a saturation rail from grey to the colour, a luminance rail from the dark to the light version of the colour. Grading's views are in [colour grading](colour-grading.md#workspace). HSL and Hue show first |
 | Vignette | After Crop, collapsed | One group: Amount (zero 0, soft range full), Midpoint, Roundness, Feather; module reset |
 
 History labels come from `ToolModule::label`, and recipe rows and seeded slider values from `describe`, so the panel shows authoritative current or historical values for each module as it does for Basic.
