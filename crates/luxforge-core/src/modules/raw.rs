@@ -393,6 +393,7 @@ impl RawModule {
                                  when temperature is not sent",
                             ),
                             ParameterDescriptor::enumeration(WHITE_BALANCE, [AS_SHOT, CUSTOM])
+                                .default(AS_SHOT)
                                 .notes(
                                     "as-shot returns the development to the camera's own white \
                                      balance, the Original's; custom names a temperature or tint \

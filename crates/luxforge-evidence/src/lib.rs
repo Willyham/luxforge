@@ -163,6 +163,8 @@ pub enum Step {
     },
     /// Click one library preset's row.
     Preset(PresetPick),
+    /// Settings clipboard gestures through the desktop command paths.
+    CopySettings(CopySettingsStep),
     /// Open the create form, type its name and group, set every checkbox and press Create.
     PresetCreate(PresetCreateStep),
     /// Delete one library preset through its row's context menu.
@@ -430,6 +432,7 @@ impl Step {
             }
             Self::Preset(pick) | Self::PresetDelete(pick) => pick.validate(),
             Self::PresetCreate(step) => step.validate(),
+            Self::CopySettings(step) => step.validate(),
             Self::PresetImport { path } => text(path, "preset_import path"),
             Self::GpuWarmed { quiet_ms, ms } => {
                 if *quiet_ms <= MAX_WAIT_MS && (1..=MAX_WARM_MS).contains(ms) && quiet_ms <= ms {
@@ -1520,6 +1523,42 @@ impl ThemePick {
             (Some(id), None) => text(id, "theme id"),
             (None, Some(name)) => text(name, "theme name"),
             _ => Err("theme takes exactly one of id and name".into()),
+        }
+    }
+}
+
+/// Copy, chooser, paste and selection gestures. Shortcut variants run through the key table.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case", deny_unknown_fields)]
+pub enum CopySettingsStep {
+    Copy,
+    Chooser,
+    Check {
+        group: String,
+        checked: bool,
+    },
+    None,
+    Chosen,
+    Paste,
+    Previous,
+    Confirm,
+    Cancel,
+    SelectAll,
+    Cell {
+        index: usize,
+        command: bool,
+        shift: bool,
+    },
+    Report,
+}
+impl CopySettingsStep {
+    fn validate(&self) -> Result<(), String> {
+        match self {
+            Self::Check { group, .. } => text(group, "copy settings group"),
+            Self::Cell { index, .. } if *index >= 50_000 => {
+                Err("copy settings cell must be below 50000".into())
+            }
+            _ => Ok(()),
         }
     }
 }

@@ -1,8 +1,8 @@
 # Live-session Rust CLI
 
-Status: specified; implementation awaits owner authorization. This is the command-line client for
-people and agents that want to operate the photograph already open in Luxforge without writing a
-custom JSON-lines or TCP client.
+Status: implemented ([feature status](../features.md), [user guide](../user-guide.md#the-live-session-command-line)).
+This is the command-line client for people and agents that want to operate the photograph already
+open in Luxforge without writing a custom JSON-lines or TCP client.
 
 ## Goal
 
@@ -106,13 +106,26 @@ considered only after real command use shows a need.
 - The command output is scriptable, and the user guide documents only commands that exist after
   implementation.
 
-## Decisions resolved for this plan
+## Decisions
 
-The owner asked that the plan be implementable without further questions. This plan therefore fixes
-the binary name as `luxforge-ctl`, uses the desktop's stored/default catalog selection with an
-explicit `--catalog` override, and includes the schema-driven `--asset` revision helper. The owner
-has asked for this plan to need no further product answers. Implementation itself still awaits a
-separate go-ahead.
+The binary is named `luxforge-ctl`; it uses the desktop's stored/default catalog selection with an
+explicit `--catalog` override, and includes the schema-driven `--asset` revision helper. No
+operation-specific aliases are included.
 
-The task plan is [live-cli.json](../../tasks/project/live-cli.json). TASK-001 is ready in the
-roadmap's authorization section; implementation awaits the owner's go-ahead.
+Implementation choices this contract left open, recorded as built:
+
+- **Where the shared rules live.** `CatalogSelection` and `CATALOG_FILE` are in `luxforge-cli`
+  beside `Paths`, and the desktop's `LaunchCatalog` calls them, adding only its `--catalog` and
+  evidence overrides. The core publishes the session file's format (`LocalSessionInfo`), its path
+  (`live_session_file`) and the protocol name (`PROTOCOL`), which the desktop writes and the client
+  reads.
+- **Errors.** The error type is the API's own `ApiFailure`, so an owner's failure is printed
+  exactly as answered. The client's own codes are `usage`, `validation`, `no-session`,
+  `stale-session`, `invalid-session`, `unsupported-protocol`, `resource-limit`, `connection-lost`
+  (a read) and `outcome-unknown` (a mutation, with its `method` and `request_id` in `data`). Every
+  failure exits with status 1.
+- **Output.** A result is printed as one compact JSON line. `--wait` prints `{call, job}`; a job that
+  ends other than `ready` is an error carrying the job's own error, with the record beside it as
+  `job`. A result that names no job prints alone.
+- **Parameters.** `--params` input is bounded to the 1 MiB request limit and checked before
+  connecting. With `--asset`, `asset_id` in `--params` is refused, so the asset is named once.

@@ -153,10 +153,26 @@ pub(crate) fn presettable_groups(
     modules: &[ModuleDescriptor],
     developer: bool,
 ) -> Vec<PresettableGroup> {
+    declared_groups(modules, developer, false)
+}
+
+/// Copy shows unavailable groups with their refusal instead of silently omitting them.
+pub(crate) fn copyable_groups(
+    modules: &[ModuleDescriptor],
+    developer: bool,
+) -> Vec<PresettableGroup> {
+    declared_groups(modules, developer, true)
+}
+
+fn declared_groups(
+    modules: &[ModuleDescriptor],
+    developer: bool,
+    unavailable: bool,
+) -> Vec<PresettableGroup> {
     let mut groups = Vec::new();
     for module in modules
         .iter()
-        .filter(|module| module.is_available())
+        .filter(|module| unavailable || module.is_available())
         .filter(|module| developer || !module.developer)
     {
         let entries = collect(modules, module);

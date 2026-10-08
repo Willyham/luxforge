@@ -261,6 +261,7 @@ pub(crate) fn set_now(
             if let RowItem::Photo { asset_id } = row.item {
                 photos.push(SetPhoto {
                     asset_id,
+                    kind: Some(row.kind),
                     name: row.file_name,
                 });
             }
@@ -379,6 +380,34 @@ impl Editor {
                     return Task::none();
                 };
                 return self.switch_to(index);
+            }
+            DevelopMessage::Select {
+                index,
+                command,
+                shift,
+            } => {
+                if let Some(set) = &mut self.develop.state.set {
+                    set.select(index, command, shift);
+                }
+            }
+            DevelopMessage::SelectAll => {
+                self.view_state.copy_settings.cell_menu = None;
+                if let Some(set) = &mut self.develop.state.set {
+                    if set.reading {
+                        self.status.text = "Wait for the development set to finish loading".into();
+                    } else {
+                        set.selected = (0..set.photos.len()).collect();
+                    }
+                }
+            }
+            DevelopMessage::SelectOnly => {
+                self.view_state.copy_settings.cell_menu = None;
+                if let Some(set) = &mut self.develop.state.set {
+                    set.selected.clear();
+                }
+            }
+            DevelopMessage::CellMenu { index, at } => {
+                self.view_state.copy_settings.cell_menu = Some((index, (at.x, at.y)));
             }
             DevelopMessage::Show(index) => return self.switch_to(index),
             DevelopMessage::Collapse => {
@@ -677,6 +706,7 @@ impl Editor {
                 self.develop.set_serial,
                 vec![SetPhoto {
                     asset_id: state.asset.id.clone(),
+                    kind: Some(state.asset.source.tag()),
                     name: state
                         .asset
                         .locator
@@ -715,6 +745,7 @@ impl Editor {
         };
         let photo = SetPhoto {
             asset_id: asset_id.clone(),
+            kind: Some(row.kind),
             name: row.file_name.clone(),
         };
         self.develop.set_serial += 1;
@@ -763,6 +794,7 @@ impl Editor {
                 if !photos.is_empty() {
                     set.photos = photos;
                     set.active = index;
+                    set.selected.clear();
                     set.first = index;
                     set.reveal(self.develop.state.capacity);
                 }
@@ -774,6 +806,7 @@ impl Editor {
     /// Move to the set's photograph at `index`: the one document is replaced through the open path,
     /// its cached large preview drawn at once when it is decoded. Refused while a draft is open.
     pub(crate) fn switch_to(&mut self, index: usize) -> Task<Message> {
+        self.view_state.copy_settings.cell_menu = None;
         let Some(photo) = self
             .develop
             .state
@@ -797,6 +830,7 @@ impl Editor {
         if (open && self.develop.switch.is_none()) || moving {
             if let Some(set) = &mut self.develop.state.set {
                 set.active = index;
+                set.selected.clear();
                 set.reveal(self.develop.state.capacity);
             }
             return Task::none();
@@ -813,6 +847,7 @@ impl Editor {
         }
         if let Some(set) = &mut self.develop.state.set {
             set.active = index;
+            set.selected.clear();
             set.reveal(self.develop.state.capacity);
         }
         // The open path's own bookkeeping, as opening a file does: one open request, the frames in
@@ -1141,6 +1176,7 @@ impl Editor {
                 "active": set.active,
                 "first": set.first,
                 "reading": set.reading,
+                "selected": set.selected_assets(),
                 "assets": set.photos.iter().map(|photo| &photo.asset_id).collect::<Vec<_>>(),
                 "names": set.photos.iter().map(|photo| &photo.name).collect::<Vec<_>>(),
             })

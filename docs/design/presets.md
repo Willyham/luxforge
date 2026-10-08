@@ -14,7 +14,9 @@ In scope:
 - **Import.** Lightroom Classic XMP develop presets, legacy `.lrtemplate` presets and Luxforge's own preset document, with a per-setting report. A dry run returns the same report without saving anything.
 - **A desktop Presets section.** The grouped library, apply on click, a create form, a file import and a delete command.
 
-Not in scope, with no placeholder controls: an Amount slider, a hover preview, writing Lightroom XMP, DNG presets, Lightroom profiles, named white balances, Copy and Paste Settings ([planned separately](copy-settings.md)), and reading Lightroom's settings folders automatically. [Later](#later) lists each of these with what it needs. Applying a library preset to several developed photographs is `batch.apply-preset` ([the catalog](catalog.md#the-catalog)), which applies it to each through `edit.apply-preset`'s own path.
+Not in scope, with no placeholder controls: an Amount slider, a hover preview, writing Lightroom XMP, DNG presets, Lightroom profiles, named white balances, and reading Lightroom's settings folders automatically. [Later](#later) lists each of these with what it needs. Applying a library preset to several developed photographs is `batch.apply-preset` ([the catalog](catalog.md#the-catalog)), which applies it to each through `edit.apply-preset`'s own path.
+
+Copy and paste settings is a separate [desktop clipboard](copy-settings.md) using `preset.capture`, `edit.paste-settings` and the same batch runner.
 
 ## Settings sets
 
@@ -280,7 +282,5 @@ The owner asked for this work to proceed without blocking. These are proposals t
 | --- | --- |
 | Amount slider | A per-field scaling rule from each module; Lightroom scales only presets that declare `SupportsAmount` |
 | Hover preview | A draft of `apply-preset` drawn as a drag's frames are, on the GPU within the slider latency budget, with warm-up coverage for the hovered stack's program combinations within the existing warm-list bound. The current warm list already includes first drags of available absent modules, but not every multi-layer preset combination; a cold combination uses the declared compiling hold and reference fallback |
-
-| Copy/Paste Settings | Planned in [copy and paste settings](copy-settings.md): capture into a per-window clipboard, paste through a `paste-settings` action beside `apply-preset` and a `batch.paste-settings` method sharing the batch preset runner |
 | DNG presets and profiles | Reading an embedded XMP packet from binary content; a profile system |
 | Writing Lightroom XMP | An exporter for the mapped fields only, with the same value-transfer caveat |

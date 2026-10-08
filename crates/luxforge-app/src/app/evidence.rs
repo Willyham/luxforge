@@ -1303,6 +1303,7 @@ impl Editor {
                 interval_ms,
             } => self.canvas_hover_sweep_step(points, interval_ms),
             Step::Preset(pick) => self.preset_step(pick),
+            Step::CopySettings(step) => self.copy_settings_step(step),
             Step::PresetCreate(step) => self.preset_create_step(step),
             Step::PresetDelete(pick) => self.preset_delete_step(pick),
             Step::PresetImport { path } => self.preset_import_step(path),
@@ -2743,6 +2744,10 @@ impl Editor {
         if waiting
             && self.slider_gesture().is_none()
             && !self.busy
+            && !self.view_state.copy_settings.pending
+            && self.sync.poll.idle()
+            && self.select.state.catalog.running().is_none()
+            && (!self.select_shown() || self.catalog_quiet())
             && self.controls.pending_reset.is_none()
             && !self.presentation.queue.is_busy()
             && self.presentation.presented_generation == self.presentation.preview_generation
@@ -4093,6 +4098,72 @@ impl Editor {
     /// One key pressed with no text field focused, through the same key table the keyboard
     /// reaches: a letter the table binds to a canvas mode waits for the session to follow, as the
     /// strip and the palette do; any other bound key captures the next frame.
+    fn copy_settings_step(&mut self, step: luxforge_evidence::CopySettingsStep) -> Task<Message> {
+        use crate::app::message::{
+            copy_settings::CopySettingsMessage as C, develop::DevelopMessage as D,
+        };
+        use iced::keyboard::{
+            Event as E, Key, Location, Modifiers,
+            key::{NativeCode, Physical},
+        };
+        use luxforge_evidence::CopySettingsStep as S;
+        let shortcut = match &step {
+            S::Copy => Some(("c", Modifiers::COMMAND)),
+            S::Chooser => Some(("c", Modifiers::COMMAND | Modifiers::SHIFT)),
+            S::Paste => Some(("v", Modifiers::COMMAND)),
+            S::Previous => Some(("v", Modifiers::COMMAND | Modifiers::ALT)),
+            S::SelectAll => Some(("a", Modifiers::COMMAND)),
+            _ => None,
+        };
+        let message = if let Some((key, modifiers)) = shortcut {
+            let key = Key::Character(key.into());
+            Message::Key(
+                iced::Event::Keyboard(E::KeyPressed {
+                    key: key.clone(),
+                    modified_key: key,
+                    physical_key: Physical::Unidentified(NativeCode::Unidentified),
+                    location: Location::Standard,
+                    modifiers,
+                    text: None,
+                    repeat: false,
+                }),
+                iced::event::Status::Ignored,
+            )
+        } else {
+            match step {
+                S::Check { group, checked } => Message::CopySettings(C::Check {
+                    label: group,
+                    checked,
+                }),
+                S::None => Message::CopySettings(C::CheckMany {
+                    module: None,
+                    edited: false,
+                    checked: false,
+                }),
+                S::Chosen => Message::CopySettings(C::Chosen),
+                S::Confirm => Message::CopySettings(C::Confirm),
+                S::Cancel => Message::CopySettings(C::Cancel),
+                S::Cell {
+                    index,
+                    command,
+                    shift,
+                } => Message::Develop(D::Select {
+                    index,
+                    command,
+                    shift,
+                }),
+                S::Report => Message::Select(crate::app::message::select::SelectMessage::Catalog(
+                    crate::app::message::select_catalog::CatalogMessage::Act(
+                        crate::state::select_catalog::CatalogAction::Report(true),
+                    ),
+                )),
+                _ => unreachable!(),
+            }
+        };
+        self.await_step(Settle::Quiet);
+        self.dispatch(message)
+    }
+
     fn key_step(&mut self, key: String) -> Task<Message> {
         use iced::keyboard::{
             Event as KeyEvent, Key, Location, Modifiers,
@@ -4233,6 +4304,7 @@ impl Editor {
             PaletteAction::TogglePerformance => self.arm_performance_settle(),
             PaletteAction::Settings(_) => self.arm_settings_settle(),
             PaletteAction::Theme(id) => self.arm_theme_settle(id),
+            PaletteAction::CopySettings(_) => self.await_step(Settle::Quiet),
             // A reveal is local view state, unless it has to show the tools panel first.
             PaletteAction::Reveal(_) if !self.session.workspace.tools_panel => {
                 self.await_step(Settle::Session)
