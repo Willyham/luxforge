@@ -15,8 +15,9 @@
 //! picking the bracket's frame where it stands; `Esc` back to the grid; the burst's second
 //! frame clicked, `E` and `P`, which picks it and moves on to the next moment's first frame (P7);
 //! and `Esc`, All photographs, the first imported photograph clicked (where the core's view of
-//! them puts it, beside the generated catalog's own) and `E`, the loupe over it; `D` and `G`
-//! preserving that loupe, then the folder browsed again showing its grid; its burst opened in the
+//! them puts it, beside the generated catalog's own) and `E`, the loupe over it; `D` explaining the
+//! missing set while preserving the loupe, then explicit grid development and `G` returning to that
+//! loupe; the folder browsed again showing its grid; its burst opened in the
 //! loupe, then All photographs showing its grid without an intervening Escape.
 //!
 //! Each loupe frame's `select.loupe` block is checked against the core's answers: the active frame
@@ -39,7 +40,7 @@ use crate::{
     *,
 };
 use luxforge_core::{ApiRequest, ClientId, OwnerHandle};
-use luxforge_evidence::{self as script, ArrowKey, SelectStep};
+use luxforge_evidence::{self as script, ArrowKey, DevelopStep, SelectStep};
 
 pub const SCENARIO: &str = "loupe";
 /// What `reproduce.md` says the run does before it launches.
@@ -137,7 +138,9 @@ pub fn plan(expected: &Value) -> Result<Plan> {
         select("photographs", SelectStep::Source("All photographs".into())),
         click("photo", photo),
         key("photo-loupe", "e"),
-        key("develop-switch", "d"),
+        key("develop-switch", "d")
+            .status("Pick a catalog folder or choose images to develop from the grid"),
+        Step::new("develop-active", script::Step::Develop(DevelopStep::Active)),
         key("select-return", "g"),
         select("folder-return", SelectStep::Folder(folder.into())),
         click("folder-burst", burst),
@@ -866,6 +869,16 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         burst + burst_len,
     )?;
     photo_loupe(&mut checks, &expected, launch.at("photo-loupe")?)?;
+    let without_set = launch.at("develop-switch")?;
+    ensure(
+        select(without_set)["shown"] == "select",
+        "D opened Develop without a selected catalog folder or loaded set",
+    )?;
+    photo_loupe(&mut checks, &expected, without_set)?;
+    ensure(
+        select(launch.at("develop-active")?)["shown"] == "develop",
+        "Explicit grid development did not open Develop",
+    )?;
     photo_loupe(&mut checks, &expected, launch.at("select-return")?)?;
     loupe_frame(
         &mut checks,
@@ -1058,7 +1071,7 @@ mod tests {
         assert_eq!(photo_position(&expected).unwrap(), 1, "the imported one");
         let plan = plan(&expected).unwrap();
         plan.validate().unwrap();
-        assert_eq!(plan.len(), 33);
+        assert_eq!(plan.len(), 34);
         assert!(plan.scripted());
     }
 }

@@ -424,12 +424,13 @@ fn a_cold_open_and_an_open_without_a_gpu_draw_the_reference_first() {
 /// Compare over a content the GPU presented waits for the reference's frame of it: the photograph
 /// under the GPU's picture is an earlier content's and is never taken as the After side.
 #[test]
-fn compare_over_a_content_the_gpu_presented_waits_for_the_references_frame_of_it() {
+fn zoomed_compare_over_gpu_content_keeps_the_reference_fallback() {
     let (mut editor, catalog) = opened_on_the_gpu("compare");
     commit(&mut editor, 0.4);
     deliver_until(&mut editor, "the committed stack presented", |editor| {
         editor.presentation.gpu_presented == Some(editor.presentation.content_serial)
     });
+    editor.session.preview.view.zoom = luxforge_core::Zoom::Percent { value: 100.0 };
     let content = editor.presentation.content_serial;
     drop(editor.compare_toggle());
     assert!(editor.presentation.compare_after.is_none(), "no After yet");
@@ -539,5 +540,72 @@ fn a_presented_stack_whose_compile_outlasts_the_threshold_is_the_references() {
     assert_eq!(editor.gpu.refused_content, Some(content));
     assert_eq!(editor.presentation.gpu_presented, None);
     assert!(!editor.gpu_compile_deadline(), "no further wake");
+    finish(editor, catalog);
+}
+
+#[test]
+fn fit_compare_reuses_gpu_after_without_rendering_the_edited_stack() {
+    let (mut editor, catalog) = opened_on_the_gpu("compare-retain");
+    commit(&mut editor, 0.4);
+    deliver_until(&mut editor, "the committed stack presented", |editor| {
+        editor.presentation.gpu_presented == Some(editor.presentation.content_serial)
+    });
+    assert!(editor.gpu_compare_can_retain());
+    let plan = editor.gpu_rest_plan().unwrap().0.steps.clone();
+    let after_source = editor.gpu_source_handed().unwrap().version();
+    drop(editor.compare_toggle());
+    assert!(
+        editor.presentation.compare_after.is_some(),
+        "{}",
+        editor.status.text
+    );
+    assert!(!editor.gpu.compare_waits);
+    assert!(editor.gpu.refused_content.is_none());
+    // Stand in for a later source delivery, and keep After's source tied to its retained
+    // plans through zoom and exit. Eligibility separately requires a shared development.
+    editor.gpu_hold_source(&luxforge_core::PreviewSource::Jpeg(
+        luxforge_core::SourceImage {
+            width: 1,
+            height: 1,
+            rgba: std::sync::Arc::new(vec![0, 0, 0, 255]),
+            fingerprint: "compare-before-source".into(),
+            orientation: 1,
+            capture: Default::default(),
+        },
+    ));
+    assert_ne!(editor.gpu_source_handed().unwrap().version(), after_source);
+    assert_eq!(
+        editor.surfaces().compare_source.unwrap().version(),
+        after_source
+    );
+    assert_eq!(editor.surfaces().compare_gpu.unwrap().steps, plan);
+    editor.session.preview.view.zoom = luxforge_core::Zoom::Percent { value: 100.0 };
+    assert_eq!(
+        editor.surfaces().compare_gpu.unwrap().steps,
+        plan,
+        "zoom keeps the correct display-detail After picture"
+    );
+    drop(editor.compare_toggle());
+    assert_eq!(editor.gpu_source_handed().unwrap().version(), after_source);
+    finish(editor, catalog);
+}
+
+#[test]
+fn a_comparison_without_a_shared_source_discards_retired_gpu_plans() {
+    let (mut editor, catalog) = opened_on_the_gpu("compare-unshared-source");
+    commit(&mut editor, 0.4);
+    deliver_until(&mut editor, "the committed stack presented", |editor| {
+        editor.presentation.gpu_presented == Some(editor.presentation.content_serial)
+    });
+    assert!(editor.gpu_rest_plan().is_some());
+    assert!(editor.gpu_source_handed().is_some());
+    // A historical selection cannot reuse the current entry's Original development identity.
+    editor.document.compare_return = Some(luxforge_core::HistorySelection::Entry(
+        luxforge_core::EntryId::new(),
+    ));
+    editor.gpu_compare_begin();
+    editor.gpu_compare_end();
+    assert!(editor.gpu_rest_plan().is_none());
+    assert!(editor.gpu_source_handed().is_none());
     finish(editor, catalog);
 }

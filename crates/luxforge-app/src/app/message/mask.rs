@@ -88,6 +88,8 @@ pub(crate) enum MaskMessage {
     OverlayColour(usize),
     /// O in Mask mode: the overlay on, or off again.
     ToggleOverlay,
+    /// H in Mask mode: show or hide gradient handles independently of coverage.
+    ToggleHandles,
     /// Draw a new mask whose first component is of this kind.
     New(String),
     /// Draw a further component of this kind on the open mask, in the chosen mode.

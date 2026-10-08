@@ -75,6 +75,16 @@ impl<'de> Deserialize<'de> for RawInterpretation {
 }
 
 impl SourceKind {
+    /// Whether an admitted stack uses the same prepared pixels as its Original. This reads
+    /// bounded recipe metadata only, so a presentation can retain a shared GPU source without
+    /// decoding or developing another one.
+    pub fn uses_original_development(&self, recipe: &crate::Recipe) -> Result<bool, Error> {
+        match self {
+            Self::Jpeg => Ok(true),
+            Self::Raw { metadata } => Ok(raw_gains(metadata, recipe)? == metadata.as_shot_gains),
+        }
+    }
+
     /// How a prepared original is interpreted: a JPEG, or a RAW with its checked interpretation.
     fn of(source: &PreparedSource) -> Result<Self, Error> {
         Ok(match source.metadata() {
@@ -1625,6 +1635,44 @@ mod tests {
     };
     use crate::{Draft, PreviewSource, render::testing::render};
     use serde_json::Map;
+
+    #[test]
+    fn original_development_identity_uses_the_admitted_source_settings() {
+        let metadata = synthetic_raw_metadata();
+        let source = SourceKind::Raw {
+            metadata: RawInterpretation::new(metadata.clone()).unwrap(),
+        };
+        let as_shot =
+            crate::RawPayload::for_as_shot(metadata.as_shot_gains, metadata.cam_xyz).unwrap();
+        let recipe = |payload: crate::RawPayload| crate::Recipe {
+            layers: vec![payload.layer(LayerId::new())],
+            ..Default::default()
+        };
+        assert!(
+            source
+                .uses_original_development(&recipe(as_shot.clone()))
+                .unwrap()
+        );
+        let mut custom = as_shot;
+        custom.wb_mode = crate::WhiteBalanceMode::Custom;
+        assert!(
+            source
+                .uses_original_development(&recipe(custom.clone()))
+                .unwrap()
+        );
+        custom.gains[0] += 0.2;
+        assert!(!source.uses_original_development(&recipe(custom)).unwrap());
+        assert!(
+            source
+                .uses_original_development(&crate::Recipe::default())
+                .is_err()
+        );
+        assert!(
+            SourceKind::Jpeg
+                .uses_original_development(&crate::Recipe::default())
+                .unwrap()
+        );
+    }
 
     /// A file's preparation checks the bytes against its photograph's fingerprint and source kind,
     /// and so does one from what a Develop read of the file, exactly as it would the file's: the

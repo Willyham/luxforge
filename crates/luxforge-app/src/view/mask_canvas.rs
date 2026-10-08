@@ -77,14 +77,27 @@ pub(crate) struct Interaction {
 pub(crate) struct MaskCanvas<'a> {
     draft: &'a MaskDraft,
     placement: Placement,
+    handles_visible: bool,
 }
 
 impl<'a> MaskCanvas<'a> {
     pub(crate) fn new(draft: &'a MaskDraft, placement: Placement) -> Self {
-        Self { draft, placement }
+        Self {
+            draft,
+            placement,
+            handles_visible: true,
+        }
+    }
+
+    pub(crate) fn with_handles(mut self, visible: bool) -> Self {
+        self.handles_visible = visible;
+        self
     }
 
     fn handle_at(&self, point: Point) -> Option<MaskHandle> {
+        if !self.handles_visible {
+            return None;
+        }
         let content = self.placement.content_point(point)?;
         let tolerance = self.placement.tolerance(point)?;
         self.draft
@@ -307,7 +320,9 @@ impl canvas::Program<Message, Theme> for MaskCanvas<'_> {
                 approximate: false,
                 segments: 0,
             };
-            self.draft.draw(pointer, &mut pen);
+            if self.handles_visible || self.draft.paints() {
+                self.draft.draw(pointer, &mut pen);
+            }
             (pen.approximate, pen.segments)
         };
         if super::cursor_probe::geometry_started().is_some() {
@@ -316,7 +331,12 @@ impl canvas::Program<Message, Theme> for MaskCanvas<'_> {
         // One grip per drawn handle, whatever the figure under them is: white, except the one that
         // moves the whole figure, which is the accent, and each ringed in a hairline of black so it
         // reads over a bright sky as well as a dark one.
-        for (handle, (x, y)) in self.draft.handles() {
+        for (handle, (x, y)) in self
+            .draft
+            .handles()
+            .into_iter()
+            .filter(|_| self.handles_visible)
+        {
             let Some(centre) = self.placement.visible_handle(x, y) else {
                 continue;
             };

@@ -281,6 +281,8 @@ pub struct WorkspaceState {
     /// What the canvas draws of the selected mask.
     #[serde(default)]
     pub mask_overlay: MaskOverlayMode,
+    /// Show gradient handles independently of mask coverage.
+    pub mask_handles: bool,
     /// The tint [`MaskOverlayMode::Tint`] is drawn in.
     #[serde(default)]
     pub mask_overlay_colour: MaskOverlayColour,
@@ -308,6 +310,7 @@ impl Default for WorkspaceState {
             clip_shadows: false,
             clip_highlights: false,
             mask_overlay: MaskOverlayMode::Off,
+            mask_handles: true,
             mask_overlay_colour: MaskOverlayColour::Green,
         }
     }

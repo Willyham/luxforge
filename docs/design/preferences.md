@@ -153,7 +153,7 @@ Decided by the owner on 2026-10-04:
 - Add the mask overlay colour, the canvas background and a switch for automatic lens correction to General.
 - Add an interface size and a catalog location to General.
 - The GPU preview stays a per-session switch, not a preference. Superseded on 2026-10-05 ([decisions](../decisions.md#gpu-first-rendering)): the switch is retired, the GPU is the renderer of record, and only `--no-gpu-render` refuses it, for a launch.
-- **Export defaults** (owner, 2026-10-07): keep JPEG quality fixed at 90 and Keep metadata chosen per export. Neither becomes a preference; the export folder remains remembered as described above.
+- **Export defaults** (owner, 2026-10-07): keep JPEG quality fixed at 90 and Keep metadata chosen per export. Neither becomes a preference; the export folder remains remembered as described above. The planned [export settings](export-settings.md) replace this when implemented, with export presets and a remembered last export (`export_last`) in place of `export_folder`.
 
 Recorded defaults, proposals the owner can revise:
 

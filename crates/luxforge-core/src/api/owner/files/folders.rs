@@ -23,7 +23,7 @@ use crate::{
         exclude::OwnDirs,
         lane::RootPlan,
         query::existing_folder,
-        volumes::{card_of, volume_in},
+        volumes::{MountSource, card_of, volume_in},
     },
     library::journal::{self, Desired, Request},
 };
@@ -49,7 +49,7 @@ pub(in crate::api) fn index_add_folder(
     let (own, mounts) = (own_dirs(owner), owner.catalog.files.mounts.clone());
     let (method, origin) = (call.request.method.clone(), call.origin.clone());
     ask(owner, move || {
-        let found = browsable(&params.path, &own).and_then(|canonical| {
+        let found = browsable(&params.path, &own, &mounts).and_then(|canonical| {
             let volume = volume_in(&mounts.list(), &canonical, now_ms())?;
             Ok((canonical, volume))
         });
@@ -269,8 +269,9 @@ pub(in crate::api) fn index_refresh(
         IndexSource::Folder { path } => {
             absolute(&path)?;
             let own = own_dirs(owner);
+            let mounts = owner.catalog.files.mounts.clone();
             ask(owner, move || {
-                let found = browsable(&path, &own);
+                let found = browsable(&path, &own, &mounts);
                 Box::new(move |owner| {
                     let canonical = found?;
                     let detail = canonical.display().to_string();
@@ -344,8 +345,18 @@ fn indexed_root(folder: IndexedFolder) -> RootPlan {
 /// An existing folder a person may browse or add, off the owner: a directory that is not a
 /// package, another application's cache or one of Luxforge's own directories. Answers its
 /// canonical path.
-fn browsable(path: &Path, own: &OwnDirs) -> Result<PathBuf, Error> {
+fn browsable(path: &Path, own: &OwnDirs, mounts: &MountSource) -> Result<PathBuf, Error> {
     let canonical = existing_folder(path)?;
+    let home =
+        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(PathBuf::from);
+    let home = home.map(|home| home.canonicalize().unwrap_or(home));
+    if crate::catalog_types::disk::broad_folder(&canonical, home.as_deref())
+        || volume_in(&mounts.list(), &canonical, now_ms())?.mount_point == canonical
+    {
+        return Err(Error::validation(
+            "This folder is too broad to scan; open it for navigation and choose a specific subfolder",
+        ));
+    }
     if let Some(skip) = own.exclusions().refuse_root(&canonical) {
         return Err(Error::validation(format!(
             "{} is {} and cannot be indexed",

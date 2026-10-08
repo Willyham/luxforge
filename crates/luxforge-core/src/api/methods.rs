@@ -1855,6 +1855,7 @@ host_params! {
         // Each spelling is declared as an option, so a client reads the vocabulary from the schema
         // and an unknown one is refused with the vocabulary spelled out.
         mask_overlay: Option<String> = enumeration(MaskOverlayMode::ALL.map(MaskOverlayMode::as_str)).notes("what the canvas draws of the selected mask"),
+        mask_handles: Option<bool> = boolean().notes("show mask gradient handles independently of coverage; on by default"),
         mask_overlay_colour: Option<String> = enumeration(MaskOverlayColour::ALL.map(MaskOverlayColour::as_str)).notes("the tint the mask overlay is drawn in"),
     }
 }
@@ -2359,6 +2360,9 @@ fn workspace_set(
     // selected mask and commits nothing.
     if let Some(mode) = mask_overlay {
         session.workspace.mask_overlay = mode;
+    }
+    if let Some(visible) = p.mask_handles {
+        session.workspace.mask_handles = visible;
     }
     if let Some(colour) = mask_overlay_colour {
         session.workspace.mask_overlay_colour = colour;
@@ -4547,6 +4551,7 @@ mod tests {
                 "clip_shadows": false,
                 "clip_highlights": false,
                 "mask_overlay": "off",
+                "mask_handles": true,
                 "mask_overlay_colour": "green",
             }),
             "a fresh session opens with both panels, the pointer and no overlay"
@@ -4555,7 +4560,7 @@ mod tests {
             &mut service,
             &mut session,
             "workspace.set",
-            json!({"state_panel": false, "mode": "luxforge.crop", "thirds": true, "information": true}),
+            json!({"state_panel": false, "mode": "luxforge.crop", "thirds": true, "information": true, "mask_handles": false}),
         );
         assert_eq!(
             set["workspace"],
@@ -4568,6 +4573,7 @@ mod tests {
                 "clip_shadows": false,
                 "clip_highlights": false,
                 "mask_overlay": "off",
+                "mask_handles": false,
                 "mask_overlay_colour": "green",
             })
         );

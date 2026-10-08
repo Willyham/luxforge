@@ -467,7 +467,7 @@ mod contract_table {
             "index.refresh",
             "IndexReport",
             &[Validation, SourceUnavailable, FileAccess, ResourceLimit, Cancelled],
-            "lists a source again and reads the headers of new and changed files, reconciling by signature; a job with progress; resource-limit past the file limit",
+            "lists a source again and reads the headers of new and changed files, reconciling by signature; broad disk roots, home directories and user-parent folders are refused: navigate them with disk.folders and choose a specific subfolder; a job with progress; resource-limit past the file limit",
         )
         .starts(&jobs::INDEX_REFRESH),
         method::<NoParams>(

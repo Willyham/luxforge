@@ -33,7 +33,7 @@ use crate::app::{
     Before, Editor,
     gesture::Starting,
     loupe_frames::{self, LoupeFrames, LoupeFramesMessage, Slot, Want},
-    message::{Message, develop::DevelopMessage, select::SelectMessage},
+    message::{Message, develop::DevelopMessage},
     select_previews::{self, Item, SelectPreviewMessage, SelectPreviews, Wanted},
     tasks::{self, call, owner_task, owner_work, request},
     waker::Signal,
@@ -45,7 +45,7 @@ use crate::state::{
         Confirmation, DevelopSet, Developing, SetPhoto, ShownPreview, develop_params,
         developed_photos, developed_sentence,
     },
-    select::{RowsRequest, Shown},
+    select::RowsRequest,
 };
 use iced::{Subscription, Task, widget::image::Handle};
 use luxforge_core::{
@@ -271,6 +271,24 @@ pub(crate) fn set_now(
     Ok((photos, active))
 }
 
+pub(crate) fn folder_set_now(
+    owner: &OwnerHandle,
+    query: &luxforge_core::catalog_types::ViewQuery,
+    active: Option<&AssetId>,
+) -> Result<(Vec<SetPhoto>, usize), String> {
+    let client = owner.register();
+    let result = (|| {
+        let summary = super::select::evaluate_now(owner, client, query)?.0;
+        let (photos, _) = set_now(owner, client, summary.revision, summary.count, 0)?;
+        let index = active
+            .and_then(|asset| photos.iter().position(|photo| &photo.asset_id == asset))
+            .unwrap_or(0);
+        Ok((photos, index))
+    })();
+    owner.disconnect(client);
+    result
+}
+
 /// A photograph as the large previews cache names it: its current entry, which `preview.read`
 /// answers with the entry its preview is of.
 fn item(asset: &AssetId) -> PreviewItem {
@@ -328,6 +346,28 @@ impl Editor {
             DevelopMessage::Started(result) => return self.develop_started(result),
             DevelopMessage::Ended { job, result } => return self.develop_ended(job, result),
             DevelopMessage::SetRead { serial, result } => self.set_read(serial, result),
+            DevelopMessage::FolderSetRead { serial, result } => {
+                if serial != self.develop.set_serial {
+                    return Task::none();
+                }
+                self.develop.state.folder_loading = false;
+                match result {
+                    Ok((photos, index)) if !photos.is_empty() => {
+                        self.develop.state.set = Some(DevelopSet::new(serial, photos, index));
+                        self.develop.state.collapsed = false;
+                        self.status.text = "Showing Develop".into();
+                        let shown = self.show_develop_workspace();
+                        return Task::batch([shown, self.switch_to(index)]);
+                    }
+                    Ok(_) => {
+                        self.status.text =
+                            "This catalog folder has no photographs to develop".into()
+                    }
+                    Err(error) => {
+                        self.status.text = format!("Could not load the development set: {error}")
+                    }
+                }
+            }
             DevelopMessage::Step(delta) => {
                 let Some(index) = self
                     .develop
@@ -572,11 +612,84 @@ impl Editor {
             return Task::none();
         }
         self.develop.set_serial += 1;
+        self.develop.state.folder_query = None;
         self.develop.state.set = Some(DevelopSet::new(self.develop.set_serial, photos, 0));
         self.develop.state.collapsed = false;
-        let shown = self.dispatch(Message::Select(SelectMessage::Switch(Shown::Develop)));
+        let shown = self.show_develop_workspace();
         let opened = self.switch_to(0);
         Task::batch([shown, opened])
+    }
+
+    /// Catalog views select or clear the Develop folder; import browsing preserves it.
+    /// Changing that selection fences an outstanding set read for the previous folder.
+    pub(crate) fn remember_develop_folder(
+        &mut self,
+        query: &luxforge_core::catalog_types::ViewQuery,
+    ) {
+        let folder = match &query.source {
+            luxforge_core::catalog_types::ViewSource::CatalogFolder { .. } => Some(query.clone()),
+            source if source.over_files() => return,
+            _ => None,
+        };
+        if self.develop.state.folder_query != folder {
+            self.develop.set_serial += 1;
+            self.develop.state.folder_loading = false;
+            self.develop.state.folder_query = folder;
+        }
+    }
+
+    /// Enter Develop using the last catalog folder, or the previously loaded set.
+    pub(crate) fn enter_develop_set(&mut self) -> Task<Message> {
+        if self.develop.state.folder_loading {
+            return Task::none();
+        }
+        if let Some(query) = self.develop.state.folder_query.clone() {
+            self.develop.set_serial += 1;
+            let serial = self.develop.set_serial;
+            self.develop.state.folder_loading = true;
+            self.status.text = "Reading the catalog folder for Develop…".into();
+            let (owner, active) = (
+                self.owner.clone(),
+                self.document
+                    .state
+                    .as_ref()
+                    .map(|state| state.asset.id.clone()),
+            );
+            return owner_task(
+                move || folder_set_now(&owner, &query, active.as_ref()),
+                move |result| Message::Develop(DevelopMessage::FolderSetRead { serial, result }),
+            );
+        }
+        if self
+            .develop
+            .state
+            .set
+            .as_ref()
+            .is_some_and(|set| !set.photos.is_empty())
+        {
+            let index = self.develop.state.set.as_ref().unwrap().active;
+            let shown = self.show_develop_workspace();
+            return Task::batch([shown, self.switch_to(index)]);
+        }
+        if let Some(state) = &self.document.state {
+            self.develop.set_serial += 1;
+            self.develop.state.set = Some(DevelopSet::new(
+                self.develop.set_serial,
+                vec![SetPhoto {
+                    asset_id: state.asset.id.clone(),
+                    name: state
+                        .asset
+                        .locator
+                        .file_name()
+                        .map(|name| name.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                }],
+                0,
+            ));
+            return self.show_develop_workspace();
+        }
+        self.status.text = "Pick a catalog folder or choose images to develop from the grid".into();
+        Task::none()
     }
 
     // -- The development set --------------------------------------------------------------------
@@ -587,6 +700,11 @@ impl Editor {
         let Some(summary) = &self.select.state.summary else {
             return Task::none();
         };
+        self.develop.state.folder_query = matches!(
+            summary.query.source,
+            luxforge_core::catalog_types::ViewSource::CatalogFolder { .. }
+        )
+        .then(|| summary.query.clone());
         let (revision, count) = (summary.revision, summary.count);
         let Some(row) = self.select.state.rows.read(position) else {
             self.status.text = "Reading the photograph\u{2026}".into();
@@ -607,7 +725,7 @@ impl Editor {
         self.develop.state.collapsed = false;
         // The grid's wake is the one a client has; Develop is passed it.
         self.select.previews.watch(&self.owner, self.client);
-        let shown = self.dispatch(Message::Select(SelectMessage::Switch(Shown::Develop)));
+        let shown = self.show_develop_workspace();
         let opened = self.switch_to(0);
         let read = if count > 1 {
             let (owner, client) = (self.owner.clone(), self.client);
@@ -988,6 +1106,9 @@ impl Editor {
     /// move, and, with a photograph open in Develop, its newest requested frame on screen. What an
     /// evidence step settles on; a capture then waits for the photograph's actual GPU draw.
     pub(crate) fn develop_quiet(&self) -> bool {
+        if self.develop.state.folder_loading {
+            return false;
+        }
         let state = &self.develop.state;
         !state.planning
             && state.developing.is_none()

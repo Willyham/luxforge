@@ -177,17 +177,23 @@ fn main_result() -> Result {
                     cfg!(target_os = "macos"),
                     "develop --background is currently supported only on macOS",
                 )?;
-                cargo(&root, "build", !debug)?;
-                let mut bin = binary(&root)?;
-                if debug {
-                    bin = bin
-                        .parent()
-                        .unwrap()
-                        .parent()
-                        .unwrap()
-                        .join("debug")
-                        .join(bin.file_name().unwrap());
-                }
+                let supplied = a.value("--binary")?.map(PathBuf::from);
+                let bin = if let Some(bin) = supplied {
+                    absolute(&root, &bin)
+                } else {
+                    cargo(&root, "build", !debug)?;
+                    let mut bin = binary(&root)?;
+                    if debug {
+                        bin = bin
+                            .parent()
+                            .unwrap()
+                            .parent()
+                            .unwrap()
+                            .join("debug")
+                            .join(bin.file_name().unwrap());
+                    }
+                    bin
+                };
                 let launch = launch::Background::new(&bin)?;
                 ensure(
                     Command::new(&launch.executable)
