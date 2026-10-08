@@ -26,6 +26,7 @@ The renderer, its GPU and CPU paths, memory and efficiency.
 | --- | --- |
 | [Efficiency](rendering/efficiency.json) | Reference-renderer, preparation and desktop CPU/memory reductions: hardware SHA-256 and build features, source preparation, the 16-bit quantizer, spatial tile buffers and batches, Detail and Presence kernels, the reduced-grid cache retired with the CPU production paths, RAW row reads, the float mosaic through a checked-in librtprocess patch, owner and painting copies, the WAL catalog and desktop derivation, measured once at the end; the `dist` profile is deferred |
 | [GPU-first rendering](rendering/gpu-first.json) | The GPU as the renderer of record for the picture, the histogram, samples and export, with correctness a declared tolerance against a whole-frame CPU reference: every zoom on the GPU, the picture at rest and the histogram on the GPU, per-frame estimates, samples and export through GPU tiles, portability and warm-up, the retirement of the CPU production paths, and one qualification and measurement at the end |
+| [Export settings](rendering/export-settings.json) ([design](../docs/design/export-settings.md)) | Planned Export sheet and `ExportSettings` API: Web, Print and Master presets, JPEG, lossy WebP and 8/16-bit TIFF, resizing, Optimise, file-size limits and metadata levels, then output sharpening, qualification and measurement last; implementation awaits authorization |
 | [GPU memory accounting](rendering/gpu-memory.json) | Measure and bound both GPU devices, including resources outside the 1 GiB aggregate photo slots and separate 2 GiB preview and tile-worker budgets, with resources.read and Performance attribution |
 
 ### RAW (`raw/`)
@@ -52,6 +53,7 @@ One plan per tool module.
 | --- | --- |
 | [AI editing](editing/ai-editing.json) | Proposed Remove, Select, generative fill and Replace, and optional sky replacement on local, user-downloaded models: the inference port and runtime, the model manager, the analysis cache and picker, the model-selection mask kind, the fill tiers, the remote-provider shape, portability, qualification and documentation |
 | [Corrections](editing/corrections.json) | Proposed offline Clone/Heal, the repair stage, the shared brush and the repair layer's frozen-patch operation; its AI Remove is planned under AI editing |
+| [Auto tone](editing/auto-tone.json) ([design](../docs/design/auto-tone.md)) | Planned, not authorized: deterministic Auto for Lightroom's eight Basic fields from a bounded sample of the stage Basic receives, the action, query and Tone-header button first, Auto in presets and the Lightroom importer, then a fit to Lightroom's Auto on the owner's photos last |
 | [Colour grading](editing/colour-grading.json) | Decided, implementation-ready mixer extension: tonal/Global wheels, masks, presets and direct Lightroom mappings delivered first; independent reference analysis and Lightroom response refinement last, with no approval/research gates |
 
 ### Lightroom (`lightroom/`)
@@ -67,6 +69,7 @@ Import from and alignment with Lightroom Classic.
 
 | Plan | Purpose |
 | --- | --- |
+| [Copy and paste settings](interface/copy-settings.json) ([design](../docs/design/copy-settings.md)) | Planned copy of chosen adjustment groups into a per-window clipboard and paste onto the open photograph, a new Develop filmstrip multi-selection or a Select selection, and Paste from previous, through a `paste-settings` action and batch method; implementation awaits authorization |
 | [High-zoom minimap](interface/minimap.json) ([design](../docs/design/minimap.md)) | Planned whole-image overview at percentage zoom ≥200, with owner-chosen click/drag navigation through `view.set`, bounded GPU/reference rendering, working integration first and final qualification/measurement; implementation awaits authorization |
 
 ### Project (`project/`)

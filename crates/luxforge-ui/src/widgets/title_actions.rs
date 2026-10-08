@@ -49,7 +49,7 @@ impl WorkspaceTab {
 /// with its workspace; with `on_select` `None` the switch draws as it would but does nothing.
 pub fn workspace_switch<'a, M: Clone + 'a>(
     current: WorkspaceTab,
-    on_select: Option<impl Fn(WorkspaceTab) -> M + 'a>,
+    on_select: Option<impl Fn(WorkspaceTab) -> Option<M> + 'a>,
 ) -> Element<'a, M> {
     segment_track(
         WorkspaceTab::ALL
@@ -59,7 +59,7 @@ pub fn workspace_switch<'a, M: Clone + 'a>(
                     tab.label().to_owned(),
                     tab.key().to_owned(),
                     tab == current,
-                    on_select.as_ref().map(|select| select(tab)),
+                    on_select.as_ref().and_then(|select| select(tab)),
                 )
             })
             .collect(),
@@ -182,9 +182,9 @@ mod tests {
             [("Select", "G"), ("Develop", "D")]
         );
         for current in WorkspaceTab::ALL {
-            let _: Element<'_, WorkspaceTab> = workspace_switch(current, Some(|tab| tab));
+            let _: Element<'_, WorkspaceTab> = workspace_switch(current, Some(Some));
             let _: Element<'_, WorkspaceTab> =
-                workspace_switch(current, None::<fn(WorkspaceTab) -> WorkspaceTab>);
+                workspace_switch(current, None::<fn(WorkspaceTab) -> Option<WorkspaceTab>>);
         }
     }
 

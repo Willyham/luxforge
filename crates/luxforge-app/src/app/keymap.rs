@@ -464,6 +464,9 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         return (!context.palette_open && modifiers.is_empty())
             .then_some(Message::View(ViewMessage::ToggleInformation));
     }
+    if character(key, "h") && context.mask_brush && modifiers.is_empty() {
+        return Some(Message::Mask(MaskMessage::ToggleHandles));
+    }
     // O is the mask overlay in Mask mode and the thirds guide elsewhere; modified, it is neither.
     if character(key, "o") {
         if modifiers.alt() || modifiers.control() || modifiers.shift() || modifiers.logo() {
@@ -948,6 +951,37 @@ mod tests {
             *repeat = true;
         }
         assert!(keymap(&repeated, Status::Ignored, &crop).is_none());
+    }
+
+    #[test]
+    fn h_toggles_mask_handles_only_and_respects_focus_modifiers_and_repeat() {
+        let mask = KeyContext {
+            mask_brush: true,
+            ..context()
+        };
+        let h = pressed(letter("h"), Modifiers::empty());
+        assert!(matches!(
+            keymap(&h, Status::Ignored, &mask),
+            Some(Message::Mask(MaskMessage::ToggleHandles))
+        ));
+        assert!(keymap(&h, Status::Ignored, &context()).is_none());
+        assert!(keymap(&h, Status::Captured, &mask).is_none());
+        assert!(
+            keymap(
+                &held(letter("h"), Modifiers::empty(), true),
+                Status::Ignored,
+                &mask
+            )
+            .is_none()
+        );
+        for modifiers in [
+            Modifiers::SHIFT,
+            Modifiers::ALT,
+            Modifiers::CTRL,
+            Modifiers::LOGO,
+        ] {
+            assert!(keymap(&pressed(letter("h"), modifiers), Status::Ignored, &mask).is_none());
+        }
     }
 
     #[test]

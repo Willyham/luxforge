@@ -94,6 +94,11 @@ pub(crate) fn curve(
                 return;
             }
             let mapped = content.map(|p| self.placement.canvas_point(p.0, p.1));
+            // A warped map refuses points outside its output. Do not spend the entire
+            // subdivision budget on an off-screen arc before reaching the visible one.
+            if mapped.iter().all(Option::is_none) {
+                return;
+            }
             let within = if let [Some(a), Some(q), Some(m), Some(r), Some(b)] = mapped {
                 [q, m, r]
                     .iter()
@@ -329,6 +334,45 @@ mod tests {
         );
         assert_eq!(outline.segments.len(), 1024);
         assert!(outline.approximate);
+    }
+
+    #[test]
+    fn offscreen_warped_radial_arcs_do_not_starve_visible_arcs() {
+        let geometry = crate::state::testing::nonlinear_mapping(
+            crate::state::testing::TestOrientation::NEUTRAL,
+            100,
+            100,
+        );
+        let placement = Placement {
+            map: ContentMap::new(&geometry).unwrap(),
+            view: CanvasView::fit((6000.0, 4000.0), iced::Size::new(1200.0, 800.0)).unwrap(),
+            scale_factor: 2.0,
+        };
+        let point = |t: f64| {
+            let angle = t * std::f64::consts::TAU;
+            (0.5 + 0.46 * angle.cos(), 0.5 + 0.46 * angle.sin())
+        };
+        let outline = curve(&placement, point, 32, false);
+        assert!(!outline.segments.is_empty());
+        assert!(outline.segments.len() < MAX_SEGMENTS);
+        let mut visible = 0;
+        for i in 0..4096 {
+            let (x, y) = point(i as f64 / 4096.0);
+            let Some(screen) = placement.canvas_point(x, y) else {
+                continue;
+            };
+            visible += 1;
+            let error = outline
+                .segments
+                .iter()
+                .map(|(a, b)| deviation(screen, *a, *b))
+                .fold(f64::INFINITY, f64::min);
+            assert!(
+                error * 2.0 < 0.4,
+                "visible arc {i} disappeared: error {error}"
+            );
+        }
+        assert!(visible > 100);
     }
 
     #[test]

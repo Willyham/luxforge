@@ -190,7 +190,8 @@ pub(crate) enum Reread {
 impl Default for Select {
     fn default() -> Self {
         let state = SelectState {
-            home: std::env::var_os("HOME").map(PathBuf::from),
+            home: std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
+                .map(PathBuf::from),
             ..SelectState::default()
         };
         let layout = GridLayout::new(Vec::new(), metrics(&state), 0.0);
@@ -828,11 +829,7 @@ impl Editor {
             return Task::none();
         }
         if shown == Shown::Develop {
-            self.select.state.menu = None;
-            self.select.state.catalog.close();
-            self.select.state.shown = Shown::Develop;
-            self.select.previews.release();
-            return self.loupe_leave();
+            return self.enter_develop_set();
         }
         if let Some(reason) = self.gesture_refusal(Starting::Workspace) {
             self.status.text = reason;
@@ -853,6 +850,14 @@ impl Editor {
         Task::batch(tasks)
     }
 
+    pub(crate) fn show_develop_workspace(&mut self) -> Task<Message> {
+        self.select.state.menu = None;
+        self.select.state.catalog.close();
+        self.select.state.shown = Shown::Develop;
+        self.select.previews.release();
+        self.loupe_leave()
+    }
+
     /// Browse a card or a folder on disk: the index lane lists it, a folder with its subfolders,
     /// and reads each file's header (`index.refresh`, a job), and it is viewed once the job has
     /// ended. The status bar says it is reading until then, and a first look that takes a while
@@ -860,6 +865,18 @@ impl Editor {
     /// through the activity board ([`Editor::reading_followed`]); its authoritative `job.wait`
     /// reader adopts the final result independently of presentation visibility.
     pub(crate) fn read_source(&mut self, source: ReadSource) -> Task<Message> {
+        if let ReadSource::Folder(path) = &source
+            && luxforge_core::catalog_types::disk::broad_folder(
+                path,
+                self.select.state.home.as_deref(),
+            )
+        {
+            self.status.text = "Choose a specific subfolder to browse photographs".into();
+            if self.select.state.open.contains(path) {
+                return Task::none();
+            }
+            return self.toggle_disk(path.clone());
+        }
         match &source {
             ReadSource::Folder(path) => self.select.state.folder = Some(path.clone()),
             // Browsing the card its notice offers answers the notice.
@@ -1055,6 +1072,7 @@ impl Editor {
     /// Evaluate `query` into this client's one view: `browse.view` with the whole query and nothing
     /// else, then the session it left, in one owner task; and the chips' `browse.facets` beside it.
     pub(crate) fn evaluate(&mut self, query: ViewQuery) -> Task<Message> {
+        self.remember_develop_folder(&query);
         let changed_source = self
             .select
             .state
@@ -1129,6 +1147,7 @@ impl Editor {
                 let was_active = self.session.browse.selection.active;
                 self.adopt(session);
                 let now_active = self.session.browse.selection.active;
+                self.remember_develop_folder(&summary.query);
                 let state = &mut self.select.state;
                 let previous = state.summary.take();
                 let same_source = previous

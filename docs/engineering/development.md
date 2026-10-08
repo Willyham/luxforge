@@ -41,7 +41,7 @@ Doctor reports missing tools and the graphics environment without installing any
 | Individual steps | `cargo xtask check-repository`, `fmt`, `lint`, `test [--quick]`, `build [--release]` (the editor, the headless `luxforge-json` and the live-session client `luxforge-ctl`) |
 | Run the editor, release build | `cargo xtask develop [--catalog FILE] [--open PATH] [--data-root DIR]` |
 | Run a lightly optimized debug build, debugging only | `cargo xtask develop --debug ...` |
-| Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH]` |
+| Run an agent's editor check without taking focus (macOS) | `cargo xtask develop --background --catalog FILE [--open PATH] [--binary PATH]` |
 | Display-independent acceptance of what `cargo test` cannot prove at the same layer: the Basic and histogram, field-patch conformance (in release), Presence, mixer and vignette, Tone curve and masking chapters | `cargo run --release --locked --package xtask -- editor-acceptance --output NEW_DIR` |
 | Core timing on a real-sized JPEG; `--lens-only` accepts JPEG or RAW and measures profile queries, commits, matched exact renders, point picks, serial export and cancellation | `cargo run --release --locked --package xtask -- editor-performance --source JPEG --output NEW_DIR [--samples N]`; for Lens, `--lens-only --source JPEG\|RAW` |
 | Headless Detail full render/export, reopened-owner neutral picks, first/later colour-limited draft ticks and neutral source sharing; accepts the planned 24 MP or 60 MP JPEG | `cargo run --release --locked --package xtask -- detail-performance --source JPEG --output NEW_DIR [--samples N] [--case all\|render\|export\|points\|sharing]` |

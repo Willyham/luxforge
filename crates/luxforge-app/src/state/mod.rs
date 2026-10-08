@@ -480,6 +480,7 @@ impl Workspace {
             .and_then(|job| job.entry.progress.as_ref())
             .and_then(|progress| progress.fraction);
         self.develop = develop::derive(inputs.develop, progress);
+        self.develop.can_enter |= inputs.document.state.is_some();
         self.settings = settings::derive(
             inputs.settings,
             inputs.preferences,

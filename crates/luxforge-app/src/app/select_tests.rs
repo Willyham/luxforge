@@ -194,10 +194,10 @@ fn held(key: Key, modifiers: Modifiers, repeat: bool) -> Event {
     })
 }
 
-/// Both title-bar hints switch workspaces before browsing and with or without a selection; neither
-/// shortcut steals a letter from a text field or acts again when held.
+/// With no loaded set or catalog folder, D explains the choice without developing a selection;
+/// neither shortcut steals a letter from a text field or acts again when held.
 #[test]
-fn workspace_keys_switch_without_developing_the_selection() {
+fn workspace_keys_respect_empty_develop_set_and_text_capture() {
     for (with_view, active) in [(false, None), (true, None), (true, Some(1))] {
         let (mut editor, catalog) = if with_view {
             viewing(
@@ -224,7 +224,8 @@ fn workspace_keys_switch_without_developing_the_selection() {
         ));
         assert!(editor.select_shown(), "holding must not repeat the action");
         let _ = editor.update(press("d", Status::Ignored));
-        assert!(!editor.select_shown(), "D returns to Develop");
+        assert!(editor.select_shown(), "D needs a folder or loaded set");
+        assert!(editor.status.text.contains("Pick a catalog folder"));
         assert!(editor.develop.state.confirm.is_none());
         assert!(!editor.develop.state.planning);
         assert!(
@@ -232,7 +233,7 @@ fn workspace_keys_switch_without_developing_the_selection() {
             "D must not pick the active frame"
         );
         let _ = editor.update(press("g", Status::Captured));
-        assert!(!editor.select_shown(), "typing must keep Develop shown");
+        assert!(editor.select_shown(), "typing must keep Select shown");
         let _ = editor.update(press("g", Status::Ignored));
         assert!(editor.select_shown(), "G returns to Select");
         finish(editor, catalog);
@@ -826,8 +827,9 @@ fn a_stale_select_view_is_evaluated_again_after_a_wake() {
     let reveal = editor.select.layout.reveal(15, 30.0, 700.0);
     assert_eq!(editor.select.scroll, reveal);
 
-    // While Develop is shown a wake reads nothing until Select is shown again.
-    let _ = editor.update(Message::Select(SelectMessage::Switch(Shown::Develop)));
+    // While Develop is shown a wake reads nothing until Select is shown again. This scene
+    // supplies no development set, so set up that workspace directly.
+    drop(editor.show_develop_workspace());
     let _ = editor.update(Message::Sync(SyncMessage::Changed));
     assert!(!editor.select.check.in_flight());
     assert!(editor.select.check_on_show);
@@ -883,7 +885,8 @@ fn select_methods_the_owner_refuses_leave_the_workspace_usable() {
     let _ = editor.update(Message::Select(SelectMessage::TogglePanels));
     assert!(editor.left_panel_shown());
     let _ = editor.update(Message::Select(SelectMessage::Switch(Shown::Develop)));
-    assert!(!editor.select_shown());
+    assert!(editor.select_shown());
+    assert!(editor.status.text.contains("Pick a catalog folder"));
     // An evaluation overtaken by a newer one is dropped.
     let _ = editor.update(Message::Select(SelectMessage::Switch(Shown::Select)));
     let _ = editor.update(Message::Select(SelectMessage::Source(ViewSource::Removed)));

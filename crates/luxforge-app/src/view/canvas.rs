@@ -588,6 +588,7 @@ fn plain<'a>(
     let (clipping, coverage) = (surfaces.clipping, surfaces.coverage);
     let mask_draft = surfaces.mask_draft;
     let mask_map = surfaces.mask_map;
+    let mask_handles = surfaces.mask_handles;
     let gpu = surfaces.gpu;
     let (gpu_hold, gpu_tag, gpu_warm) = (surfaces.gpu_hold, surfaces.gpu_tag, surfaces.gpu_warm);
     let (gpu_change, gpu_source) = (surfaces.gpu_change, surfaces.gpu_source);
@@ -635,14 +636,17 @@ fn plain<'a>(
                     Some((draft, map, view, rect)) => stack([
                         photo,
                         iced::widget::container(
-                            canvas(MaskCanvas::new(
-                                draft,
-                                Placement {
-                                    map: map.clone(),
-                                    view,
-                                    scale_factor: model.scale_factor,
-                                },
-                            ))
+                            canvas(
+                                MaskCanvas::new(
+                                    draft,
+                                    Placement {
+                                        map: map.clone(),
+                                        view,
+                                        scale_factor: model.scale_factor,
+                                    },
+                                )
+                                .with_handles(mask_handles),
+                            )
                             .width(Length::Fill)
                             .height(Length::Fill),
                         )
@@ -748,14 +752,17 @@ fn plain<'a>(
                 let layered: Element<'a, Message> = match handles {
                     Some(((draft, map), view)) => stack([
                         photo,
-                        canvas(MaskCanvas::new(
-                            draft,
-                            Placement {
-                                map: map.clone(),
-                                view,
-                                scale_factor: model.scale_factor,
-                            },
-                        ))
+                        canvas(
+                            MaskCanvas::new(
+                                draft,
+                                Placement {
+                                    map: map.clone(),
+                                    view,
+                                    scale_factor: model.scale_factor,
+                                },
+                            )
+                            .with_handles(mask_handles),
+                        )
                         .width(box_width)
                         .height(box_height)
                         .into(),
@@ -816,7 +823,7 @@ fn comparison<'a>(
             .gpu_tag(surfaces.gpu_tag)
             .gpu_change(surfaces.gpu_change)
             .gpu_source(surfaces.gpu_source)
-            .gpu_rest(surfaces.gpu_counts)
+            .gpu_rest(surfaces.gpu_rest.or(surfaces.gpu_counts))
             .into()
         } else {
             match before {
@@ -849,12 +856,19 @@ fn comparison<'a>(
             Length::Fixed(size.height),
         )
         .exact_stage(dimensions)
-        .reveal_from(if position == 1.0 { 0.0 } else { position })
+        .reveal_from(if surfaces.comparison_waiting || position == 1.0 {
+            0.0
+        } else {
+            position
+        })
         .gpu_preview(surfaces.compare_gpu)
         .gpu_change(surfaces.compare_change)
-        .gpu_source(surfaces.gpu_source)
+        .gpu_source(surfaces.compare_source.or(surfaces.gpu_source))
         .gpu_rest(surfaces.compare_rest)
         .into();
+        if surfaces.comparison_waiting {
+            return stack([after, before]).into();
+        }
         let divider = canvas(super::compare_canvas::CompareCanvas {
             photo: rect,
             position,
@@ -1400,6 +1414,7 @@ mod tests {
         let frame = luxforge_ui::Frame::new(pixels, 1, 1, 1).expect("a one-pixel frame");
         let surfaces = Surfaces {
             comparison: None,
+            comparison_waiting: false,
             photo: Some(&frame),
             photo_content: None,
             current_content: 0,
@@ -1410,6 +1425,7 @@ mod tests {
             coverage: None,
             mask_draft: None,
             mask_map: None,
+            mask_handles: true,
             draft: None,
             gpu: None,
             gpu_hold: false,
@@ -1421,6 +1437,7 @@ mod tests {
             gpu_rest: None,
             gpu_counts: None,
             compare_gpu: None,
+            compare_source: None,
             compare_change: None,
             compare_rest: None,
         };
