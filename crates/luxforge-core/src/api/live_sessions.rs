@@ -135,21 +135,18 @@ pub fn running_sessions(dir: &Path) -> Result<Vec<RunningSession>, Error> {
     files.sort();
     let mut running = Vec::new();
     for file in &files {
-        let extension = file.extension().and_then(|extension| extension.to_str());
-        match extension {
-            Some(ENTRY_EXTENSION) => {
-                let lock = file.with_extension(LOCK_EXTENSION);
-                if held(&lock) {
-                    running.push(RunningSession {
-                        file: file.clone(),
-                        entry: read_entry(file),
-                    });
-                } else {
-                    let _ = std::fs::remove_file(file);
-                    let _ = std::fs::remove_file(lock);
-                }
-            }
-            _ => {}
+        if file.extension().and_then(|extension| extension.to_str()) != Some(ENTRY_EXTENSION) {
+            continue;
+        }
+        let lock = file.with_extension(LOCK_EXTENSION);
+        if held(&lock) {
+            running.push(RunningSession {
+                file: file.clone(),
+                entry: read_entry(file),
+            });
+        } else {
+            let _ = std::fs::remove_file(file);
+            let _ = std::fs::remove_file(lock);
         }
     }
     Ok(running)
