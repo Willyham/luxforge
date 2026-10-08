@@ -117,7 +117,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         Step::new(
             "form",
             PresetCreateStep {
-                auto_tone: false,
+                analysis: Vec::new(),
                 name: NATIVE.into(),
                 group: None,
                 groups: vec![TONE_GROUP.into()],
@@ -129,7 +129,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         Step::new(
             "created",
             PresetCreateStep {
-                auto_tone: false,
+                analysis: Vec::new(),
                 name: NATIVE.into(),
                 group: None,
                 groups: vec![TONE_GROUP.into()],

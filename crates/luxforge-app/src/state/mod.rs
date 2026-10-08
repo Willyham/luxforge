@@ -3930,7 +3930,7 @@ mod tests {
         scene.preset_form.name = "Tone only".into();
         assert!(form(&scene).can_create);
         for check in &opened.checks {
-            scene.preset_form.checked.insert(check.label.clone(), false);
+            scene.preset_form.checked.insert(check.id.clone(), false);
         }
         assert!(
             !form(&scene).can_create,
@@ -3939,7 +3939,7 @@ mod tests {
         scene
             .preset_form
             .checked
-            .insert("Basic \u{00b7} Tone".into(), true);
+            .insert("luxforge.basic/tone".into(), true);
         assert!(form(&scene).can_create);
         scene.busy = true;
         assert!(!form(&scene).can_create);

@@ -357,7 +357,10 @@ fn check_patch(module: &ModuleDescriptor, action: &ActionDescriptor) -> Result<(
         )));
     }
     if !action.preset {
-        return Err(Error::validation(format!("{} is not presettable", action.id)));
+        return Err(Error::validation(format!(
+            "{} is not presettable",
+            action.id
+        )));
     }
     module.check_available()
 }
@@ -372,7 +375,10 @@ fn check_analysis(module: &ModuleDescriptor, action: &ActionDescriptor) -> Resul
         )));
     }
     if !action.preset {
-        return Err(Error::validation(format!("{} is not presettable", action.id)));
+        return Err(Error::validation(format!(
+            "{} is not presettable",
+            action.id
+        )));
     }
     module.check_available()
 }

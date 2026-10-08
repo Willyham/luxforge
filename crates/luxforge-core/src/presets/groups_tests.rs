@@ -16,7 +16,11 @@ fn builtin() -> SettingsGroups {
 }
 
 fn ids(groups: &SettingsGroups) -> Vec<&str> {
-    groups.groups.iter().map(|group| group.id.as_str()).collect()
+    groups
+        .groups
+        .iter()
+        .map(|group| group.id.as_str())
+        .collect()
 }
 
 /// Every presettable field-patch group of the built-in modules, in registry order, under an
@@ -57,18 +61,31 @@ fn the_builtin_groups_have_stable_ids_in_registry_order_and_white_balance_is_per
         serde_json::to_value(&tone.fields).unwrap(),
         json!({"set-basic": ["exposure", "contrast", "highlights", "shadows", "whites", "blacks"]})
     );
-    assert!(groups.groups.iter().all(|group| group.unavailable.is_none()));
+    assert!(
+        groups
+            .groups
+            .iter()
+            .all(|group| group.unavailable.is_none())
+    );
     let [auto] = groups.analysis.as_slice() else {
         panic!("one analysis step: {:?}", groups.analysis);
     };
     assert_eq!(auto.id, "auto-tone");
     assert_eq!(auto.title, "Basic \u{00b7} Auto tone");
-    assert_eq!(auto.overwrites, ["luxforge.basic/tone", "luxforge.basic/colour"]);
+    assert_eq!(
+        auto.overwrites,
+        ["luxforge.basic/tone", "luxforge.basic/colour"]
+    );
     assert_eq!(tone.overwritten_by, ["auto-tone"]);
     assert!(groups.groups[0].overwritten_by.is_empty());
     // Without a photograph nothing is per-entry.
     assert!(groups.photo.is_none());
-    assert!(groups.groups.iter().all(|g| g.state.is_none() && g.reason.is_none()));
+    assert!(
+        groups
+            .groups
+            .iter()
+            .all(|g| g.state.is_none() && g.reason.is_none())
+    );
 }
 
 /// White balance is each kind's own: a JPEG's relative pair, which a RAW photo's development
@@ -84,7 +101,10 @@ fn per_kind_captures_and_skips_predict_the_white_balance_notice() {
         Value::Object(jpeg.captures.clone()),
         json!({"set-basic": ["temperature", "tint"]})
     );
-    assert_eq!(Value::Object(raw.captures.clone()), json!({"set-raw": true}));
+    assert_eq!(
+        Value::Object(raw.captures.clone()),
+        json!({"set-raw": true})
+    );
     assert!(jpeg.refused.is_none() && raw.refused.is_none());
     let [on_raw] = jpeg.skipped.as_slice() else {
         panic!("a JPEG's pair is skipped on RAW: {:?}", jpeg.skipped);
@@ -164,11 +184,18 @@ fn groups_come_from_descriptors_not_from_names() {
     let groups = settings_groups([&module]);
     assert_eq!(
         ids(&groups),
-        ["fixture.look", "fixture.look/cast", "fixture.look/glow-light"]
+        [
+            "fixture.look",
+            "fixture.look/cast",
+            "fixture.look/glow-light"
+        ]
     );
     assert_eq!(groups.groups[0].title, "Look");
     assert_eq!(groups.groups[1].title, "Look \u{00b7} Cast");
-    assert!(groups.groups[1].default_checked, "a tint field is not per photo by name");
+    assert!(
+        groups.groups[1].default_checked,
+        "a tint field is not per photo by name"
+    );
     assert!(!groups.groups[2].default_checked);
     let unavailable = ModuleDescriptor {
         availability: crate::Availability::Unavailable {
@@ -193,7 +220,11 @@ fn capture_fields_merge_groups_and_name_analysis_steps() {
     assert_eq!(
         Value::Object(
             groups
-                .capture_fields(&["luxforge.basic/white-balance", "luxforge.basic/tone", "luxforge.vignette/vignette"])
+                .capture_fields(&[
+                    "luxforge.basic/white-balance",
+                    "luxforge.basic/tone",
+                    "luxforge.vignette/vignette"
+                ])
                 .unwrap()
         ),
         json!({
@@ -202,12 +233,22 @@ fn capture_fields_merge_groups_and_name_analysis_steps() {
         })
     );
     assert_eq!(
-        Value::Object(groups.capture_fields(&["auto-tone", "luxforge.basic/white-balance"]).unwrap()),
+        Value::Object(
+            groups
+                .capture_fields(&["auto-tone", "luxforge.basic/white-balance"])
+                .unwrap()
+        ),
         json!({"auto-tone": true, "set-basic": ["temperature", "tint"]})
     );
     for (ids, detail) in [
-        (vec!["luxforge.basic/nowhere"], "unknown settings group luxforge.basic/nowhere"),
-        (vec!["luxforge.basic/tone", "luxforge.basic/tone"], "names luxforge.basic/tone twice"),
+        (
+            vec!["luxforge.basic/nowhere"],
+            "unknown settings group luxforge.basic/nowhere",
+        ),
+        (
+            vec!["luxforge.basic/tone", "luxforge.basic/tone"],
+            "names luxforge.basic/tone twice",
+        ),
         (vec![], "groups names 1 to 64 groups"),
     ] {
         let error = groups.capture_fields(&ids).expect_err(detail);
@@ -284,7 +325,9 @@ fn a_photos_groups_are_custom_or_original_against_the_named_entry() {
         )
         .expect("a mixer edit");
     let edited = current(&service, &asset);
-    let groups = service.preset_groups(Some((&asset, &edited))).expect("groups");
+    let groups = service
+        .preset_groups(Some((&asset, &edited)))
+        .expect("groups");
     let custom: Vec<&str> = states(&groups)
         .into_iter()
         .filter(|(_, state)| *state == GroupState::Custom)
@@ -341,7 +384,9 @@ fn a_group_capture_refuses_is_refused_with_its_reason() {
     }
     let service = EditorService::open_with(&path, Arc::new(registry)).expect("a catalog");
     let entry = current(&service, &asset);
-    let groups = service.preset_groups(Some((&asset, &entry))).expect("groups");
+    let groups = service
+        .preset_groups(Some((&asset, &entry)))
+        .expect("groups");
     for group in &groups.groups {
         let refused = match group.module.as_str() {
             "luxforge.basic" => Some("validation: ambiguous Basic layers"),

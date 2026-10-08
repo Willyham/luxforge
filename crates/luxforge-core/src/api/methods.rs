@@ -2188,8 +2188,9 @@ fn preset_capture(
 ) -> Result<Value, Error> {
     let fields = match (p.fields, p.groups) {
         (Some(fields), None) => fields,
-        (None, Some(groups)) => crate::settings_groups(service.registry().descriptors())
-            .capture_fields(&groups)?,
+        (None, Some(groups)) => {
+            crate::settings_groups(service.registry().descriptors()).capture_fields(&groups)?
+        }
         _ => {
             return Err(Error::validation(
                 "preset.capture takes exactly one of fields and groups",

@@ -120,7 +120,6 @@ pub(crate) use raw::lightroom_white_balance::lightroom_to_luxforge;
 pub use raw::white_balance::{gains_from_temperature_tint, temperature_tint_from_gains};
 pub use raw::{RawModule, RawPayload, WhiteBalanceMode};
 pub(crate) use raw::{is_raw_development, white_balance_variants};
-pub(crate) use registry::{Superseded, settings_action_in, superseded_in, superseded_refusal_in};
 #[cfg(test)]
 pub(crate) use registry::linked_modules;
 #[cfg(test)]
@@ -132,6 +131,7 @@ pub(crate) use registry::tests::{
 };
 pub use registry::{ActionRef, QueryRef};
 pub use registry::{ModuleRegistry, Provider, RegistryOptions, insertion_index_among};
+pub(crate) use registry::{Superseded, settings_action_in, superseded_in, superseded_refusal_in};
 pub(crate) use spatial::{
     ESTIMATE_REDUCTION, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes,
     PlanesMut, Reduction, SPATIAL_BUDGET_BYTES, SpatialUnit,
