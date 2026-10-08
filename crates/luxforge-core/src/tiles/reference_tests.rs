@@ -125,7 +125,7 @@ struct Lattice;
 
 impl super::SensorClip for Lattice {
     fn clipped_at(&self, x: u32, y: u32) -> bool {
-        (x + 2 * y) % 7 == 0
+        (x + 2 * y).is_multiple_of(7)
     }
 }
 
@@ -183,7 +183,7 @@ fn a_grids_clipped_flags_read_the_source_under_each_point_through_the_crop() {
         sensed.sample.source_clipped,
         points
             .iter()
-            .map(|&(x, y)| (x + 2 * y) % 7 == 0)
+            .map(|&(x, y)| (x + 2 * y).is_multiple_of(7))
             .collect::<Vec<_>>()
     );
     assert_eq!(sensed.clipping, super::ClipDetection::RawSensorWhite);

@@ -216,9 +216,9 @@ fn auto_tone_dark_neutral_ramp_equals_the_designs_steps_and_its_analytical_expos
         &Cancel::never(),
     )
     .unwrap();
-    let median = f64::from(input.rgb[511][0]);
+    let middle = f64::from(input.rgb[511][0]);
     let linear_target = ((0.46_f64 + 0.055) / 1.055).powf(2.4);
-    let first = ((linear_target / median).log2() * 100.).round() / 100.;
+    let first = ((linear_target / middle).log2() * 100.).round() / 100.;
     assert_eq!(
         report.bands,
         statistics(
