@@ -57,7 +57,7 @@ pub fn forward_model<'a>(
             .effect(LOOK_EFFECT)
             .ok_or_else(|| Error::incompatible("Auto tone's Look provider is unavailable"))?;
         if !module.monotonic_luminance(LOOK_EFFECT, layer.effect_format, &layer.payload)? {
-            search = ExposureSearch::Exhaustive;
+            search = ExposureSearch::CoarseToFine;
         }
         let Processing::Color(unit) =
             module.compile(LOOK_EFFECT, layer.effect_format, &layer.payload, stage)?
