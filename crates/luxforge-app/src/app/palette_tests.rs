@@ -230,14 +230,22 @@ fn an_entry_shows_its_declared_chord_beside_its_label() {
             .iter()
             .find(|entry| entry.label == query)
             .unwrap_or_else(|| panic!("no entry named {query:?}: {entries:?}"));
-        (entry.shortcut.clone(), entry.refusal.clone(), entry.action.clone())
+        (
+            entry.shortcut.clone(),
+            entry.refusal.clone(),
+            entry.action.clone(),
+        )
     };
     let (auto, _, action) = shortcut(&mut editor, "Basic \u{b7} Auto");
     assert!(matches!(action, PaletteAction::Run { action, .. } if action == "auto-tone"));
     assert_eq!(auto.as_deref(), Some("\u{2318}U"));
     for (label, chord, command) in [
         ("Copy settings", "\u{2318}C", HostCommand::CopySettings),
-        ("Copy settings\u{2026}", "\u{21e7}\u{2318}C", HostCommand::CopySettingsChoosing),
+        (
+            "Copy settings\u{2026}",
+            "\u{21e7}\u{2318}C",
+            HostCommand::CopySettingsChoosing,
+        ),
         ("Paste settings", "\u{2318}V", HostCommand::PasteSettings),
         (
             "Paste settings from previous photograph",

@@ -77,11 +77,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             .label("Preset: Auto per photo"),
         Step::new("predicted-again", script::Step::api("query.auto-tone")).commits(0),
         // The palette lists Auto with the chord Basic's descriptor declares beside its label.
-        Step::new(
-            "palette",
-            script::PaletteStep::Query("auto".into()),
-        )
-        .commits(0),
+        Step::new("palette", script::PaletteStep::Query("auto".into())).commits(0),
     ])
 }
 
