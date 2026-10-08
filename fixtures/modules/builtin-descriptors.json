@@ -2691,6 +2691,7 @@
             ],
             "kind": "group",
             "label": "White balance",
+            "per_photo": true,
             "reset": {
               "action": "set-basic",
               "preset": {

@@ -17,7 +17,9 @@
 //! them: no source is opened and nothing is rendered or sampled.
 use crate::{
     ActionDescriptor, AssetId, Control, EditorService, EntryId, Error, ModuleDescriptor, SourceTag,
-    modules::{not_applicable, settings_action_in, superseded_in, superseded_refusal_in},
+    modules::{
+        Superseded, not_applicable, settings_action_in, superseded_in, superseded_refusal_in,
+    },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -211,8 +213,11 @@ impl SettingsGroup {
 /// answers without a photograph, from the registry's descriptors, and what a client derives from
 /// its `module.list` alike. An unavailable module's groups are listed with the refusal capture
 /// would give them. `O(modules × controls)`; reads no stack.
-pub fn settings_groups<'a>(modules: impl IntoIterator<Item = &'a ModuleDescriptor>) -> SettingsGroups {
+pub fn settings_groups<'a>(
+    modules: impl IntoIterator<Item = &'a ModuleDescriptor>,
+) -> SettingsGroups {
     let modules: Vec<&ModuleDescriptor> = modules.into_iter().collect();
+    let superseded = superseded_in(&modules);
     let mut groups = Vec::new();
     for module in &modules {
         let mut drafts = Vec::new();
@@ -251,9 +256,12 @@ pub fn settings_groups<'a>(modules: impl IntoIterator<Item = &'a ModuleDescripto
                 title,
                 kinds: SourceTag::ALL
                     .into_iter()
-                    .map(|kind| on_kind(&modules, &fields, kind))
+                    .map(|kind| on_kind(&modules, &superseded, &fields, kind))
                     .collect(),
-                unavailable: module.check_available().err().map(|error| error.to_string()),
+                unavailable: module
+                    .check_available()
+                    .err()
+                    .map(|error| error.to_string()),
                 fields,
                 per_photo: draft.per_photo,
                 default_checked: !draft.per_photo,
@@ -291,7 +299,10 @@ pub fn settings_groups<'a>(modules: impl IntoIterator<Item = &'a ModuleDescripto
                 title: format!("{} \u{00b7} {}", module.title, action.title),
                 writes,
                 overwrites,
-                unavailable: module.check_available().err().map(|error| error.to_string()),
+                unavailable: module
+                    .check_available()
+                    .err()
+                    .map(|error| error.to_string()),
                 reason: None,
             });
         }
@@ -304,7 +315,10 @@ pub fn settings_groups<'a>(modules: impl IntoIterator<Item = &'a ModuleDescripto
 }
 
 /// Whether a group's fields and an analysis step's writes share a field.
-fn overlaps(fields: &BTreeMap<String, Vec<String>>, writes: &BTreeMap<String, Vec<String>>) -> bool {
+fn overlaps(
+    fields: &BTreeMap<String, Vec<String>>,
+    writes: &BTreeMap<String, Vec<String>>,
+) -> bool {
     fields.iter().any(|(action, names)| {
         writes
             .get(action)
@@ -411,10 +425,10 @@ fn slug(label: &str) -> String {
 /// it: a step whose module does not apply to the target, and a field superseded on it.
 fn on_kind(
     modules: &[&ModuleDescriptor],
+    superseded: &[Superseded<'_>],
     fields: &BTreeMap<String, Vec<String>>,
     kind: SourceTag,
 ) -> GroupOnKind {
-    let superseded = superseded_in(modules);
     let refusal = |action: &str| -> Option<String> {
         match settings_action_in(modules, action) {
             Ok((module, _)) => module.check_applies_to(kind).err(),
@@ -450,7 +464,7 @@ fn on_kind(
     let skipped = SourceTag::ALL
         .into_iter()
         .filter(|target| *target != kind)
-        .filter_map(|target| skipped_on(modules, &superseded, &captures, target))
+        .filter_map(|target| skipped_on(modules, superseded, &captures, target))
         .collect();
     GroupOnKind {
         kind,
@@ -464,7 +478,7 @@ fn on_kind(
 /// when every field applies.
 fn skipped_on(
     modules: &[&ModuleDescriptor],
-    superseded: &[crate::modules::Superseded<'_>],
+    superseded: &[Superseded<'_>],
     captures: &Map<String, Value>,
     target: SourceTag,
 ) -> Option<KindSkip> {
@@ -564,7 +578,12 @@ impl EditorService {
                 .map(|(action, names)| {
                     (
                         action.clone(),
-                        Value::Array(names.iter().map(|name| Value::from(name.as_str())).collect()),
+                        Value::Array(
+                            names
+                                .iter()
+                                .map(|name| Value::from(name.as_str()))
+                                .collect(),
+                        ),
                     )
                 })
                 .collect();

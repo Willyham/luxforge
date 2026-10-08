@@ -145,7 +145,10 @@ pub(crate) fn settings_groups(modules: &[ModuleDescriptor], developer: bool) -> 
 }
 
 /// The group a label names, as a script or a person reads it (`Basic · Tone`).
-pub(crate) fn group_titled<'a>(groups: &'a SettingsGroups, title: &str) -> Option<&'a SettingsGroup> {
+pub(crate) fn group_titled<'a>(
+    groups: &'a SettingsGroups,
+    title: &str,
+) -> Option<&'a SettingsGroup> {
     groups.groups.iter().find(|group| group.title == title)
 }
 
@@ -481,11 +484,17 @@ mod tests {
     fn the_form_offers_the_cores_groups_for_the_listed_modules() {
         let modules = descriptors();
         let ordinary = settings_groups(&modules, false);
-        let builtin = luxforge_core::settings_groups(
-            luxforge_core::ModuleRegistry::builtin().descriptors(),
+        let builtin =
+            luxforge_core::settings_groups(luxforge_core::ModuleRegistry::builtin().descriptors());
+        assert_eq!(
+            ordinary, builtin,
+            "a developer module adds nothing outside a developer run"
         );
-        assert_eq!(ordinary, builtin, "a developer module adds nothing outside a developer run");
-        let titles: Vec<&str> = ordinary.groups.iter().map(|group| group.title.as_str()).collect();
+        let titles: Vec<&str> = ordinary
+            .groups
+            .iter()
+            .map(|group| group.title.as_str())
+            .collect();
         assert_eq!(
             titles,
             [

@@ -1353,7 +1353,7 @@ fn copy_settings_select_confirmation_rechecks_selection_and_uses_the_shared_batc
         app::message::copy_settings::CopySettingsMessage as C,
         state::{
             copy_settings::Clipboard,
-            presets::{PresetForm, copyable_groups},
+            presets::{PresetForm, settings_groups},
         },
     };
     let (mut editor, catalog, agent) = catalog_editor();
@@ -1371,7 +1371,7 @@ fn copy_settings_select_confirmation_rechecks_selection_and_uses_the_shared_batc
     settle(&mut editor);
     press(&mut editor, 0, false);
     let source = editor.copy_source().unwrap();
-    let groups = copyable_groups(&editor.modules, false);
+    let groups = settings_groups(&editor.modules, false);
     let captured = crate::app::copy_settings::capture_now(
         &editor.owner,
         editor.client,
@@ -1387,8 +1387,9 @@ fn copy_settings_select_confirmation_rechecks_selection_and_uses_the_shared_batc
             .unwrap()
             .clone(),
         groups: groups
+            .groups
             .iter()
-            .filter(|group| group.label == "Basic · Tone")
+            .filter(|group| group.id == "luxforge.basic/tone")
             .cloned()
             .collect(),
         ..(*captured).clone()
