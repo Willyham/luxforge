@@ -180,6 +180,8 @@ pub struct ModuleRegistry {
     tasks: HashMap<String, (usize, usize)>,
     /// Canvas mode shortcut to the module that claims it, so one letter selects one mode.
     shortcuts: HashMap<String, usize>,
+    /// Action shortcut to the module that declares it, so one chord runs one action.
+    chords: HashMap<crate::Chord, usize>,
 }
 
 impl std::fmt::Debug for ModuleRegistry {
@@ -370,9 +372,27 @@ impl ModuleRegistry {
                 self.entries[*existing].provider().descriptor().id
             )));
         }
+        for action in &descriptor.actions {
+            if let Some(chord) = action.shortcut
+                && let Some(existing) = self.chords.get(&chord)
+            {
+                return Err(Error::validation(format!(
+                    "shortcut {chord} of action {} is already claimed by {}",
+                    action.id,
+                    self.entries[*existing].provider().descriptor().id
+                )));
+            }
+        }
         let index = self.entries.len();
         if let Some(letter) = shortcut {
             self.shortcuts.insert(letter.to_owned(), index);
+        }
+        for chord in descriptor
+            .actions
+            .iter()
+            .filter_map(|action| action.shortcut)
+        {
+            self.chords.insert(chord, index);
         }
         self.module_ids.insert(descriptor.id.clone());
         for (position, effect) in descriptor.effects.iter().enumerate() {

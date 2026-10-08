@@ -48,7 +48,7 @@ pub(crate) fn palette(model: &PaletteModel) -> Option<Element<'_, Message>> {
                         .unwrap_or_else(|| entry.detail.clone()),
                 ),
                 dimmed: entry.refusal.is_some(),
-                tag: None,
+                tag: entry.shortcut.clone(),
                 enabled: entry.refusal.is_none(),
             },
             entry
