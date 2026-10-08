@@ -6,6 +6,14 @@
 //! tiles they draw, so a neutral pick's 25 points draw one; a mutation's read comes back to the
 //! owner, which keeps it in the session's [`PixelMemo`] and replays the mutation once with it.
 //!
+//! The replay is one protocol ([`Replay`]) with two drivers: the owner's parked calls, which keep
+//! their answers in the calling session's memo, and a library batch's photographs, each of which
+//! keeps its own memo on the lane's worker and never touches the caller's. Both serve every pass
+//! through [`EditorService::begin_pixel_call`] and [`EditorService::finish_pixel_call`], submit
+//! every read as [`DeferredRead::tile_call`], check on the owner that what a read was read from is
+//! still current ([`EditorService::pixel_key_current`]) before the pass that uses it, and stop at
+//! [`MAX_PIXEL_READS`].
+//!
 //! [performance rule 5]: ../../../../docs/engineering/performance-rules.md#rules
 use super::{
     AssetRecord, EditorService, Evaluation,
@@ -20,7 +28,7 @@ use crate::{
 };
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
-use std::cell::RefCell;
+use std::{cell::RefCell, collections::BTreeMap};
 
 pub(crate) const MAX_PIXEL_MEMO: usize = 32;
 
@@ -32,6 +40,58 @@ pub(crate) const MAX_PIXEL_READS: usize = 4;
 /// What a read deferred to the tile service answers where its pixel would have been: the call
 /// that made it is discarded whatever it answered, and runs again once the pixel is read.
 pub(crate) const DEFERRED: &str = "pixel read deferred to the tile service";
+
+/// Which pass of a call that reads pixels is served: its first, a replay once its `n`th parked
+/// read was answered with the pixel in its memo, or a replay without it because what the pixel
+/// was read from changed meanwhile.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Replay {
+    First,
+    Read(usize),
+    Stale,
+}
+
+impl Replay {
+    /// A pass of this replay deferred another read: the number that read is among the call's,
+    /// which the caller parks and has read; or the call's answer instead — `resource-limit` once
+    /// its plans have read [`MAX_PIXEL_READS`] pixels, and `conflict` when what its last read was
+    /// read from changed and the replay needs a pixel again.
+    pub(crate) fn park(self) -> Result<usize, Error> {
+        match self {
+            Self::First => Ok(1),
+            // The read it parked for is in its memo, so its plans ask for another, such as a
+            // collapse planning against the entry's parent: parked again, a bounded number of
+            // times.
+            Self::Read(reads) if reads < MAX_PIXEL_READS => Ok(reads + 1),
+            Self::Read(_) => Err(Error::resource_limit(format!(
+                "the plan read more than {MAX_PIXEL_READS} pixels"
+            ))),
+            Self::Stale => Err(Error::conflict(
+                "the stack changed while its pixels were read; retry",
+            )),
+        }
+    }
+
+    /// The pass after the call's `reads`th read came back with `answer`: kept in `memo` and
+    /// replayed with it when what it was read from is still `current`, which the owner decides
+    /// ([`EditorService::pixel_key_current`]) just before the replay; otherwise `memo` is cleared
+    /// and the call replayed without it, so a replay that needs the pixel again answers
+    /// `conflict` ([`Self::park`]) and one that no longer does answers as it would have.
+    pub(crate) fn answered(
+        reads: usize,
+        answer: PixelAnswer,
+        current: bool,
+        memo: &mut PixelMemo,
+    ) -> Self {
+        if current {
+            memo.insert(answer);
+            Self::Read(reads)
+        } else {
+            memo.clear();
+            Self::Stale
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PixelRead {
@@ -145,6 +205,9 @@ pub(crate) struct PixelReads {
     pub draft: Option<(DraftId, u64)>,
     pub memo: PixelMemo,
     pub deferred: Option<DeferredRead>,
+    /// The answer of each declared analysis query ([`crate::AnalysisAction`]) an action's plans
+    /// were given, by query, which [`EditorService::run_action`] reports beside its result.
+    pub analysed: BTreeMap<String, Value>,
 }
 
 #[derive(Debug)]
@@ -155,6 +218,23 @@ pub(crate) struct DeferredRead {
 }
 
 impl DeferredRead {
+    /// The tile call that reads this pixel for `client` under `cancel` and hands the answer to
+    /// `deliver`, which returns it to the owner: every parked read, the owner's and a batch's, is
+    /// submitted as one of these.
+    pub(crate) fn tile_call(
+        self,
+        client: crate::ClientId,
+        cancel: Cancel,
+        deliver: impl FnOnce(Result<PixelAnswer, Error>) + Send + 'static,
+    ) -> crate::tiles::TileCall {
+        crate::tiles::TileCall::pixels(
+            client,
+            cancel,
+            move |reads, cancel| self.evaluate(reads, cancel),
+            deliver,
+        )
+    }
+
     /// Read the deferred pixel with `reads`, the tile service's renderer: its code and its linear
     /// value in the stage its layer receives, through one session, so the two are one tile.
     pub(crate) fn evaluate(
@@ -221,7 +301,10 @@ impl EditorService {
         };
         if let Some(answer) = self.deferred_read(asset, recipe, source.clone(), false, read)? {
             return match answer.value {
-                PixelValue::Query(Ok(value)) => Ok(value),
+                PixelValue::Query(Ok(value)) => {
+                    self.analysed(id, &value);
+                    Ok(value)
+                }
                 PixelValue::Query(Err(refusal)) => {
                     let mut error = Error::validation(refusal.detail);
                     error.data = refusal.data;
@@ -235,7 +318,7 @@ impl EditorService {
         super::plan::refuse_on_owner()?;
         let head = self.head(&asset.id)?;
         let entry = self.entry(&asset.id, &head.current)?;
-        QueryPlan {
+        let value = QueryPlan {
             evaluation: Evaluation::new(
                 self.registry.clone(),
                 self.render_context().clone(),
@@ -249,7 +332,24 @@ impl EditorService {
             mask: None,
             kind: asset.source.tag(),
         }
-        .evaluate(&crate::tiles::ReferenceReads, &Cancel::never())
+        .evaluate(&crate::tiles::ReferenceReads, &Cancel::never())?;
+        self.analysed(id, &value);
+        Ok(value)
+    }
+
+    /// Keep a declared analysis query's answer for the action being planned to report.
+    fn analysed(&self, id: &str, value: &Value) {
+        if self.registry.analysis_query(id) {
+            self.pixel_reads
+                .borrow_mut()
+                .analysed
+                .insert(id.to_owned(), value.clone());
+        }
+    }
+
+    /// The declared analysis answers the plans since the last take were given, by query.
+    pub(crate) fn take_analysed(&self) -> BTreeMap<String, Value> {
+        std::mem::take(&mut self.pixel_reads.borrow_mut().analysed)
     }
 
     /// Whether `draft`'s plan reads a pixel when it is planned: a stroke drafted with a colour
@@ -273,19 +373,30 @@ impl EditorService {
         }))
     }
 
+    /// Begin one pass of a call on the owner: every read its plans make of a stage is answered
+    /// from `memo` or deferred ([`Self::deferred_read`]), keyed with `draft`'s identity.
     pub(crate) fn begin_pixel_call(&self, draft: Option<&crate::Draft>, memo: PixelMemo) {
         *self.pixel_reads.borrow_mut() = PixelReads {
             enabled: true,
             draft: draft.map(|d| (d.draft_id.clone(), d.draft_revision)),
             memo,
             deferred: None,
+            analysed: BTreeMap::new(),
         };
     }
+
+    /// Take the read a step of the pass deferred, leaving the pass open: a query that answers it
+    /// whole on the tile service instead.
     pub(crate) fn take_pixel_read(&self) -> Option<DeferredRead> {
         self.pixel_reads.borrow_mut().deferred.take()
     }
-    pub(crate) fn end_pixel_call(&self) {
-        self.pixel_reads.borrow_mut().enabled = false;
+
+    /// End the pass [`Self::begin_pixel_call`] began, answering the read it deferred, if any, for
+    /// its caller to park and replay the call after ([`Replay`]).
+    pub(crate) fn finish_pixel_call(&self) -> Option<DeferredRead> {
+        let mut reads = self.pixel_reads.borrow_mut();
+        reads.enabled = false;
+        reads.deferred.take()
     }
 
     /// While the catalog owner serves a call, answer a read of the stage layer `read.index`
@@ -345,19 +456,32 @@ impl EditorService {
         Err(Error::internal(DEFERRED))
     }
 
+    /// Whether what `key` was read from is still current: the asset's entry and revision, `draft`
+    /// (the calling session's, `None` for a batch) at the revision read, and the verified source.
     pub(crate) fn pixel_key_current(
         &self,
         key: &PixelReadKey,
         draft: Option<&crate::Draft>,
     ) -> Result<bool, Error> {
-        let head = self.head(&key.asset_id)?;
-        if head.current != key.entry_id
-            || head.revision != key.revision
-            || draft.map(|d| (d.draft_id.clone(), d.draft_revision)) != key.draft
-        {
+        if !self.pixel_head_current(key, draft)? {
             return Ok(false);
         }
+        let head = self.head(&key.asset_id)?;
         self.holds_verified_source(&head.asset, &key.source)
+    }
+
+    /// [`Self::pixel_key_current`] without the source check, which may read the file's metadata:
+    /// what the owner asks of every parked read after each message, so a read whose stack or draft
+    /// has moved on is cancelled rather than finished.
+    pub(crate) fn pixel_head_current(
+        &self,
+        key: &PixelReadKey,
+        draft: Option<&crate::Draft>,
+    ) -> Result<bool, Error> {
+        let head = self.head(&key.asset_id)?;
+        Ok(head.current == key.entry_id
+            && head.revision == key.revision
+            && draft.map(|d| (d.draft_id.clone(), d.draft_revision)) == key.draft)
     }
 
     pub(crate) fn query_plan(
