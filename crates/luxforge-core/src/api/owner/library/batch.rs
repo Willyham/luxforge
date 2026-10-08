@@ -22,16 +22,16 @@ use crate::{
     api::{ClientId, Origin, announce_once, methods::value, owner::export},
     catalog_types::{
         BatchWritten,
-        api::{BatchApplyPreset, BatchExport},
-        jobs::{BATCH_EXPORT, BATCH_PRESET},
+        api::{BatchApplyPreset, BatchExport, BatchPasteSettings},
+        jobs::{BATCH_EXPORT, BATCH_PASTE, BATCH_PRESET, CatalogJob},
     },
     editor::{ExportPlan, library_rows},
     library::{
-        batch::{self, Applied, PresetApply, Progress},
+        batch::{self, Applied, Progress, SettingsApply},
         locate::Phase,
         targets,
     },
-    modules::APPLY_PRESET,
+    modules::PASTE_SETTINGS,
 };
 use serde_json::Value;
 use std::{
@@ -59,15 +59,59 @@ pub(in crate::api) fn batch_apply_preset(
         selected(owner, call.client)
     })?;
     let (record, _) = owner.service.preset(&params.preset_id)?;
-    let preset = Arc::new(PresetApply::new(
+    let preset = Arc::new(SettingsApply::new(
         record,
         params.mutation.request_id,
         params.mutation.actor,
     ));
+    queue_settings(owner, call, assets, preset, &BATCH_PRESET)
+}
+
+/// Validate the inline set once, before publishing a job or changing any photograph.
+pub(in crate::api) fn batch_paste_settings(
+    owner: &mut Owner,
+    call: &Call<'_>,
+    params: BatchPasteSettings,
+) -> Result<Value, Error> {
+    crate::presets::validate_settings(owner.service.registry(), &params.settings)?;
+    let mut parameters = serde_json::json!({"settings": params.settings, "source": params.source});
+    if let Some(asset) = params.source_asset_id {
+        parameters["source-asset"] = Value::String(asset);
+    }
+    let (module, action) = owner
+        .service
+        .registry()
+        .action(PASTE_SETTINGS)
+        .ok_or_else(|| Error::validation("paste-settings is unavailable"))?;
+    module.descriptor().check_available()?;
+    let checked = crate::check_parameters(action, &parameters)?;
+    let input = module.parse(PASTE_SETTINGS, &checked)?;
+    let parameters = Value::Object(input.parameters);
+    let source = parameters["source"].as_str().unwrap_or_default().to_owned();
+    let assets = targets::assets(&owner.service, &params.targets, || {
+        selected(owner, call.client)
+    })?;
+    let paste = Arc::new(SettingsApply::action(
+        PASTE_SETTINGS,
+        source,
+        parameters,
+        params.mutation.request_id,
+        params.mutation.actor,
+    ));
+    queue_settings(owner, call, assets, paste, &BATCH_PASTE)
+}
+
+fn queue_settings(
+    owner: &mut Owner,
+    call: &Call<'_>,
+    assets: Vec<(AssetId, crate::catalog_types::AssetRowId)>,
+    preset: Arc<SettingsApply>,
+    kind: &'static CatalogJob,
+) -> Result<Value, Error> {
     let (client, origin) = (call.client, call.origin.clone());
     let task = Task {
         job_id: JobId::new(),
-        job: &BATCH_PRESET,
+        job: kind,
         asset_id: only(&assets),
         detail: Some(format!("{} · {}", preset.name, photographs(assets.len()))),
         origin: call.origin.clone(),
@@ -103,7 +147,7 @@ fn apply(
     client: ClientId,
     origin: &Origin,
     asset: &AssetId,
-    preset: &PresetApply,
+    preset: &SettingsApply,
 ) -> Result<Applied, Error> {
     if let Some(skip) = batch::removed(&owner.service.connection, asset)? {
         return Ok(Applied::Skipped(skip));
@@ -144,7 +188,7 @@ fn apply(
     let result =
         owner
             .service
-            .run_action(asset, mutation, APPLY_PRESET, preset.parameters.clone())?;
+            .run_action(asset, mutation, preset.action, preset.parameters.clone())?;
     if result.mutation.outcome != MutationOutcome::NoOp && !result.mutation.deduplicated {
         let changed = origin
             .clone()

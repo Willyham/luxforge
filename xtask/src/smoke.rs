@@ -700,6 +700,16 @@ pub static SCENARIOS: &[Scenario] = &[
         own: None,
     },
     Scenario {
+        name: "copy-settings",
+        about: "Copy and paste, chooser, undo, previous, filmstrip and Select batch confirmation and reports",
+        launches: &[],
+        verify: crate::copy_settings_smoke::verify,
+        source: Source::Default(&[]),
+        window: Some(PANELLED),
+        note: None,
+        own: Some(crate::copy_settings_smoke::run),
+    },
+    Scenario {
         name: "presets",
         about: "Presets imported, applied, undone, created, listed and deleted",
         launches: &[LaunchSpec {
@@ -1956,6 +1966,7 @@ mod tests {
             [
                 "visibility-monitoring",
                 "raw-detail",
+                "copy-settings",
                 "performance",
                 "filmstrip",
                 "raw-panel",

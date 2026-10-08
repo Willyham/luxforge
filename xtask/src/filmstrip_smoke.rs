@@ -153,7 +153,7 @@ pub(crate) fn file_luminance(path: &Path) -> Result<f64> {
 
 /// Mean luminance of the middle of the photograph the frame draws, a quarter of its short side
 /// either way.
-fn drawn_luminance(frame: &Frame) -> Result<f64> {
+pub(crate) fn drawn_luminance(frame: &Frame) -> Result<f64> {
     let [left, top, right, bottom] = frame.photo()?;
     let (width, height) = (f64::from(right - left), f64::from(bottom - top));
     crate::scenario::pixels::mean_luminance(
@@ -188,7 +188,7 @@ fn distinct(images: &Path) -> Result<Vec<PathBuf>> {
 }
 
 /// Make the folder and the catalog, develop the photographs and ask the core for the catalog view.
-fn make(generated: &Path, raw: Option<&Path>) -> Result<Value> {
+pub(crate) fn make(generated: &Path, raw: Option<&Path>) -> Result<Value> {
     generate_catalog::run(
         &generated.join("source"),
         &generate_catalog::Options {

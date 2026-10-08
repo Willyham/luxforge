@@ -136,6 +136,8 @@ pub enum JobKind {
     SourceLocate,
     /// Applying a preset to many photographs.
     BatchPreset,
+    /// Pasting captured settings to many photographs.
+    BatchPaste,
     /// Exporting many photographs.
     BatchExport,
 }
@@ -185,6 +187,7 @@ impl JobKind {
             | Self::SourceCheck
             | Self::SourceFind
             | Self::SourceLocate
+            | Self::BatchPaste
             | Self::BatchPreset
             | Self::BatchExport => Family::Catalog,
         }
@@ -208,6 +211,7 @@ impl JobKind {
             | Self::SourceCheck
             | Self::SourceFind
             | Self::SourceLocate
+            | Self::BatchPaste
             | Self::BatchPreset
             | Self::BatchExport => None,
         }

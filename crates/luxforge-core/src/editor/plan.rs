@@ -3437,6 +3437,11 @@ mod tests {
                 "Preset: Soft Film",
             ),
             (
+                "paste-settings",
+                json!({"source":"Source.NEF","source-asset":"source-id","settings":{"set-basic":{"exposure":1.0}}}),
+                "Paste settings from Source.NEF",
+            ),
+            (
                 "set-raw",
                 json!({"temperature":5500.0}),
                 "Temperature 5500 K",

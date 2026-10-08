@@ -523,8 +523,11 @@ impl Editor {
     }
 
     /// Why a batch cannot start for the selection now, as the status bar says it.
-    fn batch_refusal(&self) -> Option<String> {
+    pub(crate) fn batch_refusal(&self) -> Option<String> {
         let state = &self.select.state;
+        if self.view_state.copy_settings.pending {
+            return Some("Waiting for the settings request".into());
+        }
         if !state.over_catalog() || self.missing_shown() {
             return Some("Select developed photographs first".into());
         }
@@ -575,11 +578,75 @@ impl Editor {
         }
         let method = match kind {
             BatchKind::Preset { .. } => "batch.apply-preset",
+            BatchKind::Paste { .. } => "batch.paste-settings",
             BatchKind::Export { .. } => "batch.export",
         };
         let selection = self.catalog_selection();
         let names = model::selected_names(&self.select.state, &selection);
         let result = batch_call(&self.owner, self.client, method, params.clone());
+        self.adopt_batch_start(kind, params, selection.count, names, result)
+    }
+
+    pub(crate) fn start_settings_batch(
+        &mut self,
+        kind: BatchKind,
+        params: Value,
+        targets: crate::state::copy_settings::Targets,
+    ) -> Task<Message> {
+        if matches!(
+            targets,
+            crate::state::copy_settings::Targets::Selection { .. }
+        ) {
+            return self.start_batch(kind, params);
+        }
+        if self.select.state.catalog.running().is_some() || self.view_state.copy_settings.pending {
+            return Task::none();
+        }
+        self.view_state.copy_settings.pending = true;
+        let (owner, client) = (self.owner.clone(), self.client);
+        let count = targets.count() as u32;
+        let names = self
+            .develop
+            .state
+            .set
+            .as_ref()
+            .map(|set| {
+                set.photos
+                    .iter()
+                    .map(|photo| (photo.asset_id.clone(), photo.name.clone()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let sent = params.clone();
+        owner_task(
+            move || batch_call(&owner, client, "batch.paste-settings", sent),
+            move |result| {
+                Message::CopySettings(
+                    crate::app::message::copy_settings::CopySettingsMessage::BatchStarted {
+                        kind,
+                        params,
+                        count,
+                        names,
+                        result,
+                    },
+                )
+            },
+        )
+    }
+
+    pub(crate) fn adopt_batch_start(
+        &mut self,
+        kind: BatchKind,
+        params: Value,
+        count: u32,
+        names: std::collections::BTreeMap<luxforge_core::AssetId, String>,
+        result: Result<(String, Value), CallError>,
+    ) -> Task<Message> {
+        let method = match kind {
+            BatchKind::Preset { .. } => "batch.apply-preset",
+            BatchKind::Paste { .. } => "batch.paste-settings",
+            BatchKind::Export { .. } => "batch.export",
+        };
         self.select.catalog.batch_request = Some(json!({
             "method": method,
             "params": params,
@@ -595,7 +662,7 @@ impl Editor {
             Ok((job, _)) => {
                 let batch = BatchRun {
                     kind,
-                    count: selection.count,
+                    count,
                     job,
                     names,
                     progress: None,
@@ -612,6 +679,7 @@ impl Editor {
                     BatchKind::Preset { name } => {
                         format!("Could not apply {name}: {}", error.message)
                     }
+                    BatchKind::Paste { .. } => format!("Could not paste: {}", error.message),
                     BatchKind::Export { .. } => format!("Could not export: {}", error.message),
                 };
                 // A stale view refuses its selection: read it again, so the next press acts on
@@ -678,7 +746,10 @@ impl Editor {
             Err(error) => BatchEnd::Failed(format!("its job could not be read: {error}")),
         };
         batch.end = Some(end);
-        let preset = matches!(batch.kind, BatchKind::Preset { .. });
+        let preset = matches!(
+            batch.kind,
+            BatchKind::Preset { .. } | BatchKind::Paste { .. }
+        );
         let home = self.select.state.home.clone();
         let sentence = batch.sentence(home.as_deref()).unwrap_or_default();
         self.select.catalog.batch_record = result.ok();
@@ -1171,6 +1242,7 @@ impl Editor {
                 json!({
                     "kind": match &batch.kind {
                         BatchKind::Preset { name } => json!({"preset": name}),
+                        BatchKind::Paste { source } => json!({"paste": source}),
                         BatchKind::Export { .. } => json!("export"),
                     },
                     "count": batch.count,

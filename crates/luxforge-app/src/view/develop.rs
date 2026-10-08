@@ -297,8 +297,24 @@ pub(crate) fn strip<'a>(model: &StripModel, images: StripImages<'a>) -> Element<
             first: model.first,
             total: model.total,
             active: model.active,
+            selected: model.selected.clone(),
         },
-        |index| develop(DevelopMessage::Show(index)),
+        |press| {
+            develop(if let Some(at) = press.context {
+                DevelopMessage::CellMenu {
+                    index: press.index,
+                    at,
+                }
+            } else if press.command || press.shift {
+                DevelopMessage::Select {
+                    index: press.index,
+                    command: press.command,
+                    shift: press.shift,
+                }
+            } else {
+                DevelopMessage::Show(press.index)
+            })
+        },
         model
             .can_previous
             .then(|| develop(DevelopMessage::Step(-1))),
