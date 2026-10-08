@@ -461,8 +461,8 @@ fn selecting_a_view_is_session_state_with_no_history_or_frame() {
 #[test]
 fn the_wheels_views_add_no_capture_groups_and_no_duplicate_fields() {
     let proof = Proof::new();
-    let groups = crate::state::presets::presettable_groups(&proof.editor.modules, true);
-    let labels: Vec<&str> = groups.iter().map(|group| group.label.as_str()).collect();
+    let groups = crate::state::presets::settings_groups(&proof.editor.modules, true).groups;
+    let labels: Vec<&str> = groups.iter().map(|group| group.title.as_str()).collect();
     // The nested Colour wheel group is a capture group of its own, as any nested group is; its
     // Compact and Large views are not.
     assert_eq!(
@@ -475,9 +475,8 @@ fn the_wheels_views_add_no_capture_groups_and_no_duplicate_fields() {
     let parameters = |index: usize| -> Vec<String> {
         groups[index]
             .fields
-            .iter()
-            .find(|(action, _)| action == ACTION)
-            .map(|(_, parameters)| parameters.clone())
+            .get(ACTION)
+            .cloned()
             .unwrap_or_default()
     };
     assert_eq!(

@@ -369,7 +369,7 @@ fn grading_journey(
                "grade-blending": 20.0}),
     )?;
     let revision = client::revision(owner, editor, asset)?;
-    call(
+    let created = call(
         owner,
         editor,
         "mask.create-luminance-range",
@@ -382,7 +382,7 @@ fn grading_journey(
         editor,
         "edit.set-mixer",
         json!({"asset_id": asset, "mutation": mutation(revision, "grading-masked"),
-               "mask": {"name": "Mask 1"}, "grade-global-hue": 220.0,
+               "mask": created["mask"], "grade-global-hue": 220.0,
                "grade-global-saturation": 70.0}),
     )?;
     let stored = client::recipe(owner, editor, asset)?;
