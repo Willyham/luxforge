@@ -6,7 +6,7 @@ use super::types::{
     CurveControl, EffectStage, GroupControl, MAX_SECRET_LENGTH, ModuleDescriptor, ModuleLayout,
     NumberControl, PRESET_ID, PRESET_NAME, PRESET_SETTINGS, ParameterDescriptor, ParameterKind,
     PickerControl, PresetsControl, QueryChoiceControl, RailDecoration, RangeControl, ResetAction,
-    TaskControl, ToggleControl,
+    TaskControl, ToggleControl, WheelControl,
 };
 use super::values::check_value;
 use crate::Error;
@@ -129,9 +129,7 @@ impl ModuleDescriptor {
         // Settings, capabilities, resources and tasks refer to each other and to the
         // actions above, so they are checked together once those are known to be sound.
         crate::capabilities::descriptor::validate(self)?;
-        for control in &self.controls {
-            self.check_control(control, 1)?;
-        }
+        self.validate_controls()?;
         if declarer == Declarer::Host
             && let Some(control) = with_variants(&self.controls)
         {
@@ -174,18 +172,6 @@ impl ModuleDescriptor {
             )));
         }
         self.check_reset(self.reset.as_ref())?;
-        if self.layout == ModuleLayout::Tabs {
-            let all_groups = self
-                .controls
-                .iter()
-                .all(|control| matches!(control, Control::Group(_)));
-            if self.controls.len() < 2 || !all_groups {
-                return Err(Error::validation(format!(
-                    "module {} declares layout: tabs but needs at least two top-level groups",
-                    self.id
-                )));
-            }
-        }
         match &self.canvas {
             Some(CanvasInteraction::PointPick {
                 action,
@@ -471,6 +457,9 @@ impl ModuleDescriptor {
                 label,
                 controls,
                 reset,
+                layout,
+                view,
+                variants,
                 ..
             }) => {
                 if label.trim().is_empty() {
@@ -479,7 +468,22 @@ impl ModuleDescriptor {
                         self.id
                     )));
                 }
+                // A view shows fields its enclosing group owns, so it is no reset or capture scope
+                // of its own and has nothing a variant could replace.
+                if *view && (reset.is_some() || !variants.is_empty()) {
+                    return Err(Error::validation(format!(
+                        "view {label} of module {} declares a reset or variants; a view is \
+                         presentation only",
+                        self.id
+                    )));
+                }
                 self.check_reset(reset.as_ref())?;
+                let owner = format!("group {label}");
+                if *layout == ModuleLayout::Tabs {
+                    self.check_tabs(controls, &owner)?;
+                } else {
+                    self.check_no_views(controls, &owner)?;
+                }
                 for child in controls {
                     self.check_control(child, depth + 1)?;
                 }
@@ -659,6 +663,7 @@ impl ModuleDescriptor {
                     )));
                 }
             }
+            Control::Wheel(wheel) => self.check_wheel(wheel)?,
             Control::Action(ActionControl {
                 action,
                 preset,
@@ -767,6 +772,155 @@ impl ModuleDescriptor {
                     }
                 }
             }
+        }
+        Ok(())
+    }
+
+    /// The control tree's own rules: every control against the declarations it binds, every tab
+    /// row's shape, every view's place and every tab row's label path. A field-patch spec runs
+    /// these when it is built, before the module is registered.
+    pub(crate) fn validate_controls(&self) -> Result<(), Error> {
+        for control in &self.controls {
+            self.check_control(control, 1)?;
+        }
+        if self.layout == ModuleLayout::Tabs {
+            self.check_tabs(&self.controls, "the top level")?;
+        } else {
+            self.check_no_views(&self.controls, "the top level")?;
+        }
+        self.check_view_identities(&self.controls, &mut Vec::new())
+    }
+
+    /// A tab row's controls: at least two, every one a group, with distinct labels, since a view is
+    /// selected by its label ([`ModuleDescriptor::views_at`]). `owner` names where the row is.
+    fn check_tabs(&self, controls: &[Control], owner: &str) -> Result<(), Error> {
+        let mut labels = HashSet::with_capacity(controls.len());
+        let distinct_groups = controls.iter().all(|control| match control {
+            Control::Group(group) => labels.insert(group.label.as_str()),
+            _ => false,
+        });
+        if controls.len() < 2 || !distinct_groups {
+            return Err(Error::validation(format!(
+                "{owner} of module {} declares layout: tabs but needs at least two groups with \
+                 distinct labels",
+                self.id
+            )));
+        }
+        Ok(())
+    }
+
+    /// A view is one tab of a tab row, so a stacked list of controls holds none.
+    fn check_no_views(&self, controls: &[Control], owner: &str) -> Result<(), Error> {
+        match controls.iter().find_map(|control| match control {
+            Control::Group(group) if group.view => Some(&group.label),
+            _ => None,
+        }) {
+            Some(label) => Err(Error::validation(format!(
+                "view {label} of module {} is not a tab: {owner} does not declare layout: tabs",
+                self.id
+            ))),
+            None => Ok(()),
+        }
+    }
+
+    /// Every tabbed group is the group its label path names ([`ModuleDescriptor::group_at`]), so a
+    /// session's view selection, keyed by that path, names exactly one tab row. `path` is the
+    /// label path of the group `controls` belong to.
+    fn check_view_identities<'a>(
+        &self,
+        controls: &'a [Control],
+        path: &mut Vec<&'a str>,
+    ) -> Result<(), Error> {
+        for control in controls {
+            let Control::Group(group) = control else {
+                continue;
+            };
+            path.push(&group.label);
+            if group.layout == ModuleLayout::Tabs
+                && !self
+                    .group_at(path)
+                    .is_some_and(|named| std::ptr::eq(named, group))
+            {
+                return Err(Error::validation(format!(
+                    "tabbed group {} of module {} shares its label path with an earlier group, so \
+                     its views cannot be named",
+                    path.join(" / "),
+                    self.id
+                )));
+            }
+            self.check_view_identities(&group.controls, path)?;
+            path.pop();
+        }
+        Ok(())
+    }
+
+    /// A wheel binds number parameters of one field-patch action: a hue of exactly `0..=360`
+    /// degrees, a saturation whose centre is 0, and optionally a luminance rail, all distinct.
+    fn check_wheel(&self, wheel: &WheelControl) -> Result<(), Error> {
+        let WheelControl {
+            action,
+            hue,
+            saturation,
+            label,
+            reset,
+            ..
+        } = wheel;
+        if label.trim().is_empty() {
+            return Err(Error::validation(format!(
+                "wheel control of action {action} has no label"
+            )));
+        }
+        let declared = self.declared_action(action)?;
+        if !declared.patch {
+            return Err(Error::validation(format!(
+                "wheel control of action {action} needs a field-patch action, since one gesture \
+                 patches its hue and saturation together"
+            )));
+        }
+        let names: Vec<&str> = wheel.parameters().collect();
+        for (at, name) in names.iter().enumerate() {
+            let parameter = self.declared_parameter(declared, name)?;
+            if !matches!(parameter.kind, ParameterKind::Number { .. }) {
+                return Err(Error::validation(format!(
+                    "wheel control for {name} of action {action} is not a number"
+                )));
+            }
+            if names[..at].contains(name) {
+                return Err(Error::validation(format!(
+                    "wheel control of action {action} binds {name} twice"
+                )));
+            }
+        }
+        let range = |name: &str| match declared.parameter(name).map(|p| &p.kind) {
+            Some(ParameterKind::Number { min, max }) => (*min, *max),
+            _ => (f64::NAN, f64::NAN),
+        };
+        let (min, max) = range(hue);
+        if min != 0.0 || max != 360.0 {
+            return Err(Error::validation(format!(
+                "wheel hue {hue} of action {action} declares {min}..={max}, not the 0..=360 \
+                 degrees a wheel's angle spans"
+            )));
+        }
+        let (min, max) = range(saturation);
+        if min != 0.0 || max <= 0.0 {
+            return Err(Error::validation(format!(
+                "wheel saturation {saturation} of action {action} declares {min}..={max}; a \
+                 wheel's radius runs from 0 at its centre to a positive rim"
+            )));
+        }
+        self.check_reset(reset.as_ref())?;
+        if let Some(reset) = reset
+            && reset.action == *action
+            && let Some(other) = reset
+                .preset
+                .keys()
+                .find(|name| !names.contains(&name.as_str()))
+        {
+            return Err(Error::validation(format!(
+                "wheel control reset of action {action} names {other}, which the wheel does not \
+                 bind"
+            )));
         }
         Ok(())
     }

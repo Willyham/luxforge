@@ -831,6 +831,7 @@ pub enum Control {
     Color(ColorControl),
     Curve(CurveControl),
     Range(RangeControl),
+    Wheel(WheelControl),
     Action(ActionControl),
     Picker(PickerControl),
     Task(TaskControl),
@@ -848,6 +849,19 @@ pub struct GroupControl {
     pub reset: Option<ResetAction>,
     #[serde(default, skip_serializing_if = "is_default")]
     pub collapsed: bool,
+    /// How a client arranges this group's child groups: stacked (the default), or `tabs`, one
+    /// segmented row showing one child group at a time, exactly as a module's `layout: tabs`
+    /// arranges its top-level groups. Groups nest, so a tab can hold tabs of its own. A hint: it
+    /// changes what a client draws, never what the host accepts. Serialized only when it is
+    /// `tabs`. Which child a client shows is its session's view state (`workspace.set`'s `views`).
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub layout: ModuleLayout,
+    /// A presentation-only view: a child of a `tabs` group whose controls show fields the
+    /// enclosing groups own, so the same field may be drawn in more than one view. A view is no
+    /// scope of its own: it declares no reset and no variants, and a client gathering capture or
+    /// reset groups attributes its fields to the group that holds it. Serialized only when true.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub view: bool,
     /// The group reset another module provides on a photo of one source kind: each variant
     /// carries a `reset` and applies on the global target of a photo of its kind
     /// ([`resolve_group_reset`]). Listed only when declared.
@@ -856,6 +870,16 @@ pub struct GroupControl {
 }
 
 impl GroupControl {
+    /// Arrange this group's child groups as declared ([`GroupControl::layout`]).
+    pub fn group_layout(self, layout: ModuleLayout) -> Self {
+        Self { layout, ..self }
+    }
+
+    /// Mark this group a presentation-only view ([`GroupControl::view`]).
+    pub fn as_view(self) -> Self {
+        Self { view: true, ..self }
+    }
+
     /// The action the group header's reset runs.
     pub(crate) fn reset(self, reset: ResetAction) -> Self {
         Self {
@@ -1046,6 +1070,79 @@ impl RangeControl {
     }
 }
 
+/// How large a client draws a [`WheelControl`]: `compact`, small enough for three to share a panel
+/// row, or `large`, a wheel that fills the panel's width for an individual view.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum WheelStyle {
+    #[default]
+    Compact,
+    Large,
+}
+
+/// A hue and saturation wheel over number parameters of one field-patch `action`: the handle's
+/// angle is `hue` and its distance from the centre is `saturation`, with `luminance`, when
+/// declared, drawn as the wheel's rail.
+///
+/// `hue` declares the range `0..=360` exactly, in degrees on the familiar RGB colour wheel (red 0,
+/// green 120, blue 240); 0 and 360 are the same direction, so the wheel wraps across the seam
+/// while both values stay valid. `saturation` declares a minimum of 0: the centre is 0 and the rim
+/// its maximum. All the bound parameters are distinct. A gesture on the wheel is an ordinary
+/// patch of `hue` and `saturation` together — one draft, one history entry — so the wheel adds no
+/// request of its own and a client that draws no wheel edits the same fields by name. At the
+/// centre a client keeps the last hue rather than computing an angle that does not exist.
+///
+/// `reset`, when declared, is an action of this module with fixed parameters, validated like a
+/// group's; on the wheel's own action it names only the wheel's fields.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WheelControl {
+    pub action: String,
+    pub hue: String,
+    pub saturation: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub luminance: Option<String>,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub style: WheelStyle,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset: Option<ResetAction>,
+}
+
+impl WheelControl {
+    /// The parameter drawn as the wheel's luminance rail.
+    pub fn luminance(self, luminance: impl Into<String>) -> Self {
+        Self {
+            luminance: Some(luminance.into()),
+            ..self
+        }
+    }
+
+    pub fn wheel_style(self, style: WheelStyle) -> Self {
+        Self { style, ..self }
+    }
+
+    /// What resetting the wheel runs.
+    pub fn wheel_reset(self, reset: ResetAction) -> Self {
+        Self {
+            reset: Some(reset),
+            ..self
+        }
+    }
+
+    /// The bound parameters: hue, saturation and, when declared, luminance.
+    pub fn parameters(&self) -> impl Iterator<Item = &str> {
+        [
+            Some(&self.hue),
+            Some(&self.saturation),
+            self.luminance.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(String::as_str)
+    }
+}
+
 /// A button that submits one action with fixed parameters.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1168,6 +1265,7 @@ control_kinds!(
     Color(ColorControl),
     Curve(CurveControl),
     Range(RangeControl),
+    Wheel(WheelControl),
     Action(ActionControl),
     Picker(PickerControl),
     Task(TaskControl),
@@ -1211,6 +1309,26 @@ impl Control {
             high_feather: None,
             label: label.into(),
             rail: None,
+        }
+    }
+
+    /// A compact `wheel` control over the `hue` and `saturation` parameters of `action`, without a
+    /// luminance rail or a reset. Chain [`WheelControl::luminance`], [`WheelControl::wheel_style`]
+    /// and [`WheelControl::wheel_reset`].
+    pub fn wheel(
+        action: impl Into<String>,
+        hue: impl Into<String>,
+        saturation: impl Into<String>,
+        label: impl Into<String>,
+    ) -> WheelControl {
+        WheelControl {
+            action: action.into(),
+            hue: hue.into(),
+            saturation: saturation.into(),
+            luminance: None,
+            label: label.into(),
+            style: WheelStyle::Compact,
+            reset: None,
         }
     }
 
@@ -1285,6 +1403,8 @@ impl Control {
             controls,
             reset: None,
             collapsed: false,
+            layout: ModuleLayout::Stacked,
+            view: false,
             variants: Vec::new(),
         }
     }
@@ -1332,6 +1452,7 @@ impl Control {
             Self::Color(_) => "color",
             Self::Curve(_) => "curve",
             Self::Range(_) => "range",
+            Self::Wheel(_) => "wheel",
             Self::Action(_) => "action",
             Self::Picker(_) => "picker",
             Self::Task(_) => "task",
@@ -1453,8 +1574,9 @@ impl CanvasInteraction {
     }
 }
 
-/// How a client lays out a module's top-level controls. A hint for clients: it changes only what
-/// a client draws, never what the host accepts, the vocabulary's rule for every hint.
+/// How a client lays out a module's top-level controls, or a group's child groups
+/// ([`GroupControl::layout`]). A hint for clients: it changes only what a client draws, never what
+/// the host accepts, the vocabulary's rule for every hint.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum ModuleLayout {
@@ -1462,9 +1584,10 @@ pub enum ModuleLayout {
     /// are different controls, such as Basic's white balance, tone and colour.
     #[default]
     Stacked,
-    /// The top-level groups render as one segmented row, one group visible at a time, for a
-    /// module whose groups are parallel views of the same controls, such as the colour mixer's
-    /// Hue, Saturation and Luminance over the same eight ranges.
+    /// The groups render as one segmented row, one group visible at a time, for groups that are
+    /// parallel views of the same controls, such as the colour mixer's Hue, Saturation and
+    /// Luminance over the same eight ranges. Which group a client shows is its session's view
+    /// state ([`crate::ViewSelection`]): selecting one changes no recipe, history or frame.
     Tabs,
 }
 
@@ -1560,6 +1683,45 @@ impl ModuleDescriptor {
 
     pub fn is_available(&self) -> bool {
         matches!(self.availability, Availability::Available)
+    }
+
+    /// The group a path of group labels reaches from the module's top level, each label naming
+    /// the first group of that label at its level. Registration makes that first group the one a
+    /// tabbed group's path names ([`Self::validate`]), so a view identity is never ambiguous.
+    pub fn group_at(&self, path: &[impl AsRef<str>]) -> Option<&GroupControl> {
+        let mut controls = &self.controls[..];
+        let mut found = None;
+        for label in path {
+            let group = controls.iter().find_map(|control| match control {
+                Control::Group(group) if group.label == label.as_ref() => Some(group),
+                _ => None,
+            })?;
+            controls = &group.controls;
+            found = Some(group);
+        }
+        found
+    }
+
+    /// The views of the tabbed controls a label path names, in their declared order: the empty
+    /// path names the module's own top-level tabs (`layout: tabs`), and any other path the nested
+    /// group it reaches ([`Self::group_at`]), which must declare `layout: tabs`. `None` when the
+    /// path names no tabbed controls. A view is one child group, named by its label.
+    pub fn views_at(&self, path: &[impl AsRef<str>]) -> Option<Vec<&str>> {
+        let (controls, layout) = if path.is_empty() {
+            (&self.controls[..], self.layout)
+        } else {
+            let group = self.group_at(path)?;
+            (&group.controls[..], group.layout)
+        };
+        (layout == ModuleLayout::Tabs).then(|| {
+            controls
+                .iter()
+                .filter_map(|control| match control {
+                    Control::Group(group) => Some(group.label.as_str()),
+                    _ => None,
+                })
+                .collect()
+        })
     }
 
     /// Whether this module applies to a photo of `kind`: when any of its effects may exist on that

@@ -65,10 +65,10 @@ pub mod tiles;
 pub use activity::ActivitySnapshot;
 pub use api::{
     ApiEvent, ApiFailure, ApiRequest, ApiResponse, ClientAuthority, ClientId, ClientSession,
-    EventWake, EventsResult, JobMonitorStats, LocalServer, MASK_MODE, MaskOverlayColour,
-    MaskOverlayMode, OwnerHandle, PIXEL_READ_REQUIRED, POINTER_MODE, PreviewRenderIntent,
-    PreviewRequest, PreviewSelection, PreviewStack, Renderer, RendererReason, RendererRecord,
-    WorkspaceState, schemas, serve_json_lines_with,
+    EventWake, EventsResult, JobMonitorStats, LocalServer, MASK_MODE, MAX_VIEW_SELECTIONS,
+    MaskOverlayColour, MaskOverlayMode, OwnerHandle, PIXEL_READ_REQUIRED, POINTER_MODE,
+    PreviewRenderIntent, PreviewRequest, PreviewSelection, PreviewStack, Renderer, RendererReason,
+    RendererRecord, ViewSelection, WorkspaceState, schemas, serve_json_lines_with,
 };
 pub use artifacts::{ArtifactId, ArtifactTable, PreparedArtifact};
 pub use cancel::{Cancel, ProgressCounts};
@@ -107,9 +107,9 @@ pub use modules::{
     QueryRef, RailDecoration, RangeControl, RawModule, RawPayload, Region, RegistryOptions,
     Resample, ResetAction, ResolvedControl, ResolvedReset, SamplingScale, SpatialOperation, Stage,
     StageContext, StageQuestions, TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT,
-    WhiteBalanceMode, check_parameters, check_value, controls_module, gains_from_temperature_tint,
-    guide_angle, insertion_index_among, largest_with_ratio_inside, palette_bytes, resolve_control,
-    resolve_group_reset, temperature_tint_from_gains,
+    WheelControl, WheelStyle, WhiteBalanceMode, check_parameters, check_value, controls_module,
+    gains_from_temperature_tint, guide_angle, insertion_index_among, largest_with_ratio_inside,
+    palette_bytes, resolve_control, resolve_group_reset, temperature_tint_from_gains,
 };
 pub use modules::{OriginalContext, OriginalLayer, OriginalPreferences};
 pub use presets::{

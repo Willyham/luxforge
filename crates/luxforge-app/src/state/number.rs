@@ -105,6 +105,19 @@ impl NumberSpec {
         ))
     }
 
+    /// The value a raw number stands for, as a drag sends it: snapped to the fine step, clamped
+    /// into the hard range and rounded to the fine decimals, exactly as [`Self::at_fraction`]
+    /// treats a rail position. A wheel's angle and radius are sent through it.
+    pub(crate) fn snapped(&self, raw: f64) -> Value {
+        self.value(quantize(
+            raw,
+            self.min,
+            self.max,
+            self.fine_step,
+            self.fine_decimals,
+        ))
+    }
+
     /// The rail fraction that sends exactly `value`: where the widget's pointer publishes it, the
     /// inverse of [`Self::at_fraction`]. A value outside the soft range or off the fine grid has no
     /// such fraction, since every fraction lands inside the one and on the other; the error is the
