@@ -486,3 +486,17 @@ fn filmstrip_selection_keeps_the_open_photograph_and_ranges_from_it() {
     let replacement = DevelopSet::new(2, set.photos, 4);
     assert_eq!(replacement.selected_assets().len(), 1);
 }
+
+/// The active photograph is always selected, whether or not it is among the others.
+#[test]
+fn the_selected_count_includes_the_active_photograph_once() {
+    let mut set = DevelopSet::new(1, photos(6), 2);
+    assert_eq!(set.selected_count(), 1);
+    set.select(4, true, false);
+    assert_eq!(set.selected_count(), 2);
+    set.select(2, false, true);
+    assert_eq!(set.selected_count(), 1, "a shift range of the active alone");
+    set.select(5, false, true);
+    assert_eq!(set.selected_count(), 4, "the range 2 to 5 holds the active");
+    assert_eq!(set.selected_count(), set.selected_assets().len());
+}
