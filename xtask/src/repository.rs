@@ -1482,8 +1482,8 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         manifests: &["crates/luxforge-cli"],
         tables: &[Table::Normal],
         allowed: &[],
-        reason: "luxforge-cli builds the headless luxforge-json binary and may not depend on the \
-                 GUI stack (iced, wgpu, naga, rfd, luxforge-ui or luxforge-app)",
+        reason: "luxforge-cli builds the headless luxforge-json and luxforge-ctl binaries and may \
+                 not depend on the GUI stack (iced, wgpu, naga, rfd, luxforge-ui or luxforge-app)",
     },
     // The core evaluates nothing on a GPU and draws nothing: a module's GPU program is WGSL text
     // that the photo surface in luxforge-ui executes, so the core builds no GPU or GUI crate. Its

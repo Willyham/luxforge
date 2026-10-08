@@ -65,10 +65,10 @@ pub mod tiles;
 pub use activity::ActivitySnapshot;
 pub use api::{
     ApiEvent, ApiFailure, ApiRequest, ApiResponse, ClientAuthority, ClientId, ClientSession,
-    EventWake, EventsResult, JobMonitorStats, LocalServer, MASK_MODE, MaskOverlayColour,
-    MaskOverlayMode, OwnerHandle, PIXEL_READ_REQUIRED, POINTER_MODE, PreviewRenderIntent,
-    PreviewRequest, PreviewSelection, PreviewStack, Renderer, RendererReason, RendererRecord,
-    WorkspaceState, schemas, serve_json_lines_with,
+    EventWake, EventsResult, JobMonitorStats, LocalServer, LocalSessionInfo, MASK_MODE,
+    MaskOverlayColour, MaskOverlayMode, OwnerHandle, PIXEL_READ_REQUIRED, POINTER_MODE, PROTOCOL,
+    PreviewRenderIntent, PreviewRequest, PreviewSelection, PreviewStack, Renderer, RendererReason,
+    RendererRecord, WorkspaceState, live_session_file, schemas, serve_json_lines_with,
 };
 pub use artifacts::{ArtifactId, ArtifactTable, PreparedArtifact};
 pub use cancel::{Cancel, ProgressCounts};

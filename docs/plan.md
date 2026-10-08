@@ -34,7 +34,6 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 | --- | --- | --- | --- |
 | [Lightroom import](../tasks/lightroom/lightroom-import.json) ([design](design/lightroom-import.md)) | TASK-001 confirm the catalog format against a copy of the owner's catalog | Needs no code; needs the owner's catalog copy | High tier |
 | [Lightroom alignment](../tasks/lightroom/lightroom-alignment.json) ([design](design/lightroom-alignment.md)) | TASK-001 the rig's generator and synthetic targets | Its rounds need the owner to import and export in Lightroom | High tier |
-| [Live-session Rust CLI](../tasks/project/live-cli.json) ([design](design/live-cli.md)) | TASK-001 shared catalog targeting and authenticated session client | The command contract and defaults are decided; implementation awaits owner authorization | High tier |
 | [Auto tone](../tasks/editing/auto-tone.json) ([design](design/auto-tone.md)) | TASK-001 the auto-tone/1 solver; TASK-002 the bounded analysis sample | Lightroom's eight sliders, no white balance, Auto in presets and import, and a later fit to Lightroom's Auto chosen; the owner's Lightroom export is needed only by the final fit. Planning only; implementation awaits authorization | High tier |
 | [Copy and paste settings](../tasks/interface/copy-settings.json) ([design](design/copy-settings.md)) | TASK-001 paste-settings action and batch method; TASK-002 settings clipboard and copy; TASK-003 filmstrip multi-selection | Scope, default groups, filmstrip multi-selection and Paste from previous chosen; the rest are recorded defaults. Planning only; implementation awaits authorization | High tier |
 | [HDR exposure merges](../tasks/library/hdr-merge.json) ([design](design/hdr-merge.md)) | TASK-001 durable chunked derived sources; TASK-002 RAW exposure resolution/fusion; TASK-003 alignment/deghosting | RAW-only scope and automatic alignment/deghosting are decided; independent foundations, working feature before final quality/timing; implementation awaits authorization | High tier |
@@ -171,7 +170,7 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 
 ## Programmability
 
-**Live-session Rust CLI** ([design](design/live-cli.md), [tasks](../tasks/project/live-cli.json)). A thin `luxforge-ctl` client attaches to the authenticated loopback session for the already-open catalog and exposes state, schemas, generic calls and same-connection job waiting. The shared catalog resolver follows the desktop's stored/default rules; revisioned calls use a schema-driven `--asset` helper. It does not start another catalog owner or infer the asset from the desktop's selection. The contract is specified; implementation awaits owner authorization.
+**Live-session CLI** ([design](design/live-cli.md)) is implemented: `luxforge-ctl` drives the catalog the desktop has open through its live session ([feature status](features.md), [user guide](user-guide.md#the-live-session-command-line)). Operation-specific aliases wait until real use shows a need for one.
 
 **MCP adapter.** Expose the whole operation registry to agents through a standards-compliant MCP server over the existing command service.
 
