@@ -243,6 +243,9 @@ pub(crate) struct CopySettings {
     pub chooser: Option<Chooser>,
     pub confirm: Option<Confirmation>,
     pub pending: bool,
+    /// A Develop paste's `batch.apply-settings` is sent and its job not yet adopted. Separate from
+    /// `pending` (a capture or inspection), which has no reason to refuse an export or preset batch.
+    pub batch_pending: bool,
     /// Late responses cannot reopen a cancelled chooser or replace a newer copy.
     pub serial: u64,
     pub previous: Option<Source>,
