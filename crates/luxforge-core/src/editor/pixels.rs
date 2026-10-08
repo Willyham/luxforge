@@ -17,7 +17,7 @@
 //! [performance rule 5]: ../../../../docs/engineering/performance-rules.md#rules
 use super::{
     AssetRecord, EditorService, Evaluation,
-    evaluate::source_of,
+    evaluate::{sensor_of, source_of},
     masks::{Targeted, recipe_for_target, take_mask_target},
     source::RawSettingsMode,
 };
@@ -28,7 +28,7 @@ use crate::{
 };
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
-use std::{cell::RefCell, collections::BTreeMap};
+use std::{cell::RefCell, collections::BTreeMap, sync::Arc};
 
 pub(crate) const MAX_PIXEL_MEMO: usize = 32;
 
@@ -286,7 +286,7 @@ impl EditorService {
         &self,
         asset: &AssetRecord,
         recipe: &Recipe,
-        source: PreviewSource,
+        (source, sensor): (PreviewSource, Option<Arc<dyn crate::tiles::SensorClip>>),
         id: &str,
         parameters: &Map<String, Value>,
     ) -> Result<Value, Error> {
@@ -299,7 +299,9 @@ impl EditorService {
             id: id.into(),
             parameters: parameters.clone(),
         };
-        if let Some(answer) = self.deferred_read(asset, recipe, source.clone(), false, read)? {
+        if let Some(answer) =
+            self.deferred_read(asset, recipe, source.clone(), sensor.clone(), false, read)?
+        {
             return match answer.value {
                 PixelValue::Query(Ok(value)) => {
                     self.analysed(id, &value);
@@ -326,7 +328,8 @@ impl EditorService {
                 entry,
                 recipe.clone(),
                 None,
-            ),
+            )
+            .with_sensor(sensor),
             query: id.into(),
             parameters,
             mask: None,
@@ -408,6 +411,7 @@ impl EditorService {
         asset: &AssetRecord,
         recipe: &Recipe,
         source: PreviewSource,
+        sensor: Option<Arc<dyn crate::tiles::SensorClip>>,
         input_wide: bool,
         read: PixelRead,
     ) -> Result<Option<PixelAnswer>, Error> {
@@ -426,7 +430,7 @@ impl EditorService {
             layers: prefix.to_vec(),
             ..recipe.clone()
         };
-        hash.update(crate::tiles::analysis::content_hash(&prefix_recipe)?);
+        hash.update(crate::tiles::grid::content_hash(&prefix_recipe)?);
         let key = PixelReadKey {
             asset_id: asset.id.clone(),
             entry_id: entry.id.clone(),
@@ -447,7 +451,8 @@ impl EditorService {
             (*entry).clone(),
             recipe.clone(),
             None,
-        );
+        )
+        .with_sensor(sensor);
         self.pixel_reads.borrow_mut().deferred = Some(DeferredRead {
             read,
             key,
@@ -534,10 +539,14 @@ impl EditorService {
             }
             _ => bound.into_owned(),
         };
-        let source = self.needing(
+        let (source, sensor) = self.needing(
             super::source::Evaluated::exactly(&state.asset, &entry.id, &recipe),
             self.verified_prepared(&state.asset, &recipe)
-                .and_then(|prepared| source_of(prepared, &recipe, RawSettingsMode::Strict)),
+                .and_then(|prepared| {
+                    let sensor = sensor_of(&prepared);
+                    source_of(prepared, &recipe, RawSettingsMode::Strict)
+                        .map(|source| (source, sensor))
+                }),
         )?;
         Ok(QueryPlan {
             evaluation: Evaluation::new(
@@ -547,7 +556,8 @@ impl EditorService {
                 entry,
                 recipe,
                 None,
-            ),
+            )
+            .with_sensor(sensor),
             query: query_id.to_owned(),
             parameters: checked,
             mask,
@@ -691,8 +701,8 @@ impl<'a> TileStage<'a> {
 }
 
 impl StageQuestions for TileStage<'_> {
-    fn analysis_before(&self, index: usize) -> Result<crate::tiles::AnalysisRead, Error> {
-        let read = crate::tiles::analysis::read(self.evaluation, index, self.reads, self.cancel)?;
+    fn grid_before(&self, index: usize) -> Result<crate::tiles::GridRead, Error> {
+        let read = crate::tiles::grid::read(self.evaluation, index, self.reads, self.cancel)?;
         *self.answered.borrow_mut() = Some(read.answered.clone());
         Ok(read)
     }

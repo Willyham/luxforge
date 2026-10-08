@@ -50,9 +50,11 @@ use std::{
     },
 };
 
-pub(crate) mod analysis;
+pub(crate) mod grid;
 mod reference;
-pub use analysis::{AnalysisRead, read as read_analysis};
+pub use grid::{
+    ClipDetection, GridRead, MAX_SIDE as GRID_MAX_SIDE, SampleGrid, SensorClip, read as read_grid,
+};
 
 #[cfg(test)]
 pub(crate) use reference::Hold;
@@ -321,9 +323,9 @@ impl Reply {
 
 /// A service's renderer, as a call reads through it.
 pub trait TileReads {
-    /// Renderer identity for retained analysis samples. Providers without a stable identity do
-    /// not retain samples; a fallback answer is never retained as a GPU answer.
-    fn analysis_renderer(&self) -> Option<RendererRecord> {
+    /// Renderer identity for retained sample grids ([`grid::read`]). Providers without a stable
+    /// identity do not retain grids; a fallback answer is never retained as a GPU answer.
+    fn grid_renderer(&self) -> Option<RendererRecord> {
         None
     }
 

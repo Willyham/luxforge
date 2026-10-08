@@ -230,6 +230,45 @@ pub struct PreparationNeeds {
     /// The derived artifacts the stack references that are not ready.
     pub artifacts: Vec<crate::ArtifactId>,
 }
+
+/// Why an analysis action ([`crate::AnalysisAction`]) has nothing to analyse in a photograph —
+/// too few usable samples, no tonal range — as distinct from a refusal of the request itself. It
+/// travels as a `validation` error whose `data.analysis_refusal` is the reason alone, so a client
+/// and a composite read it from the error's kind and data: a preset skips such a step for that
+/// photograph and applies the rest.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AnalysisRefusal {
+    /// A stable kebab-case reason, such as `no-tonal-range`.
+    pub reason: String,
+    /// The refusal as a person reads it.
+    pub message: String,
+}
+
+impl AnalysisRefusal {
+    pub fn new(reason: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            message: message.into(),
+        }
+    }
+
+    /// The refusal `error` carries, read from its kind and data, or `None` for any other error.
+    pub fn of(error: &Error) -> Option<Self> {
+        if error.kind != ErrorKind::Validation {
+            return None;
+        }
+        let reason = error.data.as_deref()?.get("analysis_refusal")?.as_str()?;
+        Some(Self::new(reason, error.detail.clone()))
+    }
+}
+
+impl From<AnalysisRefusal> for Error {
+    fn from(refusal: AnalysisRefusal) -> Self {
+        Error::validation(refusal.message)
+            .with_data(serde_json::json!({ "analysis_refusal": refusal.reason }))
+    }
+}
+
 impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}: {}", self.kind.code(), self.detail)

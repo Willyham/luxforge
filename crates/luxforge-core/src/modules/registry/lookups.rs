@@ -159,14 +159,40 @@ impl ModuleRegistry {
         Ok((module, action))
     }
 
+    /// Whether `action_id` is a declared analysis step ([`ActionDescriptor::analysis`]).
+    pub(crate) fn analysis_step(&self, action_id: &str) -> bool {
+        self.action(action_id)
+            .is_some_and(|(_, action)| action.analysis.is_some())
+    }
+
+    /// Whether running `action_id` with `parameters` runs an analysis step: the action is one, or
+    /// a settings parameter it declares names one, as a preset's settings may. The one answer
+    /// the API's draft refusal of an edit and the editor's refusal of a draft read.
+    /// `O(parameters)`; plans nothing.
+    pub(crate) fn contains_analysis(
+        &self,
+        action_id: &str,
+        parameters: &serde_json::Map<String, serde_json::Value>,
+    ) -> bool {
+        let Some(action) = self.resolve_action(action_id) else {
+            return false;
+        };
+        let declared = action.descriptor();
+        declared.analysis.is_some()
+            || declared.parameters.iter().any(|parameter| {
+                matches!(parameter.kind, crate::ParameterKind::Settings)
+                    && parameters
+                        .get(&parameter.name)
+                        .and_then(serde_json::Value::as_object)
+                        .is_some_and(|settings| settings.keys().any(|id| self.analysis_step(id)))
+            })
+    }
+
     pub(crate) fn settings_action(
         &self,
         id: &str,
     ) -> Result<(Provider<'_>, &ActionDescriptor), Error> {
-        if self
-            .action(id)
-            .is_some_and(|(_, action)| action.analysis.is_some())
-        {
+        if self.analysis_step(id) {
             self.analysis_action(id)
         } else {
             self.patch_action(id)
