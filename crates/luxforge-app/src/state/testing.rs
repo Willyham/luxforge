@@ -271,6 +271,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
         actions: vec![
             ActionDescriptor {
                 analysis: None,
+                shortcut: None,
                 preset: true,
                 id: "crop".into(),
                 title: "Crop".into(),
@@ -280,6 +281,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
             },
             ActionDescriptor {
                 analysis: None,
+                shortcut: None,
                 preset: true,
                 id: "crop-fit".into(),
                 title: "Fit crop".into(),
@@ -289,6 +291,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
             },
             ActionDescriptor {
                 analysis: None,
+                shortcut: None,
                 preset: true,
                 id: "crop-reset".into(),
                 title: "Reset crop".into(),

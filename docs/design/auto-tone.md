@@ -177,7 +177,7 @@ The constants above are the starting targets. They live in one versioned `AutoTo
 
 - **Button:** an **Auto** text button in the Tone group's header, where Lightroom places it.
   - It is declared in Basic's descriptor as a header action, and it is drawn by the existing sub-group header with actions. There is no Basic-specific widget code.
-  - **Shortcut:** Cmd+U / Ctrl+U, Lightroom's.
+  - **Shortcut:** Cmd+U / Ctrl+U, Lightroom's, declared as the action's `shortcut` (`Command+U`) in Basic's descriptor; the desktop's key binding and palette hint come from that declaration.
 - **Run:** a click sends `edit.auto-tone` with the expected revision. While the analysis runs the button shows a busy state, and a second click is ignored. The entry then appears in history and the sliders follow it.
 - **Disabled, with a tooltip saying why:**
   - on a mask target;

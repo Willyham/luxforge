@@ -224,6 +224,7 @@ impl FieldPatch for Basic {
                 patch: false,
                 preset: true,
                 analysis: None,
+                shortcut: None,
                 // The neutral picker's coordinates, in the content stage the Basic layer's input
                 // addresses; a point outside that stage is refused when it is asked.
                 parameters: ["x", "y"]

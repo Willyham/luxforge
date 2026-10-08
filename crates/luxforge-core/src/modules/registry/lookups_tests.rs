@@ -32,6 +32,7 @@ fn one_query_identity_resolves_to_one_provider_across_the_registry() {
             patch: false,
             preset: true,
             analysis: None,
+            shortcut: None,
             parameters: Vec::new(),
         }];
         TestModule::from_descriptor(descriptor)
