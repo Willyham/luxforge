@@ -127,15 +127,7 @@ impl ModuleRegistry {
         let (module, action) = self
             .action(id)
             .ok_or_else(|| Error::validation(format!("unknown action {id}")))?;
-        if !action.patch {
-            return Err(Error::validation(format!(
-                "{id} is not a field-patch action"
-            )));
-        }
-        if !action.preset {
-            return Err(Error::validation(format!("{id} is not presettable")));
-        }
-        module.descriptor().check_available()?;
+        check_patch(module.descriptor(), action)?;
         Ok((module, action))
     }
 
@@ -147,15 +139,7 @@ impl ModuleRegistry {
         let (module, action) = self
             .action(id)
             .ok_or_else(|| Error::validation(format!("unknown action {id}")))?;
-        if action.analysis.is_none() || action.patch {
-            return Err(Error::validation(format!(
-                "{id} is not an analysis-step action"
-            )));
-        }
-        if !action.preset {
-            return Err(Error::validation(format!("{id} is not presettable")));
-        }
-        module.descriptor().check_available()?;
+        check_analysis(module.descriptor(), action)?;
         Ok((module, action))
     }
 
@@ -361,4 +345,53 @@ impl ModuleRegistry {
             }
         }
     }
+}
+
+/// [`ModuleRegistry::patch_action`]'s checks of a declared action: a field patch, presettable and
+/// provided by an available module.
+fn check_patch(module: &ModuleDescriptor, action: &ActionDescriptor) -> Result<(), Error> {
+    if !action.patch {
+        return Err(Error::validation(format!(
+            "{} is not a field-patch action",
+            action.id
+        )));
+    }
+    if !action.preset {
+        return Err(Error::validation(format!("{} is not presettable", action.id)));
+    }
+    module.check_available()
+}
+
+/// [`ModuleRegistry::analysis_action`]'s checks of a declared action: an analysis step that is no
+/// field patch, presettable and provided by an available module.
+fn check_analysis(module: &ModuleDescriptor, action: &ActionDescriptor) -> Result<(), Error> {
+    if action.analysis.is_none() || action.patch {
+        return Err(Error::validation(format!(
+            "{} is not an analysis-step action",
+            action.id
+        )));
+    }
+    if !action.preset {
+        return Err(Error::validation(format!("{} is not presettable", action.id)));
+    }
+    module.check_available()
+}
+
+/// [`ModuleRegistry::settings_action`] over descriptors as `module.list` publishes them: the same
+/// answer and the same refusals, so the settings groups a client derives from its listing
+/// ([`crate::settings_groups`]) predict what capture and apply accept. `O(modules)`.
+pub(crate) fn settings_action_in<'d>(
+    descriptors: &[&'d ModuleDescriptor],
+    id: &str,
+) -> Result<(&'d ModuleDescriptor, &'d ActionDescriptor), Error> {
+    let (module, action) = descriptors
+        .iter()
+        .find_map(|module| module.action(id).map(|action| (*module, action)))
+        .ok_or_else(|| Error::validation(format!("unknown action {id}")))?;
+    if action.analysis.is_some() {
+        check_analysis(module, action)?;
+    } else {
+        check_patch(module, action)?;
+    }
+    Ok((module, action))
 }

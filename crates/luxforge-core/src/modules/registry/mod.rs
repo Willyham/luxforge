@@ -23,8 +23,9 @@ mod variants_tests;
 #[cfg(test)]
 pub(crate) use compile::stack_compiles;
 pub use lookups::{ActionRef, QueryRef};
+pub(crate) use lookups::settings_action_in;
 pub use placement::insertion_index_among;
-pub(crate) use variants::Superseded;
+pub(crate) use variants::{Superseded, superseded_in, superseded_refusal_in};
 
 use super::{
     BasicModule, CanvasInteraction, CapabilitiesProofModule, CropModule, CurveModule, DetailModule,
