@@ -10,10 +10,15 @@ publish.workspace = true
 name = "luxforge-json"
 path = "src/json.rs"
 
+[[bin]]
+name = "luxforge-ctl"
+path = "src/ctl.rs"
+
 [dependencies]
 luxforge-core = { path = "../luxforge-core" }
 luxforge-net = { path = "../luxforge-net" }
 serde_json.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 luxforge-reference = { path = "../luxforge-reference" }
