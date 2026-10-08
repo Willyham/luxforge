@@ -76,8 +76,8 @@ pub(super) mod views;
 pub(crate) const OWNER_THREAD: &str = "luxforge-owner";
 
 const EVENT_CAPACITY: usize = 256;
-/// The longest an `events.wait` may be asked to wait, and what it waits when it names no time.
-const MAX_EVENT_WAIT_MS: i64 = 30_000;
+/// The longest an `events.wait` or a `job.wait` may be asked to hold, in milliseconds.
+pub const MAX_EVENT_WAIT_MS: i64 = 30_000;
 const DEFAULT_EVENT_WAIT_MS: u64 = 10_000;
 const SOURCE_QUEUE_CAPACITY: usize = 8;
 /// Pending developments, with file preparations holding the sensor a Develop read, may pin one
@@ -824,13 +824,13 @@ fn queue_work(
 
 /// Where a test holds the source worker: after a task's activity has begun and before any of its
 /// work, so the test can read the task as running for as long as it needs to, or panic there as the
-/// task's work could. Outside tests it is empty and holds nothing.
+/// task's work could. Outside tests and the `test-holds` feature it is empty and holds nothing.
 #[derive(Clone, Default)]
-struct SourceHold(#[cfg(test)] Option<Arc<dyn Fn() + Send + Sync>>);
+struct SourceHold(#[cfg(any(test, feature = "test-holds"))] Option<Arc<dyn Fn() + Send + Sync>>);
 
 impl SourceHold {
     fn wait(&self) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-holds"))]
         if let Some(hold) = &self.0 {
             hold();
         }
@@ -1061,6 +1061,24 @@ impl OwnerHandle {
             host,
             ActivityBoard::new(),
             SourceHold::default(),
+        )
+    }
+
+    /// [`Self::start`] with the source worker calling `hold` after each task's activity begins and
+    /// before its work, so a test outside the core acts while a source job runs whatever the
+    /// host's load: `luxforge-ctl`'s, through the `test-holds` feature, which only
+    /// `[dev-dependencies]` turn on.
+    #[cfg(any(test, feature = "test-holds"))]
+    pub fn start_holding_sources(
+        catalog: &Path,
+        hold: Arc<dyn Fn() + Send + Sync>,
+    ) -> Result<(Self, JoinHandle<()>), Error> {
+        Self::launch(
+            catalog,
+            Arc::new(ModuleRegistry::builtin()),
+            HostConfig::unconfigured(),
+            ActivityBoard::new(),
+            SourceHold(Some(hold)),
         )
     }
 

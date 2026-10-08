@@ -4830,7 +4830,8 @@
           "mutation",
           "settings",
           "name"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "edit.auto-tone": {
         "mutates": true,
@@ -4845,6 +4846,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "target": {
           "default": null,
           "kind": "identity",
@@ -4935,7 +4937,8 @@
           "y",
           "width",
           "height"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "edit.crop-fit": {
         "mutates": true,
@@ -5035,7 +5038,8 @@
         "required": [
           "asset_id",
           "mutation"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "edit.crop-reset": {
         "mutates": true,
@@ -5047,7 +5051,8 @@
         "required": [
           "asset_id",
           "mutation"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "edit.paste-settings": {
         "mutates": true,
@@ -5096,7 +5101,8 @@
           "mutation",
           "settings",
           "source"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "edit.pick-raw-neutral": {
         "mutates": true,
@@ -5136,6 +5142,7 @@
           "x",
           "y"
         ],
+        "revision_of": "asset",
         "sources": [
           "raw"
         ]
@@ -5153,6 +5160,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "target": {
           "default": null,
           "kind": "identity",
@@ -5178,6 +5186,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "target": {
           "default": null,
           "kind": "identity",
@@ -5203,6 +5212,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "target": {
           "default": null,
           "kind": "identity",
@@ -5225,7 +5235,8 @@
         "required": [
           "asset_id",
           "mutation"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "edit.reset-look": {
         "mutates": true,
@@ -5238,6 +5249,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "sources": [
           "raw"
         ]
@@ -5255,6 +5267,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "target": {
           "default": null,
           "kind": "identity",
@@ -5277,7 +5290,8 @@
         "required": [
           "asset_id",
           "mutation"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "edit.reset-presence": {
         "mutates": true,
@@ -5292,6 +5306,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "target": {
           "default": null,
           "kind": "identity",
@@ -5314,7 +5329,8 @@
         "required": [
           "asset_id",
           "mutation"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "edit.select-lens-profile": {
         "mutates": true,
@@ -5364,7 +5380,8 @@
           "asset_id",
           "mutation",
           "profile"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "edit.set-basic": {
         "mutates": true,
@@ -5522,6 +5539,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "target": {
           "default": null,
           "kind": "identity",
@@ -5571,6 +5589,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "target": {
           "default": null,
           "kind": "identity",
@@ -5708,6 +5727,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "target": {
           "default": null,
           "kind": "identity",
@@ -5761,6 +5781,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "sources": [
           "raw"
         ]
@@ -6115,6 +6136,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "target": {
           "default": null,
           "kind": "identity",
@@ -6165,7 +6187,8 @@
         "required": [
           "asset_id",
           "mutation"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "edit.set-presence": {
         "mutates": true,
@@ -6223,6 +6246,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "target": {
           "default": null,
           "kind": "identity",
@@ -6289,6 +6313,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "sources": [
           "raw"
         ]
@@ -6319,6 +6344,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "sources": [
           "raw"
         ]
@@ -6349,6 +6375,7 @@
           "asset_id",
           "mutation"
         ],
+        "revision_of": "asset",
         "sources": [
           "raw"
         ]
@@ -6419,7 +6446,8 @@
         "required": [
           "asset_id",
           "mutation"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "edit.transform": {
         "mutates": true,
@@ -6449,7 +6477,8 @@
           "asset_id",
           "mutation",
           "transform"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.add-colour-range": {
         "mutates": true,
@@ -6506,7 +6535,8 @@
           "mutation",
           "mask",
           "mode"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.add-colour-range-sample": {
         "mutates": true,
@@ -6591,7 +6621,8 @@
           "r",
           "g",
           "b"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.add-linear": {
         "mutates": true,
@@ -6696,7 +6727,8 @@
           "y0",
           "x1",
           "y1"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.add-luminance-range": {
         "mutates": true,
@@ -6796,7 +6828,8 @@
           "mutation",
           "mask",
           "mode"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.add-radial": {
         "mutates": true,
@@ -6931,7 +6964,8 @@
           "radius_y",
           "angle",
           "feather"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.add-stroke": {
         "mutates": true,
@@ -7075,7 +7109,8 @@
           "feather",
           "flow",
           "erase"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.create-colour-range": {
         "mutates": true,
@@ -7104,7 +7139,8 @@
         "required": [
           "asset_id",
           "mutation"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.create-linear": {
         "mutates": true,
@@ -7181,7 +7217,8 @@
           "y0",
           "x1",
           "y1"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.create-luminance-range": {
         "mutates": true,
@@ -7253,7 +7290,8 @@
         "required": [
           "asset_id",
           "mutation"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.create-radial": {
         "mutates": true,
@@ -7360,7 +7398,8 @@
           "radius_y",
           "angle",
           "feather"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.delete": {
         "mutates": true,
@@ -7385,7 +7424,8 @@
           "asset_id",
           "mutation",
           "mask"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.delete-colour-range-sample": {
         "mutates": true,
@@ -7435,7 +7475,8 @@
           "mask",
           "component",
           "index"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.delete-component": {
         "mutates": true,
@@ -7472,7 +7513,8 @@
           "mutation",
           "mask",
           "component"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.delete-stroke": {
         "mutates": true,
@@ -7521,7 +7563,8 @@
           "mask",
           "component",
           "stroke"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.duplicate": {
         "mutates": true,
@@ -7546,7 +7589,8 @@
           "asset_id",
           "mutation",
           "mask"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.list": {
         "mutates": false,
@@ -7594,7 +7638,8 @@
           "mutation",
           "mask",
           "name"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.rename-component": {
         "mutates": true,
@@ -7643,7 +7688,8 @@
           "mask",
           "component",
           "name"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.reorder": {
         "mutates": true,
@@ -7681,7 +7727,8 @@
           "mutation",
           "mask",
           "index"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.reorder-component": {
         "mutates": true,
@@ -7731,7 +7778,8 @@
           "mask",
           "component",
           "index"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.sample-input": {
         "mutates": false,
@@ -7819,7 +7867,8 @@
           "mutation",
           "mask",
           "amount"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.set-colour-range": {
         "mutates": true,
@@ -7872,7 +7921,8 @@
           "mutation",
           "mask",
           "component"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.set-component-invert": {
         "mutates": true,
@@ -7920,7 +7970,8 @@
           "mask",
           "component",
           "invert"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.set-component-mode": {
         "mutates": true,
@@ -7973,7 +8024,8 @@
           "mask",
           "component",
           "mode"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.set-invert": {
         "mutates": true,
@@ -8009,7 +8061,8 @@
           "mutation",
           "mask",
           "invert"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.set-linear": {
         "mutates": true,
@@ -8111,7 +8164,8 @@
           "mutation",
           "mask",
           "component"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.set-luminance-range": {
         "mutates": true,
@@ -8207,7 +8261,8 @@
           "mutation",
           "mask",
           "component"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "mask.set-radial": {
         "mutates": true,
@@ -8339,7 +8394,8 @@
           "mutation",
           "mask",
           "component"
-        ]
+        ],
+        "revision_of": "asset"
       },
       "query.auto-tone": {
         "mutates": false,
