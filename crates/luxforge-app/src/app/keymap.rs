@@ -14,6 +14,7 @@ use crate::app::message::{
     select::{SelectMessage, Step},
     select_catalog::CatalogMessage,
 };
+use crate::state::host_commands::HostCommand;
 use crate::state::palette::Panel;
 use crate::state::select::{SelectPanel, Shown};
 use crate::state::select_catalog::CatalogAction;
@@ -22,7 +23,7 @@ use iced::{
     event::Status,
     keyboard::{Event as Keys, Key, key::Named},
 };
-use luxforge_core::{MASK_MODE, POINTER_MODE};
+use luxforge_core::{Chord, MASK_MODE, POINTER_MODE};
 use std::time::{Duration, Instant};
 
 pub(crate) const COMPARE_HOLD_DELAY: Duration = Duration::from_millis(200);
@@ -154,7 +155,56 @@ pub(crate) struct KeyContext {
     pub(crate) develop_confirm: bool,
     /// Develop has a development set, so `←` and `→` move through it.
     pub(crate) development_set: bool,
-    pub(crate) copy_settings_modal: u8,
+    /// What of Copy settings is open over the workspace, which takes the keyboard while it is.
+    pub(crate) copy_settings_modal: Option<CopySettingsModal>,
+    /// The chords the registered modules declare for their actions, with the action each runs
+    /// ([`crate::state::host_commands::action_shortcuts`]).
+    pub(crate) actions: Vec<(Chord, String)>,
+}
+
+/// What of Copy settings is open over the workspace. Escape cancels any of them; Return answers
+/// the chooser and the confirmation, and nothing in a menu or the report.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CopySettingsModal {
+    /// The chooser, whose Return copies the checked groups.
+    Chooser,
+    /// The paste confirmation, whose Return pastes.
+    Confirm,
+    /// A filmstrip cell's menu or the batch report, which Return does not answer.
+    Menu,
+}
+
+impl HostCommand {
+    /// The message running this command sends, whichever of its chord, its palette entry or a
+    /// script runs it.
+    pub(crate) fn message(self) -> Message {
+        use crate::app::message::copy_settings::CopySettingsMessage as C;
+        Message::CopySettings(match self {
+            Self::CopySettings | Self::CopySettingsChoosing => C::Copy {
+                choose: self == Self::CopySettingsChoosing,
+                source: None,
+            },
+            Self::PasteSettings => C::Paste,
+            Self::PastePrevious => C::Previous,
+        })
+    }
+}
+
+/// The chord a press is, when its key is one a chord can name.
+pub(crate) fn chord_of(key: &Key, modifiers: &iced::keyboard::Modifiers) -> Option<Chord> {
+    let Key::Character(value) = key else {
+        return None;
+    };
+    let mut characters = value.chars();
+    let (Some(key), None) = (characters.next(), characters.next()) else {
+        return None;
+    };
+    Some(Chord {
+        command: modifiers.command(),
+        option: modifiers.alt(),
+        shift: modifiers.shift(),
+        key: key.to_ascii_uppercase(),
+    })
 }
 
 /// One event as one message, or nothing. `status` is Iced's: a key a text field already consumed
@@ -213,7 +263,7 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
             _ => None,
         };
     }
-    if context.copy_settings_modal > 0 {
+    if let Some(modal) = context.copy_settings_modal {
         use crate::app::message::copy_settings::CopySettingsMessage as C;
         return match keyboard {
             Keys::KeyPressed {
@@ -223,13 +273,11 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
             Keys::KeyPressed {
                 key: Key::Named(Named::Enter),
                 ..
-            } if status == Status::Ignored && context.copy_settings_modal < 3 => {
-                Some(Message::CopySettings(if context.copy_settings_modal == 2 {
-                    C::Confirm
-                } else {
-                    C::Chosen
-                }))
-            }
+            } if status == Status::Ignored => match modal {
+                CopySettingsModal::Confirm => Some(Message::CopySettings(C::Confirm)),
+                CopySettingsModal::Chooser => Some(Message::CopySettings(C::Chosen)),
+                CopySettingsModal::Menu => None,
+            },
             _ => None,
         };
     }
@@ -238,20 +286,11 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         && let Keys::KeyPressed { key, modifiers, .. } = keyboard
         && modifiers.command()
     {
-        use crate::app::message::copy_settings::CopySettingsMessage as C;
-        if character(key, "c") && !modifiers.alt() {
-            return Some(Message::CopySettings(C::Copy {
-                choose: modifiers.shift(),
-                source: None,
-            }));
-        }
-        if character(key, "v") && !modifiers.shift() {
-            if !modifiers.alt() {
-                return Some(Message::CopySettings(C::Paste));
-            }
-            if !context.select {
-                return Some(Message::CopySettings(C::Previous));
-            }
+        // The host's own commands, from their one table.
+        if let Some(command) =
+            chord_of(key, modifiers).and_then(|chord| HostCommand::bound(chord, context.select))
+        {
+            return Some(command.message());
         }
         if character(key, "a")
             && !context.select
@@ -302,16 +341,15 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         return None;
     };
     if modifiers.command() {
+        // A module action's declared chord runs it with nothing preset, as its control does.
         if status == Status::Ignored
-            && character(key, "u")
-            && !modifiers.shift()
-            && !modifiers.alt()
             && !repeat
-            && !context.select
+            && let Some(chord) = chord_of(key, modifiers)
+            && let Some((_, action)) = context.actions.iter().find(|(bound, _)| *bound == chord)
         {
             return Some(Message::Action(
                 crate::app::message::action::ActionMessage::Run {
-                    action: "auto-tone".into(),
+                    action: action.clone(),
                     preset: serde_json::Map::new(),
                 },
             ));
@@ -868,7 +906,7 @@ mod tests {
             Some(Message::CopySettings(C::Previous))
         ));
         let modal = KeyContext {
-            copy_settings_modal: 2,
+            copy_settings_modal: Some(CopySettingsModal::Confirm),
             ..select
         };
         assert!(matches!(
@@ -879,6 +917,73 @@ mod tests {
             ),
             Some(Message::CopySettings(C::Cancel))
         ));
+    }
+
+    /// Every chord the keyboard table answers on its own, in every workspace and with no module
+    /// chord bound, is one the host keeps from modules (`luxforge_core::HOST_CHORDS`), so a chord a
+    /// module may register never collides with one the host already answers.
+    #[test]
+    fn every_chord_the_host_answers_is_kept_from_modules() {
+        let contexts = [
+            KeyContext::default(),
+            KeyContext {
+                development_set: true,
+                ..KeyContext::default()
+            },
+            KeyContext {
+                select: true,
+                ..KeyContext::default()
+            },
+            KeyContext {
+                select: true,
+                loupe_open: true,
+                ..KeyContext::default()
+            },
+            KeyContext {
+                mask_brush: true,
+                mask_keys: true,
+                ..KeyContext::default()
+            },
+        ];
+        let keys = ('A'..='Z')
+            .chain('0'..='9')
+            .chain(Chord::PUNCTUATION.chars());
+        let mut answered = Vec::new();
+        for key in keys {
+            for (option, shift) in [(false, false), (false, true), (true, false), (true, true)] {
+                let mut modifiers = Modifiers::COMMAND;
+                if option {
+                    modifiers |= Modifiers::ALT;
+                }
+                if shift {
+                    modifiers |= Modifiers::SHIFT;
+                }
+                let event = pressed(Key::Character(key.to_string().into()), modifiers);
+                if contexts
+                    .iter()
+                    .any(|context| keymap(&event, Status::Ignored, context).is_some())
+                {
+                    answered.push(Chord {
+                        command: true,
+                        option,
+                        shift,
+                        key,
+                    });
+                }
+            }
+        }
+        let unkept: Vec<String> = answered
+            .iter()
+            .filter(|chord| luxforge_core::host_chord(**chord).is_none())
+            .map(ToString::to_string)
+            .collect();
+        assert!(unkept.is_empty(), "the host answers {unkept:?}");
+        let unanswered: Vec<String> = luxforge_core::HOST_CHORDS
+            .iter()
+            .filter(|(chord, _)| !answered.contains(chord))
+            .map(|(chord, _)| chord.to_string())
+            .collect();
+        assert!(unanswered.is_empty(), "the host keeps {unanswered:?}");
     }
 
     fn pressed(key: Key, modifiers: Modifiers) -> Event {
@@ -916,8 +1021,15 @@ mod tests {
     /// or not; the bare keys and Option are not zoom keys.
     #[test]
     fn auto_tone_shortcut_respects_text_focus_workspace_modifiers_and_repeat() {
-        let context = KeyContext::default();
+        // The chord is Basic's declaration, so a registry without it binds nothing.
         let event = pressed(Key::Character("u".into()), Modifiers::COMMAND);
+        assert!(keymap(&event, Status::Ignored, &KeyContext::default()).is_none());
+        let context = KeyContext {
+            actions: crate::state::host_commands::action_shortcuts(
+                &crate::state::testing::descriptors(),
+            ),
+            ..KeyContext::default()
+        };
         assert!(
             matches!(keymap(&event, Status::Ignored, &context), Some(Message::Action(crate::app::message::action::ActionMessage::Run { action, .. })) if action == "auto-tone")
         );
@@ -1111,7 +1223,8 @@ mod tests {
             loupe_open: false,
             develop_confirm: false,
             development_set: false,
-            copy_settings_modal: 0,
+            copy_settings_modal: None,
+            actions: vec![(Chord::command('U'), "auto-tone".into())],
         }
     }
 

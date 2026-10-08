@@ -970,18 +970,9 @@ impl Editor {
         workspace.derive(&inputs);
         workspace.copy_settings = self.copy_model();
         for entry in &mut workspace.palette.entries {
-            if let state::palette::PaletteAction::CopySettings(kind) = entry.action {
-                entry.refusal = match kind {
-                    0 | 1 => workspace.copy_settings.copy_refusal.clone(),
-                    2 => workspace.copy_settings.paste_refusal.clone(),
-                    _ => workspace.copy_settings.previous_refusal.clone(),
-                };
-                if kind == 2 && workspace.copy_settings.targets > 1 {
-                    entry.label = format!(
-                        "Paste settings to {} photographs",
-                        workspace.copy_settings.targets
-                    );
-                }
+            if let state::palette::PaletteAction::Host(command) = entry.action {
+                entry.refusal = command.refusal(&workspace.copy_settings);
+                entry.label = command.label(&workspace.copy_settings);
             }
         }
         for job in &mut workspace.performance.jobs {
@@ -1363,16 +1354,17 @@ impl Editor {
             develop_confirm: self.develop.state.confirm.is_some(),
             development_set: self.develop.state.set.is_some(),
             copy_settings_modal: if self.view_state.copy_settings.confirm.is_some() {
-                2
+                Some(keymap::CopySettingsModal::Confirm)
             } else if self.view_state.copy_settings.chooser.is_some() {
-                1
+                Some(keymap::CopySettingsModal::Chooser)
             } else if self.view_state.copy_settings.cell_menu.is_some()
                 || self.select.state.catalog.report
             {
-                3
+                Some(keymap::CopySettingsModal::Menu)
             } else {
-                0
+                None
             },
+            actions: state::host_commands::action_shortcuts(&self.modules),
         }
     }
 
