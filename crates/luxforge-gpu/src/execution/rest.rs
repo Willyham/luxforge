@@ -308,6 +308,12 @@ pub struct EvaluationFigures {
     /// that ran: what the frame's links drew.
     pub window_texels: u64,
     pub link_texels: u64,
+    /// Evaluations that ran each link only where the plan's change reached, and those that ran
+    /// every link over the whole window; and the texels the links that ran reached, the window's
+    /// for a whole evaluation's.
+    pub incremental: u32,
+    pub whole: u32,
+    pub reached_texels: u64,
 }
 
 impl EvaluationFigures {
@@ -321,6 +327,9 @@ impl EvaluationFigures {
         self.lights_restored += other.lights_restored;
         self.window_texels += other.window_texels;
         self.link_texels += other.link_texels;
+        self.incremental += other.incremental;
+        self.whole += other.whole;
+        self.reached_texels += other.reached_texels;
     }
 }
 

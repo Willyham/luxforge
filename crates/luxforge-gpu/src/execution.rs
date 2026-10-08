@@ -2832,6 +2832,14 @@ impl Executor {
         // The links that encode passes, for the evaluation's figures.
         let mut links_run = 0u32;
         let mut spatial_passes = 0u64;
+        let window = u64::from(size.0) * u64::from(size.1);
+        let texels = |rect: Option<spatial::Rect>| {
+            rect.map_or(window, |rect| {
+                u64::from(rect.x1.saturating_sub(rect.x0))
+                    * u64::from(rect.y1.saturating_sub(rect.y0))
+            })
+        };
+        let mut reached_texels = 0u64;
         for (index, steps) in chain.links.iter().enumerate() {
             let (compiled, id) = &pipelines[index];
             chain::pack_words(plan.texels, (0, 0), steps, link_words);
@@ -2876,6 +2884,9 @@ impl Executor {
                 .map(|(changed, reached)| changed.union(&reached));
             encoded |= ran;
             links_run += u32::from(ran);
+            if ran {
+                reached_texels += texels(dirty);
+            }
             spatial_passes += dispatched;
             self.figures
                 .preview
@@ -2926,6 +2937,7 @@ impl Executor {
                     .spatial_passes
                     .fetch_add(dispatched, Ordering::Relaxed);
             }
+            reached_texels += texels(reached);
             let groups = slot.spatial.as_ref().and_then(|spatial| spatial.groups());
             let planes = groups.and_then(|groups| groups.fragment.as_ref());
             // The frame and, where the bucket has room, one more column and row: the edge
@@ -3047,8 +3059,13 @@ impl Executor {
         slot.evaluated_serial = change.map(|change| (change.serial, plan.boundary.version));
         if changed || encoded {
             let figures = &mut surface.evaluation;
-            let window = u64::from(size.0) * u64::from(size.1);
             figures.links_run += links_run;
+            if incremental.is_some() {
+                figures.incremental += 1;
+            } else {
+                figures.whole += 1;
+            }
+            figures.reached_texels += reached_texels;
             figures.spatial_passes += spatial_passes;
             figures.window_texels = window;
             figures.link_texels += window * u64::from(links_run);
