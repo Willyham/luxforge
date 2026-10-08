@@ -115,7 +115,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         Step::new(
             "preset-created",
             PresetCreateStep {
-                auto_tone: false,
+                analysis: Vec::new(),
                 name: "Detail moderate".into(),
                 group: None,
                 groups: vec![

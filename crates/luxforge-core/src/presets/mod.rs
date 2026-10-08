@@ -7,6 +7,9 @@
 //! document is text work, not frame work. The library, the API methods and the desktop build on
 //! it; `docs/design/presets.md` is the contract.
 mod document;
+mod groups;
+#[cfg(test)]
+mod groups_tests;
 mod library;
 mod lrtemplate;
 mod mapping;
@@ -19,6 +22,10 @@ mod library_tests;
 #[cfg(test)]
 mod tests;
 
+pub use groups::{
+    GroupOnKind, GroupState, KindSkip, SettingsAnalysis, SettingsGroup, SettingsGroups,
+    SettingsPhoto, settings_groups,
+};
 pub(crate) use library::MAX_PRESET_GROUP;
 #[cfg(test)]
 use library::{IMPORTED_PRESET_GROUP, MAX_PRESETS};

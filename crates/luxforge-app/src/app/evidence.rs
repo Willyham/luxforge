@@ -36,7 +36,7 @@ use crate::{
         control_tree::walk,
         fields,
         number::{NumberSpec, number_text},
-        presets::{PresetRow, presettable_groups},
+        presets::{PresetRow, settings_groups},
         tools::crop_frame,
     },
     view,
@@ -2745,6 +2745,7 @@ impl Editor {
             && self.slider_gesture().is_none()
             && !self.busy
             && !self.view_state.copy_settings.pending
+            && !self.view_state.copy_settings.batch_pending
             && self.sync.poll.idle()
             && self.select.state.catalog.running().is_none()
             && (!self.select_shown() || self.catalog_quiet())
@@ -4117,10 +4118,22 @@ impl Editor {
             Message::Key(chord_pressed(chord), iced::event::Status::Ignored)
         } else {
             match step {
-                S::Check { group, checked } => Message::CopySettings(C::Check {
-                    label: group,
-                    checked,
-                }),
+                // The script names a chooser row by the label it shows.
+                S::Check { group, checked } => {
+                    let Some(id) = self
+                        .view_state
+                        .copy_settings
+                        .chooser
+                        .as_ref()
+                        .and_then(|chooser| {
+                            chooser.groups.iter().find(|row| row.group.title == group)
+                        })
+                        .map(|row| row.group.id.clone())
+                    else {
+                        return self.fail_step(format!("no chooser row is labelled {group}"));
+                    };
+                    Message::CopySettings(C::Check { id, checked })
+                }
                 S::None => Message::CopySettings(C::CheckMany {
                     module: None,
                     edited: false,
@@ -4627,12 +4640,27 @@ impl Editor {
         if self.document.state.is_none() {
             return self.fail_step("no photograph is open");
         }
-        let labels: Vec<String> = presettable_groups(&self.modules, self.developer)
+        // The script names groups by the labels the form shows, and steps by identity.
+        let offered = settings_groups(&self.modules, self.developer);
+        let groups: Vec<(String, String)> = offered
+            .groups
             .into_iter()
-            .map(|group| group.label)
+            .filter(|group| group.unavailable.is_none())
+            .map(|group| (group.id, group.title))
             .collect();
-        if let Some(unknown) = step.groups.iter().find(|label| !labels.contains(label)) {
+        if let Some(unknown) = step
+            .groups
+            .iter()
+            .find(|label| !groups.iter().any(|(_, title)| title == *label))
+        {
             return self.fail_step(format!("no create-form group is labelled {unknown}"));
+        }
+        if let Some(unknown) = step
+            .analysis
+            .iter()
+            .find(|id| !offered.analysis.iter().any(|step| &step.id == *id))
+        {
+            return self.fail_step(format!("no create-form analysis step is {unknown}"));
         }
         let mut tasks = Vec::new();
         if !self.presets.form.open {
@@ -4642,11 +4670,17 @@ impl Editor {
         if let Some(group) = step.group {
             tasks.push(self.update(Message::Preset(PresetMessage::Group(group))));
         }
-        for label in labels {
-            let checked = step.groups.contains(&label);
-            tasks.push(self.update(Message::Preset(PresetMessage::Check { label, checked })));
+        for (id, title) in groups {
+            let checked = step.groups.contains(&title);
+            tasks.push(self.update(Message::Preset(PresetMessage::Check { id, checked })));
         }
-        tasks.push(self.update(Message::Preset(PresetMessage::AutoTone(step.auto_tone))));
+        for analysis in offered.analysis {
+            let checked = step.analysis.contains(&analysis.id);
+            tasks.push(self.update(Message::Preset(PresetMessage::Analysis {
+                id: analysis.id,
+                checked,
+            })));
+        }
         if !step.submit {
             self.capture_next_frame();
             return Task::batch(tasks);
@@ -6948,7 +6982,7 @@ mod tests {
             .filter(|(_, on)| **on)
             .map(|(label, _)| label.as_str())
             .collect();
-        assert_eq!(checked, ["Basic \u{00b7} Tone"]);
+        assert_eq!(checked, ["luxforge.basic/tone"]);
         assert!(!editor.presets.library.pending);
         // Submitted: Create runs and the step waits for the library's answer.
         let _ = editor.next_step();
