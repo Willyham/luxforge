@@ -1361,9 +1361,18 @@ fn presentation_observation_has_a_bounded_measurement_window() {
 
 #[test]
 fn a_key_step_takes_a_chord_written_as_an_action_shortcut() {
-    for key in ["Command+U", "Command+Shift+C", "Command+Option+V", "Command+,"] {
+    for key in [
+        "Command+U",
+        "Command+Shift+C",
+        "Command+Option+V",
+        "Command+,",
+    ] {
         let written = write(&[Step::key(key)]);
-        assert_eq!(parse(&written.to_string()).unwrap(), vec![Step::key(key)], "{key}");
+        assert_eq!(
+            parse(&written.to_string()).unwrap(),
+            vec![Step::key(key)],
+            "{key}"
+        );
     }
     for key in [
         "Command+u",

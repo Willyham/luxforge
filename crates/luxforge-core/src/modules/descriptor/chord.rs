@@ -135,7 +135,10 @@ pub const HOST_CHORDS: &[(Chord, &str)] = &[
     (Chord::command('D'), "Select none"),
     (Chord::command('F'), "Find"),
     (Chord::command('F').option(), "Collapse the filmstrip"),
-    (Chord::command('F').option().shift(), "Collapse the filmstrip"),
+    (
+        Chord::command('F').option().shift(),
+        "Collapse the filmstrip",
+    ),
     (Chord::command('Z'), "Undo"),
     (Chord::command('Z').shift(), "Redo"),
     (Chord::command('Z').option(), "Undo"),
@@ -172,9 +175,15 @@ pub const HOST_CHORDS: &[(Chord, &str)] = &[
     (Chord::command('-').option(), "Zoom out"),
     (Chord::command('-').option().shift(), "Zoom out"),
     (Chord::command('[').option(), "Show or hide the left panel"),
-    (Chord::command('[').option().shift(), "Show or hide the left panel"),
+    (
+        Chord::command('[').option().shift(),
+        "Show or hide the left panel",
+    ),
     (Chord::command(']').option(), "Show or hide the right panel"),
-    (Chord::command(']').option().shift(), "Show or hide the right panel"),
+    (
+        Chord::command(']').option().shift(),
+        "Show or hide the right panel",
+    ),
 ];
 
 /// What the host does with `chord`, when it keeps it.
