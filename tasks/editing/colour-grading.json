@@ -3,7 +3,7 @@
   "plan_id": "colour-grading",
   "title": "Colour grading in the mixer",
   "objective": "Extend the existing mixer with Lightroom-familiar tonal and Global grading, shared atomic wheels and numeric/API parity, independently proven CPU/GPU rendering, masks, presets and mapped Lightroom grading documents.",
-  "context_summary": "The owner settled product choices on 2026-10-07 and requested an implementation-ready plan with no approval/research gates. Deliver HSL/Grading tabs with three-way and individual/Global wheels, luminance, masks, Luxforge presets and direct Lightroom preset mappings; retain dormant hue and scoped resets. Initial numerical/layout details are implementer decisions. TASK-001 records the completed contract. TASK-002 and TASK-003 implement numerics and shared controls immediately; TASK-009 hands off the working feature. Only TASK-010 performs independent f64 reference analysis and Lightroom matching/refinement, with no dependency back into initial delivery. Lightroom exports are measurement inputs, not approval gates or prerequisites for feature/tooling implementation. Ordinary correctness tests, GPU-versus-CPU checks and background rendered evidence ship with the feature. Keep current shapes only, bounded work and the roadmap high-tier minimum.",
+  "context_summary": "The owner settled product choices on 2026-10-07 and requested an implementation-ready plan with no approval/research gates. Deliver HSL/Grading tabs with three-way and individual/Global wheels, luminance, masks, Luxforge presets and direct Lightroom preset mappings; retain dormant hue and scoped resets. Initial numerical/layout details are implementer decisions. TASK-001 records the completed contract. TASK-002 through TASK-009 are completed, including native M4 full-tier component coverage and quiet-start 24/60 MP and Nikon Z6 RAW measurements; the scope and misses are in docs/specs/performance.md. Only TASK-010 performs independent f64 reference analysis and Lightroom matching/refinement, with no dependency back into initial delivery. Lightroom exports are measurement inputs, not approval gates or prerequisites for feature/tooling implementation. Ordinary correctness tests, GPU-versus-CPU checks and background rendered evidence ship with the feature. Keep current shapes only, bounded work and the roadmap high-tier minimum.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -618,7 +618,7 @@
     {
       "id": "TASK-008",
       "description": "Extend integrated acceptance, smoke and corpus coverage for grading.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-006",
         "TASK-007"
@@ -630,7 +630,7 @@
         "Include mask kinds that depend on luminance/colour so layer ordering and coverage inputs are proved, plus stale/cancel/revision race recovery and immutable source hashes.",
         "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step.",
         "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence.",
-        "Mostly delivered: the registered grading smoke scenario, the mixer smoke's nested HSL tabs, the editor-acceptance grading section with single and batch JPEG exports, grading GPU corpus recipes. Outstanding: the latency harness's two-field wheel gesture, and running the rendered tier with these scenarios on the owner's M4."
+        "Delivered: grading and nested-HSL smoke, editor-acceptance masks/samples/single and batch exports, grading GPU corpus recipes and the latency harness atomic two-field wheel gesture. Native M4 background rendered journeys and full-corpus GPU gate pass with the supported RAW manifest; wheel captures prove the selected expanded individual view and both fields in each patch. Shared preset/Copy settings derivation captures HSL and Grading independently without duplicate wheel fields."
       ],
       "context_links": [
         {
@@ -720,7 +720,7 @@
     {
       "id": "TASK-009",
       "description": "Hand off the working feature with native verification, measurements and current documentation.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-008"
       ],
@@ -731,7 +731,7 @@
         "Documentation reflects current delivered contracts and scoped evidence only. Native Windows/Linux, screen-reader and calibrated-display claims need native evidence; skips remain incomplete.",
         "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step.",
         "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence.",
-        "Started ahead of TASK-008's last item: the integrated feature is delivered with targeted tests, clippy and an M2 native GPU comparison. Outstanding: the full tier with the supported RAW manifest and the GPU gate over the grading recipes on the owner's M4, the latency harness's wheel gesture and the 24/60 MP grading-versus-HSL measurements, and the performance checklist's measured figures."
+        "Native M4 handoff coverage is complete: 77 full-tier components passed in artifacts/pr5-full-final-20261008, and the three corrected RAW-panel assertions replay successfully plus fresh hardening passes in artifacts/pr5-harness-rechecks-20261008 (qualification.json retains the original failed full status and records all 81 covered components against the unchanged editor binary). GPU release gate: 305 stacks/1,220 at-rest view cells, grading included; motion remains reported under the accepted policy. All 21 grading measurement commands started at load <=8, with 30 samples on 24/60 MP and Nikon Z6 RAW; scoped latency, reference render/sample/export and CPU/GPU resources, RSS and sparse histogram-release misses are in docs/specs/performance.md. No native Windows/Linux or Lightroom response claim."
       ],
       "context_links": [
         {

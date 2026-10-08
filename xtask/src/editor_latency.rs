@@ -3277,14 +3277,33 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         let setup = frames
             .get(setup_steps(options, field, kind).len())
             .ok_or("No wheel setup frame")?;
-        ensure(
-            setup["state"]["control_ui"]["wheels"]
+        let module = ModuleRegistry::builtin()
+            .action(&field.action)
+            .map(|(provider, _)| provider.descriptor().id.clone())
+            .ok_or("The measured wheel's provider is unavailable")?;
+        let selected = |group: Value, view: &str| {
+            setup["state"]["workspace"]["views"]
                 .as_array()
-                .is_some_and(|wheels| {
-                    wheels
-                        .iter()
-                        .any(|drawn| drawn["hue_parameter"] == wheel.hue && drawn["large"] == true)
-                }),
+                .is_some_and(|views| {
+                    views.iter().any(|selected| {
+                        selected["module"] == module
+                            && selected["group"] == group
+                            && selected["view"] == view
+                    })
+                })
+        };
+        ensure(
+            setup["state"]["expanded"][&module] == true
+                && setup["state"]["tools_scroll"] == 0.0
+                && selected(json!([]), "Grading")
+                && selected(json!(["Grading"]), &wheel.label)
+                && setup["state"]["control_ui"]["wheels"]
+                    .as_array()
+                    .is_some_and(|wheels| {
+                        wheels.iter().any(|drawn| {
+                            drawn["hue_parameter"] == wheel.hue && drawn["large"] == true
+                        })
+                    }),
             "The measured wheel was not visible in its individual view before timing",
         )?;
         let patches: Vec<_> = events
