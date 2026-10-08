@@ -316,10 +316,12 @@ fn filmstrip_set_is_what_the_develop_answered() {
         photos,
         [
             SetPhoto {
+                kind: None,
                 asset_id: a.clone(),
                 name: "DSC_0001.JPG".into()
             },
             SetPhoto {
+                kind: None,
                 asset_id: b.clone(),
                 name: "DSC_0002.JPG".into()
             },
@@ -353,6 +355,7 @@ fn filmstrip_set_is_what_the_develop_answered() {
 fn photos(count: usize) -> Vec<SetPhoto> {
     (0..count)
         .map(|at| SetPhoto {
+            kind: None,
             asset_id: AssetId::new(),
             name: format!("IMG_{at:04}.JPG"),
         })
@@ -449,4 +452,37 @@ fn filmstrip_model_draws_the_window_of_the_set() {
         derive(&state, None).render.as_deref(),
         Some("Cached preview \u{b7} approximate")
     );
+}
+
+#[test]
+fn filmstrip_selection_keeps_the_open_photograph_and_ranges_from_it() {
+    let photos: Vec<_> = (0..5)
+        .map(|index| SetPhoto {
+            kind: None,
+            asset_id: luxforge_core::AssetId::new(),
+            name: format!("{index}.jpg"),
+        })
+        .collect();
+    let mut set = DevelopSet::new(1, photos, 2);
+    assert_eq!(set.selected_assets(), [set.photos[2].asset_id.clone()]);
+    set.select(4, true, false);
+    assert_eq!(set.active, 2);
+    assert!(set.selected(4));
+    set.select(2, true, false);
+    assert!(set.selected(2));
+    set.select(4, true, false);
+    assert!(!set.selected(4));
+    set.select(0, false, true);
+    assert_eq!(
+        (0..5)
+            .filter(|index| set.selected(*index))
+            .collect::<Vec<_>>(),
+        [0, 1, 2]
+    );
+    set.select(99, true, false);
+    assert_eq!(set.selected_assets().len(), 3);
+    set.selected.clear();
+    assert_eq!(set.selected_assets().len(), 1);
+    let replacement = DevelopSet::new(2, set.photos, 4);
+    assert_eq!(replacement.selected_assets().len(), 1);
 }

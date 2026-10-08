@@ -90,6 +90,7 @@ mod gpu_white_balance_tests;
 #[cfg(test)]
 mod gpu_window_tests;
 // The shared lowering from core semantic plans to executable display and tile-worker plans.
+pub(crate) mod copy_settings;
 mod decoded_handles;
 pub(crate) mod gpu_plan;
 pub(crate) mod gpu_settle;
@@ -937,9 +938,50 @@ impl Editor {
         // whenever a message arrives, and nothing polls it.
         self.activity.render_bar =
             state::canvas::render_bar(self.presentation.queue.progress(), self.activity.render_bar);
+        if self.select.state.shown == state::select::Shown::Develop {
+            let source = self
+                .document
+                .state
+                .as_ref()
+                .filter(|state| {
+                    self.view_state
+                        .copy_settings
+                        .shown
+                        .as_ref()
+                        .is_none_or(|shown| shown.asset != state.asset.id)
+                })
+                .map(|state| state::copy_settings::Source {
+                    asset: state.asset.id.clone(),
+                    entry: None,
+                    name: state
+                        .asset
+                        .locator
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                });
+            self.view_state.copy_settings.observe(source);
+        }
         let mut workspace = std::mem::take(&mut self.workspace);
         let inputs = self.inputs();
         workspace.derive(&inputs);
+        workspace.copy_settings = self.copy_model();
+        for entry in &mut workspace.palette.entries {
+            if let state::palette::PaletteAction::CopySettings(kind) = entry.action {
+                entry.refusal = match kind {
+                    0 | 1 => workspace.copy_settings.copy_refusal.clone(),
+                    2 => workspace.copy_settings.paste_refusal.clone(),
+                    _ => workspace.copy_settings.previous_refusal.clone(),
+                };
+                if kind == 2 && workspace.copy_settings.targets > 1 {
+                    entry.label = format!(
+                        "Paste settings to {} photographs",
+                        workspace.copy_settings.targets
+                    );
+                }
+            }
+        }
         for job in &mut workspace.performance.jobs {
             job.cancelling = job
                 .job_id
@@ -1063,6 +1105,7 @@ impl Editor {
             Message::Mask(message) => self.mask_message(message),
             Message::Draft(message) => self.draft_message(message),
             Message::Preset(message) => self.preset_update(message),
+            Message::CopySettings(message) => self.copy_settings_update(message),
             Message::Capability(message) => self.capability_update(message),
             Message::Performance(message) => self.performance_update(message),
             Message::Visibility(message) => self.visibility_update(message),
@@ -1317,6 +1360,17 @@ impl Editor {
             loupe_open: self.loupe_open(),
             develop_confirm: self.develop.state.confirm.is_some(),
             development_set: self.develop.state.set.is_some(),
+            copy_settings_modal: if self.view_state.copy_settings.confirm.is_some() {
+                2
+            } else if self.view_state.copy_settings.chooser.is_some() {
+                1
+            } else if self.view_state.copy_settings.cell_menu.is_some()
+                || self.select.state.catalog.report
+            {
+                3
+            } else {
+                0
+            },
         }
     }
 

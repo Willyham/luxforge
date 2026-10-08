@@ -75,6 +75,8 @@ pub(crate) struct Refresh {
     /// in the log needs no refresh of its own when a poll reads it ([`sync_now`]). `None` when the
     /// refresh read back no change of this desktop's.
     pub(crate) request: Option<String>,
+    /// The mutation envelope's identity, distinct from the transport request recorded above.
+    pub(crate) mutation_request: Option<String>,
     /// What the composite action this refresh read back left out because it does not apply to
     /// the photo, as its answer listed it; empty for every other change.
     pub(crate) skipped: Vec<luxforge_core::SkippedSetting>,
@@ -802,6 +804,7 @@ pub(crate) fn refresh(
         job,
         session,
         request: None,
+        mutation_request: None,
         skipped: Vec::new(),
         collapsed: None,
     })
@@ -1034,10 +1037,12 @@ pub(crate) fn command_now(
     params: Value,
     proxy: impl Into<Drawn>,
 ) -> Result<Refresh, String> {
+    let mutation_request = params["mutation"]["request_id"].as_str().map(str::to_owned);
     let (answer, request) = call_own(owner, client, method, params)?;
     let scope = Scope::after(method, &answer);
     let mut refreshed = refresh(owner, client, asset_id, scope, proxy)?;
     refreshed.request = Some(request);
+    refreshed.mutation_request = mutation_request;
     refreshed.collapsed = collapsed(&answer);
     // A composite's skips are part of its answer, not of any state read back afterwards.
     if let Some(skipped) = answer.get("skipped") {

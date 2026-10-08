@@ -397,7 +397,11 @@ pub(crate) fn metadata(columns: &[FacetColumnModel]) -> Element<'_, Message> {
 
 /// The Info panel over photographs: the preview (or the selection's previews), the title, the
 /// Organize band with Move to… and Add to…, the Metadata band and the Develop band.
-pub(crate) fn info<'a>(model: &'a PhotoInfo, images: GridImages<'a>) -> Element<'a, Message> {
+pub(crate) fn info<'a>(
+    model: &'a PhotoInfo,
+    images: GridImages<'a>,
+    copy: &'a crate::state::copy_settings::CopyModel,
+) -> Element<'a, Message> {
     let mut content = Column::new().spacing(theme::PANEL_SECTION_SPACING);
     if model.count <= 1 {
         let preview: Element<'a, Message> = match model
@@ -461,7 +465,7 @@ pub(crate) fn info<'a>(model: &'a PhotoInfo, images: GridImages<'a>) -> Element<
     if !model.metadata.is_empty() {
         content = content.push(band("Metadata", &model.metadata));
     }
-    content = content.push(develop(model));
+    content = content.push(develop(model, copy));
     // Send back, refused with the core's reason when the rows already say it would be.
     if let Some(send_back) = &model.send_back {
         let enabled = send_back.refused.is_none();
@@ -614,7 +618,10 @@ fn organize(model: &PhotoInfo) -> Element<'_, Message> {
 /// library's presets, and Export…, each refused with why while a batch runs or over Removed; the
 /// running batch's progress or the last one's sentence with its Report; and the board's note that
 /// each photograph gets its own history entry.
-fn develop(model: &PhotoInfo) -> Element<'_, Message> {
+fn develop<'a>(
+    model: &'a PhotoInfo,
+    copy: &'a crate::state::copy_settings::CopyModel,
+) -> Element<'a, Message> {
     let band_model = &model.batch;
     let button = |label: String, glyph: Option<Icon>, press: Message| {
         let enabled = band_model.refused.is_none();
@@ -652,6 +659,7 @@ fn develop(model: &PhotoInfo) -> Element<'_, Message> {
     );
     let mut content = Column::new().spacing(theme::SPACING);
     content = content.push(band("Develop", &model.develop));
+    content = content.push(crate::view::copy_settings::card(copy));
     content = content.push(
         row![
             container(apply).width(Length::Fill),
@@ -693,8 +701,47 @@ fn develop(model: &PhotoInfo) -> Element<'_, Message> {
 /// The selected photographs' menu, at the point of the grid the right-click was at, moved in as
 /// little as keeps it inside the grid's `viewport`. A press beside it puts it away and never reaches
 /// the grid under it.
-pub(crate) fn photo_menu(model: &PhotoMenu, viewport: iced::Size) -> Element<'_, Message> {
-    let height = model.choices.len() as f32 * theme::MENU_ITEM_HEIGHT + 2.0 * theme::MENU_PADDING;
+pub(crate) fn photo_menu<'a>(
+    model: &'a PhotoMenu,
+    viewport: iced::Size,
+    copy: &'a crate::state::copy_settings::CopyModel,
+) -> Element<'a, Message> {
+    use crate::app::message::copy_settings::CopySettingsMessage as C;
+    let mut entries = Vec::new();
+    for (label, event, refusal) in [
+        (
+            "Copy settings".to_owned(),
+            C::Copy {
+                choose: false,
+                source: None,
+            },
+            &copy.copy_refusal,
+        ),
+        (
+            "Copy settings…".to_owned(),
+            C::Copy {
+                choose: true,
+                source: None,
+            },
+            &copy.copy_refusal,
+        ),
+        (
+            format!("Paste settings to {}", copy.targets),
+            C::Paste,
+            &copy.paste_refusal,
+        ),
+    ] {
+        entries.push(MenuEntry::Item(MenuItem {
+            icon: None,
+            label,
+            trailing: None,
+            on_press: refusal.is_none().then_some(Message::CopySettings(event)),
+            reason: refusal.clone(),
+        }));
+    }
+    let content = column![menu_list(entries), menu(&model.choices)];
+    let height =
+        (model.choices.len() + 3) as f32 * theme::MENU_ITEM_HEIGHT + 2.0 * theme::MENU_PADDING;
     let x = model.x.min((viewport.width - theme::MENU_WIDTH).max(0.0));
     let y = model.y.min((viewport.height - height).max(0.0));
     iced::widget::stack![
@@ -705,7 +752,7 @@ pub(crate) fn photo_menu(model: &PhotoMenu, viewport: iced::Size) -> Element<'_,
         )
         .on_press(close())
         .on_right_press(close()),
-        container(menu(&model.choices)).padding(Padding {
+        container(content).padding(Padding {
             top: y,
             right: 0.0,
             bottom: 0.0,
@@ -754,6 +801,22 @@ pub(crate) fn sheet(model: &CatalogSheet) -> Element<'_, Message> {
             .is_some()
             .then(|| act(CatalogAction::Confirmed)),
     );
+    let sheet: Element<'_, Message> = if model.confirm.is_none() {
+        column![
+            sheet,
+            text_button(
+                "Copy report JSON",
+                ButtonTone::Quiet,
+                ButtonSize::Compact,
+                Some(Message::CopySettings(
+                    crate::app::message::copy_settings::CopySettingsMessage::CopyReport
+                ))
+            )
+        ]
+        .into()
+    } else {
+        sheet
+    };
     // A press beside the sheet puts it away, as a menu's does, and never reaches the grid under it.
     iced::widget::stack![
         mouse_area(

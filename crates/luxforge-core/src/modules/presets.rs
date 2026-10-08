@@ -1,7 +1,6 @@
-//! The presets module: applies a settings set, named field-patch actions and the fields each one
-//! sets, as one history entry labelled `Preset: <name>`.
+//! Named presets and copied settings, composed through the same field-patch planner as one entry.
 //!
-//! It declares no effects, so it never owns a layer and writes nothing itself. Its one action plans
+//! It declares no effects, so it never owns a layer and writes nothing itself. Each action plans
 //! a [`ActionPlan::Compose`] of the other modules' field patches; the host runs each step through
 //! the registry against the stack the steps before it produced and commits the result once. A
 //! field the set does not name keeps its value, because each step is a patch.
@@ -20,6 +19,7 @@ use crate::ErrorKind;
 use serde_json::{Map, Value};
 
 pub(crate) const APPLY_PRESET: &str = "apply-preset";
+pub(crate) const PASTE_SETTINGS: &str = "paste-settings";
 
 /// The longest preset name, in characters: the history label and the entry's provenance. The
 /// library holds its names to the same bound, so every library preset can be applied by name.
@@ -54,8 +54,9 @@ impl PresetsModule {
                 title: "Presets".into(),
                 hint: Some("Saved and imported settings".into()),
                 effects: Vec::new(),
-                actions: vec![ActionDescriptor {
-                    parameters: vec![
+                actions: vec![
+                    ActionDescriptor {
+                        parameters: vec![
                         ParameterDescriptor::settings(PRESET_SETTINGS)
                             .required(true)
                             .notes(
@@ -70,10 +71,10 @@ impl PresetsModule {
                              looked up",
                         ),
                     ],
-                    ..ActionDescriptor::new(
-                        APPLY_PRESET,
-                        "Apply preset",
-                        "applies a settings set as one history entry labelled `Preset: \
+                        ..ActionDescriptor::new(
+                            APPLY_PRESET,
+                            "Apply preset",
+                            "applies a settings set as one history entry labelled `Preset: \
                              <name>`. Each key of settings names a field-patch action and its \
                              value the fields to send it; the host runs the actions in key order, \
                              each against the stack the ones before it produced, exactly as it \
@@ -84,8 +85,24 @@ impl PresetsModule {
                              global target, are skipped and listed under skipped in the result. \
                              An unknown, non-patch or unavailable action, or a field its action \
                              refuses, refuses the whole preset and writes nothing.",
-                    )
-                }],
+                        )
+                    },
+                    ActionDescriptor {
+                        parameters: vec![
+                            ParameterDescriptor::settings(PRESET_SETTINGS).required(true),
+                            ParameterDescriptor::string("source", MAX_PRESET_NAME)
+                                .required(true)
+                                .notes("the source photograph's display name; not empty"),
+                            ParameterDescriptor::string("source-asset", MAX_PRESET_ID_LENGTH)
+                                .notes("source asset provenance only; never looked up"),
+                        ],
+                        ..ActionDescriptor::new(
+                            PASTE_SETTINGS,
+                            "Paste settings",
+                            "applies captured settings as one entry labelled Paste settings from <source>; uses the same field patches, skips, refusals and no-op behavior as apply-preset; fields not named keep their values and masked layers are unchanged",
+                        )
+                    },
+                ],
                 queries: Vec::new(),
                 controls: vec![Control::presets(APPLY_PRESET).into()],
                 reset: None,
@@ -113,19 +130,27 @@ impl ToolModule for PresetsModule {
         action_id: &str,
         parameters: &Map<String, Value>,
     ) -> Result<ActionInput, Error> {
-        if action_id != APPLY_PRESET {
-            return Err(Error::validation(format!("unknown action {action_id}")));
-        }
+        let field = match action_id {
+            APPLY_PRESET => PRESET_NAME,
+            PASTE_SETTINGS => "source",
+            _ => return Err(Error::validation(format!("unknown action {action_id}"))),
+        };
         let name = parameters
-            .get(PRESET_NAME)
+            .get(field)
             .and_then(Value::as_str)
-            .ok_or_else(|| Error::validation("preset name must be a string"))?;
+            .ok_or_else(|| Error::validation(format!("preset {field} must be a string")))?;
         if name.trim().is_empty() {
-            return Err(Error::validation("preset name must not be empty"));
+            return Err(Error::validation(format!(
+                "preset {field} must not be empty"
+            )));
+        }
+        let mut parameters = parameters.clone();
+        if action_id == PASTE_SETTINGS {
+            parameters.insert(field.into(), Value::String(name.trim().to_owned()));
         }
         Ok(ActionInput {
             action_id: action_id.to_owned(),
-            parameters: parameters.clone(),
+            parameters,
         })
     }
 
@@ -161,6 +186,16 @@ impl ToolModule for PresetsModule {
 
     /// `Preset: <name>`.
     fn label(&self, action: &ActionDescriptor, input: &ActionInput) -> String {
+        if input.action_id == PASTE_SETTINGS {
+            return input
+                .parameters
+                .get("source")
+                .and_then(Value::as_str)
+                .map_or_else(
+                    || action.title.clone(),
+                    |source| format!("Paste settings from {source}"),
+                );
+        }
         match input.parameters.get(PRESET_NAME).and_then(Value::as_str) {
             Some(name) => format!("Preset: {name}"),
             None => action.title.clone(),
@@ -198,10 +233,10 @@ mod tests {
         value.as_object().expect("an object").clone()
     }
 
-    /// The descriptor is exactly the design's: no effects, one non-patch action with three
+    /// The preset action declares three
     /// parameters, and one presets control, serialized the way a client discovers it.
     #[test]
-    fn the_descriptor_declares_one_action_one_control_and_no_effects() {
+    fn the_descriptor_declares_presets_and_paste_with_one_control_and_no_effects() {
         let module = PresetsModule::new();
         let descriptor = module.descriptor();
         descriptor.validate().expect("a valid descriptor");
@@ -258,6 +293,47 @@ mod tests {
             .register(Arc::new(PresetsModule::new()))
             .expect("a module without effects registers");
         assert_eq!(alone.descriptors().len(), 1);
+    }
+
+    #[test]
+    fn paste_settings_declares_bounded_provenance_and_trims_the_source() {
+        let module = PresetsModule::new();
+        let descriptor = module.descriptor();
+        assert_eq!(descriptor.actions.len(), 2);
+        let action = &descriptor.actions[1];
+        assert_eq!(action.id, PASTE_SETTINGS);
+        assert!(!action.patch);
+        let checked = check_parameters(
+            action,
+            &json!({
+                "settings": {"set-basic": {"exposure": 1.0}},
+                "source": "  DSC_4471.NEF  ", "source-asset": "provenance-only"
+            }),
+        )
+        .unwrap();
+        let parsed = module.parse(PASTE_SETTINGS, &checked).unwrap();
+        assert_eq!(parsed.parameters["source"], "DSC_4471.NEF");
+        assert_eq!(parsed.parameters["source-asset"], "provenance-only");
+        assert_eq!(
+            module.label(action, &parsed),
+            "Paste settings from DSC_4471.NEF"
+        );
+        for source in ["", "   "] {
+            let checked = check_parameters(
+                action,
+                &json!({
+                    "settings": {"set-basic": {"exposure": 1.0}}, "source": source
+                }),
+            )
+            .unwrap();
+            assert!(module.parse(PASTE_SETTINGS, &checked).is_err());
+        }
+        for request in [
+            json!({"settings": {"set-basic": {"exposure": 1.0}}, "source": "x".repeat(129)}),
+            json!({"settings": {"set-basic": {"exposure": 1.0}}, "source": "photo", "source-asset": "x".repeat(97)}),
+        ] {
+            assert!(check_parameters(action, &request).is_err());
+        }
     }
 
     #[test]

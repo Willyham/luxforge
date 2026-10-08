@@ -147,6 +147,7 @@ impl Editor {
                         }
                     }
                     Err(error) => {
+                        self.view_state.copy_settings.paste_request = None;
                         self.status.text = error.clone();
                         // The command may have landed before its read-back failed, and the owner
                         // wakes no client for its own changes: read the log once to find out.
@@ -448,6 +449,49 @@ impl Editor {
             self.status.happened = Some(happened);
         } else if self.status.skipped.is_some() {
             self.status.happened = Some(state::status::Happened::NothingApplied);
+        }
+        if self
+            .view_state
+            .copy_settings
+            .paste_request
+            .as_ref()
+            .is_some_and(|(id, _, _)| Some(id) == refresh.mutation_request.as_ref())
+        {
+            let (_, clipboard, before) =
+                self.view_state.copy_settings.paste_request.take().unwrap();
+            let mut sentence =
+                if before == refresh.state.current_entry.id && !refresh.skipped.is_empty() {
+                    "Nothing changed; the applicable settings already match".into()
+                } else if before == refresh.state.current_entry.id {
+                    format!(
+                        "Nothing changed: {} already has these settings",
+                        refresh
+                            .state
+                            .asset
+                            .locator
+                            .file_name()
+                            .unwrap_or_default()
+                            .to_string_lossy()
+                    )
+                } else {
+                    format!(
+                        "Pasted {} group{} from {} · Undo ⌘Z",
+                        clipboard.groups.len(),
+                        if clipboard.groups.len() == 1 { "" } else { "s" },
+                        clipboard.source.name
+                    )
+                };
+            let mut reasons = Vec::new();
+            for skipped in &refresh.skipped {
+                if !reasons.contains(&skipped.reason.as_str()) {
+                    reasons.push(skipped.reason.as_str());
+                }
+            }
+            if !reasons.is_empty() {
+                sentence.push_str(&format!(" · Skipped: {}", reasons.join("; ")));
+            }
+            self.status.happened = Some(state::status::Happened::Pasted(sentence));
+            self.status.skipped = None;
         }
         if let Some(request) = refresh.request {
             self.read_back(request);

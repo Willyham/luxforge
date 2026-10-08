@@ -626,6 +626,7 @@ fn strip(first: usize, total: usize, active: usize, loading: &[usize]) -> Elemen
             first,
             total,
             active: Some(active),
+            selected: Vec::new(),
         },
         |_| (),
         (active > 0).then_some(()),

@@ -51,6 +51,7 @@ pub(crate) fn title_bar(model: &Workspace) -> Element<'_, Message> {
         crate::view::select::switch(crate::state::select::Shown::Develop, true),
         identity(&model.title),
         Space::new().width(Length::Fill),
+        crate::view::copy_settings::buttons(&model.copy_settings),
         actions(&model.title),
     ]
     .spacing(theme::TITLE_GROUP_SPACING)

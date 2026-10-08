@@ -154,6 +154,7 @@ pub(crate) struct KeyContext {
     pub(crate) develop_confirm: bool,
     /// Develop has a development set, so `←` and `→` move through it.
     pub(crate) development_set: bool,
+    pub(crate) copy_settings_modal: u8,
 }
 
 /// One event as one message, or nothing. `status` is Iced's: a key a text field already consumed
@@ -211,6 +212,55 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
             }
             _ => None,
         };
+    }
+    if context.copy_settings_modal > 0 {
+        use crate::app::message::copy_settings::CopySettingsMessage as C;
+        return match keyboard {
+            Keys::KeyPressed {
+                key: Key::Named(Named::Escape),
+                ..
+            } => Some(Message::CopySettings(C::Cancel)),
+            Keys::KeyPressed {
+                key: Key::Named(Named::Enter),
+                ..
+            } if status == Status::Ignored && context.copy_settings_modal < 3 => {
+                Some(Message::CopySettings(if context.copy_settings_modal == 2 {
+                    C::Confirm
+                } else {
+                    C::Chosen
+                }))
+            }
+            _ => None,
+        };
+    }
+    if !context.palette_open
+        && status == Status::Ignored
+        && let Keys::KeyPressed { key, modifiers, .. } = keyboard
+        && modifiers.command()
+    {
+        use crate::app::message::copy_settings::CopySettingsMessage as C;
+        if character(key, "c") && !modifiers.alt() {
+            return Some(Message::CopySettings(C::Copy {
+                choose: modifiers.shift(),
+                source: None,
+            }));
+        }
+        if character(key, "v") && !modifiers.shift() {
+            if !modifiers.alt() {
+                return Some(Message::CopySettings(C::Paste));
+            }
+            if !context.select {
+                return Some(Message::CopySettings(C::Previous));
+            }
+        }
+        if character(key, "a")
+            && !context.select
+            && context.development_set
+            && !modifiers.alt()
+            && !modifiers.shift()
+        {
+            return Some(Message::Develop(DevelopMessage::SelectAll));
+        }
     }
     // The Select workspace has its own keys (`docs/design/catalog.md#keyboard`). None of Develop's
     // reaches it, so nothing acts on a photograph it does not show.
@@ -448,6 +498,9 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     if context.mode_active && !context.drafting && matches!(key, Key::Named(Named::Escape)) {
         let leave = context.leave_to.as_deref().unwrap_or(POINTER_MODE);
         return Some(Message::View(ViewMessage::SetMode(leave.into())));
+    }
+    if context.development_set && matches!(key, Key::Named(Named::Escape)) {
+        return Some(Message::Develop(DevelopMessage::SelectOnly));
     }
     // Single-key shortcuts act only when no text field took the key, and only on the first press:
     // holding a letter down must not re-run its command once per repeat.
@@ -738,6 +791,82 @@ mod tests {
     use super::*;
     use iced::keyboard::Modifiers;
 
+    #[test]
+    fn copy_settings_shortcuts_yield_to_fields_and_keep_select_separate() {
+        use crate::app::message::copy_settings::CopySettingsMessage as C;
+        let context = KeyContext {
+            development_set: true,
+            ..KeyContext::default()
+        };
+        for key in ["c", "v", "a"] {
+            assert!(
+                keymap(
+                    &pressed(Key::Character(key.into()), Modifiers::COMMAND),
+                    Status::Captured,
+                    &context
+                )
+                .is_none()
+            );
+        }
+        assert!(matches!(
+            keymap(
+                &pressed(Key::Character("c".into()), Modifiers::COMMAND),
+                Status::Ignored,
+                &context
+            ),
+            Some(Message::CopySettings(C::Copy { choose: false, .. }))
+        ));
+        assert!(matches!(
+            keymap(
+                &pressed(
+                    Key::Character("c".into()),
+                    Modifiers::COMMAND | Modifiers::SHIFT
+                ),
+                Status::Ignored,
+                &context
+            ),
+            Some(Message::CopySettings(C::Copy { choose: true, .. }))
+        ));
+        assert!(matches!(
+            keymap(
+                &pressed(
+                    Key::Character("v".into()),
+                    Modifiers::COMMAND | Modifiers::ALT
+                ),
+                Status::Ignored,
+                &context
+            ),
+            Some(Message::CopySettings(C::Previous))
+        ));
+        let select = KeyContext {
+            select: true,
+            ..context
+        };
+        assert!(!matches!(
+            keymap(
+                &pressed(
+                    Key::Character("v".into()),
+                    Modifiers::COMMAND | Modifiers::ALT
+                ),
+                Status::Ignored,
+                &select
+            ),
+            Some(Message::CopySettings(C::Previous))
+        ));
+        let modal = KeyContext {
+            copy_settings_modal: 2,
+            ..select
+        };
+        assert!(matches!(
+            keymap(
+                &pressed(Key::Named(Named::Escape), Modifiers::empty()),
+                Status::Ignored,
+                &modal
+            ),
+            Some(Message::CopySettings(C::Cancel))
+        ));
+    }
+
     fn pressed(key: Key, modifiers: Modifiers) -> Event {
         held(key, modifiers, false)
     }
@@ -926,6 +1055,7 @@ mod tests {
             loupe_open: false,
             develop_confirm: false,
             development_set: false,
+            copy_settings_modal: 0,
         }
     }
 

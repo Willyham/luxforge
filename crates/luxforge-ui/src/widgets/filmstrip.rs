@@ -31,6 +31,73 @@ pub struct FilmstripModel {
     pub total: usize,
     /// The set's index of the photograph Develop shows.
     pub active: Option<usize>,
+    /// Selection flags for the visible cells.
+    pub selected: Vec<bool>,
+}
+
+/// A cell press, with modifiers and a secondary-menu position in window coordinates.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FilmstripPress {
+    pub index: usize,
+    pub command: bool,
+    pub shift: bool,
+    pub context: Option<iced::Point>,
+}
+
+struct CellPress<'a, M> {
+    index: usize,
+    publish: Box<dyn Fn(FilmstripPress) -> M + 'a>,
+}
+impl<'a, M: 'a, Theme, Renderer: iced::advanced::renderer::Renderer>
+    super::decorator::Decoration<'a, M, Theme, Renderer> for CellPress<'a, M>
+{
+    type State = iced::keyboard::Modifiers;
+    fn update(
+        &mut self,
+        content: &mut iced::Element<'a, M, Theme, Renderer>,
+        tree: &mut iced::advanced::widget::Tree,
+        event: &iced::Event,
+        layout: iced::advanced::Layout<'_>,
+        cursor: iced::mouse::Cursor,
+        renderer: &Renderer,
+        clipboard: &mut dyn iced::advanced::Clipboard,
+        shell: &mut iced::advanced::Shell<'_, M>,
+        viewport: &iced::Rectangle,
+    ) {
+        if let iced::Event::Keyboard(iced::keyboard::Event::ModifiersChanged(modifiers)) = event {
+            *tree.state.downcast_mut::<Self::State>() = *modifiers;
+        }
+        if let iced::Event::Mouse(iced::mouse::Event::ButtonPressed(button)) = event
+            && matches!(
+                button,
+                iced::mouse::Button::Left | iced::mouse::Button::Right
+            )
+            && let Some(at) = cursor.position_over(layout.bounds())
+        {
+            let modifiers = *tree.state.downcast_ref::<Self::State>();
+            let context = (*button == iced::mouse::Button::Right
+                || (cfg!(target_os = "macos") && modifiers.control()))
+            .then_some(at);
+            shell.publish((self.publish)(FilmstripPress {
+                index: self.index,
+                command: modifiers.command(),
+                shift: modifiers.shift(),
+                context,
+            }));
+            shell.capture_event();
+            return;
+        }
+        content.as_widget_mut().update(
+            &mut tree.children[0],
+            event,
+            layout,
+            cursor,
+            renderer,
+            clipboard,
+            shell,
+            viewport,
+        );
+    }
 }
 
 /// Renders the filmstrip, [`theme::FILMSTRIP_HEIGHT`] tall and filling its width. Pressing a cell
@@ -38,10 +105,11 @@ pub struct FilmstripModel {
 /// disabled.
 pub fn filmstrip<'a, M: Clone + 'a>(
     model: &FilmstripModel,
-    on_select: impl Fn(usize) -> M + 'a,
+    on_select: impl Fn(FilmstripPress) -> M + 'a,
     on_previous: Option<M>,
     on_next: Option<M>,
 ) -> Element<'a, M> {
+    let on_select = std::rc::Rc::new(on_select);
     let mut header = row![
         step_button(
             Icon::ChevronLeft,
@@ -68,7 +136,7 @@ pub fn filmstrip<'a, M: Clone + 'a>(
     let cells = Row::with_children(model.cells.iter().enumerate().map(|(offset, cell)| {
         let index = model.first + offset;
         let active = model.active == Some(index);
-        button(
+        let cell: Element<'a, M> = button(
             container(fitted_image(
                 cell.clone(),
                 theme::FILMSTRIP_IMAGE_WIDTH,
@@ -76,16 +144,33 @@ pub fn filmstrip<'a, M: Clone + 'a>(
             ))
             .center(Length::Fill),
         )
+        .on_press(on_select(FilmstripPress {
+            index,
+            command: false,
+            shift: false,
+            context: None,
+        }))
         .padding(0)
         .width(Length::Fixed(theme::FILMSTRIP_CELL_WIDTH))
         .height(Length::Fixed(theme::FILMSTRIP_CELL_HEIGHT))
         .style(theme::image_cell(
-            active,
+            active || model.selected.get(offset).copied().unwrap_or(false),
             theme::FILMSTRIP_CELL_RADIUS,
-            theme::FILMSTRIP_ACTIVE_OUTLINE,
+            if active {
+                theme::FILMSTRIP_ACTIVE_OUTLINE
+            } else {
+                1.0
+            },
         ))
-        .on_press(on_select(index))
-        .into()
+        .into();
+        let on_select = on_select.clone();
+        super::decorator::decorate(
+            cell,
+            CellPress {
+                index,
+                publish: Box::new(move |press| on_select(press)),
+            },
+        )
     }))
     .spacing(theme::FILMSTRIP_CELL_SPACING)
     .align_y(Alignment::Center);
@@ -171,6 +256,71 @@ pub fn filmstrip_capacity(width: f32) -> usize {
 mod tests {
     use super::*;
 
+    #[test]
+    fn copy_settings_filmstrip_presses_keep_modifiers_and_secondary_position() {
+        use super::super::decorator::Decorated;
+        use iced::advanced::{Layout, Shell, Widget, layout, widget::Tree};
+        use iced::{
+            Event, Point, Rectangle, Size,
+            keyboard::{Event as K, Modifiers},
+            mouse::{Button, Cursor, Event as Mouse},
+        };
+        let mut widget: Decorated<'_, FilmstripPress, _, iced::Theme, ()> = Decorated {
+            content: iced::Element::new(Space::new().width(78).height(54)),
+            decoration: CellPress {
+                index: 7,
+                publish: Box::new(|press| press),
+            },
+        };
+        let mut tree = Tree::new(&widget as &dyn Widget<FilmstripPress, iced::Theme, ()>);
+        let node = layout::Node::new(Size::new(78.0, 54.0));
+        let mut send = |event: Event, at: Point| {
+            let mut messages = Vec::new();
+            widget.update(
+                &mut tree,
+                &event,
+                Layout::new(&node),
+                Cursor::Available(at),
+                &(),
+                &mut iced::advanced::clipboard::Null,
+                &mut Shell::new(&mut messages),
+                &Rectangle::new(Point::ORIGIN, Size::new(78.0, 54.0)),
+            );
+            messages
+        };
+        let at = Point::new(20.0, 20.0);
+        send(
+            Event::Keyboard(K::ModifiersChanged(Modifiers::COMMAND | Modifiers::SHIFT)),
+            at,
+        );
+        assert_eq!(
+            send(Event::Mouse(Mouse::ButtonPressed(Button::Left)), at),
+            [FilmstripPress {
+                index: 7,
+                command: true,
+                shift: true,
+                context: None
+            }]
+        );
+        send(Event::Keyboard(K::ModifiersChanged(Modifiers::empty())), at);
+        assert_eq!(
+            send(Event::Mouse(Mouse::ButtonPressed(Button::Right)), at),
+            [FilmstripPress {
+                index: 7,
+                command: false,
+                shift: false,
+                context: Some(at)
+            }]
+        );
+        assert!(
+            send(
+                Event::Mouse(Mouse::ButtonPressed(Button::Left)),
+                Point::new(100.0, 100.0)
+            )
+            .is_empty()
+        );
+    }
+
     fn model(caption: Option<&str>, active: Option<usize>) -> FilmstripModel {
         FilmstripModel {
             title: "Development set".into(),
@@ -179,6 +329,7 @@ mod tests {
             first: 40,
             total: 1200,
             active,
+            selected: Vec::new(),
         }
     }
 
