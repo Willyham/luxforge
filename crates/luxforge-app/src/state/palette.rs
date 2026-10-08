@@ -65,6 +65,7 @@ impl Panel {
 /// entry can reach nothing the panels and the title bar cannot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum PaletteAction {
+    CopySettings(u8),
     /// Open a section of the tools panel, collapsing the others, and mark it or one of its
     /// controls. Expansion is this client's view state, as a click on a section header is.
     Reveal(RevealTarget),
@@ -105,6 +106,7 @@ pub(crate) struct PaletteEntry {
     pub(crate) label: String,
     pub(crate) detail: String,
     pub(crate) action: PaletteAction,
+    pub(crate) refusal: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -158,6 +160,7 @@ pub(crate) fn derive(
             label,
             detail,
             action,
+            refusal: None,
         })
         .collect();
     PaletteModel {
@@ -174,6 +177,26 @@ pub(crate) fn derive(
 fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
     let workspace = &inputs.session.workspace;
     let mut entries = vec![
+        (
+            "Copy settings".into(),
+            "preset.capture".into(),
+            PaletteAction::CopySettings(0),
+        ),
+        (
+            "Copy settings…".into(),
+            "preset.capture".into(),
+            PaletteAction::CopySettings(1),
+        ),
+        (
+            "Paste settings".into(),
+            "edit.paste-settings / batch.paste-settings".into(),
+            PaletteAction::CopySettings(2),
+        ),
+        (
+            "Paste settings from previous photograph".into(),
+            "preset.capture → edit.paste-settings".into(),
+            PaletteAction::CopySettings(3),
+        ),
         (
             "Pointer".to_owned(),
             "workspace.set".to_owned(),

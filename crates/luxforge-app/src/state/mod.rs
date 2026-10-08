@@ -4,6 +4,7 @@
 pub(crate) mod canvas;
 pub(crate) mod capabilities;
 pub(crate) mod control_tree;
+pub(crate) mod copy_settings;
 pub(crate) mod develop;
 pub(crate) mod document;
 pub(crate) mod fields;
@@ -219,6 +220,7 @@ pub(crate) struct ViewState {
     /// so the thumb is seen to move.
     pub(crate) zoom_reveal: u64,
     pub(crate) menu: Option<MenuTarget>,
+    pub(crate) copy_settings: copy_settings::CopySettings,
     /// The developer components gallery page shown instead of the workspace, or `None` for the
     /// editor. The owner does not hold it.
     pub(crate) gallery: Option<usize>,
@@ -247,6 +249,7 @@ impl ViewState {
             zoom_editing: false,
             zoom_reveal: 0,
             menu: None,
+            copy_settings: Default::default(),
             gallery: None,
             picker_open: false,
             local_pan: (0.0, 0.0),
@@ -432,6 +435,7 @@ impl Inputs<'_> {
 /// The whole screen as plain data, derived again after every message.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct Workspace {
+    pub(crate) copy_settings: copy_settings::CopyModel,
     pub(crate) title: title::TitleBarModel,
     pub(crate) panel: panel::StatePanelModel,
     pub(crate) canvas: canvas::CanvasModel,
@@ -480,6 +484,7 @@ impl Workspace {
             .and_then(|job| job.entry.progress.as_ref())
             .and_then(|progress| progress.fraction);
         self.develop = develop::derive(inputs.develop, progress);
+        self.develop.can_enter |= inputs.document.state.is_some();
         self.settings = settings::derive(
             inputs.settings,
             inputs.preferences,
@@ -544,7 +549,7 @@ impl Workspace {
                                     .collect::<Vec<_>>(),
                             })),
                             tools::ControlModel::Action(action) => Some(json!({
-                                "kind": "action", "label": action.label, "action": action.action,
+                                "kind": "action", "label": action.label, "action": action.action, "runnable": action.runnable, "reason": action.reason, "explanation": action.explanation,
                             })),
                             tools::ControlModel::QueryChoice(choice) => Some(json!({"kind":"query-choice", "label":choice.control.label, "action":choice.control.action, "query":choice.control.query})),
                             tools::ControlModel::Picker(picker) => Some(json!({
@@ -4219,5 +4224,53 @@ mod tests {
             ..thumbnail.clone()
         };
         assert_ne!(copy, thumbnail);
+    }
+    #[test]
+    fn auto_tone_header_explains_every_disabled_state_and_pending_work() {
+        fn action(scene: &Scene) -> tools::ActionControl {
+            let workspace = scene.derive();
+            control_tree::walk(&section(&workspace, "luxforge.basic").controls)
+                .find_map(|control| match control {
+                    ControlModel::Action(action) if action.action == "auto-tone" => {
+                        Some(action.clone())
+                    }
+                    _ => None,
+                })
+                .expect("Auto is declared in Basic's Tone group")
+        }
+        let mut scene = Scene::new(descriptors());
+        assert_eq!(action(&scene).reason.as_deref(), Some(NO_PHOTOGRAPH));
+        scene = scene.opened(vec![]);
+        assert!(action(&scene).runnable);
+        assert_eq!(action(&scene).style, tools::ActionControlStyle::GroupHeader);
+        scene.busy = true;
+        scene.control_ui.analysis_pending = Some("auto-tone".into());
+        assert_eq!(action(&scene).label, "Auto…");
+        assert_eq!(action(&scene).reason.as_deref(), Some(IN_FLIGHT));
+        scene.busy = false;
+        scene.control_ui.analysis_pending = None;
+        scene.slider_draft = Some(("set-basic".into(), "exposure".into(), false));
+        assert!(action(&scene).reason.unwrap().contains("slider draft"));
+        scene.slider_draft = None;
+        testing::show(
+            &mut scene.session,
+            scene.document.state.as_ref(),
+            HistorySelection::Entry(EntryId::new()),
+        );
+        assert_eq!(action(&scene).reason.as_deref(), Some(NOT_CURRENT));
+        testing::show(
+            &mut scene.session,
+            scene.document.state.as_ref(),
+            HistorySelection::Current,
+        );
+        let mut comparing = scene.inputs();
+        comparing.compare_held = true;
+        assert_eq!(
+            tools::analysis_refusal(&comparing).as_deref(),
+            Some(NOT_CURRENT)
+        );
+        scene.session.workspace.mode = luxforge_core::MASK_MODE.into();
+        scene.mask_panel.selected_mask = Some(luxforge_core::MaskId::new());
+        assert!(action(&scene).reason.unwrap().contains("global Basic"));
     }
 }

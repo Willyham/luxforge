@@ -150,6 +150,11 @@ impl CoreDraft {
         (draft, step)
     }
 
+    /// Release or cancellation has ended pointer/key interaction, even while a round trip waits.
+    pub(crate) fn released(&self) -> bool {
+        self.finish.is_some() || self.in_flight == Some(Round::Commit)
+    }
+
     /// The round trip in flight, if any.
     pub(crate) fn in_flight(&self) -> Option<Round> {
         self.in_flight

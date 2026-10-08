@@ -29,6 +29,10 @@ use std::{
 /// refresh only reads these values, so a recipe refresh cannot reset a selected channel or point.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct ControlsUi {
+    pub(crate) analysis_pending: Option<String>,
+    pub(crate) analysis_serial: u64,
+    /// Reports are shown only while this exact entry is displayed.
+    pub(crate) analysis_reports: BTreeMap<String, (AssetId, EntryId, Value)>,
     pub(crate) query_choices: BTreeMap<String, super::query_choice::QueryChoiceUi>,
     pub(crate) group_expanded: BTreeMap<String, bool>,
     /// Each generated control's own local state, by the control's key. Only a control that holds
@@ -189,6 +193,7 @@ pub(crate) enum ActionControlStyle {
     Default,
     Primary,
     Icon,
+    GroupHeader,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum RailStyle {
@@ -708,6 +713,7 @@ pub(crate) struct ActionControl {
     pub(crate) runnable: bool,
     /// Why the action cannot run, when it cannot.
     pub(crate) reason: Option<String>,
+    pub(crate) explanation: Option<String>,
     pub(crate) style: ActionControlStyle,
     pub(crate) icon: Option<String>,
 }
@@ -1247,6 +1253,21 @@ fn owns_mode(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> bool {
     module.canvas.is_some() && inputs.session.workspace.mode == module.id
 }
 
+/// Analysis changes the global photo and cannot borrow a mask or an open gesture.
+pub(crate) fn analysis_refusal(inputs: &Inputs<'_>) -> Option<String> {
+    if inputs.target.is_some() {
+        return Some("Auto tone applies to the photo's global Basic layer".into());
+    }
+    if inputs.compare_held || inputs.session.preview.comparison.is_some() {
+        return Some(super::NOT_CURRENT.into());
+    }
+    inputs.edit_refusal.clone().or_else(|| {
+        inputs
+            .gesture
+            .map(|gesture| format!("Finish the open {gesture} before running an action"))
+    })
+}
+
 /// Why editing this module is disabled, in the words the status bar would use: its provider's
 /// unavailability first, then the one editability rule ([`Inputs::edit_refusal`]).
 fn disabled_reason(unavailable: Option<&str>, inputs: &Inputs<'_>) -> Option<String> {
@@ -1601,9 +1622,36 @@ fn resolved_model(
                 })
                 .and(inputs.gesture)
                 .map(|gesture| format!("Finish the open {gesture} before running an action"));
+            let analysis = declared_action(inputs.modules, action)
+                .is_some_and(|declared| declared.analysis.is_some());
+            let draft_reason = if analysis {
+                analysis_refusal(inputs).or(draft_reason)
+            } else {
+                draft_reason
+            };
+            let pending = inputs.control_ui.analysis_pending.as_deref() == Some(action);
+            let explanation = inputs
+                .control_ui
+                .analysis_reports
+                .get(action)
+                .filter(|(asset, entry, _)| {
+                    inputs
+                        .document
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| &state.asset.id == asset)
+                        && inputs.document.display_entry.as_ref() == Some(entry)
+                })
+                .and_then(|(_, _, report)| report["summary"].as_str())
+                .map(str::to_owned);
             ControlModel::Action(ActionControl {
+                explanation,
                 action: action.to_owned(),
-                label: button.label.clone(),
+                label: if pending {
+                    format!("{}…", button.label)
+                } else {
+                    button.label.clone()
+                },
                 preset: button.preset.clone(),
                 runnable: enabled && draft_reason.is_none() && matches!(params, Some(Ok(_))),
                 reason: draft_reason.or_else(|| match params {
@@ -1615,6 +1663,7 @@ fn resolved_model(
                     ActionStyle::Default => ActionControlStyle::Default,
                     ActionStyle::Primary => ActionControlStyle::Primary,
                     ActionStyle::Icon => ActionControlStyle::Icon,
+                    ActionStyle::GroupHeader => ActionControlStyle::GroupHeader,
                 },
                 icon: button.icon.clone(),
             })

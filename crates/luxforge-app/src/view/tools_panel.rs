@@ -46,7 +46,8 @@ use luxforge_ui::{
     histogram_inspector, icon_button, icon_button_row, inline_menu, label_line, labelled_button,
     list_heading, menu_choice, module_section, number_field, range_slider, readout_card,
     row_icon_button, section_label, segmented, slider, stepper, sub_group_header,
-    sub_group_header_with_actions, tab_row, text_button, theme, toggle,
+    sub_group_header_with_actions, sub_group_header_with_controls, tab_row, text_button, theme,
+    toggle,
 };
 use serde_json::{Map, Value};
 
@@ -551,7 +552,10 @@ fn control_rows<'a>(
     };
     for control in controls {
         // A field a band draws under itself is drawn there and not again.
-        if drawn_by_range(controls, control) {
+        if drawn_by_range(controls, control)
+            || (under_header
+                && matches!(control, ControlModel::Action(action) if action.style == ActionControlStyle::GroupHeader))
+        {
             continue;
         }
         if is_button(control) {
@@ -809,12 +813,24 @@ fn preset_form_view(form: &PresetFormModel) -> Element<'_, Message> {
     let mut block =
         column![name, group, caption("Keep these settings"),].spacing(theme::SPACING / 2.0);
     for check in &form.checks {
+        if check.fields.iter().any(|(action, fields)| {
+            action == "set-basic" && fields.iter().any(|field| field == "exposure")
+        }) {
+            block = block.push(toggle(
+                &ToggleModel {
+                    label: "Basic · Auto tone (per photo)".into(),
+                    on: form.auto_tone,
+                    enabled: form.enabled,
+                },
+                |enabled| Message::Preset(PresetMessage::AutoTone(enabled)),
+            ));
+        }
         let label = check.label.clone();
         block = block.push(toggle(
             &ToggleModel {
                 label: check.label.clone(),
                 on: check.checked,
-                enabled: form.enabled,
+                enabled: form.enabled && check.enabled,
             },
             move |checked| {
                 Message::Preset(PresetMessage::Check {
@@ -1787,7 +1803,7 @@ fn group_rows<'a>(
     mark: Option<&RevealKey>,
 ) -> Vec<PanelRow<'a>> {
     let enabled = enabled && group.enabled;
-    let header = sub_group_header(
+    let header = sub_group_header_with_controls(
         &SubGroupHeaderModel {
             label: group.label.clone(),
             state: group
@@ -1807,6 +1823,16 @@ fn group_rows<'a>(
             module_id: module_id.to_owned(),
             path: group.path.clone(),
         }),
+        group
+            .controls
+            .iter()
+            .filter_map(|control| match control {
+                ControlModel::Action(action) if action.style == ActionControlStyle::GroupHeader => {
+                    Some(action_view(action, ButtonSize::Compact, menu))
+                }
+                _ => None,
+            })
+            .collect(),
     );
     let header = match &group.reset {
         Some(reset) => {
@@ -2046,8 +2072,13 @@ fn action_view<'a>(
     });
     let control =
         with_control_menu_preset(control, &action.action, None, Some(&action.preset), menu);
-    match &action.reason {
-        Some(reason) if !action.runnable => iced::widget::tooltip(
+    match action
+        .reason
+        .as_ref()
+        .filter(|_| !action.runnable)
+        .or(action.explanation.as_ref())
+    {
+        Some(reason) => iced::widget::tooltip(
             control,
             iced::widget::container(caption(reason.clone()))
                 .padding(theme::TOOLTIP_PADDING)
@@ -2471,6 +2502,7 @@ mod tests {
 
     fn action(name: &str, icon: Option<&str>) -> ControlModel {
         ControlModel::Action(ActionControl {
+            explanation: None,
             action: name.into(),
             label: name.into(),
             preset: serde_json::Map::new(),

@@ -1026,7 +1026,8 @@ const SOURCE_RULES: &[SourceRule] = &[
     // curve study's lifted-black noise spread and the RAW look study's corpus figures are the
     // allowed second homes: they are study figures, not timings, and `luxforge-reference` may
     // depend on no workspace crate (`independent-references`), so they cannot reach
-    // `Distribution`; they use the same nearest rank.
+    // `Distribution`; they use the same nearest rank. Auto's production image solver also
+    // cannot depend on test tooling and needs an in-place selection within charged scratch.
     SourceRule {
         name: "one-distribution",
         tokens: &[
@@ -1043,6 +1044,7 @@ const SOURCE_RULES: &[SourceRule] = &[
         types: &["rs"],
         allowed: &[
             "crates/luxforge-testbase/src/distribution.rs",
+            "crates/luxforge-core/src/auto_tone.rs",
             "crates/luxforge-reference/tests/studies/curve.rs",
             "crates/luxforge-reference/tests/studies/look.rs",
         ],
@@ -1482,8 +1484,8 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         manifests: &["crates/luxforge-cli"],
         tables: &[Table::Normal],
         allowed: &[],
-        reason: "luxforge-cli builds the headless luxforge-json binary and may not depend on the \
-                 GUI stack (iced, wgpu, naga, rfd, luxforge-ui or luxforge-app)",
+        reason: "luxforge-cli builds the headless luxforge-json and luxforge-ctl binaries and may \
+                 not depend on the GUI stack (iced, wgpu, naga, rfd, luxforge-ui or luxforge-app)",
     },
     // The core evaluates nothing on a GPU and draws nothing: a module's GPU program is WGSL text
     // that the photo surface in luxforge-ui executes, so the core builds no GPU or GUI crate. Its
@@ -4779,6 +4781,10 @@ mod tests {
                 (
                     "crates/luxforge-testbase/src/distribution.rs",
                     "    let rank = (percent * sorted.len()).div_ceil(100).clamp(1, sorted.len());\n    pub fn percentile(&self, percent: usize) -> f64 {\n",
+                ),
+                (
+                    "crates/luxforge-core/src/auto_tone.rs",
+                    "fn percentile(values: &mut [f64], fraction: f64) -> f64 {\n",
                 ),
                 (
                     "crates/luxforge-core/src/render/spatial.rs",

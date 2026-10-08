@@ -48,9 +48,10 @@ const EXPORT_MENU_WIDTH: f32 = 220.0;
 pub(crate) fn title_bar(model: &Workspace) -> Element<'_, Message> {
     let edges = row![
         // The workspace switch at the bar's leading edge, Develop raised.
-        crate::view::select::switch(crate::state::select::Shown::Develop),
+        crate::view::select::switch(crate::state::select::Shown::Develop, true),
         identity(&model.title),
         Space::new().width(Length::Fill),
+        crate::view::copy_settings::buttons(&model.copy_settings),
         actions(&model.title),
     ]
     .spacing(theme::TITLE_GROUP_SPACING)

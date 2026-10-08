@@ -1,0 +1,653 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "export-settings",
+  "title": "Export settings: JPEG, WebP and TIFF with presets, resizing and optimisation",
+  "objective": "Deliver an Export sheet with Web, Print and Master presets and the person's own, exporting JPEG, lossy WebP and 8/16-bit TIFF with resizing, optimised encoding, file-size limits and metadata levels through one ExportSettings API, then output sharpening, with declared-tolerance GPU correctness and recorded measurements.",
+  "context_summary": "The owner requested a plan with UX designs (2026-10-07) and chose: JPEG, WebP and TIFF (no DNG); lossy WebP; a sheet that writes directly into its folder with an editable suffix; output sharpening after the core delivery. The owner decided on 2026-10-08 that optimisation and file-size limits have no memory cap, with a large-image warning in the sheet and a progress bar for long exports. Other defaults (preset values, preset storage, Lanczos-3, Annex K tables, the 24 MP warning threshold, the progress-bar rule, metadata levels, shortcuts) are recorded proposals in the design; routine layout and code organisation are delegated. Implementation is not authorized by the planning request. No external inputs block delivery: generated 24/60 MP JPEGs and supplied RAW fixtures suffice; missing native Windows/Linux GPU evidence stays unrun. Re-review against current main and use the roadmap high-tier model minimum. The design, docs/design/export-settings.md, is the contract for every task; its boards are in docs/design/export-settings/.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Define ExportSettings, export presets and the export API: export.plan with settings, export.write replacing export.jpeg, batch.export with settings, export.presets.* and the remembered last export.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Deliver the settings type, validation, output-size arithmetic, name rule, metadata levels, preset store and command registrations consumed by TASK-005 and TASK-006. Rendering and encoding stay today's (full-size baseline JPEG) until TASK-005 wires the new paths; settings a format or renderer cannot honour yet are refused by name, never ignored.",
+        "Fields, ranges and per-format applicability are the design's Settings table; a field that does not apply to the chosen format is a validation error naming it. Output size scales both sides by one factor never above 1 and rounds to whole pixels; null pixels_per_inch keeps today's desktop density behaviour.",
+        "export.plan answers stage and output size, physical size, the suggested path from folder and suffix counting up within 64 names, the encoder's held-memory estimate, and notices with codes (large-image above 24 MP of optimised or size-limited output, with the estimate; webp-too-large; folder-missing). It renders nothing. export.write keeps export.jpeg's freeze, request-id retry and job semantics and validates the destination's extension against the format. Remove export.jpeg and its desktop callers in the same change (current shapes only).",
+        "Built-in Web, Print and Master presets are constants listed first; the person's presets live in export-presets.json beside preferences.json in the host configuration directory, at most 100, names unique case-insensitively, an unreadable or unsupported document kept and refused by name. export_last replaces the export_folder preference and is stored only after a successful person-started export.",
+        "Metadata levels select from the existing supported field table: none, copyright (Artist, Copyright), no_location (everything but the GPS group), all. Structural fields are written for every level but none.",
+        "Implementer owns module layout, error wording and schema prose within the design."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Export settings design",
+          "target": "docs/design/export-settings.md",
+          "relevance": "Behavior, settings object, presets, encoding, bounds, declared tolerances, decisions and recorded defaults"
+        },
+        {
+          "kind": "file",
+          "label": "JPEG export design",
+          "target": "docs/design/export.md",
+          "relevance": "Freeze, render, publish, never-replace and metadata rules this plan keeps"
+        },
+        {
+          "kind": "file",
+          "label": "Command registry",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "relevance": "export.plan, export.jpeg and batch.export registrations and schema text"
+        },
+        {
+          "kind": "file",
+          "label": "Export handlers",
+          "target": "crates/luxforge-core/src/api/owner/export.rs",
+          "relevance": "ExportPlanParams, ExportJpeg, plan(), jpeg(), Options and the shared write()"
+        },
+        {
+          "kind": "file",
+          "label": "Batch export params",
+          "target": "crates/luxforge-core/src/catalog_types/api.rs",
+          "relevance": "BatchExport fields"
+        },
+        {
+          "kind": "file",
+          "label": "Batch export job",
+          "target": "crates/luxforge-core/src/api/owner/library/batch.rs",
+          "relevance": "Per-photograph planning and export::write call"
+        },
+        {
+          "kind": "file",
+          "label": "Batch naming",
+          "target": "crates/luxforge-core/src/library/batch.rs",
+          "relevance": "export_folder() and destination() name rule"
+        },
+        {
+          "kind": "file",
+          "label": "Destination and suggestion",
+          "target": "crates/luxforge-core/src/export/publish.rs",
+          "relevance": "Destination::check, hard-coded .jpg extension and suggest()"
+        },
+        {
+          "kind": "file",
+          "label": "Metadata payload",
+          "target": "crates/luxforge-core/src/export/metadata/mod.rs",
+          "relevance": "Supported fields and exif_payload"
+        },
+        {
+          "kind": "file",
+          "label": "Preferences store",
+          "target": "crates/luxforge-core/src/preferences.rs",
+          "relevance": "export_folder preference, JsonDocument store and checks"
+        }
+      ],
+      "acceptance_criteria": [
+        "Every settings field validates by name, including a field the chosen format does not use; ranges match the design table.",
+        "Output sizes match an independent calculation for portrait, landscape, cropped and rotated stages and every fit with bounds above, at and below the stage; nothing is enlarged.",
+        "export.plan returns the suggested path and the design's notices without rendering; export.write and batch.export accept settings, export.jpeg no longer exists, and schema.list describes ExportSettings once.",
+        "Presets round-trip through create, list, update and delete; built-ins refuse update and delete; a corrupt presets document is kept unchanged and reported.",
+        "Metadata levels write exactly the tabled fields, verified by an independent EXIF reader.",
+        "export_last is stored only after a successful export and export_folder is gone.",
+        "export.plan's large-image notice appears exactly above the 24 MP threshold for optimised or size-limited output, and its estimate matches the design's per-pixel coefficient and frame figures."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Unit-test validation, size arithmetic, name rule and metadata level selection with hand-computed cases.",
+          "Integration-test the methods through an independent JSON client, including retries, refusals and preset persistence across owner restarts."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core export",
+          "tools/cargo-cached test -p luxforge-core preferences"
+        ],
+        "expected_results": [
+          "Settings, plan, write, batch and preset tests pass; existing export behaviour holds for full-size JPEG settings."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Add JPEG quality, chroma and Optimise options to luxforge-jpeg, with the coefficient-memory limit and a bounded limit-file-size search.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Deliver encoder options consumed by TASK-005: quality 1-100, chroma 4:4:4 or 4:2:0, and Optimise (progressive scans, optimised Huffman tables, trellis quantisation) while keeping the standard Annex K quantisation tables for both settings, so a quality value means the same with Optimise on or off.",
+        "mozjpeg's set_fastest_defaults and scan-optimisation setters call jpeg_set_defaults and reset quality, sampling and density: call them first. Trellis has no safe-wrapper setter; use the pinned mozjpeg-sys parameter API if needed.",
+        "Every optimisation allocates whole-image coefficient arrays (two in mozjpeg). There is no memory cap (owner, 2026-10-08): Optimise applies at every size. Expose a pure estimate of that memory for export.plan. Install libjpeg's progress monitor (jpeg_progress_mgr through mozjpeg-sys if the safe crate lacks it) to report determinate progress across passes, and check cancellation between passes without unwinding through C frames. Optimise off stays the current streamed encoding and its byte-for-byte behaviour.",
+        "Limit file size: an in-memory encode of a held frame of any size bisecting quality downward from the requested value, at most eight encodes, returning the best fitting result and the quality used, or a refusal when nothing fits at quality 10. Report each attempt as progress and check cancellation between attempts.",
+        "Update the existing SOF0/4:4:4/standard-DHT assertions to cover each option rather than deleting them."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Export settings design",
+          "target": "docs/design/export-settings.md",
+          "relevance": "Behavior, settings object, presets, encoding, bounds, declared tolerances, decisions and recorded defaults"
+        },
+        {
+          "kind": "file",
+          "label": "JPEG encoder",
+          "target": "crates/luxforge-jpeg/src/encode.rs",
+          "relevance": "Settings, Encoder::start with set_fastest_defaults, strip writing and markers"
+        },
+        {
+          "kind": "file",
+          "label": "Core encode wrapper",
+          "target": "crates/luxforge-core/src/export/encode.rs",
+          "relevance": "encode_jpeg, encode_jpeg_rows and the existing structural tests"
+        },
+        {
+          "kind": "file",
+          "label": "Export constants",
+          "target": "crates/luxforge-core/src/export/mod.rs",
+          "relevance": "QUALITY = 90 and the sRGB profile"
+        },
+        {
+          "kind": "url",
+          "label": "mozjpeg crate",
+          "target": "https://docs.rs/mozjpeg/0.10.13/mozjpeg/",
+          "relevance": "Compress setters and default profile"
+        }
+      ],
+      "acceptance_criteria": [
+        "Decoded by zune-jpeg, each option produces the stated SOF type, scan count, sampling factors, quantisation tables and Huffman tables; ICC, density and APPn segments are unchanged.",
+        "On corpus renders, an optimised file at a given quality is smaller than the baseline at the same quality; recorded sizes and encode times are reported, not claimed as targets.",
+        "The memory estimate matches the allocator-observed coefficient arrays within a stated margin; Optimise applies at every size, and progress across passes is monotonic and reaches completion; a cancel between passes stops the encode cleanly.",
+        "Limit search returns a file within the limit at the highest bisected quality, at most eight encodes, cancels between attempts and refuses an unreachable limit without output."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Encode synthetic and corpus-sized frames under each option and inspect markers with an independent decoder.",
+          "Exercise limit boundaries, cancellation and the memory threshold."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-jpeg",
+          "tools/cargo-cached test -p luxforge-core export::encode"
+        ],
+        "expected_results": [
+          "Encoder option, memory-limit and limit-search tests pass; Optimise-off output is unchanged."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Add lossy WebP and 8/16-bit TIFF encoders with ICC and metadata, behind the export encode interface.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Deliver encoders consumed by TASK-005. WebP: pinned libwebp-sys with vendored C source and its mux API; lossy 4:2:0 at a quality, Optimise as the slowest method with sharp RGB-to-YUV; ICCP and EXIF chunks; refuse outputs over 16,383 px a side before encoding. It encodes a whole picture and must accept a borrowed frame without a second full copy where the API allows.",
+        "TIFF: pinned tiff crate; RGB 8 or 16 bits per channel written by strips as rows arrive; Optimise as lossless Deflate with the horizontal predictor if the pinned version supports it, otherwise the implementer records the measured alternative; ICC in tag 34675, descriptive fields in IFD 0, capture fields in an Exif IFD and GPS in a GPS IFD from the existing metadata model.",
+        "Limit file size applies to WebP through the same bisection contract as JPEG (shared helper with TASK-002 is the implementer's choice).",
+        "Record each new dependency, its licence and its native build in docs/engineering/dependencies.md and keep cargo-deny passing; do not claim a licence audit."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Export settings design",
+          "target": "docs/design/export-settings.md",
+          "relevance": "Behavior, settings object, presets, encoding, bounds, declared tolerances, decisions and recorded defaults"
+        },
+        {
+          "kind": "file",
+          "label": "Core encode wrapper",
+          "target": "crates/luxforge-core/src/export/encode.rs",
+          "relevance": "Where format encoders plug in"
+        },
+        {
+          "kind": "file",
+          "label": "Metadata writer",
+          "target": "crates/luxforge-core/src/export/metadata/write.rs",
+          "relevance": "TIFF/EXIF IFD writing reused for TIFF tags and WebP EXIF"
+        },
+        {
+          "kind": "file",
+          "label": "Dependency record",
+          "target": "docs/engineering/dependencies.md",
+          "relevance": "Pinned dependency and licence notes"
+        },
+        {
+          "kind": "url",
+          "label": "libwebp-sys",
+          "target": "https://docs.rs/crate/libwebp-sys/latest",
+          "relevance": "Vendored libwebp with mux bindings"
+        },
+        {
+          "kind": "url",
+          "label": "tiff encoder",
+          "target": "https://docs.rs/tiff/latest/tiff/encoder/index.html",
+          "relevance": "Strip writing, compression and custom tags"
+        }
+      ],
+      "acceptance_criteria": [
+        "WebP files decode with image-webp (test-only) to the expected dimensions, carry the sRGB ICCP chunk and the metadata level's EXIF fields; oversize outputs are refused before encoding.",
+        "TIFF files decode with the tiff decoder to identical pixels with and without compression at 8 and 16 bits; tags read by the repository's own TIFF walker show the ICC profile, density, descriptive fields and Exif/GPS IFDs for each metadata level.",
+        "TIFF encoding holds no more than its strips beyond the caller's bands; WebP holds one frame plus libwebp state, both measured in tests.",
+        "cargo deny and the dependency record cover the new packages."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Encode synthetic gradients and corpus-sized frames, decode independently and compare pixels, tags and chunks.",
+          "Run the dependency audit."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core export",
+          "tools/cargo-cached xtask check"
+        ],
+        "expected_results": [
+          "WebP and TIFF encoder tests and repository checks pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Render resized and 16-bit export output on the reference renderer and the GPU tile worker, and add both export kinds to gpu-qualification with the design's declared limits.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Deliver render paths consumed by TASK-005: an output size below the stage and an output encoding of 8 or 16 bits per channel.",
+        "Reference: resample the exact whole frame in linear light with a separable Lanczos-3 whose support scales with the reduction, clamped, then encode once; exact-buffer tests against a stepwise reference. The output frame is bounded by the stage and the 512 MiB evaluated-frame limit.",
+        "GPU: resampling is the stream's final staged sweep from content-stage textures inside GPU_TILE_BUDGET, cutting output bands of the output's width; a stage that does not fit is the reference's (tiles-budget). 16-bit bands are read back at 16 bits per channel. Keep two bands in flight, cancellation between tiles and the whole-export reference restart when a stream stops.",
+        "Declared limits: resized and 16-bit exports within the stack class's display limit (four statistics over every pixel) against the reference's resized or 16-bit export, ΔE00 computed from the 16-bit values. A cell past its limit is a defect to fix, not a reason to loosen the limit.",
+        "Run qualification for these kinds here on the corpus subset needed to prove the path; the full corpus run and measurements belong to TASK-008."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Export settings design",
+          "target": "docs/design/export-settings.md",
+          "relevance": "Behavior, settings object, presets, encoding, bounds, declared tolerances, decisions and recorded defaults"
+        },
+        {
+          "kind": "file",
+          "label": "GPU-first contract",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "Export tolerance, staged sweeps and qualification"
+        },
+        {
+          "kind": "file",
+          "label": "Tile service",
+          "target": "crates/luxforge-core/src/tiles.rs",
+          "relevance": "TileService::stream, Band and BandStream"
+        },
+        {
+          "kind": "file",
+          "label": "Reference tiles",
+          "target": "crates/luxforge-core/src/tiles/reference.rs",
+          "relevance": "Reference tile service"
+        },
+        {
+          "kind": "file",
+          "label": "GPU tile worker",
+          "target": "crates/luxforge-app/src/app/gpu_tiles.rs",
+          "relevance": "Desktop stream implementation and budget"
+        },
+        {
+          "kind": "file",
+          "label": "Linear-light reductions",
+          "target": "crates/luxforge-core/src/proxy.rs",
+          "relevance": "Existing area-coverage reducers to share conventions with"
+        },
+        {
+          "kind": "file",
+          "label": "Reference tolerance",
+          "target": "crates/luxforge-reference/src/tolerance.rs",
+          "relevance": "Statistics and reduction used by qualification"
+        }
+      ],
+      "acceptance_criteria": [
+        "Exact-buffer tests hold the reference resampler and 16-bit encoding to stepwise references, including odd sizes, extreme reductions and clamping.",
+        "GPU resized and 16-bit exports are within the declared limits against the reference on the qualification subset, with each export's renderer named; budget exhaustion falls back to the reference with tiles-budget.",
+        "Band memory and stage-texture use stay within the stated bounds in tests; a stream stopped part-way restarts on the reference and never mixes renderers.",
+        "gpu-qualification lists resized and 16-bit export as kinds with their limits."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Unit-test the reference resampler and output encodings.",
+          "Run the GPU path against the reference on the qualification subset on the M4."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core export",
+          "tools/cargo-cached test -p luxforge-gpu",
+          "tools/cargo-cached xtask gpu-qualification --output artifacts/export-settings-render-qualification"
+        ],
+        "expected_results": [
+          "Reference exact tests pass and the GPU resized and 16-bit exports are within the declared limits on the subset run."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Integrate settings, encoders and render paths into export.write and batch.export, with phases, results and refusals as designed.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003",
+        "TASK-004"
+      ],
+      "extra_context": [
+        "Join TASK-001's API, TASK-002's JPEG options, TASK-003's WebP and TIFF encoders and TASK-004's resized and 16-bit renders. Streaming formats (JPEG with Optimise off, TIFF) encode bands as they arrive; WebP, optimised JPEG and limited-size exports hold the bounded frame or coefficients named in the design.",
+        "Determinate progress over the whole export, rounded to whole percent, with phases rendering, resampling, encoding, optimising, limiting (with the attempt) and writing. Results carry format, quality used, whether it was optimised, metadata fields and renderer. Batch reports written files with quality and left-out photographs with codes, such as webp-too-large.",
+        "Refusals that export.plan can predict are refused before rendering with the same code. Publishing, temporary-file removal, cancellation and the never-replace rule are unchanged.",
+        "Extend the existing export smoke scenario's API steps only as far as needed for integration evidence; the desktop journey is TASK-006."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Export settings design",
+          "target": "docs/design/export-settings.md",
+          "relevance": "Behavior, settings object, presets, encoding, bounds, declared tolerances, decisions and recorded defaults"
+        },
+        {
+          "kind": "file",
+          "label": "JPEG export design",
+          "target": "docs/design/export.md",
+          "relevance": "Freeze, render, publish, never-replace and metadata rules this plan keeps"
+        },
+        {
+          "kind": "file",
+          "label": "Export job",
+          "target": "crates/luxforge-core/src/api/owner/export.rs",
+          "relevance": "ExportJob::run, write() and the streamed/reference paths"
+        },
+        {
+          "kind": "file",
+          "label": "Publish",
+          "target": "crates/luxforge-core/src/export/publish.rs",
+          "relevance": "Staging, publish without replacement and cleanup"
+        },
+        {
+          "kind": "file",
+          "label": "Batch export job",
+          "target": "crates/luxforge-core/src/api/owner/library/batch.rs",
+          "relevance": "Per-photograph export loop and report"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Checklist the finished change answers once"
+        }
+      ],
+      "acceptance_criteria": [
+        "Through an independent JSON client, every built-in preset and each format, size mode, metadata level, Optimise and limit setting writes a file whose independent decode matches the plan's output and the result's fields.",
+        "Original checksums, history and existing files are unchanged across exports, refusals, cancellations and limit searches; temporary files are removed on failure and cancel.",
+        "A mixed batch writes each file under the name rule, reports a left-out photograph with its code and cancels between and within photographs.",
+        "Held memory for optimised and size-limited exports matches export.plan's estimate at 24 MP and 60 MP-sized outputs, with one export's arrays held at a time; job progress is monotonic across phases, passes and attempts."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Run export and batch integration tests over generated JPEGs and supplied RAW fixtures through a real owner.",
+          "Run the export smoke scenario in the background."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core export",
+          "tools/cargo-cached test -p luxforge-core batch",
+          "tools/cargo-cached xtask smoke --scenario export --output artifacts/export-settings-integration"
+        ],
+        "expected_results": [
+          "Integration tests and the export scenario pass with files, results and source hashes as designed."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Build the desktop Export sheet, Export menu, Export again and Export with preset, and Select's batch sheet, with a rendered journey and current documentation.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-005"
+      ],
+      "extra_context": [
+        "The first useful delivery. Follow the boards in docs/design/export-settings/ and the design's sheet behaviour; reuse the Settings sheet's scrim and stacking and the existing segmented, toggle, slider and number-field widgets. Leave the Sharpen row out entirely until TASK-007.",
+        "The sheet is a client: readouts, suggested names and notices come from export.plan, asked only on format, size, density, folder or suffix changes, one in flight with the newest pending. No asset.state, history refresh, preview job or upload is added; job reads use the existing reader stream.",
+        "Large images: the sheet shows the amber large-image notice from export.plan under Quality (batch mode counts photographs over the threshold), never blocking. The status bar shows a determinate bar with phase and percent from the start for a warned export and otherwise once the job's elapsed time passes one second, derived from the existing job reads with no new timer; clicking it opens the Performance section with Cancel.",
+        "Menu: Export… (Cmd+E), Export again as Preset (Shift+Cmd+E, disabled until an export succeeds), Export with preset entries; palette entries per preset and Export reference render… opening the sheet with reference true. Select's Export N… opens the sheet in batch mode instead of the folder dialog.",
+        "Changed-preset marking, Save as preset…, Update, Rename, Duplicate and Delete go through export.presets.*. Status lines report size, bytes and quality used as designed.",
+        "Update export.md, features.md, user-guide.md, decisions.md and the smoke scenario table for delivered behaviour only; sharpening stays described as planned.",
+        "Automated launches use the hidden background bundles; no foreground interaction check is required."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Export settings design",
+          "target": "docs/design/export-settings.md",
+          "relevance": "Behavior, settings object, presets, encoding, bounds, declared tolerances, decisions and recorded defaults"
+        },
+        {
+          "kind": "file",
+          "label": "Export flow",
+          "target": "crates/luxforge-app/src/app/export.rs",
+          "relevance": "Current start, plan, save dialog, send and status lines to replace"
+        },
+        {
+          "kind": "file",
+          "label": "Title bar",
+          "target": "crates/luxforge-app/src/view/title_bar.rs",
+          "relevance": "Export button and popover menu"
+        },
+        {
+          "kind": "file",
+          "label": "Menu items",
+          "target": "crates/luxforge-app/src/state/title.rs",
+          "relevance": "EXPORT_ITEMS"
+        },
+        {
+          "kind": "file",
+          "label": "Keymap",
+          "target": "crates/luxforge-app/src/app/keymap.rs",
+          "relevance": "Cmd+E and Shift+Cmd+E handling"
+        },
+        {
+          "kind": "file",
+          "label": "Palette",
+          "target": "crates/luxforge-app/src/state/palette.rs",
+          "relevance": "Export entries and REFERENCE_EXPORT"
+        },
+        {
+          "kind": "file",
+          "label": "Settings sheet",
+          "target": "crates/luxforge-app/src/view/settings.rs",
+          "relevance": "Modal sheet pattern to reuse"
+        },
+        {
+          "kind": "file",
+          "label": "Select export",
+          "target": "crates/luxforge-app/src/app/select_catalog.rs",
+          "relevance": "ask_export_folder and batch export start"
+        },
+        {
+          "kind": "file",
+          "label": "Select Develop band",
+          "target": "crates/luxforge-app/src/view/select_catalog.rs",
+          "relevance": "Export N… button and batch report sheet"
+        },
+        {
+          "kind": "file",
+          "label": "Smoke scenarios",
+          "target": "docs/engineering/development.md",
+          "relevance": "Existing export and select scenarios to extend"
+        }
+      ],
+      "acceptance_criteria": [
+        "Each sheet, menu and palette gesture sends exactly the request an independent JSON client sends for the same settings and produces the same files.",
+        "A background rendered journey correlates sheet state, logs, captures and written files for Web, Print and Master on a generated 24 MP JPEG and a supplied RAW, a changed preset saved, updated and deleted, Export again, a taken name, a refused WebP, an optimised 60 MP export with its warning, progress and cancel, and a mixed batch with one left out.",
+        "The large-image notice appears exactly when the plan carries it; an optimised 60 MP export in the journey shows the bar from the start with rising percent and is cancelled from the Performance section, while a quick Web export shows no bar.",
+        "Plan calls occur only on the named changes with at most one in flight; no added asset.state, history, preview or upload messages are observed in the journey's log.",
+        "Documentation describes delivered behaviour and the remaining planned sharpening, with no placeholder control in the build."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Unit-test sheet state, plan coalescing and request construction.",
+          "Run the extended export and select smoke scenarios in the background and inspect captures.",
+          "Run the quick tier once when finished."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app export",
+          "tools/cargo-cached xtask smoke --scenario export --output artifacts/export-settings-desktop",
+          "tools/cargo-cached xtask smoke --scenario select --output artifacts/export-settings-select",
+          "tools/cargo-cached xtask verify --tier quick --output artifacts/export-settings-quick"
+        ],
+        "expected_results": [
+          "Desktop tests, both scenarios and the quick tier pass with correlated evidence."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Add output sharpening (Screen, Matte, Glossy by Low, Standard, High) after resizing, with a CPU reference, a GPU final sweep, the declared spatial limit, the sheet row and preset values.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-006"
+      ],
+      "extra_context": [
+        "The second delivery. Sharpen at the final pixel size, on luminance only, in the encoded domain; radius from the medium and output density, Matte stronger than Glossy; Low/Standard/High scale the amount. Kernel and constants are the implementer's, calibrated by eye on the corpus and recorded in the design.",
+        "CPU reference unit with exact fixtures; GPU program as the last sweep after resampling, with halos handled at band edges; held to the spatial class's display limit against the reference's sharpened export. It is an export setting, never a recipe layer, and does not change Detail.",
+        "Enable the settings field, add the Sharpen row to the sheet, and set Web to Screen/Standard, Print to Glossy/Standard and Master to None. Extend the rendered journey and update the docs."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Export settings design",
+          "target": "docs/design/export-settings.md",
+          "relevance": "Behavior, settings object, presets, encoding, bounds, declared tolerances, decisions and recorded defaults"
+        },
+        {
+          "kind": "file",
+          "label": "Detail module",
+          "target": "crates/luxforge-core/src/modules/detail/mod.rs",
+          "relevance": "Existing capture sharpening to keep separate and to borrow conventions from"
+        },
+        {
+          "kind": "file",
+          "label": "GPU tile worker",
+          "target": "crates/luxforge-app/src/app/gpu_tiles.rs",
+          "relevance": "Final-sweep placement"
+        },
+        {
+          "kind": "file",
+          "label": "GPU-first contract",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "Spatial class limits and qualification"
+        }
+      ],
+      "acceptance_criteria": [
+        "Exact-buffer tests hold the reference sharpening for each medium and amount, at band edges and at image borders.",
+        "GPU sharpened exports are within the spatial class's limit against the reference on the qualification subset.",
+        "The sheet row, presets and API agree; a rendered journey shows sharpened Web and Print exports with correlated settings and files.",
+        "Luminance-only sharpening adds no chroma change beyond the limit on saturated edges."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Unit-test the reference kernel and GPU program against it.",
+          "Extend the export scenario with sharpened presets."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core export",
+          "tools/cargo-cached xtask smoke --scenario export --output artifacts/export-settings-sharpen"
+        ],
+        "expected_results": [
+          "Sharpening tests and the scenario pass within the declared limit."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Qualify the new export kinds on the full corpus, measure export cost once on the M4, and publish final documentation.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-007"
+      ],
+      "extra_context": [
+        "Runs after feature work. Not an owner-approval gate: it records evidence and limitations.",
+        "Full gpu-qualification for resized, 16-bit and sharpened exports at their declared limits; missing native Windows/Linux GPU evidence stays explicitly unrun.",
+        "Measure in release on the M4, generated 24 MP and 60 MP JPEGs and a supplied RAW, both renderers: wall time and peak additional memory per format and preset, Optimise's encode-time, memory and size effect (refining the large-image warning's wording with the measured rate if useful), limit-search encode counts and resampling's share. Record scope; editor-performance does not measure export.",
+        "Update export.md, export-settings.md, features.md, user-guide.md, performance.md, plan.md and the tasks README with measured current behaviour; answer the performance-rules checklist once for the finished change."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Export settings design",
+          "target": "docs/design/export-settings.md",
+          "relevance": "Behavior, settings object, presets, encoding, bounds, declared tolerances, decisions and recorded defaults"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Checklist the finished change answers once"
+        },
+        {
+          "kind": "file",
+          "label": "Performance evidence",
+          "target": "docs/specs/performance.md",
+          "relevance": "Existing export measurements and their scope"
+        },
+        {
+          "kind": "file",
+          "label": "Verification tiers",
+          "target": "docs/engineering/development.md",
+          "relevance": "Rendered tier, background launches and measurement rules"
+        }
+      ],
+      "acceptance_criteria": [
+        "Full-corpus qualification passes for every new export kind, or each failing cell is filed as a defect with its figures.",
+        "Measurements are recorded with build, host, scope and medians; no claim exceeds what was measured.",
+        "Documentation reflects delivered behaviour with no planned language left for delivered parts; the rendered tier passes."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the release gate and export measurements once.",
+          "Run the rendered tier on the finished change and validate repository checks."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask gpu-qualification --output artifacts/export-settings-qualification",
+          "tools/cargo-cached xtask verify --tier rendered --output artifacts/export-settings-rendered"
+        ],
+        "expected_results": [
+          "Qualification, measurements and the rendered tier are recorded and pass, with remaining platform limits stated."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003",
+        "TASK-004"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-005"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-006"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-007"
+      ]
+    },
+    {
+      "wave": 5,
+      "task_ids": [
+        "TASK-008"
+      ]
+    }
+  ]
+}

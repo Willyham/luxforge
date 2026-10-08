@@ -20,10 +20,11 @@ const NOTICE_TOOLTIP_WIDTH: f32 = 320.0;
 pub(crate) fn status_bar<'a>(
     model: &'a StatusBarModel,
     work: &'a LongWorkModel,
+    report: bool,
 ) -> Element<'a, Message> {
     // The sentence hugs its text, so Copy follows it, and ends in an ellipsis before it would push
     // the facts along.
-    let message = row![
+    let mut message = row![
         truncated_text(
             model.message.clone(),
             theme::SIZE_CAPTION,
@@ -42,6 +43,9 @@ pub(crate) fn status_bar<'a>(
     ]
     .spacing(theme::STATUS_SPACING)
     .align_y(Alignment::Center);
+    if report {
+        message = message.push(crate::view::select_catalog::status_report());
+    }
     let connected = model.agents_connected;
     let dot = container(Space::new())
         .width(Length::Fixed(theme::STATUS_DOT_SIZE))

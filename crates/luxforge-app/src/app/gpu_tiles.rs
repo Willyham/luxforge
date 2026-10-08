@@ -1787,6 +1787,12 @@ impl Worker {
 }
 
 impl TileReads for Worker {
+    fn analysis_renderer(&self) -> Option<luxforge_core::RendererRecord> {
+        self.unavailable()
+            .is_none()
+            .then_some(luxforge_core::RendererRecord::Gpu)
+    }
+
     fn session<'a>(
         &'a self,
         evaluation: &'a Stack,
@@ -1950,6 +1956,26 @@ impl Session<'_> {
 }
 
 impl TileSession for Session<'_> {
+    fn gather(
+        &mut self,
+        stage: ReadStage,
+        points: &[[u32; 2]],
+        cancel: &Cancel,
+    ) -> Result<luxforge_core::tiles::GatherAnswer, Error> {
+        match luxforge_core::tiles::gather_tiles(self, stage, points, cancel) {
+            Err(_) if self.fallback.is_some() => {
+                cancel.check()?;
+                let reference = self
+                    .reference
+                    .get_or_insert_with(|| self.worker.reference.session(self.stack, self.cancel));
+                let mut answer = reference.gather(stage, points, cancel)?;
+                answer.answered = Some(Answered::reference(self.fallback.clone()));
+                Ok(answer)
+            }
+            result => result,
+        }
+    }
+
     fn read(
         &mut self,
         stage: ReadStage,

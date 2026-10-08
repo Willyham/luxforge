@@ -15,7 +15,7 @@ pub use owner::{
 };
 pub(crate) use owner::{OWNER_THREAD, SourceFlightKey};
 
-pub use transport::{LocalServer, serve_json_lines_with};
+pub use transport::{LocalServer, LocalSessionInfo, live_session_file, serve_json_lines_with};
 
 use crate::{
     AssetId, Draft, DraftId, Error, JobId, PreviewSession, catalog_types::LibraryChangeSeq,
@@ -23,7 +23,8 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub(crate) const PROTOCOL: &str = "luxforge-jsonl-1";
+/// The JSON-lines protocol every client speaks, named in `schema.list` and in a live-session file.
+pub const PROTOCOL: &str = "luxforge-jsonl-1";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -280,6 +281,8 @@ pub struct WorkspaceState {
     /// What the canvas draws of the selected mask.
     #[serde(default)]
     pub mask_overlay: MaskOverlayMode,
+    /// Show gradient handles independently of mask coverage.
+    pub mask_handles: bool,
     /// The tint [`MaskOverlayMode::Tint`] is drawn in.
     #[serde(default)]
     pub mask_overlay_colour: MaskOverlayColour,
@@ -347,6 +350,7 @@ impl Default for WorkspaceState {
             clip_shadows: false,
             clip_highlights: false,
             mask_overlay: MaskOverlayMode::Off,
+            mask_handles: true,
             mask_overlay_colour: MaskOverlayColour::Green,
             views: Vec::new(),
         }

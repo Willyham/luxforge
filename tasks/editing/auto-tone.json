@@ -1,0 +1,574 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "auto-tone",
+  "title": "Auto tone for the Basic panel",
+  "objective": "Deliver a deterministic, explainable Auto tone that sets Lightroom's eight Basic fields (Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Vibrance, Saturation) on the global Basic layer as one undoable entry, from a bounded analysis sample of the stage Basic receives, with a command and query for API parity, a desktop Auto button, Auto in presets and the Lightroom importer, then fit its targets to Lightroom's Auto on the owner's photos.",
+  "context_summary": "The owner requested a plan and decided scope on 2026-10-07: Lightroom's eight sliders, no white balance, Auto in presets (recomputed per photo) and AutoTone import mapping, and tuning by fitting to Lightroom's Auto on the owner's photos after delivery. The owner authorized implementation on 2026-10-08 after copy/paste settings. Re-reviewed against upstream main 76af7e1e: the module and tile-service interfaces remain present; batch presets need the same off-owner deferred analysis as single actions. Work proceeds independently of the live CLI and colour-grading worktrees. Deterministic statistics and searches (no learned model), analysis before Basic with a forward model through Basic and the Look only, the starting targets, grid size, caps, button placement and Cmd+U are recorded defaults in the design; routine organisation is delegated. The solver and the analysis sample are independent outputs consumed by the action; desktop and presets build on the action; the Lightroom rig needs only the solver; the owner's export is the one external input and is needed only by the final fit. Re-review against current main and use the roadmap high-tier model minimum. No approval, owner-question or research task is inserted. The available implementation host is M2, so ordinary rendered checks run there; owner M4 and complete private-corpus checks are retained together in TASK-006, after working delivery. No tolerance or final qualification requirement is removed.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Implement the auto-tone/1 solver as a pure core function over an analysis sample, with versioned targets and an explanation report.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "Deliver the solver, AutoToneTargets (auto-tone/1 constants from the design) and the bounded explanation consumed by TASK-003 and TASK-007. No sample reading, command, UI or preset change here.",
+        "Input: a sample of linear RGB f32 values with per-sample exclusion flags (non-finite, source white), plus the compiled pointwise units of a candidate global Basic payload followed by the global Look layer when present. Reuse the modules' own compiled units; add no second copy of Basic or Look equations.",
+        "Steps in fixed order: Exposure median target with the bright-fraction guard; Highlights and Shadows from band fractions; Contrast from the P90-P10 spread; Whites and Blacks binary searches on their integer grids to the 0.05% clipping fractions with source-white samples excluded; one second sweep of Exposure, Whites and Blacks; Vibrance and Saturation from mean Oklab chroma. Round to field steps half away from zero; every search runs on the committed grid.",
+        "Statistics in f64 with deterministic weighted reductions so results are independent of thread count. Repeated evaluation may use a reduced sample only where tests prove equal fractions and percentiles to brute force over the whole sample.",
+        "Refuse fewer than 1,024 usable samples, an input luminance spread P99-P1 under half a stop, or a median at or below 1e-6, with a structured reason.",
+        "The implementer chooses module placement within luxforge-core and the reduction strategy.",
+        "Implemented with exact committed-grid searches and actual Basic/Look units. Look amounts above 100% can reverse luminance, so that declared case uses an exhaustive Exposure grid. Focused independent-oracle, bounds, determinism and cancellation tests pass."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Auto tone design",
+          "target": "docs/design/auto-tone.md",
+          "relevance": "Forward model, statistics, steps, targets, refusal and explanation contract"
+        },
+        {
+          "kind": "file",
+          "label": "Basic module",
+          "target": "crates/luxforge-core/src/modules/basic/mod.rs",
+          "relevance": "Field names, ranges, steps and compile order the solver drives"
+        },
+        {
+          "kind": "file",
+          "label": "Basic tone unit",
+          "target": "crates/luxforge-core/src/modules/basic/tone.rs",
+          "relevance": "Monotone Whites/Blacks remap that makes the clipping searches exact for Basic alone"
+        },
+        {
+          "kind": "file",
+          "label": "Basic colour unit",
+          "target": "crates/luxforge-core/src/modules/basic/colour.rs",
+          "relevance": "Oklab chroma used by the Vibrance and Saturation statistics"
+        },
+        {
+          "kind": "file",
+          "label": "Look module",
+          "target": "crates/luxforge-core/src/modules/look/mod.rs",
+          "relevance": "Pointwise colour units of the global Look applied after Basic in the forward model"
+        },
+        {
+          "kind": "file",
+          "label": "Tone mathematics",
+          "target": "docs/design/basic-tone.md",
+          "relevance": "Encoded luminance domain and monotonicity proof"
+        }
+      ],
+      "acceptance_criteria": [
+        "Hand-computed synthetic samples (dark, bright, low contrast, high key, clipped source, saturated colour, near-neutral) produce the expected values; degenerate samples are refused with their reasons.",
+        "Each committed Whites/Blacks value meets its clipping constraint and the next step outward fails it; Exposure meets the median and bright-guard rules on its 0.01 EV grid.",
+        "Results are identical across Rayon thread counts and repeated runs; solving with Basic already at the result gives the same values.",
+        "Every value stays within its declared Auto bound and the field's range; bounded fields are listed in the explanation, which stays within 4 KiB and names the forward-model layers.",
+        "A Look present in the forward model changes the result consistently with rendering the same payload through the reference renderer on the sample's values."
+      ],
+      "test_strategy": {
+        "approach": "unit",
+        "steps": [
+          "Write independent oracle tests with hand-computed statistics and brute-force evaluation over small samples; do not mirror the solver's code.",
+          "Exercise thread-count determinism, idempotence, bounds and refusals."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core auto_tone"
+        ],
+        "expected_results": [
+          "All solver tests pass; no frame rendering, IO or owner-thread work is introduced."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Provide a bounded, identity-keyed analysis sample of the stage the Basic layer receives through the deferred tile-service read path, on the GPU and the reference.",
+      "status": "completed",
+      "dependencies": [],
+      "extra_context": [
+        "Deliver the sample read consumed by TASK-003: a grid of at most 1024 points on the output frame's long side at pixel centres, each mapped back through the stack's geometry (crop, straighten, lens, perspective) to the Basic input stage and read as that stage's linear values at the nearest input pixel, without interpolation. Points outside the input stage are dropped.",
+        "Extend the existing deferred tile-service read path from a patch to a bounded strided grid. The GPU gathers from prefix tiles with no full-frame CPU buffer. The reference shares its existing per-call stage evaluation; spatial prefixes currently materialize their reference frames, as performance rule 4 documents. Auto retains only its bounded sample, never those frames. Never read on the catalog owner.",
+        "Flag non-finite samples and samples at the source's white in any channel (JPEG code 255; RAW sensor saturation where the development reports it).",
+        "Identity: asset, source fingerprint, content of layers before Basic, geometry after Basic, grid dimensions, renderer and algorithm; it excludes Basic's own values and later colour layers. Retain samples within a 32 MiB total cap, released on photo replacement and leaving Develop; charge scratch before allocation; cancel at chunk granularity.",
+        "The implementer chooses the read plumbing and storage format within these caps.",
+        "Implemented. Exact JPEG and synthetic RAW grid/cache tests pass. Native M2/Metal comparisons pass for half/float tiles with Detail and combined crop/straighten/lens/perspective geometry; Auto values meet 0.02 EV / 2-unit limits. Owner M4 and full supplied RAW corpus checks remain unrun, tracked by TASK-006."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Auto tone design",
+          "target": "docs/design/auto-tone.md",
+          "relevance": "Analysis input contract, identity, caps and exclusions"
+        },
+        {
+          "kind": "file",
+          "label": "Tile reads",
+          "target": "crates/luxforge-core/src/tiles.rs",
+          "relevance": "TileSession::read, ReadStage::Before and ReadValues::Linear"
+        },
+        {
+          "kind": "file",
+          "label": "Deferred pixel reads",
+          "target": "crates/luxforge-core/src/editor/pixels.rs",
+          "relevance": "How picker reads leave the owner and return"
+        },
+        {
+          "kind": "file",
+          "label": "Reference tiles",
+          "target": "crates/luxforge-core/src/tiles/reference.rs",
+          "relevance": "Reference implementation of stage reads"
+        },
+        {
+          "kind": "file",
+          "label": "GPU tiles",
+          "target": "crates/luxforge-app/src/app/gpu_tiles.rs",
+          "relevance": "GPU implementation of stage reads"
+        },
+        {
+          "kind": "file",
+          "label": "GPU contract",
+          "target": "docs/design/gpu-first.md",
+          "relevance": "Declared display tolerance and renderer of record"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Allocation, source-cache, owner-thread and reuse requirements"
+        }
+      ],
+      "acceptance_criteria": [
+        "The reference sample equals an independent grid read of the reference frame exactly, including crop, straighten, lens and perspective geometry, JPEG and RAW kinds.",
+        "The GPU sample matches the reference sample within the declared display tolerance on generated inputs; an available authentic RAW input has matching predicted values. Owner M4 and complete supplied RAW corpus qualification is retained in TASK-006.",
+        "A repeated read with equal identity reuses the retained sample with no render; changing Basic, the Look or a later colour layer does not invalidate it, while a layer before Basic or geometry after it does.",
+        "Storage stays within the caps including replacement; cancellation and photo switches never deliver a stale sample; no read runs on the owner thread and the original is never re-read."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Compare reference samples with an independent oracle over rendered frames and geometric mappings computed by hand.",
+          "Compare GPU and reference samples within tolerance on the available native GPU; test cancellation, identity reuse and caps. TASK-006 retains owner M4 and complete-corpus qualification."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core tiles",
+          "tools/cargo-cached test -p luxforge-app gpu_tiles"
+        ],
+        "expected_results": [
+          "Exact reference and in-tolerance GPU samples, reuse by identity and bounded storage are demonstrated."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Add Basic's auto-tone action and query, committing one Auto tone entry on the global Basic layer with API parity.",
+      "status": "completed",
+      "dependencies": [
+        "TASK-001",
+        "TASK-002"
+      ],
+      "extra_context": [
+        "edit.auto-tone {asset_id, mutation} analyses the current revision and creates or updates the one global Basic layer, writing all eight fields absolutely and leaving Temperature, Tint and set-raw untouched; equal result is a no-op. query.auto-tone {asset_id, entry_id?} returns values and the explanation without committing. Both share one function.",
+        "The action takes no parameters, is not a field patch or draft action, and plans through the deferred read path; the owner handles metadata only.",
+        "Label the entry Auto tone; it does not collapse into following slider edits. Refuse a mask target (validation: Auto tone applies to the photo's global Basic layer), a historical selection and an open draft as Basic actions are refused; surface solver refusals with their reason.",
+        "Register both in the module descriptor so schema.list discovers them with notes describing behaviour.",
+        "Implemented and tested through the owner: query/action agreement, repeat no-op, deduplication, undo, source preservation, mask/history/draft refusals and a competing client commit. Analysis itself cannot be drafted; an Auto preset also refuses an open draft."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Auto tone design",
+          "target": "docs/design/auto-tone.md",
+          "relevance": "Command and API parity, refusals, labels and explanation"
+        },
+        {
+          "kind": "file",
+          "label": "Basic module",
+          "target": "crates/luxforge-core/src/modules/basic/mod.rs",
+          "relevance": "Spec, groups, neutral-sample query precedent and set-basic plan"
+        },
+        {
+          "kind": "file",
+          "label": "Field patches",
+          "target": "crates/luxforge-core/src/modules/field_patch.rs",
+          "relevance": "plan_extra for extra actions, query hook and labels"
+        },
+        {
+          "kind": "file",
+          "label": "Action planning",
+          "target": "crates/luxforge-core/src/editor/plan.rs",
+          "relevance": "Superseded-field checks, first-open and action planning"
+        },
+        {
+          "kind": "file",
+          "label": "History collapse",
+          "target": "crates/luxforge-core/src/editor/collapse.rs",
+          "relevance": "Rules an Auto tone entry must not collapse under"
+        },
+        {
+          "kind": "file",
+          "label": "Method table",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "relevance": "edit.<action> and query.<id> dispatch and deferred query planning"
+        }
+      ],
+      "acceptance_criteria": [
+        "On JPEG and supplied RAW photos the action commits one Auto tone entry with the solver's values for that revision's sample, keeps white balance and other modules, and one undo restores every field.",
+        "A second Auto on an unchanged photo is a no-op with no entry; a retried request id is deduplicated; a stale expected revision is refused.",
+        "query.auto-tone and edit.auto-tone agree for the same identity; an independent JSON client gets the same result as the desktop path.",
+        "Mask targets, historical selections, open drafts and degenerate photos are refused with reasons and commit nothing; the original's checksum is unchanged."
+      ],
+      "test_strategy": {
+        "approach": "integration",
+        "steps": [
+          "Add editor and API tests across JPEG and RAW fixtures with independent clients and revision conflicts.",
+          "Check schema discovery, labels, collapse behaviour and refusals."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core auto_tone",
+          "tools/cargo-cached test -p luxforge-core basic"
+        ],
+        "expected_results": [
+          "Action and query tests pass with one-entry commits, parity and explicit refusals."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Add the desktop Auto button in the Tone group header with Cmd+U and verify it in a background rendered journey.",
+      "status": "completed",
+      "dependencies": [
+        "TASK-003"
+      ],
+      "extra_context": [
+        "Declare the button as a header action of Basic's Tone group in the descriptor and draw it with the existing sub-group header with actions; no Basic-specific widget code. Cmd+U / Ctrl+U runs it when no text field has focus.",
+        "A click sends edit.auto-tone with the expected revision; the button is busy while the analysis runs and ignores a second click; sliders and history follow the committed entry; refusals show in the status bar.",
+        "Disabled with a tooltip on a mask target, a historical entry, an open draft or Compare, and without a photo. After a run the tooltip shows the explanation's summary.",
+        "The rendered check runs in the background per the development guide; do not launch the GUI binary directly.",
+        "Implemented with generic GroupHeader action style. Native M2/Metal JPEG and public Nikon Z6 RAW captures correlate the busy control, report, values, Cmd+U, repeat, undo, history/Compare refusals and preset form. Unit checks cover all disabled states. Owner M4 verification remains unrun in TASK-006."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Auto tone design",
+          "target": "docs/design/auto-tone.md",
+          "relevance": "Desktop behaviour and disabled states"
+        },
+        {
+          "kind": "file",
+          "label": "Sub-group header",
+          "target": "crates/luxforge-ui/src/widgets/sub_group_header.rs",
+          "relevance": "sub_group_header_with_actions used by crop"
+        },
+        {
+          "kind": "file",
+          "label": "Tools panel",
+          "target": "crates/luxforge-app/src/view/tools_panel.rs",
+          "relevance": "Generated group rows and header actions"
+        },
+        {
+          "kind": "file",
+          "label": "Action dispatch",
+          "target": "crates/luxforge-app/src/app/actions.rs",
+          "relevance": "How panel actions become edit requests"
+        },
+        {
+          "kind": "file",
+          "label": "Development guide",
+          "target": "docs/engineering/development.md",
+          "relevance": "Background smoke scenarios and evidence rules"
+        }
+      ],
+      "acceptance_criteria": [
+        "A background rendered journey on the available native host correlates the button, busy state, history row, slider values, session state, logs and captures on a generated JPEG and an authentic RAW input, including Cmd+U, undo and a refusal. Repeat on the owner M4 with the supplied corpus in TASK-006.",
+        "Disabled states and their tooltips are covered for mask target, history preview, open draft, Compare and no photo.",
+        "Panel unit tests cover the declared header action; no new preference, panel or dependency is added."
+      ],
+      "test_strategy": {
+        "approach": "end-to-end",
+        "steps": [
+          "Extend the existing basic smoke scenario with the Auto tone journey, capturing state and logs per run.",
+          "Run focused app and UI tests."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app auto_tone",
+          "tools/cargo-cached xtask smoke --scenario auto-tone --output artifacts/auto-tone-integration"
+        ],
+        "expected_results": [
+          "The rendered journey passes with correlated evidence; focused tests pass."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Carry Auto tone in presets as a per-photo analysis step, with capture, the create form and Lightroom AutoTone import mapping.",
+      "status": "completed",
+      "dependencies": [
+        "TASK-003"
+      ],
+      "extra_context": [
+        "A settings set may name \"auto-tone\": {} (the one key allowed an empty object); a registry answer beside patch_action declares analysis-step actions. The step runs after every field-patch step whatever the key order and analyses the intermediate stack through the same deferred read; other composites keep planning without rasterizing.",
+        "Refuse at store a set naming auto-tone together with any of its eight set-basic fields. A degenerate photo skips the step and reports it under skipped; the rest of the preset applies.",
+        "preset.capture accepts {\"auto-tone\": true}; the desktop create form gains an Auto tone row in Basic's Tone group that clears and disables the eight fields.",
+        "Import: crs:AutoTone True (XMP) and AutoTone = true (.lrtemplate) map to the step; the eight fields in that preset are reported as overridden by Auto tone; False is neutral; earlier process versions' Auto* switches keep their current treatment. The Luxforge preset document round-trips the key.",
+        "batch.apply-preset continues to apply through edit.apply-preset per photo, so each photo is analysed separately.",
+        "Implemented and tested for capture, overlapping-field refusal, degenerate skipping, XMP/lrtemplate mapping, per-photo batch results and cancellation. A public Nikon Z6 RAW test proves a composite with new RAW white balance equals the same edits applied separately, without changing other layers or source bytes. The rendered create-form check passes on the available M2."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Auto tone design",
+          "target": "docs/design/auto-tone.md",
+          "relevance": "Presets and import contract"
+        },
+        {
+          "kind": "file",
+          "label": "Presets design",
+          "target": "docs/design/presets.md",
+          "relevance": "Settings sets, composite actions, capture and mapping rules being extended"
+        },
+        {
+          "kind": "file",
+          "label": "Presets module",
+          "target": "crates/luxforge-core/src/modules/presets.rs",
+          "relevance": "apply-preset Compose plan"
+        },
+        {
+          "kind": "file",
+          "label": "Lightroom mapping",
+          "target": "crates/luxforge-core/src/presets/mapping.rs",
+          "relevance": "AutoTone row currently refused as Luxforge has no Auto Tone"
+        },
+        {
+          "kind": "file",
+          "label": "Preset library",
+          "target": "crates/luxforge-core/src/presets/library.rs",
+          "relevance": "Store-time validation and capture"
+        },
+        {
+          "kind": "file",
+          "label": "Registry",
+          "target": "crates/luxforge-core/src/modules/registry/mod.rs",
+          "relevance": "patch_action and the new analysis-step answer"
+        }
+      ],
+      "acceptance_criteria": [
+        "Applying a preset with auto-tone equals applying its other steps and then edit.auto-tone, in one Preset: <name> entry, regardless of key order.",
+        "Overlapping sets are refused at store; degenerate photos skip the step with a report; a batch over several photos analyses each one separately.",
+        "XMP and .lrtemplate fixtures with AutoTone true, false and with overlapping values import with the specified report; the document round-trips.",
+        "Capture and the create form produce the auto-tone key and exclude the eight fields; a rendered check of the form is recorded."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add preset library, composite and import mapping tests with fixtures, and a batch test over generated photos.",
+          "Extend the existing presets smoke scenario with the create form's Auto tone row."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core presets",
+          "tools/cargo-cached xtask smoke --scenario auto-tone --output artifacts/auto-tone-presets"
+        ],
+        "expected_results": [
+          "Preset, import and batch tests pass; the create form's rendered check passes."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Qualify Auto tone on the corpus, measure it once on the M4, and document the delivered behaviour.",
+      "status": "in_progress",
+      "dependencies": [
+        "TASK-004",
+        "TASK-005"
+      ],
+      "extra_context": [
+        "Corpus agreement: Auto values from GPU and reference samples agree within 0.02 EV and 2 units on every field for every corpus photo; report the distribution and any miss.",
+        "Release photo-sized measurements on a quiet host: click-to-entry latency p50/p95 for 24 MP and 60 MP, warm and cold, GPU and reference, sample bytes and solve time. Provisional targets p95 at or below 250 ms (24 MP) and 400 ms (60 MP) warm on the GPU; a miss is reported with figures and does not block.",
+        "Update feature status, the user guide, the Basic and presets designs and decisions to current behaviour only; remove the planned wording; no unrun check claimed passed.",
+        "The available host is Apple M2/Metal with 8 GiB, not the owner M4. A public licensed Nikon Z6 original supplies additional native RAW evidence; the owner private corpus and M4 click-to-entry qualification remain outstanding. Do not treat engine-only timings or the single public RAW as the missing scopes.",
+        "Owner M4 sample/value comparisons and rendered JPEG/supplied RAW journeys from TASK-002/TASK-004 remain qualification requirements here. Local M2 release engine measurements are recorded in docs/specs/performance.md: warm GPU p95 2.81 s at 24 MP and 2.51 s at 60 MP, materially over the provisional budgets; engine scope excludes preparation, commit and preview.",
+        "Final quick and full headless checks pass on M2. Rendered tier: 58 pre-gate components pass; the GPU gate has no errors and passes 159 measured combinations, but 118 missing-source combinations make the aggregate incomplete. Standard timing tier passes functionally with all four timing components marked unreliable by high host load; the separate Auto engine run had load 1.44–2.95. Evidence is under artifacts/auto-tone-quick-03, auto-tone-rendered-01, auto-tone-timing-01 and auto-tone-measure-01*."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Auto tone design",
+          "target": "docs/design/auto-tone.md",
+          "relevance": "Acceptance and measurement contract"
+        },
+        {
+          "kind": "file",
+          "label": "Performance spec",
+          "target": "docs/specs/performance.md",
+          "relevance": "Where measurements are recorded"
+        },
+        {
+          "kind": "file",
+          "label": "Feature status",
+          "target": "docs/features.md",
+          "relevance": "Status row to update"
+        },
+        {
+          "kind": "file",
+          "label": "User guide",
+          "target": "docs/user-guide.md",
+          "relevance": "Basic section to document Auto"
+        }
+      ],
+      "acceptance_criteria": [
+        "Corpus GPU/reference agreement is recorded and within the stated bounds, or misses are reported with figures.",
+        "Measurements with host, profile, cache state and scope are recorded once in the performance spec.",
+        "Documentation describes delivered behaviour and outstanding limits only; plan indexes and links validate.",
+        "Final quick and rendered verification pass."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the corpus comparison and inspect skips separately.",
+          "Take release measurements once after code is final.",
+          "Run final verification tiers after documentation is complete."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask gpu-qualification --output artifacts/auto-tone-gpu-qualification",
+          "tools/cargo-cached xtask verify --tier quick --output artifacts/auto-tone-quick",
+          "tools/cargo-cached xtask verify --tier rendered --output artifacts/auto-tone-rendered"
+        ],
+        "expected_results": [
+          "Qualification and verification pass; measurements and limits are recorded without an owner-review gate."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Build the Lightroom Auto fitting rig: picture statistics, target fitting with hold-out, and a report, proven on synthetic and corpus inputs before the owner's export exists.",
+      "status": "completed",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "Rust tooling only. Inputs: originals, Lightroom's Auto-result sRGB JPEG exports and XMP sidecars. Compute the picture statistics the solver uses (median, P10/P90, band fractions, clipping fractions, mean chroma) on Lightroom's exports and on Luxforge's Auto output for the same originals, and fit AutoToneTargets to minimise a weighted median difference with a quarter held out.",
+        "Compare in picture space so the fit does not depend on the unfinished slider response alignment; report base-rendering differences beside it, and compare slider values for information using alignment conversions where they exist.",
+        "Rendered outputs only, no Adobe code or data; runs locally, keeps figures only, asks consent each run when given the owner's photos.",
+        "Prove the rig end to end with synthetic stand-ins for Lightroom's exports (for example Luxforge's own Auto at perturbed targets, which the fit must recover).",
+        "The local auto-tone-fit command requires explicit per-run consent, uses 40–100 originals and rendered exports, holds out a deterministic quarter, and writes figures without adopting targets. End-to-end tests pass for synthetic exports and four repository fixtures with stand-in exports. The synthetic median target is recovered exactly; held-out weighted error falls from 0.365032 to 0.021657. This is rig validation, not Lightroom calibration."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Auto tone design",
+          "target": "docs/design/auto-tone.md",
+          "relevance": "Tuning contract"
+        },
+        {
+          "kind": "file",
+          "label": "Lightroom alignment design",
+          "target": "docs/design/lightroom-alignment.md",
+          "relevance": "Rendered-outputs-only, local, consent rules and conversions"
+        },
+        {
+          "kind": "file",
+          "label": "Lightroom preset research",
+          "target": "docs/research/lightroom/presets.md",
+          "relevance": "XMP crs fields read from sidecars"
+        }
+      ],
+      "acceptance_criteria": [
+        "On synthetic stand-ins the rig recovers perturbed targets within a stated tolerance and reports held-out error.",
+        "The report lists per-photo statistics, fitted targets, held-out figures and informational value differences, with no image content retained.",
+        "The rig refuses to read owner photos without per-run consent."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Unit-test statistics against hand-computed images and the fit against known targets.",
+          "Run the rig on corpus photos with synthetic stand-ins."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p xtask auto_tone"
+        ],
+        "expected_results": [
+          "The rig recovers known targets and produces a bounded report."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Fit auto-tone/2 to the owner's Lightroom Auto round and record the owner's review.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-006",
+        "TASK-007"
+      ],
+      "extra_context": [
+        "External input: the owner selects 40 to 100 of their RAW and JPEG photos, applies Lightroom Classic Auto on the current process version with the default profile, and exports XMP sidecars and full-size sRGB JPEGs.",
+        "Run the rig with consent, fit auto-tone/2, and present the fitted results on the corpus and the owner's photos with held-out figures. Report where the fit reproduces Lightroom's known weaknesses (near-constant Vibrance, over-lifted shadows) so the owner can keep a different target.",
+        "Adopt the owner-accepted targets as auto-tone/2 with updated solver tests and documentation; no recipe, preset or catalog format changes."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Auto tone design",
+          "target": "docs/design/auto-tone.md",
+          "relevance": "Tuning contract and decided T4"
+        },
+        {
+          "kind": "file",
+          "label": "Decisions",
+          "target": "docs/decisions.md",
+          "relevance": "Where the owner's accepted targets are recorded"
+        }
+      ],
+      "acceptance_criteria": [
+        "auto-tone/2 reduces the held-out statistic difference against Lightroom's Auto relative to auto-tone/1, with figures recorded.",
+        "The owner's review and any retained differences are recorded in the design and decisions.",
+        "Solver tests and quick verification pass with the new targets."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run the rig on the owner's export with consent; review results with the owner.",
+          "Update targets, tests and documentation."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core auto_tone",
+          "tools/cargo-cached xtask verify --tier quick --output artifacts/auto-tone-fit-quick"
+        ],
+        "expected_results": [
+          "Fitted, owner-reviewed targets are adopted with passing tests and recorded figures."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-003",
+        "TASK-007"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-004",
+        "TASK-005"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-006"
+      ]
+    },
+    {
+      "wave": 5,
+      "task_ids": [
+        "TASK-008"
+      ]
+    }
+  ]
+}

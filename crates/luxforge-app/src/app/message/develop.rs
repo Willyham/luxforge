@@ -20,7 +20,10 @@ pub(crate) enum DevelopMessage {
         result: Result<Box<(DevelopPlan, CatalogFolders)>, String>,
     },
     /// The name typed into an event's new-folder field.
-    Name { event: usize, text: String },
+    Name {
+        event: usize,
+        text: String,
+    },
     /// Open an event's Or add to an existing folder menu, or close the one open.
     Menu(Option<usize>),
     /// An existing folder chosen for an event.
@@ -43,6 +46,11 @@ pub(crate) enum DevelopMessage {
     },
     /// A view's photographs were read into the set numbered `serial`, with where the photograph it
     /// was opened on is among them.
+    /// The last viewed catalog folder read in an independent browse session.
+    FolderSetRead {
+        serial: u64,
+        result: Result<(Vec<SetPhoto>, usize), String>,
+    },
     SetRead {
         serial: u64,
         result: Result<(Vec<SetPhoto>, usize), String>,
@@ -51,6 +59,17 @@ pub(crate) enum DevelopMessage {
     Step(isize),
     /// A press on the filmstrip's cell of the set's photograph at this index.
     Show(usize),
+    Select {
+        index: usize,
+        command: bool,
+        shift: bool,
+    },
+    SelectAll,
+    SelectOnly,
+    CellMenu {
+        index: usize,
+        at: iced::Point,
+    },
     /// `Cmd+Option+F`: collapse or expand the filmstrip.
     Collapse,
     /// The large previews Develop decodes ahead: a batch of `preview.read` answers.

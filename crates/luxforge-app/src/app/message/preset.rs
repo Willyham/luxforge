@@ -21,6 +21,8 @@ pub(crate) enum PresetMessage {
     Check { label: String, checked: bool },
     /// Capture the checked groups from the displayed entry and store them as a new preset.
     Create,
+    /// Recompute Auto for every photo the preset is applied to.
+    AutoTone(bool),
     /// Close the create form and forget what was typed.
     Cancel,
     /// `preset.capture`, `preset.create` and the listing after them answered.

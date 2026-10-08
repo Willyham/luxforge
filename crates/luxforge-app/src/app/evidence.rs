@@ -471,6 +471,7 @@ enum GeneratedKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Settle {
     QueryChoice,
+    Analysis,
     /// The crop layer's truncated preview must reach the GPU under the open frame, and a Reapply's
     /// rebase must have answered.
     Draft,
@@ -553,6 +554,7 @@ impl Settle {
     fn name(self) -> &'static str {
         match self {
             Self::QueryChoice => "query_choice",
+            Self::Analysis => "analysis",
             Self::Draft => "draft",
             Self::Session => "session",
             Self::Preview => "preview",
@@ -687,6 +689,9 @@ impl Editor {
         // change of drawing path wakes the desktop, whose next update derives the label again.
         let label_current = self.workspace.status.gpu_us == self.gpu_frame_us();
         let surfaces = self.surfaces();
+        if surfaces.comparison_waiting {
+            return false;
+        }
         let compare_ready = surfaces.comparison.is_none_or(|(after, _)| {
             // Compare's After side: the retained GPU picture once drawn — its picture at
             // rest in tiles, else its view plan's frame once evaluated — or the retained frame.
@@ -968,6 +973,9 @@ impl Editor {
                 // The screenshot reads back the frame drawn last, so it waits for a frame built
                 // after every update so far; the next frame tick tries again.
                 if !evidence.capture_pending
+                    // The command can finish and present its preview before the independent
+                    // explanation query answers. RequestEnded must not bypass that wait.
+                    || evidence.awaiting == Some(Settle::Analysis)
                     || evidence.saving
                     || !evidence.sync.current()
                     || evidence.sync.cursor.waiting()
@@ -1296,6 +1304,7 @@ impl Editor {
                 interval_ms,
             } => self.canvas_hover_sweep_step(points, interval_ms),
             Step::Preset(pick) => self.preset_step(pick),
+            Step::CopySettings(step) => self.copy_settings_step(step),
             Step::PresetCreate(step) => self.preset_create_step(step),
             Step::PresetDelete(pick) => self.preset_delete_step(pick),
             Step::PresetImport { path } => self.preset_import_step(path),
@@ -2798,6 +2807,10 @@ impl Editor {
         if waiting
             && self.slider_gesture().is_none()
             && !self.busy
+            && !self.view_state.copy_settings.pending
+            && self.sync.poll.idle()
+            && self.select.state.catalog.running().is_none()
+            && (!self.select_shown() || self.catalog_quiet())
             && self.controls.pending_reset.is_none()
             && !self.presentation.queue.is_busy()
             && self.presentation.presented_generation == self.presentation.preview_generation
@@ -2931,6 +2944,23 @@ impl Editor {
         Task::batch(tasks)
     }
 
+    /// An explanation completion wakes only the evidence step waiting for this action.
+    pub(super) fn analysis_explained(&mut self, action: &str, failure: Option<&str>) {
+        let waiting = self.evidence.as_ref().is_some_and(|evidence| {
+            evidence.awaiting == Some(Settle::Analysis)
+                && evidence
+                    .current
+                    .as_ref()
+                    .is_some_and(|step| step["request"]["controls"]["action"] == action)
+        });
+        if waiting {
+            if let Some(reason) = failure {
+                self.refuse_step(reason);
+            }
+            self.settle_step(Settle::Analysis, "analysis_explained");
+        }
+    }
+
     /// Generated controls publish fractions and typed values, then use the same bounded draft
     /// driver as ordinary pointer input. The `slider` step is the same path, scripted in values.
     fn controls_step(&mut self, step: ControlsStep) -> Task<Message> {
@@ -2938,6 +2968,34 @@ impl Editor {
             return self.fail_step("no photograph is open");
         }
         match step {
+            ControlsStep::Action { action, background } => {
+                self.begin_request();
+                let task = self.update(Message::Action(ActionMessage::Run {
+                    action,
+                    preset: Map::new(),
+                }));
+                if background || !self.busy {
+                    self.capture_next_frame();
+                }
+                task
+            }
+            ControlsStep::AnalysisReady { action } => {
+                let valid = self.controls.ui.analysis_reports.get(&action).is_some_and(
+                    |(asset, entry, _)| {
+                        self.document
+                            .state
+                            .as_ref()
+                            .is_some_and(|state| &state.asset.id == asset)
+                            && self.document.display_entry.as_ref() == Some(entry)
+                    },
+                );
+                if valid {
+                    self.capture_next_frame();
+                } else {
+                    self.await_step(Settle::Analysis);
+                }
+                Task::none()
+            }
             ControlsStep::QueryChoiceSearch { action, text } => {
                 self.query_choice_evidence_input(ControlMessage::QueryChoiceSearch { action, text })
             }
@@ -4137,12 +4195,81 @@ impl Editor {
     /// One key pressed with no text field focused, through the same key table the keyboard
     /// reaches: a letter the table binds to a canvas mode waits for the session to follow, as the
     /// strip and the palette do; any other bound key captures the next frame.
+    fn copy_settings_step(&mut self, step: luxforge_evidence::CopySettingsStep) -> Task<Message> {
+        use crate::app::message::{
+            copy_settings::CopySettingsMessage as C, develop::DevelopMessage as D,
+        };
+        use iced::keyboard::{
+            Event as E, Key, Location, Modifiers,
+            key::{NativeCode, Physical},
+        };
+        use luxforge_evidence::CopySettingsStep as S;
+        let shortcut = match &step {
+            S::Copy => Some(("c", Modifiers::COMMAND)),
+            S::Chooser => Some(("c", Modifiers::COMMAND | Modifiers::SHIFT)),
+            S::Paste => Some(("v", Modifiers::COMMAND)),
+            S::Previous => Some(("v", Modifiers::COMMAND | Modifiers::ALT)),
+            S::SelectAll => Some(("a", Modifiers::COMMAND)),
+            _ => None,
+        };
+        let message = if let Some((key, modifiers)) = shortcut {
+            let key = Key::Character(key.into());
+            Message::Key(
+                iced::Event::Keyboard(E::KeyPressed {
+                    key: key.clone(),
+                    modified_key: key,
+                    physical_key: Physical::Unidentified(NativeCode::Unidentified),
+                    location: Location::Standard,
+                    modifiers,
+                    text: None,
+                    repeat: false,
+                }),
+                iced::event::Status::Ignored,
+            )
+        } else {
+            match step {
+                S::Check { group, checked } => Message::CopySettings(C::Check {
+                    label: group,
+                    checked,
+                }),
+                S::None => Message::CopySettings(C::CheckMany {
+                    module: None,
+                    edited: false,
+                    checked: false,
+                }),
+                S::Chosen => Message::CopySettings(C::Chosen),
+                S::Confirm => Message::CopySettings(C::Confirm),
+                S::Cancel => Message::CopySettings(C::Cancel),
+                S::Cell {
+                    index,
+                    command,
+                    shift,
+                } => Message::Develop(D::Select {
+                    index,
+                    command,
+                    shift,
+                }),
+                S::Report => Message::Select(crate::app::message::select::SelectMessage::Catalog(
+                    crate::app::message::select_catalog::CatalogMessage::Act(
+                        crate::state::select_catalog::CatalogAction::Report(true),
+                    ),
+                )),
+                _ => unreachable!(),
+            }
+        };
+        self.await_step(Settle::Quiet);
+        self.dispatch(message)
+    }
+
     fn key_step(&mut self, key: String) -> Task<Message> {
         use iced::keyboard::{
             Event as KeyEvent, Key, Location, Modifiers,
             key::{Named, NativeCode, Physical},
         };
-        let pressed = if key == luxforge_evidence::KEY_ESCAPE {
+        let command = key == "Command+U";
+        let pressed = if command {
+            Key::Character("u".into())
+        } else if key == luxforge_evidence::KEY_ESCAPE {
             Key::Named(Named::Escape)
         } else {
             Key::Character(key.to_lowercase().into())
@@ -4152,13 +4279,25 @@ impl Editor {
             modified_key: pressed,
             physical_key: Physical::Unidentified(NativeCode::Unidentified),
             location: Location::Standard,
-            modifiers: Modifiers::empty(),
+            modifiers: if command {
+                Modifiers::COMMAND
+            } else {
+                Modifiers::empty()
+            },
             text: None,
             repeat: false,
         });
         let status = iced::event::Status::Ignored;
         match crate::app::keymap::keymap(&event, status, &self.key_context()) {
             None => self.fail_step(format!("the key {key} does nothing here")),
+            Some(Message::Action(_)) => {
+                self.begin_request();
+                let task = self.dispatch(Message::Key(event, status));
+                if !self.busy {
+                    self.capture_next_frame();
+                }
+                task
+            }
             // A per-client view setting goes through `workspace.set`: the step is the session the
             // owner answers, not the next frame, which a picture at rest the GPU presents at once
             // can draw before that answer arrives.
@@ -4179,7 +4318,9 @@ impl Editor {
             // wait for and is captured with its reason.
             Some(Message::Select(_)) => {
                 let task = self.dispatch(Message::Key(event, status));
-                if self.select_shown() {
+                if self.develop.state.folder_loading {
+                    self.await_develop();
+                } else if self.select_shown() {
                     self.await_step(Settle::Select);
                 } else {
                     self.capture_next_frame();
@@ -4260,6 +4401,7 @@ impl Editor {
             PaletteAction::TogglePerformance => self.arm_performance_settle(),
             PaletteAction::Settings(_) => self.arm_settings_settle(),
             PaletteAction::Theme(id) => self.arm_theme_settle(id),
+            PaletteAction::CopySettings(_) => self.await_step(Settle::Quiet),
             // A reveal is local view state, unless it has to show the tools panel first.
             PaletteAction::Reveal(_) if !self.session.workspace.tools_panel => {
                 self.await_step(Settle::Session)
@@ -4611,6 +4753,7 @@ impl Editor {
             let checked = step.groups.contains(&label);
             tasks.push(self.update(Message::Preset(PresetMessage::Check { label, checked })));
         }
+        tasks.push(self.update(Message::Preset(PresetMessage::AutoTone(step.auto_tone))));
         if !step.submit {
             self.capture_next_frame();
             return Task::batch(tasks);

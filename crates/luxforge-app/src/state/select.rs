@@ -2033,7 +2033,16 @@ fn folder_rows(
             ..SourceRow::plain(
                 SourceIcon::Folder,
                 folder.name.clone(),
-                Some(SourcePress::Read(ReadSource::Folder(folder.path.clone()))),
+                Some(
+                    if luxforge_core::catalog_types::disk::broad_folder(
+                        &folder.path,
+                        state.home.as_deref(),
+                    ) {
+                        SourcePress::Toggle(folder.path.clone())
+                    } else {
+                        SourcePress::Read(ReadSource::Folder(folder.path.clone()))
+                    },
+                ),
             )
         });
         if open {

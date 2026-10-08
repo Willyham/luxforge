@@ -1,3 +1,5 @@
+mod auto_tone_fit;
+mod auto_tone_smoke;
 mod basic_acceptance;
 mod basic_smoke;
 mod capabilities_smoke;
@@ -8,6 +10,7 @@ mod catalog_probes;
 #[path = "../../crates/luxforge-core/tests/modules/conformance/mod.rs"]
 mod conformance;
 mod controls_smoke;
+mod copy_settings_smoke;
 mod crop_smoke;
 mod curve_acceptance;
 mod curve_smoke;
@@ -171,6 +174,7 @@ fn main_result() -> Result {
     let op = args.next().unwrap_or_else(|| "help".into());
     let mut a = Args(args.collect());
     match op.to_str().ok_or("Invalid command")? {
+        "auto-tone-fit" => auto_tone_fit::run(&mut a)?,
         "develop" => {
             let debug = a.flag("--debug");
             let background = a.flag("--background");
@@ -179,17 +183,23 @@ fn main_result() -> Result {
                     cfg!(target_os = "macos"),
                     "develop --background is currently supported only on macOS",
                 )?;
-                cargo(&root, "build", !debug)?;
-                let mut bin = binary(&root)?;
-                if debug {
-                    bin = bin
-                        .parent()
-                        .unwrap()
-                        .parent()
-                        .unwrap()
-                        .join("debug")
-                        .join(bin.file_name().unwrap());
-                }
+                let supplied = a.value("--binary")?.map(PathBuf::from);
+                let bin = if let Some(bin) = supplied {
+                    absolute(&root, &bin)
+                } else {
+                    cargo(&root, "build", !debug)?;
+                    let mut bin = binary(&root)?;
+                    if debug {
+                        bin = bin
+                            .parent()
+                            .unwrap()
+                            .parent()
+                            .unwrap()
+                            .join("debug")
+                            .join(bin.file_name().unwrap());
+                    }
+                    bin
+                };
                 let launch = launch::Background::new(&bin)?;
                 ensure(
                     Command::new(&launch.executable)

@@ -121,9 +121,16 @@ pub(crate) struct PresetChoice {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum BatchKind {
     /// `batch.apply-preset` of the library preset named so.
-    Preset { name: String },
+    Preset {
+        name: String,
+    },
+    Paste {
+        source: String,
+    },
     /// `batch.export` into the folder.
-    Export { folder: PathBuf },
+    Export {
+        folder: PathBuf,
+    },
 }
 
 /// How a batch ended, as its `job.read` record says.
@@ -169,6 +176,9 @@ impl BatchRun {
                         format!("Applied {name} to {}", photographs(done))
                     }
                     BatchKind::Preset { name } => format!("Applied {name} to no photographs"),
+                    BatchKind::Paste { source } => {
+                        format!("Pasted settings from {source} to {}", photographs(done))
+                    }
                     BatchKind::Export { folder } if done > 0 => format!(
                         "Exported {} to {}",
                         photographs(done),
@@ -193,12 +203,18 @@ impl BatchRun {
             (BatchEnd::Cancelled, BatchKind::Preset { name }) => {
                 format!("Cancelled applying {name}: the photographs it reached keep their entries")
             }
+            (BatchEnd::Cancelled, BatchKind::Paste { .. }) => {
+                "Cancelled pasting: finished photographs keep their entries".into()
+            }
             (BatchEnd::Cancelled, BatchKind::Export { folder }) => format!(
                 "Cancelled exporting: the files it wrote stay in {}",
                 super::long_work::place(&folder.to_string_lossy(), home)
             ),
             (BatchEnd::Failed(reason), BatchKind::Preset { name }) => {
                 format!("Applying {name} failed: {reason}")
+            }
+            (BatchEnd::Failed(reason), BatchKind::Paste { .. }) => {
+                format!("Pasting failed: {reason}")
             }
             (BatchEnd::Failed(reason), BatchKind::Export { .. }) => {
                 format!("Exporting failed: {reason}")
@@ -210,6 +226,7 @@ impl BatchRun {
     pub(crate) fn running(&self) -> String {
         let doing = match &self.kind {
             BatchKind::Preset { name } => format!("Applying {name}"),
+            BatchKind::Paste { .. } => "Pasting settings".into(),
             BatchKind::Export { .. } => "Exporting".to_owned(),
         };
         match &self.progress {
@@ -1250,7 +1267,7 @@ fn report_of(catalog: &CatalogState) -> Option<(&BatchRun, &BatchReport)> {
 }
 
 /// The sheet over the centre: the confirmation asked for, or the report opened.
-fn sheet(state: &SelectState, selection: &SelectionModel) -> Option<CatalogSheet> {
+pub(crate) fn sheet(state: &SelectState, selection: &SelectionModel) -> Option<CatalogSheet> {
     let catalog = &state.catalog;
     match catalog.confirm {
         Some(Confirm::Remove { count }) => {
@@ -1359,6 +1376,11 @@ fn sheet(state: &SelectState, selection: &SelectionModel) -> Option<CatalogSheet
             "Each photograph got its own history entry, which its history in Develop undoes. \
              Every one left out is listed with why."
                 .to_owned(),
+        ),
+        BatchKind::Paste { source } => (
+            SheetKind::Preset,
+            format!("Pasted settings from {source}"),
+            "Each photograph has its own history entry; undo in that photograph’s history.".into(),
         ),
         BatchKind::Export { folder } => {
             let written: Vec<(String, String)> = report
@@ -2350,7 +2372,7 @@ fn positions(selection: &SelectionModel) -> impl Iterator<Item = u32> + '_ {
 }
 
 /// The selected rows, when the desktop holds every one; `None` otherwise.
-fn selected_rows<'a>(
+pub(crate) fn selected_rows<'a>(
     state: &'a SelectState,
     selection: &SelectionModel,
 ) -> Option<Vec<&'a ViewRow>> {

@@ -34,10 +34,15 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 | --- | --- | --- | --- |
 | [Lightroom import](../tasks/lightroom/lightroom-import.json) ([design](design/lightroom-import.md)) | TASK-001 confirm the catalog format against a copy of the owner's catalog | Needs no code; needs the owner's catalog copy | High tier |
 | [Lightroom alignment](../tasks/lightroom/lightroom-alignment.json) ([design](design/lightroom-alignment.md)) | TASK-001 the rig's generator and synthetic targets | Its rounds need the owner to import and export in Lightroom | High tier |
-| [Live-session Rust CLI](../tasks/project/live-cli.json) ([design](design/live-cli.md)) | TASK-001 shared catalog targeting and authenticated session client | The command contract and defaults are decided; implementation awaits owner authorization | High tier |
+| [HDR exposure merges](../tasks/library/hdr-merge.json) ([design](design/hdr-merge.md)) | TASK-001 durable chunked derived sources; TASK-002 RAW exposure resolution/fusion; TASK-003 alignment/deghosting | RAW-only scope and automatic alignment/deghosting are decided; independent foundations, working feature before final quality/timing; implementation awaits authorization | High tier |
+| [Export settings](../tasks/rendering/export-settings.json) ([design](design/export-settings.md)) | TASK-001 settings, presets and API; TASK-002 JPEG options and limit search; TASK-003 WebP and TIFF encoders; TASK-004 resized and 16-bit output | Formats, direct-writing sheet, sharpening after the core and uncapped optimisation with a large-image warning and progress bar chosen; other defaults recorded in the design. Planning only; implementation awaits authorization | High tier |
 | [High-zoom minimap](../tasks/interface/minimap.json) ([design](design/minimap.md)) | TASK-001 shared viewport projection; TASK-002 bounded overview rendering | Inclusive 200% threshold and click/drag navigation chosen; layout remains a proposed default. Planning only; implementation awaits authorization | High tier |
 
 ### In progress
+
+[Auto tone](../tasks/editing/auto-tone.json) is implemented, with owner M4/corpus qualification outstanding: bounded sampling, the solver, API, desktop controls, presets and the local fitting rig. The owner's Lightroom exports and review come after delivery.
+
+[Copy and paste settings](../tasks/interface/copy-settings.json): implemented with quick and native M2 / Metal verification; TASK-006 final rendered qualification remains in progress. Its project-wide GPU corpus gate needs the owner’s private RAW manifest, unavailable in this environment.
 
 Continue these rather than starting them again: [GPU-first rendering](../tasks/rendering/gpu-first.json) TASK-008, portability without a native GPU: prior hosted Linux no-adapter checks pass, but lavapipe stops at `large24` before the required histogram and `gpu-preview` scenarios; the current run fails earlier in the indexed-folder watcher test. TASK-010, 011 and 012 record delivery and wait on it. [RAW looks](../tasks/raw/raw-looks.json) TASK-005 remains in progress: supplied-file journeys pass, but the rendered tier with the owner manifest and the Neutral Amount control remain outstanding. The [Efficiency](../tasks/rendering/efficiency.json) `dist` profile is blocked by the owner's deferral, and the [product decisions](../tasks/project/product-decisions.json) are the owner's to make.
 
@@ -72,7 +77,13 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 ## Output
 
 **JPEG export follow-ups.** JPEG export is delivered ([design](design/export.md)).
-- Presets, resizing, output sharpening and other formats, each only by its own decision; resize, 16-bit and wide-gamut features declare and qualify their GPU-versus-reference tolerance when designed (owner, 2026-10-07)
+- **Export settings** ([design](design/export-settings.md), [tasks](../tasks/rendering/export-settings.json)) are planned:
+  - an Export sheet with Web, Print and Master presets and the person's own
+  - JPEG, lossy WebP and 8/16-bit TIFF, with resizing, optimised encoding, file-size limits and metadata levels
+  - output sharpening as a second delivery
+
+  The resized, 16-bit and sharpened tolerances are declared in the design. Settings, encoders and render paths can start independently before integration and the desktop. The request authorizes planning only.
+- Wide-gamut output still needs its own decision and tolerance (owner, 2026-10-07)
 
 ## Library
 
@@ -83,7 +94,7 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 - Native Linux and Windows runs of the folder and volume watchers
 - In the desktop: dragging photographs onto a catalog folder, moving collections between groups, changing a smart collection's query, previews in Missing originals' rows, and Locate original… in export's refusal
 - Background availability checks, and a browse filter for a missing value
-- Later: merging brackets to HDR and stitching panoramas as a merge source kind (not selected)
+- **HDR exposure merges** are [planned](design/hdr-merge.md): Import merged creates a saved catalog result and collapsed source stack; Pick merged also appends to the development set by default; originals stay individually pickable and removal/undo retains the result and edits. RAW-only inputs and automatic alignment/deghosting are decided; implementation is not authorized. Panorama stitching remains later and has no plan; the derived-source/merge-kind/stack boundary leaves room for it
 - Catalog portability and backup, carrying each catalog's derived-artifact directory with it (decision pending)
 
 ## RAW
@@ -128,7 +139,6 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 - Owner review of the recorded defaults
 - An Amount slider and a hover preview
 - Calibrated RAW white balance preset import in the Lightroom alignment RAW white-balance round; the existing conversion matches white chromaticity, not a measured rendered response
-- Copy and Paste Settings over the same composite action
 
 **Lightroom import** (decided 2026-10-06, planned, not authorized; [design](design/lightroom-import.md), [plan](../tasks/lightroom/lightroom-import.json)). Bring a Lightroom Classic catalog or a folder of XMP sidecars across, read-only.
 - Phase 1: the photographs worked on, catalog folders by event, collections, ratings and labels as collections, virtual copies and snapshots as versions, global settings, crop, orientation, lens and the look, the report and re-mapping, Lightroom's previews as first grid tiles only; no import undo, with the current catalog removal rule
@@ -145,9 +155,13 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 - The range selections have no photographic corpus: every figure in the [range study](design/range-study.md) is over flat synthetic patches
 - Density, edge-aware refinement, copying masks between photographs and mask presets are out of scope with their reasons recorded; model-based selections are the [AI editing](design/ai-editing.md) proposal's Select
 
+**Auto tone** ([design](design/auto-tone.md), [tasks](../tasks/editing/auto-tone.json)). Implemented: an Auto button and `edit.auto-tone` that set Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Vibrance and Saturation on the global Basic layer as one entry, from deterministic statistics and clipping searches over a bounded sample of the stage Basic receives, solved through Basic and the Look. Presets can carry Auto, recomputed per photo, and the Lightroom importer maps `AutoTone`. The local fitting rig is ready; the owner M4/corpus qualification and fit to Lightroom's Auto on the owner's photos remain open. Implementation authorized on 2026-10-08.
+
 **Tuning delivered tools.** Refine the recorded defaults of Presence, the colour mixer and the vignette (decision pending).
 
 ## Interface
+
+**Copy and paste settings** ([design](design/copy-settings.md), [tasks](../tasks/interface/copy-settings.json)). Implemented with quick and native M2 / Metal verification; final corpus qualification remains open. Copy chosen adjustment groups from one photograph into a per-window clipboard and paste them onto the open photograph, a Develop filmstrip selection (new multi-selection) or a Select selection, or from the previous photograph, one history entry per photograph through a new `paste-settings` action and `batch.paste-settings` method. Geometry, masks, Sync and a system clipboard document remain later work.
 
 **High-zoom minimap** ([design](design/minimap.md), [tasks](../tasks/interface/minimap.json)). Planned for Develop at percentage zoom ≥200: whole-image overview, visible-region rectangle and owner-chosen click/drag navigation through the existing `view.set` path. Shared geometry and bounded overview rendering can proceed independently before UI integration; final native qualification and photo-sized measurements follow working delivery. The request authorizes planning only.
 
@@ -157,7 +171,7 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 
 ## Programmability
 
-**Live-session Rust CLI** ([design](design/live-cli.md), [tasks](../tasks/project/live-cli.json)). A thin `luxforge-ctl` client attaches to the authenticated loopback session for the already-open catalog and exposes state, schemas, generic calls and same-connection job waiting. The shared catalog resolver follows the desktop's stored/default rules; revisioned calls use a schema-driven `--asset` helper. It does not start another catalog owner or infer the asset from the desktop's selection. The contract is specified; implementation awaits owner authorization.
+**Live-session CLI** ([design](design/live-cli.md)) is implemented: `luxforge-ctl` drives the catalog the desktop has open through its live session ([feature status](features.md), [user guide](user-guide.md#the-live-session-command-line)). Operation-specific aliases wait until real use shows a need for one.
 
 **MCP adapter.** Expose the whole operation registry to agents through a standards-compliant MCP server over the existing command service.
 

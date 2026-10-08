@@ -75,6 +75,16 @@ impl Editor {
             PresetMessage::Check { label, checked } => {
                 self.presets.form.checked.insert(label, checked);
             }
+            PresetMessage::AutoTone(enabled) => {
+                self.presets.form.auto_tone = enabled;
+                if enabled {
+                    for group in presettable_groups(&self.modules, self.developer) {
+                        if group.auto_overwrites() {
+                            self.presets.form.checked.insert(group.label, false);
+                        }
+                    }
+                }
+            }
             PresetMessage::Cancel => self.presets.form = PresetForm::default(),
             PresetMessage::Create => {
                 if self.presets.library.pending {

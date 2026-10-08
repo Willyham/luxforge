@@ -582,6 +582,8 @@ pub enum ActionStyle {
     Default,
     Primary,
     Icon,
+    /// A compact action in its enclosing group's header, including while collapsed.
+    GroupHeader,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -771,7 +773,18 @@ pub struct ActionDescriptor {
     /// Whether this action may be captured or applied by the preset service.
     #[serde(default = "preset_default", skip_serializing_if = "preset_enabled")]
     pub preset: bool,
+    /// A global analysis step: its query explains the result and its field sets name what it
+    /// overwrites absolutely. Presets use this declaration to refuse overlapping field patches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub analysis: Option<AnalysisAction>,
     pub parameters: Vec<ParameterDescriptor>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AnalysisAction {
+    pub query: String,
+    pub writes: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 fn preset_default() -> bool {
@@ -791,6 +804,7 @@ impl ActionDescriptor {
             notes: notes.into(),
             patch: false,
             preset: true,
+            analysis: None,
             parameters: Vec::new(),
         }
     }

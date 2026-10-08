@@ -27,6 +27,8 @@
 mod actions;
 #[cfg(test)]
 mod actions_tests;
+#[cfg(test)]
+mod auto_tone_measure;
 pub(crate) mod capabilities;
 #[cfg(test)]
 mod capabilities_tests;
@@ -90,6 +92,7 @@ mod gpu_white_balance_tests;
 #[cfg(test)]
 mod gpu_window_tests;
 // The shared lowering from core semantic plans to executable display and tile-worker plans.
+pub(crate) mod copy_settings;
 mod decoded_handles;
 pub(crate) mod gpu_plan;
 pub(crate) mod gpu_settle;
@@ -939,9 +942,50 @@ impl Editor {
         // whenever a message arrives, and nothing polls it.
         self.activity.render_bar =
             state::canvas::render_bar(self.presentation.queue.progress(), self.activity.render_bar);
+        if self.select.state.shown == state::select::Shown::Develop {
+            let source = self
+                .document
+                .state
+                .as_ref()
+                .filter(|state| {
+                    self.view_state
+                        .copy_settings
+                        .shown
+                        .as_ref()
+                        .is_none_or(|shown| shown.asset != state.asset.id)
+                })
+                .map(|state| state::copy_settings::Source {
+                    asset: state.asset.id.clone(),
+                    entry: None,
+                    name: state
+                        .asset
+                        .locator
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .into_owned(),
+                });
+            self.view_state.copy_settings.observe(source);
+        }
         let mut workspace = std::mem::take(&mut self.workspace);
         let inputs = self.inputs();
         workspace.derive(&inputs);
+        workspace.copy_settings = self.copy_model();
+        for entry in &mut workspace.palette.entries {
+            if let state::palette::PaletteAction::CopySettings(kind) = entry.action {
+                entry.refusal = match kind {
+                    0 | 1 => workspace.copy_settings.copy_refusal.clone(),
+                    2 => workspace.copy_settings.paste_refusal.clone(),
+                    _ => workspace.copy_settings.previous_refusal.clone(),
+                };
+                if kind == 2 && workspace.copy_settings.targets > 1 {
+                    entry.label = format!(
+                        "Paste settings to {} photographs",
+                        workspace.copy_settings.targets
+                    );
+                }
+            }
+        }
         for job in &mut workspace.performance.jobs {
             job.cancelling = job
                 .job_id
@@ -1065,6 +1109,7 @@ impl Editor {
             Message::Mask(message) => self.mask_message(message),
             Message::Draft(message) => self.draft_message(message),
             Message::Preset(message) => self.preset_update(message),
+            Message::CopySettings(message) => self.copy_settings_update(message),
             Message::Capability(message) => self.capability_update(message),
             Message::Performance(message) => self.performance_update(message),
             Message::Visibility(message) => self.visibility_update(message),
@@ -1111,9 +1156,10 @@ impl Editor {
                 .compare_after
                 .as_ref()
                 .zip(self.session.preview.comparison.as_ref())
-                .filter(|_| {
+                .filter(|(after, _)| {
                     !self.document.compare_hold
-                        && self.presentation.presented_entry == self.document.original_entry
+                        && (after.gpu_only
+                            || self.presentation.presented_entry == self.document.original_entry)
                 })
                 .map(|(after, comparison)| {
                     let fit = matches!(self.session.preview.view.zoom, luxforge_core::Zoom::Fit);
@@ -1121,9 +1167,14 @@ impl Editor {
                 }),
             mask_draft: self.drawn_mask().map(|mask| &mask.shape),
             mask_map: self.drawn_mask().and_then(|mask| mask.map.as_ref()),
+            mask_handles: self.session.workspace.mask_handles,
             draft: self.crop(),
             ..self.presentation.surfaces(self.overlays.request.as_ref())
         };
+        if self.mask_adjustment_held() {
+            surfaces.coverage = None;
+            surfaces.region_coverage = None;
+        }
         if self.presentation.compare_after.is_some() {
             surfaces.clipping = None;
             surfaces.coverage = None;
@@ -1162,9 +1213,42 @@ impl Editor {
         surfaces.gpu_counts = self.gpu_counts_handed();
         let (after, after_rest) = self.gpu_compare_after();
         surfaces.compare_gpu = after.map(|(plan, _)| plan);
+        surfaces.compare_source = self.gpu_compare_source();
         surfaces.compare_change = after.map(|(_, change)| change);
         surfaces.compare_rest = after_rest;
         surfaces.dissolve = self.gpu_settle.dissolve();
+        if self
+            .presentation
+            .compare_after
+            .as_ref()
+            .is_some_and(|after| after.gpu_only)
+            && surfaces.comparison.is_some()
+        {
+            let drawn = luxforge_ui::surface_diagnostics(view::canvas::COMPARE_SURFACE);
+            let ready = after_rest.map_or_else(
+                || {
+                    after.is_some_and(|(plan, _)| {
+                        drawn.drawn_gpu_boundary == Some(plan.boundary.version())
+                    })
+                },
+                |rest| {
+                    drawn.drawn_rest == Some(rest.version) && drawn.drawn_rest_dissolve.is_none()
+                },
+            );
+            surfaces.comparison_waiting =
+                !ready || self.presentation.presented_entry != self.document.original_entry;
+            if surfaces.comparison_waiting {
+                // Warm the comparison surface behind the edited picture already on screen.
+                // Neither an earlier CPU frame nor an unfinished Before replaces that picture.
+                surfaces.gpu = surfaces.compare_gpu;
+                surfaces.gpu_change = surfaces.compare_change;
+                surfaces.gpu_source = surfaces.compare_source;
+                surfaces.gpu_rest = surfaces.compare_rest;
+                surfaces.gpu_counts = None;
+                surfaces.gpu_hold = false;
+                surfaces.gpu_tag = None;
+            }
+        }
         surfaces
     }
 
@@ -1280,6 +1364,17 @@ impl Editor {
             loupe_open: self.loupe_open(),
             develop_confirm: self.develop.state.confirm.is_some(),
             development_set: self.develop.state.set.is_some(),
+            copy_settings_modal: if self.view_state.copy_settings.confirm.is_some() {
+                2
+            } else if self.view_state.copy_settings.chooser.is_some() {
+                1
+            } else if self.view_state.copy_settings.cell_menu.is_some()
+                || self.select.state.catalog.report
+            {
+                3
+            } else {
+                0
+            },
         }
     }
 

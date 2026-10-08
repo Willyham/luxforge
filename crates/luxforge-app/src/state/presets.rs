@@ -77,6 +77,7 @@ pub(crate) struct PresetForm {
     pub(crate) group: String,
     /// The checkboxes the person changed, by label. Every other one keeps its derived default.
     pub(crate) checked: BTreeMap<String, bool>,
+    pub(crate) auto_tone: bool,
     /// The last create's refusal, shown in the form until the next attempt.
     pub(crate) error: Option<String>,
 }
@@ -88,6 +89,7 @@ impl Default for PresetForm {
             name: String::new(),
             group: USER_PRESET_GROUP.into(),
             checked: BTreeMap::new(),
+            auto_tone: false,
             error: None,
         }
     }
@@ -96,6 +98,9 @@ impl Default for PresetForm {
 impl PresetForm {
     /// Whether this group's checkbox is on: the person's choice, else the group's default.
     pub(crate) fn is_checked(&self, group: &PresettableGroup) -> bool {
+        if self.auto_tone && group.auto_overwrites() {
+            return false;
+        }
         self.checked
             .get(&group.label)
             .copied()
@@ -117,6 +122,15 @@ pub(crate) struct PresettableGroup {
 }
 
 impl PresettableGroup {
+    pub(crate) fn auto_overwrites(&self) -> bool {
+        self.fields.iter().any(|(action, fields)| {
+            action == "set-basic"
+                && fields
+                    .iter()
+                    .any(|field| luxforge_core::auto_tone::FIELDS.contains(&field.as_str()))
+        })
+    }
+
     fn add(&mut self, action: &str, parameter: &str) {
         match self.fields.iter_mut().find(|(named, _)| named == action) {
             Some((_, parameters)) => {
@@ -139,10 +153,26 @@ pub(crate) fn presettable_groups(
     modules: &[ModuleDescriptor],
     developer: bool,
 ) -> Vec<PresettableGroup> {
+    declared_groups(modules, developer, false)
+}
+
+/// Copy shows unavailable groups with their refusal instead of silently omitting them.
+pub(crate) fn copyable_groups(
+    modules: &[ModuleDescriptor],
+    developer: bool,
+) -> Vec<PresettableGroup> {
+    declared_groups(modules, developer, true)
+}
+
+fn declared_groups(
+    modules: &[ModuleDescriptor],
+    developer: bool,
+    unavailable: bool,
+) -> Vec<PresettableGroup> {
     let mut groups = Vec::new();
     for module in modules
         .iter()
-        .filter(|module| module.is_available())
+        .filter(|module| unavailable || module.is_available())
         .filter(|module| developer || !module.developer)
     {
         let entries = collect(modules, module);
@@ -287,7 +317,7 @@ pub(crate) fn capture_fields(groups: &[PresettableGroup], form: &PresetForm) -> 
             }
         }
     }
-    merged
+    let mut fields: Map<String, Value> = merged
         .fields
         .into_iter()
         .map(|(action, parameters)| {
@@ -296,7 +326,11 @@ pub(crate) fn capture_fields(groups: &[PresettableGroup], form: &PresetForm) -> 
                 Value::Array(parameters.into_iter().map(Value::from).collect()),
             )
         })
-        .collect()
+        .collect();
+    if form.auto_tone {
+        fields.insert("auto-tone".into(), Value::Bool(true));
+    }
+    fields
 }
 
 /// The module that declares the `presets` control and the action that control submits.
@@ -392,6 +426,7 @@ pub(crate) struct PresetGroupModel {
 /// One create-form checkbox.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PresetCheck {
+    pub(crate) enabled: bool,
     pub(crate) label: String,
     pub(crate) checked: bool,
     /// The parameters this checkbox captures, per action.
@@ -400,6 +435,7 @@ pub(crate) struct PresetCheck {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct PresetFormModel {
+    pub(crate) auto_tone: bool,
     pub(crate) enabled: bool,
     pub(crate) open: bool,
     pub(crate) name: String,
@@ -454,6 +490,8 @@ impl PresetsModel {
                 "enabled": row.enabled,
             })).collect::<Vec<_>>(),
             "form": {
+                "auto_tone": self.form.auto_tone,
+                "disabled": self.form.checks.iter().filter(|check| !check.enabled).map(|check| &check.label).collect::<Vec<_>>(),
                 "enabled": self.form.enabled,
                 "open": self.form.open,
                 "name": self.form.name,
@@ -517,6 +555,7 @@ pub(crate) fn presets_model(
     let checks: Vec<PresetCheck> = presettable_groups(inputs.modules, inputs.developer)
         .into_iter()
         .map(|group| PresetCheck {
+            enabled: !form.auto_tone || !group.auto_overwrites(),
             checked: form.is_checked(&group),
             label: group.label,
             fields: group.fields,
@@ -529,7 +568,7 @@ pub(crate) fn presets_model(
         && !library.pending
         && !form.name.trim().is_empty()
         && !form.group.trim().is_empty()
-        && checks.iter().any(|check| check.checked);
+        && (form.auto_tone || checks.iter().any(|check| check.checked));
     PresetsModel {
         action: action.to_owned(),
         empty: library.presets.as_ref().is_some_and(Vec::is_empty),
@@ -537,6 +576,7 @@ pub(crate) fn presets_model(
         error: library.error.clone(),
         groups,
         form: PresetFormModel {
+            auto_tone: form.auto_tone,
             enabled: can_manage,
             open: form.open,
             name: form.name.clone(),

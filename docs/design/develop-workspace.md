@@ -48,12 +48,15 @@ At the reference size (1440 × 900 logical points on the M4 MacBook Pro) the scr
 
 The mode strip holds the pointer, the host's Mask mode, one entry per registered module whose canvas declaration takes the photograph over (crop today) and the view overlays (thirds). Each entry is an icon with a tooltip naming it and its letter ("Crop (R)"): a module names its mode's icon in its canvas declaration, crop declares `crop`, and a mode that names none shows its title instead. It floats over the canvas so it stays next to the photograph when the panels are hidden. A pick mode is not a canvas takeover and is not listed here: a module that declares a `point-pick` or `sample-apply` canvas declares a `picker` control too, and that button lives in the module's own panel beside the controls the pick fills.
 
+Copy settings… and Paste sit together before Undo in the title bar. The [settings clipboard](copy-settings.md) also has palette entries and `⌘C`, `⇧⌘C`, `⌘V`, `⌥⌘V` shortcuts; text fields keep those keys. Filmstrip multi-selection targets a confirmed batch paste.
+
 ## Tool array
 
 Where each tool lives, what kind of thing it is and whether it exists. Kinds: **module** sections render from descriptors in registry order; **mode** entries come from a module's canvas declaration, and a takeover mode is also a mode-strip entry while a pick mode is reached from its module's own `picker` control; **view** and **core** items are host features that need no module.
 
 | Tool | Where | Kind | Status | Programmable through |
 | --- | --- | --- | --- | --- |
+| Copy settings, Copy settings…, Paste settings, Paste from previous | Title bar, keyboard, palette, filmstrip menu | core | Implemented | `preset.capture`, `edit.paste-settings`, `batch.paste-settings` |
 | Fit, 100%, zoom stops, typed zoom, pan | Title bar, Space-drag | view | Implemented | `view.set` |
 | Before/After slider (tap `\`), Original hold (`\`; Shift uncropped) | Title bar, keyboard, palette | view | Implemented | `preview.compare` enters, moves and exits the slider; the hold uses `preview.select` with `keep_geometry` and restores the previous selection; refused while a draft or edit request is open |
 | Histogram, clipping triangles and overlays | Top of tools panel, `J` | core inspector | Implemented | `analysis.request` / `job.read`, `workspace.set` `clip_shadows` and `clip_highlights` |
