@@ -1733,6 +1733,32 @@ fn two_gpu_exports_are_byte_identical() {
     eprintln!("{test}: {} bytes, the same three times", file.len());
 }
 
+/// A module query that reads pixels names the renderer that drew them, as `render.sample` and
+/// `mask.sample-input` do: the neutral picker's patch and Auto tone's grid, each read by the GPU
+/// tile worker the owner serves its reads through.
+#[test]
+fn pixel_reading_queries_name_the_gpu_that_drew_them() {
+    let test = "pixel_reading_queries_name_the_gpu_that_drew_them";
+    let Some(adapter) = host_adapter(test) else {
+        return;
+    };
+    let exports = Exports::new("queries", exporter(&adapter), &generated(900, 600));
+    // The generated photograph's flat grey patch, which the picker can neutralise.
+    for (query, mut params) in [
+        ("query.neutral-sample", json!({"x": 75, "y": 500})),
+        ("query.auto-tone", json!({})),
+    ] {
+        params["asset_id"] = json!(exports.asset);
+        let (answer, _) = owner_call(&exports.owner, exports.client, query, params)
+            .unwrap_or_else(|error| panic!("{query}: {error}"));
+        assert_eq!(
+            answer["renderer"],
+            json!({"record": "gpu", "reason": null}),
+            "{query}: {answer}"
+        );
+    }
+}
+
 /// No export changes the original: GPU exports with and without metadata, the reference export,
 /// and an export to a name already taken, which is refused and replaces nothing. The original's
 /// folder holds nothing new but the exports.
@@ -2325,5 +2351,87 @@ fn auto_tone_gpu_grid_and_values_agree_with_the_reference() {
                 );
             }
         }
+    }
+}
+
+/// A trivial export's whole time, GPU against reference, through the owner's export lane as the
+/// desktop starts it: `export.jpeg` to its job's end, read through `job.wait`, with the moment
+/// encoding began. Alternating, after one discarded export of each; the generated 24 and 60 MP
+/// fixtures with Basic exposure +0.3.
+#[test]
+#[ignore = "release export timing on a quiet host; needs cargo xtask generate-fixtures"]
+fn trivial_export_timing_gpu_against_reference() {
+    use std::time::Instant;
+    let adapter = host_adapter("trivial_export_timing_gpu_against_reference").expect("an adapter");
+    let samples: usize = std::env::var("LUXFORGE_EXPORT_SAMPLES")
+        .ok()
+        .and_then(|samples| samples.parse().ok())
+        .unwrap_or(7);
+    let fixtures =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/generated");
+    for name in ["24mp", "60mp"] {
+        let photograph = image::open(fixtures.join(format!("{name}.jpg")))
+            .expect("cargo xtask generate-fixtures")
+            .to_rgb8();
+        let worker = Arc::new(GpuTiles::new(Some(adapter.clone()), false));
+        let exports = Exports::new(&format!("timing-{name}"), Arc::clone(&worker), &photograph);
+        exports.edit("edit.set-basic", json!({"exposure": 0.3}));
+        let time = |file: &str, reference: bool| -> (f64, f64) {
+            let mut params = json!({
+                "asset_id": exports.asset, "destination": exports.dir.join(file),
+                "mutation": {"request_id": format!("export-{file}"), "actor": "test"},
+            });
+            if reference {
+                params["reference"] = json!(true);
+            }
+            let started = Instant::now();
+            let (queued, _) = owner_call(&exports.owner, exports.client, "export.jpeg", params)
+                .expect("an export");
+            let job = queued["job_id"].clone();
+            let (mut after, mut encoding) = (None, None);
+            loop {
+                let mut wait = json!({"job_id": job, "timeout_ms": 10_000});
+                if let Some(after) = &after {
+                    wait["after"] = json!(after);
+                }
+                let (read, _) =
+                    owner_call(&exports.owner, exports.client, "job.wait", wait).expect("the job");
+                let job = &read["job"];
+                if encoding.is_none() && job["progress"]["message"] == "encoding" {
+                    encoding = Some(started.elapsed().as_secs_f64() * 1000.0);
+                }
+                match job["status"].as_str() {
+                    Some("queued" | "running") => after = Some(read["change"].clone()),
+                    status => {
+                        assert_eq!(status, Some("ready"), "{read}");
+                        let total = started.elapsed().as_secs_f64() * 1000.0;
+                        return (total, encoding.unwrap_or(f64::NAN));
+                    }
+                }
+            }
+        };
+        let _ = (
+            time("warm-gpu.jpg", false),
+            time("warm-reference.jpg", true),
+        );
+        let (mut gpu, mut reference) = (Vec::new(), Vec::new());
+        for sample in 0..samples {
+            gpu.push(time(&format!("gpu-{sample}.jpg"), false));
+            reference.push(time(&format!("reference-{sample}.jpg"), true));
+        }
+        let times = |rows: &[(f64, f64)], pick: fn(&(f64, f64)) -> f64| {
+            luxforge_testbase::Distribution::of(rows.iter().map(pick))
+        };
+        println!(
+            "TRIVIAL_EXPORT {}",
+            json!({
+                "source": name, "samples": samples,
+                "gpu_ms": times(&gpu, |row| row.0).map(|times| times.p50),
+                "reference_ms": times(&reference, |row| row.0).map(|times| times.p50),
+                "gpu_encoding_at_ms": times(&gpu, |row| row.1).map(|times| times.p50),
+                "reference_encoding_at_ms": times(&reference, |row| row.1).map(|times| times.p50),
+                "gpu": gpu, "reference": reference, "figures": worker.figures().record(),
+            })
+        );
     }
 }

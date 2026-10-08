@@ -120,7 +120,8 @@ impl Scenario {
     /// Whether `verify --tier rendered` runs it: everything a checkout can open.
     pub fn rendered(&self) -> bool {
         !matches!(self.source, Source::Supplied { .. })
-            && (self.name != visibility::SCENARIO || cfg!(target_os = "macos"))
+            && (![visibility::SCENARIO, histogram::HIDDEN_SCENARIO].contains(&self.name)
+                || cfg!(target_os = "macos"))
     }
 
     /// Whether `--source` may replace what it opens.
@@ -643,6 +644,21 @@ pub static SCENARIOS: &[Scenario] = &[
         source: Source::Fixtures(&[ORIENTATION_1]),
         window: Some(PANELLED),
         note: None,
+        own: None,
+    },
+    Scenario {
+        name: histogram::HIDDEN_SCENARIO,
+        about: "A commit while the window is minimised or hidden, then analysis.request, correlated by entry",
+        launches: &[LaunchSpec {
+            plan: histogram::hidden_plan,
+            ..APP
+        }],
+        verify: histogram::verify_hidden,
+        source: Source::Fixtures(&[ORIENTATION_1]),
+        window: Some(PANELLED),
+        note: Some(
+            "Actual AppKit minimise and hide transitions on a transparent background-only window; no foreground activation. Native visibility qualification is macOS-only.",
+        ),
         own: None,
     },
     Scenario {
