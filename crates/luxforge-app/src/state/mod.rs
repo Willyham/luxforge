@@ -9,6 +9,7 @@ pub(crate) mod develop;
 pub(crate) mod document;
 pub(crate) mod fields;
 pub(crate) mod histogram;
+pub(crate) mod host_commands;
 pub(crate) mod information;
 pub(crate) mod long_work;
 pub(crate) mod loupe;
