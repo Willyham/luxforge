@@ -340,6 +340,7 @@ mod tests {
             )],
             variants: variants.iter().map(|action| (*action).to_owned()).collect(),
             default_checked: true,
+            auto_overwritten: false,
         }
     }
 
