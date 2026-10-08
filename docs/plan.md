@@ -42,7 +42,7 @@ Ready tasks in validated plans whose implementation the owner has not authorized
 
 ### In progress
 
-[Copy and paste settings](../tasks/interface/copy-settings.json): implementation complete; TASK-006 native verification and documentation are in progress.
+[Copy and paste settings](../tasks/interface/copy-settings.json): implemented with quick and native M2 / Metal verification; TASK-006 final rendered qualification remains in progress. Its project-wide GPU corpus gate needs the owner’s private RAW manifest, unavailable in this environment.
 
 Continue these rather than starting them again: [GPU-first rendering](../tasks/rendering/gpu-first.json) TASK-008, portability without a native GPU: prior hosted Linux no-adapter checks pass, but lavapipe stops at `large24` before the required histogram and `gpu-preview` scenarios; the current run fails earlier in the indexed-folder watcher test. TASK-010, 011 and 012 record delivery and wait on it. [RAW looks](../tasks/raw/raw-looks.json) TASK-005 remains in progress: supplied-file journeys pass, but the rendered tier with the owner manifest and the Neutral Amount control remain outstanding. The [Efficiency](../tasks/rendering/efficiency.json) `dist` profile is blocked by the owner's deferral, and the [product decisions](../tasks/project/product-decisions.json) are the owner's to make.
 
@@ -161,7 +161,7 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 
 ## Interface
 
-**Copy and paste settings** ([design](design/copy-settings.md), [tasks](../tasks/interface/copy-settings.json)). Implemented; verification in progress: copy chosen adjustment groups from one photograph into a per-window clipboard and paste them onto the open photograph, a Develop filmstrip selection (new multi-selection) or a Select selection, or from the previous photograph, one history entry per photograph through a new `paste-settings` action and `batch.paste-settings` method. Geometry, masks, Sync and a system clipboard document remain later work.
+**Copy and paste settings** ([design](design/copy-settings.md), [tasks](../tasks/interface/copy-settings.json)). Implemented with quick and native M2 / Metal verification; final corpus qualification remains open. Copy chosen adjustment groups from one photograph into a per-window clipboard and paste them onto the open photograph, a Develop filmstrip selection (new multi-selection) or a Select selection, or from the previous photograph, one history entry per photograph through a new `paste-settings` action and `batch.paste-settings` method. Geometry, masks, Sync and a system clipboard document remain later work.
 
 **High-zoom minimap** ([design](design/minimap.md), [tasks](../tasks/interface/minimap.json)). Planned for Develop at percentage zoom ≥200: whole-image overview, visible-region rectangle and owner-chosen click/drag navigation through the existing `view.set` path. Shared geometry and bounded overview rendering can proceed independently before UI integration; final native qualification and photo-sized measurements follow working delivery. The request authorizes planning only.
 
