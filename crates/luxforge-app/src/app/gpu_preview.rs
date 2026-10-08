@@ -641,7 +641,8 @@ pub(crate) fn evaluation_record(figures: &luxforge_gpu::EvaluationFigures) -> Va
         "lights_encoded": figures.lights_encoded, "lights_restored": figures.lights_restored,
         "window_texels": figures.window_texels, "link_texels": figures.link_texels,
         "incremental": figures.incremental, "whole": figures.whole,
-        "reached_texels": figures.reached_texels})
+        "reached_texels": figures.reached_texels, "refilled": figures.refilled,
+        "spatial_texels": figures.spatial_texels})
 }
 
 /// What a picture at rest's tiles did, as evidence records it beside its timing: their

@@ -1447,7 +1447,10 @@ instant on the run's clock, its path, and its draft and revision or the generati
 picture; a GPU frame's `evaluation` says what the evaluation in the frame that first drew it did
 (`refits`, `rebinds`, `links_run`, `spatial_passes`, `lights_encoded`, `lights_restored`,
 `window_texels`, `link_texels`, and `incremental` or `whole` with `reached_texels`, the texels the
-links that ran reached, the window's for a whole evaluation), which a slow tick is attributed by. Neither is display scanout: the figures are an upper bound on the editor's own work and a
+links that ran reached, the window's for a whole evaluation; `spatial_texels`, the texels its
+spatial passes wrote, where `spatial_passes` counts a pass dispatched over nothing too; and
+`refilled`, the links that ran every pass over the whole window on an incremental evaluation, a
+mask grown past where their planes were written), which a slow tick is attributed by. Neither is display scanout: the figures are an upper bound on the editor's own work and a
 lower bound on what an eye sees. `input_to_presented_frame` pools both paths, which
 `gpu_input_to_presented_frame` and `cpu_input_to_presented_frame` split; `input_to_drawn_frame`
 times both to the surface's first draw; `gpu_tick_to_drawn_frame` runs from the GPU tick's update to that draw.
@@ -1457,8 +1460,8 @@ drained input with its path, reason, draft, revision or generation, its two figu
 frame captured after its step showed: a GPU input's capture must show the GPU path at its own
 revision, or the run fails. `paths` counts the inputs by path and the CPU ticks by reason, beside
 the whole run's ticks by path, and `compile_queue_before_gesture` the GPU stage's programs handed
-and compiled before the first input. `--warm MS` (drag mode, up to 10 s) waits that long after the
-preconditions, so a committed stack's programs finish compiling off the interface thread as they
+and compiled before the first input. `--warm MS` (drag and paint modes, up to 10 s) waits that long after the
+preconditions and a paint run's zoom, so a committed stack's programs finish compiling off the interface thread as they
 would before a person's next drag; without it the first ticks over a Presence or Detail layer can
 take the CPU path as `compiling`. The measured window is
 invisible, so nothing in these runs is composited or scanned out at all; the figures cover the
