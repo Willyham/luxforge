@@ -144,14 +144,6 @@ pub(crate) fn settings_groups(modules: &[ModuleDescriptor], developer: bool) -> 
     )
 }
 
-/// The group a label names, as a script or a person reads it (`Basic · Tone`).
-pub(crate) fn group_titled<'a>(
-    groups: &'a SettingsGroups,
-    title: &str,
-) -> Option<&'a SettingsGroup> {
-    groups.groups.iter().find(|group| group.title == title)
-}
-
 /// The module that declares the `presets` control and the action that control submits.
 pub(crate) fn presets_control(modules: &[ModuleDescriptor]) -> Option<(&ModuleDescriptor, &str)> {
     modules.iter().find_map(|module| {
@@ -512,10 +504,7 @@ mod tests {
             ],
             "RAW, transforms, crop and the pixel proof declare no field patch; Perspective's patch is not presettable"
         );
-        assert_eq!(
-            group_titled(&ordinary, "Basic \u{00b7} Tone").map(|group| group.id.as_str()),
-            Some("luxforge.basic/tone")
-        );
+        assert_eq!(ordinary.groups[1].id, "luxforge.basic/tone");
     }
 
     #[test]

@@ -513,7 +513,7 @@ fn skipped_on(
             }
         }
     }
-    (skipped > 0).then(|| KindSkip {
+    (skipped > 0).then_some(KindSkip {
         kind: target,
         all: skipped == total,
         reasons,
