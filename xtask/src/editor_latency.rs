@@ -67,6 +67,7 @@ const DRAGGED_X: f32 = 0.5;
 pub enum Control {
     Slider,
     Curve,
+    Wheel,
 }
 
 impl Control {
@@ -74,6 +75,7 @@ impl Control {
         match self {
             Self::Slider => "slider",
             Self::Curve => "curve",
+            Self::Wheel => "wheel",
         }
     }
 }
@@ -106,6 +108,8 @@ struct FieldTarget {
     origin: f64,
     /// `Some` for a curve target: whose curve it is.
     curve: Option<CurveOwner>,
+    /// The hue/saturation control resolved from the module descriptor.
+    wheel: Option<luxforge_core::WheelControl>,
 }
 
 impl FieldTarget {
@@ -121,6 +125,7 @@ impl FieldTarget {
             step: 0.01,
             origin: 0.0,
             curve: None,
+            wheel: None,
         }
     }
 
@@ -135,6 +140,7 @@ impl FieldTarget {
             step: 0.0,
             origin: 0.0,
             curve: Some(CurveOwner::Proof),
+            wheel: None,
         }
     }
 
@@ -205,6 +211,7 @@ impl FieldTarget {
             step: 0.0,
             origin: 0.0,
             curve: Some(CurveOwner::Module(module.id.clone())),
+            wheel: None,
         })
     }
 
@@ -268,7 +275,35 @@ impl FieldTarget {
             step,
             origin,
             curve: None,
+            wheel: None,
         })
+    }
+
+    fn lookup_wheel(action: &str, hue: &str) -> Result<Self> {
+        let registry = ModuleRegistry::builtin();
+        let (module, _) = registry
+            .action(action)
+            .ok_or_else(|| format!("No module declares the action {action}"))?;
+        fn find(
+            controls: &[luxforge_core::Control],
+            action: &str,
+            hue: &str,
+        ) -> Option<luxforge_core::WheelControl> {
+            controls.iter().find_map(|control| match control {
+                luxforge_core::Control::Group(group) => find(&group.controls, action, hue),
+                luxforge_core::Control::Wheel(wheel)
+                    if wheel.action == action && wheel.hue == hue =>
+                {
+                    Some(wheel.clone())
+                }
+                _ => None,
+            })
+        }
+        let wheel = find(&module.descriptor().controls, action, hue)
+            .ok_or_else(|| format!("Action {action} declares no wheel keyed by {hue}"))?;
+        let mut field = Self::lookup(action, hue)?;
+        field.wheel = Some(wheel);
+        Ok(field)
     }
 
     /// `count` distinct, non-zero, ascending multiples of a spacing derived from the parameter's
@@ -321,6 +356,10 @@ fn resolve_field(
         (Control::Slider, None, None) => Ok(FieldTarget::basic_exposure()),
         (Control::Curve, None, None) => Ok(FieldTarget::proof_curve()),
         (Control::Slider, Some(action), Some(parameter)) => FieldTarget::lookup(action, parameter),
+        (Control::Wheel, None, None) => FieldTarget::lookup_wheel("set-mixer", "grade-shadows-hue"),
+        (Control::Wheel, Some(action), Some(parameter)) => {
+            FieldTarget::lookup_wheel(action, parameter)
+        }
         (Control::Curve, Some(action), Some(parameter)) => {
             FieldTarget::lookup_curve(action, parameter)
         }
@@ -715,7 +754,7 @@ impl Input {
 /// answer at all still fails the run.
 fn event_value(value: &Value, control: Control) -> Option<f64> {
     match control {
-        Control::Slider => value.as_f64(),
+        Control::Slider | Control::Wheel => value.as_f64(),
         Control::Curve => value.get(1)?.get(1)?.as_f64(),
     }
 }
@@ -735,6 +774,14 @@ fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec
                     pending.is_none(),
                     "Two slider_draft_set events without an answer between them",
                 )?;
+                if let Some(wheel) = &field.wheel {
+                    ensure(
+                        event["detail"]["fields"][&wheel.saturation]
+                            .as_f64()
+                            .is_some_and(|saturation| (0.0..=100.0).contains(&saturation)),
+                        "A wheel draft.set carried no saturation alongside its hue",
+                    )?;
+                }
                 pending = Some((value, elapsed(event)?));
                 reason = None;
             }
@@ -899,6 +946,29 @@ fn drawn_frames(events: &[Value]) -> Result<Vec<(f64, &Value)>> {
 /// Point 1 of the target's curve — the proof curve's middle point, or the seeded mid-tone point of
 /// a module's curve — dragged through `points`, each a height the widget publishes in single
 /// precision, through the target's own action and parameter.
+/// Each wheel position changes both fields. Integer hue/radius steps round-trip through
+/// the shipped widget geometry and its descriptor's numeric snapping.
+fn wheel_position(hue: f64) -> [f32; 2] {
+    let angle = hue.to_radians();
+    let radius = (20.0 + hue / 3.0) / 100.0;
+    [
+        (radius * angle.cos()) as f32,
+        (-radius * angle.sin()) as f32,
+    ]
+}
+
+fn wheel_step(field: &FieldTarget, values: &[f64], finish: SliderEnd) -> script::Step {
+    script::Step::Controls(script::ControlsStep::Wheel {
+        action: field.action.clone(),
+        hue: field.parameter.clone(),
+        positions: values.iter().map(|hue| wheel_position(*hue)).collect(),
+        shift: false,
+        command: false,
+        option: false,
+        finish,
+    })
+}
+
 fn curve_step(field: &FieldTarget, points: Vec<f64>, finish: SliderEnd) -> script::Step {
     script::Step::Curve(CurveStep {
         action: field.action.clone(),
@@ -922,6 +992,17 @@ fn gesture_steps(values: &[f64], control: Control, field: &FieldTarget) -> Vec<s
                 return curve_step(
                     field,
                     vec![*value],
+                    if release {
+                        SliderEnd::Release
+                    } else {
+                        SliderEnd::Open
+                    },
+                );
+            }
+            if control == Control::Wheel {
+                return wheel_step(
+                    field,
+                    &[*value],
                     if release {
                         SliderEnd::Release
                     } else {
@@ -955,6 +1036,13 @@ fn burst_step(values: &[f64], control: Control, field: &FieldTarget) -> script::
             SliderEnd::Release,
         );
     }
+    if control == Control::Wheel {
+        return wheel_step(
+            field,
+            &values.iter().rev().copied().collect::<Vec<_>>(),
+            SliderEnd::Release,
+        );
+    }
     let reflected: Vec<f64> = values
         .iter()
         .map(|value| field.min + field.max - value)
@@ -974,6 +1062,7 @@ fn commit_steps(values: &[f64], control: Control, field: &FieldTarget) -> Vec<sc
         .iter()
         .map(|value| match control {
             Control::Curve => curve_step(field, vec![*value], SliderEnd::Release),
+            Control::Wheel => wheel_step(field, &[*value], SliderEnd::Release),
             _ => script::Step::Slider(
                 SliderStep::new(&field.action, &field.parameter, [*value]).release(),
             ),
@@ -1600,6 +1689,39 @@ fn setup_steps(options: &Options, field: &FieldTarget, source: SourceTag) -> Vec
         steps.push(seed_step(field, options.mask));
     }
     steps.extend(curve_view_steps(field, source, options.mask));
+    if let Some(wheel) = &field.wheel {
+        let registry = ModuleRegistry::builtin();
+        if let Some((provider, _)) = registry.action(&field.action) {
+            let module = provider.descriptor();
+            steps.extend(
+                registry
+                    .descriptors()
+                    .into_iter()
+                    .take_while(|descriptor| descriptor.id != module.id)
+                    .filter(|descriptor| lists_section(descriptor, source, options.mask))
+                    .map(|descriptor| script::Step::section(&descriptor.id, false)),
+            );
+            steps.push(script::Step::section(&module.id, true));
+            steps.push(script::Step::Tab(script::TabStep {
+                module: module.id.clone(),
+                group: Vec::new(),
+                index: 1,
+            }));
+            let views = module
+                .views_at(&["Grading"])
+                .expect("the grading wheel's views");
+            let index = views
+                .iter()
+                .position(|view| *view == wheel.label)
+                .expect("the wheel's individual view");
+            steps.push(script::Step::Tab(script::TabStep {
+                module: module.id.clone(),
+                group: vec!["Grading".into()],
+                index,
+            }));
+            steps.push(script::Step::tools_scroll(0.0));
+        }
+    }
     steps
 }
 
@@ -2958,7 +3080,7 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
     )?;
     ensure(
         options.control == Control::Slider || matches!(options.mode, Mode::Drag | Mode::Commit),
-        "--control curve measures a drag or a commit; pass --mode drag or --mode commit",
+        "--control curve or wheel measures a drag or a commit; pass --mode drag or --mode commit",
     )?;
     ensure(
         (options.masks == 1 && !options.mask_presence) || options.mode == Mode::Paint,
@@ -3151,6 +3273,34 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         }
     }
 
+    if let Some(wheel) = &field.wheel {
+        let setup = frames
+            .get(setup_steps(options, field, kind).len())
+            .ok_or("No wheel setup frame")?;
+        ensure(
+            setup["state"]["control_ui"]["wheels"]
+                .as_array()
+                .is_some_and(|wheels| {
+                    wheels
+                        .iter()
+                        .any(|drawn| drawn["hue_parameter"] == wheel.hue && drawn["large"] == true)
+                }),
+            "The measured wheel was not visible in its individual view before timing",
+        )?;
+        let patches: Vec<_> = events
+            .iter()
+            .filter(|event| event["event"] == "slider_draft_set")
+            .map(|event| &event["detail"]["fields"])
+            .collect();
+        for (patch, hue) in patches.iter().zip(&values) {
+            let expected = (20.0 + hue / 3.0) * 10.0;
+            ensure(
+                patch[&wheel.hue].as_f64() == Some(*hue)
+                    && patch[&wheel.saturation].as_f64() == Some(expected.round() / 10.0),
+                "The wheel did not send both scripted hue and saturation values in one patch",
+            )?;
+        }
+    }
     let measured = inputs(&events, options.control, field)?;
     ensure(
         measured.len() >= values.len(),
@@ -3495,6 +3645,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
                 Some(CurveOwner::Module(module)) => format!("{module} {action} {parameter}: point {DRAGGED_POINT} of the curve seeded with {MID_TONE_SEED:?}, a mid-tone point, is dragged through draft.begin/set/commit while the curve canvas is visible; every drafted frame runs the curve's colour unit."),
                 _ => "Developer proof curve: identity colour operation. Draft/preview scheduling and GPU upload are timed while the curve canvas is visible; the curve does not alter photo pixels.".to_owned(),
             },
+            (Control::Wheel, action, parameter) => format!("{action} {parameter}: both hue and saturation are drafted together through the wheel's geometry, with the wheel visible."),
             (Control::Slider, SET_BASIC, EXPOSURE) => "Basic exposure: the photograph's colour pass is measured with the generated slider.".to_owned(),
             (Control::Slider, "set-raw", parameter) => format!("{} {parameter}: the slider is measured through draft.begin/set/commit exactly as Basic exposure is. Each drafted value is drawn on the GPU from the planes developed at the committed white balance, the drafted one approximated over them by one matrix (approximate_white_balance frames, whose counts are never adopted); each release commits and redevelops the mosaic before its picture at rest and histogram.", field.action),
             (Control::Slider, action, parameter) => format!("{action} {parameter}: the slider is measured through draft.begin/set/commit exactly as Basic exposure is."),
@@ -3581,6 +3732,22 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         let _ = fs::remove_dir_all(&contention);
     }
     result["zoom_percent"] = json!(options.zoom);
+    if let Some(wheel) = &field.wheel {
+        result["wheel"] = serde_json::to_value(wheel)?;
+        result["wheel_draft_patches"] = json!(
+            events
+                .iter()
+                .filter(|event| event["event"] == "slider_draft_set")
+                .map(|event| event["detail"]["fields"].clone())
+                .collect::<Vec<_>>()
+        );
+        result["queue"]["scripted_wheel_positions"] = json!(
+            values
+                .iter()
+                .map(|hue| wheel_position(*hue))
+                .collect::<Vec<_>>()
+        );
+    }
     report_geometry(&mut result, options);
     stamp(&mut result, &header);
     write_json(&out.join("latency.json"), &result)?;
@@ -4391,6 +4558,7 @@ mod tests {
             step: 1.0,
             origin: 0.0,
             curve: None,
+            wheel: None,
         };
         for crop in [None, Some(8.0)] {
             for mask in [false, true] {
@@ -4909,6 +5077,38 @@ mod tests {
     /// `--control curve --action set-curve --parameter luminance` resolves the Tone curve's
     /// registered field: its own action and parameter, owned by `luxforge.curve`, over the curve's
     /// `0..=1` coordinates, and the launch is an ordinary one.
+    #[test]
+    fn wheel_measurement_resolves_two_fields_and_draws_the_individual_view() {
+        let field = resolve_field(Control::Wheel, None, None).unwrap();
+        let wheel = field.wheel.as_ref().unwrap();
+        assert_eq!(wheel.hue, "grade-shadows-hue");
+        assert_eq!(wheel.saturation, "grade-shadows-saturation");
+        assert!(resolve_field(Control::Wheel, Some("set-mixer"), Some("red-hue")).is_err());
+        assert!(resolve_field(Control::Wheel, Some("set-mixer"), None).is_err());
+        let values = gesture_values(31, Control::Wheel, &field);
+        let steps = gesture_steps(&values, Control::Wheel, &field);
+        let encoded = script::write(&steps);
+        script::parse(&encoded.to_string()).unwrap();
+        assert_eq!(steps.len(), 31);
+        for (step, value) in steps.iter().zip(&values) {
+            let script::Step::Controls(script::ControlsStep::Wheel { positions, .. }) = step else {
+                panic!("not a wheel");
+            };
+            assert_eq!(positions, &[wheel_position(*value)]);
+        }
+        let events = vec![
+            json!({"event":"slider_draft_set","elapsed_ms":10.0,"detail":{"fields":{"grade-shadows-hue":3.0,"grade-shadows-saturation":21.0}}}),
+            json!({"event":"gpu_preview_tick","elapsed_ms":11.0,"detail":{"path":"gpu","draft_id":"d","draft_revision":1}}),
+        ];
+        assert_eq!(inputs(&events, Control::Wheel, &field).unwrap().len(), 1);
+        let mut wrong = events.clone();
+        wrong[0]["detail"]["fields"]
+            .as_object_mut()
+            .unwrap()
+            .remove(&wheel.saturation);
+        assert!(inputs(&wrong, Control::Wheel, &field).is_err());
+    }
+
     #[test]
     fn a_curve_action_and_parameter_resolve_a_module_curve() {
         let field = tone_curve();
@@ -6111,6 +6311,7 @@ mod tests {
             step: 1.0,
             origin: 0.0,
             curve: None,
+            wheel: None,
         };
         let values = field.gesture_values(31);
         assert_eq!(values.len(), 31);

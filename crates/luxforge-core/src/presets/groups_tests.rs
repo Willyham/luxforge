@@ -362,7 +362,13 @@ fn grading_views_capture_all_four_wheels_once_and_keep_hsl_separate() {
     assert_eq!(hsl.fields["set-mixer"].len(), 24);
     assert_eq!(grading.fields["set-mixer"].len(), 14);
     let fields = &grading.fields["set-mixer"];
-    assert_eq!(fields.iter().collect::<std::collections::BTreeSet<_>>().len(), 14);
+    assert_eq!(
+        fields
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        14
+    );
     for band in ["shadows", "midtones", "highlights", "global"] {
         for channel in ["hue", "saturation", "luminance"] {
             assert!(fields.contains(&format!("grade-{band}-{channel}")));
