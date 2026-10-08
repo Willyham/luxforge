@@ -124,45 +124,10 @@ impl ModuleRegistry {
         })
     }
 
-    /// Every field a control variant supersedes, derived from the variants and never listed by
-    /// name: when a number control of action `A` and parameter `P` has a variant for kind `K`, `P`
-    /// of `A` is superseded on the global target of a `K` photo, and the variant's own field is its
-    /// one path there. The host's refusal, admission and `schema.list` all read this. `O(controls)`.
+    /// Every field a control variant supersedes ([`superseded_in`]) over this registry's modules.
+    /// The host's refusal, admission and `schema.list` all read this. `O(controls)`.
     pub(crate) fn superseded(&self) -> Vec<Superseded<'_>> {
-        let mut found = Vec::new();
-        for owner in self.descriptors() {
-            walk(&owner.controls, &mut |control| {
-                let Control::Number(NumberControl {
-                    action,
-                    parameter,
-                    label,
-                    variants,
-                    ..
-                }) = control
-                else {
-                    return;
-                };
-                for variant in variants {
-                    if let Some(Control::Number(NumberControl {
-                        action: by_action,
-                        parameter: by_parameter,
-                        ..
-                    })) = variant.control.as_deref()
-                    {
-                        found.push(Superseded {
-                            source: variant.source,
-                            action,
-                            parameter,
-                            label,
-                            module: &variant.module,
-                            by_action,
-                            by_parameter,
-                        });
-                    }
-                }
-            });
-        }
-        found
+        superseded_in(&self.descriptors())
     }
 
     /// The supersession of parameter `parameter` of action `action` on a photo of `kind`, if any.
@@ -182,24 +147,7 @@ impl ModuleRegistry {
     /// control's label, the variant module's hint (its title without one), and the variant's action,
     /// parameter and declared unit.
     pub(crate) fn superseded_refusal(&self, field: &Superseded<'_>) -> String {
-        let module = self.module(field.module).map(|module| module.descriptor());
-        let owner = module
-            .map(|module| module.hint.as_deref().unwrap_or(&module.title))
-            .unwrap_or(field.module)
-            .to_lowercase();
-        let unit = module
-            .and_then(|module| module.action(field.by_action))
-            .and_then(|action| action.parameter(field.by_parameter))
-            .and_then(|parameter| parameter.unit.as_deref())
-            .map(|unit| format!(" ({unit})"))
-            .unwrap_or_default();
-        format!(
-            "on a {} photo, {} is the {owner}'s: {} {}{unit}",
-            field.source.label(),
-            field.label,
-            field.by_action,
-            field.by_parameter
-        )
+        superseded_refusal_in(&self.descriptors(), field)
     }
 
     /// The refusal of a superseded field, of kind `error`: [`Self::superseded_refusal`]'s message,
@@ -212,4 +160,78 @@ impl ModuleRegistry {
             "by": field.by(),
         }))
     }
+}
+
+/// Every field a control variant supersedes among `descriptors`, derived from the variants and
+/// never listed by name: when a number control of action `A` and parameter `P` has a variant for
+/// kind `K`, `P` of `A` is superseded on the global target of a `K` photo, and the variant's own
+/// field is its one path there. Over descriptors rather than a registry, so the settings groups
+/// a client derives from `module.list` read the same rule (`crate::settings_groups`).
+/// `O(controls)`.
+pub(crate) fn superseded_in<'r>(descriptors: &[&'r ModuleDescriptor]) -> Vec<Superseded<'r>> {
+    let mut found = Vec::new();
+    for owner in descriptors {
+        walk(&owner.controls, &mut |control| {
+            let Control::Number(NumberControl {
+                action,
+                parameter,
+                label,
+                variants,
+                ..
+            }) = control
+            else {
+                return;
+            };
+            for variant in variants {
+                if let Some(Control::Number(NumberControl {
+                    action: by_action,
+                    parameter: by_parameter,
+                    ..
+                })) = variant.control.as_deref()
+                {
+                    found.push(Superseded {
+                        source: variant.source,
+                        action,
+                        parameter,
+                        label,
+                        module: &variant.module,
+                        by_action,
+                        by_parameter,
+                    });
+                }
+            }
+        });
+    }
+    found
+}
+
+/// What a superseded field is refused with, worded from the declarations: `on a RAW photo,
+/// Temperature is the source development's: set-raw temperature (K)` — the kind, the base
+/// control's label, the variant module's hint (its title without one), and the variant's action,
+/// parameter and declared unit.
+pub(crate) fn superseded_refusal_in(
+    descriptors: &[&ModuleDescriptor],
+    field: &Superseded<'_>,
+) -> String {
+    let module = descriptors
+        .iter()
+        .copied()
+        .find(|module| module.id == field.module);
+    let owner = module
+        .map(|module| module.hint.as_deref().unwrap_or(&module.title))
+        .unwrap_or(field.module)
+        .to_lowercase();
+    let unit = module
+        .and_then(|module| module.action(field.by_action))
+        .and_then(|action| action.parameter(field.by_parameter))
+        .and_then(|parameter| parameter.unit.as_deref())
+        .map(|unit| format!(" ({unit})"))
+        .unwrap_or_default();
+    format!(
+        "on a {} photo, {} is the {owner}'s: {} {}{unit}",
+        field.source.label(),
+        field.label,
+        field.by_action,
+        field.by_parameter
+    )
 }

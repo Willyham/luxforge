@@ -143,17 +143,13 @@ fn chooser(model: &Chooser) -> Element<'_, Message> {
     let mut rows = column![].spacing(8).width(Length::Fill);
     let mut module = "";
     for group in &model.groups {
-        let (heading, label) = group
-            .group
-            .label
-            .split_once(" · ")
-            .unwrap_or((&group.group.label, &group.group.label));
-        if module != heading {
-            module = heading;
+        let (heading, label) = (&group.group.module_title, &group.group.label);
+        if module != group.group.module {
+            module = &group.group.module;
             let members: Vec<_> = model
                 .groups
                 .iter()
-                .filter(|row| row.group.label.split(" · ").next() == Some(heading))
+                .filter(|row| row.group.module == group.group.module)
                 .collect();
             let selected = members
                 .iter()
@@ -162,27 +158,27 @@ fn chooser(model: &Chooser) -> Element<'_, Message> {
             let caption = if selected > 0 && selected < members.len() {
                 format!("− {heading}")
             } else {
-                heading.to_owned()
+                heading.clone()
             };
             rows = rows.push(button(
                 &caption,
                 C::CheckMany {
-                    module: Some(heading.into()),
+                    module: Some(group.group.module.clone()),
                     edited: false,
                     checked: selected != members.len(),
                 },
             ));
         }
         let mut check = checkbox(model.form.is_checked(&group.group))
-            .label(label.to_owned())
+            .label(label.clone())
             .text_size(theme::SIZE_CONTROL)
             .size(14)
             .width(Length::Shrink);
         if group.reason.is_none() {
-            let label = group.group.label.clone();
+            let id = group.group.id.clone();
             check = check.on_toggle(move |checked| {
                 msg(C::Check {
-                    label: label.clone(),
+                    id: id.clone(),
                     checked,
                 })
             });

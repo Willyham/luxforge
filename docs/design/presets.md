@@ -124,7 +124,8 @@ Every method is a host method listed by `schema.list`. The four mutating methods
 | `preset.list` | no | none | `{presets: [record without source_text, report reduced to counts]}` sorted by group, then name, ignoring case |
 | `preset.read` | no | `preset_id` | `{preset: record with the full report and source_text}` |
 | `preset.create` | yes | `name`, `settings`, `mutation`; optional `group` | `{preset, deduplicated}` |
-| `preset.capture` | no | `asset_id`, `fields`; optional `entry_id` (default: the session's selection) | `{settings}` read from that entry's stack |
+| `preset.groups` | no | optional `asset_id`, `entry_id` (default: the session's selection) | `{groups, analysis, photo?}`: the [settings groups](#settings-groups) and, with `asset_id`, each one on that entry |
+| `preset.capture` | no | `asset_id`, and `fields` or `groups`; optional `entry_id` (default: the session's selection) | `{settings}` read from that entry's stack |
 | `preset.update` | yes | `preset_id`, `mutation`; optional `name`, `group`, `settings` | `{outcome, preset, deduplicated}`, with `outcome: no-op` when nothing changes |
 | `preset.delete` | yes | `preset_id`, `mutation` | `{outcome, deleted, deduplicated}`, with `outcome: no-op` and `deleted: false` when the preset is absent |
 | `preset.export` | no | `preset_id` | `{file_name, content}`, a Luxforge preset document |
@@ -132,6 +133,21 @@ Every method is a host method listed by `schema.list`. The four mutating methods
 | `preset.import` | yes | `content`, `mutation`; optional `file_name`, `name`, `group` | `{preset, report, deduplicated}` |
 
 `preset.create`, `preset.update` and `preset.import` validate the set against the registry, without a stack: the `settings` parameter's shape check, every action presettable and every field passing its action's parameter check. An empty set is refused. Applying a preset is `edit.apply-settings`, or `batch.apply-settings` for several photographs; the library has no other apply path.
+
+### Settings groups
+
+`preset.groups` answers which groups of settings a preset or Copy settings can carry, derived from the registered modules' control descriptors by one core function (`settings_groups`), which the desktop's create form and Copy chooser also call over the modules it lists, so a client offers the same groups under the same identities and defaults. A group is one control group whose value controls belong to a presettable field patch, or a module's patch controls outside any group, in registry order:
+
+- `id`: `<module id>/<group label as a slug>` (`luxforge.basic/tone`), or the module id for its loose controls; `module`, `module_title`, `label` and `title` (`Basic · Tone`).
+- `fields`: the `preset.capture` `fields` value naming its controls.
+- `per_photo` and `default_checked`: a module declares a group `per_photo` when its values usually belong to one photograph; Basic's White balance is the one, so it alone starts unchecked.
+- `unavailable`: the registry's refusal, for a module registered unavailable.
+- `kinds`: per source kind, what capture reads for the group there (`captures`, a `fields` value; Basic's White balance is `{"set-raw": true}` on a RAW photo), why capture refuses it there (`refused`), and per other kind, what applying a set captured here skips there (`skipped: [{kind, all, reasons}]`), by the apply rule: a module that does not apply to the target and a field a control variant supersedes on it.
+- `overwritten_by`: the analysis steps that write one of its fields.
+
+`analysis` lists each declared analysis step a set may carry, `{id, module, module_title, label, title, writes, overwrites}`, `overwrites` naming the groups a set carrying it cannot carry. With `asset_id`, `photo` is `{asset_id, entry_id, kind}`, each group adds `state` — `custom` when a field capture reads there differs from its declared default, `original`, or `refused` — with capture's own `reason`, and each step a `reason` when capture would refuse it. Each group is captured exactly as `preset.capture` with its `fields` would capture it, from one read of the entry: payloads only, no source opened and nothing rendered.
+
+`preset.capture {groups}` names group and analysis-step identities instead of `fields`: each group is read as its `fields`, merged per action in the order named, and each step as `true`. An unknown or repeated identity, more than 64, or both `fields` and `groups` is `validation`.
 
 **Auto tone.** A settings set can carry `"auto-tone": {}`. A set also naming any of its eight overwritten `set-basic` fields is refused when stored. `preset.capture` accepts `{"auto-tone": true}` to capture the step rather than the photograph's numbers. Every target, including a batch target, is analysed separately. [Auto tone](auto-tone.md#presets-and-import) records the full contract.
 
@@ -250,7 +266,7 @@ The Presets section is generated from the `presets` control and follows Crop in 
 
 - **Library.** Group headings in the order `preset.list` returns them, each followed by one row per preset. A partial preset shows a `Partial` badge whose tooltip gives the report's four counts, and a preset with unavailable actions shows why it cannot apply. Rows are disabled while the editor is busy, while a draft is open and during a historical preview. The whole section, Import and the form included, is disabled while no photo is open, like every other section.
 - **Apply.** Clicking a row submits `edit.apply-settings` once with that preset's `settings` and `origin: {kind: preset, name, preset_id}`. The ordinary completion path follows: `asset.state`, one preview job and a history merge.
-- **Create.** A `+` button opens a form with the name, the group (default `User presets`) and one checkbox per group of presettable controls, labelled `Module · Group` and taken from the descriptors, all checked except white balance. Auto tone is a separate unchecked choice; checking it clears and disables Basic Tone and Colour. Create calls `preset.capture` for the displayed entry with the checked groups' parameters and `auto-tone: true` when selected, then `preset.create`.
+- **Create.** A `+` button opens a form with the name, the group (default `User presets`) and one checkbox per available [settings group](#settings-groups), labelled by its title and checked by its `default_checked`, so all but white balance. Each declared analysis step is a separate unchecked choice, `Basic · Auto tone (per photo)`, placed before the first group it overwrites; checking it clears and disables the groups it overwrites, Basic Tone and Colour. Create calls `preset.capture` for the displayed entry with the checked group and step identities, then `preset.create`.
 - **Import.** An Import button opens the native file dialog, filtered to `.xmp`, `.lrtemplate` and `.lfpreset`. The file is read in the dialog's task, refused over 1 MiB or when it is not UTF-8, and sent to `preset.import`. The status bar reports the result, for example `Imported "Soft film": 18 mapped, 2 unsupported, 1 refused`; the neutral count is in the badge's tooltip. A duplicate name, or a file that maps nothing, appears as the error it is.
 - **Row menu.** Right-clicking a row offers Export…, which writes the `preset.export` document through a native save dialog; Copy import report, for an imported preset, which copies the full report as JSON from `preset.read`; and Delete, which calls `preset.delete`.
 - **Palette.** The command palette lists `Apply preset: <name>` for each library preset that can apply in this build.
@@ -274,7 +290,7 @@ The owner asked for this work to proceed without blocking. These are proposals t
 3. `edit.apply-settings` carries the settings, not a library reference; a preset and a paste share it and differ only in their origin.
 4. Imports are value transfers for the controls Luxforge has, and Lightroom's absolute `Temperature` and `Tint` a value conversion through the white they name (owner decision 5). Nothing is clamped.
 5. The Presets section is the first tools-panel section, collapsed, in the "what can I do" panel. Lightroom Classic puts presets on the left instead.
-6. The create form leaves white balance unchecked by default, because white balance is usually per photo.
+6. The create form leaves white balance unchecked by default, because white balance is usually per photo. Basic declares its White balance group `per_photo`, so the default is the descriptor's, not a list of field names.
 
 ## Later
 

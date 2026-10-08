@@ -9,10 +9,12 @@ pub(crate) enum CopySettingsMessage {
         source: Option<Source>,
     },
     Chosen,
+    /// One chooser row, by its settings-group identity.
     Check {
-        label: String,
+        id: String,
         checked: bool,
     },
+    /// Every row, or one module's rows by module identity.
     CheckMany {
         module: Option<String>,
         edited: bool,
