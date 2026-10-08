@@ -109,7 +109,8 @@ impl Step {
         Self::CanvasHover { x, y }
     }
 
-    /// One key pressed on the photograph: a letter or digit, or [`crate::KEY_ESCAPE`].
+    /// One key pressed on the photograph: a letter or digit, [`crate::KEY_ESCAPE`], or a chord
+    /// ([`crate::is_chord`]).
     pub fn key(key: impl Into<String>) -> Self {
         Self::Key { key: key.into() }
     }

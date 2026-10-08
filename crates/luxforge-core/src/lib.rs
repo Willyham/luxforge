@@ -113,6 +113,7 @@ pub use modules::{
     gains_from_temperature_tint, guide_angle, insertion_index_among, largest_with_ratio_inside,
     palette_bytes, resolve_control, resolve_group_reset, temperature_tint_from_gains,
 };
+pub use modules::{Chord, HOST_CHORDS, host_chord};
 pub use modules::{OriginalContext, OriginalLayer, OriginalPreferences};
 pub use presets::{
     ImportReport, ImportedPreset, MAX_PRESET_BYTES, MappedSetting, PresetOrigin, PresetRecord,
