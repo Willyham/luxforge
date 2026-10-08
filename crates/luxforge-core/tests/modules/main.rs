@@ -15,6 +15,7 @@ mod field_patch;
 mod mixer;
 mod presence;
 mod presets;
+mod settings_across_kinds;
 mod vignette;
 
 // `luxforge-testkit`'s core-typed helpers, compiled into this binary from their one source: the
