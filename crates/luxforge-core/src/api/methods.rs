@@ -694,10 +694,16 @@ pub(super) const METHODS: &[MethodSpec] = &[
         retries: Owner,
     ),
     service!(
+        "preset.groups",
+        PresetGroups,
+        preset_groups,
+        "{groups, analysis, photo?}: the settings groups a preset or Copy settings carries, derived from the registered modules' controls in registry order, and the analysis steps a set may carry. A group is {id, module, module_title, label, title, fields, per_photo, default_checked, unavailable?, kinds, overwritten_by?}: id is <module id>/<group label as a slug> (luxforge.basic/tone), or the module id for its controls outside any group; fields is the preset.capture fields value naming its controls; per_photo is the module's declaration that its values usually belong to one photograph (white balance), so default_checked is false for it and true for every other group; unavailable is the registry's refusal; kinds is, per source kind, {kind, captures, refused?, skipped?}: what capture reads for the group on a photo of that kind (a field a control variant supersedes there is captured as the variant's action, whole: {set-raw: true} for White balance on RAW), why capture refuses it there, and, per other target kind, {kind, all, reasons} for what applying a set captured there skips, by the apply rule (a module that does not apply to the target, a field superseded on it). overwritten_by names the analysis steps writing one of its fields. An analysis step is {id, module, module_title, label, title, writes, overwrites, unavailable?}, overwrites naming the groups a set carrying it cannot carry. With asset_id, photo is {asset_id, entry_id, kind} and each group adds state custom (a captured field differs from its declared default), original or refused, with reason, captured as preset.capture would capture its fields from that entry, and each step adds reason when capture would refuse it; reads stored payloads only, so it opens no source and renders nothing"
+    ),
+    service!(
         "preset.capture",
         PresetCapture,
         preset_capture,
-        "{settings} read from one entry's stack: fields maps field-patch actions to an array of their parameter names or true for all of them; a declared analysis action accepts true and captures an empty step (auto-tone: {}), without analysing this photo; overlap with fields that step overwrites is refused; each field takes the value of its module's one layer, or its declared default when the stack has none; two or more layers are validation: ambiguous; reads stored payloads only, so it opens no source and renders nothing; send the result to preset.create"
+        "{settings} read from one entry's stack: fields maps field-patch actions to an array of their parameter names or true for all of them, or groups names preset.groups group and analysis-step ids, resolved to the same fields (exactly one of the two); a declared analysis action accepts true and captures an empty step (auto-tone: {}), without analysing this photo; overlap with fields that step overwrites is refused; each field takes the value of its module's one layer, or its declared default when the stack has none; two or more layers are validation: ambiguous; reads stored payloads only, so it opens no source and renders nothing; send the result to preset.create"
     ),
     mutating!(
         "preset.update",
@@ -1856,8 +1862,16 @@ host_params! {
 host_params! {
     pub(super) struct PresetCapture {
         asset_id: AssetId = asset(),
-        fields: Map<String, Value> = json("{action: [field, ...] or true}: the fields of each field-patch action to read, true for all of them"),
+        fields: Option<Map<String, Value>> = json("{action: [field, ...] or true}: the fields of each field-patch action to read, true for all of them; give this or groups"),
+        groups: Option<Vec<String>> = json("[id, ...]: 1 to 64 preset.groups group or analysis-step ids, each group read as its fields and each step as true; give this or fields"),
         entry_id: Option<EntryId> = entry().notes("entry to read; default the session's selection"),
+    }
+}
+
+host_params! {
+    pub(super) struct PresetGroups {
+        asset_id: Option<AssetId> = asset().notes("describe each group on this photograph's entry; default no photograph"),
+        entry_id: Option<EntryId> = entry().notes("entry to read, with asset_id; default the session's selection"),
     }
 }
 
@@ -2172,8 +2186,36 @@ fn preset_capture(
     session: &mut ClientSession,
     p: PresetCapture,
 ) -> Result<Value, Error> {
+    let fields = match (p.fields, p.groups) {
+        (Some(fields), None) => fields,
+        (None, Some(groups)) => crate::settings_groups(service.registry().descriptors())
+            .capture_fields(&groups)?,
+        _ => {
+            return Err(Error::validation(
+                "preset.capture takes exactly one of fields and groups",
+            ));
+        }
+    };
     let entry_id = selected_entry(service, session, &p.asset_id, p.entry_id)?;
-    Ok(json!({"settings": service.capture_preset(&p.asset_id, &entry_id, &p.fields)?}))
+    Ok(json!({"settings": service.capture_preset(&p.asset_id, &entry_id, &fields)?}))
+}
+
+/// The settings groups, and with a photograph, each group on the entry the caller names or the
+/// session's selection, exactly as capture resolves it.
+fn preset_groups(
+    service: &mut EditorService,
+    session: &mut ClientSession,
+    p: PresetGroups,
+) -> Result<Value, Error> {
+    let photo = match (p.asset_id, p.entry_id) {
+        (Some(asset_id), entry_id) => {
+            let entry_id = selected_entry(service, session, &asset_id, entry_id)?;
+            Some((asset_id, entry_id))
+        }
+        (None, Some(_)) => return Err(Error::validation("entry_id needs asset_id")),
+        (None, None) => None,
+    };
+    value(service.preset_groups(photo.as_ref().map(|(asset, entry)| (asset, entry)))?)
 }
 
 fn preset_update(

@@ -120,7 +120,7 @@ pub(crate) use raw::lightroom_white_balance::lightroom_to_luxforge;
 pub use raw::white_balance::{gains_from_temperature_tint, temperature_tint_from_gains};
 pub use raw::{RawModule, RawPayload, WhiteBalanceMode};
 pub(crate) use raw::{is_raw_development, white_balance_variants};
-pub(crate) use registry::Superseded;
+pub(crate) use registry::{Superseded, settings_action_in, superseded_in, superseded_refusal_in};
 #[cfg(test)]
 pub(crate) use registry::linked_modules;
 #[cfg(test)]
