@@ -196,20 +196,37 @@ impl Sampled {
         )
     }
 
-    /// The median CIEDE2000 between these responses at `value` and `target`'s.
+    /// The median CIEDE2000 between these responses at `value` and `target`'s, over the patches
+    /// the target affects (its own response at least [`AFFECTED`] from neutral), or over every patch
+    /// when it affects none: a setting that reaches only the shadows is judged on the shadows, not
+    /// drowned by the unchanged patches around them.
     fn distance(&self, value: f64, target: &[Response]) -> f64 {
         let Some(responses) = self.at(value) else {
             return f64::INFINITY;
         };
-        let differences: Vec<f64> = responses
-            .iter()
-            .zip(target)
-            .zip(&self.neutrals)
-            .map(|((own, other), neutral)| response_difference(*neutral, *own, *other))
-            .collect();
-        median(&differences)
+        let differences = |only_affected: bool| -> Vec<f64> {
+            responses
+                .iter()
+                .zip(target)
+                .zip(&self.neutrals)
+                .filter(|((_, other), neutral)| {
+                    !only_affected
+                        || response_difference(**neutral, Response::default(), **other) >= AFFECTED
+                })
+                .map(|((own, other), neutral)| response_difference(*neutral, *own, *other))
+                .collect()
+        };
+        let affected = differences(true);
+        if affected.is_empty() {
+            median(&differences(false))
+        } else {
+            median(&affected)
+        }
     }
 }
+
+/// The CIEDE2000 from neutral at and above which a patch counts as affected by a setting.
+pub const AFFECTED: f64 = 0.5;
 
 /// One fitted point: a Lightroom value, the Luxforge value with the closest response, the median
 /// CIEDE2000 left at that value, and whether the best value lies at the end of Luxforge's range,
@@ -221,7 +238,17 @@ pub struct FitPoint {
     pub luxforge: f64,
     pub residual: f64,
     pub shortfall: bool,
+    /// The Luxforge values whose responses the measurement cannot tell from the best one (within
+    /// [`TIE`] CIEDE2000, or [`HUE_TIE`] degrees for a hue): the fit's resolution on this round.
+    pub span: [f64; 2],
 }
+
+/// How close, in CIEDE2000, a candidate's distance must be to the best one's to be
+/// indistinguishable from it: far below a visible difference.
+pub const TIE: f64 = 0.1;
+
+/// The hue fit's counterpart of [`TIE`], in degrees.
+pub const HUE_TIE: f64 = 0.5;
 
 /// The step the fit searches Luxforge's range at.
 const SEARCH_STEP: f64 = 0.25;
@@ -243,20 +270,29 @@ pub fn fit_monotone(luxforge: &Sampled, lightroom: &Sampled) -> Vec<FitPoint> {
     let candidates: Vec<f64> = (0..=steps)
         .map(|step| (low + step as f64 * SEARCH_STEP).min(high))
         .collect();
-    let mut best: Vec<(f64, f64)> = lightroom
+    // Each target's distance at every candidate, searched once.
+    let distances: Vec<Vec<f64>> = lightroom
         .samples
         .iter()
         .map(|(_, target)| {
             candidates
                 .iter()
-                .map(|value| (*value, luxforge.distance(*value, target)))
-                .min_by(|a, b| a.1.total_cmp(&b.1))
-                .unwrap_or((low, f64::INFINITY))
+                .map(|value| luxforge.distance(*value, target))
+                .collect()
+        })
+        .collect();
+    let best: Vec<f64> = distances
+        .iter()
+        .map(|row| {
+            row.iter()
+                .zip(&candidates)
+                .min_by(|a, b| a.0.total_cmp(b.0))
+                .map_or(low, |(_, value)| *value)
         })
         .collect();
     // Pool adjacent violators: each block takes the mean of its values.
     let mut blocks: Vec<(f64, usize)> = Vec::new();
-    for (value, _) in &best {
+    for value in &best {
         blocks.push((*value, 1));
         while blocks.len() > 1 {
             let (last, count) = blocks[blocks.len() - 1];
@@ -270,21 +306,15 @@ pub fn fit_monotone(luxforge: &Sampled, lightroom: &Sampled) -> Vec<FitPoint> {
             *blocks.last_mut().expect("a block") = (merged, previous_count + count);
         }
     }
-    let pooled: Vec<f64> = blocks
+    let pooled = blocks
         .iter()
-        .flat_map(|(value, count)| std::iter::repeat_n(*value, *count))
-        .collect();
-    for ((value, residual), pooled) in best.iter_mut().zip(&pooled) {
-        if *value != *pooled {
-            *value = *pooled;
-        }
-        *residual = f64::NAN;
-    }
+        .flat_map(|(value, count)| std::iter::repeat_n(*value, *count));
     lightroom
         .samples
         .iter()
-        .zip(best)
-        .map(|((lightroom_value, target), (value, _))| {
+        .zip(pooled)
+        .zip(&distances)
+        .map(|(((lightroom_value, target), value), row)| {
             let residual = luxforge.distance(value, target);
             let at_end = value == low || value == high;
             let inward = if value == high {
@@ -295,11 +325,22 @@ pub fn fit_monotone(luxforge: &Sampled, lightroom: &Sampled) -> Vec<FitPoint> {
             let shortfall = at_end
                 && residual > SHORTFALL_RESIDUAL
                 && luxforge.distance(inward, target) > residual;
+            let nearest = row.iter().copied().fold(f64::INFINITY, f64::min);
+            let within: Vec<f64> = row
+                .iter()
+                .zip(&candidates)
+                .filter(|(distance, _)| **distance <= nearest + TIE)
+                .map(|(_, value)| *value)
+                .collect();
             FitPoint {
                 lightroom: *lightroom_value,
                 luxforge: value,
                 residual,
                 shortfall,
+                span: [
+                    within.iter().copied().fold(value, f64::min),
+                    within.iter().copied().fold(value, f64::max),
+                ],
             }
         })
         .collect()
@@ -343,11 +384,24 @@ pub fn fit_hue(luxforge: &Sampled, lightroom: &Sampled) -> Vec<FitPoint> {
                     .abs()
                     .total_cmp(&circular_difference(b.1, target).abs())
             })?;
+            let residual = circular_difference(*angle, target).abs();
+            // The span runs both ways round from the best hue through every hue as close.
+            let close: Vec<f64> = angles
+                .iter()
+                .filter(|(_, other)| {
+                    circular_difference(*other, target).abs() <= residual + HUE_TIE
+                })
+                .map(|(hue, _)| circular_difference(*best, *hue))
+                .collect();
+            let (behind, ahead) = close
+                .iter()
+                .fold((0.0f64, 0.0f64), |(lo, hi), d| (lo.min(*d), hi.max(*d)));
             Some(FitPoint {
                 lightroom: *value,
                 luxforge: *best,
-                residual: circular_difference(*angle, target).abs(),
+                residual,
                 shortfall: false,
+                span: [best + behind, best + ahead],
             })
         })
         .collect()
