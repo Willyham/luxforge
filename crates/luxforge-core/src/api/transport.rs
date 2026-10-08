@@ -1,10 +1,12 @@
 //! Loopback JSON-lines transport: one line per request and response, a per-run token and a
 //! session file for discovery. The same framing serves stdin/stdout for headless use.
-use super::{ApiRequest, ApiResponse, ClientAuthority, ClientId, OwnerHandle, PROTOCOL};
+use super::{
+    ApiRequest, ApiResponse, ClientAuthority, ClientId, OwnerHandle, PROTOCOL,
+    live_sessions::{RegistryEntry, write_private},
+};
 use crate::Error;
 use serde::{Deserialize, Serialize};
 use std::{
-    fs::OpenOptions,
     io::{BufRead, BufReader, BufWriter, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
     path::{Path, PathBuf},
@@ -16,9 +18,12 @@ use std::{
     time::Duration,
 };
 
-const MAX_REQUEST_BYTES: usize = 1024 * 1024;
+/// The longest request line a session reads, its newline included; a longer one is refused.
+pub const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 /// How many loopback connections are served at once; the tile service's queue is sized from it.
 pub(super) const MAX_CLIENTS: usize = 8;
+/// How long the listener spends telling a connection past [`MAX_CLIENTS`] why it is refused.
+const REFUSAL_WRITE: Duration = Duration::from_millis(250);
 
 /// What a live-session file records: the protocol, the loopback address and the per-run token a
 /// client sends with every request. The desktop writes it; a live client such as `luxforge-ctl`
@@ -40,6 +45,8 @@ pub fn live_session_file(catalog: &Path) -> PathBuf {
 pub struct LocalServer {
     info: LocalSessionInfo,
     session_file: PathBuf,
+    /// The session's entry in the per-user registry of running sessions, once registered.
+    registration: Option<RegistryEntry>,
     stopping: Arc<AtomicBool>,
     /// The same counter the accept loop keeps, so the status bar can report live clients.
     clients: Arc<AtomicUsize>,
@@ -47,6 +54,8 @@ pub struct LocalServer {
 }
 
 impl LocalServer {
+    /// Serve `owner` on a new loopback address with a new token, recorded in `session_file`, which
+    /// is written whole and owner-only and replaces any file there; dropping the server removes it.
     pub fn start(owner: OwnerHandle, session_file: &Path) -> Result<Self, Error> {
         let listener = TcpListener::bind(("127.0.0.1", 0))
             .map_err(|error| Error::protocol(error.to_string()))?;
@@ -72,6 +81,7 @@ impl LocalServer {
                 let Ok(stream) = stream else { break };
                 if clients.fetch_add(1, Ordering::AcqRel) >= MAX_CLIENTS {
                     clients.fetch_sub(1, Ordering::AcqRel);
+                    refuse(stream);
                     continue;
                 }
                 let owner = owner.clone();
@@ -86,6 +96,7 @@ impl LocalServer {
         Ok(Self {
             info,
             session_file: session_file.into(),
+            registration: None,
             stopping,
             clients: connected,
             join: Some(join),
@@ -99,6 +110,42 @@ impl LocalServer {
     pub fn connected(&self) -> usize {
         self.clients.load(Ordering::Acquire)
     }
+
+    /// Register this session, serving `catalog`, in the per-user registry `dir`
+    /// (`<config>/live-sessions`), so a live client finds the running desktop's catalog without
+    /// naming it ([`super::running_sessions`]). The entry is removed when the server drops. A
+    /// failure leaves the session served and findable through its session file alone.
+    pub fn register(&mut self, dir: &Path, catalog: &Path) -> Result<(), Error> {
+        self.registration = Some(RegistryEntry::register(dir, catalog, &self.session_file)?);
+        Ok(())
+    }
+}
+
+/// Answer a connection past [`MAX_CLIENTS`] with one `resource-limit` failure naming the limit
+/// before closing it, so its client can tell a full session from one that has gone. The write is
+/// bounded, and a client that reads nothing only loses its answer. What the client already sent is
+/// read and dropped until it closes, for at most [`REFUSAL_WRITE`] in all: closing a socket with
+/// unread input resets it, which can discard the answer before the client reads it.
+fn refuse(mut stream: TcpStream) {
+    let failure = Error::resource_limit(format!(
+        "the live session already serves {MAX_CLIENTS} clients; try again once one disconnects"
+    ))
+    .with_data(serde_json::json!({"max_clients": MAX_CLIENTS}));
+    let Ok(mut line) = serde_json::to_vec(&ApiResponse::failure(String::new(), 0, failure)) else {
+        return;
+    };
+    line.push(b'\n');
+    let deadline = std::time::Instant::now() + REFUSAL_WRITE;
+    let _ = stream.set_write_timeout(Some(REFUSAL_WRITE));
+    if stream.write_all(&line).is_err() || stream.shutdown(std::net::Shutdown::Write).is_err() {
+        return;
+    }
+    let mut discard = [0_u8; 4096];
+    while let Some(left) = deadline.checked_duration_since(std::time::Instant::now())
+        && !left.is_zero()
+        && stream.set_read_timeout(Some(left)).is_ok()
+        && matches!(stream.read(&mut discard), Ok(count) if count > 0)
+    {}
 }
 
 impl Drop for LocalServer {
@@ -109,6 +156,8 @@ impl Drop for LocalServer {
         {
             let _ = join.join();
         }
+        // The registry entry goes first, so no reader finds an entry whose session file is gone.
+        drop(self.registration.take());
         let _ = std::fs::remove_file(&self.session_file);
     }
 }
@@ -117,19 +166,13 @@ fn write_session_file(path: &Path, info: &LocalSessionInfo) -> Result<(), Error>
     if let Some(parent) = path.parent().filter(|path| !path.as_os_str().is_empty()) {
         std::fs::create_dir_all(parent).map_err(|error| Error::protocol(error.to_string()))?;
     }
-    let mut options = OpenOptions::new();
-    options.create_new(true).write(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options.open(path).map_err(|error| {
-        Error::protocol(format!("cannot create live session file: {}", error.kind()))
-    })?;
-    serde_json::to_writer(&mut file, info).map_err(|error| Error::protocol(error.to_string()))?;
-    file.flush()
-        .map_err(|error| Error::protocol(error.to_string()))
+    let bytes = serde_json::to_vec(info).map_err(|error| Error::protocol(error.to_string()))?;
+    write_private(path, &bytes).map_err(|error| {
+        Error::protocol(format!(
+            "cannot write the live session file: {}",
+            error.kind()
+        ))
+    })
 }
 
 /// Serve one client over JSON lines with the authority its process was started with. Only a local
@@ -473,7 +516,7 @@ mod tests {
         {
             let server = match LocalServer::start(owner.clone(), &session_file) {
                 Ok(server) => server,
-                Err(error) if error.detail.contains("Operation not permitted") => {
+                Err(error) if luxforge_testbase::loopback_forbidden(&error.detail) => {
                     owner.stop();
                     join.join().unwrap();
                     std::fs::remove_file(catalog).unwrap();
@@ -502,6 +545,83 @@ mod tests {
         owner.stop();
         join.join().unwrap();
         std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// The session file is written whole and owner-only over whatever was there, the session is
+    /// registered while it runs, and a client past the limit is told why it is refused.
+    #[test]
+    fn local_server_registers_itself_and_answers_a_client_past_its_limit() {
+        let root = luxforge_testbase::paths::temp_dir("live-limit");
+        let catalog = root.join("catalog.sqlite");
+        let session_file = live_session_file(&catalog);
+        std::fs::write(&session_file, b"left by an earlier process").unwrap();
+        let registry = root.join("config").join(super::super::LIVE_SESSIONS_DIR);
+        let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+        let mut server = match LocalServer::start(owner.clone(), &session_file) {
+            Ok(server) => server,
+            Err(error) if luxforge_testbase::loopback_forbidden(&error.detail) => {
+                owner.stop();
+                join.join().unwrap();
+                return;
+            }
+            Err(error) => panic!("cannot start local server: {error}"),
+        };
+        let written: LocalSessionInfo =
+            serde_json::from_slice(&std::fs::read(&session_file).unwrap()).unwrap();
+        assert_eq!(written.address, server.info().address);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&session_file)
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        server.register(&registry, &catalog).unwrap();
+        let running = super::super::running_sessions(&registry).unwrap();
+        assert_eq!(running.len(), 1);
+        let entry = running[0].entry.as_ref().unwrap();
+        assert_eq!(
+            (&entry.catalog, &entry.session_file),
+            (&catalog, &session_file)
+        );
+        // Every client the session serves, each answered once so it is surely counted.
+        let token = server.info().token.clone();
+        let ask = |stream: &mut TcpStream| {
+            let line = json!({"id":"c","method":"catalog.info","params":{},"token":token});
+            writeln!(stream, "{line}").unwrap();
+            let mut answer = String::new();
+            BufReader::new(stream.try_clone().unwrap())
+                .read_line(&mut answer)
+                .unwrap();
+            serde_json::from_str::<ApiResponse>(&answer).unwrap()
+        };
+        let mut served: Vec<TcpStream> = (0..MAX_CLIENTS)
+            .map(|_| TcpStream::connect(server.info().address).unwrap())
+            .collect();
+        for stream in &mut served {
+            assert!(ask(stream).error.is_none());
+        }
+        assert_eq!(server.connected(), MAX_CLIENTS);
+        let mut refused = TcpStream::connect(server.info().address).unwrap();
+        refused
+            .set_read_timeout(Some(luxforge_testbase::HANG))
+            .unwrap();
+        let answer = ask(&mut refused).error.unwrap();
+        assert_eq!(answer.code, "resource-limit", "{answer:?}");
+        assert_eq!(answer.data, Some(json!({"max_clients": MAX_CLIENTS})));
+        drop(served);
+        drop(server);
+        assert!(!session_file.exists());
+        assert!(
+            super::super::running_sessions(&registry)
+                .unwrap()
+                .is_empty()
+        );
+        owner.stop();
+        join.join().unwrap();
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     /// An inner writer that records the length of every `write` call and counts flushes, so a test
