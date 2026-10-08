@@ -108,12 +108,16 @@ pub(crate) fn switch<'a>(current: Shown, can_develop: bool) -> Element<'a, Messa
 /// The whole Select screen: title bar, the middle row and the status bar.
 pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Message> {
     let select = &model.select;
-    let title = container(title_bar(&select.title, &model.develop))
-        .width(Length::Fill)
-        .height(Length::Fixed(TITLE_BAR_HEIGHT))
-        .style(theme::title_bar_surface);
+    let title = container(title_bar(
+        &select.title,
+        &model.develop,
+        &model.copy_settings,
+    ))
+    .width(Length::Fill)
+    .height(Length::Fixed(TITLE_BAR_HEIGHT))
+    .style(theme::title_bar_surface);
     let mut middle = row![].height(Length::Fill);
-    let mut centre = centre(select, grid, &model.long_work);
+    let mut centre = centre(select, grid, &model.long_work, &model.copy_settings);
     // Over the centre: a connected card's notice at its top, and Remove from indexed folders…'s
     // confirmation.
     if let Some(notice) = &select.card_notice {
@@ -149,7 +153,7 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
             container(if select.missing.shown {
                 crate::view::select_missing::info(&select.missing)
             } else if let Some(photos) = &select.catalog.info {
-                crate::view::select_catalog::info(photos, grid.images)
+                crate::view::select_catalog::info(photos, grid.images, &model.copy_settings)
             } else {
                 info(&select.info)
             })
@@ -185,14 +189,19 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
     .padding([0.0, theme::TITLE_BAR_INSET])
     .align_y(Vertical::Center)
     .style(theme::panel_surface);
-    column![
+    let screen: Element<'a, Message> = column![
         title,
         horizontal_divider(),
         middle,
         horizontal_divider(),
         status
     ]
-    .into()
+    .into();
+    if let Some(sheet) = crate::view::copy_settings::confirmation(&model.copy_settings) {
+        stack![screen, sheet].into()
+    } else {
+        screen
+    }
 }
 
 // -- Title bar -------------------------------------------------------------------------------------
@@ -202,6 +211,7 @@ pub(crate) fn screen<'a>(model: &'a Workspace, grid: Grid<'a>) -> Element<'a, Me
 fn title_bar<'a>(
     model: &'a SelectTitle,
     develop: &'a crate::state::develop::DevelopModel,
+    copying: &'a crate::state::copy_settings::CopyModel,
 ) -> Element<'a, Message> {
     let identity = row![
         switch(Shown::Select, develop.can_enter),
@@ -264,6 +274,7 @@ fn title_bar<'a>(
     );
     let actions = row![
         add_folder,
+        crate::view::copy_settings::buttons(copying),
         library(
             Icon::Undo,
             "Undo this desktop's last library change (\u{2318}Z)",
@@ -577,6 +588,7 @@ fn centre<'a>(
     model: &'a SelectModel,
     grid: Grid<'a>,
     work: &'a LongWorkModel,
+    copy: &'a crate::state::copy_settings::CopyModel,
 ) -> Element<'a, Message> {
     if model.loupe.open {
         return crate::view::loupe::loupe(&model.loupe, grid.loupe);
@@ -632,7 +644,9 @@ fn centre<'a>(
     );
     // The selected photographs' menu, where a right-click on the grid opened it.
     if let Some(menu) = &model.catalog.context {
-        layers = layers.push(crate::view::select_catalog::photo_menu(menu, viewport));
+        layers = layers.push(crate::view::select_catalog::photo_menu(
+            menu, viewport, copy,
+        ));
     }
     // A catalog confirmation or a batch's report, over the grid.
     if let Some(sheet) = &model.catalog.sheet {

@@ -11,6 +11,7 @@ pub(crate) mod canvas;
 pub(crate) mod canvas_view;
 mod capabilities;
 mod compare_canvas;
+pub(crate) mod copy_settings;
 pub(crate) mod crop_canvas;
 pub(crate) mod cursor_probe;
 pub(crate) mod develop;
@@ -175,11 +176,15 @@ pub(crate) fn workspace<'a>(
         );
     }
 
-    let status = container(status_bar::status_bar(&model.status, &model.long_work))
-        .height(Length::Fixed(STATUS_BAR_HEIGHT))
-        .padding([0.0, theme::TITLE_BAR_INSET])
-        .align_y(iced::alignment::Vertical::Center)
-        .style(theme::panel_surface);
+    let status = container(status_bar::status_bar(
+        &model.status,
+        &model.long_work,
+        model.copy_settings.batch_report,
+    ))
+    .height(Length::Fixed(STATUS_BAR_HEIGHT))
+    .padding([0.0, theme::TITLE_BAR_INSET])
+    .align_y(iced::alignment::Vertical::Center)
+    .style(theme::panel_surface);
 
     let screen = column![
         title,
@@ -189,6 +194,15 @@ pub(crate) fn workspace<'a>(
         status
     ];
     let mut layers = stack![screen];
+    if let Some(menu) = copy_settings::cell_menu(&model.copy_settings) {
+        layers = layers.push(menu);
+    }
+    if let Some(report) = &model.copy_settings.report {
+        layers = layers.push(select_catalog::sheet(report));
+    }
+    if let Some(sheet) = copy_settings::confirmation(&model.copy_settings) {
+        layers = layers.push(sheet);
+    }
     if let Some(overlay) = palette::palette(&model.palette) {
         layers = layers.push(overlay);
     }

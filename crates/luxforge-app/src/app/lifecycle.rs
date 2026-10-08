@@ -111,7 +111,7 @@ pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
                 _ => format!("cannot open catalog {}: {error}", catalog.display()),
             }
         })?;
-    let session_file = catalog.with_extension("live-session.json");
+    let session_file = luxforge_core::live_session_file(&catalog);
     // Owning the catalog proves any same-catalog session file from an earlier process is stale.
     if session_file.exists() {
         let _ = std::fs::remove_file(&session_file);

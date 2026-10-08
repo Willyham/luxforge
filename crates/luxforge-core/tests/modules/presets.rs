@@ -1056,3 +1056,148 @@ fn a_preset_carrying_set_curve_captures_applies_and_round_trips() {
     join.join().expect("the owner joined");
     let _ = fs::remove_file(catalog);
 }
+
+#[test]
+fn paste_settings_keeps_provenance_matches_direct_edits_and_is_undoable() {
+    let original = fs::read(jpeg()).unwrap();
+    let (mut service, asset, path) = opened("paste-settings", None);
+    let (mut direct, other, other_path) = opened("paste-direct", None);
+    for (editor, id) in [(&mut service, &asset), (&mut direct, &other)] {
+        editor
+            .apply_action(
+                id,
+                mutation(0, "seed"),
+                "set-basic",
+                json!({"exposure": -1, "contrast": 30}),
+            )
+            .unwrap();
+    }
+    let before = recipe(&service, &asset);
+    let parameters = json!({"settings": {"set-basic": {"exposure": 0}}, "source": "source.jpg", "source-asset": "detached-provenance"});
+    let pasted = service
+        .apply_action(
+            &asset,
+            mutation(1, "paste"),
+            "paste-settings",
+            parameters.clone(),
+        )
+        .unwrap();
+    direct
+        .apply_action(
+            &other,
+            mutation(1, "reset"),
+            "set-basic",
+            json!({"exposure": 0}),
+        )
+        .unwrap();
+    let entry = service.state(&asset).unwrap().current_entry;
+    assert_eq!(entry.label, "Paste settings from source.jpg");
+    assert_eq!(entry.parameters, parameters);
+    assert_eq!(
+        contents(&recipe(&service, &asset).layers),
+        contents(&recipe(&direct, &other).layers)
+    );
+    assert_eq!(
+        recipe(&service, &asset).layers[0].payload["contrast"].as_f64(),
+        Some(30.0)
+    );
+    assert_eq!(
+        service.render_current(&asset).unwrap().rgba,
+        direct.render_current(&other).unwrap().rgba
+    );
+    let count = entries(&service, &asset);
+    let unchanged = service
+        .apply_action(
+            &asset,
+            mutation(pasted.revision, "again"),
+            "paste-settings",
+            parameters,
+        )
+        .unwrap();
+    assert_eq!(unchanged.outcome, MutationOutcome::NoOp);
+    assert_eq!(entries(&service, &asset), count);
+    service
+        .undo(&asset, mutation(pasted.revision, "undo-paste"))
+        .unwrap();
+    assert_eq!(recipe(&service, &asset), before);
+    let current = revision(&service, &asset);
+    service
+        .restore(&asset, mutation(current, "restore-paste"), &entry.id)
+        .unwrap();
+    assert_eq!(
+        contents(&recipe(&service, &asset).layers),
+        contents(&entry.snapshot.recipe.layers)
+    );
+    drop((service, direct));
+    assert_eq!(fs::read(jpeg()).unwrap(), original);
+    fs::remove_file(path).unwrap();
+    fs::remove_file(other_path).unwrap();
+}
+
+#[test]
+fn paste_settings_refuses_non_patch_steps_atomically() {
+    let (mut service, asset, path) = opened("paste-refusals", None);
+    for (index, settings) in [
+        json!({"paste-settings": {"source": "nested", "settings": {"set-basic": {"exposure": 1}}}}),
+        json!({"apply-preset": {"name": "nested", "settings": {"set-basic": {"exposure": 1}}}}),
+        json!({"set-basic": {"exposure": 1}, "unknown": {"value": 1}}),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert!(
+            service
+                .apply_action(
+                    &asset,
+                    mutation(0, &format!("bad-{index}")),
+                    "paste-settings",
+                    json!({"source": "source.jpg", "settings": settings})
+                )
+                .is_err()
+        );
+        assert_eq!(revision(&service, &asset), 0);
+        assert_eq!(entries(&service, &asset), 1);
+    }
+    drop(service);
+    fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn paste_settings_preserves_masks_and_masked_adjustments() {
+    let (mut service, asset, path) = opened("paste-masked", None);
+    let mask = masked_basic(&mut service, &asset, true);
+    let before = recipe(&service, &asset);
+    let current = revision(&service, &asset);
+    service
+        .apply_action(
+            &asset,
+            mutation(current, "paste"),
+            "paste-settings",
+            json!({"source":"source.jpg","settings":{"set-basic":{"exposure":0.25}}}),
+        )
+        .unwrap();
+    let after = recipe(&service, &asset);
+    assert_eq!(before.masks, after.masks);
+    assert_eq!(
+        before
+            .layers
+            .iter()
+            .find(|layer| layer.mask.as_ref() == Some(&mask)),
+        after
+            .layers
+            .iter()
+            .find(|layer| layer.mask.as_ref() == Some(&mask))
+    );
+    assert_eq!(
+        after
+            .layers
+            .iter()
+            .find(|layer| layer.mask.is_none() && layer.effect_id == BASIC_EFFECT)
+            .unwrap()
+            .payload["exposure"]
+            .as_f64(),
+        Some(0.25)
+    );
+    drop(service);
+    fs::remove_file(path).unwrap();
+}

@@ -537,7 +537,7 @@ The owner requested a plan for a minimap at zoom levels of **200% or more**. The
 
 ## Copy and paste settings planning
 
-The owner requested a plan for copying settings between photographs and on 2026-10-07 chose: **adjustments only** in the first delivery (the presettable groups; crop, orientation, lens correction, perspective, the RAW look and masks later), **every group except White balance** checked by default with neutral groups included and the last confirmed choice remembered for a quick `⌘C`, **multi-selection in Develop's filmstrip** with `⌘V` pasting to it, and **Paste from previous** (`⌥⌘V`). The [design](design/copy-settings.md) records the remaining defaults. This request authorizes planning only.
+The owner requested a plan for copying settings between photographs and on 2026-10-07 chose: **adjustments only** in the first delivery (the presettable groups; crop, orientation, lens correction, perspective, the RAW look and masks later), **every group except White balance** checked by default with neutral groups included and the last confirmed choice remembered for a quick `⌘C`, **multi-selection in Develop's filmstrip** with `⌘V` pasting to it, and **Paste from previous** (`⌥⌘V`). The [design](design/copy-settings.md) records the remaining defaults. Implementation and an upstream pull request were authorized on 2026-10-08.
 
 ## Code structure consolidation
 

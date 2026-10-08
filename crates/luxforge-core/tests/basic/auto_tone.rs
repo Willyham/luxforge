@@ -102,6 +102,78 @@ fn auto_tone_query_action_repeat_undo_and_source_preservation_through_the_owner(
 }
 
 #[test]
+fn auto_tone_copy_paste_carries_values_without_reanalysing_the_target() {
+    let source = photo("copy-source", false);
+    let target = photo("paste-target", true);
+    let before = [fs::read(&source).unwrap(), fs::read(&target).unwrap()];
+    let catalog = paths::temp_catalog("auto-tone-copy-paste");
+    let (owner, join) = OwnerHandle::start(&catalog).unwrap();
+    let client = owner.register();
+    let source_asset = open(&owner, client, &source, "test").unwrap()["asset"]["id"].clone();
+    call(
+        &owner,
+        client,
+        "edit.auto-tone",
+        json!({"asset_id":source_asset,"mutation":mutation(0,"auto-source","test")}),
+    )
+    .unwrap();
+    let source_values = basic(&entry(&owner, client, &source_asset));
+    let captured = call(
+        &owner,
+        client,
+        "preset.capture",
+        json!({"asset_id":source_asset,"fields":{"set-basic":FIELDS}}),
+    )
+    .unwrap();
+    assert!(captured["settings"].get("auto-tone").is_none());
+    for field in FIELDS {
+        assert_eq!(
+            captured["settings"]["set-basic"][field].as_f64().unwrap(),
+            source_values[field].as_f64().unwrap_or(0.),
+            "{field}"
+        );
+    }
+    let target_asset = open(&owner, client, &target, "test").unwrap()["asset"]["id"].clone();
+    assert!(
+        call(
+            &owner,
+            client,
+            "query.auto-tone",
+            json!({"asset_id":target_asset})
+        )
+        .is_err()
+    );
+    let applied = call(
+        &owner,
+        client,
+        "edit.paste-settings",
+        json!({"asset_id":target_asset,"settings":captured["settings"],"source":"source.jpg","mutation":mutation(0,"paste-auto-values","test")}),
+    )
+    .unwrap();
+    assert_eq!(applied["outcome"], "applied");
+    let pasted = entry(&owner, client, &target_asset);
+    assert_eq!(pasted["label"], "Paste settings from source.jpg");
+    let target_values = basic(&pasted);
+    for field in FIELDS {
+        assert_eq!(
+            target_values[field].as_f64().unwrap_or(0.),
+            source_values[field].as_f64().unwrap_or(0.),
+            "{field}"
+        );
+    }
+    assert_eq!(
+        [fs::read(&source).unwrap(), fs::read(&target).unwrap()],
+        before
+    );
+    owner.disconnect(client);
+    owner.stop();
+    join.join().unwrap();
+    for path in [source, target, catalog] {
+        let _ = fs::remove_file(path);
+    }
+}
+
+#[test]
 fn auto_tone_presets_analyse_after_white_balance_and_skip_uniform_photos() {
     let image = photo("preset", false);
     let uniform = photo("uniform", true);

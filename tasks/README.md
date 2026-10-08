@@ -69,7 +69,7 @@ Import from and alignment with Lightroom Classic.
 
 | Plan | Purpose |
 | --- | --- |
-| [Copy and paste settings](interface/copy-settings.json) ([design](../docs/design/copy-settings.md)) | Planned copy of chosen adjustment groups into a per-window clipboard and paste onto the open photograph, a new Develop filmstrip multi-selection or a Select selection, and Paste from previous, through a `paste-settings` action and batch method; implementation awaits authorization |
+| [Copy and paste settings](interface/copy-settings.json) ([design](../docs/design/copy-settings.md)) | Implemented with quick and native M2 / Metal verification; final corpus qualification pending: copy of chosen adjustment groups into a per-window clipboard and paste onto the open photograph, a new Develop filmstrip multi-selection or a Select selection, and Paste from previous, through a `paste-settings` action and batch method |
 | [High-zoom minimap](interface/minimap.json) ([design](../docs/design/minimap.md)) | Planned whole-image overview at percentage zoom ≥200, with owner-chosen click/drag navigation through `view.set`, bounded GPU/reference rendering, working integration first and final qualification/measurement; implementation awaits authorization |
 
 ### Project (`project/`)
@@ -79,10 +79,9 @@ Owner decisions and repository upkeep.
 | Plan | Purpose |
 | --- | --- |
 | [Dependency advisories](project/dependency-advisories.json) | Remove or re-review the two expiring advisory exceptions the dependency audit enforces |
-| [Live-session Rust CLI](project/live-cli.json) ([design](../docs/design/live-cli.md)) | Specified thin client for the authenticated API of an already-open desktop session; implementation awaits owner authorization |
 | [Product decisions](project/product-decisions.json) | Open product questions |
 
-The post-consolidation programme, the Tone curve, Detail and Lens and perspective are complete and their plans are deleted; their outcome lives in the specs, their designs and [feature status](../docs/features.md).
+The post-consolidation programme, the Tone curve, Detail, Lens and perspective and the live-session CLI are complete and their plans are deleted; their outcome lives in the specs, their designs and [feature status](../docs/features.md).
 
 The Efficiency plan runs on the owner's decisions of 2026-10-03 in [decisions](../docs/decisions.md#cpu-and-memory-efficiency). Every feature task is done and measured within the three hours the owner allotted to measurement on 2026-10-04 ([performance](../docs/specs/performance.md#cpu-and-memory-efficiency-measured-on-the-m4)); each change paid for itself where measured, and the workloads not measured are listed there. Its one open task is the `dist` profile, blocked: the owner deferred it until the other plans' outstanding timing runs are recorded, so every plan measures in `release`.
 

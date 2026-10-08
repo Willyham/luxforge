@@ -3,12 +3,12 @@
   "plan_id": "copy-settings",
   "title": "Copy and paste settings between photographs",
   "objective": "Let a person copy chosen adjustment groups from one photograph into a per-window settings clipboard and paste them onto the open photograph, a Develop filmstrip selection or a Select selection, each photograph getting one undoable history entry, through a new paste-settings action and batch method that agents call identically.",
-  "context_summary": "The owner requested a plan, not implementation; implementation awaits a separate instruction. Owner decisions of 2026-10-07: adjustments only (the presettable groups; crop, orientation, lens, perspective, the RAW look and masks are later), every group except White balance checked by default with neutral groups included and the last confirmed choice remembered for quick Cmd+C, multi-selection in Develop's filmstrip, and Paste from previous (Opt+Cmd+V). Everything else in the design is a recorded default the implementer refines within its contract: title-bar placement, labels, confirmation wording, layout and sizes are delegated. Copy reuses the existing read-only preset.capture; the core adds one composite action beside apply-preset and one batch method beside batch.apply-preset sharing its implementation. Core, the clipboard/copy desktop work and the filmstrip selection are independent and run first; Develop paste and Select paste consume them; the rendered scenario and documentation finish. No external inputs: supplied JPEG and RAW fixtures cover every journey. Re-review against current main and use the roadmap's high-tier model minimum. No owner-review, approval or research task is inserted.",
+  "context_summary": "Implementation and an upstream PR were authorized on 2026-10-08; Auto tone follows in a separate branch. Owner decisions of 2026-10-07: adjustments only (the presettable groups; crop, orientation, lens, perspective, the RAW look and masks are later), every group except White balance checked by default with neutral groups included and the last confirmed choice remembered for quick Cmd+C, multi-selection in Develop's filmstrip, and Paste from previous (Opt+Cmd+V). Everything else in the design is a recorded default the implementer refines within its contract: title-bar placement, labels, confirmation wording, layout and sizes are delegated. Copy reuses the existing read-only preset.capture; the core adds one composite action beside apply-preset and one batch method beside batch.apply-preset sharing its implementation. Core, the clipboard/copy desktop work and the filmstrip selection are independent and run first; Develop paste and Select paste consume them; the rendered scenario and documentation finish. No external inputs: supplied JPEG and RAW fixtures cover every journey. Re-review against current main and use the roadmap's high-tier model minimum. No owner-review, approval or research task is inserted.",
   "tasks": [
     {
       "id": "TASK-001",
       "description": "Add the paste-settings composite action to luxforge.presets and the batch.paste-settings host method sharing batch.apply-preset's implementation.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Consumed by TASK-004 and TASK-005. No desktop work here.",
@@ -92,7 +92,7 @@
     {
       "id": "TASK-002",
       "description": "Build the desktop settings clipboard and copy: the per-window clipboard and remembered choice, Copy and Paste title-bar buttons, Cmd+C quick copy, the Shift+Cmd+C chooser, palette entries, and the shared paste confirmation and batch report views.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Consumed by TASK-004 and TASK-005, which wire paste. Copy needs only the existing preset.capture, so this task does not wait on core work; the confirmation and report views render data shapes that exist today (BatchReport) and are wired to the new method later.",
@@ -171,7 +171,7 @@
     {
       "id": "TASK-003",
       "description": "Add multi-selection to Develop's filmstrip: Cmd-click and Shift-click without opening, Cmd+A, Escape, the selected-count header, selected-cell drawing and a right-press cell menu.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Consumed by TASK-004, which adds the paste and copy menu items and Cmd+V to the selection. This task delivers the selection and the menu mechanism only, with Select all N and Select only the open photograph as its first items.",
@@ -241,7 +241,7 @@
     {
       "id": "TASK-004",
       "description": "Wire paste in Develop: Cmd+V into the open photograph or to the filmstrip selection, Paste from previous (Opt+Cmd+V), the Paste button and palette entries, filmstrip menu paste and copy items, confirmation, progress and report.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002",
@@ -316,7 +316,7 @@
     {
       "id": "TASK-005",
       "description": "Wire copy and paste in Select: Cmd+C/Shift+Cmd+C from the active photograph, Cmd+V and the grid menu pasting to the selection, the Info panel's clipboard card and Paste settings to N, confirmation, progress and report.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002"
@@ -388,7 +388,7 @@
     {
       "id": "TASK-006",
       "description": "Add the rendered copy-settings smoke scenario, publish current documentation, and run final verification.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-004",
         "TASK-005"
@@ -396,7 +396,8 @@
       "extra_context": [
         "Scenario in the hidden background bundle over supplied JPEG and RAW fixtures: copy with Cmd+C and through the chooser, paste into the next photograph in the development set, undo, Paste from previous, paste to a three-photograph filmstrip selection through its confirmation, paste to a Select selection with a RAW-to-JPEG white balance skip, and open the report. Every frame correlates clipboard, selection, revision and entry, history label, stored layer payloads and status sentence; target pixels move in the source's direction. Register it beside the presets scenario and in the rendered tier list.",
         "Documentation: feature status, user guide, the Develop workspace tool array and keys, the catalog design's Info panel and filmstrip, the presets design's scope line and Later table, development.md's scenario table, and the roadmap and task index statuses; describe delivered behaviour only and keep the design's Later table for what remains.",
-        "No timing run is required: the feature adds no render path. The performance-rules checklist is answered once for the finished change."
+        "No timing run is required: the feature adds no render path. The performance-rules checklist is answered once for the finished change.",
+        "Implementation, documentation, final quick verification and the dedicated native M2/Metal journey over JPEGs and the public Nikon Z6 RAW pass, including Original/Custom captions, changed Select targets, both white-balance skip directions and source preservation. Full headless checks and release acceptance pass. All rendered scenarios have passing evidence; basic-crop, mask-brush, mask-interactions and performance required isolated reruns after failed assertions in the aggregate run. The aggregate rendered tier is not a pass. Its project-wide GPU corpus gate remains unrun without the owner’s manifest and three matching private RAW originals. Keep this final task open for a complete rendered-tier pass; do not describe the missing corpus gate as passed."
       ],
       "context_links": [
         {

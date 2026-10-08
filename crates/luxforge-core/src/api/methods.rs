@@ -1194,6 +1194,13 @@ pub(super) const METHODS: &[MethodSpec] = &[
         retries: Owner,
     ),
     owner!(
+        "batch.paste-settings",
+        crate::catalog_types::api::BatchPasteSettings,
+        owner::library::batch::batch_paste_settings,
+        "starts a batch-paste job with inline settings validated once against the registry; answers {job_id, status, deduplicated}, with the same BatchReport, targets, progress, cancellation, limits and skip rules as batch.apply-preset. Each photograph runs edit.paste-settings with source and optional source_asset_id as source-asset, against its current revision under <request_id>/<asset_id>, writing one entry labelled Paste settings from <source>. Settings contain 1..=16 presettable actions with at most 64 fields each. Unknown, unavailable or non-patch actions refuse the submission. No library preset is created or read; source_asset_id is provenance only. Cancel keeps every finished photograph; job.read reports progress and per-photograph settings_skipped.",
+        retries: Owner,
+    ),
+    owner!(
         "batch.export",
         crate::catalog_types::api::BatchExport,
         owner::library::batch::batch_export,
