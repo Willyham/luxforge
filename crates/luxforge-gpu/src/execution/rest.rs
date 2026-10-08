@@ -314,6 +314,13 @@ pub struct EvaluationFigures {
     pub incremental: u32,
     pub whole: u32,
     pub reached_texels: u64,
+    /// Links that, on an incremental evaluation, ran every pass over the whole window once because
+    /// their planes did not hold what their mask now needs: a painted mask grown past where its
+    /// planes were written.
+    pub refilled: u32,
+    /// The texels the spatial passes that ran wrote, each over its own rectangle of its plane: the
+    /// spatial work, where [`Self::spatial_passes`] counts passes dispatched over nothing too.
+    pub spatial_texels: u64,
 }
 
 impl EvaluationFigures {
@@ -330,6 +337,8 @@ impl EvaluationFigures {
         self.incremental += other.incremental;
         self.whole += other.whole;
         self.reached_texels += other.reached_texels;
+        self.refilled += other.refilled;
+        self.spatial_texels += other.spatial_texels;
     }
 }
 
