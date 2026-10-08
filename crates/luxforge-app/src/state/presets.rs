@@ -10,7 +10,7 @@
 use crate::state::{Inputs, control_tree::walk, palette::PaletteAction, tools::is_patch};
 use luxforge_core::{
     ActionDescriptor, Control, ModuleDescriptor, ParameterKind, PresetSummary, ReportCounts,
-    USER_PRESET_GROUP,
+    SettingsOrigin, USER_PRESET_GROUP,
 };
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
@@ -120,6 +120,9 @@ pub(crate) struct PresettableGroup {
     pub(crate) label: String,
     /// The parameters this group captures, per field-patch action, in declaration order.
     pub(crate) fields: Vec<(String, Vec<String>)>,
+    /// The actions its controls' variants name: what a capture takes the group as on another kind
+    /// of photo (Basic's White balance is `set-raw`'s development on a RAW photo).
+    pub(crate) variants: Vec<String>,
     /// Checked unless the group carries per-photo white balance.
     pub(crate) default_checked: bool,
     /// Whether the Auto tone step overwrites a field of this group, as its descriptor declares
@@ -216,6 +219,7 @@ fn collect(modules: &[ModuleDescriptor], module: &ModuleDescriptor) -> Vec<Prese
                 entries.push(PresettableGroup {
                     label: format!("{} \u{00b7} {}", module.title, group.label),
                     fields: Vec::new(),
+                    variants: Vec::new(),
                     default_checked: true,
                     auto_overwritten: false,
                 });
@@ -262,6 +266,7 @@ fn collect(modules: &[ModuleDescriptor], module: &ModuleDescriptor) -> Vec<Prese
                     entries.push(PresettableGroup {
                         label: module.title.clone(),
                         fields: Vec::new(),
+                        variants: Vec::new(),
                         default_checked: true,
                         auto_overwritten: false,
                     });
@@ -269,6 +274,13 @@ fn collect(modules: &[ModuleDescriptor], module: &ModuleDescriptor) -> Vec<Prese
                 }),
             };
             entries[index].add(action, parameter);
+            for variant in control.variants() {
+                if let Some(Control::Number(number)) = variant.control.as_deref()
+                    && !entries[index].variants.contains(&number.action)
+                {
+                    entries[index].variants.push(number.action.clone());
+                }
+            }
         }
     }
     entries
@@ -280,6 +292,7 @@ pub(crate) fn capture_fields(groups: &[PresettableGroup], form: &PresetForm) -> 
     let mut merged = PresettableGroup {
         label: String::new(),
         fields: Vec::new(),
+        variants: Vec::new(),
         default_checked: true,
         auto_overwritten: false,
     };
@@ -319,30 +332,28 @@ pub(crate) fn presets_control(modules: &[ModuleDescriptor]) -> Option<(&ModuleDe
 }
 
 /// The fields a `presets` control's action carries for one library preset, under the names its
-/// descriptor declares: the `settings` parameter, the required `string` (the name) and the
-/// optional `string` (the library identity). Registration guarantees exactly those three.
+/// descriptor declares: the `settings` parameter and the `settings-origin` one, the preset's name and
+/// library identity. Registration guarantees exactly those two.
 pub(crate) fn apply_fields(
     action: &ActionDescriptor,
     preset: &PresetSummary,
 ) -> Option<Map<String, Value>> {
-    let settings = action
-        .parameters
-        .iter()
-        .find(|parameter| matches!(parameter.kind, ParameterKind::Settings))?;
-    let name = action.parameters.iter().find(|parameter| {
-        matches!(parameter.kind, ParameterKind::String { .. }) && parameter.required
-    })?;
+    let named = |kind: fn(&ParameterKind) -> bool| {
+        action
+            .parameters
+            .iter()
+            .find(|parameter| kind(&parameter.kind))
+            .map(|parameter| parameter.name.clone())
+    };
+    let settings = named(|kind| matches!(kind, ParameterKind::Settings))?;
+    let origin = named(|kind| matches!(kind, ParameterKind::SettingsOrigin))?;
     let mut fields = Map::new();
-    fields.insert(
-        settings.name.clone(),
-        Value::Object(preset.settings.clone()),
-    );
-    fields.insert(name.name.clone(), Value::from(preset.name.clone()));
-    if let Some(id) = action.parameters.iter().find(|parameter| {
-        matches!(parameter.kind, ParameterKind::String { .. }) && !parameter.required
-    }) {
-        fields.insert(id.name.clone(), Value::from(preset.id.as_str()));
-    }
+    fields.insert(settings, Value::Object(preset.settings.clone()));
+    let origin_value = SettingsOrigin::Preset {
+        name: preset.name.clone(),
+        preset_id: Some(preset.id.clone()),
+    };
+    fields.insert(origin, serde_json::to_value(origin_value).ok()?);
     Some(fields)
 }
 
@@ -814,8 +825,7 @@ mod tests {
             Value::Object(fields),
             json!({
                 "settings": {"set-basic": {"exposure": 0.5}},
-                "name": "Warm",
-                "preset-id": preset.id.as_str(),
+                "origin": {"kind": "preset", "name": "Warm", "preset_id": preset.id.as_str()},
             })
         );
     }

@@ -65,7 +65,7 @@ Each Lightroom photograph in scope ([L1](#decided)) becomes a catalog photograph
 
 ### The edit
 
-Each photograph's Lightroom settings become **one history entry**, `Imported from Lightroom`, by the `system` actor after the Original, built transactionally from each module's own actions, so every value passes the module's own validation. It shares [composite planning](presets.md#composite-actions) invariants, but `apply-preset` accepts only presettable field patches and at most 16 steps: the importer must support its bounded per-photo actions without relaxing public preset eligibility. Undo returns to the Original.
+Each photograph's Lightroom settings become **one history entry**, `Imported from Lightroom`, by the `system` actor after the Original, built transactionally from each module's own actions, so every value passes the module's own validation. It shares [composite planning](presets.md#composite-actions) invariants, but `apply-settings` accepts only presettable field patches and at most 16 steps: the importer must support its bounded per-photo actions without relaxing public preset eligibility. Undo returns to the Original.
 
 | Lightroom | Luxforge | Notes |
 | --- | --- | --- |

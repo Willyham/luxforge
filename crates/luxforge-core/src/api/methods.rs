@@ -673,7 +673,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "saved versions in creation order with their entry sequence"
     ),
     // The preset library is catalog data beside history. None of these methods renders, opens a
-    // source or hashes pixels; applying a preset is edit.apply-preset.
+    // source or hashes pixels; applying a preset is edit.apply-settings or batch.apply-settings.
     service!(
         "preset.list",
         NoParams,
@@ -1185,26 +1185,19 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "permanently deletes the catalog records of the removed photographs, at most 50,000 a call, earliest removed first, in one transaction, answering {outcome, deleted, remaining, deduplicated} (remaining: removed photographs left for another call; no-op when none is removed): each one's history entries, state, requests, versions, capture row, collection memberships, artifact references and asset row, then the strokes and artifact rows no remaining entry names (the artifacts' files are removed by a collect job it queues); records one event and marks every client's view stale; not a library change, never undone, and the journal is kept, so an undo naming a deleted photograph is conflict; files on disk are never touched; forbidden to a client without permission authority (only the desktop's own client and luxforge-json --permission-authority have it); records one event",
         retries: Owner,
     ),
-    // Batch preset and export.
+    // Batch settings and export.
     owner!(
-        "batch.apply-preset",
-        crate::catalog_types::api::BatchApplyPreset,
-        owner::library::batch::batch_apply_preset,
-        "starts a batch-preset job, answering {job_id, status, deduplicated}, whose result is {done, skipped: [{asset_id, code, reason}], settings_skipped?: [{asset_id, settings: [{action, parameter?, reason}]}]}: the library preset is read once and applied to each photograph targets names, one at a time, exactly as edit.apply-preset applies it (its settings, name and id as preset-id, against the photograph's current revision, by the envelope's actor under the request identity <request_id>/<asset_id>), analysis steps such as Auto tone run after the field patches and are recomputed per photograph; so each done photograph has its own entry labelled Preset: <name> and records an event naming it and its revision; settings_skipped lists the settings left out of a done photograph because they do not apply to it; skipped names every photograph left out: removed (in Removed), draft-open (the caller holds a draft on it), history-selected (the caller previews its history), not-applicable (none of the preset's settings apply to it), unchanged (it already has them) or the code and message edit.apply-preset refuses it with; a stack that needs its source prepared is prepared first, one photograph at a time; targets are photographs by id, by their originals' paths or index rows, or the photographs selected in the caller's view; an unknown preset or photograph is validation; while it runs job.read's result is the report so far and its progress reads n of N; job.cancel stops it between photographs or during deferred analysis, keeping every one done; a retry after a restart applies nothing twice; resource-limit past 50,000 photographs or when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id",
-        retries: Owner,
-    ),
-    owner!(
-        "batch.paste-settings",
-        crate::catalog_types::api::BatchPasteSettings,
-        owner::library::batch::batch_paste_settings,
-        "starts a batch-paste job with inline settings validated once against the registry; answers {job_id, status, deduplicated}, with the same BatchReport, targets, progress, cancellation, limits and skip rules as batch.apply-preset. Each photograph runs edit.paste-settings with source and optional source_asset_id as source-asset, against its current revision under <request_id>/<asset_id>, writing one entry labelled Paste settings from <source>. Settings contain 1..=16 presettable actions with at most 64 fields each. Unknown, unavailable or non-patch actions refuse the submission. No library preset is created or read; source_asset_id is provenance only. Cancel keeps every finished photograph; job.read reports progress and per-photograph settings_skipped.",
+        "batch.apply-settings",
+        crate::catalog_types::api::BatchApplySettings,
+        owner::library::batch::batch_apply_settings,
+        "starts a batch-settings job, answering {job_id, status, deduplicated}, whose result is {done, skipped: [{asset_id, code, reason}], settings_skipped?: [{asset_id, settings: [{action, parameter?, reason}]}]}: the set is either inline settings with their origin ({kind: preset, name, preset_id?} or {kind: paste, source, source_asset?}) or a library preset_id, read once, whose origin is {kind: preset, name, preset_id}; exactly one of settings and preset_id, and origin only with settings; it is checked once as edit.apply-settings checks it, so an unknown, non-presettable or overlapping action or a refused field refuses the submission, and a step whose module does not apply to a photograph's kind is skipped for that photograph; then it is applied to each photograph targets names, one at a time, exactly as edit.apply-settings applies it (against the photograph's current revision, by the envelope's actor under the request identity <request_id>/<asset_id>), analysis steps such as Auto tone running after the field patches and recomputed per photograph; so each done photograph has its own entry labelled by the origin (Preset: <name> or Paste settings from <source>) and records an event naming it and its revision; settings_skipped lists the settings left out of a done photograph because they do not apply to it; skipped names every photograph left out: removed (in Removed), draft-open (the caller holds a draft on it), history-selected (the caller previews its history), not-applicable (none of the set's settings apply to it), unchanged (it already has them) or the code and message edit.apply-settings refuses it with; a stack that needs its source prepared is prepared first, one photograph at a time; targets are photographs by id, by their originals' paths or index rows, or the photographs selected in the caller's view; an unknown preset or photograph is validation; the job's detail is the entry label and the photograph count; while it runs job.read's result is the report so far and its progress reads n of N; job.cancel stops it between photographs or during deferred analysis, keeping every one done; a retry after a restart applies nothing twice; resource-limit past 50,000 photographs or when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id",
         retries: Owner,
     ),
     owner!(
         "batch.export",
         crate::catalog_types::api::BatchExport,
         owner::library::batch::batch_export,
-        "starts a batch-export job, answering {job_id, status, deduplicated}, whose result is {done, written: [{asset_id, path, renderer}], skipped: [{asset_id, code, reason}]}: each photograph targets names, one at a time, has its current entry exported exactly as export.jpeg exports it (baseline quality-90 sRGB, keep_metadata as there, through the GPU tile service or the reference renderer) into destination, an existing absolute folder, named by the export's rule from its original's name (<name>-edited.jpg, else -edited-2.jpg and so on, at most 64 names read) and never replacing a file; each written file names the renderer that rendered it as export.jpeg's result does ({record: gpu, reason: null}, or {record: reference, reason} with why the GPU did not, no reason on an owner with no GPU provider) and records an event under the request; skipped names every photograph left out: removed (in Removed), or the code and message export.jpeg refuses it with, such as source-unavailable for a missing or offline original and conflict when every name is taken; a source that is not prepared is prepared first through the one preparation path, one photograph at a time, replacing the editor's prepared source; targets as batch.apply-preset's; a relative path or a file as destination is validation and a folder that is not there read-error; while it runs job.read's result is the report so far and its progress reads n of N; job.cancel stops it between photographs, or within the one being exported, whose temporary file is removed, keeping every file written; resource-limit past 50,000 photographs or when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id",
+        "starts a batch-export job, answering {job_id, status, deduplicated}, whose result is {done, written: [{asset_id, path, renderer}], skipped: [{asset_id, code, reason}]}: each photograph targets names, one at a time, has its current entry exported exactly as export.jpeg exports it (baseline quality-90 sRGB, keep_metadata as there, through the GPU tile service or the reference renderer) into destination, an existing absolute folder, named by the export's rule from its original's name (<name>-edited.jpg, else -edited-2.jpg and so on, at most 64 names read) and never replacing a file; each written file names the renderer that rendered it as export.jpeg's result does ({record: gpu, reason: null}, or {record: reference, reason} with why the GPU did not, no reason on an owner with no GPU provider) and records an event under the request; skipped names every photograph left out: removed (in Removed), or the code and message export.jpeg refuses it with, such as source-unavailable for a missing or offline original and conflict when every name is taken; a source that is not prepared is prepared first through the one preparation path, one photograph at a time, replacing the editor's prepared source; targets as batch.apply-settings'; a relative path or a file as destination is validation and a folder that is not there read-error; while it runs job.read's result is the report so far and its progress reads n of N; job.cancel stops it between photographs, or within the one being exported, whose temporary file is removed, keeping every file written; resource-limit past 50,000 photographs or when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id",
         retries: Owner,
     ),
     // Views: events, browsing and the selection.
@@ -4950,8 +4943,8 @@ mod tests {
         )
     }
 
-    /// `edit.apply-preset` takes its settings, name and library identity as top-level fields beside
-    /// the envelope, and any registered field patch is presettable: the test patch module's action
+    /// `edit.apply-settings` takes its settings and origin as top-level fields beside the envelope,
+    /// and any registered field patch is presettable: the test patch module's action
     /// is applied in the same entry as Basic's. A second identical call is a no-op that emits no
     /// event, and a refused step is the same structured error the action gives alone.
     #[test]
@@ -4962,24 +4955,23 @@ mod tests {
         let (applied, changed) = mutated(
             &mut service,
             &mut session,
-            "edit.apply-preset",
+            "edit.apply-settings",
             json!({
                 "asset_id": asset,
                 "mutation": mutation_json(0, "preset"),
                 "settings": settings,
-                "name": "Warm",
-                "preset-id": "preset-7",
+                "origin": {"kind": "preset", "name": "Warm", "preset_id": "preset-000000007"},
             }),
         );
         assert_eq!(applied["outcome"], json!("applied"));
         assert_eq!(applied["revision"], json!(1));
         assert_eq!(changed, Changed::Something { revision: Some(1) });
         let entry = entry_of(&mut service, &mut session, &asset, &applied);
-        assert_eq!(entry["action_id"], json!("apply-preset"));
+        assert_eq!(entry["action_id"], json!("apply-settings"));
         assert_eq!(entry["label"], json!("Preset: Warm"));
         assert_eq!(
             entry["parameters"],
-            json!({"settings": settings, "name": "Warm", "preset-id": "preset-7"})
+            json!({"settings": settings, "origin": {"kind": "preset", "name": "Warm", "preset_id": "preset-000000007"}})
         );
         let rows = described(&mut service, &mut session, &asset);
         assert_eq!(
@@ -5000,12 +4992,12 @@ mod tests {
         let (again, changed) = mutated(
             &mut service,
             &mut session,
-            "edit.apply-preset",
+            "edit.apply-settings",
             json!({
                 "asset_id": asset,
                 "mutation": mutation_json(1, "again"),
                 "settings": settings,
-                "name": "Warm",
+                "origin": {"kind": "preset", "name": "Warm"},
             }),
         );
         assert_eq!(again["outcome"], json!("no-op"));
@@ -5015,12 +5007,12 @@ mod tests {
         let refused = call(
             &mut service,
             &mut session,
-            "edit.apply-preset",
+            "edit.apply-settings",
             json!({
                 "asset_id": asset,
                 "mutation": mutation_json(1, "refused"),
                 "settings": {"set-patch": {"red": 300}},
-                "name": "Too red",
+                "origin": {"kind": "preset", "name": "Too red"},
             }),
         );
         let error = refused.error.expect("a refused step");

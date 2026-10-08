@@ -981,7 +981,7 @@ fn view_rows(editor: &Editor, agent: ClientId, query: &Value) -> Vec<Value> {
 }
 
 /// Apply preset… and Export… of the selection, on a real owner: the menu lists the library's
-/// presets as `preset.list` answers them; each starts the job an agent's `batch.apply-preset` or
+/// presets as `preset.list` answers them; each starts the job an agent's `batch.apply-settings` or
 /// `batch.export` of the selection starts, with the desktop's actor; its end is read with
 /// `job.read`, whose report the desktop shows — each photograph left out named with the owner's
 /// reason — and its sentence is the status bar's; each photograph the preset reached has one
@@ -1050,7 +1050,7 @@ fn catalog_browse_applies_a_preset_and_exports_the_selection_on_a_real_owner() {
     assert_eq!(
         batch_sent(&editor),
         (
-            "batch.apply-preset".to_owned(),
+            "batch.apply-settings".to_owned(),
             json!({"targets": {"kind": "selection"}, "preset_id": preset["id"]})
         )
     );
@@ -1386,7 +1386,11 @@ fn copy_settings_select_confirmation_rechecks_selection_and_uses_the_shared_batc
             .as_object()
             .unwrap()
             .clone(),
-        groups: vec!["Basic · Tone".into()],
+        groups: groups
+            .iter()
+            .filter(|group| group.label == "Basic · Tone")
+            .cloned()
+            .collect(),
         ..(*captured).clone()
     });
     editor.view_state.copy_settings.clipboard = Some(clipboard.clone());
@@ -1421,10 +1425,10 @@ fn copy_settings_select_confirmation_rechecks_selection_and_uses_the_shared_batc
     );
     let _ = editor.update(Message::CopySettings(C::Confirm));
     let (method, params) = batch_sent(&editor);
-    assert_eq!(method, "batch.paste-settings");
+    assert_eq!(method, "batch.apply-settings");
     assert_eq!(
         params,
-        json!({"targets":{"kind":"selection"},"settings":clipboard.settings,"source":clipboard.source.name,"source_asset_id":clipboard.source.asset})
+        json!({"targets":{"kind":"selection"},"settings":clipboard.settings,"origin":{"kind":"paste","source":clipboard.source.name,"source_asset":clipboard.source.asset}})
     );
     settle(&mut editor);
     let job = editor

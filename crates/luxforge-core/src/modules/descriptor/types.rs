@@ -14,11 +14,10 @@ use crate::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-/// The parameters a `presets` control submits its action with: the settings set, the preset's name
-/// and, optionally, the library identity it came from.
+/// The parameters a `presets` control submits its action with: the settings set and where it came
+/// from ([`ParameterKind::SettingsOrigin`]).
 pub(crate) const PRESET_SETTINGS: &str = "settings";
-pub(crate) const PRESET_NAME: &str = "name";
-pub(crate) const PRESET_ID: &str = "preset-id";
+pub(crate) const SETTINGS_ORIGIN: &str = "origin";
 
 fn is_default<T: Default + PartialEq>(value: &T) -> bool {
     value == &T::default()
@@ -193,6 +192,10 @@ pub enum ParameterKind {
     /// non-empty objects of that action's fields. The generic check validates only this shape; the
     /// host checks every action and field against its own descriptor when the set is applied.
     Settings,
+    /// Where a settings set came from, as one object: `{kind: preset, name, preset_id?}` or
+    /// `{kind: paste, source, source_asset?}` ([`crate::SettingsOrigin`]). The generic check reads
+    /// it whole, bounds and all, so the module that declares it receives a well-formed origin.
+    SettingsOrigin,
     /// A network destination: a URL of at most `MAX_ENDPOINT_BYTES` that the capability
     /// transport's policy accepts as one of `classes`. Only a module setting declares one, and only
     /// a provider profile's, because only the host contacts anything and a destination is the
@@ -313,6 +316,7 @@ impl ParameterKind {
             Self::Curve { .. } => "curve",
             Self::String { .. } => "string",
             Self::Settings => "settings",
+            Self::SettingsOrigin => "settings-origin",
             Self::Endpoint { .. } => "endpoint",
             Self::Secret { .. } => "secret",
             Self::Identity { .. } => "identity",
@@ -458,6 +462,10 @@ impl ParameterDescriptor {
 
     pub(crate) fn settings(name: impl Into<String>) -> Self {
         Self::new(name, ParameterKind::Settings)
+    }
+
+    pub(crate) fn settings_origin(name: impl Into<String>) -> Self {
+        Self::new(name, ParameterKind::SettingsOrigin)
     }
 
     pub(crate) fn endpoint(

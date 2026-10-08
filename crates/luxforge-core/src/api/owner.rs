@@ -6703,6 +6703,10 @@ mod tests {
             }
             ParameterKind::Artifact => (json!(format!("artifact-{}", "0".repeat(64))), json!("x")),
             ParameterKind::Settings => (json!({"set-basic": {"exposure": 0.5}}), json!({})),
+            ParameterKind::SettingsOrigin => (
+                json!({"kind": "paste", "source": "x".repeat(crate::modules::MAX_SOURCE_NAME)}),
+                json!({"kind": "paste", "source": "x".repeat(crate::modules::MAX_SOURCE_NAME + 1)}),
+            ),
             ParameterKind::Json | ParameterKind::Secret { .. } => return None,
             other => panic!("no host method declares a {} parameter", other.name()),
         })
@@ -6837,8 +6841,16 @@ mod tests {
         assert_eq!(
             exercised.into_iter().collect::<Vec<_>>(),
             [
-                "artifact", "boolean", "enum", "identity", "integer", "number", "settings",
-                "string", "text"
+                "artifact",
+                "boolean",
+                "enum",
+                "identity",
+                "integer",
+                "number",
+                "settings",
+                "settings-origin",
+                "string",
+                "text"
             ],
             "every kind a host method declares, but json and secret, is exercised"
         );

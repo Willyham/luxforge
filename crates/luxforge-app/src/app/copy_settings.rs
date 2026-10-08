@@ -73,7 +73,7 @@ pub(crate) fn capture_now(
         groups: groups
             .iter()
             .filter(|group| form.is_checked(group))
-            .map(|group| group.label.clone())
+            .cloned()
             .collect(),
         copied_at: SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -318,7 +318,7 @@ impl Editor {
         if self.select.state.shown == Shown::Select {
             return self.batch_refusal();
         }
-        self.action_refusal("paste-settings")
+        self.action_refusal("apply-settings")
     }
 
     pub(crate) fn copy_model(&self) -> CopyModel {
@@ -630,7 +630,7 @@ impl Editor {
         let state = &self.view_state.copy_settings;
         json!({
             "pending": state.pending,
-            "clipboard": state.clipboard.as_ref().map(|clip| json!({"asset": clip.source.asset, "entry": clip.source.entry, "name": clip.source.name, "kind": clip.kind, "groups": clip.groups, "settings": clip.settings, "copied_at": clip.copied_at})),
+            "clipboard": state.clipboard.as_ref().map(|clip| json!({"asset": clip.source.asset, "entry": clip.source.entry, "name": clip.source.name, "kind": clip.kind, "groups": clip.labels(), "settings": clip.settings, "copied_at": clip.copied_at})),
             "chooser": state.chooser.as_ref().map(|chooser| json!({"name": chooser.source.name, "entry": chooser.inspected_entry, "kind": chooser.kind, "groups": chooser.groups.iter().map(|row| json!({"label":row.group.label,"custom":row.custom,"reason":row.reason,"checked":chooser.form.is_checked(&row.group)})).collect::<Vec<_>>() })),
             "confirmation": state.confirm.as_ref().map(|confirm| json!({"count": confirm.targets.count(),"source":confirm.clipboard.source.name,"skip":confirm.skip})),
             "previous": state.previous.as_ref().map(|source| &source.asset),
@@ -679,23 +679,17 @@ impl Editor {
     }
 
     fn paste_single(&mut self, clipboard: &Clipboard) -> Task<Message> {
-        if let Some(reason) = self.action_refusal("paste-settings") {
+        if let Some(reason) = self.action_refusal("apply-settings") {
             self.status.text = reason;
             return Task::none();
         }
-        match self.request("paste-settings", &clipboard.parameters()) {
+        match self.request("apply-settings", &clipboard.parameters()) {
             Ok((method, params)) => {
                 self.view_state.copy_settings.request =
                     Some(json!({"method": method, "params": params}));
-                if let (Some(request_id), Some(state)) = (
-                    params["mutation"]["request_id"].as_str(),
-                    self.document.state.as_ref(),
-                ) {
-                    self.view_state.copy_settings.paste_request = Some((
-                        request_id.into(),
-                        Arc::new(clipboard.clone()),
-                        state.current_entry.id.clone(),
-                    ));
+                if let Some(request_id) = params["mutation"]["request_id"].as_str() {
+                    self.view_state.copy_settings.paste_request =
+                        Some((request_id.into(), Arc::new(clipboard.clone())));
                 }
                 self.command(method, params)
             }
@@ -718,7 +712,7 @@ impl Editor {
         {
             return self.paste_single(&clipboard);
         }
-        let params = json!({"targets": targets.params(), "settings": clipboard.settings, "source": clipboard.source.name, "source_asset_id": clipboard.source.asset, "mutation": request()});
+        let params = json!({"targets": targets.params(), "settings": clipboard.settings, "origin": clipboard.origin(), "mutation": request()});
         self.start_settings_batch(
             BatchKind::Paste {
                 source: clipboard.source.name.clone(),
@@ -734,8 +728,28 @@ mod tests {
     use super::*;
     use crate::app::testing::import_and_adopt;
     use luxforge_testbase::paths;
+    /// The copied groups that capture `action`'s `field`, from the registry's own groups.
+    fn group_with(action: &str, field: &str) -> PresettableGroup {
+        let modules = luxforge_core::ModuleRegistry::builtin()
+            .descriptors()
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        copyable_groups(&modules, false)
+            .into_iter()
+            .find(|group| {
+                group
+                    .fields
+                    .iter()
+                    .any(|(named, fields)| named == action && fields.iter().any(|f| f == field))
+            })
+            .unwrap_or_else(|| panic!("a group capturing {action}.{field}"))
+    }
+
+    /// A paste's status reads its answer: the outcome and the skipped settings say how many of the
+    /// copied groups applied and which were skipped, and a no-op says nothing changed.
     #[test]
-    fn copy_settings_status_correlates_the_mutation_and_keeps_no_op_skips() {
+    fn copy_settings_status_correlates_the_mutation_and_reads_applied_and_skipped_groups() {
         use crate::app::{message::sync::SyncMessage, tasks, testing};
         let catalog = paths::temp_catalog("copy-settings-status");
         let (mut editor, asset, _) = testing::real_photo_at(&catalog, &paths::jpeg());
@@ -750,18 +764,31 @@ mod tests {
                 .as_object()
                 .unwrap()
                 .clone(),
-            groups: vec!["Basic · Tone".into(), "Basic · White balance".into()],
+            groups: vec![
+                group_with("set-basic", "exposure"),
+                group_with("set-basic", "temperature"),
+            ],
             copied_at: 0,
             capture: Value::Null,
         };
+        let target = paths::jpeg()
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
         for unchanged in [false, true] {
             let _ = editor.paste_single(&clipboard);
             let sent = editor.view_state.copy_settings.request.clone().unwrap();
+            assert_eq!(sent["method"], "edit.apply-settings");
+            assert_eq!(
+                sent["params"]["origin"],
+                json!({"kind": "paste", "source": "source.NEF", "source_asset": asset})
+            );
             let refresh = tasks::command_now(
                 &editor.owner,
                 editor.client,
                 asset.clone(),
-                "edit.paste-settings",
+                "edit.apply-settings",
                 sent["params"].clone(),
                 None,
             )
@@ -774,6 +801,7 @@ mod tests {
                 refresh.mutation_request, refresh.request,
                 "transport and mutation identities are distinct"
             );
+            let reason = refresh.skipped[0].reason.clone();
             let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
             let Some(crate::state::status::Happened::Pasted(sentence)) = &editor.status.happened
             else {
@@ -782,19 +810,71 @@ mod tests {
                     editor.status.happened
                 );
             };
-            assert!(sentence.contains("Skipped:"), "{sentence}");
-            if unchanged {
-                assert!(sentence.starts_with("Nothing changed"), "{sentence}");
-                assert!(!sentence.contains("Undo"), "{sentence}");
+            let expected = if unchanged {
+                format!(
+                    "Nothing changed: {target} already has the settings that apply \u{b7} White balance skipped: {reason}"
+                )
             } else {
-                assert!(
-                    sentence.contains("source.NEF") && sentence.contains("Undo"),
-                    "{sentence}"
-                );
-            }
+                format!(
+                    "Pasted 1 of 2 groups from source.NEF \u{b7} White balance skipped: {reason} \u{b7} Undo \u{2318}Z"
+                )
+            };
+            assert_eq!(sentence, &expected);
             assert_eq!(editor.document.state.as_ref().unwrap().revision, 1);
             assert!(editor.view_state.copy_settings.paste_request.is_none());
         }
+        testing::finish(editor, catalog);
+    }
+
+    /// Pasting from a photograph whose file name is as long as a platform allows works, and the
+    /// history label shortens the name in the middle.
+    #[test]
+    fn copy_settings_pastes_from_a_source_with_the_longest_file_name() {
+        use crate::app::{tasks, testing};
+        let catalog = paths::temp_catalog("copy-settings-long-name");
+        let (mut editor, asset, _) = testing::real_photo_at(&catalog, &paths::jpeg());
+        let name = format!("{}.NEF", "a".repeat(251));
+        assert_eq!(name.len(), 255, "the longest file name a platform allows");
+        let clipboard = Clipboard {
+            source: Source {
+                asset: asset.clone(),
+                entry: None,
+                name: name.clone(),
+            },
+            kind: luxforge_core::SourceTag::Raw,
+            settings: json!({"set-basic":{"exposure":0.6}})
+                .as_object()
+                .unwrap()
+                .clone(),
+            groups: vec![group_with("set-basic", "exposure")],
+            copied_at: 0,
+            capture: Value::Null,
+        };
+        let _ = editor.paste_single(&clipboard);
+        let sent = editor.view_state.copy_settings.request.clone().unwrap();
+        assert_eq!(sent["params"]["origin"]["source"], json!(name));
+        tasks::command_now(
+            &editor.owner,
+            editor.client,
+            asset.clone(),
+            "edit.apply-settings",
+            sent["params"].clone(),
+            None,
+        )
+        .expect("a 255-byte file name pastes");
+        let (state, _) = call(
+            &editor.owner,
+            editor.client,
+            "asset.state",
+            json!({"asset_id": asset}),
+        )
+        .unwrap();
+        let label = state["current_entry"]["label"].as_str().unwrap();
+        assert!(
+            label.starts_with("Paste settings from aaaa") && label.ends_with("aaa.NEF"),
+            "{label}"
+        );
+        assert!(label.contains('\u{2026}'), "{label}");
         testing::finish(editor, catalog);
     }
 

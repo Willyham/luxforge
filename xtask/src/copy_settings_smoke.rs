@@ -287,7 +287,10 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             "confirmation does not identify three JPEG white-balance skips",
         )?;
         ensure(
-            launch.at("jpeg-to-raw")?.status()?.contains("Skipped:"),
+            launch
+                .at("jpeg-to-raw")?
+                .status()?
+                .contains("White balance skipped:"),
             "JPEG white balance on RAW did not report its skip",
         )?;
         run.record(

@@ -50,7 +50,7 @@ What Luxforge takes from this:
 - **Not in scope**, with no placeholder controls:
   - Auto white balance. The owner chose tone only; it remains a separate later proposal.
   - Per-slider Auto (Shift+double-click).
-  - A desktop "Auto selected photos" command. [Presets](#presets-and-import) carry Auto to several photos through `batch.apply-preset`, which analyses each photo separately.
+  - A desktop "Auto selected photos" command. [Presets](#presets-and-import) carry Auto to several photos through `batch.apply-settings`, which analyses each photo separately.
   - A learned model.
   - Texture, Clarity and Dehaze.
 
@@ -170,7 +170,7 @@ The constants above are the starting targets. They live in one versioned `AutoTo
 
 **Capture.** `preset.capture` accepts `{"auto-tone": true}` and returns `{"auto-tone": {}}`. The desktop create form gains an Auto tone row in Basic's Tone group; ticking it clears and disables the eight fields it would overwrite.
 
-**Batch.** `batch.apply-preset` applies through `edit.apply-preset` for each photo, so each photo is analysed separately. One photo's values are never copied to another.
+**Batch.** `batch.apply-settings` applies through `edit.apply-settings` for each photo, so each photo is analysed separately. One photo's values are never copied to another.
 
 **Lightroom import.**
 

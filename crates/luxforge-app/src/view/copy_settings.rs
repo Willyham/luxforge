@@ -61,7 +61,7 @@ pub(crate) fn buttons(model: &CopyModel) -> Element<'_, Message> {
                         .unwrap_or_default()
                         .as_secs()
                         .saturating_sub(clipboard.copied_at),
-                    clipboard.groups.join(", ")
+                    clipboard.labels().join(", ")
                 )
             })
             .unwrap_or_default()
@@ -242,7 +242,7 @@ pub(crate) fn confirmation(model: &CopyModel) -> Option<Element<'_, Message>> {
     let body = column![
         text(format!("Paste settings to {count} photographs?")).size(theme::SIZE_TITLE),
         text(format!("Settings from {}", confirm.clipboard.source.name)),
-        text(confirm.clipboard.groups.join(" · ")).size(theme::SIZE_CAPTION),
+        text(confirm.clipboard.labels().join(" · ")).size(theme::SIZE_CAPTION),
         text("Each photograph gets its own history entry. Undo in each photograph’s history; there is no undo for the whole paste."),
         text(confirm.skip.clone()).size(theme::SIZE_CAPTION),
         row![button("Cancel", C::Cancel), text_button(&format!("Paste to {count}"), ButtonTone::Primary, ButtonSize::Compact, Some(msg(C::Confirm)))].spacing(8),
@@ -294,7 +294,7 @@ pub(crate) fn card(model: &CopyModel) -> Element<'_, Message> {
                     .saturating_sub(clipboard.copied_at)
             ))
             .size(theme::SIZE_CAPTION),
-            text(clipboard.groups.join(" · ")).size(theme::SIZE_CAPTION),
+            text(clipboard.labels().join(" · ")).size(theme::SIZE_CAPTION),
             text_button(
                 &format!("Paste settings to {}", model.targets),
                 ButtonTone::Primary,

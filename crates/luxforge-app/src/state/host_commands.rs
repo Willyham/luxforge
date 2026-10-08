@@ -52,14 +52,14 @@ pub(crate) static HOST_COMMANDS: [HostCommandSpec; 4] = [
     HostCommandSpec {
         command: HostCommand::PasteSettings,
         label: "Paste settings",
-        detail: "edit.paste-settings / batch.paste-settings",
+        detail: "edit.apply-settings / batch.apply-settings",
         chord: Chord::command('V'),
         in_select: true,
     },
     HostCommandSpec {
         command: HostCommand::PastePrevious,
         label: "Paste settings from previous photograph",
-        detail: "preset.capture \u{2192} edit.paste-settings",
+        detail: "preset.capture \u{2192} edit.apply-settings",
         chord: Chord::command('V').option(),
         in_select: false,
     },

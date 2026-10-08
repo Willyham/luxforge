@@ -68,7 +68,7 @@ pub(crate) use evaluate::PointPlan;
 pub(crate) use history::{MAX_HISTORY_PAGE, MAX_VERSION_NAME};
 pub use masks::MASK_FIELD;
 pub(crate) use masks::mask_target_parameter;
-pub(crate) use plan::prefix;
+pub(crate) use plan::{Prepared as PreparedAction, prefix};
 pub use source::RawInterpretation;
 pub(crate) use source::{
     FilePreparation, NewPhotograph, Prepared, Preparing, ReadContent, ReadOriginal, SourceWork,

@@ -49,7 +49,7 @@ pub(in crate::api) mod remove;
 #[cfg(test)]
 mod remove_tests;
 
-// Batch preset and export: `batch.apply-preset`, `batch.export`.
+// Batch settings and export: `batch.apply-settings`, `batch.export`.
 pub(in crate::api) mod batch;
 #[cfg(test)]
 mod batch_tests;

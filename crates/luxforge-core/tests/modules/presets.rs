@@ -1,11 +1,11 @@
 //! The `luxforge.presets` module and the host's composite plans end to end, through the real
-//! `EditorService`: `apply-preset` commits one entry whose stack equals the same fields sent through
+//! `EditorService`: `apply-settings` commits one entry whose stack equals the same fields sent through
 //! the individual `edit.set-*` actions, leaves every field it does not name alone, is a no-op when
 //! it changes nothing, undoes to the stack from before it, refuses every bad step with nothing
 //! written, drafts exactly what it commits, and on a masked photo edits the global layer as the
 //! direct action does.
 //!
-//! The descriptor, the generic `string` and `settings` checks, the `presets` control's registration
+//! The descriptor, the generic `settings-origin` and `settings` checks, the `presets` control's registration
 //! rules and the module's own parse, plan and label are proved in-crate next to their code.
 
 use luxforge_core::{
@@ -86,7 +86,7 @@ fn apply_preset(
     service.apply_action(
         asset,
         mutation(current, request),
-        "apply-preset",
+        "apply-settings",
         parameters,
     )
 }
@@ -117,7 +117,7 @@ fn assert_refused(
         service,
         asset,
         "refused",
-        json!({"settings": settings, "name": "Refused"}),
+        json!({"settings": settings, "origin": {"kind": "preset", "name": "Refused"}}),
     )
     .expect_err(case);
     assert_eq!(error.kind, kind, "{case}: {error}");
@@ -137,7 +137,7 @@ fn assert_refused(
 #[test]
 fn a_preset_commits_one_entry_whose_stack_equals_the_individual_actions() {
     let (mut service, asset, path) = opened("one-entry", None);
-    let sent = json!({"settings": soft_film(), "name": "Soft film", "preset-id": "preset-1"});
+    let sent = json!({"settings": soft_film(), "origin": {"kind": "preset", "name": "Soft film", "preset_id": "preset-000000001"}});
     let (before, count) = (revision(&service, &asset), entries(&service, &asset));
     let result = apply_preset(&mut service, &asset, "apply", sent.clone()).expect("applied");
     assert_eq!(result.outcome, MutationOutcome::Applied);
@@ -145,7 +145,7 @@ fn a_preset_commits_one_entry_whose_stack_equals_the_individual_actions() {
     assert_eq!(entries(&service, &asset), count + 1, "one entry");
     let entry = service.state(&asset).expect("state").current_entry;
     assert_eq!(Some(&entry.id), result.created_entry_id.as_ref());
-    assert_eq!(entry.action_id, "apply-preset");
+    assert_eq!(entry.action_id, "apply-settings");
     assert_eq!(entry.label, "Preset: Soft film");
     assert_eq!(
         entry.parameters, sent,
@@ -157,7 +157,7 @@ fn a_preset_commits_one_entry_whose_stack_equals_the_individual_actions() {
         .apply_action(
             &asset,
             mutation(before, "apply"),
-            "apply-preset",
+            "apply-settings",
             sent.clone(),
         )
         .expect("a retry");
@@ -240,7 +240,7 @@ fn fields_a_preset_does_not_name_keep_their_values() {
         &mut service,
         &asset,
         "exposure",
-        json!({"settings": {"set-basic": {"exposure": 0.5}}, "name": "Brighter"}),
+        json!({"settings": {"set-basic": {"exposure": 0.5}}, "origin": {"kind": "preset", "name": "Brighter"}}),
     )
     .expect("applied");
     let after = recipe(&service, &asset);
@@ -260,7 +260,7 @@ fn fields_a_preset_does_not_name_keep_their_values() {
 #[test]
 fn applying_the_same_preset_twice_is_a_no_op_the_second_time() {
     let (mut service, asset, path) = opened("twice", None);
-    let sent = json!({"settings": soft_film(), "name": "Soft film"});
+    let sent = json!({"settings": soft_film(), "origin": {"kind": "preset", "name": "Soft film"}});
     apply_preset(&mut service, &asset, "first", sent.clone()).expect("applied");
     let (before, count) = (revision(&service, &asset), entries(&service, &asset));
     let stack = recipe(&service, &asset);
@@ -272,7 +272,7 @@ fn applying_the_same_preset_twice_is_a_no_op_the_second_time() {
     assert_eq!(entries(&service, &asset), count, "no new entry");
     assert_eq!(recipe(&service, &asset), stack, "the same snapshot");
     let retried = service
-        .apply_action(&asset, mutation(before, "second"), "apply-preset", sent)
+        .apply_action(&asset, mutation(before, "second"), "apply-settings", sent)
         .expect("a retried no-op");
     assert!(retried.deduplicated);
     assert_eq!(retried.outcome, MutationOutcome::NoOp);
@@ -297,7 +297,7 @@ fn undo_returns_to_the_stack_from_before_the_preset() {
         &mut service,
         &asset,
         "apply",
-        json!({"settings": soft_film(), "name": "Soft film"}),
+        json!({"settings": soft_film(), "origin": {"kind": "preset", "name": "Soft film"}}),
     )
     .expect("applied");
     let applied = recipe(&service, &asset);
@@ -380,7 +380,7 @@ fn a_bad_step_refuses_the_whole_preset_and_writes_nothing() {
         &mut service,
         &asset,
         "refused",
-        json!({"settings": {"set-basic": {"exposure": 1}}, "name": "Refused"}),
+        json!({"settings": {"set-basic": {"exposure": 1}}, "origin": {"kind": "preset", "name": "Refused"}}),
     )
     .expect("the request identity was never stored");
     assert_eq!(result.outcome, MutationOutcome::Applied);
@@ -388,26 +388,34 @@ fn a_bad_step_refuses_the_whole_preset_and_writes_nothing() {
     fs::remove_file(path).expect("the catalog is removed");
 }
 
-/// A name that is empty or only whitespace would label an entry with nothing, so it is refused and
-/// nothing is written.
+/// A name or source that is empty or only whitespace would label an entry with nothing, so the
+/// generic check refuses it and nothing is written.
 #[test]
 fn an_empty_or_blank_name_is_refused() {
     let (mut service, asset, path) = opened("names", None);
-    for name in ["", "  ", "\t"] {
+    for (origin, expected) in [
+        (
+            json!({"kind": "preset", "name": ""}),
+            "parameter origin is not a usable origin: name must not be empty",
+        ),
+        (
+            json!({"kind": "preset", "name": "  "}),
+            "parameter origin is not a usable origin: name must not be empty",
+        ),
+        (
+            json!({"kind": "paste", "source": "\u{3000}"}),
+            "parameter origin is not a usable origin: source must not be empty",
+        ),
+    ] {
         let error = apply_preset(
             &mut service,
             &asset,
             "blank",
-            json!({"settings": {"set-basic": {"exposure": 1}}, "name": name}),
+            json!({"settings": {"set-basic": {"exposure": 1}}, "origin": origin}),
         )
         .expect_err("a blank name");
-        assert_eq!(error.kind, ErrorKind::Validation, "{name:?}");
-        let expected = if name == "\t" {
-            "parameter name must not contain control characters"
-        } else {
-            "preset name must not be empty"
-        };
-        assert_eq!(error.detail, expected, "{name:?}");
+        assert_eq!(error.kind, ErrorKind::Validation, "{origin}");
+        assert_eq!(error.detail, expected, "{origin}");
     }
     assert_eq!(revision(&service, &asset), 0);
     assert_eq!(entries(&service, &asset), 1, "only the import entry");
@@ -452,13 +460,13 @@ fn a_step_of_an_unavailable_module_that_does_not_apply_is_skipped() {
         .run_action(
             &asset,
             mutation(0, "unavailable-raw"),
-            "apply-preset",
+            "apply-settings",
             json!({
                 "settings": {
                     "set-basic": {"exposure": 1},
                     "set-raw": {"white-balance": "as-shot"},
                 },
-                "name": "Both kinds",
+                "origin": {"kind": "preset", "name": "Both kinds"},
             }),
         )
         .expect("the applicable step applies");
@@ -676,7 +684,7 @@ fn composites_do_not_nest_and_hold_at_most_sixteen_steps() {
 // Drafts.
 // -------------------------------------------------------------------------------------------
 
-/// A draft of `apply-preset` resolves through the same helper a commit does, so its effective
+/// A draft of `apply-settings` resolves through the same helper a commit does, so its effective
 /// recipe is what committing it produces: the layer it updates keeps its identity in both, and the
 /// layers it adds match in everything but their fresh identities.
 #[test]
@@ -690,8 +698,9 @@ fn a_drafted_preset_resolves_to_exactly_what_it_commits() {
             json!({"exposure": -1}),
         )
         .expect("an exposure");
-    let fields = json!({"settings": soft_film(), "name": "Soft film"});
-    let mut draft = Draft::new("apply-preset", asset.clone(), revision(&service, &asset));
+    let fields =
+        json!({"settings": soft_film(), "origin": {"kind": "preset", "name": "Soft film"}});
+    let mut draft = Draft::new("apply-settings", asset.clone(), revision(&service, &asset));
     draft.merge(fields.as_object().expect("an object").clone());
     let (drafted, _) = service
         .draft_recipe(&asset, &draft)
@@ -713,9 +722,9 @@ fn a_drafted_preset_resolves_to_exactly_what_it_commits() {
     );
 
     // A draft that changes nothing resolves to the current recipe.
-    let mut again = Draft::new("apply-preset", asset.clone(), revision(&service, &asset));
+    let mut again = Draft::new("apply-settings", asset.clone(), revision(&service, &asset));
     again.merge(
-        json!({"settings": soft_film(), "name": "Soft film"})
+        json!({"settings": soft_film(), "origin": {"kind": "preset", "name": "Soft film"}})
             .as_object()
             .expect("an object")
             .clone(),
@@ -801,9 +810,9 @@ fn a_preset_on_a_masked_photo_edits_the_global_layer_as_the_direct_action_does()
             .expect("the masked layer");
         let masked_layer = before.layers[masked_at].clone();
         let count = entries(&service, &asset);
-        let sent = json!({"settings": {"set-basic": {"exposure": 0.5}}, "name": "Brighter"});
+        let sent = json!({"settings": {"set-basic": {"exposure": 0.5}}, "origin": {"kind": "preset", "name": "Brighter"}});
 
-        let mut draft = Draft::new("apply-preset", asset.clone(), revision(&service, &asset));
+        let mut draft = Draft::new("apply-settings", asset.clone(), revision(&service, &asset));
         draft.merge(sent.as_object().expect("an object").clone());
         let (drafted, _) = service
             .draft_recipe(&asset, &draft)
@@ -887,7 +896,7 @@ fn a_preset_on_a_masked_photo_edits_the_global_layer_as_the_direct_action_does()
 
 /// `set-curve` is presettable like every field-patch action, through the JSON method table: a
 /// settings set carrying it is validated by `preset.create`, captured from the curve layer by
-/// `preset.capture`, applied by `edit.apply-preset` as one `Preset:` entry whose stack equals the
+/// `preset.capture`, applied by `edit.apply-settings` as one `Preset:` entry whose stack equals the
 /// one `edit.set-curve` wrote and which changes only the curve, and exported and re-imported to
 /// the same points. A preset acts on the recipe stack, which is the same for a JPEG and a RAW
 /// photo; the curve's RAW rendering is the module's own test.
@@ -984,9 +993,9 @@ fn a_preset_carrying_set_curve_captures_applies_and_round_trips() {
     );
     let before = client::revision(&owner, editor, &asset).unwrap();
     let applied = edit(
-        "edit.apply-preset",
+        "edit.apply-settings",
         "apply",
-        json!({"settings": settings, "name": "Matte", "preset-id": preset_id}),
+        json!({"settings": settings, "origin": {"kind": "preset", "name": "Matte", "preset_id": preset_id}}),
     );
     assert_eq!(applied["outcome"], json!("applied"));
     assert_eq!(applied["revision"], json!(before + 1), "one revision");
@@ -1045,11 +1054,11 @@ fn a_preset_carrying_set_curve_captures_applies_and_round_trips() {
         }])
     );
     let again = edit(
-        "edit.apply-preset",
+        "edit.apply-settings",
         "again",
         json!({
-            "settings": reimported["preset"]["settings"], "name": "Matte copy",
-            "preset-id": reimported["preset"]["id"],
+            "settings": reimported["preset"]["settings"],
+            "origin": {"kind": "preset", "name": "Matte copy", "preset_id": reimported["preset"]["id"]},
         }),
     );
     assert_eq!(again["outcome"], json!("no-op"));
@@ -1075,12 +1084,12 @@ fn paste_settings_keeps_provenance_matches_direct_edits_and_is_undoable() {
             .unwrap();
     }
     let before = recipe(&service, &asset);
-    let parameters = json!({"settings": {"set-basic": {"exposure": 0}}, "source": "source.jpg", "source-asset": "detached-provenance"});
+    let parameters = json!({"settings": {"set-basic": {"exposure": 0}}, "origin": {"kind": "paste", "source": "source.jpg", "source_asset": other}});
     let pasted = service
         .apply_action(
             &asset,
             mutation(1, "paste"),
-            "paste-settings",
+            "apply-settings",
             parameters.clone(),
         )
         .unwrap();
@@ -1112,7 +1121,7 @@ fn paste_settings_keeps_provenance_matches_direct_edits_and_is_undoable() {
         .apply_action(
             &asset,
             mutation(pasted.revision, "again"),
-            "paste-settings",
+            "apply-settings",
             parameters,
         )
         .unwrap();
@@ -1140,8 +1149,7 @@ fn paste_settings_keeps_provenance_matches_direct_edits_and_is_undoable() {
 fn paste_settings_refuses_non_patch_steps_atomically() {
     let (mut service, asset, path) = opened("paste-refusals", None);
     for (index, settings) in [
-        json!({"paste-settings": {"source": "nested", "settings": {"set-basic": {"exposure": 1}}}}),
-        json!({"apply-preset": {"name": "nested", "settings": {"set-basic": {"exposure": 1}}}}),
+        json!({"apply-settings": {"origin": {"kind": "paste", "source": "nested"}, "settings": {"set-basic": {"exposure": 1}}}}),
         json!({"set-basic": {"exposure": 1}, "unknown": {"value": 1}}),
     ]
     .into_iter()
@@ -1152,8 +1160,8 @@ fn paste_settings_refuses_non_patch_steps_atomically() {
                 .apply_action(
                     &asset,
                     mutation(0, &format!("bad-{index}")),
-                    "paste-settings",
-                    json!({"source": "source.jpg", "settings": settings})
+                    "apply-settings",
+                    json!({"origin": {"kind": "paste", "source": "source.jpg"}, "settings": settings})
                 )
                 .is_err()
         );
@@ -1174,8 +1182,8 @@ fn paste_settings_preserves_masks_and_masked_adjustments() {
         .apply_action(
             &asset,
             mutation(current, "paste"),
-            "paste-settings",
-            json!({"source":"source.jpg","settings":{"set-basic":{"exposure":0.25}}}),
+            "apply-settings",
+            json!({"origin":{"kind":"paste","source":"source.jpg"},"settings":{"set-basic":{"exposure":0.25}}}),
         )
         .unwrap();
     let after = recipe(&service, &asset);

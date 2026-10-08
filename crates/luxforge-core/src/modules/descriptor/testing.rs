@@ -274,17 +274,22 @@ pub(super) fn settings(name: &str) -> ParameterDescriptor {
     }
 }
 
-/// A module shaped like the presets module: one action taking a settings set, a name and an
-/// optional library identity, and the one presets control that submits it.
+/// A required origin parameter, as a presets action declares it.
+pub(super) fn origin(name: &str) -> ParameterDescriptor {
+    ParameterDescriptor {
+        kind: ParameterKind::SettingsOrigin,
+        unit: None,
+        ..integer(name)
+    }
+}
+
+/// A module shaped like the presets module: one action taking a settings set and its origin, and
+/// the one presets control that submits it.
 pub(super) fn presets_descriptor() -> ModuleDescriptor {
     ModuleDescriptor {
         effects: Vec::new(),
         actions: vec![ActionDescriptor {
-            parameters: vec![
-                settings("settings"),
-                string("name", 128, true),
-                string("preset-id", 96, false),
-            ],
+            parameters: vec![settings("settings"), origin("origin")],
             ..ActionDescriptor::new("apply-thing", "Apply thing", "test")
         }],
         controls: vec![Control::Presets(PresetsControl {
@@ -317,7 +322,7 @@ pub(super) fn presets_cases() -> Vec<(&'static str, ModuleDescriptor, &'static s
         ),
         (
             "a presets action without settings",
-            presets_with(vec![string("name", 128, true)]),
+            presets_with(vec![origin("origin")]),
             "action apply-thing has no parameter settings",
         ),
         (
@@ -333,7 +338,7 @@ pub(super) fn presets_cases() -> Vec<(&'static str, ModuleDescriptor, &'static s
                     unit: None,
                     ..integer("settings")
                 },
-                string("name", 128, true),
+                origin("origin"),
             ]),
             "needs a required settings parameter settings",
         ),
@@ -344,60 +349,35 @@ pub(super) fn presets_cases() -> Vec<(&'static str, ModuleDescriptor, &'static s
                     required: false,
                     ..settings("settings")
                 },
-                string("name", 128, true),
+                origin("origin"),
             ]),
             "needs a required settings parameter settings",
         ),
         (
-            "a presets action without a name",
+            "a presets action without an origin",
             presets_with(vec![settings("settings")]),
-            "action apply-thing has no parameter name",
+            "action apply-thing has no parameter origin",
         ),
         (
-            "a presets action whose name is not a string",
-            presets_with(vec![settings("settings"), enumerated("name")]),
-            "needs a required string parameter name",
+            "a presets action whose origin is a string",
+            presets_with(vec![settings("settings"), string("origin", 128, true)]),
+            "needs a required settings-origin parameter origin",
         ),
         (
-            "a presets action whose name has a default",
+            "a presets action whose origin is optional",
             presets_with(vec![
                 settings("settings"),
-                ParameterDescriptor {
-                    default: Some(json!("Preset")),
-                    ..string("name", 128, true)
-                },
-            ]),
-            "needs a required string parameter name",
-        ),
-        (
-            "a presets action whose library identity is required",
-            presets_with(vec![
-                settings("settings"),
-                string("name", 128, true),
-                string("preset-id", 96, true),
-            ]),
-            "may declare only an optional string parameter preset-id",
-        ),
-        (
-            "a presets action whose library identity is not a string",
-            presets_with(vec![
-                settings("settings"),
-                string("name", 128, true),
                 ParameterDescriptor {
                     required: false,
-                    ..integer("preset-id")
+                    ..origin("origin")
                 },
             ]),
-            "may declare only an optional string parameter preset-id",
+            "needs a required settings-origin parameter origin",
         ),
         (
             "a presets action with another parameter",
-            presets_with(vec![
-                settings("settings"),
-                string("name", 128, true),
-                integer("x"),
-            ]),
-            "declares parameter x beyond settings, name and preset-id",
+            presets_with(vec![settings("settings"), origin("origin"), integer("x")]),
+            "declares parameter x beyond settings and origin",
         ),
         (
             "a presets control on a field patch",
