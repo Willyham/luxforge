@@ -64,7 +64,6 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 - A stroke over three masked Presence layers at 100% on the Air 2S, beside Detail and a global Presence, misses 16 ms at p95 (22.5 to 24.0 ms on 2026-10-07): its slow ticks run the same links over the same window as its fast ones, with no rebind, so step 8's buffer fix does not apply and the cause is not yet separated
 - A trivial GPU export is slower than the reference export: 75 against 57 ms at 24 MP and 158 against 137 ms at 60 MP timed in the process. The gap is the stream's first band, its window upload and the device's first-tile wait; closing it needs a window uploaded beside the band before it or kept for the next, not built ([performance](specs/performance.md#the-trivial-exports-first-band))
 - Launch to an empty shell (2.07 to 2.11 s) and the uncached 24 MP open (1.21 to 1.25 s) miss their provisional targets; measured beside the 2026-10-02 build on 2026-10-07, about 0.45 s of each since that day's record is the host's, on both builds, and this build adds 0.19 to 0.25 s to a launch, mostly the harness copying and macOS first-checking its larger executable
-- Explicit qualification of the softer `budget-reduced` motion frame at 100%, accepted with that requirement on 2026-10-07
 - A passing hosted result for Linux's retained lavapipe journeys, including histogram and `gpu-preview`
 - The native Windows and Linux checks
 

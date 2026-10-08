@@ -938,6 +938,19 @@ fn picture(
         None => reduce(&reference.rgba, 4, stage, size)?,
     };
     let rest_against = compare(&at_rest, &expected, size)?;
+    // At 100% or more, the softer frame a drag past the budget draws in the region's place.
+    let softer = match (region, view) {
+        (Some(rect), View::Percent(zoom)) => Some(softer(
+            surface,
+            evaluation,
+            gpu,
+            reference,
+            (rect, f64::from(zoom) / 100.0),
+            (&expected, &at_rest),
+            charged.saturating_add(gpu.bytes()),
+        )?),
+        _ => None,
+    };
     let motion_against_rest = compare(&motion, &at_rest, size)?;
     let motion_against = compare(&motion, &expected, size)?;
     let at_rest_value = at_rest_kind(&rest_against, renderer, tiles, class);
@@ -982,9 +995,131 @@ fn picture(
             "against_reference": statistics(&motion_against),
         },
         "charged_bytes": charged,
+        "softer": softer,
         "notes": notes,
         "frames": frames,
     }))
+}
+
+/// The softer frame a drag at 100% or more draws when the region's slot passes the GPU-preview
+/// budget ([`crate::app::gpu_preview`]'s `budget-reduced`, accepted by the owner on 2026-10-07
+/// subject to this qualification): the stack planned whole at the reduced stage of the view's
+/// area, the region's size times `magnification`, drawn by `surface` as the editor draws it, then
+/// magnified over `rect`, the region of the full stage, bilinearly in linear light, standing in for
+/// the photo surface's sampler. Against `expected`, the reference's region, and `at_rest`, the
+/// region's picture at rest, and the reduced frame itself against the reference reduced to its
+/// size. `holds` is what the region's own slot and the source take: past the budget, the editor
+/// draws this frame in a drag here (`natural`); within it, it is drawn here to qualify it
+/// (`forced`).
+#[allow(clippy::too_many_arguments)]
+fn softer(
+    surface: &mut HeadlessSurface,
+    evaluation: &Evaluation,
+    gpu: &GpuSource,
+    reference: &Raster,
+    (rect, magnification): (Region, f64),
+    (expected, at_rest): (&[u8], &[u8]),
+    holds: u64,
+) -> Result<Value, String> {
+    let stage = (reference.width, reference.height);
+    let side = |pixels: u32| (f64::from(pixels) * magnification).round().max(1.0) as u32;
+    let bounds = ProxyBounds {
+        width: side(rect.width),
+        height: side(rect.height),
+    };
+    let rest = luxforge_core::qualification::rest_plan(evaluation, GpuView::Fit(bounds))
+        .map_err(|error| error.to_string())?;
+    let (plan, request) = match rest.view {
+        GpuPreview {
+            answer: GpuAnswer::Plan(plan),
+            boundary: Some(request),
+            ..
+        } => (*plan, request),
+        GpuPreview {
+            answer: GpuAnswer::Fallback(reason),
+            ..
+        } => {
+            return Ok(gap(format!(
+                "{}: the reduced stage is not drawn",
+                reason.code()
+            )));
+        }
+        GpuPreview { .. } => return Ok(gap("the reduced stage's plan has no boundary")),
+    };
+    let (boundary, origin, grid) = match derived_now(gpu, &plan, &request, 1) {
+        Ok(derived) => derived,
+        Err(reason) => return Ok(gap(reason)),
+    };
+    let converted = match surface_plan_over(&plan, boundary, origin, grid.as_ref(), None) {
+        Ok(converted) => converted,
+        Err(unrunnable) => {
+            return Ok(gap(format!(
+                "{}: the surface cannot run the reduced stage's plan",
+                unrunnable.code()
+            )));
+        }
+    };
+    // A light behind a spatial layer is the staged sweeps' at the reduced stage, as at Fit.
+    if plan.lights.iter().any(luxforge_core::GpuLight::staged) {
+        match &rest.tiles {
+            Some(Ok(tiles)) => {
+                let handed = rest_now(gpu, tiles, 1)?;
+                surface.rest(gpu, &handed).map_err(|fallback| {
+                    format!("the reduced stage's picture at rest in tiles: {fallback:?}")
+                })?;
+            }
+            _ => return Ok(gap("the reduced stage's light sweeps are not drawn")),
+        }
+    }
+    let (reduced, size) = match surface.draw(gpu, &converted) {
+        Ok(drawn) => (rgb_codes(&drawn.codes), drawn.size),
+        Err(fallback) => return Ok(gap(format!("the reduced stage is not drawn: {fallback:?}"))),
+    };
+    let reduced_reference = reduce(&reference.rgba, 4, stage, size)?;
+    let reduced_against = compare(&reduced, &reduced_reference, size)?;
+    let magnified = magnify(&reduced, size, stage, rect);
+    let region = (rect.width, rect.height);
+    let against_reference = compare(&magnified, expected, region)?;
+    let against_rest = compare(&magnified, at_rest, region)?;
+    Ok(json!({
+        "status": "measured",
+        "trigger": if holds > luxforge_gpu::GPU_PREVIEW_BUDGET { "natural" } else { "forced" },
+        "region_holds_bytes": holds,
+        "budget_bytes": luxforge_gpu::GPU_PREVIEW_BUDGET,
+        "reduced_stage": [size.0, size.1],
+        "drawing_path": "the stack planned whole at the reduced stage of the view's area and drawn \
+            on the GPU, magnified to the region bilinearly in linear light for the photo surface's \
+            sampler",
+        "against_reference": statistics(&against_reference),
+        "against_rest": statistics(&against_rest),
+        "reduced_against_reference": statistics(&reduced_against),
+    }))
+}
+
+/// `rect` of a `stage` frame, sampled bilinearly in linear light from `reduced`, a frame of the
+/// whole stage at `size`, three bytes a pixel each: the softer frame as the region shows it.
+fn magnify(reduced: &[u8], size: (u32, u32), stage: (u32, u32), rect: Region) -> Vec<u8> {
+    use luxforge_reference::{geometry::bilinear_linear, srgb};
+    let linear: Vec<[f64; 3]> = reduced
+        .chunks_exact(3)
+        .map(|pixel| std::array::from_fn(|channel| srgb::decode(pixel[channel])))
+        .collect();
+    let scale = (
+        f64::from(size.0) / f64::from(stage.0),
+        f64::from(size.1) / f64::from(stage.1),
+    );
+    let mut codes = Vec::with_capacity(rect.width as usize * rect.height as usize * 3);
+    for y in rect.y0..rect.y1() {
+        for x in rect.x0..rect.x1() {
+            let at = [
+                (f64::from(x) + 0.5) * scale.0,
+                (f64::from(y) + 0.5) * scale.1,
+            ];
+            let value = bilinear_linear(&linear, size.0, size.1, at);
+            codes.extend(value.map(|v| (srgb::encode_clamped(v) * 255.0).round() as u8));
+        }
+    }
+    codes
 }
 
 /// The picture at rest at one view: the GPU's frame at rest against the reference frame at the

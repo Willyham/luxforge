@@ -701,7 +701,7 @@ pub(crate) fn plan_preview(
 /// [`plan_preview`], a region whose plan's own figures pass `reduce_after` bytes carrying its
 /// draft at the reduced stage of the view's area: what the owner plans with the figure the job's
 /// request names, [`REDUCED_AFTER_BYTES`] unless a test names a smaller one
-/// ([`crate::PreviewRequest::reduce_regions_after`]).
+/// ([`crate::PreviewRequest::gpu_region_reducing`]).
 pub(crate) fn plan_preview_reducing(
     evaluation: &Evaluation,
     draft: &Draft,
