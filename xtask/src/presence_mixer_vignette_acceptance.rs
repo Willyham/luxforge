@@ -1,8 +1,9 @@
 //! The Presence, colour mixer and vignette chapter of `cargo xtask editor-acceptance`: what each of
 //! the three modules does that no other module does, driven through the JSON method table with
 //! [`OwnerHandle::call`] exactly as an independent client reaches it — Presence's place after the
-//! colour run, the mixer's order after Basic, and the vignette recentring on the stage a crop update
-//! produces.
+//! colour run, the mixer's order after Basic, the mixer's colour grading on the global target and a
+//! mask through history and real JPEG exports, and the vignette recentring on the stage a crop
+//! update produces.
 //!
 //! The host behaviour the three share with every field-patch module — discovery, drafts, no-ops,
 //! deduplication, resets, one layer per target, history, sample equal to render on both paths, an
@@ -34,6 +35,12 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
         presence_placement,
     )?;
     let mixer = section(&fixture, &out.join("mixer-catalog.sqlite"), mixer_order)?;
+    let grading = section_in(
+        &fixture,
+        &out.join("grading-catalog.sqlite"),
+        out,
+        grading_journey,
+    )?;
     let vignette = section(
         &fixture,
         &out.join("vignette-catalog.sqlite"),
@@ -49,6 +56,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
         "fixture_sha256": fixture_hash,
         "presence": presence,
         "mixer": mixer,
+        "grading": grading,
         "vignette": vignette,
         "generic": "the host behaviour these modules share with every field-patch module is proved under field_patch_conformance",
         "elapsed_ms": total.elapsed().as_secs_f64() * 1000.0,
@@ -59,6 +67,51 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
 /// Original entry and the decoded fixture, and where it records what it showed.
 type Section =
     fn(&OwnerHandle, ClientId, &Value, &Value, &SourceImage, &mut dyn FnMut(&str, Value)) -> Result;
+
+/// What the grading section receives: [`Section`]'s arguments and a fresh folder for its exports.
+type ExportingSection = fn(
+    &OwnerHandle,
+    ClientId,
+    &Value,
+    &Value,
+    &SourceImage,
+    &Path,
+    &mut dyn FnMut(&str, Value),
+) -> Result;
+
+/// [`section`] for a section that writes exports, into a new folder under `out`.
+fn section_in(fixture: &Path, catalog: &Path, out: &Path, run: ExportingSection) -> Result<Value> {
+    let exports = out.join("grading-exports");
+    fs::create_dir(&exports)?;
+    let source = luxforge_core::open_source(fixture)?;
+    let total = Instant::now();
+    let mut checks = Vec::new();
+    let (owner, join) = OwnerHandle::start(catalog)?;
+    let outcome = (|| -> Result {
+        let editor = owner.register();
+        let imported = open(&owner, editor, fixture)?;
+        let asset = imported["asset"]["id"].clone();
+        let original = imported["current_entry"]["id"].clone();
+        let mut record =
+            |shows: &str, detail: Value| checks.push(json!({"shows": shows, "detail": detail}));
+        run(
+            &owner,
+            editor,
+            &asset,
+            &original,
+            &source,
+            &exports,
+            &mut record,
+        )
+    })();
+    owner.stop();
+    join.join().map_err(|_| "The owner thread panicked")?;
+    outcome?;
+    Ok(json!({
+        "checks": checks,
+        "elapsed_ms": total.elapsed().as_secs_f64() * 1000.0,
+    }))
+}
 
 /// One module's section against its own catalog: a new owner, one client and the fixture imported
 /// once. The owner is stopped however the section ends.
@@ -265,6 +318,214 @@ fn mixer_order(
     record(
         "committing the mixer then Basic, and Basic then the mixer, on two fresh assets: recipe.describe always orders Basic before the mixer and the rendered bytes are identical",
         json!({"orders": orders, "sample": final_samples[0]}),
+    );
+    Ok(())
+}
+
+/// The grading fields as the JSON method table sends them: a wheel's hue and saturation in one
+/// patch, the way the desktop's wheel commits a gesture.
+const WHEEL: &str = "grade-midtones";
+
+/// Colour grading through the JSON method table: a wheel's two fields are one entry, a mask target
+/// holds its own mixer layer, `render.sample` equals an independent render of the stored recipe,
+/// single and batch JPEG exports write the graded photograph and repeat byte for byte, undo/redo
+/// moves the grade, and the original never changes.
+fn grading_journey(
+    owner: &OwnerHandle,
+    editor: ClientId,
+    asset: &Value,
+    _: &Value,
+    source: &SourceImage,
+    exports: &Path,
+    record: &mut dyn FnMut(&str, Value),
+) -> Result {
+    let entries = |owner: &OwnerHandle| -> Result<usize> {
+        Ok(
+            call(owner, editor, "history.list", json!({"asset_id": asset}))?["entries"]
+                .as_array()
+                .map_or(0, Vec::len),
+        )
+    };
+    let before = entries(owner)?;
+    let revision = client::revision(owner, editor, asset)?;
+    let mut params = json!({format!("{WHEEL}-hue"): 30.0, format!("{WHEEL}-saturation"): 60.0});
+    params["asset_id"] = asset.clone();
+    params["mutation"] = mutation(revision, "grading-wheel");
+    call(owner, editor, "edit.set-mixer", params)?;
+    ensure(
+        entries(owner)? == before + 1,
+        "A wheel's hue and saturation were not one history entry",
+    )?;
+
+    // Luminance and a dormant hue on a second wheel, then a luminance-range mask with its own
+    // grade: two mixer layers, one per target.
+    let revision = client::revision(owner, editor, asset)?;
+    call(
+        owner,
+        editor,
+        "edit.set-mixer",
+        json!({"asset_id": asset, "mutation": mutation(revision, "grading-luminance"),
+               "grade-shadows-luminance": 40.0, "grade-highlights-hue": 200.0,
+               "grade-blending": 20.0}),
+    )?;
+    let revision = client::revision(owner, editor, asset)?;
+    call(
+        owner,
+        editor,
+        "mask.create-luminance-range",
+        json!({"asset_id": asset, "mutation": mutation(revision, "grading-mask"),
+               "low": 50.0, "low_feather": 10.0, "high": 100.0, "high_feather": 0.0}),
+    )?;
+    let revision = client::revision(owner, editor, asset)?;
+    call(
+        owner,
+        editor,
+        "edit.set-mixer",
+        json!({"asset_id": asset, "mutation": mutation(revision, "grading-masked"),
+               "mask": {"name": "Mask 1"}, "grade-global-hue": 220.0,
+               "grade-global-saturation": 70.0}),
+    )?;
+    let stored = client::recipe(owner, editor, asset)?;
+    let mixers: Vec<&luxforge_core::Layer> = stored
+        .layers
+        .iter()
+        .filter(|layer| layer.effect_id == MIXER_EFFECT)
+        .collect();
+    ensure(
+        mixers.len() == 2
+            && mixers.iter().filter(|layer| layer.mask.is_some()).count() == 1
+            && mixers
+                .iter()
+                .all(|layer| layer.effect_format == luxforge_core::MIXER_EFFECT_FORMAT),
+        format!(
+            "The stack holds {} mixer layers, not one global and one masked",
+            mixers.len()
+        ),
+    )?;
+    let global = mixers
+        .iter()
+        .find(|layer| layer.mask.is_none())
+        .ok_or("no global mixer layer")?;
+    ensure(
+        global.payload["grade-highlights-hue"] == json!(200.0)
+            && global.payload["grade-midtones-hue"] == json!(30.0),
+        format!("The global layer lost a grading field: {}", global.payload),
+    )?;
+
+    // render.sample answers the bytes an independent render of the stored recipe draws.
+    let raster = render(source, &stored)?;
+    let mut samples = Vec::new();
+    for (x, y) in [(40, 40), (120, 240), (360, 80), (440, 280)] {
+        let sampled = call(
+            owner,
+            editor,
+            "render.sample",
+            json!({"asset_id": asset, "x": x, "y": y}),
+        )?["rgba"]
+            .clone();
+        let drawn = raster.pixel(x, y).ok_or("a probe outside the render")?;
+        ensure(
+            sampled == json!(drawn),
+            format!("render.sample at ({x}, {y}) answered {sampled}, the render drew {drawn:?}"),
+        )?;
+        samples.push(json!({"x": x, "y": y, "rgba": sampled}));
+    }
+    let ungraded = render(source, &luxforge_core::Recipe::default())?;
+    ensure(
+        raster.rgba != ungraded.rgba,
+        "The grade changed no rendered byte",
+    )?;
+
+    // A real single export, twice, then a batch export of the same photograph.
+    let export = |name: &str, request: &str| -> Result<(PathBuf, Value)> {
+        let destination = exports.join(name);
+        let accepted = call(
+            owner,
+            editor,
+            "export.jpeg",
+            json!({"asset_id": asset, "destination": destination, "keep_metadata": false,
+                   "mutation": {"request_id": client::request_id(request), "actor": "editor-acceptance"}}),
+        )?;
+        let settled = client::settle(owner, editor, &accepted["job_id"])?;
+        ensure(
+            settled["status"] == "ready",
+            format!("The export did not finish: {settled}"),
+        )?;
+        Ok((destination, settled))
+    };
+    let (first, first_job) = export("graded-1.jpg", "grading-export-1")?;
+    let (second, _) = export("graded-2.jpg", "grading-export-2")?;
+    ensure(
+        hash(&first)? == hash(&second)?,
+        "Two exports of one graded entry wrote different bytes",
+    )?;
+    let decoded = image::open(&first)?.to_rgb8();
+    ensure(
+        (decoded.width(), decoded.height()) == (raster.width, raster.height),
+        "The export is not the render's size",
+    )?;
+    let batch = exports.join("batch");
+    fs::create_dir(&batch)?;
+    let accepted = call(
+        owner,
+        editor,
+        "batch.export",
+        json!({"targets": {"kind": "assets", "asset_ids": [asset]}, "destination": batch,
+               "mutation": {"request_id": client::request_id("grading-batch"), "actor": "editor-acceptance"}}),
+    )?;
+    let settled = client::settle(owner, editor, &accepted["job_id"])?;
+    let written = settled["result"]["written"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    ensure(
+        settled["status"] == "ready" && written.len() == 1,
+        format!("The batch export did not write the photograph: {settled}"),
+    )?;
+    let batch_file = PathBuf::from(written[0]["path"].as_str().ok_or("a written path")?);
+    ensure(
+        written[0]["renderer"] == first_job["result"]["renderer"]
+            && hash(&batch_file)? == hash(&first)?,
+        "The batch export wrote different bytes from the single export",
+    )?;
+
+    // Undo removes the masked grade and redo restores it, the stored payloads unchanged.
+    let revision = client::revision(owner, editor, asset)?;
+    call(
+        owner,
+        editor,
+        "history.undo",
+        json!({"asset_id": asset, "mutation": mutation(revision, "grading-undo")}),
+    )?;
+    let undone = client::recipe(owner, editor, asset)?;
+    ensure(
+        undone
+            .layers
+            .iter()
+            .filter(|layer| layer.effect_id == MIXER_EFFECT)
+            .count()
+            == 1,
+        "Undo did not remove the masked grade",
+    )?;
+    let revision = client::revision(owner, editor, asset)?;
+    call(
+        owner,
+        editor,
+        "history.redo",
+        json!({"asset_id": asset, "mutation": mutation(revision, "grading-redo")}),
+    )?;
+    ensure(
+        client::recipe(owner, editor, asset)?.layers == stored.layers,
+        "Redo did not restore the graded stack exactly",
+    )?;
+    record(
+        "a wheel's two grading fields commit as one entry; a luminance-range mask holds its own mixer layer beside the global one; render.sample equals an independent render; two single exports and a batch export of the graded entry write the same bytes at the render's size; undo and redo move the masked grade",
+        json!({
+            "samples": samples,
+            "export_sha256": hash(&first)?,
+            "renderer": first_job["result"]["renderer"],
+            "batch": settled["result"],
+        }),
     );
     Ok(())
 }

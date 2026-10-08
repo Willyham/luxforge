@@ -28,6 +28,7 @@ mod generate_catalog;
 mod gpu_preview_smoke;
 mod gpu_preview_zoom_smoke;
 mod gpu_qualification;
+mod grade_align;
 mod histogram_smoke;
 mod information_smoke;
 mod inspect_dng;
@@ -704,6 +705,7 @@ fn main_result() -> Result {
         }
         "preview-error" => preview_error::run(a)?,
         "preview-corpus" => preview_error::corpus::run(&root, a)?,
+        "grade-align" => grade_align::run(&root, a)?,
         "gpu-qualification" => {
             let options = gpu_qualification::Options::parse(&root, &mut a)?;
             a.done()?;
