@@ -17,16 +17,26 @@
 //!   unanswered, as the tile service drops the client's waiting calls.
 //!
 //! A cancelled read stops before its next row, tile or solver chunk; one still waiting in the
-//! service's queue is answered at once when its turn comes. Every answer, a cancelled one
-//! included, comes back through the owner's own channel of answers.
+//! service's queue, or in the analysis worker's after it, is answered at once when its turn comes.
+//! Every answer, a cancelled one included, comes back through the owner's own channel of answers.
+//!
+//! An analysis query (`query.auto-tone`) is not parked, since it is answered from the tile
+//! service and the analysis worker directly, but it is read under a cancellation of its own by the
+//! same rules: superseded — answered `cancelled` — when its client asks the same method for the
+//! same photograph again or prepares another photograph, and dropped when its client disconnects.
+//! It is never stale: it answers for the entry it names, whatever the photograph's head is now.
 //!
 //! [performance rule 5]: ../../../../../docs/engineering/performance-rules.md#rules
 use super::{Owed, Owner, OwnerCall, OwnerMessage, Replay};
 use crate::{
     AssetId, Cancel, ClientId, Error,
-    editor::pixels::{DeferredRead, PixelAnswer, PixelMemo, PixelReadKey},
+    editor::pixels::{DeferredRead, PixelAnswer, PixelMemo, PixelReadKey, QueryPlan},
 };
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use serde_json::Value;
+use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::Arc,
+};
 
 /// A call parked on the owner while a pixel read is answered off the owner: the call, replayed
 /// once the read comes back, what the read was read from, how many of the call's reads it is, the
@@ -64,6 +74,29 @@ impl ParkedRead {
 
 /// The answer to a parked read, by its ticket, which the tile service hands back to the owner.
 pub(super) type PixelsRead = (u64, Result<PixelAnswer, Error>);
+
+/// An analysis query handed to the tile service: who asked, by which method, for which
+/// photograph, under which cancellation. `pending` is shared with the query's delivery, which
+/// drops its share once it has answered or been dropped unanswered, so a query nobody waits for
+/// any more is forgotten.
+pub(super) struct AnalysisQuery {
+    client: ClientId,
+    method: String,
+    asset: AssetId,
+    cancel: Cancel,
+    pending: Arc<()>,
+}
+
+impl AnalysisQuery {
+    /// The photograph the query reads.
+    pub(super) fn asset(&self) -> &AssetId {
+        &self.asset
+    }
+
+    fn answered(&self) -> bool {
+        Arc::strong_count(&self.pending) == 1
+    }
+}
 
 impl Owner {
     /// Serve one pass of a call that may read pixels: `pass` with the owner, every read its plans
@@ -130,6 +163,58 @@ impl Owner {
             }));
     }
 
+    /// Hand an analysis query to the tile service under a cancellation of its own, which reads its
+    /// grid and hands its solve to the analysis worker ([`QueryPlan::evaluate_steps`]), answering
+    /// `deliver` from there; an earlier query `client` asked by `method` for the same photograph
+    /// is superseded. Queries already answered are forgotten first, so at most those the tile
+    /// service and the analysis worker hold are kept: each queue's bound and the one each runs.
+    pub(super) fn submit_analysis_query(
+        &mut self,
+        client: ClientId,
+        method: &str,
+        plan: Box<QueryPlan>,
+        deliver: impl FnOnce(Result<Value, Error>) + Send + 'static,
+    ) {
+        self.analysis_queries.retain(|query| !query.answered());
+        let asset = plan.asset().clone();
+        self.supersede_analysis_queries(client, |query| {
+            query.method == method && query.asset() == &asset
+        });
+        let (cancel, pending) = (Cancel::new(), Arc::new(()));
+        self.analysis_queries.push(AnalysisQuery {
+            client,
+            method: method.to_owned(),
+            asset,
+            cancel: cancel.clone(),
+            pending: Arc::clone(&pending),
+        });
+        self.tiles.submit(crate::tiles::TileCall::caller_steps(
+            client,
+            cancel,
+            move |reads, cancel| plan.evaluate_steps(reads, cancel),
+            move |result| {
+                let _pending = pending;
+                deliver(result);
+            },
+        ));
+    }
+
+    /// Cancel every analysis query `client` asked that `superseded` names: each is answered
+    /// `cancelled` at its next chunk, at once when it is still waiting.
+    pub(super) fn supersede_analysis_queries(
+        &mut self,
+        client: ClientId,
+        superseded: impl Fn(&AnalysisQuery) -> bool,
+    ) {
+        self.analysis_queries.retain(|query| {
+            let kept = query.client != client || !superseded(query);
+            if !kept {
+                query.cancel.cancel();
+            }
+            kept
+        });
+    }
+
     /// Cancel every read `client` parked that `superseded` names: each call is answered
     /// `cancelled` once its read comes back, at once when it was still waiting.
     pub(super) fn supersede_parked_reads(
@@ -169,8 +254,10 @@ impl Owner {
         }
     }
 
-    /// Drop a disconnected client's parked calls unanswered, cancelling their reads first.
+    /// Drop a disconnected client's parked calls unanswered, cancelling their reads first, and
+    /// cancel its analysis queries.
     pub(super) fn drop_parked_reads(&mut self, client: ClientId) {
+        self.supersede_analysis_queries(client, |_| true);
         self.parked_reads.retain(|_, parked| {
             let kept = parked.call.client != client;
             if !kept {

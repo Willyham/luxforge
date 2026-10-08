@@ -26,12 +26,19 @@
 //! mutation's read is answered back to the owner, which replays the mutation once with the pixels
 //! it read; nothing else waits on the owner thread.
 //!
+//! A service only reads. What a call computes from its read, such as Auto tone's solve over its
+//! sample grid, it hands on (`Step::Then`) with its cancellation and reply to the analysis
+//! worker of its evaluation's render context, which answers the caller in its place, so the
+//! service's next call never waits behind it.
+//!
 //! # Bounds
 //!
 //! At most [`TILE_QUEUE_CAPACITY`] calls wait behind the one a service answers, and a full queue
 //! refuses at once with `resource-limit` (rule 6); submitting never blocks (rule 12). A read
 //! answers at most the pixels one evaluated frame may hold. An export holds at most
-//! [`EXPORT_BANDS_IN_FLIGHT`] rendered bands waiting for its encoder.
+//! [`EXPORT_BANDS_IN_FLIGHT`] rendered bands waiting for its encoder. At most
+//! [`ANALYSIS_QUEUE_CAPACITY`] pieces of handed-on work wait behind the one the analysis worker
+//! runs, and past them the call is refused with `resource-limit` at once.
 //!
 //! [GPU-first]: ../../../docs/design/gpu-first.md
 //! [performance rule 5]: ../../../docs/engineering/performance-rules.md#rules
@@ -50,8 +57,11 @@ use std::{
     },
 };
 
+mod analysis;
 pub(crate) mod grid;
 mod reference;
+pub use analysis::ANALYSIS_QUEUE_CAPACITY;
+pub(crate) use analysis::AnalysisWorker;
 pub use grid::{
     ClipDetection, GridRead, MAX_SIDE as GRID_MAX_SIDE, SampleGrid, SensorClip, read as read_grid,
 };
@@ -213,7 +223,92 @@ pub struct TileCall {
 }
 
 /// What a call evaluates, with the service's reads and the call's cancellation.
-type Evaluate = Box<dyn FnOnce(&dyn TileReads, &Cancel) -> Result<TileAnswer, Error> + Send>;
+type Evaluate = Box<dyn FnOnce(&dyn TileReads, &Cancel) -> Result<Step<TileAnswer>, Error> + Send>;
+
+/// What a call's evaluation on the service's thread answers: the call's answer, or, once it has
+/// read what it needs, the rest of its work, which the analysis worker finishes under the call's
+/// cancellation and answers on the call's reply ([`analysis`]).
+pub(crate) enum Step<T> {
+    Done(T),
+    Then(Then<T>),
+}
+
+/// The rest of a call's work, for the analysis worker of `context`.
+pub(crate) struct Then<T> {
+    context: crate::RenderContext,
+    finish: Finish<T>,
+}
+
+/// What the analysis worker runs of a call, under the call's cancellation.
+type Finish<T> = Box<dyn FnOnce(&Cancel) -> Result<T, Error> + Send>;
+
+impl<T: 'static> Step<T> {
+    /// The rest of a call's work, `finish`, for the analysis worker of `context`, the render
+    /// context of the evaluation it continues.
+    pub(crate) fn then(
+        context: crate::RenderContext,
+        finish: impl FnOnce(&Cancel) -> Result<T, Error> + Send + 'static,
+    ) -> Self {
+        Self::Then(Then {
+            context,
+            finish: Box::new(finish),
+        })
+    }
+
+    /// The same step answering `map` of what it answers, wherever it finishes.
+    pub(crate) fn map<U>(self, map: impl FnOnce(T) -> U + Send + 'static) -> Step<U> {
+        match self {
+            Self::Done(value) => Step::Done(map(value)),
+            Self::Then(Then { context, finish }) => Step::Then(Then {
+                context,
+                finish: Box::new(move |cancel| finish(cancel).map(map)),
+            }),
+        }
+    }
+
+    /// The evaluation `step` answered, with `map` of the result it finishes with, its failure
+    /// included, wherever it finishes.
+    pub(crate) fn map_result<U>(
+        step: Result<Self, Error>,
+        map: impl FnOnce(Result<T, Error>) -> Result<U, Error> + Send + 'static,
+    ) -> Result<Step<U>, Error> {
+        match step {
+            Ok(Self::Then(Then { context, finish })) => Ok(Step::Then(Then {
+                context,
+                finish: Box::new(move |cancel| map(finish(cancel))),
+            })),
+            Ok(Self::Done(value)) => map(Ok(value)).map(Step::Done),
+            Err(error) => map(Err(error)).map(Step::Done),
+        }
+    }
+}
+
+/// A call's work handed on to the analysis worker, with its cancellation and reply.
+struct Continued {
+    cancel: Cancel,
+    finish: Finish<TileAnswer>,
+    reply: Reply,
+}
+
+impl analysis::Work for Continued {
+    fn run(self: Box<Self>) {
+        let Self {
+            cancel,
+            finish,
+            reply,
+        } = *self;
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            cancel.check()?;
+            finish(&cancel)
+        }))
+        .unwrap_or_else(|_| Err(Error::internal("an analysis panicked")));
+        reply.answer(result);
+    }
+
+    fn refuse(self: Box<Self>, error: Error) {
+        self.reply.answer(Err(error));
+    }
+}
 
 impl TileCall {
     /// A call whose caller waits for a JSON value — `render.sample`, a module query — evaluated by
@@ -229,25 +324,50 @@ impl TileCall {
         Self {
             client,
             cancel,
-            evaluate: Box::new(move |reads, cancel| evaluate(reads, cancel).map(TileAnswer::Value)),
+            evaluate: Box::new(move |reads, cancel| {
+                evaluate(reads, cancel).map(|value| Step::Done(TileAnswer::Value(value)))
+            }),
+            reply: Reply::Caller(Box::new(deliver)),
+        }
+    }
+
+    /// [`Self::caller`] for an evaluation that may hand the rest of its work to the analysis
+    /// worker once it has read what it needs ([`Step`]): an analysis query reads its grid here and
+    /// is solved there.
+    pub(crate) fn caller_steps(
+        client: ClientId,
+        cancel: Cancel,
+        evaluate: impl FnOnce(&dyn TileReads, &Cancel) -> Result<Step<Value>, Error> + Send + 'static,
+        deliver: impl FnOnce(Result<Value, Error>) + Send + 'static,
+    ) -> Self {
+        Self {
+            client,
+            cancel,
+            evaluate: Box::new(move |reads, cancel| {
+                evaluate(reads, cancel).map(|step| step.map(TileAnswer::Value))
+            }),
             reply: Reply::Caller(Box::new(deliver)),
         }
     }
 
     /// A mutation's pixel read, evaluated by `evaluate` and handed to `deliver`, which returns the
     /// pixels to the catalog owner for its entry, revision, draft and source checks before the
-    /// mutation is replayed once: what the owner submits for each read it parks.
+    /// mutation is replayed once: what the owner submits for each read it parks. The evaluation may
+    /// hand the rest of its work to the analysis worker once it has read what it needs ([`Step`]).
     pub(crate) fn pixels(
         client: ClientId,
         cancel: Cancel,
-        evaluate: impl FnOnce(&dyn TileReads, &Cancel) -> Result<PixelAnswer, Error> + Send + 'static,
+        evaluate: impl FnOnce(&dyn TileReads, &Cancel) -> Result<Step<PixelAnswer>, Error>
+        + Send
+        + 'static,
         deliver: impl FnOnce(Result<PixelAnswer, Error>) + Send + 'static,
     ) -> Self {
         Self {
             client,
             cancel,
             evaluate: Box::new(move |reads, cancel| {
-                evaluate(reads, cancel).map(|pixels| TileAnswer::Pixels(Box::new(pixels)))
+                evaluate(reads, cancel)
+                    .map(|step| step.map(|pixels| TileAnswer::Pixels(Box::new(pixels))))
             }),
             reply: Reply::Pixels(Box::new(deliver)),
         }
@@ -266,7 +386,9 @@ impl TileCall {
 
     /// Evaluate the call with `reads`, the service's renderer, and answer it: with `cancelled`
     /// when its cancellation came first, and with `internal` when the evaluation panicked, so the
-    /// service lives on for the next call. Runs on the service's own thread, never the owner's.
+    /// service lives on for the next call. Runs on the service's own thread, never the owner's. A
+    /// call that hands the rest of its work on (`Step::Then`) is queued for the analysis worker
+    /// with its cancellation and reply and answered from there; this returns at once.
     pub fn run(self, reads: &dyn TileReads) {
         let Self {
             cancel,
@@ -279,7 +401,17 @@ impl TileCall {
             evaluate(reads, &cancel)
         }))
         .unwrap_or_else(|_| Err(Error::internal("a tile call's evaluation panicked")));
-        reply.answer(result);
+        match result {
+            Ok(Step::Done(answer)) => reply.answer(Ok(answer)),
+            Ok(Step::Then(Then { context, finish })) => {
+                context.analysis().submit(Box::new(Continued {
+                    cancel,
+                    finish,
+                    reply,
+                }));
+            }
+            Err(error) => reply.answer(Err(error)),
+        }
     }
 
     /// Answer the call with `error` without evaluating it, such as a full queue's

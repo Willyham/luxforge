@@ -25,6 +25,8 @@ struct Shared {
     scratch: ScratchBudget,
     spatial: SpatialBudget,
     grids: crate::tiles::grid::GridCache,
+    /// The worker that finishes what a pixel-reading call computes after its tile read.
+    analysis: crate::tiles::AnalysisWorker,
     /// How many stacks [`super::render`] compiled in this context, for the tests that prove a
     /// preview job compiles once per stage it renders at.
     #[cfg(test)]
@@ -66,6 +68,7 @@ impl RenderContext {
             scratch: ScratchBudget::new(scratch),
             spatial: SpatialBudget::new(spatial),
             grids: crate::tiles::grid::GridCache::default(),
+            analysis: crate::tiles::AnalysisWorker::default(),
             #[cfg(test)]
             compiles: AtomicU64::new(0),
             #[cfg(test)]
@@ -91,6 +94,12 @@ impl RenderContext {
     /// The bounded cache of sample grids every client of this context shares.
     pub(crate) fn sample_grids(&self) -> &crate::tiles::grid::GridCache {
         &self.0.grids
+    }
+
+    /// The analysis worker every client of this context shares ([`crate::tiles`]'s analysis
+    /// worker), started by the first work handed to it.
+    pub(crate) fn analysis(&self) -> &crate::tiles::AnalysisWorker {
+        &self.0.analysis
     }
 
     /// The spatial budget: the working sets of spatial tiles.
