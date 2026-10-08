@@ -29,6 +29,7 @@ mod gpu_preview_smoke;
 mod gpu_preview_zoom_smoke;
 mod gpu_qualification;
 mod grade_align;
+mod grading_smoke;
 mod histogram_smoke;
 mod information_smoke;
 mod inspect_dng;

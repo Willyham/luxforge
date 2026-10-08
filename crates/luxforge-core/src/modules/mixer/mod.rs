@@ -22,8 +22,10 @@ pub(crate) use grade::PROGRAM as GRADE_PROGRAM;
 pub(crate) use unit::PROGRAM as MIXER_PROGRAM;
 
 use super::{
-    ColorOperation, EffectStage, PointwiseColor, Processing, RailDecoration,
-    field_patch::{Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
+    ColorOperation, EffectStage, NumberStyle, PointwiseColor, Processing, RailDecoration,
+    field_patch::{
+        Field, FieldControl, FieldPatch, FieldPatchModule, Group, Spec, Values, View, Wheel,
+    },
 };
 use crate::Error;
 use std::sync::Arc;
@@ -105,6 +107,7 @@ const HUE_GROUP: &str = "Hue";
 const SATURATION_GROUP: &str = "Saturation";
 const LUMINANCE_GROUP: &str = "Luminance";
 const GRADING_GROUP: &str = "Grading";
+const HSL_GROUP: &str = "HSL";
 
 /// The neutral value of every mixer field.
 const NEUTRAL: f64 = 0.0;
@@ -234,13 +237,18 @@ impl FieldPatch for Mixer {
         .reset_notes("returns the stack's one Colour mixer layer to its all-default payload, HSL and grading together (Blending 50), keeping its identity and position; a no-op without one and when it is already all default")
         .fields(HSL_FIELDS.map(hsl_field))
         .fields(grade_fields())
-        .group(Group::new(HUE_GROUP, HSL_FIELDS[0..8].iter().copied()))
-        .group(Group::new(SATURATION_GROUP, HSL_FIELDS[8..16].iter().copied()).collapsed())
-        .group(Group::new(LUMINANCE_GROUP, HSL_FIELDS[16..24].iter().copied()).collapsed())
-        .group(Group::new(GRADING_GROUP, GRADE_FIELDS).collapsed())
+        // HSL and Grading are the band's two tabs, each its own reset and preset-capture scope.
+        // HSL's Hue, Saturation and Luminance are three parallel subgroups over the same eight
+        // ranges, drawn as nested tabs and each resetting its own eight fields.
+        .group(
+            Group::new(HSL_GROUP, [])
+                .tabs()
+                .subgroup(Group::new(HUE_GROUP, HSL_FIELDS[0..8].iter().copied()))
+                .subgroup(Group::new(SATURATION_GROUP, HSL_FIELDS[8..16].iter().copied()))
+                .subgroup(Group::new(LUMINANCE_GROUP, HSL_FIELDS[16..24].iter().copied())),
+        )
+        .group(grading_group())
         .collapsed()
-        // The groups are parallel views of the one layer, so the desktop draws them as one
-        // segmented row instead of stacked sections.
         .layout(crate::ModuleLayout::Tabs)
     }
 
@@ -276,6 +284,70 @@ impl FieldPatch for Mixer {
         }
         Ok(Processing::Color(ColorOperation::new(units)))
     }
+}
+
+/// One wheel's three fields: hue, saturation and luminance.
+fn wheel_fields(wheel: usize) -> [&'static str; 3] {
+    [
+        GRADE_FIELDS[3 * wheel],
+        GRADE_FIELDS[3 * wheel + 1],
+        GRADE_FIELDS[3 * wheel + 2],
+    ]
+}
+
+/// The wheel labels and history words, in [`grade::WHEEL_NAMES`] order.
+const WHEEL_LABELS: [&str; grade::WHEEL_COUNT] = ["Shadows", "Midtones", "Highlights", "Global"];
+const WHEEL_TINTS: [&str; grade::WHEEL_COUNT] = [
+    "Shadows tint",
+    "Midtones tint",
+    "Highlights tint",
+    "Global tint",
+];
+
+/// One wheel over its hue and saturation, with its luminance as the wheel's rail: the reset of
+/// exactly its three fields, and one history entry, `<Range> tint`, for a gesture moving both.
+fn grade_wheel(wheel: usize) -> Wheel {
+    let [hue, saturation, luminance] = wheel_fields(wheel);
+    Wheel::new(WHEEL_LABELS[wheel], hue, saturation)
+        .luminance(luminance)
+        .history(WHEEL_TINTS[wheel])
+}
+
+/// The Grading tab: one group owning the fourteen grading fields, its reset (Blending back to 50),
+/// shown through presentation-only views. 3-way draws Midtones above Shadows and Highlights in
+/// compact wheels; each range and Global has a view of its own with a large wheel and its exact
+/// hue and saturation. Blending and Balance follow every tonal view and are absent from Global,
+/// which does not read them; a view never changes a value, a reset scope or what a preset holds.
+fn grading_group() -> Group {
+    const SHADOWS: usize = 0;
+    const MIDTONES: usize = 1;
+    const HIGHLIGHTS: usize = 2;
+    const GLOBAL: usize = 3;
+    let three_way = View::new("3-way")
+        .wheel(grade_wheel(MIDTONES))
+        .wheel(grade_wheel(SHADOWS))
+        .wheel(grade_wheel(HIGHLIGHTS))
+        .field(GRADE_BLENDING)
+        .field(GRADE_BALANCE);
+    let single = |wheel: usize, tonal: bool| {
+        let [hue, saturation, _] = wheel_fields(wheel);
+        let view = View::new(WHEEL_LABELS[wheel])
+            .wheel(grade_wheel(wheel).large())
+            .field(hue)
+            .field(saturation);
+        if tonal {
+            view.field(GRADE_BLENDING).field(GRADE_BALANCE)
+        } else {
+            view
+        }
+    };
+    Group::new(GRADING_GROUP, GRADE_FIELDS)
+        .tabs()
+        .view(three_way)
+        .view(single(SHADOWS, true))
+        .view(single(MIDTONES, true))
+        .view(single(HIGHLIGHTS, true))
+        .view(single(GLOBAL, false))
 }
 
 /// The fourteen grading values a payload holds, defaults filled.
@@ -335,7 +407,7 @@ fn grade_fields() -> Vec<Field> {
             )
             .range(0.0, 360.0)
             .history(format!("{label} hue"))
-            .rail(RailDecoration::Hue),
+            .control(FieldControl::Number(NumberStyle::Field)),
         );
         fields.push(
             Field::slider(
@@ -346,7 +418,8 @@ fn grade_fields() -> Vec<Field> {
                 ),
             )
             .range(0.0, 100.0)
-            .history(format!("{label} saturation")),
+            .history(format!("{label} saturation"))
+            .control(FieldControl::Number(NumberStyle::Field)),
         );
         fields.push(
             Field::slider(

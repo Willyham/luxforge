@@ -3354,7 +3354,11 @@ mod tests {
         }
         assert_eq!(groups(section(&workspace, "luxforge.basic")), 3);
         let mixer = section(&workspace, "luxforge.mixer");
-        assert_eq!(groups(mixer), 3, "a tabbed module keeps its groups as tabs");
+        assert_eq!(
+            groups(mixer),
+            2,
+            "a tabbed module keeps its groups, HSL and Grading, as tabs"
+        );
         assert!(matches!(mixer.layout, tools::SectionLayout::Tabs { .. }));
 
         // The only group has nothing to collapse: a recorded collapse, however it got there,

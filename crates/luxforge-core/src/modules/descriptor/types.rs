@@ -888,10 +888,6 @@ impl GroupControl {
         }
     }
 
-    pub(crate) fn collapsed(self, collapsed: bool) -> Self {
-        Self { collapsed, ..self }
-    }
-
     /// A replacement reset for one source kind ([`ControlVariant::reset`]).
     pub(crate) fn variant(mut self, variant: ControlVariant) -> Self {
         self.variants.push(variant);

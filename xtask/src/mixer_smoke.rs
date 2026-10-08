@@ -25,6 +25,8 @@ const SET_MIXER: &str = "set-mixer";
 const RED_HUE: &str = "red-hue";
 const AQUA_SATURATION: &str = "aqua-saturation";
 const SATURATION_GROUP: &str = "Saturation";
+/// The module's HSL tab, whose own tab row shows Hue, Saturation and Luminance.
+const HSL_GROUP: &str = "HSL";
 pub const FIXTURE: &str = "fixtures/generated/hue-wheel.jpg";
 
 /// The wheel's own east point (angle 0), where the mixer's red range is centred.
@@ -133,12 +135,13 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         .expanded(MIXER_MODULE)
         .collapsed(BASIC_MODULE)
         .percent(100.0),
-        // 9: the Saturation tab: the mixer's groups are tabs, and choosing one is view state.
+        // 9: the HSL tab's Saturation view: HSL's three properties are a nested tab row, and
+        // choosing one is view state.
         Step::new(
             "saturation-tab",
             TabStep {
                 module: MIXER_MODULE.into(),
-                group: Vec::new(),
+                group: vec![HSL_GROUP.into()],
                 index: 1,
             },
         )
@@ -148,7 +151,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             "luminance-tab",
             TabStep {
                 module: MIXER_MODULE.into(),
-                group: Vec::new(),
+                group: vec![HSL_GROUP.into()],
                 index: 2,
             },
         )
@@ -234,12 +237,17 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         Tolerance::Under(UNCHANGED),
     )?;
 
-    // The Saturation and Luminance tabs, each per-client view state alone.
-    for (step, index) in [("saturation-tab", 1), ("luminance-tab", 2)] {
-        let selected = &launch.at(step)?.state()["control_ui"]["selected_tab"][MIXER_MODULE];
+    // The Saturation and Luminance tabs of the HSL tab's own row, each session view state alone.
+    for (step, view) in [
+        ("saturation-tab", "Saturation"),
+        ("luminance-tab", "Luminance"),
+    ] {
+        let views = &launch.at(step)?.state()["workspace"]["views"];
         ensure(
-            selected == &json!(index),
-            format!("The {step} step selected tab {selected}, not {index}"),
+            views.as_array().is_some_and(|rows| {
+                rows.contains(&json!({"module": MIXER_MODULE, "group": [HSL_GROUP], "view": view}))
+            }),
+            format!("The {step} step selected {views}, not {view}"),
         )?;
     }
 

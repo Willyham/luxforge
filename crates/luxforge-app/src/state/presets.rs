@@ -610,9 +610,8 @@ mod tests {
                 "Detail \u{00b7} Sharpening",
                 "Detail \u{00b7} Noise reduction",
                 "Presence \u{00b7} Presence",
-                "Colour mixer \u{00b7} Hue",
-                "Colour mixer \u{00b7} Saturation",
-                "Colour mixer \u{00b7} Luminance",
+                "Colour mixer \u{00b7} HSL",
+                "Colour mixer \u{00b7} Grading",
                 "Vignette \u{00b7} Vignette",
             ],
             "RAW, transforms, crop and the pixel proof declare no field patch; Perspective's patch is not presettable"
@@ -628,6 +627,25 @@ mod tests {
                 .flat_map(|group| &group.fields)
                 .all(|(action, _)| action != "set-perspective")
         );
+        // The mixer's HSL and Grading tabs are one checkbox each: HSL's nested Hue, Saturation
+        // and Luminance tabs and Grading's views are presentation, and a field several views show
+        // (a wheel and its own numbers) is captured once.
+        for (label, count) in [
+            ("Colour mixer \u{00b7} HSL", 24),
+            ("Colour mixer \u{00b7} Grading", 14),
+        ] {
+            let group = groups
+                .iter()
+                .find(|group| group.label == label)
+                .expect("a mixer capture group");
+            let [(action, fields)] = group.fields.as_slice() else {
+                panic!("{label} captures one action: {:?}", group.fields);
+            };
+            assert_eq!(action, "set-mixer");
+            assert_eq!(fields.len(), count, "{label}: {fields:?}");
+            let unique: std::collections::BTreeSet<&String> = fields.iter().collect();
+            assert_eq!(unique.len(), count, "{label} captures a field twice");
+        }
         let tone = &groups[1];
         assert_eq!(
             tone.fields,

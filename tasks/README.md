@@ -42,9 +42,9 @@ One plan per tool module.
 
 | Plan | Purpose |
 | --- | --- |
+| [Colour grading](editing/colour-grading.json) | Implemented mixer extension: the remaining handoff evidence (M4 full tier with the GPU gate over the grading recipes, the latency harness's wheel gesture and 24/60 MP measurements) and a Lightroom round for the delivered `grade-align` tooling |
 | [AI editing](editing/ai-editing.json) | Proposed Remove, Select, generative fill and Replace, and optional sky replacement on local, user-downloaded models: the inference port and runtime, the model manager, the analysis cache and picker, the model-selection mask kind, the fill tiers, the remote-provider shape, portability, qualification and documentation |
 | [Corrections](editing/corrections.json) | Proposed offline Clone/Heal, the repair stage, the shared brush and the repair layer's frozen-patch operation; its AI Remove is planned under AI editing |
-| [Colour grading](editing/colour-grading.json) | Decided, implementation-ready mixer extension: tonal/Global wheels, masks, presets and direct Lightroom mappings delivered first; independent reference analysis and Lightroom response refinement last, with no approval/research gates |
 
 ### Lightroom (`lightroom/`)
 
