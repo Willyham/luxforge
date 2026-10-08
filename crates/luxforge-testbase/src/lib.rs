@@ -2,7 +2,8 @@
 //! [`wait_until`] every test orders its steps by, the one [`Distribution`] every timing figure is
 //! computed with, the one loopback [`TestServer`] (TLS only with the `tls` feature, which only the
 //! transport's own tests in `luxforge-net` ask for), the capability proof's fake provider
-//! [`ProofEndpoint`] built on it, and the repository fixtures and unique scratch paths of
+//! [`ProofEndpoint`] built on it, the one rule for a host that forbids loopback listening
+//! ([`loopback_forbidden`]), and the repository fixtures and unique scratch paths of
 //! [`paths`].
 //!
 //! A test must not depend on how loaded the host is. It shares no mutable state with another test,
@@ -28,6 +29,7 @@
 
 mod distribution;
 mod gate;
+mod loopback;
 pub mod paths;
 mod proof;
 mod server;
@@ -35,6 +37,7 @@ mod wait;
 
 pub use distribution::Distribution;
 pub use gate::Gate;
+pub use loopback::{NO_LOOPBACK, loopback_forbidden};
 pub use proof::{ProofAnswer, ProofEndpoint, ProofProtocol, ProofRequest};
 pub use server::{Options, Request, TestServer, respond, send};
 pub use wait::{HANG, try_wait_for, wait_for, wait_until};

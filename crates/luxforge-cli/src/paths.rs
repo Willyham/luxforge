@@ -1,3 +1,4 @@
+use luxforge_core::{LIVE_SESSIONS_DIR, preferences::CATALOG_FILE};
 use std::path::PathBuf;
 /// Where the application keeps its files. `config` holds the catalog and module settings and
 /// grants; `data` holds what the application downloads or installs, such as module resources;
@@ -57,6 +58,18 @@ impl Paths {
     pub fn module_resources(&self) -> PathBuf {
         self.data.join("modules").join("resources")
     }
+
+    /// The catalog an ordinary launch opens with no location stored: [`CATALOG_FILE`] in the
+    /// configuration directory.
+    pub fn default_catalog(&self) -> PathBuf {
+        self.config.join(CATALOG_FILE)
+    }
+
+    /// The per-user registry of running live sessions, which each desktop serving one keeps an
+    /// entry in and `luxforge-ctl` reads ([`luxforge_core::running_sessions`]).
+    pub fn live_sessions(&self) -> PathBuf {
+        self.config.join(LIVE_SESSIONS_DIR)
+    }
 }
 #[cfg(test)]
 mod tests {
@@ -72,6 +85,14 @@ mod tests {
         assert_eq!(
             paths.module_resources(),
             root.join("data").join("modules").join("resources")
+        );
+        assert_eq!(
+            paths.default_catalog(),
+            root.join("config").join(CATALOG_FILE)
+        );
+        assert_eq!(
+            paths.live_sessions(),
+            root.join("config").join("live-sessions")
         );
         assert!(!root.exists(), "resolving creates nothing");
     }

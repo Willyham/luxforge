@@ -228,6 +228,21 @@ pub use crate::model::JobStatus;
 /// rather than keeping its own copy, and `job.read` answers with what the board carries.
 pub(crate) use crate::activity::ActivityProgress as JobProgress;
 
+/// Who a job belongs to, which says who may read it and what a client's leaving does to it.
+/// `job.read` names it in every record, so a client can tell whether a job it started outlives
+/// its connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum JobOwnership {
+    /// The clients that requested it (source work, an analysis, a shared preview job): only they
+    /// read it, a cancel or disconnect releases the caller's interest, and the work stops when the
+    /// last interested client leaves it, as when its last client's connection closes.
+    Clients,
+    /// The catalog owner (capability work, an export, the catalog's other long-running work): any
+    /// client reads and cancels it, a cancel stops it for everyone, and no disconnect touches it.
+    Catalog,
+}
+
 /// A failed or cancelled job's error, as a client reads it.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct JobError {
@@ -258,6 +273,8 @@ pub struct JobRecord {
     pub job_id: JobId,
     pub kind: JobKind,
     pub status: JobStatus,
+    /// Who the job belongs to.
+    pub ownership: JobOwnership,
     pub progress: JobProgress,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asset_id: Option<AssetId>,
@@ -627,6 +644,11 @@ impl Entry {
         }
         record.error = self.error.as_ref().map(JobError::from);
         record.request_id = self.origin.as_ref().map(|origin| origin.request_id.clone());
+        record.ownership = if self.interest.is_some() {
+            JobOwnership::Clients
+        } else {
+            JobOwnership::Catalog
+        };
         record
     }
 
@@ -1003,6 +1025,7 @@ impl Jobs {
                 job_id: job_id.clone(),
                 kind,
                 status: JobStatus::Queued,
+                ownership: JobOwnership::Catalog,
                 progress: JobProgress::default(),
                 asset_id,
                 module_id: None,
@@ -1038,6 +1061,7 @@ impl Jobs {
                 job_id: job_id.clone(),
                 kind,
                 status: JobStatus::Queued,
+                ownership: JobOwnership::Catalog,
                 progress: JobProgress::default(),
                 asset_id,
                 module_id: None,
@@ -1301,6 +1325,7 @@ impl Jobs {
                 job_id: job_id.clone(),
                 kind: job.kind,
                 status: JobStatus::Queued,
+                ownership: JobOwnership::Catalog,
                 progress: JobProgress::default(),
                 asset_id: job.asset_id,
                 module_id: job.module_id,
@@ -2018,10 +2043,16 @@ mod tests {
             "a gone client owns nothing"
         );
         assert!(jobs.wanted_by(&shared, two));
-        assert!(!control.is_cancelled(), "the export runs on");
         assert_eq!(
-            jobs.read_for(&export.job_id, one).unwrap().status,
-            JobStatus::Running,
+            jobs.read_for(&shared, two).unwrap().ownership,
+            JobOwnership::Clients,
+            "each record says who it belongs to"
+        );
+        assert!(!control.is_cancelled(), "the export runs on");
+        let record = jobs.read_for(&export.job_id, one).unwrap();
+        assert_eq!(
+            (record.status, record.ownership),
+            (JobStatus::Running, JobOwnership::Catalog),
             "any client reads a lane job"
         );
         open_lane.send(()).unwrap();

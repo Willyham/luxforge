@@ -12,7 +12,7 @@
 use super::{
     ClientSession, MASK_MODE, MaskOverlayColour, MaskOverlayMode, POINTER_MODE, PROTOCOL,
     owner::{self, Call, Owner},
-    params::{self, Envelope, HostParams, NoParams, ParamSchema, host_params, parse},
+    params::{self, Envelope, HostParams, NoParams, ParamSchema, RevisionOf, host_params, parse},
 };
 #[cfg(test)]
 use crate::ErrorKind;
@@ -349,7 +349,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         JOB_READ,
         owner::JobParams,
         owner::job_read,
-        "{job_id, kind, status, progress: {fraction?, message?}, asset_id?, module_id?, resource_id?, identity?, result?, error?: {code, message, data?}, request_id?} for a job of any kind: prepare, develop, artifacts and collect (source work), analysis, install, remove and task (capability work) or export; status is queued, running, ready, failed, cancelled or superseded; result is present only when ready: the prepared asset's state, a collection's counts, the analysis report, the capability job's value or the written export; a source or analysis job is read by the clients that requested it, and a capability or export job by any client; the owner keeps the last 64 finished source jobs, 32 of each other kind and 8 analysis reports"
+        "{job_id, kind, status, ownership, progress: {fraction?, message?}, asset_id?, module_id?, resource_id?, identity?, result?, error?: {code, message, data?}, request_id?} for a job of any kind: prepare, develop, artifacts and collect (source work), analysis, install, remove and task (capability work), export, or the catalog's long-running work (listing, previews, developing picks, checking and finding originals, and batches); status is queued, running, ready, failed, cancelled or superseded; result is present only when ready: the prepared asset's state, a collection's counts, the analysis report, the capability job's value or the written export; ownership is clients for a job that belongs to the clients that requested it (source work, an analysis, a shared preview read or render): only they read it, and it stops when the last of them still interested cancels it or disconnects, so a client that closes its connection stops such a job unless another client still wants it; ownership is catalog for every other job: any client reads and cancels it, and no disconnect touches it; the owner keeps the last 64 finished source jobs, 32 of each other kind and 8 analysis reports"
     ),
     // The activity board belongs to the catalog owner, whose workers publish to it, so the owner
     // answers from it: one lock and a copy, nothing rendered or read.
@@ -1240,6 +1240,46 @@ pub(super) const METHODS: &[MethodSpec] = &[
     ),
 ];
 
+/// The host methods whose effect lives only in the calling client's session, which ends with its
+/// connection, so a call of one on a connection of its own changes nothing that outlasts it: a
+/// draft, a previewed entry or comparison, the session's view and workspace state, a selection in
+/// its browse view or the rows of that view, and adopting its own preparation. `schema.list` marks
+/// each `session_scoped`, so a one-request client such as `luxforge-ctl call` can refuse it and point
+/// to a client that keeps one connection. A method that also answers something useful on its own,
+/// such as `browse.view`'s counts or `render.sample`'s pixel, is not listed.
+const SESSION_SCOPED: &[&str] = &[
+    "draft.begin",
+    "draft.set",
+    "draft.read",
+    "draft.reapply",
+    "draft.cancel",
+    "draft.commit",
+    "preview.select",
+    "preview.compare",
+    "preview.return-current",
+    "view.set",
+    "workspace.set",
+    "browse.select",
+    "browse.rows",
+    "job.adopt",
+];
+
+/// What each host method with a `revision` envelope checks its `expected_revision` against, as
+/// `schema.list` publishes it in `revision_of`; an action's is always its asset's. A test holds
+/// this list to exactly the host methods with that envelope.
+const HOST_REVISIONS: &[(&str, RevisionOf)] = &[
+    ("history.undo", RevisionOf::Asset),
+    ("history.redo", RevisionOf::Asset),
+    ("history.restore", RevisionOf::Asset),
+    ("draft.commit", RevisionOf::Draft),
+    ("module.settings.set", RevisionOf::ModuleSettings),
+    ("module.settings.set-secret", RevisionOf::ModuleSettings),
+    ("module.settings.clear-secret", RevisionOf::ModuleSettings),
+    ("module.settings.reset", RevisionOf::ModuleSettings),
+    ("module.profile.create", RevisionOf::ModuleSettings),
+    ("module.profile.remove", RevisionOf::ModuleSettings),
+];
+
 /// A resolved method: a host method from the static table, or one generated from an action, query
 /// or task a registered module or the host descriptor declares. All of them come from the same
 /// lookup discovery uses.
@@ -1281,6 +1321,24 @@ impl Method {
 
     pub(super) fn mutates(&self) -> bool {
         self.envelope() != Envelope::None
+    }
+
+    /// What a `revision` envelope's `expected_revision` is checked against: an action's asset, or
+    /// what [`HOST_REVISIONS`] declares for a host method. `None` for any other envelope.
+    pub(super) fn revision_of(&self) -> Option<RevisionOf> {
+        match self {
+            Self::Host(spec) => HOST_REVISIONS
+                .iter()
+                .find(|(name, _)| *name == spec.name)
+                .map(|(_, of)| *of),
+            Self::Action(_) => Some(RevisionOf::Asset),
+            Self::Task(_) | Self::Query(_) => None,
+        }
+    }
+
+    /// Whether the method's effect lives only in the caller's session ([`SESSION_SCOPED`]).
+    pub(super) fn session_scoped(&self) -> bool {
+        matches!(self, Self::Host(spec) if SESSION_SCOPED.contains(&spec.name))
     }
 
     /// Who answers a retry of the method: what a host method's entry declares. An action — a
@@ -1450,6 +1508,12 @@ fn method_schema(
     }
     if let Some(name) = envelope.name() {
         schema["mutation"] = json!(name);
+    }
+    if let Some(of) = method.revision_of() {
+        schema["revision_of"] = json!(of);
+    }
+    if method.session_scoped() {
+        schema["session_scoped"] = json!(true);
     }
     if let Some(patch) = patch {
         schema["patch"] = json!(patch);
@@ -1656,11 +1720,15 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
             "export_reasons": crate::RendererReason::EXPORT.map(crate::RendererReason::as_str),
             "notes": "session.state's renderer is {record, reason}, the same for every client of this owner. record gpu: the desktop's photo surface draws on its GPU, and reason is null; software is true when that GPU is the platform's software adapter (lavapipe on Linux, WARP on Windows), a rasterizer on the CPU, and is omitted otherwise. record reference: the CPU reference renderer draws the desktop's picture, slower, and reason says why: surface-pending before the desktop has drawn a photograph, which is when its photo surface checks its GPU stage; no-adapter when the GPU stage cannot run on this graphics device, when the host offers only a software adapter, which is not adopted and the desktop was not launched with --software-adapter, or when the desktop was launched with --no-gpu-render, which refuses it the same way; device-lost when the graphics device was lost, which nothing waits to recover. record reference with a null reason is an owner that draws nothing, such as luxforge-json, whose renderer is always the reference. The desktop reports it from its photo surface and the session reports it; no method sets it. A ready export's job.read result names the renderer that rendered its file in the same shape: record gpu with a null reason, or record reference with a null reason on an owner with no GPU, such as luxforge-json, and otherwise one of the reasons, one of export_reasons or the GPU plan's own code: requested when export.jpeg asked for reference: true; surface-pending before the desktop has named the adapter its window draws with to its GPU tile worker, which it does once its photo surface has checked its GPU stage; no-adapter when the tile worker found no adapter or device it can render on; refused when the desktop was launched with --no-gpu-render; device-lost when the tile worker's device was lost, before or during the export, which then starts again on the reference; adapter-mismatch when the tile worker's adapter is not the one the window draws with; tiles-budget when the export's tiles would hold more than the tile worker's GPU budget; or the code of the GPU plan or stage that cannot draw the stack, such as pixel-stage for a layer no GPU program replaces, or pipeline-failed.",
         },
+        // A method whose effect lives only in the caller's session marks itself `session_scoped`.
+        "session": {
+            "notes": "A method marked session_scoped: true acts only on the calling client's session, such as its draft, previewed entry, view, workspace or browse selection, which ends when the client's connection closes: call it on a connection that also sends what depends on it, never on a connection of its own.",
+        },
         // Every mutating method names its envelope in its own `mutation` field.
         "mutation": {
             "revision": Envelope::Revision.fields(),
             "request": Envelope::Request.fields(),
-            "notes": "Every mutating method carries a mutation envelope. A method that changes an asset or a module's settings, which have a revision, carries revision: expected_revision must be that revision or the request is a conflict. Every other mutating method carries request. request_id and actor are 1..128 characters. A retry with the same request_id and the same input returns the first answer, marked deduplicated: true, and emits no event; the same request_id with different input is a conflict. An asset change's request_id is unique per asset and is remembered durably with the change; every other request_id, a settings write's included, is unique per method family, the method name without its last segment, and is remembered for the owner's lifetime, bounded to the most recent requests, after which a settings write's retry conflicts on its revision.",
+            "notes": "Every mutating method carries a mutation envelope. A method that changes an asset or a module's settings, which have a revision, carries revision: expected_revision must be that revision or the request is a conflict, and the method's revision_of says whose revision it is: asset, the asset its asset_id names, as asset.state answers it; draft, the asset its draft_id's draft is bound to; module-settings, the settings of the module its module_id names, as module.settings.read answers them. Every other mutating method carries request. request_id and actor are 1..128 characters. A retry with the same request_id and the same input returns the first answer, marked deduplicated: true, and emits no event; the same request_id with different input is a conflict. An asset change's request_id is unique per asset and is remembered durably with the change; every other request_id, a settings write's included, is unique per method family, the method name without its last segment, and is remembered for the owner's lifetime, bounded to the most recent requests, after which a settings write's retry conflicts on its revision.",
         },
     })
 }
@@ -3090,6 +3158,16 @@ mod tests {
                 .unwrap()
             )
         );
+        // Every method the two declared lists name is a host method.
+        for name in SESSION_SCOPED
+            .iter()
+            .chain(HOST_REVISIONS.iter().map(|(name, _)| name))
+        {
+            assert!(
+                METHODS.iter().any(|spec| spec.name == *name),
+                "{name} is not a host method"
+            );
+        }
         for (name, method) in listed {
             let resolved = find(&service, name).expect("every listed method resolves");
             // A method mutates exactly when it names an envelope, and the schema describes it.
@@ -3102,6 +3180,22 @@ mod tests {
                     "{name}: its envelope {envelope} is described"
                 );
             }
+            // Whose revision a revision envelope carries is published, and only for that envelope.
+            assert_eq!(
+                method.get("revision_of").is_some(),
+                envelope == Some(&json!("revision")),
+                "{name}: revision_of names whose revision its revision envelope carries"
+            );
+            assert_eq!(
+                method.get("revision_of").cloned(),
+                resolved.revision_of().map(|of| json!(of)),
+                "{name}"
+            );
+            assert_eq!(
+                method.get("session_scoped").cloned(),
+                resolved.session_scoped().then_some(json!(true)),
+                "{name}"
+            );
             assert_eq!(
                 resolved.retries() != Retries::None,
                 resolved.mutates(),

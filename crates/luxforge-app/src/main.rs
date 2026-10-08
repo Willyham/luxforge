@@ -79,6 +79,9 @@ struct Config {
     /// (`app/lifecycle.rs`); `None` until then, when [`Config::launch_renderer`] answers as for a
     /// host it did not look at.
     launch_renderer: Option<crate::adapters::LaunchRenderer>,
+    /// Why the live session could not be started or registered at launch (`app/lifecycle.rs`),
+    /// which the status bar shows and the log records.
+    live_problem: Option<String>,
 }
 
 impl Config {

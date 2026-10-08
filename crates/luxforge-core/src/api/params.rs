@@ -15,12 +15,14 @@
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{Error, Mutation, MutationRequest, ParameterDescriptor, ParameterKind, check_value};
-use serde::{Deserialize, de::DeserializeOwned};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Map, Value};
 
-/// Which mutation envelope a method carries in its `mutation` field.
+/// Which mutation envelope a method carries in its `mutation` field, as its `schema.list` entry
+/// names it. A client that builds envelopes, such as `luxforge-ctl`, reads the name back with
+/// [`Envelope::named`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Envelope {
+pub enum Envelope {
     /// None: the method reads, or changes only the caller's own session.
     None,
     /// `{expected_revision, request_id, actor}`: the method changes something that has a revision,
@@ -35,7 +37,7 @@ pub(crate) enum Envelope {
 
 impl Envelope {
     /// The fields of the envelope, as `schema.list` names them.
-    pub(crate) fn fields(self) -> Option<&'static [&'static str]> {
+    pub fn fields(self) -> Option<&'static [&'static str]> {
         match self {
             Self::None => None,
             Self::Revision => Some(&["expected_revision", "request_id", "actor"]),
@@ -44,11 +46,22 @@ impl Envelope {
     }
 
     /// The envelope's name in a method's `schema.list` entry.
-    pub(crate) fn name(self) -> Option<&'static str> {
+    pub fn name(self) -> Option<&'static str> {
         match self {
             Self::None => None,
             Self::Revision => Some("revision"),
             Self::Request => Some("request"),
+        }
+    }
+
+    /// The envelope a method's `schema.list` entry names in its `mutation` field: [`Self::None`]
+    /// when it names none, and `None` for a name this build does not know.
+    pub fn named(name: Option<&str>) -> Option<Self> {
+        match name {
+            None => Some(Self::None),
+            Some("revision") => Some(Self::Revision),
+            Some("request") => Some(Self::Request),
+            Some(_) => None,
         }
     }
 
@@ -69,6 +82,21 @@ impl Envelope {
         };
         checked.unwrap_or(Ok(()))
     }
+}
+
+/// What the `expected_revision` of a method's `revision` envelope is the revision of, as its
+/// `schema.list` entry publishes it in `revision_of`, so a client knows where to read the revision
+/// it sends without inferring it from the method's parameters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RevisionOf {
+    /// The asset the method's `asset_id` names, whose revision `asset.state` answers.
+    Asset,
+    /// The asset the draft the method's `draft_id` names is bound to.
+    Draft,
+    /// The settings of the module the method's `module_id` names, whose revision
+    /// `module.settings.read` answers.
+    ModuleSettings,
 }
 
 /// One method's parameters as `schema.list` publishes them.
