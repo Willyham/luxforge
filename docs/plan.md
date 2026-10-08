@@ -65,7 +65,6 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 - A trivial GPU export is about 15 ms slower than the reference export (101 against 85 ms at 24 MP, 190 against 175 ms at 60 MP)
 - Launch to an empty shell (2.07 to 2.11 s) and the uncached 24 MP open (1.21 to 1.25 s) miss their provisional targets; measured beside the 2026-10-02 build on 2026-10-07, about 0.45 s of each since that day's record is the host's, on both builds, and this build adds 0.19 to 0.25 s to a launch, mostly the harness copying and macOS first-checking its larger executable
 - Explicit qualification of the softer `budget-reduced` motion frame at 100%, accepted with that requirement on 2026-10-07
-- A hidden or minimised commit followed by `analysis.request`, with correlated state and counts; the existing visibility journey does not establish this
 - Hosted Linux's lavapipe lane stopping at `large24` before histogram and `gpu-preview`, and the current indexed-folder watcher failure before rendered journeys
 - The native Windows and Linux checks
 
