@@ -1602,11 +1602,22 @@ pub fn schemas(registry: &ModuleRegistry) -> Value {
             if maskable {
                 optional.insert(target.name.clone(), json!(target.notes));
             }
+            // An analysis action's answer carries the report its plan used.
+            let notes = match &action.analysis {
+                Some(analysis) => format!(
+                    "{} Returns the mutation result with analysis.{query}: the report query.{query} \
+                     answers for the stack this call analysed, the one its values came from, also \
+                     on a no-op; a deduplicated retry analyses nothing and carries none.",
+                    action.notes,
+                    query = analysis.query
+                ),
+                None => action.notes.clone(),
+            };
             let mut schema = method_schema(
                 &Method::Action(action.id.clone()),
                 vec![json!("asset_id"), json!("mutation")],
                 optional,
-                &action.notes,
+                &notes,
                 Some(&action.parameters),
                 Some(action.patch),
             );

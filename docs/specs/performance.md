@@ -42,7 +42,7 @@ A single float32 RGBA buffer for 60 MP is about 916 MiB, so unrestricted full-re
 
 ## Auto tone
 
-Native Apple M2 / Metal, 8 GiB, optimized release, 2026-10-08. Thirty samples per case use prepared generated 24 MP and 60 MP JPEGs and a neutral Basic prefix. The engine timer covers the tile-worker queue, grid read and deterministic solver; it excludes original decoding/preparation, catalog commit, tooltip query and preview. Cold and warm refer only to the analysis-sample cache; filesystem, device and shader caches are not purged. This is neither a before/after editor baseline nor the owner's M4 click-to-entry qualification.
+Native Apple M2 / Metal, 8 GiB, optimized release, 2026-10-08. Thirty samples per case use prepared generated 24 MP and 60 MP JPEGs and a neutral Basic prefix. The engine timer covers the tile-worker queue, grid read and deterministic solver; it excludes original decoding/preparation, catalog commit and preview. Cold and warm refer only to the analysis-sample cache; filesystem, device and shader caches are not purged. This is neither a before/after editor baseline nor the owner's M4 click-to-entry qualification.
 
 | Source | Renderer | Sample cache | Engine ms p50 / p95 | Grid read ms p95 | Solve ms p95 |
 | --- | --- | --- | ---: | ---: | ---: |
