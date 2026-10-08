@@ -786,7 +786,7 @@
         "Every corpus stack is within the recorded limit for every output kind on the M4, recorded as the release gate's first run; any other machine's result is recorded with its hardware.",
         "Every latency above is recorded with p50/p95, load, build and source identity against its baseline; the known costs, the roadmap and feature status state the measured costs and nothing unmeasured.",
         "Source files are unchanged after every run.",
-        "Softer budget-reduced motion at 100% has explicit native qualification with the affected stacks, views, drawing path and reported reference differences; acceptance of that behaviour is not itself evidence that it is qualified."
+        "Softer budget-reduced motion at 100% has explicit native qualification with the affected stacks, views, drawing path and reported reference differences; acceptance of that behaviour is not itself evidence that it is qualified. Met 2026-10-08: gpu-qualification reports the softer frame on every 100% cell, natural or forced, against the picture at rest and the reference (docs/specs/performance.md, The softer frame at 100%)."
       ],
       "test_strategy": {
         "approach": "manual",

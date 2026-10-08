@@ -15,10 +15,12 @@
 //! window at 100% — is gated against the reference, as the owner decided. **In motion**, the frame a
 //! drag draws over the boundary the surface derives from the source is reported against the
 //! picture at rest it settles to and against the reference, with the same statistics and limits,
-//! but not gated: what a drag's frame is held to is an open owner question (2026-10-05,
-//! [design](../../docs/design/gpu-first.md#proposals-with-recorded-defaults)).
-//! `--gate-motion against-rest` or `--gate-motion against-reference` gates it on demand, so the
-//! owner's own run shows its misses as failures.
+//! but not gated, as the owner decided on 2026-10-07
+//! ([decisions](../../docs/decisions.md#owner-decisions-2026-10-07)).
+//! `--gate-motion against-rest` or `--gate-motion against-reference` gates it on demand, so a run
+//! can show its misses as failures. At 100% the softer frame a drag past the budget draws instead
+//! is measured on every cell and reported, not gated: the qualification the owner's acceptance of
+//! it asked for.
 //!
 //! Export is judged over the whole output stage: the GPU's export of each stack, streamed in tiles
 //! by the desktop's GPU tile worker as the export lane streams it, against the reference export by
@@ -68,7 +70,16 @@ impl GateMotion {
 }
 
 /// What the picture in motion is, until the owner decides what a drag's frame is held to.
-const MOTION_NOT_GATED: &str = "not gated: an open owner question (2026-10-05)";
+const MOTION_NOT_GATED: &str =
+    "not gated: reported against the picture at rest and the reference (owner, 2026-10-07)";
+
+/// What the softer frame a drag past the budget draws at 100% is held to: accepted by the owner on
+/// 2026-10-07 subject to explicit qualification, which this report is; reported, never gated.
+const SOFTER_NOT_GATED: &str =
+    "reported, not gated: accepted subject to qualification (owner, 2026-10-07)";
+
+/// The softer frame's kind name in the report's results.
+const SOFTER: &str = "softer motion at 100%";
 
 /// What one run measures.
 pub struct Options {
@@ -546,7 +557,7 @@ impl Extremes {
 }
 
 /// Where the reading the gate judges by is recorded.
-const DEFAULT: &str = "docs/design/gpu-first.md, Proposals with recorded defaults, the default recorded on 2026-10-05";
+const DEFAULT: &str = "docs/decisions.md, Owner decisions, 2026-10-07";
 
 /// One comparison over a view's cells of a class: how many are within the limits and past them,
 /// and the figures.
@@ -732,6 +743,15 @@ struct Tally {
     /// The picture at rest against the reference, and what drew it.
     at_rest: Judged,
     renderers: Vec<String>,
+    /// The softer frame at 100% or more ([`SOFTER`]): measured on how many cells, of those how
+    /// many a drag would draw it on by the budget, how many could not be drawn, and its three
+    /// comparisons.
+    softer: usize,
+    softer_natural: usize,
+    softer_gaps: usize,
+    softer_reference: Judged,
+    softer_rest: Judged,
+    softer_reduced: Judged,
 }
 
 /// Judge the harness's `cells.json` (`None` when it wrote none) against every recorded limit,
@@ -895,6 +915,34 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
                 }
                 let in_motion = &measured["in_motion"];
                 let rest = &measured["at_rest"];
+                let softer = &measured["softer"];
+                if motion && softer.is_object() {
+                    if softer["status"] == "measured" {
+                        tally.softer += 1;
+                        tally.softer_natural += usize::from(softer["trigger"] == "natural");
+                        tally.softer_reference.add(
+                            &statistics(&softer["against_reference"]),
+                            cell,
+                            class,
+                        );
+                        tally
+                            .softer_rest
+                            .add(&statistics(&softer["against_rest"]), cell, class);
+                        tally.softer_reduced.add(
+                            &statistics(&softer["reduced_against_reference"]),
+                            cell,
+                            class,
+                        );
+                    } else {
+                        tally.softer_gaps += 1;
+                        gaps.push(json!({
+                            "cell": cell,
+                            "view": view,
+                            "kind": SOFTER,
+                            "reason": softer["reason"],
+                        }));
+                    }
+                }
                 let past_settled =
                     tally
                         .settled
@@ -1068,6 +1116,22 @@ pub fn judge(cells: Option<&Value>, expected: usize, options: &Options) -> Value
                     "gated": gate_motion.map(GateMotion::name),
                     "verdict": verdict,
                 }));
+                if tally.softer + tally.softer_gaps > 0 {
+                    results.push(json!({
+                        "kind": SOFTER,
+                        "view": view,
+                        "class": class.name(),
+                        "cells": tally.softer + tally.softer_gaps,
+                        "measured": tally.softer,
+                        "natural": tally.softer_natural,
+                        "gaps": tally.softer_gaps,
+                        "limits": limits_value(*class),
+                        "against_rest": tally.softer_rest.value(),
+                        "against_reference": tally.softer_reference.value(),
+                        "reduced_against_reference": tally.softer_reduced.value(),
+                        "verdict": SOFTER_NOT_GATED,
+                    }));
+                }
             }
             if at_rest {
                 let measured = tally.at_rest.within + tally.at_rest.past;
@@ -1238,8 +1302,8 @@ pub fn markdown(report: &Value) -> String {
     match reading["gate_motion"].as_str() {
         Some(gate) => text.push_str(&format!(
             "Reading: `--gate-motion {gate}`. The picture at rest is gated against the reference; \
-             the picture in motion, the frame a drag draws, is {} at every view, which the owner \
-             has not decided ({DEFAULT}).\n\n",
+             the picture in motion, the frame a drag draws, is {} at every view, on demand: the \
+             owner reports it ungated ({DEFAULT}).\n\n",
             reading["picture_in_motion"].as_str().unwrap_or("gated")
         )),
         None => text.push_str(&format!(
@@ -1314,6 +1378,10 @@ pub fn markdown(report: &Value) -> String {
     };
     let motion = of_kind(Kind::PictureInMotion);
     let rest = of_kind(Kind::PictureAtRest);
+    let softer: Vec<&Value> = results
+        .iter()
+        .filter(|result| result["kind"] == SOFTER)
+        .collect();
     let table_head = "| View | Class | Cells | Within | Past a limit | Gaps | Errors | Max | Mean | Limit | Verdict |\n| --- | --- | ---: | ---: | ---: | ---: | ---: | --- | --- | --- | --- |\n";
     let table_row = |result: &Value| {
         let limits = &result["limits"];
@@ -1361,6 +1429,35 @@ pub fn markdown(report: &Value) -> String {
                 number(&limits["p99"]),
                 number(&limits["mean_delta_l_abs"]),
                 result["verdict"].as_str().unwrap_or("?"),
+            ));
+        }
+    }
+    if !softer.is_empty() {
+        text.push_str(&format!(
+            "\n## The softer frame at 100%, {SOFTER_NOT_GATED}\n\nThe frame a drag draws at 100% when the region's slot passes the GPU-preview budget: the stack planned whole at the reduced stage of the view's area, magnified to the region bilinearly in linear light for the photo surface's sampler. Measured on every 100% cell; *natural* counts the cells whose region a drag would draw this way by the budget, the rest drawn to qualify it. Against the region's picture at rest and the reference's region, and the reduced frame against the reference reduced to its size. {FIGURES}\n\n| View | Class | Measured | Natural | Gaps | Against the picture at rest: within / past | Max | Against the reference: within / past | Max | Reduced frame: within / past | Max | Limit |\n| --- | --- | ---: | ---: | ---: | --- | --- | --- | --- | --- | --- | --- |\n"
+        ));
+        for result in &softer {
+            let limits = &result["limits"];
+            let pair = |comparison: &Value| {
+                format!("{} / {}", comparison["within"], comparison["past_a_limit"])
+            };
+            text.push_str(&format!(
+                "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} / {} / {} / {} |\n",
+                result["view"].as_str().unwrap_or("?"),
+                result["class"].as_str().unwrap_or("?"),
+                result["measured"],
+                result["natural"],
+                result["gaps"],
+                pair(&result["against_rest"]),
+                four(&result["against_rest"]["figures"], "max"),
+                pair(&result["against_reference"]),
+                four(&result["against_reference"]["figures"], "max"),
+                pair(&result["reduced_against_reference"]),
+                four(&result["reduced_against_reference"]["figures"], "max"),
+                number(&limits["mean"]),
+                number(&limits["worst_block"]),
+                number(&limits["p99"]),
+                number(&limits["mean_delta_l_abs"]),
             ));
         }
     }
@@ -1764,6 +1861,45 @@ mod tests {
         let report = judge(Some(&cells(vec![drawn])), 1, &options());
         assert_eq!(report["status"], "passed");
         assert_eq!(rows(&report, Kind::PictureAtRest)[0]["verdict"], "passed");
+    }
+
+    #[test]
+    fn the_softer_frame_at_100_is_reported_never_gated_and_its_gap_is_never_a_pass() {
+        let softer = |trigger: &str| {
+            json!({"status": "measured", "trigger": trigger,
+                   "against_reference": stats(3.0, 9.0, 12.0, 0.1),
+                   "against_rest": stats(3.0, 9.0, 12.0, 0.1),
+                   "reduced_against_reference": within()})
+        };
+        let mut natural = pair("a--b", "spatial", within(), within());
+        natural["views"]["100%"]["softer"] = softer("natural");
+        let mut forced = pair("c--d", "spatial", within(), within());
+        forced["views"]["100%"]["softer"] = softer("forced");
+        let report = judge(Some(&cells(vec![natural, forced.clone()])), 2, &options());
+        assert_eq!(report["status"], "passed", "{report:#}");
+        let rows: Vec<&Value> = report["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["kind"] == SOFTER)
+            .collect();
+        assert_eq!(rows.len(), 1, "one row, at 100%: {report:#}");
+        assert_eq!(
+            (
+                &rows[0]["measured"],
+                &rows[0]["natural"],
+                &rows[0]["verdict"]
+            ),
+            (&json!(2), &json!(1), &json!(SOFTER_NOT_GATED))
+        );
+        assert_eq!(rows[0]["against_reference"]["past_a_limit"], 2);
+        assert!(markdown(&report).contains("## The softer frame at 100%"));
+        // A softer frame that could not be drawn leaves the run incomplete.
+        forced["views"]["100%"]["softer"] =
+            json!({"status": "gap", "reason": "the reduced stage is not drawn"});
+        let report = judge(Some(&cells(vec![forced])), 1, &options());
+        assert_eq!(report["status"], "incomplete", "{report:#}");
+        assert_eq!(report["gaps"][0]["kind"], SOFTER);
     }
 
     #[test]

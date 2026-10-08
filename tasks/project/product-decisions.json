@@ -225,7 +225,7 @@
     },
     {
       "id": "TASK-005",
-      "description": "Reconcile the accepted GPU-first and GPU-preview defaults with explicit qualification of softer budget-reduced motion at 100%, while keeping later GPU optimisation proposals distinct from delivered behaviour.",
+      "description": "Reconcile the accepted GPU-first and GPU-preview defaults, softer budget-reduced motion at 100% now qualified and reported ungated, while keeping later GPU optimisation proposals distinct from delivered behaviour.",
       "status": "ready",
       "dependencies": [],
       "extra_context": [

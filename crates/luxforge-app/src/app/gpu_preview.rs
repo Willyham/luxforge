@@ -1100,7 +1100,7 @@ pub(crate) enum GpuAsk {
     /// At a percentage zoom of 100% or more: this region of the output stage at full scale, drawn
     /// at this many physical pixels an output pixel, with its draft planned at the reduced stage
     /// of the view's area too where the region's own figures pass these bytes
-    /// ([`luxforge_core::PreviewRequest::reduce_regions_after`]).
+    /// ([`luxforge_core::PreviewRequest::gpu_region_reducing`]).
     Region(Region, f64, u64),
 }
 
