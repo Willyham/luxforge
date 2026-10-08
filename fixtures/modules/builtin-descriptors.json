@@ -2815,14 +2815,14 @@
         "queries": [
           {
             "id": "auto-tone",
-            "notes": "Predicts Auto tone's eight global Basic fields from a bounded linear input sample through Basic and the Look. Returns values, statistics, exclusions and omitted layers without committing. Refuses fewer than 1,024 finite samples, a near-black median or less than half a stop of input range.",
+            "notes": "Predicts Auto tone's eight global Basic fields from a bounded linear input sample through Basic and the Look. Returns values, statistics, exclusions, omitted layers and the renderer that drew the sample, as renderer {record, reason}, without committing. Refuses fewer than 1,024 finite samples, a near-black median or less than half a stop of input range.",
             "parameters": [],
             "patch": false,
             "title": "Auto tone"
           },
           {
             "id": "neutral-sample",
-            "notes": "reads a 5x5 patch of the stage the Basic layer receives, centred on the named content pixel and clipped at that stage's edges, and returns the temperature and tint that make its average neutral. It evaluates before the Basic layer, so picking the same patch twice gives the same answer whatever white balance is already set. A clipped, near-black or non-finite patch, a correction outside the representable range and a point outside the stage are each refused with their reason; nothing is guessed, clamped or committed",
+            "notes": "reads a 5x5 patch of the stage the Basic layer receives, centred on the named content pixel and clipped at that stage's edges, and returns the temperature and tint that make its average neutral. It evaluates before the Basic layer, so picking the same patch twice gives the same answer whatever white balance is already set. A clipped, near-black or non-finite patch, a correction outside the representable range and a point outside the stage are each refused with their reason; nothing is guessed, clamped or committed. The answer names the renderer that drew the patch as renderer {record, reason}, as render.sample does",
             "parameters": [
               {
                 "default": null,
@@ -8284,7 +8284,7 @@
       },
       "query.auto-tone": {
         "mutates": false,
-        "notes": "Predicts Auto tone's eight global Basic fields from a bounded linear input sample through Basic and the Look. Returns values, statistics, exclusions and omitted layers without committing. Refuses fewer than 1,024 finite samples, a near-black median or less than half a stop of input range.",
+        "notes": "Predicts Auto tone's eight global Basic fields from a bounded linear input sample through Basic and the Look. Returns values, statistics, exclusions, omitted layers and the renderer that drew the sample, as renderer {record, reason}, without committing. Refuses fewer than 1,024 finite samples, a near-black median or less than half a stop of input range.",
         "optional": {
           "entry_id": "entry to ask about; default the session's selection",
           "mask": "the mask whose stack to ask about, as this module's actions take it; omit it to ask about the layer that applies everywhere"
@@ -8368,7 +8368,7 @@
       },
       "query.neutral-sample": {
         "mutates": false,
-        "notes": "reads a 5x5 patch of the stage the Basic layer receives, centred on the named content pixel and clipped at that stage's edges, and returns the temperature and tint that make its average neutral. It evaluates before the Basic layer, so picking the same patch twice gives the same answer whatever white balance is already set. A clipped, near-black or non-finite patch, a correction outside the representable range and a point outside the stage are each refused with their reason; nothing is guessed, clamped or committed",
+        "notes": "reads a 5x5 patch of the stage the Basic layer receives, centred on the named content pixel and clipped at that stage's edges, and returns the temperature and tint that make its average neutral. It evaluates before the Basic layer, so picking the same patch twice gives the same answer whatever white balance is already set. A clipped, near-black or non-finite patch, a correction outside the representable range and a point outside the stage are each refused with their reason; nothing is guessed, clamped or committed. The answer names the renderer that drew the patch as renderer {record, reason}, as render.sample does",
         "optional": {
           "entry_id": "entry to ask about; default the session's selection",
           "mask": "the mask whose stack to ask about, as this module's actions take it; omit it to ask about the layer that applies everywhere"

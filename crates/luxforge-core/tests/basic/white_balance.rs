@@ -287,6 +287,12 @@ fn a_client_discovers_the_picker_runs_it_and_applies_what_it_returns() {
             .len(),
         25
     );
+    // The renderer that drew the patch: this owner has no GPU provider, so the reference, with
+    // no reason, as an export's result and `mask.sample-input` name it.
+    assert_eq!(
+        picked["renderer"],
+        json!({"record": "reference", "reason": null})
+    );
     let (temperature, tint) = (
         picked["temperature"].as_i64().expect("a temperature"),
         picked["tint"].as_i64().expect("a tint"),

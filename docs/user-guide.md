@@ -751,8 +751,10 @@ It averages up to a 5 × 5 patch centred on that pixel in linear light, clipped 
 ```
 
 ```json
-{"id":"neutral","sequence":6,"result":{"temperature":20,"tint":-5,"patch":{"x":1022,"y":766,"width":5,"height":5,"pixels":[[164,151,140]," … "],"mean_linear":[0.3706,0.3128,0.2664]}}}
+{"id":"neutral","sequence":6,"result":{"temperature":20,"tint":-5,"patch":{"x":1022,"y":766,"width":5,"height":5,"pixels":[[164,151,140]," … "],"mean_linear":[0.3706,0.3128,0.2664]},"renderer":{"record":"gpu","reason":null}}}
 ```
+
+The answer names the `renderer` that read the patch, as `render.sample`'s does: the GPU, or the reference renderer and why the GPU did not draw it. `query.auto-tone` names the renderer that read its sample the same way.
 
 Apply the answer with an ordinary `edit.set-basic` carrying its `temperature` and `tint`; that is the one entry the pick costs, and cancelling before you send it commits nothing. Because the patch is read before the Basic layer, picking the same spot twice answers the same way however strong a correction is already set.
 

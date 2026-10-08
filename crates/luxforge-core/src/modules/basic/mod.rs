@@ -217,11 +217,11 @@ impl FieldPatch for Basic {
             ).extra(Control::action(auto::ID, "Auto").action_style(crate::ActionStyle::GroupHeader)))
             .group(Group::new("Colour", [VIBRANCE, SATURATION]))
             .action(auto::descriptor())
-            .query(ActionDescriptor::new(auto::ID, "Auto tone", "Predicts Auto tone's eight global Basic fields from a bounded linear input sample through Basic and the Look. Returns values, statistics, exclusions and omitted layers without committing. Refuses fewer than 1,024 finite samples, a near-black median or less than half a stop of input range."))
+            .query(ActionDescriptor::new(auto::ID, "Auto tone", "Predicts Auto tone's eight global Basic fields from a bounded linear input sample through Basic and the Look. Returns values, statistics, exclusions, omitted layers and the renderer that drew the sample, as renderer {record, reason}, without committing. Refuses fewer than 1,024 finite samples, a near-black median or less than half a stop of input range."))
             .query(ActionDescriptor {
                 id: NEUTRAL_SAMPLE.into(),
                 title: "Neutral sample".into(),
-                notes: "reads a 5x5 patch of the stage the Basic layer receives, centred on the named content pixel and clipped at that stage's edges, and returns the temperature and tint that make its average neutral. It evaluates before the Basic layer, so picking the same patch twice gives the same answer whatever white balance is already set. A clipped, near-black or non-finite patch, a correction outside the representable range and a point outside the stage are each refused with their reason; nothing is guessed, clamped or committed".into(),
+                notes: "reads a 5x5 patch of the stage the Basic layer receives, centred on the named content pixel and clipped at that stage's edges, and returns the temperature and tint that make its average neutral. It evaluates before the Basic layer, so picking the same patch twice gives the same answer whatever white balance is already set. A clipped, near-black or non-finite patch, a correction outside the representable range and a point outside the stage are each refused with their reason; nothing is guessed, clamped or committed. The answer names the renderer that drew the patch as renderer {record, reason}, as render.sample does".into(),
                 patch: false,
                 preset: true,
                 analysis: None,
