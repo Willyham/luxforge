@@ -926,11 +926,68 @@ fn auto_tone_batch_cancel_during_analysis_cannot_commit_a_late_result() {
         .hold_tiles(Some(Arc::new(move || held.pass())));
     let started = harness.ok("batch.apply-preset", json!({"targets":assets(std::slice::from_ref(&asset)),"preset_id":preset["id"],"mutation":envelope("cancel-auto")}));
     gate.wait_reached(1, "Auto's analysis read");
+    let active = harness
+        .owner
+        .pixel_read_state()
+        .2
+        .expect("the analysis read is active");
+    assert!(!active.is_cancelled());
     harness.ok("job.cancel", json!({"job_id":started["job_id"]}));
+    assert!(
+        active.is_cancelled(),
+        "the job's cancel trips the read the tile service is answering"
+    );
     gate.open();
     let settled = harness.settle(&started["job_id"]);
     assert_eq!(settled["status"], "cancelled", "{settled}");
     assert_eq!(harness.revision(&asset), 0);
+    harness.owner.hold_tiles(None);
+}
+
+/// A batch belongs to no client, and so do its reads: the client that started it disconnecting
+/// while the tile service answers its Auto analysis cancels nothing, and the batch commits.
+#[test]
+fn auto_tone_batch_reads_outlive_the_client_that_started_it() {
+    let harness = Harness::new("auto-tone-disconnect");
+    let asset = harness.photograph("orientation-1.jpg", "disconnect.jpg");
+    let preset = harness.preset("Auto", json!({"auto-tone":{}}));
+    let gate = Arc::new(Gate::new());
+    gate.shut();
+    let held = gate.clone();
+    harness
+        .owner
+        .hold_tiles(Some(Arc::new(move || held.pass())));
+    let starter = harness.owner.register();
+    let started = harness
+        .owner
+        .call(
+            starter,
+            ApiRequest {
+                id: "start".into(),
+                method: "batch.apply-preset".into(),
+                params: json!({"targets":assets(std::slice::from_ref(&asset)),"preset_id":preset["id"],"mutation":envelope("disconnect-auto")}),
+                token: None,
+            },
+        )
+        .unwrap()
+        .result
+        .expect("the batch started");
+    gate.wait_reached(1, "Auto's analysis read");
+    let active = harness
+        .owner
+        .pixel_read_state()
+        .2
+        .expect("the analysis read is active");
+    harness.owner.disconnect(starter);
+    assert!(
+        !active.is_cancelled(),
+        "the starting client's disconnect leaves the batch's read"
+    );
+    gate.open();
+    let settled = harness.settle(&started["job_id"]);
+    assert_eq!(settled["status"], "ready", "{settled}");
+    assert_eq!(settled["result"]["done"], json!([asset]), "{settled}");
+    assert_eq!(harness.revision(&asset), 1);
     harness.owner.hold_tiles(None);
 }
 

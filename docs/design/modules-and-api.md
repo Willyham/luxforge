@@ -133,10 +133,22 @@ settings composite containing one refuses an open draft.
 
 The owner defers the entire declared query to its tile worker, then replays the small answer during
 planning only while the asset revision, source identity and draft state still match. The query
-and action therefore share the same analysis without frame work on the owner. Batch presets use
-the same replay on their library worker, with their job's cancellation checked before commit.
-Analysis settings are empty objects and execute after every patch; overlapping written fields are
-refused at store. See [Auto tone](auto-tone.md) for its sample, cache and report bounds.
+and action therefore share the same analysis without frame work on the owner. The action answers
+the report it used beside its mutation result, as `analysis.<query>` (`ActionResult::analysis`),
+added after the commit and never stored with the request, so a deduplicated retry carries none; a
+settings composite whose analysis step applied answers it too.
+
+Batch presets drive the same replay (`editor::pixels::Replay`) from their library worker rather
+than parking on the owner: each pass runs on the owner through `Owner::pixel_pass`, the pass every
+parked call takes, after the owner has checked that what the last read was read from is still
+current; each read is submitted as `DeferredRead::tile_call` to the owner's tile service under the
+job's cancellation and for no client, so a disconnect of the client that started the batch leaves
+it; each photograph keeps a memo of its own and never reads or changes the caller's session memo;
+the same four-read bound applies; and the job's commit gate keeps a cancelled batch from
+committing late. The owner's own parked reads are cancelled when superseded, stale or
+disconnected ([detail](detail.md)). Analysis settings are empty objects and execute after every
+patch; overlapping written fields are refused at store. See [Auto tone](auto-tone.md) for its
+sample, cache and report bounds.
 
 ### Field patches
 

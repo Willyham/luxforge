@@ -27,6 +27,7 @@ use luxforge_core::{
 };
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     io::Read,
     path::{Path, PathBuf},
     sync::{
@@ -83,6 +84,10 @@ pub(crate) struct Refresh {
     /// The entry this desktop's own edit collapsed, as its answer named it: its row leaves the
     /// loaded page. `None` for every other change.
     pub(crate) collapsed: Option<EntryId>,
+    /// The report of each declared analysis the action this refresh read back used, by query, as
+    /// its answer carried it (`analysis`): what an analysis action's tooltip shows, with no query
+    /// of its own. Empty for every other change.
+    pub(crate) analysis: BTreeMap<String, Value>,
 }
 
 /// What a refresh reads back, by what the change before it could have touched. Every scope reads
@@ -807,6 +812,7 @@ pub(crate) fn refresh(
         mutation_request: None,
         skipped: Vec::new(),
         collapsed: None,
+        analysis: BTreeMap::new(),
     })
 }
 
@@ -1038,7 +1044,7 @@ pub(crate) fn command_now(
     proxy: impl Into<Drawn>,
 ) -> Result<Refresh, String> {
     let mutation_request = params["mutation"]["request_id"].as_str().map(str::to_owned);
-    let (answer, request) = call_own(owner, client, method, params)?;
+    let (mut answer, request) = call_own(owner, client, method, params)?;
     let scope = Scope::after(method, &answer);
     let mut refreshed = refresh(owner, client, asset_id, scope, proxy)?;
     refreshed.request = Some(request);
@@ -1047,6 +1053,10 @@ pub(crate) fn command_now(
     // A composite's skips are part of its answer, not of any state read back afterwards.
     if let Some(skipped) = answer.get("skipped") {
         refreshed.skipped = parse(skipped.clone())?;
+    }
+    // So is the report of the analysis it ran.
+    if let Some(analysis) = answer.get_mut("analysis") {
+        refreshed.analysis = parse(analysis.take())?;
     }
     Ok(refreshed)
 }

@@ -17,6 +17,7 @@
 //! path first, as a client's request would be, and the worker waits for that off the owner. The
 //! library side is `crate::library::batch`.
 use super::{Call, JobContext, Owner, Task, selected};
+use crate::api::owner::SYSTEM_CLIENT;
 use crate::{
     AssetId, Error, ErrorKind, JobId, JobStatus, Mutation, MutationOutcome,
     api::{ClientId, Origin, announce_once, methods::value, owner::export},
@@ -25,7 +26,10 @@ use crate::{
         api::{BatchApplyPreset, BatchExport, BatchPasteSettings},
         jobs::{BATCH_EXPORT, BATCH_PASTE, BATCH_PRESET, CatalogJob},
     },
-    editor::{ExportPlan, library_rows},
+    editor::{
+        ExportPlan, library_rows,
+        pixels::{DeferredRead, PixelAnswer, PixelMemo, Replay},
+    },
     library::{
         batch::{self, Applied, Progress, SettingsApply},
         locate::Phase,
@@ -136,15 +140,26 @@ fn queue_settings(
     value(owner.catalog.library.queue(&mut owner.jobs, task)?)
 }
 
-enum ApplyAttempt {
+/// One pass of a photograph's apply on the owner: its answer, or the read it deferred, with the
+/// pass's replay and this photograph's memo as the owner left them.
+enum ApplyPass {
     Done(Applied),
-    Read(Box<crate::editor::pixels::DeferredRead>),
+    Read {
+        read: Box<DeferredRead>,
+        replay: Replay,
+        memo: PixelMemo,
+    },
 }
 
-/// A preset's metadata transaction runs on the owner. Any analysis it asks for is parked and
-/// answered by the same tile service as an individual action, with this batch's cancellation.
-/// Its private memo never changes the caller's draft/session memo. Every replay checks currency
-/// before any write, and JobContext's commit gate keeps a cancelled batch from committing late.
+/// Apply the settings to one photograph through the owner's deferred-read replay
+/// ([`Replay`]), driven from this lane's worker: each pass runs on the owner through the pass the
+/// owner's own calls take ([`Owner::pixel_pass`]), after the owner has checked that what the last
+/// read was read from is still current; each read is submitted to the same tile service, under
+/// this job's cancellation and for no client, so only a cancel of the job stops it and a
+/// disconnect never does, and the worker waits for it off the owner; and the replay stops at the
+/// same bound. The photograph's memo is its own, so the caller's draft and session memo are
+/// neither read nor changed, and JobContext's commit gate keeps a cancelled batch from committing
+/// late.
 fn apply_on_worker(
     job: &JobContext<'_>,
     client: ClientId,
@@ -153,44 +168,53 @@ fn apply_on_worker(
     asset: AssetId,
     preset: Arc<SettingsApply>,
 ) -> Result<Result<Applied, Error>, Error> {
-    let mut memo = crate::editor::pixels::PixelMemo::default();
-    let mut key = None;
-    for _ in 0..=crate::editor::pixels::MAX_PIXEL_READS {
+    let mut memo = PixelMemo::default();
+    // The last read and its number among this photograph's reads.
+    let mut answered: Option<(usize, PixelAnswer)> = None;
+    loop {
         job.control.checkpoint()?;
-        let (origin, asset, preset, read_memo, read_key) = (
+        let (origin, asset, preset, held, last) = (
             origin.clone(),
             asset.clone(),
             preset.clone(),
             memo.clone(),
-            key.clone(),
+            answered.take(),
         );
-        let attempt = ask_owner(job, client, move |owner| {
-            if let Some(key) = &read_key
-                && !owner.service.pixel_key_current(key, None)?
-            {
-                return Err(Error::conflict(
-                    "the stack changed while its analysis was read; retry",
-                ));
-            }
-            owner.service.begin_pixel_call(None, read_memo.clone());
-            let result = apply(owner, client, &origin, &asset, &preset);
-            let deferred = owner.service.take_pixel_read();
-            owner.service.end_pixel_call();
+        let pass = ask_owner(job, client, move |owner| {
+            let mut memo = held.clone();
+            let replay = match &last {
+                None => Replay::First,
+                Some((reads, answer)) => {
+                    let current = owner.service.pixel_key_current(&answer.key, None)?;
+                    Replay::answered(*reads, answer.clone(), current, &mut memo)
+                }
+            };
+            let (result, deferred) = owner.pixel_pass(None, memo.clone(), |owner| {
+                apply(owner, client, &origin, &asset, &preset)
+            });
             match deferred {
-                Some(read) => Ok(ApplyAttempt::Read(Box::new(read))),
-                None => result.map(ApplyAttempt::Done),
+                Some(read) => Ok(ApplyPass::Read {
+                    read: Box::new(read),
+                    replay,
+                    memo,
+                }),
+                None => result.map(ApplyPass::Done),
             }
         })?;
-        let read = match attempt {
-            Ok(ApplyAttempt::Done(result)) => return Ok(Ok(result)),
-            Err(error) => return Ok(Err(error)),
-            Ok(ApplyAttempt::Read(read)) => read,
+        let (read, replay, held) = match pass {
+            Ok(ApplyPass::Done(applied)) => return Ok(Ok(applied)),
+            Err(refused) => return Ok(Err(refused)),
+            Ok(ApplyPass::Read { read, replay, memo }) => (read, replay, memo),
         };
+        let reads = match replay.park() {
+            Ok(reads) => reads,
+            Err(refused) => return Ok(Err(refused)),
+        };
+        memo = held;
         let (send, receive) = sync_channel(1);
-        tiles.submit(crate::tiles::TileCall::pixels(
-            client,
+        tiles.submit(read.tile_call(
+            SYSTEM_CLIENT,
             job.control.render_cancel().clone(),
-            move |reads, cancel| read.evaluate(reads, cancel),
             move |result| {
                 let _ = send.send(result);
             },
@@ -198,16 +222,10 @@ fn apply_on_worker(
         let answer = receive.recv().map_err(|_| job.control.cancelled_error())?;
         job.control.checkpoint()?;
         match answer {
-            Ok(answer) => {
-                key = Some(answer.key.clone());
-                memo.insert(answer);
-            }
+            Ok(answer) => answered = Some((reads, answer)),
             Err(error) => return Ok(Err(error)),
         }
     }
-    Ok(Err(Error::resource_limit(
-        "preset analysis exceeded the deferred-read limit",
-    )))
 }
 
 /// Apply the preset to one photograph as `edit.apply-preset` would, on the owner: left out while it

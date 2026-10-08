@@ -137,8 +137,22 @@ impl EditorService {
     /// checked once ([`Prepared::new`]), deduplicated by the same request identity, planned against
     /// the current stack through [`Self::plan_request`] — the function a draft's effective recipe
     /// plans through — and committed through [`Self::mutate`], which admits the stack and stores
-    /// the whole answer with the request.
+    /// the whole answer with the request. The report of each declared analysis its plans used is
+    /// added to the answer afterwards ([`ActionResult::analysis`]), never stored with it.
     pub fn run_action(
+        &mut self,
+        asset_id: &AssetId,
+        mutation: Mutation,
+        action_id: &str,
+        parameters: Value,
+    ) -> Result<ActionResult, Error> {
+        self.take_analysed();
+        let mut result = self.commit_action(asset_id, mutation, action_id, parameters)?;
+        result.analysis = self.take_analysed();
+        Ok(result)
+    }
+
+    fn commit_action(
         &mut self,
         asset_id: &AssetId,
         mutation: Mutation,
@@ -3987,10 +4001,9 @@ mod tests {
             )
             .unwrap();
         assert!(
-            service.take_pixel_read().is_none(),
+            service.finish_pixel_call().is_none(),
             "a scalar curve query never parks a pixel read"
         );
-        service.end_pixel_call();
         assert_eq!(actual, expected);
         assert_eq!(tiles.load(std::sync::atomic::Ordering::Relaxed), 0);
         assert_eq!(service.state(&asset).unwrap(), current);

@@ -4834,7 +4834,7 @@
       "edit.auto-tone": {
         "mutates": true,
         "mutation": "revision",
-        "notes": "Sets Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Vibrance and Saturation absolutely on the global Basic layer in one undoable entry. Leaves white balance and other modules unchanged; repeats are no-ops. Analysis runs off the catalog owner. Refuses mask targets, historical selection, drafts and images without usable tonal range.",
+        "notes": "Sets Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Vibrance and Saturation absolutely on the global Basic layer in one undoable entry. Leaves white balance and other modules unchanged; repeats are no-ops. Analysis runs off the catalog owner. Refuses mask targets, historical selection, drafts and images without usable tonal range. Returns the mutation result with analysis.auto-tone: the report query.auto-tone answers for the stack this call analysed, the one its values came from, also on a no-op; a deduplicated retry analyses nothing and carries none.",
         "optional": {
           "mask": "the mask this edit applies through; omit it to edit the layer that applies everywhere. The global layer and each mask are distinct targets, so this action commits or updates one layer per target"
         },

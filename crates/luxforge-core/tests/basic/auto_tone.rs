@@ -57,6 +57,8 @@ fn auto_tone_query_action_repeat_undo_and_source_preservation_through_the_owner(
     let request = json!({"asset_id":asset,"mutation":mutation(1,"auto","test")});
     let applied = call(&owner, client, "edit.auto-tone", request.clone()).unwrap();
     assert_eq!(applied["outcome"], "applied");
+    // The action answers the report its values came from, which the query gives too.
+    assert_eq!(applied["analysis"]["auto-tone"], predicted);
     let after = entry(&owner, client, &asset);
     assert_eq!(after["label"], "Auto tone");
     let payload = basic(&after);
@@ -69,20 +71,21 @@ fn auto_tone_query_action_repeat_undo_and_source_preservation_through_the_owner(
     }
     assert_eq!(payload["temperature"], 12.);
     assert_eq!(payload["tint"], -4.);
-    assert_eq!(
-        call(&owner, client, "edit.auto-tone", request).unwrap()["deduplicated"],
-        true
+    let retried = call(&owner, client, "edit.auto-tone", request).unwrap();
+    assert_eq!(retried["deduplicated"], true);
+    assert!(
+        retried.get("analysis").is_none(),
+        "a retry analyses nothing: {retried}"
     );
-    assert_eq!(
-        call(
-            &owner,
-            client,
-            "edit.auto-tone",
-            json!({"asset_id":asset,"mutation":mutation(2,"repeat","test")})
-        )
-        .unwrap()["outcome"],
-        "no-op"
-    );
+    let repeat = call(
+        &owner,
+        client,
+        "edit.auto-tone",
+        json!({"asset_id":asset,"mutation":mutation(2,"repeat","test")}),
+    )
+    .unwrap();
+    assert_eq!(repeat["outcome"], "no-op");
+    assert_eq!(repeat["analysis"]["auto-tone"], predicted);
     let repeated = call(&owner, client, "query.auto-tone", json!({"asset_id":asset})).unwrap();
     assert_eq!(predicted, repeated);
     call(
