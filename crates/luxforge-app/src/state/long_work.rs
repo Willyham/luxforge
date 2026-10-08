@@ -29,7 +29,7 @@ use crate::state::select::{Shown, shown_path, thousands};
 use luxforge_core::{
     ActivitySnapshot,
     activity::{ActiveActivity, ActivityEntry, Outcome, RecentActivity},
-    catalog_types::jobs::{BATCH_EXPORT, BATCH_PRESET, CatalogJob, INDEX_REFRESH, catalog_job},
+    catalog_types::jobs::{BATCH_EXPORT, BATCH_SETTINGS, CatalogJob, INDEX_REFRESH, catalog_job},
 };
 use serde_json::Value;
 use std::{collections::VecDeque, path::Path};
@@ -287,9 +287,9 @@ pub(crate) fn place(detail: &str, home: Option<&Path>) -> String {
         .map_or(shown, |name| format!("\u{2026}/{}", name.to_string_lossy()))
 }
 
-/// The catalog jobs whose view words their end itself (the catalog's batch form reports a batch
-/// preset or export), so the status bar leaves them no sentence of its own.
-const WORDED_BY_THEIR_VIEW: [CatalogJob; 2] = [BATCH_PRESET, BATCH_EXPORT];
+/// The catalog jobs whose view words their end itself (the catalog's batch form reports a batch of
+/// settings or an export), so the status bar leaves them no sentence of its own.
+const WORDED_BY_THEIR_VIEW: [CatalogJob; 2] = [BATCH_SETTINGS, BATCH_EXPORT];
 
 /// Whether the status bar leaves a finished job of board kind `kind` a sentence.
 pub(crate) fn leaves_sentence(kind: &str) -> bool {
@@ -359,7 +359,7 @@ fn past_tense(entry: &ActivityEntry, home: Option<&Path>) -> String {
         "source.check" => "Checked originals",
         "source.find" => "Searched for originals",
         "source.locate" => "Verified original",
-        "batch.apply-preset" => "Applied preset",
+        "batch.apply-settings" => "Applied settings",
         "batch.export" => "Exported",
         _ => job.label,
     });

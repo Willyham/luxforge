@@ -50,13 +50,12 @@ fn a_preset_imports_lists_and_applies_and_a_refused_file_is_an_error_over_the_pi
     // Applying the listed settings under the revision the client read commits one labelled entry.
     let revision = client.call("asset.state", json!({"asset_id": asset}))["revision"].clone();
     let applied = client.call(
-        "edit.apply-preset",
+        "edit.apply-settings",
         json!({
             "asset_id": asset,
             "mutation": {"expected_revision": revision, "request_id": request_id("apply"), "actor": ACTOR},
             "settings": listed[0]["settings"],
-            "name": listed[0]["name"],
-            "preset-id": listed[0]["id"],
+            "origin": {"kind": "preset", "name": listed[0]["name"], "preset_id": listed[0]["id"]},
         }),
     );
     assert_eq!(applied["outcome"], json!("applied"));
@@ -102,13 +101,14 @@ fn copy_settings_capture_single_paste_and_batch_share_the_json_contract() {
     )["settings"]
         .clone();
     client.call("edit.set-basic", json!({"asset_id": asset, "exposure": 1, "mutation": {"expected_revision": 0, "request_id": request_id("edit"), "actor": ACTOR}}));
-    let pasted = client.call("edit.paste-settings", json!({"asset_id": asset, "settings": settings, "source": "Original.jpg", "source-asset": asset, "mutation": {"expected_revision": 1, "request_id": request_id("paste"), "actor": ACTOR}}));
+    let origin = json!({"kind": "paste", "source": "Original.jpg", "source_asset": asset});
+    let pasted = client.call("edit.apply-settings", json!({"asset_id": asset, "settings": settings, "origin": origin, "mutation": {"expected_revision": 1, "request_id": request_id("paste"), "actor": ACTOR}}));
     assert_eq!(pasted["outcome"], "applied");
     assert_eq!(
         client.call("history.list", json!({"asset_id": asset, "limit": 10}))["entries"][0]["label"],
         "Paste settings from Original.jpg"
     );
-    let started = client.call("batch.paste-settings", json!({"targets": {"kind": "assets", "asset_ids": [asset]}, "settings": settings, "source": "Original.jpg", "source_asset_id": asset, "mutation": request()}));
+    let started = client.call("batch.apply-settings", json!({"targets": {"kind": "assets", "asset_ids": [asset]}, "settings": settings, "origin": origin, "mutation": request()}));
     let result = client.settle("job.read", &started["job_id"]);
     assert_eq!(result["status"], "ready", "{result}");
     assert_eq!(
@@ -116,7 +116,7 @@ fn copy_settings_capture_single_paste_and_batch_share_the_json_contract() {
         1,
         "already has the settings: {result}"
     );
-    let refused = client.error("edit.paste-settings", json!({"asset_id": asset, "settings": {"paste-settings": {}}, "source": "bad", "mutation": {"expected_revision": 2, "request_id": request_id("bad"), "actor": ACTOR}}));
+    let refused = client.error("edit.apply-settings", json!({"asset_id": asset, "settings": {"apply-settings": {}}, "origin": {"kind": "paste", "source": "bad"}, "mutation": {"expected_revision": 2, "request_id": request_id("bad"), "actor": ACTOR}}));
     assert_eq!(refused["code"], "validation");
     client.finish();
     std::fs::remove_file(catalog).unwrap();

@@ -6838,7 +6838,7 @@ mod tests {
             "a settings write carries the settings revision the desktop holds"
         );
         assert_eq!(envelope_free("history.undo"), None);
-        assert_eq!(envelope_free("edit.apply-preset"), None);
+        assert_eq!(envelope_free("edit.apply-settings"), None);
         assert_eq!(envelope_free("no.such-method"), None);
 
         let (mut editor, catalog, _, _) = scripted(r#"[{"api":{"method":"preset.list"}}]"#);

@@ -1771,9 +1771,12 @@ fn value_model(
         ParameterKind::String { .. } => ControlModel::Unsupported(format!(
             "string parameter {parameter} of action {action} needs a text control"
         )),
-        ParameterKind::Settings => ControlModel::Unsupported(format!(
-            "settings parameter {parameter} of action {action} needs a presets control"
-        )),
+        ParameterKind::Settings | ParameterKind::SettingsOrigin => {
+            ControlModel::Unsupported(format!(
+                "{} parameter {parameter} of action {action} needs a presets control",
+                declared.kind.name()
+            ))
+        }
         // A path has no control and is never meant to get one: it is drawn on the canvas, so a
         // panel that finds one declared says so rather than inventing a widget for it.
         ParameterKind::Points { .. } => ControlModel::Unsupported(format!(

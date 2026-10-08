@@ -146,8 +146,8 @@ fn auto_tone_copy_paste_carries_values_without_reanalysing_the_target() {
     let applied = call(
         &owner,
         client,
-        "edit.paste-settings",
-        json!({"asset_id":target_asset,"settings":captured["settings"],"source":"source.jpg","mutation":mutation(0,"paste-auto-values","test")}),
+        "edit.apply-settings",
+        json!({"asset_id":target_asset,"settings":captured["settings"],"origin":{"kind":"paste","source":"source.jpg"},"mutation":mutation(0,"paste-auto-values","test")}),
     )
     .unwrap();
     assert_eq!(applied["outcome"], "applied");
@@ -182,7 +182,7 @@ fn auto_tone_presets_analyse_after_white_balance_and_skip_uniform_photos() {
     let client = owner.register();
     let asset = open(&owner, client, &image, "test").unwrap()["asset"]["id"].clone();
     let settings = json!({"auto-tone":{},"set-basic":{"temperature":15,"tint":3}});
-    call(&owner, client, "edit.apply-preset", json!({"asset_id":asset,"mutation":mutation(0,"preset","test"),"name":"Auto","settings":settings})).unwrap();
+    call(&owner, client, "edit.apply-settings", json!({"asset_id":asset,"mutation":mutation(0,"preset","test"),"origin":{"kind":"preset","name":"Auto"},"settings":settings})).unwrap();
     let composite = entry(&owner, client, &asset);
     assert_eq!(composite["label"], "Preset: Auto");
     call(
@@ -226,7 +226,7 @@ fn auto_tone_presets_analyse_after_white_balance_and_skip_uniform_photos() {
     )
     .unwrap();
     assert!(reason.1.contains("half a stop"), "{reason:?}");
-    let skipped = call(&owner, client, "edit.apply-preset", json!({"asset_id":flat,"mutation":mutation(0,"flat-preset","test"),"name":"Auto","settings":settings})).unwrap();
+    let skipped = call(&owner, client, "edit.apply-settings", json!({"asset_id":flat,"mutation":mutation(0,"flat-preset","test"),"origin":{"kind":"preset","name":"Auto"},"settings":settings})).unwrap();
     assert_eq!(skipped["outcome"], "applied");
     assert_eq!(skipped["skipped"][0]["action"], "auto-tone");
     assert_eq!(
@@ -292,7 +292,7 @@ fn auto_tone_refuses_mask_history_and_open_draft_without_changing_the_recipe() {
     .unwrap();
     let reason = refused(&owner, client, "edit.auto-tone", request).unwrap();
     assert!(reason.1.contains("draft"), "{reason:?}");
-    let reason = refused(&owner, client, "edit.apply-preset", json!({"asset_id":asset,"mutation":mutation(1,"preset","test"),"name":"Auto","settings":{"auto-tone":{}}})).unwrap();
+    let reason = refused(&owner, client, "edit.apply-settings", json!({"asset_id":asset,"mutation":mutation(1,"preset","test"),"origin":{"kind":"preset","name":"Auto"},"settings":{"auto-tone":{}}})).unwrap();
     assert!(reason.1.contains("draft"), "{reason:?}");
     call(
         &owner,
@@ -358,7 +358,7 @@ fn auto_tone_raw_preset_uses_the_new_white_balance_development() {
     let original_prediction =
         prepared(&owner, client, "query.auto-tone", json!({"asset_id":asset})).unwrap();
     eprintln!("RAW_AUTO_REFERENCE {}", original_prediction["values"]);
-    prepared(&owner, client, "edit.apply-preset", json!({"asset_id":asset,"mutation":mutation(revision,"preset","test"),"name":"WB and Auto","settings":{"auto-tone":{},"set-raw":{"temperature":6000,"tint":7}}})).unwrap();
+    prepared(&owner, client, "edit.apply-settings", json!({"asset_id":asset,"mutation":mutation(revision,"preset","test"),"origin":{"kind":"preset","name":"WB and Auto"},"settings":{"auto-tone":{},"set-raw":{"temperature":6000,"tint":7}}})).unwrap();
     let composite = entry(&owner, client, &asset);
     prepared(
         &owner,

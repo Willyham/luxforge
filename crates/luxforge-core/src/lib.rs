@@ -100,17 +100,18 @@ pub use modules::{
     ColorOperation, ColorStyle, CompileStage, Control, ControlVariant, CropAspect, CropPayload,
     CropStage, CurveBackground, CurveChannel, CurveControl, DETAIL_EFFECT, Edge, EffectDescriptor,
     EffectStage, ExactGeometry, GPU_PROGRAMS, GroupControl, IdentityKind, LENS_EFFECT, LOOK_EFFECT,
-    LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE, MAX_MASKED_SPATIAL_LAYERS, MIN_ANGLE,
-    MIXER_EFFECT, ModuleDescriptor, ModuleLayout, ModuleRegistry, NewLayer, NumberControl,
-    NumberStyle, ORIENTATION_EFFECT, OperationIdentity, OutputRect, PERSPECTIVE_EFFECT,
-    PIXEL_EFFECT, PRESENCE_EFFECT, PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH,
-    ParameterDescriptor, ParameterKind, PickerControl, PointwiseColor, PresetsControl, Processing,
-    Provider, QueryChoiceControl, QueryRef, RailDecoration, RangeControl, RawModule, RawPayload,
-    Region, RegistryOptions, Resample, ResetAction, ResolvedControl, ResolvedReset, SamplingScale,
-    SpatialOperation, Stage, StageContext, StageQuestions, TaskControl, ToggleControl, ToolModule,
-    VIGNETTE_EFFECT, WhiteBalanceMode, check_parameters, check_value, controls_module,
-    gains_from_temperature_tint, guide_angle, insertion_index_among, largest_with_ratio_inside,
-    palette_bytes, resolve_control, resolve_group_reset, temperature_tint_from_gains,
+    LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE, MAX_MASKED_SPATIAL_LAYERS, MAX_SOURCE_NAME,
+    MIN_ANGLE, MIXER_EFFECT, ModuleDescriptor, ModuleLayout, ModuleRegistry, NewLayer,
+    NumberControl, NumberStyle, ORIENTATION_EFFECT, OperationIdentity, OutputRect,
+    PERSPECTIVE_EFFECT, PIXEL_EFFECT, PRESENCE_EFFECT, PROOF_GENERATE_PATH, PROOF_PALETTE,
+    PROOF_PALETTE_PATH, ParameterDescriptor, ParameterKind, PickerControl, PointwiseColor,
+    PresetsControl, Processing, Provider, QueryChoiceControl, QueryRef, RailDecoration,
+    RangeControl, RawModule, RawPayload, Region, RegistryOptions, Resample, ResetAction,
+    ResolvedControl, ResolvedReset, SamplingScale, SettingsOrigin, SpatialOperation, Stage,
+    StageContext, StageQuestions, TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT,
+    WhiteBalanceMode, check_parameters, check_value, controls_module, gains_from_temperature_tint,
+    guide_angle, insertion_index_among, largest_with_ratio_inside, palette_bytes, resolve_control,
+    resolve_group_reset, temperature_tint_from_gains,
 };
 pub use modules::{OriginalContext, OriginalLayer, OriginalPreferences};
 pub use presets::{
@@ -847,6 +848,6 @@ pub(crate) use activity::ActivityBoard;
 pub(crate) use model::MASK_BYTES_PER_RECIPE;
 #[cfg(test)]
 pub(crate) use modules::{
-    APPLY_PRESET, BasicModule, CapabilitiesProofModule, MAX_COLOR_UNITS, PROOF_PALETTE_GAINS,
+    APPLY_SETTINGS, BasicModule, CapabilitiesProofModule, MAX_COLOR_UNITS, PROOF_PALETTE_GAINS,
     PresenceModule,
 };
