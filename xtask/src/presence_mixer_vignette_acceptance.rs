@@ -380,9 +380,9 @@ fn grading_journey(
     ensure(
         mixers.len() == 2
             && mixers.iter().filter(|layer| layer.mask.is_some()).count() == 1
-            && mixers
-                .iter()
-                .all(|layer| layer.effect_format == luxforge_core::MIXER_EFFECT_FORMAT),
+            && mixers.iter().all(|layer| {
+                layer.effect_format == luxforge_core::current_effect_format(MIXER_EFFECT)
+            }),
         format!(
             "The stack holds {} mixer layers, not one global and one masked",
             mixers.len()

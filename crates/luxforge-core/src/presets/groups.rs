@@ -360,6 +360,12 @@ fn collect<'d>(
     loose: &mut Option<usize>,
 ) {
     for control in controls {
+        // A view's fields are its holder's.
+        if let Control::View(view) = control {
+            let index = scope_or_loose(scope, drafts, loose);
+            collect(module, &view.controls, Some(index), true, drafts, loose);
+            continue;
+        }
         let Control::Group(declared) = control else {
             for (action, parameter) in control_fields(control) {
                 let presettable = module.action(action).is_some_and(|declared| {
@@ -372,7 +378,7 @@ fn collect<'d>(
             }
             continue;
         };
-        let (index, gathers) = if declared.view || gathered {
+        let (index, gathers) = if gathered {
             let index = scope_or_loose(scope, drafts, loose);
             drafts[index].per_photo |= declared.per_photo;
             (index, true)
@@ -417,7 +423,7 @@ fn scope_or_loose(
 /// the group's.
 fn owns_fields(group: &GroupControl) -> bool {
     group.controls.iter().any(|control| match control {
-        Control::Group(child) => child.view,
+        Control::View(_) => true,
         other => !control_fields(other).is_empty(),
     })
 }
@@ -441,6 +447,7 @@ fn control_fields(control: &Control) -> Vec<(&str, &str)> {
         // A band's fields are presettable through the number controls that declare them, and no
         // other kind carries a field.
         Control::Group(_)
+        | Control::View(_)
         | Control::Range(_)
         | Control::Action(_)
         | Control::Picker(_)

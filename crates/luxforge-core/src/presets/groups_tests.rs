@@ -500,10 +500,11 @@ fn capture_scopes_follow_field_ownership_not_layout() {
             Control::group(
                 "Tabbed",
                 vec![
-                    Control::group("Three", vec![value("e")]).into(),
-                    Control::group("Four", vec![value("f")]).into(),
+                    Control::group("Three", vec![value("e")]).id("three").into(),
+                    Control::group("Four", vec![value("f")]).id("four").into(),
                 ],
             )
+            .id("tabbed")
             .group_layout(crate::ModuleLayout::Tabs)
             .into(),
         ],
