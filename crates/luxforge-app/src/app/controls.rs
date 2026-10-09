@@ -284,20 +284,21 @@ impl Editor {
         Task::none()
     }
 
-    /// Show `view` of the tab row of `module_id` at the label path `group`, through `workspace.set`
-    /// exactly as any client selects one: the session's answer is what the panel then draws. A
-    /// row or view the module does not declare sends nothing, and choosing the view already shown
-    /// sends nothing either. No recipe field, history entry, frame or poll follows.
+    /// Show `view` of the tab row of `module_id`'s group `group` (`None` for its own top-level
+    /// row), both by id, through `workspace.set` exactly as any client selects one: the session's
+    /// answer is what the panel then draws. A row or view the module does not declare sends
+    /// nothing, and choosing the view already shown sends nothing either. No recipe field, history
+    /// entry, frame or poll follows.
     pub(crate) fn select_view(
         &mut self,
         module_id: String,
-        group: Vec<String>,
+        group: Option<String>,
         view: String,
     ) -> Task<Message> {
         let Some(module) = tools::module_of(&self.modules, &module_id) else {
             return Task::none();
         };
-        let Some(views) = module.views_at(&group) else {
+        let Some(views) = module.views_at(group.as_deref()) else {
             return Task::none();
         };
         let Some(index) = views.iter().position(|offered| *offered == view) else {
@@ -306,26 +307,29 @@ impl Editor {
         let shown = self
             .session
             .workspace
-            .view(&module_id, &group)
+            .view(&module_id, group.as_deref())
             .and_then(|chosen| views.iter().position(|offered| *offered == chosen))
             .unwrap_or(0);
         if shown == index {
             return Task::none();
         }
-        self.event(
-            "view_selected",
-            || json!({"module": module_id, "group": group, "view": view}),
-        );
+        let selection = luxforge_core::ViewSelection {
+            module: module_id,
+            group,
+            view,
+        };
+        self.event("view_selected", || json!(selection));
         crate::app::tasks::workspace_task(
             self.owner.clone(),
             self.client,
-            json!({"views": [{"module": module_id, "group": group, "view": view}]}),
+            json!({ "views": [selection] }),
         )
     }
 
     /// One wheel event: a move drafts the hue and saturation it stands for together, as one patch
     /// through one draft keyed by the hue field; the release commits that draft once; a
-    /// double-click runs the wheel's declared reset as one action.
+    /// double-click runs the wheel's declared reset as one action, after the commit its first
+    /// press made has answered ([`Editor::reset_declared`]).
     pub(crate) fn control_wheel(
         &mut self,
         action: String,
@@ -356,19 +360,10 @@ impl Editor {
                 self.controls_moved(action, wheel.hue, values)
             }
             WheelEvent::Release => self.control_release(action, wheel.hue),
-            WheelEvent::Reset => {
-                let Some(reset) = wheel.reset else {
-                    return Task::none();
-                };
-                if let Some(reason) = self.action_refusal(&reset.action) {
-                    self.status.text = reason;
-                    return Task::none();
-                }
-                self.dispatch(Message::Action(ActionMessage::Run {
-                    action: reset.action,
-                    preset: reset.preset,
-                }))
-            }
+            WheelEvent::Reset => match wheel_reset(&self.modules, &wheel) {
+                Some(reset) => self.reset_declared(action, wheel.hue, reset.action, reset.preset),
+                None => Task::none(),
+            },
         }
     }
 
@@ -388,23 +383,16 @@ impl Editor {
             return Task::none();
         };
         let parameter = if saturation {
-            wheel.saturation.clone()
+            wheel.saturation
         } else {
             wheel.hue.clone()
         };
-        let Some(spec) = self.number_spec(&action, &parameter) else {
+        let Some(value) = self.nudged_value(&action, &parameter, direction, shift, option) else {
             return Task::none();
         };
-        let current = self
-            .control_field_value(&action, &parameter)
-            .and_then(|value| value.as_f64())
-            .unwrap_or(spec.min);
-        let next = if saturation {
-            spec.nudged(current, direction, shift, option)
-        } else {
-            wrapped_hue(&spec, current, direction, shift, option)
-        };
-        let values = serde_json::Map::from_iter([(parameter, spec.value(next))]);
+        // Keyed by the hue whichever field moved, so a hue nudge and a saturation nudge are one
+        // gesture and the key's release, which names the hue, commits it.
+        let values = serde_json::Map::from_iter([(parameter, value)]);
         self.controls_moved(action, wheel.hue, values)
     }
 
@@ -519,6 +507,28 @@ impl Editor {
         fields::declared(&self.modules, action, parameter).and_then(NumberSpec::of)
     }
 
+    /// `parameter`'s value one nudge on from what its field shows ([`NumberSpec::nudged`]). The
+    /// hue a wheel binds wraps across the seam, since the core declares its 0 and 360 the same
+    /// direction.
+    fn nudged_value(
+        &self,
+        action: &str,
+        parameter: &str,
+        direction: i8,
+        shift: bool,
+        option: bool,
+    ) -> Option<Value> {
+        let mut spec = self.number_spec(action, parameter)?;
+        if wheel_of(&self.modules, action, parameter).is_some() {
+            spec = spec.wrapping();
+        }
+        let current = self
+            .control_field_value(action, parameter)
+            .and_then(|v| v.as_f64())
+            .unwrap_or(spec.min);
+        Some(spec.value(spec.nudged(current, direction, shift, option)))
+    }
+
     pub(crate) fn control_value(
         &mut self,
         action: String,
@@ -560,14 +570,9 @@ impl Editor {
             self.status.text = reason;
             return Task::none();
         }
-        let Some(spec) = self.number_spec(&action, &parameter) else {
+        let Some(value) = self.nudged_value(&action, &parameter, direction, false, false) else {
             return Task::none();
         };
-        let current = self
-            .control_field_value(&action, &parameter)
-            .and_then(|v| v.as_f64())
-            .unwrap_or(spec.min);
-        let value = spec.value(spec.nudged(current, direction, false, false));
         let task = self.control_value(action, parameter, value, drafts);
         if drafts {
             Task::batch([task, self.release()])
@@ -584,14 +589,9 @@ impl Editor {
         shift: bool,
         option: bool,
     ) -> Task<Message> {
-        let Some(spec) = self.number_spec(&action, &parameter) else {
+        let Some(value) = self.nudged_value(&action, &parameter, direction, shift, option) else {
             return Task::none();
         };
-        let current = self
-            .control_field_value(&action, &parameter)
-            .and_then(|v| v.as_f64())
-            .unwrap_or(spec.min);
-        let value = spec.value(spec.nudged(current, direction, shift, option));
         self.control_value(action, parameter, value, true)
     }
 
@@ -1142,33 +1142,16 @@ pub(crate) fn wheel_of<'a>(
     })
 }
 
-/// One hue nudge from `current`, by the field's step (ten with Shift, its fine step with Option),
-/// wrapping across the seam rather than stopping at it: a hue is a direction, so 359 and one step
-/// more is 0, and 0 and one step less is 359.
-pub(crate) fn wrapped_hue(
-    spec: &NumberSpec,
-    current: f64,
-    direction: i8,
-    shift: bool,
-    option: bool,
-) -> f64 {
-    let step = if option {
-        spec.fine_step
-    } else if shift {
-        spec.step * 10.0
-    } else {
-        spec.step
-    };
-    let span = spec.max - spec.min;
-    let next = current + f64::from(direction.signum()) * step;
-    if span > 0.0 && (next < spec.min || next >= spec.max) {
-        let wrapped = (next - spec.min).rem_euclid(span) + spec.min;
-        // Rounding residue of the wrap stays on the declared decimals.
-        let factor = 10f64.powi(spec.fine_decimals as i32);
-        (wrapped * factor).round() / factor
-    } else {
-        next
-    }
+/// What resetting `wheel` runs: its fields back to the defaults the module declaring its action
+/// gives them ([`luxforge_core::ModuleDescriptor::wheel_reset`]).
+pub(crate) fn wheel_reset(
+    modules: &[luxforge_core::ModuleDescriptor],
+    wheel: &luxforge_core::WheelControl,
+) -> Option<luxforge_core::ResetAction> {
+    modules
+        .iter()
+        .find(|module| module.action(&wheel.action).is_some())?
+        .wheel_reset(wheel)
 }
 
 fn picker_fraction(fraction: f32) -> f64 {

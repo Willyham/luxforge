@@ -335,15 +335,7 @@ impl SectionModel {
         let SectionLayout::Tabs { selected } = self.layout else {
             return None;
         };
-        let mut groups = self.controls.iter().filter_map(|control| match control {
-            ControlModel::Group(group) => Some(group),
-            _ => None,
-        });
-        let first = groups.next()?;
-        Some(match selected {
-            0 => first,
-            selected => groups.nth(selected - 1).unwrap_or(first),
-        })
+        selected_group(&self.controls, selected).map(|(_, group)| group)
     }
 
     /// Every curve this section has on screen, in the order the panel draws them: none while the
@@ -639,9 +631,9 @@ pub(crate) struct GroupControl {
     /// Every other action's fields are request inputs rather than a mirror of a stored layer, so
     /// "original" would mean nothing there and no caption is shown.
     pub(crate) state: Option<GroupState>,
-    /// The labels from the module's top level to this group: the identity its tab row's view
-    /// selection is keyed by.
-    pub(crate) labels: Vec<String>,
+    /// The declared id: what a session selects this group by as a tab of its parent's row, and
+    /// this group's own tab row by when it has one.
+    pub(crate) id: Option<String>,
     /// For a group that declares `layout: tabs`, the index of the child group it shows: the view
     /// this client's session chose, else the first. `None` for a stacked group.
     pub(crate) selected: Option<usize>,
@@ -652,17 +644,28 @@ pub(crate) struct GroupControl {
 impl GroupControl {
     /// The child group a tabbed group shows, when it is tabbed and has one.
     pub(crate) fn visible_view(&self) -> Option<&GroupControl> {
-        let selected = self.selected?;
-        let mut groups = self.controls.iter().filter_map(|control| match control {
-            ControlModel::Group(group) => Some(group),
-            _ => None,
-        });
-        let first = groups.next()?;
-        Some(match selected {
-            0 => first,
-            selected => groups.nth(selected - 1).unwrap_or(first),
-        })
+        selected_group(&self.controls, self.selected?).map(|(_, group)| group)
     }
+}
+
+/// The group a tab row over `controls` shows, with its index among their groups: the
+/// `selected`th, or the first when `selected` names none. `None` when `controls` hold no group.
+/// A tabbed section's row and a tabbed group's row read their selection through this alike.
+pub(crate) fn selected_group(
+    controls: &[ControlModel],
+    selected: usize,
+) -> Option<(usize, &GroupControl)> {
+    let mut groups = controls.iter().filter_map(|control| match control {
+        ControlModel::Group(group) => Some(group),
+        _ => None,
+    });
+    let first = groups.next()?;
+    Some(match selected {
+        0 => (0, first),
+        selected => groups
+            .nth(selected - 1)
+            .map_or((0, first), |group| (selected, group)),
+    })
 }
 
 /// A hue and saturation wheel: its two fields modelled exactly as their own number fields are, the
@@ -831,6 +834,7 @@ impl RevealKey {
         let field = |action: &str, parameter: &str| Self::Field((action.into(), parameter.into()));
         Some(match control {
             Control::Group(group) => (Self::Group(path.to_vec()), &group.label),
+            Control::View(view) => (Self::Group(path.to_vec()), &view.label),
             Control::Number(number) => (field(&number.action, &number.parameter), &number.label),
             Control::Toggle(toggle) => (field(&toggle.action, &toggle.parameter), &toggle.label),
             Control::Choice(choice) => (field(&choice.action, &choice.parameter), &choice.label),
@@ -1203,22 +1207,23 @@ fn expanded(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> bool {
 }
 
 /// A tabbed section's selected tab: the view this client's session chose for the module's own tab
-/// row (`workspace.set`'s `views`, with an empty group path), or the first when it chose none or
-/// names a view the descriptor no longer declares.
+/// row (`workspace.set`'s `views`, with no group), or the first when it chose none or names a view
+/// the descriptor no longer declares.
 fn section_layout(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionLayout {
     if module.layout != luxforge_core::ModuleLayout::Tabs {
         return SectionLayout::Stacked;
     }
     SectionLayout::Tabs {
-        selected: selected_view(module, &[], inputs),
+        selected: selected_view(module, None, inputs),
     }
 }
 
-/// The index of the view the session chose for the tab row of `module` at the label path `group`,
-/// among that row's views; 0 when it chose none or one the row does not declare.
+/// The index of the view the session chose for the tab row of `module`'s group `group` (`None`
+/// for its own top-level row), among that row's views; 0 when it chose none or one the row does
+/// not declare.
 pub(crate) fn selected_view(
     module: &ModuleDescriptor,
-    group: &[String],
+    group: Option<&str>,
     inputs: &Inputs<'_>,
 ) -> usize {
     let Some(chosen) = inputs.session.workspace.view(&module.id, group) else {
@@ -1228,24 +1233,6 @@ pub(crate) fn selected_view(
         .views_at(group)
         .and_then(|views| views.iter().position(|view| *view == chosen))
         .unwrap_or(0)
-}
-
-/// The labels of the groups an index path passes through in `controls`, the group at the path's
-/// end included: the label path a tab row is keyed by. Stops at the first index that is not a
-/// group.
-pub(crate) fn label_path(controls: &[Control], path: &[usize]) -> Vec<String> {
-    let mut labels = Vec::with_capacity(path.len());
-    let mut level = controls;
-    for index in path {
-        match level.get(*index) {
-            Some(Control::Group(group)) => {
-                labels.push(group.label.clone());
-                level = &group.controls;
-            }
-            _ => break,
-        }
-    }
-    labels
 }
 
 /// This module owns the active canvas mode.
@@ -1416,14 +1403,10 @@ fn resolved_model(
                     control_model(owner, child, inputs, enabled, &child_path)
                 })
                 .collect();
-            let labels = owner
-                .descriptor()
-                .map(|module| label_path(&module.controls, path))
-                .unwrap_or_default();
             let selected = (group.layout == luxforge_core::ModuleLayout::Tabs).then(|| {
-                owner
-                    .descriptor()
-                    .map_or(0, |module| selected_view(module, &labels, inputs))
+                owner.descriptor().map_or(0, |module| {
+                    selected_view(module, group.id.as_deref(), inputs)
+                })
             });
             ControlModel::Group(GroupControl {
                 enabled,
@@ -1439,9 +1422,35 @@ fn resolved_model(
                     .unwrap_or(!group.collapsed),
                 state: group_state(&controls, inputs),
                 controls,
-                labels,
+                id: group.id.clone(),
                 selected,
-                view: group.view,
+                view: false,
+            })
+        }
+        // A view is one tab of its parent's row: no reset, collapse or state of its own.
+        Control::View(view) => {
+            let controls: Vec<ControlModel> = view
+                .controls
+                .iter()
+                .enumerate()
+                .map(|(index, child)| {
+                    let mut child_path = path.to_vec();
+                    child_path.push(index);
+                    control_model(owner, child, inputs, enabled, &child_path)
+                })
+                .collect();
+            ControlModel::Group(GroupControl {
+                enabled,
+                unavailable: None,
+                label: view.label.clone(),
+                reset: None,
+                path: path.to_vec(),
+                expanded: true,
+                state: None,
+                controls,
+                id: Some(view.id.clone()),
+                selected: None,
+                view: true,
             })
         }
         Control::Wheel(wheel) => {
@@ -1485,7 +1494,12 @@ fn resolved_model(
                 hue,
                 saturation,
                 luminance,
-                reset: ResetRef::of(wheel.reset.as_ref()),
+                reset: ResetRef::of(
+                    owner
+                        .descriptor()
+                        .and_then(|module| module.wheel_reset(wheel))
+                        .as_ref(),
+                ),
                 dragging,
             }))
         }
@@ -2561,6 +2575,7 @@ pub(crate) fn labelled_control<'a>(
         // A band's fields carry the labels of their own number controls, and no other kind labels
         // a field.
         Control::Group(_)
+        | Control::View(_)
         | Control::Range(_)
         | Control::Action(_)
         | Control::Picker(_)
@@ -3103,8 +3118,10 @@ pub(crate) fn reveal_entries(
                 RevealKey::Group(_) => "group".to_owned(),
                 RevealKey::Field((action, _)) => format!("edit.{action}"),
             };
-            if let Control::Group(group) = control {
-                groups.push(&group.label);
+            match control {
+                Control::Group(group) => groups.push(&group.label),
+                Control::View(view) => groups.push(&view.label),
+                _ => {}
             }
             entries.push((
                 name,

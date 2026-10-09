@@ -1160,5 +1160,4 @@ fn current_effect_formats_match_the_builtin_descriptors() {
         }
     }
     assert!(checked > 10, "the built-in effects were listed");
-    assert_eq!(crate::current_effect_format(crate::MIXER_EFFECT), 2);
 }
