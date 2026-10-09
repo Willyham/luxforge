@@ -29,6 +29,10 @@ The ttf-parser exception was re-reviewed on 2026-09-29:
 
 License and source checks pass (BSL-1.0 in `clipboard-win` and `error-code` is GPL-compatible). `cargo xtask inventory` records resolved packages and copies top-level license files; it is not a notice audit. Before any distribution: inspect embedded fonts and assets, native linking and license-file declarations, assemble corresponding source and sanitize local manifest paths from dependency metadata. The manual license, native and asset review is deferred by the owner and remains incomplete.
 
+## Usage statistics ingress
+
+`services/usage-ingest` is a standalone package outside the desktop workspace, with its own `Cargo.lock`, so none of its crates is in the desktop graph or inventory. It uses `hyper` 1.12.0 (server and client, HTTP/1 only, no HTTP/2, TLS or proxy support), `hyper-util` 0.1.21 (only its Tokio adapter), `http-body-util` 0.1.5, `bytes` 1.12.1, `serde` 1.0.229, `serde_json` 1.0.149 and `tokio` 1.53.1 (the version the desktop already locks; multi-thread runtime, `net`, `time`, `sync`, `macros`, `signal`), all pinned exactly in its manifest, with the rest of its 36 locked packages (itself included) (`http`, `httparse`, `mio`, `socket2`, `libc` and `smallvec` at the desktop's versions) pinned by its lockfile. Its manifest and lockfile are held by `check-repository`, and `cargo xtask audit` runs the licence, source and advisory policy over its lockfile with no exceptions. It has `NOTICE.md` and, like every dependency, no completed manual licence review.
+
 ## Job monitoring transport
 
 The core uses the workspace's existing pinned Tokio 1.53.1 with `rt`, `net`, `io-util` and the workspace's `time` feature for the loopback transport's current-thread event loop. Socket EOF can cancel an indefinitely held `job.wait` without a polling timer or another thread. The socket features add `mio` 1.2.4 and `socket2` 0.6.5, pinned in `Cargo.lock`; no new GUI stack, background runtime worker or thread per held request is introduced. The manual license, native and notice review remains deferred and incomplete.
