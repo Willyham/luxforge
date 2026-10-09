@@ -82,6 +82,32 @@ pub fn columns(frame: &Value) -> Result<Option<[u32; 2]>> {
     }
 }
 
+/// The wheel a frame's state records drawing for the hue parameter `hue`, if it draws one.
+pub fn drawn_wheel<'a>(state: &'a Value, hue: &str) -> Option<&'a Value> {
+    state["control_ui"]["wheels"]
+        .as_array()?
+        .iter()
+        .find(|wheel| wheel["hue_parameter"] == hue)
+}
+
+/// Whether a frame's state records `view` selected in `module`'s tab row at `group`, the label
+/// path of the tabbed group (empty for the module's own tabs). The one place a view selection's
+/// shape is read.
+pub fn selected_view(state: &Value, module: &str, group: &[impl AsRef<str>], view: &str) -> bool {
+    let group: Vec<&str> = group.iter().map(AsRef::as_ref).collect();
+    state["workspace"]["views"].as_array().is_some_and(|rows| {
+        rows.iter().any(|row| {
+            row["module"] == module && row["group"] == json!(group) && row["view"] == view
+        })
+    })
+}
+
+/// Whether the frame recorded in `after` asked for no frame since `before`: the same requested
+/// generation, as session state such as a view selection must leave it.
+pub fn asked_no_frame(before: &Value, after: &Value) -> bool {
+    after["requested_generation"] == before["requested_generation"]
+}
+
 /// One captured frame: its record from the run's result, which it dereferences to, and its capture,
 /// decoded the first time a check reads it and kept for every read after. A frame read for its
 /// state before its provenance is checked has no capture to read.

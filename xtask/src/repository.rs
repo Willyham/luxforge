@@ -1091,9 +1091,11 @@ const SOURCE_RULES: &[SourceRule] = &[
             // The test kit's process threads and the test base's server threads.
             "crates/luxforge-testkit/src/process.rs",
             "crates/luxforge-testbase/src/server.rs",
-            // `verify`'s component pool, and `check`'s steps and test binaries.
+            // `verify`'s component pool, `check`'s steps and test binaries, and `grade-align`'s
+            // scoped render pool, one thread per core over a round's variants.
             "xtask/src/verify.rs",
             "xtask/src/check.rs",
+            "xtask/src/grade_align.rs",
         ],
         mode: Match::Whole,
         tests: false,
