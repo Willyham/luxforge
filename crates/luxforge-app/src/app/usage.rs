@@ -23,25 +23,26 @@ use serde_json::{Value, json};
 /// blocks its thread on the owner, so each runs in an [`owner_task`], never on the update loop.
 pub(crate) mod calls {
     use crate::{
-        app::tasks::{call, request},
+        app::tasks::{call, call_own, request},
         state::usage::{UsageRead, parse},
     };
     use luxforge_core::{ClientId, OwnerHandle};
     use serde_json::{Value, json};
 
-    /// `usage.prompt.claim`: whether this launch shows the notice, and the consent it leaves.
+    /// `usage.prompt.claim`: whether this launch shows the notice, the consent it leaves and the
+    /// request id the event of a claim that wrote the record carries.
     pub(crate) fn claim(
         owner: &OwnerHandle,
         client: ClientId,
-    ) -> Result<(bool, UsageRead), String> {
-        let (mut answer, _) = call(
+    ) -> Result<(bool, UsageRead, String), String> {
+        let (mut answer, id) = call_own(
             owner,
             client,
             "usage.prompt.claim",
             json!({"mutation": request()}),
         )?;
         let show = answer["show_prompt"].as_bool().unwrap_or(false);
-        Ok((show, parse(answer["state"].take())?))
+        Ok((show, parse(answer["state"].take())?, id))
     }
 
     /// `usage.read`.
@@ -63,15 +64,16 @@ pub(crate) mod calls {
         params
     }
 
-    /// `usage.set`: the consent it leaves, and the request id its event carries.
+    /// `usage.set`: the consent it leaves, and the request id its event carries, which is the
+    /// call's own rather than the mutation envelope's.
     pub(crate) fn set(
         owner: &OwnerHandle,
         client: ClientId,
         enabled: bool,
     ) -> Result<(UsageRead, String), String> {
-        let request_id = request().request_id;
-        let (mut answer, _) = call(owner, client, "usage.set", set_params(enabled, &request_id))?;
-        Ok((parse(answer["state"].take())?, request_id))
+        let params = set_params(enabled, &request().request_id);
+        let (mut answer, id) = call_own(owner, client, "usage.set", params)?;
+        Ok((parse(answer["state"].take())?, id))
     }
 }
 
@@ -116,7 +118,8 @@ impl Editor {
         match message {
             UsageMessage::Claimed(answer) => {
                 match answer {
-                    Ok((show, read)) => {
+                    Ok((show, read, request)) => {
+                        self.read_back(request);
                         self.usage.read = Some(read);
                         self.usage.read_error = None;
                         // A choice made in Settings while the claim was out already answered it.

@@ -50,6 +50,7 @@ pub(super) fn host_config(config: &Config, tiles: Arc<GpuTiles>) -> HostConfig {
     };
     let paths = config.paths.as_ref();
     HostConfig {
+        usage: Arc::new(luxforge_core::usage::Usage::new(usage_eligibility(config))),
         preferences_dir: paths.map(|paths| paths.config.clone()),
         config_dir: paths.map(Paths::module_config),
         resource_dir: paths.map(Paths::module_resources),
@@ -62,6 +63,25 @@ pub(super) fn host_config(config: &Config, tiles: Arc<GpuTiles>) -> HostConfig {
         tiles: Some(tiles),
         ..HostConfig::unconfigured()
     }
+}
+
+/// Whether this launch may collect usage statistics once someone opts in: explicit test
+/// eligibility with an evidence run's loopback receiver, or production's, which the core decides
+/// from the launch mode, the build and its activation switch. Eligibility is never consent.
+pub(super) fn usage_eligibility(config: &Config) -> luxforge_core::usage::Eligibility {
+    use luxforge_core::usage::{Eligibility, LaunchMode};
+    if let Some(receiver) = &config.usage_receiver {
+        return Eligibility::test(receiver.clone());
+    }
+    Eligibility::production(if config.evidence.is_some() {
+        LaunchMode::Evidence
+    } else if config.hidden {
+        LaunchMode::Hidden
+    } else if config.developer {
+        LaunchMode::Developer
+    } else {
+        LaunchMode::Interactive
+    })
 }
 
 pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
@@ -101,6 +121,8 @@ pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
     // streams through it, and the renderer report names it the window's adapter once known.
     let tiles = super::gpu_tiles::launch(launch);
     let host = host_config(&config, tiles);
+    // The notice and the Privacy tab exist exactly where the host can act on them.
+    config.usage_eligible = host.usage.eligibility().is_eligible();
     let (owner, join) =
         OwnerHandle::start_with_host(&catalog, registry, host).map_err(|error| {
             match error.kind {

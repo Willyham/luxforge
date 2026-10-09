@@ -4,8 +4,9 @@ use crate::state::usage::UsageRead;
 /// One usage statistics gesture or owner answer. Handled in `app/usage.rs`.
 #[derive(Clone, Debug)]
 pub(crate) enum UsageMessage {
-    /// `usage.prompt.claim` answered: whether this launch shows the notice, and the consent.
-    Claimed(Result<(bool, UsageRead), String>),
+    /// `usage.prompt.claim` answered: whether this launch shows the notice, the consent, and the
+    /// request id its event carries, which the event sync then skips.
+    Claimed(Result<(bool, UsageRead, String), String>),
     /// The notice's Share statistics.
     Share,
     /// The notice's No thanks, or Escape while it is on screen.
