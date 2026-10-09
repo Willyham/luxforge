@@ -335,15 +335,7 @@ impl SectionModel {
         let SectionLayout::Tabs { selected } = self.layout else {
             return None;
         };
-        let mut groups = self.controls.iter().filter_map(|control| match control {
-            ControlModel::Group(group) => Some(group),
-            _ => None,
-        });
-        let first = groups.next()?;
-        Some(match selected {
-            0 => first,
-            selected => groups.nth(selected - 1).unwrap_or(first),
-        })
+        selected_group(&self.controls, selected).map(|(_, group)| group)
     }
 
     /// Every curve this section has on screen, in the order the panel draws them: none while the
@@ -652,17 +644,28 @@ pub(crate) struct GroupControl {
 impl GroupControl {
     /// The child group a tabbed group shows, when it is tabbed and has one.
     pub(crate) fn visible_view(&self) -> Option<&GroupControl> {
-        let selected = self.selected?;
-        let mut groups = self.controls.iter().filter_map(|control| match control {
-            ControlModel::Group(group) => Some(group),
-            _ => None,
-        });
-        let first = groups.next()?;
-        Some(match selected {
-            0 => first,
-            selected => groups.nth(selected - 1).unwrap_or(first),
-        })
+        selected_group(&self.controls, self.selected?).map(|(_, group)| group)
     }
+}
+
+/// The group a tab row over `controls` shows, with its index among their groups: the
+/// `selected`th, or the first when `selected` names none. `None` when `controls` hold no group.
+/// A tabbed section's row and a tabbed group's row read their selection through this alike.
+pub(crate) fn selected_group(
+    controls: &[ControlModel],
+    selected: usize,
+) -> Option<(usize, &GroupControl)> {
+    let mut groups = controls.iter().filter_map(|control| match control {
+        ControlModel::Group(group) => Some(group),
+        _ => None,
+    });
+    let first = groups.next()?;
+    Some(match selected {
+        0 => (0, first),
+        selected => groups
+            .nth(selected - 1)
+            .map_or((0, first), |group| (selected, group)),
+    })
 }
 
 /// A hue and saturation wheel: its two fields modelled exactly as their own number fields are, the
