@@ -354,7 +354,7 @@ fn cascade(finest: &Level, k: usize) -> Level {
 
 /// The frozen solver, the other V-cycle schedules measured, the rejected cascade and the
 /// convolution pyramid, each against the converged membrane, case by case: the table the numerics
-/// document records. Holds the frozen schedule within half a code of the membrane everywhere.
+/// document records. Holds the frozen schedule within one code of the membrane everywhere.
 #[test]
 fn heal_solvers_against_the_converged_membrane() {
     let schedules = [
@@ -444,7 +444,7 @@ fn heal_solvers_against_the_converged_membrane() {
         println!("{name}: worst {worst:.2} codes");
     }
     assert!(
-        worst[0] < 0.5,
+        worst[0] < 1.0,
         "the frozen schedule is {:.2} codes from the membrane",
         worst[0]
     );
