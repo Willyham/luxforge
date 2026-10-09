@@ -10,6 +10,14 @@
 //! evidence directory, whose relaunch note the Catalog row shows until Use Default. Nothing is
 //! committed, and the photograph is untouched throughout.
 //!
+//! The launch has explicit usage statistics test eligibility with a loopback receiver, so it shows
+//! the startup notice and the Privacy tab. Once the opens are captured the notice is claimed and
+//! drawn with its two buttons, answered Share statistics, and later the Privacy tab is opened,
+//! its What is sent list expanded and its switch turned off and on again, each checked against
+//! the consent the host stored. The frames record the stored choice and the effective state,
+//! never an identifier, and the destination is the loopback receiver, never the production
+//! origin. Nothing listens there: no delivery is made by this scenario.
+//!
 //! No RAW photograph is checked in (see `fixtures/README.md`), so the scenario imports none after
 //! the lens switch: that an import with the switch off commits no lens entry is proved by the
 //! core's owner tests (`first_open_skips_the_lens_module_while_the_switch_is_off_and_asks_it_when_on`
@@ -21,6 +29,12 @@ use crate::{
     *,
 };
 use luxforge_evidence::{self as script};
+
+/// The usage statistics test receiver the launch is eligible with: loopback, on the discard port,
+/// where nothing listens.
+pub const USAGE_RECEIVER: &str = "http://127.0.0.1:9/v1/usage/batches";
+/// The production origin, which no frame may name as its destination.
+const PRODUCTION_ORIGIN: &str = "api.luxforge.app";
 
 /// The refusal a number off its step leaves in the status bar.
 const NUMBER_REFUSED: &str = "Proof number takes a number from 0 to 100 in steps of 5";
@@ -74,6 +88,13 @@ fn preference(name: &str, field: &str, value: Value) -> Step {
 fn planned(evidence: &Path) -> Plan {
     Plan::new(vec![
         Step::opened("opened"),
+        // The startup notice, claimed once the opens are captured, and answered.
+        Step::new("usage-notice", script::UsageStep::Notice).commits(0),
+        Step::new(
+            "usage-share",
+            script::UsageStep::Answer(script::NoticeAnswer::Share),
+        )
+        .commits(0),
         Step::new(
             "general",
             script::PaletteStep::Run("settings general".into()),
@@ -104,6 +125,11 @@ fn planned(evidence: &Path) -> Plan {
         .commits(0),
         Step::new("closed", script::Step::key(script::KEY_ESCAPE)).commits(0),
         Step::new("reopened", script::Step::settings(true)).commits(0),
+        // The Privacy tab: its list expanded, and the switch off and on again.
+        Step::new("privacy", script::Step::settings_tab("privacy")).commits(0),
+        Step::new("privacy-details", script::UsageStep::Details(true)).commits(0),
+        Step::new("privacy-off", script::UsageStep::Share(false)).commits(0),
+        Step::new("privacy-on", script::UsageStep::Share(true)).commits(0),
         // The display preferences with the sheet closed, so the canvas and the title bar are
         // drawn undimmed.
         Step::new("closed-again", script::Step::key(script::KEY_ESCAPE)).commits(0),
@@ -443,6 +469,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         "Reopening read back other values than the host stored",
     )?;
 
+    usage_statistics(launch, &mut checks)?;
     general_preferences(run, launch, &mut checks)?;
     checks.write(
         &launch.evidence,
@@ -450,6 +477,155 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         json!({"canvas": {"dark": DARK, "grey": GREY, "tolerance_per_channel": CANVAS_TOLERANCE,
                "scope": "a 5 × 5 patch of the canvas beside the photograph"}}),
     )
+}
+
+fn usage(frame: &Frame) -> &Value {
+    &frame.state()["usage"]
+}
+
+/// The usage statistics steps: the notice claimed, drawn and answered, and the Privacy tab's
+/// switch, each against the consent the host stored; no frame records an identifier or names the
+/// production origin as its destination.
+fn usage_statistics(launch: &Checked, checks: &mut Checks) -> Result {
+    for step in launch.names() {
+        let usage = usage(launch.at(step)?);
+        let keys: Vec<&String> = usage
+            .as_object()
+            .ok_or_else(|| format!("Step {step:?} records no usage statistics"))?
+            .keys()
+            .collect();
+        ensure(
+            usage["eligible"] == true && !keys.iter().any(|key| key.ends_with("_id")),
+            format!("Step {step:?} is not eligible or records an identifier: {usage}"),
+        )?;
+        ensure(
+            usage["destination"].as_str().is_none_or(|destination| {
+                destination == USAGE_RECEIVER && !destination.contains(PRODUCTION_ORIGIN)
+            }),
+            format!("Step {step:?} names a destination other than the test receiver: {usage}"),
+        )?;
+    }
+    let opened = launch.at("opened")?;
+    ensure(
+        usage(opened)["prompt"] == "waiting" && usage(opened)["notice"].is_null(),
+        format!(
+            "The notice was claimed before the opens were captured: {}",
+            usage(opened)
+        ),
+    )?;
+
+    let notice = launch.at("usage-notice")?;
+    let drawn = usage(notice);
+    ensure(
+        drawn["prompt"] == "shown"
+            && drawn["notice"]
+                == json!({
+                    "title": "Help improve Luxforge?",
+                    "body": "Luxforge can send usage events to api.luxforge.app for debugging \
+                             and analytics. They never include your name, contact details, IP \
+                             address, photos, filenames or photo metadata. You can change this \
+                             in Settings \u{203a} Privacy.",
+                    "buttons": ["Share statistics", "No thanks"],
+                })
+            && drawn["stored"]["prompt_shown"] == true
+            && drawn["stored"]["enabled"] == false
+            && drawn["effective"] == false
+            && drawn["destination"] == USAGE_RECEIVER,
+        format!("The notice was not claimed and drawn as designed: {drawn}"),
+    )?;
+    let share = launch.at("usage-share")?;
+    // The card is drawn above the status bar, centred: the band there changes when it goes.
+    let changed = band_changed(notice, share, [0.3, 0.7], [0.78, 0.97])?;
+    ensure(
+        changed > 2_000,
+        format!("The notice is not drawn: only {changed} pixels of its band changed when it went"),
+    )?;
+    let shared = usage(share);
+    ensure(
+        shared["prompt"] == "shared"
+            && shared["notice"].is_null()
+            && shared["stored"]["enabled"] == true
+            && shared["effective"] == true
+            && shared["writes_outstanding"] == 0,
+        format!("Share statistics did not store and apply the opt-in: {shared}"),
+    )?;
+    checks.note(
+        notice,
+        "the startup notice, claimed once the opens were captured",
+        json!({"notice": drawn["notice"], "stored": drawn["stored"], "band_pixels_changed": changed}),
+    );
+
+    let privacy = launch.at("privacy")?;
+    ensure(
+        settings(privacy)["open"] == "privacy"
+            && settings(privacy)["tabs"]
+                == json!(["general", "appearance", "experiments", "privacy"])
+            && usage(privacy)["privacy"]["switch"] == true
+            && usage(privacy)["privacy"]["error"].is_null()
+            && usage(privacy)["privacy"]["details_open"] == false,
+        format!(
+            "The Privacy tab does not show the stored opt-in: {}",
+            usage(privacy)
+        ),
+    )?;
+    let drawn = colour_at(privacy, RAIL_FOOT)?;
+    ensure(
+        near(drawn, BAR),
+        format!("The Privacy tab is not drawn: the rail's foot is {drawn:?}"),
+    )?;
+    let details = launch.at("privacy-details")?;
+    ensure(
+        usage(details)["privacy"]["details_open"] == true,
+        "What is sent did not open",
+    )?;
+    let off = launch.at("privacy-off")?;
+    ensure(
+        usage(off)["privacy"]["switch"] == false
+            && usage(off)["effective"] == false
+            && usage(off)["stored"]["enabled"] == false
+            && usage(off)["stored"]["prompt_shown"] == true
+            && usage(off)["privacy"]["error"].is_null(),
+        format!(
+            "Turning the switch off did not store the opt-out: {}",
+            usage(off)
+        ),
+    )?;
+    let on = launch.at("privacy-on")?;
+    ensure(
+        usage(on)["privacy"]["switch"] == true
+            && usage(on)["effective"] == true
+            && usage(on)["stored"]["enabled"] == true
+            && usage(on)["prompt"] == "shared",
+        format!(
+            "Turning the switch on did not store the opt-in: {}",
+            usage(on)
+        ),
+    )?;
+    checks.note(
+        on,
+        "the Privacy switch off and on again, each stored by usage.set",
+        json!({"off": usage(off)["stored"], "on": usage(on)["stored"]}),
+    );
+    Ok(())
+}
+
+/// How many pixels differ between two same-sized captures inside a band given as fractions of the
+/// width and the height.
+fn band_changed(a: &Frame, b: &Frame, across: [f64; 2], down: [f64; 2]) -> Result<u64> {
+    let (a, b) = (a.image()?, b.image()?);
+    ensure(
+        a.dimensions() == b.dimensions(),
+        "The captures differ in size",
+    )?;
+    let (width, height) = a.dimensions();
+    let span = |range: [f64; 2], size: u32| {
+        (f64::from(size) * range[0]) as u32..(f64::from(size) * range[1]) as u32
+    };
+    let (xs, ys) = (span(across, width), span(down, height));
+    Ok(ys
+        .flat_map(|y| xs.clone().map(move |x| (x, y)))
+        .filter(|(x, y)| a.get_pixel(*x, *y) != b.get_pixel(*x, *y))
+        .count() as u64)
 }
 
 /// The General rows' steps: what each frame draws and records of the preference it set.

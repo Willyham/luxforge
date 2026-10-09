@@ -129,6 +129,10 @@ pub(crate) struct UsageRead {
     pub(crate) effective: bool,
     /// The disclosure version the core asks agreement to.
     pub(crate) disclosure_version: u32,
+    /// Where an eligible launch sends: the production origin, or a test launch's loopback
+    /// receiver. Recorded so evidence shows which.
+    #[serde(default)]
+    pub(crate) destination: Option<String>,
     /// Why this process does not collect, as one fixed reason.
     #[serde(default)]
     pub(crate) reason: Option<String>,
@@ -342,6 +346,7 @@ mod tests {
             enabled: Some(enabled),
             effective,
             disclosure_version: 1,
+            destination: None,
             reason: reason.map(str::to_owned),
         }
     }
@@ -503,7 +508,13 @@ mod tests {
             "session_id": "0b7d2a10-0000-4000-8000-000000000000", "limits": {}, "diagnostics": {}
         }))
         .unwrap();
-        assert_eq!(parsed, read(true, true, None));
+        assert_eq!(
+            parsed,
+            UsageRead {
+                destination: Some("http://127.0.0.1:9/".into()),
+                ..read(true, true, None)
+            }
+        );
         let debug = format!("{parsed:?}");
         assert!(!debug.contains("5f0c1e9e") && !debug.contains("0b7d2a10"));
         let unreadable = parse(json!({

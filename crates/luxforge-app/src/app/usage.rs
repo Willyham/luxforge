@@ -76,14 +76,20 @@ pub(crate) mod calls {
 }
 
 /// After every message: in an eligible launch, claim the notice once the workspace is usable —
-/// tool discovery has answered, so the first frame and the panels are already up — and show a
-/// claimed notice once nothing that delays it is open.
+/// tool discovery has answered, so the first frame and the panels are already up, and an evidence
+/// run's opens, which are its startup, have all been captured — and show a claimed notice once
+/// nothing that delays it is open.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     if !editor.usage.eligible {
         return Task::none();
     }
+    let usable = editor.modules_ready
+        && editor
+            .evidence
+            .as_ref()
+            .is_none_or(|evidence| evidence.step > 0);
     match editor.usage.prompt {
-        Prompt::Waiting if editor.modules_ready => {
+        Prompt::Waiting if usable => {
             editor.usage.prompt = Prompt::Claiming;
             let (owner, client) = (editor.owner.clone(), editor.client);
             return owner_task(
@@ -280,6 +286,7 @@ impl Editor {
             })),
             "effective": read.map(|read| read.effective),
             "reason": read.and_then(|read| read.reason.clone()),
+            "destination": read.and_then(|read| read.destination.clone()),
             "read_error": usage.read_error,
             "privacy": privacy,
             "writes_outstanding": usage.writes_outstanding(),
