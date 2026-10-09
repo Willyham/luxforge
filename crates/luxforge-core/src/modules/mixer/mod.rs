@@ -23,6 +23,8 @@ pub(crate) use unit::PROGRAM as MIXER_PROGRAM;
 
 use super::{
     ColorOperation, EffectStage, NumberStyle, PointwiseColor, Processing, RailDecoration,
+    WheelStyle,
+    descriptor::title_case,
     field_patch::{
         Field, FieldControl, FieldPatch, FieldPatchModule, Group, Spec, Values, View, Wheel,
     },
@@ -36,9 +38,9 @@ use std::sync::Arc;
 pub const MIXER_EFFECT: &str = "luxforge.mixer.hsl";
 
 /// The mixer effect's current payload format: 2 since the payload gained the fourteen grading
-/// fields. A stored mixer layer at any other format is refused as `incompatible` and never
-/// rewritten.
-pub const MIXER_EFFECT_FORMAT: u32 = 2;
+/// fields, listed among [`super::BUILTIN_FORMATS`]. A stored mixer layer at any other format is
+/// refused as `incompatible` and never rewritten.
+pub(super) const MIXER_EFFECT_FORMAT: u32 = 2;
 
 const HUE: &str = "hue";
 const SATURATION: &str = "saturation";
@@ -78,28 +80,51 @@ const HSL_FIELDS: [&str; 24] = [
     "magenta-luminance",
 ];
 
-/// The grading fields, after the HSL fields in the payload's declared order: hue, saturation and
-/// luminance for Shadows, Midtones, Highlights and Global, in [`grade::WHEEL_NAMES`] order, then
-/// Blending and Balance.
-const GRADE_FIELDS: [&str; 14] = [
-    "grade-shadows-hue",
-    "grade-shadows-saturation",
-    "grade-shadows-luminance",
-    "grade-midtones-hue",
-    "grade-midtones-saturation",
-    "grade-midtones-luminance",
-    "grade-highlights-hue",
-    "grade-highlights-saturation",
-    "grade-highlights-luminance",
-    "grade-global-hue",
-    "grade-global-saturation",
-    "grade-global-luminance",
-    GRADE_BLENDING,
-    GRADE_BALANCE,
-];
+/// One grading wheel: its id (`shadows`, as [`grade::WHEEL_NAMES`] spells it), which names its
+/// individual view and its three fields; the label its wheel, its view and its history words
+/// use; its `grade-<id>-hue`, `-saturation` and `-luminance` fields; and whether it is tonal, a
+/// range Blending and Balance shape, which Global is not.
+struct GradeWheel {
+    id: &'static str,
+    label: &'static str,
+    hue: &'static str,
+    saturation: &'static str,
+    luminance: &'static str,
+    tonal: bool,
+}
+
+/// A [`GradeWheel`] whose field names are derived from its id.
+macro_rules! grade_wheel {
+    ($id:literal, $label:literal, $tonal:literal) => {
+        GradeWheel {
+            id: $id,
+            label: $label,
+            hue: concat!("grade-", $id, "-hue"),
+            saturation: concat!("grade-", $id, "-saturation"),
+            luminance: concat!("grade-", $id, "-luminance"),
+            tonal: $tonal,
+        }
+    };
+}
+
+const SHADOWS: GradeWheel = grade_wheel!("shadows", "Shadows", true);
+const MIDTONES: GradeWheel = grade_wheel!("midtones", "Midtones", true);
+const HIGHLIGHTS: GradeWheel = grade_wheel!("highlights", "Highlights", true);
+const GLOBAL: GradeWheel = grade_wheel!("global", "Global", false);
+
+/// The four wheels in [`grade::WHEEL_NAMES`] order: the one table the grading fields, the Grading
+/// group's wheels and views and the grading values are all read from. Their fields follow the HSL
+/// fields in the payload's declared order, wheel by wheel, then Blending and Balance.
+const WHEELS: [GradeWheel; grade::WHEEL_COUNT] = [SHADOWS, MIDTONES, HIGHLIGHTS, GLOBAL];
 
 const GRADE_BLENDING: &str = "grade-blending";
 const GRADE_BALANCE: &str = "grade-balance";
+
+impl GradeWheel {
+    fn fields(&self) -> [&'static str; 3] {
+        [self.hue, self.saturation, self.luminance]
+    }
+}
 
 /// The group label a patch that returns every one of a property's eight fields to neutral takes in
 /// history, and the label the group's own control carries.
@@ -125,16 +150,6 @@ fn parse_field(name: &str) -> Option<(usize, &'static str)> {
         _ => return None,
     };
     Some((range, property))
-}
-
-/// The capitalized range name a control label and a history label both use, e.g. `Red`.
-fn range_label(range: usize) -> String {
-    let name = unit::RANGE_NAMES[range];
-    let mut characters = name.chars();
-    match characters.next() {
-        Some(first) => first.to_uppercase().chain(characters).collect(),
-        None => String::new(),
-    }
 }
 
 /// The gradient rail for a colour's reference sRGB code, at one quarter (dark) and 60% of the way
@@ -186,7 +201,7 @@ fn luminance_rail(range: usize) -> RailDecoration {
 /// the range and the property, e.g. `Red hue +20`.
 fn hsl_field(name: &'static str) -> Field {
     let (range, property) = parse_field(name).expect("a declared mixer field");
-    let label = range_label(range);
+    let label = title_case(unit::RANGE_NAMES[range]);
     let (notes, rail) = match property {
         HUE => (
             format!(
@@ -242,10 +257,15 @@ impl FieldPatch for Mixer {
         // ranges, drawn as nested tabs and each resetting its own eight fields.
         .group(
             Group::new(HSL_GROUP, [])
+                .id("hsl")
                 .tabs()
-                .subgroup(Group::new(HUE_GROUP, HSL_FIELDS[0..8].iter().copied()))
-                .subgroup(Group::new(SATURATION_GROUP, HSL_FIELDS[8..16].iter().copied()))
-                .subgroup(Group::new(LUMINANCE_GROUP, HSL_FIELDS[16..24].iter().copied())),
+                .subgroup(Group::new(HUE_GROUP, HSL_FIELDS[0..8].iter().copied()).id(HUE))
+                .subgroup(
+                    Group::new(SATURATION_GROUP, HSL_FIELDS[8..16].iter().copied()).id(SATURATION),
+                )
+                .subgroup(
+                    Group::new(LUMINANCE_GROUP, HSL_FIELDS[16..24].iter().copied()).id(LUMINANCE),
+                ),
         )
         .group(grading_group())
         .collapsed()
@@ -286,93 +306,55 @@ impl FieldPatch for Mixer {
     }
 }
 
-/// One wheel's three fields: hue, saturation and luminance.
-fn wheel_fields(wheel: usize) -> [&'static str; 3] {
-    [
-        GRADE_FIELDS[3 * wheel],
-        GRADE_FIELDS[3 * wheel + 1],
-        GRADE_FIELDS[3 * wheel + 2],
-    ]
-}
-
-/// The wheel labels and history words, in [`grade::WHEEL_NAMES`] order.
-const WHEEL_LABELS: [&str; grade::WHEEL_COUNT] = ["Shadows", "Midtones", "Highlights", "Global"];
-const WHEEL_TINTS: [&str; grade::WHEEL_COUNT] = [
-    "Shadows tint",
-    "Midtones tint",
-    "Highlights tint",
-    "Global tint",
-];
-
-/// One wheel over its hue and saturation, with its luminance as the wheel's rail: the reset of
-/// exactly its three fields, and one history entry, `<Range> tint`, for a gesture moving both.
-fn grade_wheel(wheel: usize) -> Wheel {
-    let [hue, saturation, luminance] = wheel_fields(wheel);
-    Wheel::new(WHEEL_LABELS[wheel], hue, saturation)
-        .luminance(luminance)
-        .history(WHEEL_TINTS[wheel])
-}
-
-/// The Grading tab: one group owning the fourteen grading fields, its reset (Blending back to 50),
-/// shown through presentation-only views. 3-way draws Midtones above Shadows and Highlights in
-/// compact wheels; each range and Global has a view of its own with a large wheel and its exact
-/// hue and saturation. Blending and Balance follow every tonal view and are absent from Global,
-/// which does not read them; a view never changes a value, a reset scope or what a preset holds.
+/// The Grading tab: one group owning the fourteen grading fields and declaring the four wheels,
+/// with its reset (Blending back to 50), shown through presentation-only views. 3-way draws
+/// Midtones above Shadows and Highlights in compact wheels; each range and Global has a view of
+/// its own with its large wheel and exact hue and saturation. Blending and Balance follow every
+/// tonal view and are absent from Global, which does not read them; a view never changes a value,
+/// a reset scope or what a preset holds.
 fn grading_group() -> Group {
-    const SHADOWS: usize = 0;
-    const MIDTONES: usize = 1;
-    const HIGHLIGHTS: usize = 2;
-    const GLOBAL: usize = 3;
-    let three_way = View::new("3-way")
-        .wheel(grade_wheel(MIDTONES))
-        .wheel(grade_wheel(SHADOWS))
-        .wheel(grade_wheel(HIGHLIGHTS))
+    let fields = WHEELS
+        .iter()
+        .flat_map(GradeWheel::fields)
+        .chain([GRADE_BLENDING, GRADE_BALANCE]);
+    let three_way = [MIDTONES, SHADOWS, HIGHLIGHTS]
+        .iter()
+        .fold(View::new("three-way", "3-way"), |view, wheel| {
+            view.wheel(wheel.label, WheelStyle::Compact)
+        })
         .field(GRADE_BLENDING)
         .field(GRADE_BALANCE);
-    let single = |wheel: usize, tonal: bool| {
-        let [hue, saturation, _] = wheel_fields(wheel);
-        let view = View::new(WHEEL_LABELS[wheel])
-            .wheel(grade_wheel(wheel).large())
-            .field(hue)
-            .field(saturation);
-        if tonal {
-            view.field(GRADE_BLENDING).field(GRADE_BALANCE)
-        } else {
-            view
-        }
-    };
-    Group::new(GRADING_GROUP, GRADE_FIELDS)
-        .tabs()
-        .view(three_way)
-        .view(single(SHADOWS, true))
-        .view(single(MIDTONES, true))
-        .view(single(HIGHLIGHTS, true))
-        .view(single(GLOBAL, false))
+    WHEELS.iter().fold(
+        Group::new(GRADING_GROUP, fields)
+            .id("grading")
+            .view(three_way),
+        |group, wheel| {
+            let view = View::new(wheel.id, wheel.label)
+                .wheel(wheel.label, WheelStyle::Large)
+                .field(wheel.hue)
+                .field(wheel.saturation);
+            let view = if wheel.tonal {
+                view.field(GRADE_BLENDING).field(GRADE_BALANCE)
+            } else {
+                view
+            };
+            group
+                .wheel(Wheel::new(wheel.label, wheel.hue, wheel.saturation).luminance(wheel.luminance))
+                .view(view)
+        },
+    )
 }
 
 /// The fourteen grading values a payload holds, defaults filled.
 fn grading(values: &Values<'_>) -> grade::Grading {
     grade::Grading {
-        wheels: std::array::from_fn(|wheel| {
-            let field = |property: usize| values.number(GRADE_FIELDS[3 * wheel + property]);
-            grade::Wheel {
-                hue: field(0),
-                saturation: field(1),
-                luminance: field(2),
-            }
+        wheels: WHEELS.map(|wheel| grade::Wheel {
+            hue: values.number(wheel.hue),
+            saturation: values.number(wheel.saturation),
+            luminance: values.number(wheel.luminance),
         }),
         blending: values.number(GRADE_BLENDING),
         balance: values.number(GRADE_BALANCE),
-    }
-}
-
-/// The capitalized wheel name a control label and a history label both use, e.g. `Shadows`.
-fn wheel_label(wheel: usize) -> String {
-    let name = grade::WHEEL_NAMES[wheel];
-    let mut characters = name.chars();
-    match characters.next() {
-        Some(first) => first.to_uppercase().chain(characters).collect(),
-        None => String::new(),
     }
 }
 
@@ -383,53 +365,49 @@ fn grade_luminance_rail() -> RailDecoration {
     }
 }
 
-/// The fourteen grading fields, in [`GRADE_FIELDS`] order. Hue is a direction on the RGB colour
-/// wheel, 0..360 with 0 and 360 the same direction, kept as stored even at zero saturation;
-/// saturation is a one-sided strength, 0..100; luminance is signed, -100..100; Blending defaults
-/// to 50 and Balance to 0.
+/// The fourteen grading fields, wheel by wheel in [`WHEELS`] order, then Blending and Balance. Hue
+/// is a direction on the RGB colour wheel, 0..360 with 0 and 360 the same direction, kept as
+/// stored even at zero saturation; saturation is a one-sided strength, 0..100; luminance is
+/// signed, -100..100; Blending defaults to 50 and Balance to 0.
 fn grade_fields() -> Vec<Field> {
-    let mut fields = Vec::with_capacity(GRADE_FIELDS.len());
-    for wheel in 0..grade::WHEEL_COUNT {
-        let label = wheel_label(wheel);
-        let names = &GRADE_FIELDS[3 * wheel..3 * wheel + 3];
-        let scope = if wheel == 3 {
-            "every tone, independent of Blending and Balance".to_owned()
+    let mut fields = Vec::with_capacity(3 * WHEELS.len() + 2);
+    for wheel in &WHEELS {
+        let label = wheel.label;
+        let scope = if wheel.tonal {
+            format!("the {} range", wheel.id)
         } else {
-            format!("the {} range", label.to_lowercase())
+            "every tone, independent of Blending and Balance".to_owned()
         };
         fields.push(
             Field::slider(
-                names[0],
+                wheel.hue,
                 format!("{label} hue"),
                 format!(
                     "the direction of the {label} tint on the RGB colour wheel (red 0, green 120, blue 240), in degrees; 0 and 360 are the same direction. Kept as a setting at zero saturation, where it changes no pixel"
                 ),
             )
             .range(0.0, 360.0)
-            .history(format!("{label} hue"))
             .control(FieldControl::Number(NumberStyle::Field)),
         );
         fields.push(
             Field::slider(
-                names[1],
+                wheel.saturation,
                 format!("{label} saturation"),
                 format!(
                     "the strength of the {label} tint over {scope}: 0 adds no colour, 100 the strongest tint; greys are tinted too, and black and white stay neutral unless the luminance treatment moves them"
                 ),
             )
             .range(0.0, 100.0)
-            .history(format!("{label} saturation"))
             .control(FieldControl::Number(NumberStyle::Field)),
         );
         fields.push(
             Field::slider(
-                names[2],
+                wheel.luminance,
                 format!("{label} luminance"),
                 format!(
                     "brightens or darkens {scope} through a bounded gamma on Oklab L; works without any tint"
                 ),
             )
-            .history(format!("{label} luminance"))
             .zero(NEUTRAL)
             .rail(grade_luminance_rail()),
         );
@@ -441,8 +419,7 @@ fn grade_fields() -> Vec<Field> {
             "how much the Shadows, Midtones and Highlights ranges overlap: 0 is the narrowest smooth transition, 100 the widest; does not affect Global",
         )
         .range(0.0, 100.0)
-        .default(grade::DEFAULT_BLENDING)
-        .history("Blending"),
+        .default(grade::DEFAULT_BLENDING),
     );
     fields.push(
         Field::slider(
@@ -450,7 +427,6 @@ fn grade_fields() -> Vec<Field> {
             "Balance",
             "moves the split between the tonal ranges: negative extends Shadows, positive extends Highlights; does not affect Global",
         )
-        .history("Balance")
         .zero(NEUTRAL),
     );
     fields
@@ -469,11 +445,12 @@ mod tests {
         height: 4,
     };
 
-    /// The words a history label and the recipe row use for each field, with its declared decimals,
-    /// sign and unit. The rules that choose a label — a group reset, the module reset, a field count
-    /// — are the shared field-patch rules the conformance suite proves for every module.
+    /// The words a history label and the recipe row use for each field, with its declared decimals
+    /// and sign: an HSL field by its range and property, a grading field by its wheel and
+    /// property, Blending and Balance by themselves; and the documented wheel and group labels.
+    /// The rules that choose a label are the shared field-patch rules.
     #[test]
-    fn each_field_is_named_by_its_own_history_words() {
+    fn each_field_and_wheel_is_named_by_its_own_history_words() {
         let module = MixerModule::new();
         for (parameters, expected) in [
             (json!({"red-hue": 20.0}), "Red hue +20"),
@@ -481,6 +458,31 @@ mod tests {
             (
                 json!({"magenta-saturation": -100.0}),
                 "Magenta saturation -100",
+            ),
+            (json!({"grade-shadows-hue": 210.0}), "Shadows hue 210"),
+            (
+                json!({"grade-global-saturation": 35.0}),
+                "Global saturation 35",
+            ),
+            (
+                json!({"grade-highlights-luminance": -20.0}),
+                "Highlights luminance -20",
+            ),
+            (json!({"grade-blending": 70.0}), "Blending 70"),
+            (json!({"grade-balance": 15.0}), "Balance +15"),
+            (
+                json!({"grade-shadows-hue": 120.0, "grade-shadows-saturation": 40.0}),
+                "Shadows tint",
+            ),
+            (
+                json!({"grade-midtones-hue": 30.0, "grade-midtones-saturation": 20.0,
+                       "grade-midtones-luminance": 10.0}),
+                "Midtones",
+            ),
+            (
+                json!({"grade-global-hue": 0.0, "grade-global-saturation": 0.0,
+                       "grade-global-luminance": 0.0}),
+                "Reset Global",
             ),
         ] {
             let label = module.label(
@@ -551,46 +553,15 @@ mod tests {
         );
     }
 
-    /// A layer at the shared format the mixer used before grading is refused, never read.
+    /// The wheel table is in the grading unit's wheel order, each label is its id read as a
+    /// word, and only Global is not tonal.
     #[test]
-    fn a_layer_at_the_previous_format_is_refused() {
-        let module = MixerModule::new();
-        let error = module
-            .validate_payload(
-                MIXER_EFFECT,
-                crate::EFFECT_FORMAT,
-                &json!({"red-hue": 20.0}),
-            )
-            .unwrap_err();
-        assert_eq!(error.kind, crate::ErrorKind::Incompatible);
-        assert_eq!(module.descriptor().effects[0].format, MIXER_EFFECT_FORMAT);
-    }
-
-    /// Grading fields are named by their wheel and property, Blending and Balance by themselves.
-    #[test]
-    fn grading_fields_are_named_by_their_own_history_words() {
-        let module = MixerModule::new();
-        for (parameters, expected) in [
-            (json!({"grade-shadows-hue": 210.0}), "Shadows hue 210"),
-            (
-                json!({"grade-global-saturation": 35.0}),
-                "Global saturation 35",
-            ),
-            (
-                json!({"grade-highlights-luminance": -20.0}),
-                "Highlights luminance -20",
-            ),
-            (json!({"grade-blending": 70.0}), "Blending 70"),
-            (json!({"grade-balance": 15.0}), "Balance +15"),
-        ] {
-            let label = module.label(
-                module.descriptor().action(SET_MIXER).unwrap(),
-                &ActionInput {
-                    action_id: SET_MIXER.to_owned(),
-                    parameters: parameters.as_object().cloned().unwrap(),
-                },
-            );
-            assert_eq!(label, expected, "{parameters}");
-        }
+    fn the_wheel_table_follows_the_grading_units_wheel_order() {
+        assert_eq!(WHEELS.map(|wheel| wheel.id), grade::WHEEL_NAMES);
+        assert!(WHEELS.iter().all(|wheel| title_case(wheel.id) == wheel.label));
+        assert_eq!(
+            WHEELS.map(|wheel| wheel.tonal),
+            [true, true, true, false]
+        );
     }
 }

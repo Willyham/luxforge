@@ -355,8 +355,23 @@ fn collect<'d>(
 ) {
     for control in controls {
         let fields: Vec<(&str, &str)> = match control {
+            // A view shows fields its enclosing group owns, so they are that group's.
+            Control::View(view) => {
+                let index = group.unwrap_or_else(|| {
+                    *loose.get_or_insert_with(|| {
+                        drafts.push(Draft {
+                            label: None,
+                            per_photo: false,
+                            fields: Vec::new(),
+                        });
+                        drafts.len() - 1
+                    })
+                });
+                collect(module, &view.controls, Some(index), true, drafts, loose);
+                continue;
+            }
             Control::Group(declared) => {
-                let index = if absorb || declared.view {
+                let index = if absorb {
                     group.unwrap_or_else(|| {
                         *loose.get_or_insert_with(|| {
                             drafts.push(Draft {
@@ -379,7 +394,7 @@ fn collect<'d>(
                     module,
                     &declared.controls,
                     Some(index),
-                    absorb || declared.view || declared.layout == crate::ModuleLayout::Tabs,
+                    absorb || declared.layout == crate::ModuleLayout::Tabs,
                     drafts,
                     loose,
                 );

@@ -854,6 +854,7 @@ impl ActionDescriptor {
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum Control {
     Group(GroupControl),
+    View(ViewControl),
     Number(NumberControl),
     Toggle(ToggleControl),
     Choice(ChoiceControl),
@@ -872,6 +873,12 @@ pub enum Control {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GroupControl {
+    /// The group's identity, a lowercase hyphenated name (`grading`) unique among the module's
+    /// groups. A group that declares `layout: tabs` and a group that is one tab of a tab row
+    /// declare one, since a session's view selection names a row and its tab by it
+    /// (`workspace.set`'s `views`); any other group may. Listed only when declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub label: String,
     pub controls: Vec<Control>,
     /// The action that returns this group to its neutral values, shown on the group header.
@@ -879,19 +886,14 @@ pub struct GroupControl {
     pub reset: Option<ResetAction>,
     #[serde(default, skip_serializing_if = "is_default")]
     pub collapsed: bool,
-    /// How a client arranges this group's child groups: stacked (the default), or `tabs`, one
-    /// segmented row showing one child group at a time, exactly as a module's `layout: tabs`
-    /// arranges its top-level groups. Groups nest, so a tab can hold tabs of its own. A hint: it
-    /// changes what a client draws, never what the host accepts. Serialized only when it is
-    /// `tabs`. Which child a client shows is its session's view state (`workspace.set`'s `views`).
+    /// How a client arranges this group's children: stacked (the default), or `tabs`, one
+    /// segmented row showing one child at a time, exactly as a module's `layout: tabs` arranges
+    /// its top-level groups. A tab is a child group or a [`ViewControl`]. Groups nest, so a tab
+    /// can hold tabs of its own. A hint: it changes what a client draws, never what the host
+    /// accepts. Serialized only when it is `tabs`. Which child a client shows is its session's
+    /// view state (`workspace.set`'s `views`).
     #[serde(default, skip_serializing_if = "is_default")]
     pub layout: ModuleLayout,
-    /// A presentation-only view: a child of a `tabs` group whose controls show fields the
-    /// enclosing groups own, so the same field may be drawn in more than one view. A view is no
-    /// scope of its own: it declares no reset and no variants, and a client gathering capture or
-    /// reset groups attributes its fields to the group that holds it. Serialized only when true.
-    #[serde(default, skip_serializing_if = "is_default")]
-    pub view: bool,
     /// The group's values usually belong to the one photograph they were set on, as its white
     /// balance does, so a client carrying settings from one photograph to others (a preset's
     /// create form, Copy settings) leaves the group out unless asked (`preset.groups`'
@@ -906,14 +908,17 @@ pub struct GroupControl {
 }
 
 impl GroupControl {
-    /// Arrange this group's child groups as declared ([`GroupControl::layout`]).
-    pub fn group_layout(self, layout: ModuleLayout) -> Self {
-        Self { layout, ..self }
+    /// The group's identity ([`GroupControl::id`]).
+    pub fn id(self, id: impl Into<String>) -> Self {
+        Self {
+            id: Some(id.into()),
+            ..self
+        }
     }
 
-    /// Mark this group a presentation-only view ([`GroupControl::view`]).
-    pub fn as_view(self) -> Self {
-        Self { view: true, ..self }
+    /// Arrange this group's children as declared ([`GroupControl::layout`]).
+    pub fn group_layout(self, layout: ModuleLayout) -> Self {
+        Self { layout, ..self }
     }
 
     /// The action the group header's reset runs.
@@ -922,10 +927,6 @@ impl GroupControl {
             reset: Some(reset),
             ..self
         }
-    }
-
-    pub(crate) fn collapsed(self, collapsed: bool) -> Self {
-        Self { collapsed, ..self }
     }
 
     /// The group's values usually belong to one photograph ([`Self::per_photo`]).
@@ -938,6 +939,20 @@ impl GroupControl {
         self.variants.push(variant);
         self
     }
+}
+
+/// A presentation-only tab of a tab row: what one tab shows of fields the enclosing groups own,
+/// so the same field may be drawn in more than one view. A view is no scope of its own — it has
+/// no reset, variants, layout or collapse state, and a client gathering capture or reset groups
+/// attributes its fields to the group that holds it — and it is only ever a tab, a child of a
+/// group or module that declares `layout: tabs`. `id` is a lowercase hyphenated name, distinct
+/// among its row's tabs, by which a session selects it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ViewControl {
+    pub id: String,
+    pub label: String,
+    pub controls: Vec<Control>,
 }
 
 /// One integer or number parameter, drawn as a slider, a field or a stepper.
@@ -1133,8 +1148,11 @@ pub enum WheelStyle {
 /// request of its own and a client that draws no wheel edits the same fields by name. At the
 /// centre a client keeps the last hue rather than computing an angle that does not exist.
 ///
-/// `reset`, when declared, is an action of this module with fixed parameters, validated like a
-/// group's; on the wheel's own action it names only the wheel's fields.
+/// Resetting the wheel is one patch of its bound parameters to their declared defaults
+/// ([`ModuleDescriptor::wheel_reset`]), as a number control without a `reset` returns its field
+/// to its default. A wheel may be drawn more than once — compact in one view, large in another —
+/// and every copy that binds the same `hue` of the same `action` is the same wheel: it binds the
+/// same saturation and luminance under the same label, and only its `style` differs.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WheelControl {
@@ -1146,8 +1164,6 @@ pub struct WheelControl {
     pub label: String,
     #[serde(default, skip_serializing_if = "is_default")]
     pub style: WheelStyle,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reset: Option<ResetAction>,
 }
 
 impl WheelControl {
@@ -1163,14 +1179,6 @@ impl WheelControl {
         Self { style, ..self }
     }
 
-    /// What resetting the wheel runs.
-    pub fn wheel_reset(self, reset: ResetAction) -> Self {
-        Self {
-            reset: Some(reset),
-            ..self
-        }
-    }
-
     /// The bound parameters: hue, saturation and, when declared, luminance.
     pub fn parameters(&self) -> impl Iterator<Item = &str> {
         [
@@ -1181,6 +1189,19 @@ impl WheelControl {
         .into_iter()
         .flatten()
         .map(String::as_str)
+    }
+
+    /// Whether `other` draws the same wheel as this one: the same fields of the same action under
+    /// the same label, in whatever style.
+    pub(crate) fn same_wheel(&self, other: &Self) -> bool {
+        (&self.action, &self.hue, &self.saturation, &self.luminance, &self.label)
+            == (
+                &other.action,
+                &other.hue,
+                &other.saturation,
+                &other.luminance,
+                &other.label,
+            )
     }
 }
 
@@ -1299,6 +1320,7 @@ macro_rules! control_kinds {
 
 control_kinds!(
     Group(GroupControl),
+    View(ViewControl),
     Number(NumberControl),
     Toggle(ToggleControl),
     Choice(ChoiceControl),
@@ -1354,8 +1376,7 @@ impl Control {
     }
 
     /// A compact `wheel` control over the `hue` and `saturation` parameters of `action`, without a
-    /// luminance rail or a reset. Chain [`WheelControl::luminance`], [`WheelControl::wheel_style`]
-    /// and [`WheelControl::wheel_reset`].
+    /// luminance rail. Chain [`WheelControl::luminance`] and [`WheelControl::wheel_style`].
     pub fn wheel(
         action: impl Into<String>,
         hue: impl Into<String>,
@@ -1369,7 +1390,6 @@ impl Control {
             luminance: None,
             label: label.into(),
             style: WheelStyle::Compact,
-            reset: None,
         }
     }
 
@@ -1440,14 +1460,27 @@ impl Control {
 
     pub fn group(label: impl Into<String>, controls: Vec<Control>) -> GroupControl {
         GroupControl {
+            id: None,
             label: label.into(),
             controls,
             reset: None,
             collapsed: false,
             layout: ModuleLayout::Stacked,
-            view: false,
             per_photo: false,
             variants: Vec::new(),
+        }
+    }
+
+    /// A presentation-only tab of a tab row ([`ViewControl`]).
+    pub fn view(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        controls: Vec<Control>,
+    ) -> ViewControl {
+        ViewControl {
+            id: id.into(),
+            label: label.into(),
+            controls,
         }
     }
 
@@ -1483,10 +1516,30 @@ impl Control {
         }
     }
 
+    /// The controls a group or a view holds, in their order; empty for every other kind.
+    pub fn children(&self) -> &[Control] {
+        match self {
+            Self::Group(GroupControl { controls, .. }) | Self::View(ViewControl { controls, .. }) => {
+                controls
+            }
+            _ => &[],
+        }
+    }
+
+    /// The identity a tab row selects this control by: a view's id, or a group's declared id.
+    pub fn tab_id(&self) -> Option<&str> {
+        match self {
+            Self::Group(group) => group.id.as_deref(),
+            Self::View(view) => Some(&view.id),
+            _ => None,
+        }
+    }
+
     /// The control kind as it is serialized, for a refusal that names a shape.
     pub fn kind_name(&self) -> &'static str {
         match self {
             Self::Group(_) => "group",
+            Self::View(_) => "view",
             Self::Number(_) => "number",
             Self::Toggle(_) => "toggle",
             Self::Choice(_) => "choice",
@@ -1628,8 +1681,9 @@ pub enum ModuleLayout {
     Stacked,
     /// The groups render as one segmented row, one group visible at a time, for groups that are
     /// parallel views of the same controls, such as the colour mixer's Hue, Saturation and
-    /// Luminance over the same eight ranges. Which group a client shows is its session's view
-    /// state ([`crate::ViewSelection`]): selecting one changes no recipe, history or frame.
+    /// Luminance over the same eight ranges. Every tab declares an id, and which one a client
+    /// shows is its session's view state ([`crate::ViewSelection`]): selecting one changes no
+    /// recipe, history or frame.
     Tabs,
 }
 
@@ -1727,42 +1781,45 @@ impl ModuleDescriptor {
         matches!(self.availability, Availability::Available)
     }
 
-    /// The group a path of group labels reaches from the module's top level, each label naming
-    /// the first group of that label at its level. Registration makes that first group the one a
-    /// tabbed group's path names ([`Self::validate`]), so a view identity is never ambiguous.
-    pub fn group_at(&self, path: &[impl AsRef<str>]) -> Option<&GroupControl> {
-        let mut controls = &self.controls[..];
-        let mut found = None;
-        for label in path {
-            let group = controls.iter().find_map(|control| match control {
-                Control::Group(group) if group.label == label.as_ref() => Some(group),
-                _ => None,
-            })?;
-            controls = &group.controls;
-            found = Some(group);
+    /// The group of this module whose declared id is `id`, at any depth. Registration keeps group
+    /// ids unique within a module ([`Self::validate`]), so there is at most one. `O(controls)`.
+    pub fn group(&self, id: &str) -> Option<&GroupControl> {
+        fn find<'d>(controls: &'d [Control], id: &str) -> Option<&'d GroupControl> {
+            controls.iter().find_map(|control| match control {
+                Control::Group(group) if group.id.as_deref() == Some(id) => Some(group),
+                control => find(control.children(), id),
+            })
         }
-        found
+        find(&self.controls, id)
     }
 
-    /// The views of the tabbed controls a label path names, in their declared order: the empty
-    /// path names the module's own top-level tabs (`layout: tabs`), and any other path the nested
-    /// group it reaches ([`Self::group_at`]), which must declare `layout: tabs`. `None` when the
-    /// path names no tabbed controls. A view is one child group, named by its label.
-    pub fn views_at(&self, path: &[impl AsRef<str>]) -> Option<Vec<&str>> {
-        let (controls, layout) = if path.is_empty() {
-            (&self.controls[..], self.layout)
-        } else {
-            let group = self.group_at(path)?;
-            (&group.controls[..], group.layout)
+    /// The ids of a tab row's tabs, in their declared order: `None` names the module's own
+    /// top-level row (`layout: tabs`), and `Some(id)` the group of that id ([`Self::group`]),
+    /// which must declare `layout: tabs`. `None` when it names no tab row. A tab is a child group
+    /// or a view ([`Control::tab_id`]); registration gives every tab an id.
+    pub fn views_at(&self, group: Option<&str>) -> Option<Vec<&str>> {
+        let (controls, layout) = match group {
+            None => (&self.controls[..], self.layout),
+            Some(id) => {
+                let group = self.group(id)?;
+                (&group.controls[..], group.layout)
+            }
         };
-        (layout == ModuleLayout::Tabs).then(|| {
-            controls
-                .iter()
-                .filter_map(|control| match control {
-                    Control::Group(group) => Some(group.label.as_str()),
-                    _ => None,
-                })
-                .collect()
+        (layout == ModuleLayout::Tabs)
+            .then(|| controls.iter().filter_map(Control::tab_id).collect())
+    }
+
+    /// What resetting `wheel` runs: one patch of its action setting each bound parameter to its
+    /// declared default, or `None` when this module does not declare the action or a default. The
+    /// one reset every copy of the wheel shares, so no copy repeats it.
+    pub fn wheel_reset(&self, wheel: &WheelControl) -> Option<ResetAction> {
+        let action = self.action(&wheel.action)?;
+        Some(ResetAction {
+            action: wheel.action.clone(),
+            preset: wheel
+                .parameters()
+                .map(|name| Some((name.to_owned(), action.parameter(name)?.default.clone()?)))
+                .collect::<Option<_>>()?,
         })
     }
 

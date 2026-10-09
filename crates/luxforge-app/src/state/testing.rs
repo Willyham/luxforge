@@ -306,7 +306,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
             reset: None,
             collapsed: false,
             layout: luxforge_core::ModuleLayout::Stacked,
-            view: false,
+            id: None,
             per_photo: false,
             controls: vec![Control::Action(luxforge_core::ActionControl {
                 action: "crop-reset".into(),
