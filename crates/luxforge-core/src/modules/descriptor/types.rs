@@ -112,7 +112,29 @@ pub struct EffectDescriptor {
     /// apply, and admission refuses a layer on a kind its effect does not list.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sources: Vec<SourceTag>,
+    /// The effect's one layer holds an ordered list of at most `max` operations, in the top-level
+    /// [`OPERATIONS_FIELD`] array of its payload, that the module mints and addresses by
+    /// `identity`, as Corrections' repair layer holds its corrections. It is how the host admits
+    /// that identity into the module's own action and query declarations, how `draft.begin`
+    /// refuses a new operation at the limit, and how a client learns the limit. Registration
+    /// accepts it only on a `single` effect, with `max` in `1..=`[`MAX_OPERATIONS`] and the one
+    /// module-addressable identity, `correction`. Serialized only when declared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operations: Option<EffectOperations>,
 }
+
+/// An effect's declared operation list ([`EffectDescriptor::operations`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct EffectOperations {
+    pub identity: IdentityKind,
+    pub max: u32,
+}
+
+/// The largest operation list an effect may declare.
+pub const MAX_OPERATIONS: u32 = 1000;
+/// The payload field an effect declaring [`EffectDescriptor::operations`] holds its list in.
+pub const OPERATIONS_FIELD: &str = "operations";
 
 impl EffectDescriptor {
     /// An effect of `stage` at the current payload format ([`crate::EFFECT_FORMAT`]) and order
@@ -128,6 +150,7 @@ impl EffectDescriptor {
             artifacts: false,
             single: false,
             sources: Vec::new(),
+            operations: None,
         }
     }
 
@@ -258,6 +281,14 @@ pub enum IdentityKind {
     CatalogFolder,
     /// A collection, smart collection or collection group, `collection-…`.
     Collection,
+    /// One correction of a module's own ordered operation list, `correction-<n>`
+    /// ([`crate::CorrectionId`]). The one identity a **module** action or query may declare
+    /// ([`ParameterKind::module_identity`]), and only when one of the module's effects declares an
+    /// operation list addressed by it ([`EffectDescriptor::operations`]): the list is the module's
+    /// own state, so the module resolves the identity against its layer and refuses one the layer
+    /// does not hold. A draft of such an action is begun on that correction (`draft.begin`'s
+    /// `operation`), as a mask gesture is begun on its mask.
+    Correction,
 }
 
 impl IdentityKind {
@@ -274,6 +305,7 @@ impl IdentityKind {
             Self::Stroke => "a stroke",
             Self::CatalogFolder => "a catalog folder",
             Self::Collection => "a collection",
+            Self::Correction => "a correction",
         }
     }
 
@@ -293,6 +325,7 @@ impl IdentityKind {
             Self::Stroke => crate::path::StrokeId::parse(text).is_ok(),
             Self::CatalogFolder => crate::catalog_types::CatalogFolderId::is_valid(text),
             Self::Collection => crate::catalog_types::CollectionId::is_valid(text),
+            Self::Correction => crate::CorrectionId::is_valid(text),
         }
     }
 }
@@ -336,6 +369,21 @@ impl ParameterKind {
     /// query or task, and a module setting, refuse it.
     pub(crate) fn host_only(&self) -> bool {
         matches!(self, Self::Identity { .. } | Self::Text { .. } | Self::Json)
+    }
+
+    /// Whether a module's action or query may declare this host-only kind after all: the identity
+    /// of one correction of the module's own ordered list ([`IdentityKind::Correction`]), which the
+    /// module mints, stores and resolves itself, admitted where one of its effects declares that
+    /// list ([`EffectDescriptor::operations`]). Every other identity names a host object, and a
+    /// `text` or `json` value would reach the module unchecked, so those stay the host's alone; a
+    /// task or a module setting declares none of them.
+    pub(crate) fn module_identity(&self) -> Option<IdentityKind> {
+        match self {
+            Self::Identity {
+                of: of @ IdentityKind::Correction,
+            } => Some(*of),
+            _ => None,
+        }
     }
 
     /// Whether this parameter names an object rather than setting a value, which is what keeps a
@@ -1504,7 +1552,8 @@ impl Control {
 }
 
 /// How a module lets the canvas drive its action. A point pick commits only when it declares
-/// `commit`; a sample-apply pick submits its query's answer once; a crop frame commits on Apply.
+/// `commit`; a sample-apply pick submits its query's answer once; a crop frame commits on Apply; a
+/// brush mask commits one painted path per gesture.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum CanvasInteraction {
@@ -1583,6 +1632,70 @@ pub enum CanvasInteraction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         icon: Option<String>,
     },
+    /// The host's one brush paints a bounded path on the photograph for the module's own action:
+    /// every press on the photograph that no handle catches adds one path, captured on the shared
+    /// path grid ([`crate::path`]) in content-stage coordinates through the core's geometry map and
+    /// drafted through `action` as one draft and one history entry. It is the declared form of the
+    /// mask brush's capture, so the desktop's one capture serves both (`docs/design/masking.md`,
+    /// "One brush system"; `docs/design/corrections.md`, "The brush-mask interaction").
+    ///
+    /// The names bind the gesture to parameters of `action`: `points`, a `points` parameter that
+    /// receives the path; `radius`, a `number` the path is captured at; and, when declared,
+    /// `feather` and `opacity` (each a `number` or an `integer`) and `mode` (an `enum`), the brush
+    /// settings a client fills. The mask brush's flow and colour limit are not part of this
+    /// vocabulary. `source`, when declared, binds the absolute source position of the path's first
+    /// point and the query that ranks automatic sources; `edit`, when declared, the field patch pins
+    /// and handles draft through, its correction identity parameter and the query that lists the
+    /// drawable operations. [`ModuleDescriptor::validate`] checks every binding; a client knows no
+    /// field by name.
+    BrushMask {
+        action: String,
+        points: String,
+        radius: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        feather: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        opacity: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mode: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<BrushSource>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        edit: Option<BrushEdit>,
+        /// The mode's name in the canvas mode strip.
+        title: String,
+        /// One uppercase ASCII letter that selects the mode, unique across the registry.
+        shortcut: Option<String>,
+        /// The mode's icon in a client's mode strip; see [`CanvasInteraction::icon`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        icon: Option<String>,
+    },
+}
+
+/// A brush's source binding ([`CanvasInteraction::BrushMask`]): `x` and `y`, two `number`
+/// parameters of the brush's action (and of its edit, when one is declared) that receive the
+/// absolute position the path's first point samples from, in the path's normalized content
+/// coordinates; and `query`, the module query that ranks automatic sources. A gesture that sets no
+/// source sends neither coordinate, so the module chooses one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrushSource {
+    pub x: String,
+    pub y: String,
+    pub query: String,
+}
+
+/// A brush's edit binding ([`CanvasInteraction::BrushMask`]): `action`, the field patch a pin,
+/// source or size-handle drag drafts through, begun on one operation; `operation`, that action's
+/// required identity parameter, of the identity an effect of the module declares its operation
+/// list by ([`EffectDescriptor::operations`]); and `list`, the module query that lists the drawable
+/// operations.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BrushEdit {
+    pub action: String,
+    pub operation: String,
+    pub list: String,
 }
 
 impl CanvasInteraction {
@@ -1591,7 +1704,8 @@ impl CanvasInteraction {
         match self {
             Self::PointPick { title, .. }
             | Self::SampleApply { title, .. }
-            | Self::CropFrame { title, .. } => title,
+            | Self::CropFrame { title, .. }
+            | Self::BrushMask { title, .. } => title,
         }
     }
 
@@ -1600,7 +1714,8 @@ impl CanvasInteraction {
         match self {
             Self::PointPick { shortcut, .. }
             | Self::SampleApply { shortcut, .. }
-            | Self::CropFrame { shortcut, .. } => shortcut.as_deref(),
+            | Self::CropFrame { shortcut, .. }
+            | Self::BrushMask { shortcut, .. } => shortcut.as_deref(),
         }
     }
 
@@ -1611,7 +1726,8 @@ impl CanvasInteraction {
         match self {
             Self::PointPick { icon, .. }
             | Self::SampleApply { icon, .. }
-            | Self::CropFrame { icon, .. } => icon.as_deref(),
+            | Self::CropFrame { icon, .. }
+            | Self::BrushMask { icon, .. } => icon.as_deref(),
         }
     }
 }

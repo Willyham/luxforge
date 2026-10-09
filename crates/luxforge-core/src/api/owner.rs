@@ -6741,6 +6741,7 @@ mod tests {
                     IdentityKind::Collection => {
                         crate::catalog_types::CollectionId::new().to_string()
                     }
+                    IdentityKind::Correction => "correction-7".to_owned(),
                 };
                 (json!(valid), json!("x"))
             }

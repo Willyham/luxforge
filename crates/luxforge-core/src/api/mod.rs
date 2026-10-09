@@ -1,6 +1,8 @@
 //! The JSON owner API: protocol types, the single catalog owner, the method table and the
 //! loopback transport. Every client, including the desktop, drives the same methods.
 mod methods;
+#[cfg(test)]
+mod operation_draft_tests;
 pub(crate) mod params;
 mod response;
 #[cfg(test)]

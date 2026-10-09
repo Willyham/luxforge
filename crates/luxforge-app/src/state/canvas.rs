@@ -330,8 +330,12 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
                     selected: inputs.session.workspace.mode == module.id,
                     enabled: editable,
                 }),
+                // A declared brush is captured by the shared brush ([`crate::brush`]), but its mode,
+                // band and gestures are the Corrections workspace's, which this build does not
+                // draw yet; listing it would offer a mode with no tool in it.
                 Some(CanvasInteraction::PointPick { .. })
                 | Some(CanvasInteraction::SampleApply { .. })
+                | Some(CanvasInteraction::BrushMask { .. })
                 | None => None,
             }),
     );

@@ -996,6 +996,7 @@ fn a_first_draft_stops_before_a_finish_layer() {
             artifacts: false,
             single: false,
             sources: Vec::new(),
+            operations: None,
         }],
         ..luxforge_core::ModuleDescriptor::default()
     };
