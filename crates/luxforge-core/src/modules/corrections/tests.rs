@@ -781,17 +781,123 @@ fn presets_never_carry_corrections_and_an_ordinary_preset_keeps_them() {
 }
 
 #[test]
-fn an_automatic_source_is_refused_by_name_while_the_search_is_unavailable() {
+fn an_add_without_a_source_stores_rank_one_of_the_query_once() {
     let mut session = Session::new("corrections-auto.sqlite");
+    let entry = session
+        .service
+        .state(&session.asset)
+        .unwrap()
+        .current_entry
+        .id;
+    let path = json!([[0.5, 0.5], [0.52, 0.51]]);
+    let ranked = session
+        .service
+        .run_query(
+            &session.asset,
+            &entry,
+            "correction-sources",
+            json!({"points": path, "radius": 0.02}),
+        )
+        .unwrap();
+    assert_eq!(ranked["outcome"], "found", "{ranked}");
+    let candidates = ranked["candidates"].as_array().unwrap();
+    assert!(!candidates.is_empty() && candidates.len() <= 8);
+    for (index, candidate) in candidates.iter().enumerate() {
+        assert_eq!(candidate["rank"], index + 1);
+    }
+    // The ranking is deterministic, and count takes its head.
+    let again = session
+        .service
+        .run_query(
+            &session.asset,
+            &entry,
+            "correction-sources",
+            json!({"points": path, "radius": 0.02, "count": 2}),
+        )
+        .unwrap();
+    assert_eq!(again["candidates"].as_array().unwrap()[..], candidates[..2]);
+
+    let added = session.ok("add-correction", json!({"points": path, "radius": 0.02}));
+    let correction = &added.answer["correction"];
+    assert_eq!(correction["source-origin"], "auto");
+    assert_eq!(correction["source-x"], candidates[0]["source-x"]);
+    assert_eq!(correction["source-y"], candidates[0]["source-y"]);
+    let operation = &session.payload().unwrap().operations[0];
+    assert_eq!(operation.origin, super::payload::Origin::Auto);
+    // The answer is exactly on the grid, so it is the stored offset from the anchor.
+    let x = correction["source-x"].as_f64().unwrap();
+    assert_eq!(quantize(x) - quantize(0.5), operation.offset[0]);
+
+    // The same operation ranks over the stage below it, which is the stage the add read.
+    let entry = session
+        .service
+        .state(&session.asset)
+        .unwrap()
+        .current_entry
+        .id;
+    let by_operation = session
+        .service
+        .run_query(
+            &session.asset,
+            &entry,
+            "correction-sources",
+            json!({"operation": "correction-1"}),
+        )
+        .unwrap();
+    assert_eq!(by_operation["candidates"], ranked["candidates"]);
+    // `/`: the next rank, sent as an automatic source.
+    session.ok(
+        "update-correction",
+        json!({"operation": "correction-1", "source-x": candidates[1]["source-x"],
+               "source-y": candidates[1]["source-y"], "source-origin": "auto"}),
+    );
+    assert_eq!(session.label(), "New source Heal 1");
+}
+
+#[test]
+fn no_automatic_source_is_an_explicit_refusal_that_commits_nothing() {
+    let mut session = Session::new("corrections-no-source.sqlite");
+    // A quarter-height spot at the centre: every candidate ring leaves the frame.
+    let entry = session
+        .service
+        .state(&session.asset)
+        .unwrap()
+        .current_entry
+        .id;
+    let ranked = session
+        .service
+        .run_query(
+            &session.asset,
+            &entry,
+            "correction-sources",
+            json!({"points": [[0.5, 0.5]], "radius": 0.25}),
+        )
+        .unwrap();
+    assert_eq!(ranked, json!({"outcome": "no-source", "candidates": []}));
     let refused = session.refused(
         "add-correction",
-        json!({"points": [[0.5, 0.5]], "radius": 0.02}),
+        json!({"points": [[0.5, 0.5]], "radius": 0.25}),
     );
-    assert_eq!(refused.kind, ErrorKind::Incompatible, "{refused:?}");
-    assert!(
-        refused.detail.contains("automatic source search"),
-        "{}",
-        refused.detail
+    assert_eq!(refused.kind, ErrorKind::Validation);
+    assert_eq!(
+        refused.detail,
+        "No automatic source fits; send source-x and source-y"
+    );
+    assert_eq!(
+        refused.data.as_deref(),
+        Some(&json!({"reason": "no-source"}))
     );
     assert!(session.payload().is_none());
+    // Exactly one of operation, or points with radius.
+    for parameters in [
+        json!({}),
+        json!({"points": [[0.5, 0.5]]}),
+        json!({"operation": "correction-1", "points": [[0.5, 0.5]], "radius": 0.02}),
+    ] {
+        let error = session
+            .service
+            .run_query(&session.asset, &entry, "correction-sources", parameters)
+            .unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Validation);
+    }
 }

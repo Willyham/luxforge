@@ -1146,7 +1146,11 @@ fn remove_and_empty_keep_correction_strokes_every_surviving_entry_names() {
         .strings("SELECT id FROM strokes")
         .into_iter()
         .collect();
-    assert_eq!(all.len(), 3, "a shared stroke is stored once, whichever photograph names it");
+    assert_eq!(
+        all.len(),
+        3,
+        "a shared stroke is stored once, whichever photograph names it"
+    );
     let listed = harness.corrections(removed);
     let survivor_listed = harness.corrections(survivor);
     let entries = harness.entries(removed);
