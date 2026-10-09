@@ -18,6 +18,7 @@ mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
 mod procfs;
+pub mod system_info;
 #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 mod unsupported;
 #[cfg(windows)]
