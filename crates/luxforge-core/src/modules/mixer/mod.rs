@@ -339,7 +339,9 @@ fn grading_group() -> Group {
                 view
             };
             group
-                .wheel(Wheel::new(wheel.label, wheel.hue, wheel.saturation).luminance(wheel.luminance))
+                .wheel(
+                    Wheel::new(wheel.label, wheel.hue, wheel.saturation).luminance(wheel.luminance),
+                )
                 .view(view)
         },
     )
@@ -558,10 +560,11 @@ mod tests {
     #[test]
     fn the_wheel_table_follows_the_grading_units_wheel_order() {
         assert_eq!(WHEELS.map(|wheel| wheel.id), grade::WHEEL_NAMES);
-        assert!(WHEELS.iter().all(|wheel| title_case(wheel.id) == wheel.label));
-        assert_eq!(
-            WHEELS.map(|wheel| wheel.tonal),
-            [true, true, true, false]
+        assert!(
+            WHEELS
+                .iter()
+                .all(|wheel| title_case(wheel.id) == wheel.label)
         );
+        assert_eq!(WHEELS.map(|wheel| wheel.tonal), [true, true, true, false]);
     }
 }

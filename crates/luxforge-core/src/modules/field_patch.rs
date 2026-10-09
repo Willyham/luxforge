@@ -2236,7 +2236,9 @@ mod tests {
     fn a_wheel_declared_once_is_drawn_by_each_view_in_its_style() {
         let module = FieldPatchModule::<Controls>::new();
         let descriptor = module.descriptor();
-        let group = descriptor.group(WHEEL_GROUP_ID).expect("the Colour wheel group");
+        let group = descriptor
+            .group(WHEEL_GROUP_ID)
+            .expect("the Colour wheel group");
         assert_eq!(
             (group.label.as_str(), group.layout),
             (WHEEL_GROUP, ModuleLayout::Tabs)
@@ -2253,7 +2255,8 @@ mod tests {
         };
         assert_eq!(kinds(compact), ["wheel"]);
         assert_eq!(kinds(large), ["wheel", "number", "number"]);
-        let (Control::Wheel(small), Control::Wheel(big)) = (&compact.controls[0], &large.controls[0])
+        let (Control::Wheel(small), Control::Wheel(big)) =
+            (&compact.controls[0], &large.controls[0])
         else {
             unreachable!()
         };
@@ -2303,7 +2306,11 @@ mod tests {
             assert_eq!(label(&module, parameters.clone()), expected, "{parameters}");
         }
         let mut spec = Controls::spec();
-        colour_wheel(&mut spec).wheels[0].luminance = None;
+        let group = colour_wheel(&mut spec);
+        group.wheels[0].luminance = None;
+        group.views[0]
+            .entries
+            .push(ViewEntry::Field(WHEEL_LUMINANCE));
         let module = controls_module(spec);
         assert_eq!(
             label(&module, json!({WHEEL_HUE: 0, WHEEL_SATURATION: 0})),
@@ -2335,11 +2342,19 @@ mod tests {
                 "wheel Other of group Colour wheel draws amount, which is not a field of the group",
             ),
             (
-                |group| group.wheels.push(Wheel::new("Wheel", WHEEL_HUE, WHEEL_SATURATION)),
+                |group| {
+                    group
+                        .wheels
+                        .push(Wheel::new("Wheel", WHEEL_HUE, WHEEL_SATURATION))
+                },
                 "group Colour wheel declares two wheels labelled Wheel",
             ),
             (
-                |group| group.wheels.push(Wheel::new("Second", WHEEL_HUE, WHEEL_SATURATION)),
+                |group| {
+                    group
+                        .wheels
+                        .push(Wheel::new("Second", WHEEL_HUE, WHEEL_SATURATION))
+                },
                 "field wheel-hue of group Colour wheel is bound by two wheels",
             ),
             (
@@ -2376,8 +2391,8 @@ mod tests {
             ),
             (
                 |group| {
-                    group.wheels[0] = Wheel::new("Wheel", WHEEL_SATURATION, WHEEL_HUE)
-                        .luminance(WHEEL_LUMINANCE)
+                    group.wheels[0] =
+                        Wheel::new("Wheel", WHEEL_SATURATION, WHEEL_HUE).luminance(WHEEL_LUMINANCE)
                 },
                 "wheel hue wheel-saturation of action set-controls declares 0..=100, not the \
                  0..=360 degrees a wheel's angle spans",

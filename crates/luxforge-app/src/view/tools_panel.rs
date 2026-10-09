@@ -347,7 +347,7 @@ fn section_view<'a>(
                 &section.module_id,
                 section.enabled,
                 &section.controls,
-                &[],
+                None,
                 selected,
                 menu,
                 plot,
@@ -403,15 +403,15 @@ fn section_view<'a>(
 /// own rows follow. A visible child that is tabbed in turn draws its own row the same way: the
 /// colour mixer's HSL tab holds Hue, Saturation and Luminance, and its Grading tab its views. Any
 /// control among `controls` that is not a group follows as usual. Selecting a tab is the
-/// session's view state ([`ControlMessage::SelectView`]), keyed by `group`, the labels from the
-/// module's top level to the tabbed group (none for a section). `None` when `controls` hold no
-/// group, to be drawn stacked instead.
+/// session's view state ([`ControlMessage::SelectView`]), keyed by `group`, the tabbed group's id
+/// (none for a section), and each child's id. `None` when `controls` hold no group, to be drawn
+/// stacked instead.
 #[allow(clippy::too_many_arguments)]
 fn tab_rows<'a>(
     module_id: &str,
     enabled: bool,
     controls: &'a [ControlModel],
-    group: &[String],
+    group: Option<&str>,
     selected: usize,
     menu: Option<&'a MenuTarget>,
     plot: &HistogramModel,
@@ -425,9 +425,12 @@ fn tab_rows<'a>(
             _ => None,
         })
         .collect();
-    let labels: Vec<String> = children.iter().map(|child| child.label.clone()).collect();
+    let ids: Vec<String> = children
+        .iter()
+        .map(|child| child.id.clone().unwrap_or_default())
+        .collect();
     let module = module_id.to_owned();
-    let path = group.to_vec();
+    let row = group.map(str::to_owned);
     let tabs = tab_row(
         &TabRowModel {
             tabs: children
@@ -444,8 +447,8 @@ fn tab_rows<'a>(
         move |index| {
             Message::Control(ControlMessage::SelectView {
                 module_id: module.clone(),
-                group: path.clone(),
-                view: labels.get(index).cloned().unwrap_or_default(),
+                group: row.clone(),
+                view: ids.get(index).cloned().unwrap_or_default(),
             })
         },
         Message::Control(ControlMessage::ResetGroup {
@@ -466,7 +469,7 @@ fn tab_rows<'a>(
             module_id,
             shown,
             &visible.controls,
-            &visible.labels,
+            visible.id.as_deref(),
             selected,
             menu,
             plot,
@@ -1886,7 +1889,7 @@ fn group_rows<'a>(
             module_id,
             enabled,
             &group.controls,
-            &group.labels,
+            group.id.as_deref(),
             selected,
             menu,
             plot,

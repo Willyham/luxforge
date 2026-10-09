@@ -1194,14 +1194,19 @@ impl WheelControl {
     /// Whether `other` draws the same wheel as this one: the same fields of the same action under
     /// the same label, in whatever style.
     pub(crate) fn same_wheel(&self, other: &Self) -> bool {
-        (&self.action, &self.hue, &self.saturation, &self.luminance, &self.label)
-            == (
-                &other.action,
-                &other.hue,
-                &other.saturation,
-                &other.luminance,
-                &other.label,
-            )
+        (
+            &self.action,
+            &self.hue,
+            &self.saturation,
+            &self.luminance,
+            &self.label,
+        ) == (
+            &other.action,
+            &other.hue,
+            &other.saturation,
+            &other.luminance,
+            &other.label,
+        )
     }
 }
 
@@ -1519,9 +1524,8 @@ impl Control {
     /// The controls a group or a view holds, in their order; empty for every other kind.
     pub fn children(&self) -> &[Control] {
         match self {
-            Self::Group(GroupControl { controls, .. }) | Self::View(ViewControl { controls, .. }) => {
-                controls
-            }
+            Self::Group(GroupControl { controls, .. })
+            | Self::View(ViewControl { controls, .. }) => controls,
             _ => &[],
         }
     }

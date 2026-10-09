@@ -284,20 +284,21 @@ impl Editor {
         Task::none()
     }
 
-    /// Show `view` of the tab row of `module_id` at the label path `group`, through `workspace.set`
-    /// exactly as any client selects one: the session's answer is what the panel then draws. A
-    /// row or view the module does not declare sends nothing, and choosing the view already shown
-    /// sends nothing either. No recipe field, history entry, frame or poll follows.
+    /// Show `view` of the tab row of `module_id`'s group `group` (`None` for its own top-level
+    /// row), both by id, through `workspace.set` exactly as any client selects one: the session's
+    /// answer is what the panel then draws. A row or view the module does not declare sends
+    /// nothing, and choosing the view already shown sends nothing either. No recipe field, history
+    /// entry, frame or poll follows.
     pub(crate) fn select_view(
         &mut self,
         module_id: String,
-        group: Vec<String>,
+        group: Option<String>,
         view: String,
     ) -> Task<Message> {
         let Some(module) = tools::module_of(&self.modules, &module_id) else {
             return Task::none();
         };
-        let Some(views) = module.views_at(&group) else {
+        let Some(views) = module.views_at(group.as_deref()) else {
             return Task::none();
         };
         let Some(index) = views.iter().position(|offered| *offered == view) else {
@@ -306,20 +307,22 @@ impl Editor {
         let shown = self
             .session
             .workspace
-            .view(&module_id, &group)
+            .view(&module_id, group.as_deref())
             .and_then(|chosen| views.iter().position(|offered| *offered == chosen))
             .unwrap_or(0);
         if shown == index {
             return Task::none();
         }
-        self.event(
-            "view_selected",
-            || json!({"module": module_id, "group": group, "view": view}),
-        );
+        let selection = luxforge_core::ViewSelection {
+            module: module_id,
+            group,
+            view,
+        };
+        self.event("view_selected", || json!(selection));
         crate::app::tasks::workspace_task(
             self.owner.clone(),
             self.client,
-            json!({"views": [{"module": module_id, "group": group, "view": view}]}),
+            json!({ "views": [selection] }),
         )
     }
 
@@ -357,7 +360,7 @@ impl Editor {
                 self.controls_moved(action, wheel.hue, values)
             }
             WheelEvent::Release => self.control_release(action, wheel.hue),
-            WheelEvent::Reset => match wheel.reset {
+            WheelEvent::Reset => match wheel_reset(&self.modules, &wheel) {
                 Some(reset) => self.reset_declared(action, wheel.hue, reset.action, reset.preset),
                 None => Task::none(),
             },
@@ -1137,6 +1140,18 @@ pub(crate) fn wheel_of<'a>(
             _ => None,
         })
     })
+}
+
+/// What resetting `wheel` runs: its fields back to the defaults the module declaring its action
+/// gives them ([`luxforge_core::ModuleDescriptor::wheel_reset`]).
+pub(crate) fn wheel_reset(
+    modules: &[luxforge_core::ModuleDescriptor],
+    wheel: &luxforge_core::WheelControl,
+) -> Option<luxforge_core::ResetAction> {
+    modules
+        .iter()
+        .find(|module| module.action(&wheel.action).is_some())?
+        .wheel_reset(wheel)
 }
 
 fn picker_fraction(fraction: f32) -> f64 {
