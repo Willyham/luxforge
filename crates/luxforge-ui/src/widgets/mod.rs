@@ -42,6 +42,7 @@ mod segmented;
 mod slider;
 mod slider_guard;
 mod sparkline;
+mod steady_scroll;
 mod stepper;
 mod sub_group_header;
 mod swatch_slots;
@@ -127,6 +128,7 @@ pub use section_header::{SectionHeaderModel, band_header, module_section};
 pub use segmented::{SegmentedModel, chevron_segment, segment, segment_track, segmented};
 pub use slider::{RailDecoration, SliderModel, slider};
 pub use sparkline::SparklineModel;
+pub use steady_scroll::steady_bottom;
 pub use stepper::{StepperModel, StepperRail, StepperRailMessages, stepper};
 pub use sub_group_header::{
     GroupRuleModel, SubGroupHeaderModel, group_rule, sub_group_header,

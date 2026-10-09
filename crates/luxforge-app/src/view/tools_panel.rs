@@ -45,7 +45,7 @@ use luxforge_ui::{
     compact_number_field, curve_editor, equal_button_row, error_caption, focus_control,
     histogram_inspector, icon_button, icon_button_row, inline_menu, label_line, labelled_button,
     list_heading, menu_choice, module_section, number_field, range_slider, readout_card,
-    row_icon_button, section_label, segmented, slider, stepper, sub_group_header,
+    row_icon_button, section_label, segmented, slider, steady_bottom, stepper, sub_group_header,
     sub_group_header_with_actions, sub_group_header_with_controls, tab_row, text_button, theme,
     toggle,
 };
@@ -191,7 +191,7 @@ pub(crate) fn tools_panel<'a>(
         // They follow the list with no label of their own: each band's scope chip names the mask it
         // edits through, which is what says these are not the global sections.
         if masks.selected.is_none() {
-            return scrollable(panel)
+            return scrollable(steady_bottom(panel))
                 .id(scroll_id())
                 .direction(theme::panel_scrollbar())
                 .height(Length::Fill)
@@ -209,7 +209,9 @@ pub(crate) fn tools_panel<'a>(
             panel = panel.push(section_view(section, menu, plot));
         }
     }
-    scrollable(panel)
+    // A body that shrinks while the panel is scrolled near its end (a tab with fewer rows, a
+    // section closing) would otherwise clamp the scroll and slide everything above it down.
+    scrollable(steady_bottom(panel))
         .id(scroll_id())
         .direction(theme::panel_scrollbar())
         .height(Length::Fill)

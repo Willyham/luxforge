@@ -74,22 +74,21 @@ pub(crate) fn title_bar(model: &Workspace) -> Element<'_, Message> {
     }
 }
 
-/// The file name, its dimensions and format when known, Open and Export.
+/// The file name, its dimensions and format when known, Open and Export. With no photograph open
+/// there is no name, and Open and Export follow the workspace switch directly.
 fn identity(model: &TitleBarModel) -> Element<'_, Message> {
-    let mut content = row![
-        text(
-            model
-                .file_name
-                .clone()
-                .unwrap_or_else(|| "Luxforge".to_owned()),
-        )
-        .size(theme::SIZE_TITLE)
-        .font(theme::FONT_SEMIBOLD)
-        .style(theme::ink(Token::TextBright))
-        .wrapping(text::Wrapping::None),
-    ]
-    .spacing(theme::TITLE_GROUP_SPACING)
-    .align_y(Alignment::Center);
+    let mut content = row![]
+        .spacing(theme::TITLE_GROUP_SPACING)
+        .align_y(Alignment::Center);
+    if let Some(name) = &model.file_name {
+        content = content.push(
+            text(name.clone())
+                .size(theme::SIZE_TITLE)
+                .font(theme::FONT_SEMIBOLD)
+                .style(theme::ink(Token::TextBright))
+                .wrapping(text::Wrapping::None),
+        );
+    }
     if let Some(identity) = &model.identity {
         content = content.push(
             text(identity.clone())

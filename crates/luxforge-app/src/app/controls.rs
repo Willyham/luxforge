@@ -781,6 +781,13 @@ impl Editor {
                 if index >= points.len() {
                     return Task::none();
                 }
+                // A drag that follows the press which added its point arrives while that add is
+                // still in flight. Its draft opens on the next move after the add's answer, so it
+                // drafts on the revision the add made; each move carries the whole position, so
+                // the moves before it are not needed.
+                if self.busy && self.slider_gesture().is_none() {
+                    return Task::none();
+                }
                 let mut x = f64::from(position[0].clamp(0.0, 1.0));
                 if fixed_x.is_some() {
                     x = points[index][0];

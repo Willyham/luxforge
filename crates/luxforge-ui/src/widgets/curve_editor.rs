@@ -1,14 +1,17 @@
 //! Point curve plot. The host supplies sampled geometry and owns all point validation.
 //!
 //! The widget classifies gestures and publishes them; it never applies a limit or edits a point.
-//! A left press is classified by Iced's [`Click`], as `double_click.rs` does: a single click
-//! on a point selects it and arms a drag, a single click away from every point asks to add one, a
-//! double-click on a point asks to remove it, and a third click publishes nothing. The second
-//! press of a double-click whose first press asked to add publishes nothing, so a double-click on
-//! empty plot adds one point and never removes the point it just added. An armed drag publishes no
-//! move until the pointer has left [`DRAG_SLOP`] of the press, so a click, or the first press of a
-//! double-click, never drafts a move. An add within [`CURVE_SNAP_RADIUS`] of the drawn curve lands
-//! on the nearest host-supplied sample.
+//! A left press is classified by Iced's [`Click`], as `double_click.rs` does: a single click on a
+//! point selects it and arms a drag, a single click away from every point asks to add one and arms
+//! a drag on the point the host adds, a double-click on a point asks to remove it, and a third
+//! click publishes nothing. The second press of a double-click whose first press asked to add
+//! publishes nothing, so a double-click on empty plot adds one point and never removes the point it
+//! just added. An armed drag publishes no move until the pointer has left [`DRAG_SLOP`] of the
+//! press, so a click, or the first press of a double-click, never drafts a move. The drag an add
+//! arms moves the host's selected point once the model holds one more point than at the press,
+//! which is the host's answer to the add; an add the host refused leaves the count, so that drag
+//! moves nothing. An add within [`CURVE_SNAP_RADIUS`] of the drawn curve lands on the nearest
+//! host-supplied sample.
 //!
 //! The plot is square and fills the width it is given up to [`PLOT_MAX_SIDE`], centred in any
 //! width beyond that. Under it: the host's hint, when it gives one, then a Points disclosure row
@@ -359,6 +362,9 @@ struct CurveState {
     version: Cell<Option<(u64, bool, u64)>>,
     /// The point a press armed a drag on.
     active: Option<usize>,
+    /// A press asked to add a point when the curve held this many; its drag takes the host's
+    /// selected point once the model holds one more.
+    adding: Option<usize>,
     /// Where that press was, in window coordinates, until the pointer leaves the drag slop.
     press: Option<Point>,
     /// The armed drag has left the slop and published a move, so its release ends a gesture.
@@ -374,6 +380,7 @@ struct CurveState {
 impl CurveState {
     fn disarm(&mut self) {
         self.active = None;
+        self.adding = None;
         self.press = None;
         self.dragging = false;
     }
@@ -429,6 +436,9 @@ impl<M: Clone> canvas::Program<M, Theme> for FocusableCurveCanvas<'_, M> {
                 if let (Kind::Single, Some(index)) = (click.kind(), hit) {
                     state.active = Some(index);
                     state.press = cursor.position();
+                } else if state.last_added {
+                    state.adding = Some(self.model.points.len());
+                    state.press = cursor.position();
                 }
                 match event {
                     Some(event) => Some(Action::publish((self.on_event)(event)).and_capture()),
@@ -436,6 +446,15 @@ impl<M: Clone> canvas::Program<M, Theme> for FocusableCurveCanvas<'_, M> {
                 }
             }
             Event::Mouse(mouse::Event::CursorMoved { .. }) => {
+                if state.active.is_none() {
+                    // An add's drag waits for the host to answer it with the point it selects.
+                    let before = state.adding?;
+                    if self.model.points.len() != before + 1 {
+                        return None;
+                    }
+                    state.active = self.model.selected;
+                    state.adding = None;
+                }
                 let index = state.active?;
                 let point = cursor.position()?;
                 if !state.dragging {
@@ -455,7 +474,6 @@ impl<M: Clone> canvas::Program<M, Theme> for FocusableCurveCanvas<'_, M> {
                 )
             }
             Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                state.active?;
                 let dragged = state.dragging;
                 state.disarm();
                 // A press that never left the slop drafted nothing, so it has nothing to end.
@@ -1076,8 +1094,53 @@ mod tests {
             send(&canvas, &mut state, PRESS, bounds, pointer),
             Some(CurveEditorEvent::Add([0.6, 0.5]))
         );
-        assert!(state.active.is_none(), "an add arms no drag");
+        assert!(
+            state.active.is_none(),
+            "an add arms no drag on an existing point"
+        );
         assert_eq!(send(&canvas, &mut state, RELEASE, bounds, pointer), None);
+    }
+
+    #[test]
+    fn a_press_that_adds_drags_the_added_point_without_a_second_press() {
+        let (mut canvas, mut state) = editor(model());
+        let away = Point::new(150.0, 150.0);
+        assert_eq!(
+            send(&canvas, &mut state, PRESS, PLOT, away),
+            Some(CurveEditorEvent::Add([0.75, 0.25]))
+        );
+        // Before the host answers the add there is no new point to move.
+        let early = Point::new(160.0, 150.0);
+        assert_eq!(send(&canvas, &mut state, moved(early), PLOT, early), None);
+
+        // The host adds the point in sorted order and selects it.
+        canvas.model.points = vec![[0.2, 0.2], [0.75, 0.25]];
+        canvas.model.selected = Some(1);
+        let within = Point::new(151.0, 151.0);
+        assert_eq!(
+            send(&canvas, &mut state, moved(within), PLOT, within),
+            None,
+            "the drag slop applies to an add's drag too"
+        );
+        let beyond = Point::new(160.0, 120.0);
+        assert_eq!(
+            send(&canvas, &mut state, moved(beyond), PLOT, beyond),
+            Some(CurveEditorEvent::Move {
+                index: 1,
+                position: point_fraction(beyond, PLOT)
+            })
+        );
+        assert_eq!(
+            send(&canvas, &mut state, RELEASE, PLOT, beyond),
+            Some(CurveEditorEvent::Release)
+        );
+
+        // An add the host refused leaves the count, so the drag moves the selected point not at
+        // all.
+        let (canvas, mut state) = editor(model());
+        let _ = send(&canvas, &mut state, PRESS, PLOT, away);
+        assert_eq!(send(&canvas, &mut state, moved(beyond), PLOT, beyond), None);
+        assert_eq!(send(&canvas, &mut state, RELEASE, PLOT, beyond), None);
     }
 
     #[test]
