@@ -1136,6 +1136,7 @@ fn capture_refuses_a_field_with_no_value_and_no_default() {
             artifacts: false,
             single: false,
             sources: Vec::new(),
+            operations: None,
         }],
         actions: vec![ActionDescriptor {
             id: "set-sketch".into(),

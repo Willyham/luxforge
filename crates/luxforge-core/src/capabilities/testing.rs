@@ -101,6 +101,7 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
             artifacts: true,
             single: false,
             sources: Vec::new(),
+            operations: None,
             maskable: false,
         }],
         actions: vec![

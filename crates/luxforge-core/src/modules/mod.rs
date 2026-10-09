@@ -2,6 +2,8 @@
 //! and the compilation of its persisted payloads into host processing primitives. Modules never
 //! write the catalog, never keep an undo stack and never render.
 pub(crate) mod basic;
+#[cfg(test)]
+pub(crate) mod brush_consumer;
 mod capabilities_proof;
 mod capability;
 mod controls;
@@ -89,8 +91,9 @@ pub use descriptor::{
     resolve_control, resolve_group_reset,
 };
 pub use descriptor::{
-    ChoiceControl, ColorControl, ControlVariant, IdentityKind, RangeControl, ResolvedControl,
-    ResolvedReset, TaskControl, ToggleControl, WheelControl, WheelStyle,
+    BrushEdit, BrushSource, ChoiceControl, ColorControl, ControlVariant, EffectOperations,
+    IdentityKind, MAX_OPERATIONS, OPERATIONS_FIELD, RangeControl, ResolvedControl, ResolvedReset,
+    TaskControl, ToggleControl, WheelControl, WheelStyle,
 };
 pub use descriptor::{Chord, HOST_CHORDS, host_chord};
 pub(crate) use descriptor::{

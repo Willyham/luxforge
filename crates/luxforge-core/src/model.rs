@@ -101,6 +101,72 @@ identifier!(PresetId, "preset-");
 identifier!(MaskId, "mask-");
 identifier!(ComponentId, "component-");
 
+/// One correction of a module's ordered operation list, spelled `correction-<n>`: `n` is the
+/// operation's number, a decimal integer `1..=4294967295` without leading zeros, minted by the
+/// module that owns the list and never reused along a lineage
+/// (`docs/design/corrections.md`, "Identity and drafts"). The one identity a module's own actions
+/// and queries may declare ([`crate::IdentityKind::Correction`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CorrectionId(std::num::NonZeroU32);
+
+impl CorrectionId {
+    /// The prefix every correction identity starts with.
+    pub const PREFIX: &'static str = "correction-";
+
+    /// The identity of operation number `number`, which is never zero.
+    pub fn new(number: std::num::NonZeroU32) -> Self {
+        Self(number)
+    }
+
+    /// The operation's number.
+    pub fn number(self) -> u32 {
+        self.0.get()
+    }
+
+    /// The number `text` spells, checked in place: the prefix, then `1..=4294967295` in decimal
+    /// with no sign, no leading zero and nothing else.
+    fn number_of(text: &str) -> Option<std::num::NonZeroU32> {
+        let digits = text.strip_prefix(Self::PREFIX)?;
+        if digits.is_empty()
+            || digits.starts_with('0')
+            || !digits.bytes().all(|byte| byte.is_ascii_digit())
+        {
+            return None;
+        }
+        digits.parse().ok()
+    }
+
+    /// Whether `text` is a correction identity.
+    pub(crate) fn is_valid(text: &str) -> bool {
+        Self::number_of(text).is_some()
+    }
+
+    pub fn parse(text: &str) -> Result<Self, Error> {
+        Self::number_of(text)
+            .map(Self)
+            .ok_or_else(|| Error::validation("invalid CorrectionId"))
+    }
+}
+
+impl std::fmt::Display for CorrectionId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}{}", Self::PREFIX, self.0)
+    }
+}
+
+impl Serialize for CorrectionId {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for CorrectionId {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        Self::parse(&text).map_err(serde::de::Error::custom)
+    }
+}
+
 /// The lifecycle every job in Luxforge moves through — source, analysis, capability and export jobs
 /// alike, all records of the one job table (`crate::jobs`) — and the one `status` key `job.read`
 /// and `analysis.request` answer with. Not every kind reaches every value:
