@@ -49,6 +49,7 @@ S0 through M4 are accepted, and the [Develop workspace](docs/design/develop-work
 | Milestone contracts M1 to M4 | [docs/design/history-first-roadmap.md](docs/design/history-first-roadmap.md) |
 | Develop screen layout, tool array, visual language and desktop architecture | [docs/design/develop-workspace.md](docs/design/develop-workspace.md) |
 | Masks: model, kinds, commands, and the Masks panel and next kinds (proposal) | [docs/design/masking.md](docs/design/masking.md), [docs/design/masking-workspace.md](docs/design/masking-workspace.md) |
+| Corrections: Clone/Heal, the repair stage, and the Corrections mode, gestures and panel (proposal) | [docs/design/corrections.md](docs/design/corrections.md), [docs/design/corrections-workspace.md](docs/design/corrections-workspace.md) |
 | AI editing: Remove, Select, generative fill and Replace, sky replacement on local models (decided 2026-10-05, planned) | [docs/design/ai-editing.md](docs/design/ai-editing.md) |
 | Lightroom catalog import and slider alignment (decided 2026-10-06, planned) | [docs/design/lightroom-import.md](docs/design/lightroom-import.md), [docs/design/lightroom-alignment.md](docs/design/lightroom-alignment.md) |
 | History graph, named versions | [docs/design/versions-and-lineage.md](docs/design/versions-and-lineage.md) |
