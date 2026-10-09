@@ -28,9 +28,10 @@ pub use placement::insertion_index_among;
 pub(crate) use variants::{Superseded, superseded_in, superseded_refusal_in};
 
 use super::{
-    BasicModule, CanvasInteraction, CapabilitiesProofModule, CropModule, CurveModule, DetailModule,
-    LensModule, LookModule, MixerModule, ModuleDescriptor, PerspectiveModule, PixelModule,
-    PresenceModule, PresetsModule, RawModule, ToolModule, VignetteModule, controls_module,
+    BasicModule, CandidateProofModule, CanvasInteraction, CapabilitiesProofModule, CropModule,
+    CurveModule, DetailModule, LensModule, LookModule, MixerModule, ModuleDescriptor,
+    PerspectiveModule, PixelModule, PresenceModule, PresetsModule, RawModule, ToolModule,
+    VignetteModule, controls_module,
 };
 use crate::Error;
 #[cfg(test)]
@@ -50,7 +51,7 @@ use std::{
 /// them. [`ModuleRegistry::assemble`] registers these; a test that builds a variant registry of its
 /// own starts from them too. External loading is a later, separately measured step.
 pub(crate) fn linked_modules(developer: bool) -> Vec<Arc<dyn ToolModule>> {
-    let linked: [Arc<dyn ToolModule>; 14] = [
+    let linked: [Arc<dyn ToolModule>; 15] = [
         Arc::new(CropModule::new()),
         Arc::new(PresetsModule::new()),
         Arc::new(PixelModule::new()),
@@ -65,6 +66,7 @@ pub(crate) fn linked_modules(developer: bool) -> Vec<Arc<dyn ToolModule>> {
         Arc::new(PerspectiveModule::new()),
         Arc::new(VignetteModule::new()),
         Arc::new(controls_module()),
+        Arc::new(CandidateProofModule::new()),
     ];
     linked
         .into_iter()

@@ -43,7 +43,7 @@ mod volumes;
 pub(in crate::api) use folders::{
     index_add_folder, index_folders, index_refresh, index_remove_folder,
 };
-pub(super) use queries::{Deferred, defer};
+pub(super) use queries::{Deferred, Resume, ask, defer};
 pub(in crate::api) use volumes::{card_list, disk_folders, volume_list};
 
 use super::{Call, ClientId, Owner, catalog::Poster};
@@ -62,7 +62,7 @@ use crate::{
     },
     jobs::{CatalogOpened, JobControl, JobKind, Output},
 };
-use queries::{Queries, Resume, SurveyPost, Surveys};
+use queries::{Queries, SurveyPost, Surveys};
 use std::{
     collections::{HashMap, VecDeque},
     path::{Path, PathBuf},
