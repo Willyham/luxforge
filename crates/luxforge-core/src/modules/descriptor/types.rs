@@ -258,7 +258,18 @@ pub enum IdentityKind {
     CatalogFolder,
     /// A collection, smart collection or collection group, `collection-…`.
     Collection,
+    /// One operation of a module's own ordered operation list, `operation-…`, such as a
+    /// correction. The one identity a **module** action or query may declare
+    /// ([`ParameterKind::module_identity`]), always as its parameter named [`OPERATION_PARAMETER`]: the
+    /// operation list is the module's own state, so the module that minted the identity resolves it
+    /// and refuses one its layer does not hold. A draft of such an action is begun on that operation
+    /// (`draft.begin`'s `operation`), as a mask gesture is begun on its mask.
+    Operation,
 }
+
+/// The one name an [`IdentityKind::Operation`] parameter is declared under, which is also the field
+/// `draft.begin` names the operation a gesture edits with.
+pub const OPERATION_PARAMETER: &str = "operation";
 
 impl IdentityKind {
     /// The object with its article, as a refusal names it: `an asset`, `a mask`.
@@ -274,6 +285,7 @@ impl IdentityKind {
             Self::Stroke => "a stroke",
             Self::CatalogFolder => "a catalog folder",
             Self::Collection => "a collection",
+            Self::Operation => "an operation",
         }
     }
 
@@ -293,6 +305,7 @@ impl IdentityKind {
             Self::Stroke => crate::path::StrokeId::parse(text).is_ok(),
             Self::CatalogFolder => crate::catalog_types::CatalogFolderId::is_valid(text),
             Self::Collection => crate::catalog_types::CollectionId::is_valid(text),
+            Self::Operation => crate::OperationId::is_valid(text),
         }
     }
 }
@@ -336,6 +349,20 @@ impl ParameterKind {
     /// query or task, and a module setting, refuse it.
     pub(crate) fn host_only(&self) -> bool {
         matches!(self, Self::Identity { .. } | Self::Text { .. } | Self::Json)
+    }
+
+    /// Whether a module's action or query may declare this host-only kind after all: the identity
+    /// of one operation of the module's own ordered list ([`IdentityKind::Operation`]), which the
+    /// module mints, stores and resolves itself. Every other identity names a host object, and a
+    /// `text` or `json` value would reach the module unchecked, so those stay the host's alone; a
+    /// task or a module setting declares none of them.
+    pub(crate) fn module_identity(&self) -> bool {
+        matches!(
+            self,
+            Self::Identity {
+                of: IdentityKind::Operation
+            }
+        )
     }
 
     /// Whether this parameter names an object rather than setting a value, which is what keeps a
@@ -1504,7 +1531,8 @@ impl Control {
 }
 
 /// How a module lets the canvas drive its action. A point pick commits only when it declares
-/// `commit`; a sample-apply pick submits its query's answer once; a crop frame commits on Apply.
+/// `commit`; a sample-apply pick submits its query's answer once; a crop frame commits on Apply; a
+/// brush mask commits one painted path per gesture.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum CanvasInteraction {
@@ -1583,6 +1611,47 @@ pub enum CanvasInteraction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         icon: Option<String>,
     },
+    /// The host's one brush paints a bounded path on the photograph for the module's own action:
+    /// every press on the photograph that no handle catches adds one path, captured on the shared
+    /// path grid ([`crate::path`]) in content-stage coordinates through the core's geometry map and
+    /// committed through `action` as one draft and one history entry. The mask brush is the same
+    /// capture bound to the host's `mask.add-stroke`; this is how a module binds it
+    /// (`docs/design/masking.md`, "One brush system").
+    ///
+    /// The names bind the gesture's fields to parameters of `action`: `points`, a `points`
+    /// parameter that receives the path; `radius`, `feather` and `opacity`, `number` parameters the
+    /// brush is drawn with; and, when declared, `source_x` and `source_y`, two `number` parameters
+    /// that receive the position the path's first point samples from, in the same normalized
+    /// content coordinates as the path. A gesture that sets no source omits both, so the module may
+    /// choose one. A client offers exactly these fields and no others: a module's brush never takes
+    /// on the mask brush's flow or colour limit.
+    ///
+    /// `update`, when declared, is the field patch that edits one existing path by its
+    /// [`IdentityKind::Operation`] parameter: a pin drag sends its translated `points`, a source drag
+    /// its `source_x`/`source_y` and a size drag its `radius`, each as one draft begun on that
+    /// operation (`draft.begin`'s `operation`) and one entry on release. It declares every bound
+    /// name with the kind `action` declares it with, plus the required operation identity.
+    /// [`ModuleDescriptor::validate`] checks every binding; a client knows no field by name.
+    BrushMask {
+        action: String,
+        points: String,
+        radius: String,
+        feather: String,
+        opacity: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_x: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source_y: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        update: Option<String>,
+        /// The mode's name in the canvas mode strip.
+        title: String,
+        /// One uppercase ASCII letter that selects the mode, unique across the registry.
+        shortcut: Option<String>,
+        /// The mode's icon in a client's mode strip; see [`CanvasInteraction::icon`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        icon: Option<String>,
+    },
 }
 
 impl CanvasInteraction {
@@ -1591,7 +1660,8 @@ impl CanvasInteraction {
         match self {
             Self::PointPick { title, .. }
             | Self::SampleApply { title, .. }
-            | Self::CropFrame { title, .. } => title,
+            | Self::CropFrame { title, .. }
+            | Self::BrushMask { title, .. } => title,
         }
     }
 
@@ -1600,7 +1670,8 @@ impl CanvasInteraction {
         match self {
             Self::PointPick { shortcut, .. }
             | Self::SampleApply { shortcut, .. }
-            | Self::CropFrame { shortcut, .. } => shortcut.as_deref(),
+            | Self::CropFrame { shortcut, .. }
+            | Self::BrushMask { shortcut, .. } => shortcut.as_deref(),
         }
     }
 
@@ -1611,7 +1682,8 @@ impl CanvasInteraction {
         match self {
             Self::PointPick { icon, .. }
             | Self::SampleApply { icon, .. }
-            | Self::CropFrame { icon, .. } => icon.as_deref(),
+            | Self::CropFrame { icon, .. }
+            | Self::BrushMask { icon, .. } => icon.as_deref(),
         }
     }
 }

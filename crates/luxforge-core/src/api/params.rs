@@ -234,6 +234,10 @@ pub(crate) mod kind {
         identity(IdentityKind::Component)
     }
 
+    pub(crate) fn operation() -> ParameterDescriptor {
+        identity(IdentityKind::Operation)
+    }
+
     pub(crate) fn artifact() -> ParameterDescriptor {
         ParameterDescriptor::new("", ParameterKind::Artifact)
     }

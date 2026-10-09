@@ -20,7 +20,8 @@ use crate::ErrorKind;
 use crate::{
     ActionRef, AnalysisSelection, ArtifactId, AssetId, ComponentId, DraftId, EditorService,
     EntryId, Error, HistorySelection, MAX_PRESET_BYTES, MAX_PRESET_NAME, MaskId, ModuleRegistry,
-    Mutation, MutationOutcome, MutationResult, ParameterDescriptor, PixelSample, PresetId, Zoom,
+    Mutation, MutationOutcome, MutationResult, OperationId, ParameterDescriptor, PixelSample,
+    PresetId, Zoom,
     capabilities::{
         grants,
         host::{
@@ -1962,6 +1963,8 @@ host_params! {
         /// The mask and component a `mask.*` gesture edits. A module action's draft takes neither.
         mask: Option<MaskId> = mask().notes("the mask a mask.* gesture edits, or the mask an action of a maskable effect drafts through"),
         component: Option<ComponentId> = component().notes("the component inside that mask, for a mask.* gesture only"),
+        /// The operation a module action edits, named by its declared `operation` identity.
+        operation: Option<OperationId> = operation().notes("the operation of the module's own ordered list that a module action naming one (its required `operation` identity) edits: a pin, source or size drag of one correction"),
     }
 }
 
@@ -2420,7 +2423,8 @@ fn canvas_modes(registry: &ModuleRegistry) -> Vec<String> {
             .filter_map(|pick| match pick {
                 crate::CanvasInteraction::SampleApply { action, .. } => Some(action.clone()),
                 crate::CanvasInteraction::PointPick { .. }
-                | crate::CanvasInteraction::CropFrame { .. } => None,
+                | crate::CanvasInteraction::CropFrame { .. }
+                | crate::CanvasInteraction::BrushMask { .. } => None,
             }),
     );
     modes.extend(
@@ -2677,6 +2681,10 @@ fn draft_begin(
         (
             "component",
             p.component.map(|component| component.as_str().to_owned()),
+        ),
+        (
+            crate::OPERATION_PARAMETER,
+            p.operation.map(|operation| operation.as_str().to_owned()),
         ),
     ]
     .into_iter()
