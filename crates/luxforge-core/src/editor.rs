@@ -317,6 +317,12 @@ pub struct ActionResult {
     /// analyses nothing, answers without it.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub analysis: BTreeMap<String, Value>,
+    /// What the action's module reports of the objects the request minted or addressed
+    /// ([`crate::ToolModule::answer`]), each field one top-level key of the answer: an added or
+    /// updated correction's `correction`. Stored with the request, so a deduplicated retry answers
+    /// the same object. Empty for every other action.
+    #[serde(flatten)]
+    pub answer: serde_json::Map<String, Value>,
 }
 
 /// One setting a composite action did not apply to a photo, and why: the step's action, the field
@@ -340,6 +346,7 @@ impl ActionResult {
             removed_layers: Vec::new(),
             skipped: Vec::new(),
             analysis: BTreeMap::new(),
+            answer: serde_json::Map::new(),
         }
     }
 }
@@ -640,6 +647,9 @@ pub struct EditorService {
     /// (the open): the next preparation takes it ([`source::ReadOriginal`]).
     read_original: RefCell<Option<source::ReadOriginal>>,
     pub(crate) pixel_reads: RefCell<pixels::PixelReads>,
+    /// Whether the plan being made is a draft's preview ([`crate::StageQuestions::previewing`]):
+    /// set only while [`EditorService::draft_recipe`] plans one.
+    previewing: std::cell::Cell<bool>,
     registry: Arc<ModuleRegistry>,
     /// The budgets every evaluation this service plans shares: its own
     /// samples and exports, and the preview and analysis jobs it hands to workers.
@@ -728,6 +738,7 @@ impl EditorService {
             source_cache: RefCell::new(None),
             read_original: RefCell::new(None),
             pixel_reads: RefCell::new(pixels::PixelReads::default()),
+            previewing: std::cell::Cell::new(false),
             registry,
             render: RenderContext::new(),
             catalog_id,

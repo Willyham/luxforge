@@ -2021,10 +2021,13 @@ impl Owner {
             Ok(Planned::Query(plan)) if plan.analysis() => {
                 self.submit_analysis_query(client, &call.request.method, plan, deliver);
             }
-            Ok(Planned::Query(plan)) => self.tiles.submit(crate::tiles::TileCall::caller(
+            // A query that reads a grid or a region reads it here and hands what it computes from
+            // it to the analysis worker, as Corrections' automatic source search does; one that
+            // reads points answers on the tile service.
+            Ok(Planned::Query(plan)) => self.tiles.submit(crate::tiles::TileCall::caller_steps(
                 client,
                 crate::Cancel::new(),
-                move |reads, cancel| plan.evaluate(reads, cancel),
+                move |reads, cancel| plan.evaluate_steps(reads, cancel),
                 deliver,
             )),
             Ok(Planned::Value(value)) => deliver(Ok(value)),
