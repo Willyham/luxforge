@@ -10,8 +10,8 @@
 //! The pieces, in the order a repair layer evaluates them:
 //!
 //! - **Coverage** ([`Compiled::coverage`]): the mask brush's capsule profile
-//!   ([`crate::mask::capsule_profile`]'s equation, with the feather as a fraction rather than a
-//!   percentage) at the distance to the operation's nearest segment, times its opacity.
+//!   ([`crate::mask::capsule_profile`]'s equation) at the distance to the operation's nearest
+//!   segment, times `opacity / 100`.
 //! - **Source** ([`delta`]): a stored offset (source minus destination, in stored normalized
 //!   units) rounded to a whole pixel of the stage, half away from zero. No interpolation.
 //! - **Validity**: a destination pixel whose source pixel is outside the stage is not repaired.
@@ -95,12 +95,12 @@ pub struct Operation {
     pub paths: Vec<Vec<[f64; 2]>>,
     /// The brush radius in content-height units: the outer edge of the footprint.
     pub radius: f64,
-    /// The share of the radius the edge ramps over, `0..=1`; `0` is a hard edge.
+    /// The percentage of the radius the edge ramps over, `0..=100`; `0` is a hard edge.
     pub feather: f64,
-    /// `0..=1`.
+    /// `0..=100`.
     pub opacity: f64,
-    /// Source minus destination, in stored normalized units (`x` a fraction of the width, `y` of
-    /// the height).
+    /// Source anchor minus destination anchor, in stored normalized units (`x` a fraction of the
+    /// width, `y` of the height): a stored offset of `k` grid steps is `k / 16384`.
     pub offset: [f64; 2],
 }
 
@@ -120,9 +120,10 @@ pub struct Compiled {
     pub kind: Kind,
     pub segments: Vec<Segment>,
     pub radius: f64,
-    /// `radius * feather`, a divisor, with the hard edge as its own branch.
+    /// `radius * (feather / 100)`, a divisor, with the hard edge as its own branch.
     pub band: f64,
-    pub opacity: f64,
+    /// `opacity / 100`.
+    pub amount: f64,
     pub delta: [i64; 2],
 }
 
@@ -146,8 +147,8 @@ impl Compiled {
             kind: op.kind,
             segments,
             radius: op.radius,
-            band: op.radius * op.feather,
-            opacity: op.opacity,
+            band: op.radius * (op.feather / 100.0),
+            amount: op.opacity / 100.0,
             delta: delta(op.offset, stage),
         }
     }
@@ -179,10 +180,10 @@ impl Compiled {
         }
     }
 
-    /// Coverage at stage pixel `(px, py)`: `profile(d) * opacity` at the pixel's centre.
+    /// Coverage at stage pixel `(px, py)`: `profile(d) * (opacity / 100)` at the pixel's centre.
     pub fn coverage(&self, stage: &Stage, px: usize, py: usize) -> f64 {
         let (u, v) = stage.pixel_uv(px as u32, py as u32);
-        self.profile(self.distance(u, v)) * self.opacity
+        self.profile(self.distance(u, v)) * self.amount
     }
 
     /// Whether stage pixel `(px, py)`'s source lies inside the stage.

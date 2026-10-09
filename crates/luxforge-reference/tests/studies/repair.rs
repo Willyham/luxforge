@@ -63,7 +63,7 @@ fn spot(x: f64, y: f64, radius: f64, feather: f64, offset: [f64; 2]) -> Operatio
         paths: vec![vec![[x, y]]],
         radius,
         feather,
-        opacity: 1.0,
+        opacity: 100.0,
         offset,
     }
 }
@@ -245,20 +245,20 @@ fn cases() -> Vec<Case> {
         kind: Kind::Heal,
         paths: vec![vec![[0.2, 0.3], [0.45, 0.42], [0.7, 0.36], [0.8, 0.6]]],
         radius,
-        feather: 0.3,
-        opacity: 1.0,
+        feather: 30.0,
+        opacity: 100.0,
         offset,
     };
     vec![
         Case {
             name: "small spot, texture",
             image: tex.clone(),
-            op: spot(0.5, 0.5, 8.0 / 320.0, 0.5, [0.1, 0.0]),
+            op: spot(0.5, 0.5, 8.0 / 320.0, 50.0, [0.1, 0.0]),
         },
         Case {
             name: "spot r=32 px, texture",
             image: tex.clone(),
-            op: spot(0.5, 0.5, 32.0 / 320.0, 0.5, [0.0, 0.25]),
+            op: spot(0.5, 0.5, 32.0 / 320.0, 50.0, [0.0, 0.25]),
         },
         Case {
             name: "spot r=96 px, ramp",
@@ -268,7 +268,7 @@ fn cases() -> Vec<Case> {
         Case {
             name: "spot r=96 px, texture",
             image: tex.clone(),
-            op: spot(0.45, 0.5, 96.0 / 320.0, 0.2, [0.3, 0.0]),
+            op: spot(0.45, 0.5, 96.0 / 320.0, 20.0, [0.3, 0.0]),
         },
         Case {
             name: "spot across a hard edge",
@@ -278,7 +278,7 @@ fn cases() -> Vec<Case> {
         Case {
             name: "spot at the frame edge",
             image: tex.clone(),
-            op: spot(0.01, 0.5, 30.0 / 320.0, 0.3, [0.15, 0.0]),
+            op: spot(0.01, 0.5, 30.0 / 320.0, 30.0, [0.15, 0.0]),
         },
         Case {
             name: "thin stroke r=6 px, texture",
@@ -542,7 +542,7 @@ fn heal_domain_keeps_relative_texture_contrast() {
         paths: vec![vec![[0.75, 0.5]]],
         radius: 20.0 / 128.0,
         feather: 0.0,
-        opacity: 1.0,
+        opacity: 100.0,
         offset: [-0.5, 0.0],
     };
     let compiled = Compiled::new(&op, &stage);
@@ -671,7 +671,7 @@ fn photographic_review() {
                 [1186.0, 486.0],
             ]],
             radius_px: 40.0,
-            feather: 0.3,
+            feather: 30.0,
             source_px: [0.0, -80.0],
         },
         Review {
@@ -679,7 +679,7 @@ fn photographic_review() {
             at: [424, 2542, 847, 677],
             paths: vec![vec![[250.0, 420.0]]],
             radius_px: 40.0,
-            feather: 0.5,
+            feather: 50.0,
             source_px: [110.0, 0.0],
         },
     ];
@@ -696,7 +696,7 @@ fn photographic_review() {
                 .collect(),
             radius: review.radius_px / hf,
             feather: review.feather,
-            opacity: 1.0,
+            opacity: 100.0,
             offset: [review.source_px[0] / wf, review.source_px[1] / hf],
         };
         let stage = img.stage();
@@ -774,8 +774,8 @@ fn spot_px(img: &Image, x: f64, y: f64, radius_px: f64) -> Operation {
         kind: Kind::Heal,
         paths: vec![vec![[x / w, y / h]]],
         radius: radius_px / h,
-        feather: 0.5,
-        opacity: 1.0,
+        feather: 50.0,
+        opacity: 100.0,
         offset: [0.0, 0.0],
     }
 }
@@ -819,7 +819,7 @@ fn search_stroke_uses_the_nearest_ring_off_its_own_axis() {
         paths: vec![vec![[170.0 / w, 150.0 / h], [230.0 / w, 150.0 / h]]],
         radius: 6.0 / h,
         feather: 0.0,
-        opacity: 1.0,
+        opacity: 100.0,
         offset: [0.0, 0.0],
     };
     let ranked = ranked(search_of(&img, &op));
