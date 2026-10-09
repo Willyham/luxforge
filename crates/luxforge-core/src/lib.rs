@@ -50,6 +50,14 @@ mod previews;
 mod profile;
 mod proxy;
 mod render;
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "the Corrections render integration (TASK-003) wires the repair units in"
+    )
+)]
+mod repair;
 pub mod resources;
 /// Generated catalogs and indexes, written in bulk for `cargo xtask generate-catalog` and tests.
 pub mod seed;
