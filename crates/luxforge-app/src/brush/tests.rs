@@ -346,7 +346,12 @@ fn handle_drags_change_only_what_they_hold_and_a_drag_back_writes_nothing() {
         assert_eq!(now[0], was[0] + 20.0 * step);
         assert_eq!(now[1], was[1] - 8.0 * step);
     }
-    let (method, (identity, operation), fields) = brush.edit_fields(&pin).expect("an edit");
+    let EditRequest {
+        method,
+        identity,
+        operation,
+        fields,
+    } = brush.edit_fields(&pin).expect("an edit");
     assert_eq!(method, format!("edit.{}", testing::UPDATE));
     assert_eq!(
         (identity, operation.as_str()),
@@ -365,7 +370,7 @@ fn handle_drags_change_only_what_they_hold_and_a_drag_back_writes_nothing() {
     // A source drag moves the source by the pointer's travel.
     let mut source = HandleEdit::begin(Handle::Source, held.clone(), [0.6, 0.3], 1.5);
     source.drag([0.65, 0.28]);
-    let (_, _, fields) = brush.edit_fields(&source).expect("a moved source");
+    let fields = brush.edit_fields(&source).expect("a moved source").fields;
     assert!((fields["source-x"].as_f64().unwrap() - 0.65).abs() < 1e-12);
     assert!((fields["source-y"].as_f64().unwrap() - 0.28).abs() < 1e-12);
     // A size drag changes a spot's radius by the pointer's travel away from its centre, in
@@ -382,7 +387,7 @@ fn handle_drags_change_only_what_they_hold_and_a_drag_back_writes_nothing() {
     };
     assert!((radius - 0.08).abs() < 1e-12, "{radius}");
     size.drag([0.5 + 9.0, 0.5]);
-    let (_, _, fields) = brush.edit_fields(&size).expect("a resize");
+    let fields = brush.edit_fields(&size).expect("a resize").fields;
     assert_eq!(fields["radius"], json!(0.25), "the declared maximum");
     // A mask stroke has no edit.
     assert!(BrushBinding::mask().edit_fields(&size).is_none());
@@ -617,7 +622,7 @@ fn desktop_capture_and_semantic_json_agree_through_lens_perspective_and_every_or
                         .map(|(x, y)| [x, y])
                         .unwrap(),
                 );
-                let (_, _, fields) = brush.edit_fields(&drag).expect("a moved pin");
+                let fields = brush.edit_fields(&drag).expect("a moved pin").fields;
                 let translated: Vec<[f64; 2]> = held
                     .points
                     .iter()
@@ -789,7 +794,12 @@ fn desktop_capture_commits_what_semantic_json_commits_through_crop_straighten_an
             .map(|(x, y)| [x, y])
             .unwrap(),
     );
-    let (method, (identity, operation), fields) = brush.edit_fields(&drag).expect("a moved pin");
+    let EditRequest {
+        method,
+        identity,
+        operation,
+        fields,
+    } = brush.edit_fields(&drag).expect("a moved pin");
     let begun = ask(
         "draft.begin",
         json!({"asset_id": asset, "action": testing::UPDATE, "operation": operation}),

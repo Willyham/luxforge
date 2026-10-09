@@ -300,10 +300,7 @@ impl BrushBinding {
     /// the identity parameter naming the operation, and the fields the drag changed. `None` when
     /// the brush declares no edit or the drag changed nothing — a release that moved nothing writes
     /// nothing.
-    pub(crate) fn edit_fields(
-        &self,
-        edit: &HandleEdit,
-    ) -> Option<(&str, (&str, String), Map<String, Value>)> {
+    pub(crate) fn edit_fields(&self, edit: &HandleEdit) -> Option<EditRequest<'_>> {
         let binding = self.edit.as_ref()?;
         let mut fields = Map::new();
         match edit.change()? {
@@ -323,10 +320,21 @@ impl BrushBinding {
                 );
             }
         }
-        Some((
-            binding.method.as_str(),
-            (binding.operation.as_str(), edit.operation().to_owned()),
+        Some(EditRequest {
+            method: &binding.method,
+            identity: &binding.operation,
+            operation: edit.operation().to_owned(),
             fields,
-        ))
+        })
     }
+}
+
+/// One handle drag's draft: `draft.begin {action: method, operation}` begun on the operation the
+/// identity parameter names, then `draft.set {fields}`.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct EditRequest<'b> {
+    pub(crate) method: &'b str,
+    pub(crate) identity: &'b str,
+    pub(crate) operation: String,
+    pub(crate) fields: Map<String, Value>,
 }
