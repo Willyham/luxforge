@@ -380,6 +380,7 @@ impl ModuleRegistry {
                 layer,
                 crate::CompileStage::sampled(stage, full).shaped(shaped == Some(index)),
                 artifacts,
+                strokes,
             )?;
             // The stage this layer hands the next one, checked before anything is evaluated.
             let output = Self::output_stage(&processing, stage)?;
@@ -564,6 +565,7 @@ impl ModuleRegistry {
                     layer,
                     crate::CompileStage::exact(stage),
                     &recipe.artifacts,
+                    &recipe.strokes,
                 )
                 .and_then(|processing| Self::output_stage(&processing, stage))
             {
@@ -577,14 +579,32 @@ impl ModuleRegistry {
 
     /// One layer's processing against the stage it receives: its provider's compile or, for a
     /// layer that references artifacts, the provider's capability compile over the verified bytes
-    /// the recipe was bound with. Reads no pixels.
+    /// the recipe was bound with. A layer that carries strokes in the store — the Corrections
+    /// repair layer ([`crate::modules::RepairCarrier`]) — compiles only with every one resolved as
+    /// its declared type: a missing, corrupt or wrong-type stroke refuses every path that would
+    /// draw it, named by the operation that references it, and never compiles to an empty repair.
+    /// Reads no pixels; `O(operations)` lookups for a repair layer.
     fn compile_layer(
         &self,
         module: Provider<'_>,
         layer: &Layer,
         at: crate::CompileStage,
         artifacts: &ArtifactTable,
+        strokes: &crate::path::StrokeTable,
     ) -> Result<Processing, Error> {
+        if layer.effect_id == crate::modules::CORRECTIONS_EFFECT {
+            use crate::path::StrokeCarrier;
+            let mut references = Vec::new();
+            crate::modules::RepairCarrier(layer).stroke_references(&mut references)?;
+            for reference in &references {
+                strokes.check_reference(reference).map_err(|error| {
+                    Error::new(
+                        error.kind,
+                        format!("{} referenced by {}", error.detail, reference.what),
+                    )
+                })?;
+            }
+        }
         if layer.artifacts.is_empty() {
             return module.compile(&layer.effect_id, layer.effect_format, &layer.payload, at);
         }
