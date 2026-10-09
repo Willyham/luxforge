@@ -121,7 +121,7 @@ These limits gate **enabling** a program, against the CPU frame it stands in for
     | `lf_basic_tone` | `modules/basic/tone.rs` | Contrast's branch (identity, positive, negative) and the eight coefficients the unit holds | none |
     | `lf_basic_colour_adjust` | `modules/basic/colour.rs` | Vibrance's gain and Saturation's | none |
     | `lf_curve_tone_curve` | `modules/curve/unit.rs` | the knot count, the curve's ends and its black level | the knots, inverse widths and per-segment coefficients |
-    | `lf_mixer_mixer` | `modules/mixer/unit.rs` | the hue warp's eight cubics, the eight chroma gains and the eight luminance amounts (48) | none |
+    | `lf_mixer_mixer` | `modules/mixer/unit.rs`, its grading stage in `modules/mixer/grade.rs` | the stage flags; the HSL stage's hue warp cubics, chroma gains and luminance amounts (48); the grading stage's boundaries, inverse widths, tints, luminance amounts and exponents, lift, scale and flags (20); 69 in all | none |
     | `lf_vignette_vignette` | `modules/vignette/unit.rs` | the shape, its coefficients, the stage's half sides, the falloff, the branch and the amount (11) | none |
     | `lf_presence` (spatial) | `modules/presence/presence.wgsl`, described by `modules/presence/gpu.rs` | each pass's form, radius, run and regularization; each apply's gain, limit and reduction; a light link's selection (divisor, minimum count, floor) | none |
 
