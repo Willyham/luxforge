@@ -1035,3 +1035,34 @@ fn a_detached_disk_image_makes_its_photographs_offline() {
         })
     );
 }
+
+/// A corrected photograph located at a byte-identical copy keeps its identity, its entries and
+/// every correction with its strokes, and neither file is touched.
+#[test]
+fn a_located_original_keeps_its_corrections() {
+    let harness = Harness::new("corrections");
+    let original = harness.copy("orientation-1.jpg", &harness.dir.join("a").join("one.jpg"));
+    let copy = harness.copy("orientation-1.jpg", &harness.dir.join("b").join("copy.jpg"));
+    let asset = harness.import(&original);
+    let revision = harness.state(&asset)["revision"].as_u64().unwrap();
+    harness.ok(
+        "edit.add-correction",
+        json!({"asset_id": asset, "mutation": mutation_json(revision, "correct"),
+               "points": [[0.5, 0.5], [0.55, 0.52]], "radius": 0.02,
+               "source-x": 0.3, "source-y": 0.4}),
+    );
+    let before = harness.state(&asset);
+    let corrections = harness.ok("query.corrections", json!({"asset_id": asset}));
+    let job = harness.located(&asset, &copy, "locate");
+    assert_eq!(job["result"]["outcome"], "applied", "{job}");
+    let after = harness.state(&asset);
+    assert_eq!(locator(&after), copy);
+    assert_eq!(after["current_entry"], before["current_entry"]);
+    assert_eq!(
+        harness.ok("query.corrections", json!({"asset_id": asset})),
+        corrections
+    );
+    for path in [&original, &copy] {
+        assert_eq!(fs::read(path).unwrap(), fs::read(jpeg()).unwrap());
+    }
+}
