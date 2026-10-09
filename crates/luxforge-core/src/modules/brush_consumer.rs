@@ -1,17 +1,18 @@
-//! A test-only consumer of the declared `brush-mask` canvas and the operation identity: a module
-//! whose one layer holds an ordered list of painted operations, each with a minted
-//! [`crate::OperationId`], a path, a radius, feather, opacity and an optional source position.
+//! A test-only consumer of the declared `brush-mask` canvas and the correction identity: a module
+//! whose one layer holds an ordered operation list (`EffectDescriptor::operations`), each operation
+//! a minted number spelled `correction-<n>`, a path, a radius, feather, opacity and an optional
+//! absolute source position.
 //!
-//! It proves the generic descriptor, identity and draft bindings a production module (the
-//! Corrections module) reuses, without being one: it is compiled only into the core's tests, it
-//! renders nothing but the identity and it declares no control, so no client could ever show it as
-//! a tool. Its paths are held inline in its payload rather than in the stroke store, because the
-//! store's reuse by a second consumer is already proved by `path::tests::RepairStroke`.
+//! It proves the generic descriptor, identity and draft bindings the Corrections module reuses,
+//! without being it: it is compiled only into the core's tests, renders nothing but the identity and
+//! declares no control, so no client could show it as a tool. Its paths are held inline in its
+//! payload rather than in the stroke store, whose reuse by a second consumer is already proved by
+//! `path::tests::RepairStroke`.
 use crate::{
-    ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, EffectDescriptor,
-    EffectStage, Error, ExactGeometry, IdentityKind, LayerUpdate, ModuleDescriptor, NewLayer,
-    OPERATION_PARAMETER, OperationId, ParameterDescriptor, ParameterKind, Processing, StageContext,
-    ToolModule,
+    ActionDescriptor, ActionInput, ActionPlan, Availability, BrushEdit, BrushSource,
+    CanvasInteraction, CorrectionId, EffectDescriptor, EffectOperations, EffectStage, Error,
+    ExactGeometry, IdentityKind, LayerUpdate, ModuleDescriptor, NewLayer, OPERATIONS_FIELD,
+    ParameterDescriptor, ParameterKind, Processing, StageContext, ToolModule,
 };
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
@@ -21,25 +22,33 @@ pub(crate) const EFFECT: &str = "test.repairbrush.effect";
 pub(crate) const ADD: &str = "add-repair";
 pub(crate) const UPDATE: &str = "update-repair";
 pub(crate) const DELETE: &str = "delete-repair";
+pub(crate) const LIST: &str = "repairs";
+pub(crate) const SOURCES: &str = "repair-sources";
+/// The identity parameter the update and delete name a repair by.
+pub(crate) const OPERATION: &str = "operation";
+/// A small limit, so a test reaches it in a few adds.
+pub(crate) const LIMIT: u32 = 3;
 
 /// The brush fields both actions declare, under the names the canvas binds. The source pair is
 /// optional on the add: omitted, the module would choose one.
 fn brush_fields(required: bool) -> Vec<ParameterDescriptor> {
     vec![
-        ParameterDescriptor::points("points", 1, crate::path::POINTS_PER_STROKE)
+        ParameterDescriptor::points("points", 1, crate::path::POSTED_POINTS_PER_STROKE)
             .required(required)
             .notes("the painted path in normalized content coordinates"),
-        ParameterDescriptor::number("radius", 0.001, 0.5)
+        ParameterDescriptor::number("radius", 0.0005, 0.25)
             .required(required)
-            .default(0.05)
             .step(0.005)
             .notes("radius in units of the content height"),
-        ParameterDescriptor::number("feather", 0.0, 100.0)
-            .default(50.0)
+        ParameterDescriptor::enumeration("mode", ["heal", "clone"])
+            .default("heal")
+            .notes("test"),
+        ParameterDescriptor::integer("feather", 0, 100)
+            .default(50)
             .step(1.0)
             .notes("test"),
-        ParameterDescriptor::number("opacity", 0.0, 100.0)
-            .default(100.0)
+        ParameterDescriptor::integer("opacity", 0, 100)
+            .default(100)
             .step(1.0)
             .notes("test"),
         ParameterDescriptor::number("source-x", -1.0, 2.0)
@@ -49,28 +58,37 @@ fn brush_fields(required: bool) -> Vec<ParameterDescriptor> {
     ]
 }
 
-fn operation() -> ParameterDescriptor {
+pub(crate) fn operation() -> ParameterDescriptor {
     ParameterDescriptor::new(
-        OPERATION_PARAMETER,
+        OPERATION,
         ParameterKind::Identity {
-            of: IdentityKind::Operation,
+            of: IdentityKind::Correction,
         },
     )
     .required(true)
-    .notes("the operation this edits")
+    .notes("the repair this edits")
 }
 
-/// The interaction this consumer declares: every bound name of [`brush_fields`], with the update.
+/// The interaction this consumer declares: every bound name of [`brush_fields`], the source with
+/// its ranking query and the edit with its list.
 pub(crate) fn canvas() -> CanvasInteraction {
     CanvasInteraction::BrushMask {
         action: ADD.into(),
         points: "points".into(),
         radius: "radius".into(),
-        feather: "feather".into(),
-        opacity: "opacity".into(),
-        source_x: Some("source-x".into()),
-        source_y: Some("source-y".into()),
-        update: Some(UPDATE.into()),
+        feather: Some("feather".into()),
+        opacity: Some("opacity".into()),
+        mode: Some("mode".into()),
+        source: Some(BrushSource {
+            x: "source-x".into(),
+            y: "source-y".into(),
+            query: SOURCES.into(),
+        }),
+        edit: Some(BrushEdit {
+            action: UPDATE.into(),
+            operation: OPERATION.into(),
+            list: LIST.into(),
+        }),
         title: "Repair".into(),
         shortcut: None,
         icon: Some("heal".into()),
@@ -83,6 +101,10 @@ pub(crate) fn descriptor() -> ModuleDescriptor {
         title: "Repair brush".into(),
         effects: vec![EffectDescriptor {
             single: true,
+            operations: Some(EffectOperations {
+                identity: IdentityKind::Correction,
+                max: LIMIT,
+            }),
             ..EffectDescriptor::new(EFFECT, EffectStage::Geometry)
         }],
         actions: vec![
@@ -105,14 +127,22 @@ pub(crate) fn descriptor() -> ModuleDescriptor {
                 ..ActionDescriptor::new(DELETE, "Delete repair", "removes one operation")
             },
         ],
+        queries: vec![
+            ActionDescriptor::new(LIST, "Repairs", "lists the drawable operations"),
+            ActionDescriptor {
+                parameters: vec![operation().required(false)],
+                ..ActionDescriptor::new(SOURCES, "Repair sources", "ranks automatic sources")
+            },
+        ],
         canvas: Some(canvas()),
         availability: Availability::Available,
         ..ModuleDescriptor::default()
     }
 }
 
-/// The consumer: its layer's payload is `{"operations": [{operation, points, radius, feather,
-/// opacity, source}]}` in stack order.
+/// The consumer: its layer's payload is `{"next": n, "operations": [{id, points, radius, mode,
+/// feather, opacity, source-x?, source-y?}]}` in application order, as the frozen Corrections
+/// payload counts its operations.
 pub(crate) struct RepairBrushModule(ModuleDescriptor);
 
 impl RepairBrushModule {
@@ -121,7 +151,7 @@ impl RepairBrushModule {
     }
 
     fn operations(payload: &Value) -> Vec<Value> {
-        payload["operations"]
+        payload[OPERATIONS_FIELD]
             .as_array()
             .cloned()
             .unwrap_or_default()
@@ -149,41 +179,46 @@ impl ToolModule for RepairBrushModule {
         let mut operations = layer
             .map(|layer| Self::operations(&layer.payload))
             .unwrap_or_default();
-        let fields = &input.parameters;
-        let named = || -> Result<usize, Error> {
-            let wanted = fields[OPERATION_PARAMETER].as_str().unwrap_or_default();
+        let mut next = layer
+            .and_then(|layer| layer.payload["next"].as_u64())
+            .unwrap_or(1);
+        let mut fields = input.parameters.clone();
+        let named = |operations: &[Value], fields: &Map<String, Value>| {
+            let wanted = CorrectionId::parse(fields[OPERATION].as_str().unwrap_or_default())?;
             operations
                 .iter()
-                .position(|held| held[OPERATION_PARAMETER] == wanted)
-                .ok_or_else(|| Error::validation(format!("unknown operation {wanted}")))
+                .position(|held| held["id"] == wanted.number())
+                .ok_or_else(|| Error::validation(format!("no repair {wanted} in this photograph")))
         };
         match input.action_id.as_str() {
             ADD => {
-                let mut added = fields.clone();
-                added.insert(
-                    OPERATION_PARAMETER.into(),
-                    json!(OperationId::new().as_str()),
-                );
-                operations.push(Value::Object(added));
+                if operations.len() >= LIMIT as usize {
+                    return Err(crate::operations_limit(EffectOperations {
+                        identity: IdentityKind::Correction,
+                        max: LIMIT,
+                    }));
+                }
+                fields.insert("id".into(), json!(next));
+                next += 1;
+                operations.push(Value::Object(fields));
             }
             UPDATE => {
-                let at = named()?;
+                let at = named(&operations, &fields)?;
+                fields.remove(OPERATION);
                 let held = operations[at].as_object_mut().expect("an operation object");
                 let before = held.clone();
-                for (name, value) in fields {
-                    held.insert(name.clone(), value.clone());
-                }
+                held.extend(fields);
                 if *held == before {
                     return Ok(ActionPlan::NoOp);
                 }
             }
             DELETE => {
-                let at = named()?;
+                let at = named(&operations, &fields)?;
                 operations.remove(at);
             }
             other => return Err(Error::validation(format!("unknown action {other}"))),
         }
-        let payload = json!({ "operations": operations });
+        let payload = json!({"next": next, OPERATIONS_FIELD: operations});
         Ok(match layer {
             Some(layer) => ActionPlan::Update(LayerUpdate::new(layer.id.clone(), payload)),
             None => ActionPlan::Commit(NewLayer::new(EFFECT, payload)),
@@ -191,7 +226,7 @@ impl ToolModule for RepairBrushModule {
     }
 
     fn validate_payload(&self, _: &str, _: u32, payload: &Value) -> Result<(), Error> {
-        if payload["operations"].is_array() {
+        if payload[OPERATIONS_FIELD].is_array() {
             Ok(())
         } else {
             Err(Error::validation("a repair layer holds an operation list"))

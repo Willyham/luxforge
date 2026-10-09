@@ -88,8 +88,9 @@ pub use descriptor::{
     resolve_control, resolve_group_reset,
 };
 pub use descriptor::{
-    ChoiceControl, ColorControl, ControlVariant, IdentityKind, OPERATION_PARAMETER, RangeControl,
-    ResolvedControl, ResolvedReset, TaskControl, ToggleControl, WheelControl, WheelStyle,
+    BrushEdit, BrushSource, ChoiceControl, ColorControl, ControlVariant, EffectOperations,
+    IdentityKind, MAX_OPERATIONS, OPERATIONS_FIELD, RangeControl, ResolvedControl, ResolvedReset,
+    TaskControl, ToggleControl, WheelControl, WheelStyle,
 };
 pub use descriptor::{Chord, HOST_CHORDS, host_chord};
 pub(crate) use descriptor::{

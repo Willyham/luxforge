@@ -234,8 +234,8 @@ pub(crate) mod kind {
         identity(IdentityKind::Component)
     }
 
-    pub(crate) fn operation() -> ParameterDescriptor {
-        identity(IdentityKind::Operation)
+    pub(crate) fn correction() -> ParameterDescriptor {
+        identity(IdentityKind::Correction)
     }
 
     pub(crate) fn artifact() -> ParameterDescriptor {

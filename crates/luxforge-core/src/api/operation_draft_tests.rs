@@ -1,13 +1,13 @@
-//! A draft begun on one operation of a module's own list: the `operation` target of `draft.begin`,
+//! A draft begun on one correction of a module's own operation list: `draft.begin`'s `operation`,
 //! through the one lifecycle every draft takes — begin, set, read, commit, cancel, conflict and
 //! reapply — with the test-only repair brush as the consumer
 //! ([`crate::modules::brush_consumer`]). Pointer motion is `draft.set`, which writes no history.
 use super::methods::{Route, find};
 use crate::{
-    ClientSession, EditorService, ModuleRegistry, OperationId,
+    ClientSession, CorrectionId, EditorService, ModuleRegistry,
     api::ApiResponse,
     editor::mutation_json,
-    modules::brush_consumer::{self, ADD, EFFECT, UPDATE},
+    modules::brush_consumer::{self, ADD, EFFECT, LIMIT, UPDATE},
 };
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc};
@@ -81,9 +81,25 @@ fn operations(service: &mut EditorService, asset: &Value) -> Vec<Value> {
         .unwrap_or_default()
 }
 
+/// The API identity of the stored operation at `index`.
+fn identity(service: &mut EditorService, asset: &Value, index: usize) -> String {
+    let number = operations(service, asset)[index]["id"].as_u64().unwrap();
+    format!("correction-{number}")
+}
+
 fn history_len(service: &mut EditorService, asset: &Value) -> usize {
     let asset = serde_json::from_value(asset.clone()).unwrap();
     service.history(&asset, None, 100).unwrap().entries.len()
+}
+
+fn add(service: &mut EditorService, asset: &Value, revision: u64, at: [f64; 2]) {
+    ok(
+        service,
+        &mut ClientSession::default(),
+        &format!("edit.{ADD}"),
+        json!({"asset_id": asset, "mutation": mutation_json(revision, &format!("add-{revision}")),
+               "points": [at], "radius": 0.05}),
+    );
 }
 
 #[test]
@@ -133,11 +149,11 @@ fn an_operation_target_drafts_through_the_one_lifecycle_and_motion_writes_no_his
     assert_eq!(history_len(&mut service, &asset), before + 1, "one entry");
     let added = operations(&mut service, &asset);
     assert_eq!(added.len(), 1);
-    let operation = added[0]["operation"].as_str().unwrap().to_owned();
-    OperationId::parse(operation.clone()).expect("a minted operation identity");
     assert_eq!(added[0]["points"], json!(path));
+    let operation = identity(&mut service, &asset, 0);
+    assert_eq!(operation, "correction-1");
 
-    // A pin drag: one draft begun on the operation, its translated path set per move.
+    // A pin drag: one draft begun on the correction, its translated path set per move.
     let begun = ok(
         &mut service,
         &mut session,
@@ -181,11 +197,7 @@ fn an_operation_target_drafts_through_the_one_lifecycle_and_motion_writes_no_his
     );
     assert_eq!(history_len(&mut service, &asset), before + 2);
     let moved = operations(&mut service, &asset);
-    assert_eq!(
-        moved[0]["operation"],
-        json!(operation),
-        "the identity is stable"
-    );
+    assert_eq!(moved[0]["id"], json!(1), "the identity is stable");
     assert!((moved[0]["points"][0][0].as_f64().unwrap() - 0.23).abs() < 1e-12);
 
     // Cancel ends a drag with no entry.
@@ -218,14 +230,8 @@ fn an_operation_draft_keeps_the_one_draft_and_conflict_contract() {
     let (mut service, catalog, asset) = repairing("conflict");
     let mut session = ClientSession::default();
     let mut stranger = ClientSession::default();
-    ok(
-        &mut service,
-        &mut stranger,
-        &format!("edit.{ADD}"),
-        json!({"asset_id": asset, "mutation": mutation_json(0, "seed"),
-               "points": [[0.4, 0.4]], "radius": 0.05}),
-    );
-    let operation = operations(&mut service, &asset)[0]["operation"].clone();
+    add(&mut service, &asset, 0, [0.4, 0.4]);
+    let operation = identity(&mut service, &asset, 0);
     let begun = ok(
         &mut service,
         &mut session,
@@ -255,7 +261,7 @@ fn an_operation_draft_keeps_the_one_draft_and_conflict_contract() {
         &mut stranger,
         &format!("edit.{UPDATE}"),
         json!({"asset_id": asset, "mutation": mutation_json(1, "external"),
-               "operation": operation, "opacity": 40.0}),
+               "operation": operation, "opacity": 40}),
     );
     let read = ok(
         &mut service,
@@ -273,7 +279,7 @@ fn an_operation_draft_keeps_the_one_draft_and_conflict_contract() {
     assert_eq!(code, "conflict");
     assert!(session.draft.is_some(), "a refused commit keeps the draft");
 
-    // Reapply rebases the drafted fields and its target onto the other client's change.
+    // Reapply rebases the drafted fields and the target onto the other client's change.
     let reapplied = ok(
         &mut service,
         &mut session,
@@ -295,36 +301,76 @@ fn an_operation_draft_keeps_the_one_draft_and_conflict_contract() {
     let held = &operations(&mut service, &asset)[0];
     assert_eq!(
         held["opacity"],
-        json!(40.0),
+        json!(40),
         "the other client's change is kept"
     );
     assert_eq!(
         (held["source-x"].clone(), held["source-y"].clone()),
         (json!(0.6), json!(0.4))
     );
+
+    // A drag on a correction another client then deletes: its reapply is refused in the
+    // commit's words, and the draft stays conflicted until Discard.
+    let begun = ok(
+        &mut service,
+        &mut session,
+        "draft.begin",
+        json!({"asset_id": asset, "action": UPDATE, "operation": operation}),
+    );
+    ok(
+        &mut service,
+        &mut stranger,
+        &format!("edit.{}", brush_consumer::DELETE),
+        json!({"asset_id": asset, "mutation": mutation_json(3, "delete"), "operation": operation}),
+    );
+    let (code, message) = refusal(call(
+        &mut service,
+        &mut session,
+        "draft.reapply",
+        json!({"draft_id": begun["draft_id"]}),
+    ));
+    assert_eq!(code, "validation");
+    assert!(message.contains("no repair correction-1"), "{message}");
+    assert_eq!(
+        ok(
+            &mut service,
+            &mut session,
+            "draft.read",
+            json!({"draft_id": begun["draft_id"]}),
+        )["conflicted"],
+        json!(true)
+    );
+    ok(
+        &mut service,
+        &mut session,
+        "draft.cancel",
+        json!({"draft_id": begun["draft_id"]}),
+    );
     drop(service);
     std::fs::remove_file(catalog).unwrap();
 }
 
 #[test]
-fn an_operation_target_is_refused_where_the_action_does_not_declare_one() {
+fn an_operation_target_is_refused_where_the_action_or_the_layer_has_none() {
     let (mut service, catalog, asset) = repairing("refused");
     let mut session = ClientSession::default();
-    let operation = OperationId::new();
     let refused = |service: &mut EditorService, session: &mut ClientSession, params: Value| {
         let refused = refusal(call(service, session, "draft.begin", params));
         assert!(session.draft.is_none(), "nothing opened");
         refused
     };
-    // An action that declares no operation: the add, and a built-in module's action.
-    for action in [ADD, "set-basic"] {
+    // An action that names no correction: the add, a built-in module's action and a host gesture.
+    for action in [ADD, "set-basic", "mask.create-linear"] {
         let (code, message) = refused(
             &mut service,
             &mut session,
-            json!({"asset_id": asset, "action": action, "operation": operation}),
+            json!({"asset_id": asset, "action": action, "operation": "correction-1"}),
         );
         assert_eq!(code, "validation");
-        assert!(message.contains("operation"), "{action}: {message}");
+        assert!(
+            message.contains("names no correction"),
+            "{action}: {message}"
+        );
     }
     // The update requires one.
     let (code, message) = refused(
@@ -335,7 +381,12 @@ fn an_operation_target_is_refused_where_the_action_does_not_declare_one() {
     assert_eq!(code, "validation");
     assert!(message.contains("operation"), "{message}");
     // A malformed identity, and another kind's, are refused when the request is parsed.
-    for wrong in [json!("operation-"), json!(crate::MaskId::new()), json!(7)] {
+    for wrong in [
+        json!("correction-0"),
+        json!("correction-01"),
+        json!(crate::MaskId::new()),
+        json!(7),
+    ] {
         let (code, _) = refused(
             &mut service,
             &mut session,
@@ -343,39 +394,22 @@ fn an_operation_target_is_refused_where_the_action_does_not_declare_one() {
         );
         assert_eq!(code, "validation", "{wrong}");
     }
-    // A host mask gesture takes no operation either.
-    let (code, _) = refused(
+    // A well-formed correction the layer does not hold is refused before any draft opens, in
+    // the words the module's own commit uses.
+    let (code, message) = refused(
         &mut service,
         &mut session,
-        json!({"asset_id": asset, "action": "mask.create-linear", "operation": operation}),
+        json!({"asset_id": asset, "action": UPDATE, "operation": "correction-9"}),
     );
-    assert_eq!(code, "validation");
-    // A well-formed operation the layer does not hold is refused by the module that owns the
-    // list, at the commit that would resolve it, and writes nothing.
-    let begun = ok(
+    let committed = refusal(call(
         &mut service,
         &mut session,
-        "draft.begin",
-        json!({"asset_id": asset, "action": UPDATE, "operation": operation}),
-    );
-    let set = call(
-        &mut service,
-        &mut session,
-        "draft.set",
-        json!({"draft_id": begun["draft_id"], "fields": {"radius": 0.1}}),
-    );
-    let commit = call(
-        &mut service,
-        &mut session,
-        "draft.commit",
-        json!({"draft_id": begun["draft_id"], "mutation": mutation_json(0, "unknown")}),
-    );
-    let message = set
-        .error
-        .or(commit.error)
-        .expect("an unknown operation is refused")
-        .message;
-    assert!(message.contains("unknown operation"), "{message}");
+        &format!("edit.{UPDATE}"),
+        json!({"asset_id": asset, "mutation": mutation_json(0, "unknown"),
+               "operation": "correction-9", "radius": 0.1}),
+    ));
+    assert_eq!((code, message), committed);
+    assert_eq!(committed.1, "no repair correction-9 in this photograph");
     assert!(operations(&mut service, &asset).is_empty());
     // The schema publishes the field.
     let schema = ok(&mut service, &mut session, "schema.list", json!({}));
@@ -384,6 +418,71 @@ fn an_operation_target_is_refused_where_the_action_does_not_declare_one() {
         "{}",
         schema["methods"]["draft.begin"]
     );
+    drop(service);
+    std::fs::remove_file(catalog).unwrap();
+}
+
+#[test]
+fn a_new_path_is_refused_at_the_declared_limit_before_any_draft_opens() {
+    let (mut service, catalog, asset) = repairing("limit");
+    let mut session = ClientSession::default();
+    for revision in 0..u64::from(LIMIT) - 1 {
+        add(&mut service, &asset, revision, [0.2, 0.2]);
+    }
+    // One below the limit a new path drafts and commits.
+    let begun = ok(
+        &mut service,
+        &mut session,
+        "draft.begin",
+        json!({"asset_id": asset, "action": ADD}),
+    );
+    ok(
+        &mut service,
+        &mut session,
+        "draft.set",
+        json!({"draft_id": begun["draft_id"], "fields": {"points": [[0.5, 0.5]], "radius": 0.05}}),
+    );
+    ok(
+        &mut service,
+        &mut session,
+        "draft.commit",
+        json!({"draft_id": begun["draft_id"],
+               "mutation": mutation_json(u64::from(LIMIT) - 1, "last")}),
+    );
+    assert_eq!(operations(&mut service, &asset).len(), LIMIT as usize);
+    // At the limit the press is refused before a draft starts, with the commit's own refusal.
+    let response = call(
+        &mut service,
+        &mut session,
+        "draft.begin",
+        json!({"asset_id": asset, "action": ADD}),
+    );
+    let error = response.error.expect("refused at the limit");
+    assert!(session.draft.is_none());
+    let committed = call(
+        &mut service,
+        &mut session,
+        &format!("edit.{ADD}"),
+        json!({"asset_id": asset, "mutation": mutation_json(u64::from(LIMIT), "over"),
+               "points": [[0.6, 0.6]], "radius": 0.05}),
+    )
+    .error
+    .expect("the commit is refused too");
+    assert_eq!(error.code, "resource-limit");
+    assert_eq!(
+        (error.code, error.message),
+        (committed.code, committed.message)
+    );
+    assert_eq!(error.data, Some(json!({"limit": LIMIT})));
+    // An edit of an existing correction is not an add, and still drafts.
+    let operation = identity(&mut service, &asset, 0);
+    ok(
+        &mut service,
+        &mut session,
+        "draft.begin",
+        json!({"asset_id": asset, "action": UPDATE, "operation": operation}),
+    );
+    assert!(CorrectionId::parse(&operation).is_ok());
     drop(service);
     std::fs::remove_file(catalog).unwrap();
 }

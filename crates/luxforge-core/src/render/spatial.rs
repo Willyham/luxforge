@@ -2295,6 +2295,7 @@ mod tests {
                     artifacts: false,
                     single: false,
                     sources: Vec::new(),
+                    operations: None,
                 }],
                 actions: Vec::new(),
                 queries: Vec::new(),
