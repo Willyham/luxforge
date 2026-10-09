@@ -171,6 +171,7 @@ impl GeometryTestModule {
                 artifacts: false,
                 single: false,
                 sources: Vec::new(),
+                operations: None,
             })
             .collect(),
             actions: Vec::new(),
@@ -626,6 +627,7 @@ impl ColorTestModule {
                     artifacts: false,
                     single: false,
                     sources: Vec::new(),
+                    operations: None,
                 }],
                 actions: Vec::new(),
                 queries: Vec::new(),

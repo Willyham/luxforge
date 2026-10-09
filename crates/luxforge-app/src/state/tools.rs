@@ -2786,6 +2786,7 @@ pub(crate) fn point_pick(modules: &[ModuleDescriptor]) -> Option<(&str, &str, &s
         Some(CanvasInteraction::PointPick { .. })
         | Some(CanvasInteraction::SampleApply { .. })
         | Some(CanvasInteraction::CropFrame { .. })
+        | Some(CanvasInteraction::BrushMask { .. })
         | None => None,
     })
 }
@@ -2877,7 +2878,7 @@ pub(crate) fn canvas_pick<'a>(
             y: y.as_str(),
             action: action.as_str(),
         }),
-        CanvasInteraction::CropFrame { .. } => None,
+        CanvasInteraction::CropFrame { .. } | CanvasInteraction::BrushMask { .. } => None,
     }
 }
 
@@ -3036,6 +3037,8 @@ pub(crate) fn palette_entries(
                 CanvasInteraction::PointPick { .. } | CanvasInteraction::SampleApply { .. } => {
                     picks.contains(&module.id.as_str())
                 }
+                // As the mode strip: not offered until the workspace that draws it lands.
+                CanvasInteraction::BrushMask { .. } => false,
             };
             if reachable {
                 entries.push((
