@@ -69,17 +69,34 @@ fn resets(kind: mouse::click::Kind) -> bool {
     matches!(kind, mouse::click::Kind::Double)
 }
 
+/// The last left press of a run, which is all `mouse::Click` needs to classify the next one: the
+/// one double-click rule for this wrapper and for the canvases that tell their own presses apart
+/// (the wheel's disc and the range slider's grips).
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct ClickRun {
+    previous: Option<mouse::Click>,
+}
+
+impl ClickRun {
+    /// Records one left press at `position` and answers whether it is the one that publishes a
+    /// double-click ([`resets`]).
+    pub(crate) fn double(&mut self, position: Point) -> bool {
+        let click = mouse::Click::new(position, mouse::Button::Left, self.previous);
+        self.previous = Some(click);
+        resets(click.kind())
+    }
+}
+
 struct DoubleClick<M> {
     on_double_click: M,
     /// Presses are classified only while this is set; the wrapper stays in the tree either way.
     enabled: bool,
 }
 
-/// The wrapper's own state: the last left press it saw, which is all `mouse::Click` needs to
-/// classify the next one.
+/// The wrapper's own state: the run of left presses it has seen.
 #[derive(Default)]
 struct State {
-    previous_click: Option<mouse::Click>,
+    clicks: ClickRun,
 }
 
 impl<'a, M, Theme, Renderer> Decoration<'a, M, Theme, Renderer> for DoubleClick<M>
@@ -129,9 +146,7 @@ where
 /// Records one left press in the wrapper's state and answers whether it completes a double click.
 fn record(tree: &mut Tree, position: Point) -> bool {
     let state: &mut State = tree.state.downcast_mut();
-    let click = mouse::Click::new(position, mouse::Button::Left, state.previous_click);
-    state.previous_click = Some(click);
-    resets(click.kind())
+    state.clicks.double(position)
 }
 
 #[cfg(test)]
@@ -227,7 +242,7 @@ mod tests {
         let mut enabled = wrapper(true);
         rebuild(&mut tree, &enabled);
         assert!(
-            tree.state.downcast_ref::<State>().previous_click.is_some(),
+            tree.state.downcast_ref::<State>().clicks.previous.is_some(),
             "the first press is still held"
         );
         after(pressed);
