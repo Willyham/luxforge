@@ -101,6 +101,46 @@ pub fn checked(root: &Path) -> Result<(String, String)> {
     println!("PASS exact advisory versions, follow-up tasks and UTC expiry");
     Ok((metadata, config))
 }
+/// The standalone service packages under `services/`: each has its own manifest and lockfile
+/// outside the desktop workspace, and is audited with the same policy and no advisory exceptions.
+fn services(root: &Path) -> Result<Vec<String>> {
+    let dir = root.join("services");
+    let mut found = Vec::new();
+    if dir.is_dir() {
+        for entry in fs::read_dir(dir)? {
+            let name = entry?.file_name().to_string_lossy().into_owned();
+            if root
+                .join("services")
+                .join(&name)
+                .join("Cargo.toml")
+                .is_file()
+            {
+                found.push(format!("services/{name}"));
+            }
+        }
+    }
+    found.sort();
+    Ok(found)
+}
+fn deny(root: &Path, checker: &Path, manifest: &Path, metadata: &str, config: &str) -> Result {
+    let tmp = tempfile::tempdir()?;
+    fs::write(tmp.path().join("metadata.json"), metadata)?;
+    fs::write(tmp.path().join("deny.toml"), config)?;
+    ensure(
+        Command::new(checker)
+            .current_dir(root)
+            .arg("--manifest-path")
+            .arg(manifest)
+            .arg("--metadata-path")
+            .arg(tmp.path().join("metadata.json"))
+            .arg("--config")
+            .arg(tmp.path().join("deny.toml"))
+            .args(["check", "licenses", "sources", "advisories"])
+            .status()?
+            .success(),
+        format!("Dependency policy failed for {}", manifest.display()),
+    )
+}
 pub fn audit(root: &Path) -> Result {
     let checker = root.join(format!(
         ".tools/cargo-deny/bin/cargo-deny{}",
@@ -111,23 +151,36 @@ pub fn audit(root: &Path) -> Result {
         "Install pinned cargo-deny 0.20.2",
     )?;
     let (metadata, config) = checked(root)?;
-    let tmp = tempfile::tempdir()?;
-    fs::write(tmp.path().join("metadata.json"), metadata)?;
-    fs::write(tmp.path().join("deny.toml"), config)?;
-    ensure(
-        Command::new(checker)
-            .current_dir(root)
-            .arg("--manifest-path")
-            .arg(root.join("Cargo.toml"))
-            .arg("--metadata-path")
-            .arg(tmp.path().join("metadata.json"))
-            .arg("--config")
-            .arg(tmp.path().join("deny.toml"))
-            .args(["check", "licenses", "sources", "advisories"])
-            .status()?
-            .success(),
-        "Dependency policy failed",
-    )
+    deny(root, &checker, &root.join("Cargo.toml"), &metadata, &config)?;
+    let tasks = read_json(&root.join("tasks/project/dependency-advisories.json"))?;
+    let base = fs::read_to_string(root.join("deny.toml"))?;
+    for service in services(root)? {
+        let manifest = root.join(&service).join("Cargo.toml");
+        let metadata = output(
+            root,
+            "cargo",
+            &[
+                "metadata",
+                "--locked",
+                "--format-version",
+                "1",
+                "--manifest-path",
+                &manifest.to_string_lossy(),
+            ],
+        )?;
+        let data: Value = serde_json::from_str(&metadata)?;
+        // A service carries no advisory exception: any advisory in its lockfile fails.
+        let config = validate(
+            &json!([]),
+            &data["packages"],
+            &tasks["tasks"],
+            &base,
+            OffsetDateTime::now_utc().date(),
+        )?;
+        deny(root, &checker, &manifest, &metadata, &config)?;
+        println!("PASS license, source and advisory policy for {service}");
+    }
+    Ok(())
 }
 #[cfg(test)]
 mod tests {
