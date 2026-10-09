@@ -27,8 +27,12 @@ use serde_json::{Map, Value, json};
 /// request, in flight. It runs, as the one action it is, as soon as nothing is in flight.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PendingReset {
+    /// The control it was asked of: its action and the field that keys its gesture.
     pub(crate) action: String,
     pub(crate) parameter: String,
+    /// The reset action and preset the control declares, run as given, as a wheel's is. `None`
+    /// for a field's reset, which is resolved again when it runs ([`Editor::reset_field`]).
+    pub(crate) declared: Option<(String, Map<String, Value>)>,
     /// The photograph it was asked for: a reset never runs against another one.
     pub(crate) asset: AssetId,
 }
@@ -169,22 +173,7 @@ impl Editor {
         let declared_reset =
             tools::declared_field_reset(&self.modules, &action, &parameter).is_some();
         let reset = fields::field_reset(&self.modules, &action, &parameter);
-        let gesture_open = self.slider_gesture().is_some();
-        if reset.is_some()
-            && (gesture_open || self.busy)
-            && self.at_current()
-            && let Some(state) = &self.document.state
-        {
-            let (asset, revision) = (state.asset.id.clone(), state.revision);
-            self.event("field_reset_queued", || {
-                json!({"action":action,"parameter":parameter,"revision":revision,
-                    "gesture_open":gesture_open,"busy":self.busy})
-            });
-            self.controls.pending_reset = Some(PendingReset {
-                action,
-                parameter,
-                asset,
-            });
+        if reset.is_some() && self.hold_reset(&action, &parameter, None) {
             return Task::none();
         }
         // A reset that is one action is refused before the field shows a value that was never
@@ -207,6 +196,59 @@ impl Editor {
             Some((reset, preset)) => self.send_reset((action, parameter), reset, preset),
             None => Task::none(),
         }
+    }
+
+    /// A control's declared reset, `reset` with its fixed `preset`, asked for by a double-click on
+    /// the control keyed by `action` and `parameter`: a wheel's. It waits, as a field's reset does
+    /// ([`Editor::reset_field`]), while this client has a gesture or a request in flight, because
+    /// the double-click's first press usually opened a gesture whose commit is still answering.
+    pub(crate) fn reset_declared(
+        &mut self,
+        action: String,
+        parameter: String,
+        reset: String,
+        preset: Map<String, Value>,
+    ) -> Task<Message> {
+        if self.hold_reset(&action, &parameter, Some((&reset, &preset))) {
+            return Task::none();
+        }
+        if let Some(reason) = self.action_refusal(&reset) {
+            self.status.text = reason;
+            return Task::none();
+        }
+        self.send_reset((action, parameter), reset, preset)
+    }
+
+    /// Hold the reset of the control keyed by `action` and `parameter`, with its `declared` action
+    /// and preset when it has one, while this client has a gesture or a request in flight on the
+    /// current entry of an open photograph; answers whether it is held.
+    /// [`Editor::run_pending_reset`] sends it.
+    fn hold_reset(
+        &mut self,
+        action: &str,
+        parameter: &str,
+        declared: Option<(&String, &Map<String, Value>)>,
+    ) -> bool {
+        let gesture_open = self.slider_gesture().is_some();
+        if !(gesture_open || self.busy) || !self.at_current() {
+            return false;
+        }
+        let Some(state) = &self.document.state else {
+            return false;
+        };
+        let (asset, revision) = (state.asset.id.clone(), state.revision);
+        self.event("field_reset_queued", || {
+            json!({"action":action,"parameter":parameter,"revision":revision,
+                "declared":declared.map(|(reset, _)| reset),
+                "gesture_open":gesture_open,"busy":self.busy})
+        });
+        self.controls.pending_reset = Some(PendingReset {
+            action: action.to_owned(),
+            parameter: parameter.to_owned(),
+            declared: declared.map(|(reset, preset)| (reset.clone(), preset.clone())),
+            asset,
+        });
+        true
     }
 
     /// Run a waiting reset once nothing is in flight: the gesture has ended and its commit, if it
@@ -242,7 +284,12 @@ impl Editor {
             );
             return Task::none();
         }
-        self.reset_field(reset.action, reset.parameter)
+        match reset.declared {
+            Some((declared, preset)) => {
+                self.reset_declared(reset.action, reset.parameter, declared, preset)
+            }
+            None => self.reset_field(reset.action, reset.parameter),
+        }
     }
 
     /// Send one field's reset as its own action: `action` and `preset` are the request, `field` the
