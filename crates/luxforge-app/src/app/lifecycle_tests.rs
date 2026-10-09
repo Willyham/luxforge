@@ -35,7 +35,11 @@ fn desktop_registry_contains_every_core_builtin_including_raw() {
         ..Config::default()
     })
     .unwrap();
-    for id in ["luxforge.controls", "luxforge.capabilities"] {
+    for id in [
+        "luxforge.controls",
+        "luxforge.candidates",
+        "luxforge.capabilities",
+    ] {
         assert!(ids(&developer).contains(&id.to_owned()), "{id}");
     }
     assert!(

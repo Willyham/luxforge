@@ -28,9 +28,10 @@ pub use placement::insertion_index_among;
 pub(crate) use variants::{Superseded, superseded_in, superseded_refusal_in};
 
 use super::{
-    BasicModule, CanvasInteraction, CapabilitiesProofModule, CropModule, CurveModule, DetailModule,
-    LensModule, LookModule, MixerModule, ModuleDescriptor, PerspectiveModule, PresenceModule,
-    PresetsModule, RawModule, ToolModule, VignetteModule, controls_module,
+    BasicModule, CandidateProofModule, CanvasInteraction, CapabilitiesProofModule, CropModule,
+    CurveModule, DetailModule, LensModule, LookModule, MixerModule, ModuleDescriptor,
+    PerspectiveModule, PresenceModule, PresetsModule, RawModule, ToolModule,
+    VignetteModule, controls_module,
 };
 use crate::Error;
 #[cfg(test)]
@@ -43,14 +44,14 @@ use std::{
 /// The linked providers a run serves, in the order a registry lists them, which is the order a
 /// client's tools panel draws their sections in: crop first, then presets (which owns no layer),
 /// RAW, the RAW look, Basic, Tone curve, Detail, Presence, the colour mixer, lens
-/// correction, perspective, the vignette and the controls proof. The list is a presentation order,
-/// not the pipeline's: a layer's place in a stack is its effect's declared stage and order, so the
-/// look's section sits above Basic's while its layer follows Basic's. The controls
-/// proof is a test module — its descriptor declares `developer` — so only a `developer` run gets
-/// it. [`ModuleRegistry::assemble`] registers these; a test that builds a variant registry of its
+/// correction, perspective, the vignette, the controls proof and the candidate proof. The list is a
+/// presentation order, not the pipeline's: a layer's place in a stack is its effect's declared stage
+/// and order, so the look's section sits above Basic's while its layer follows Basic's. The two
+/// proofs are test modules — their descriptors declare `developer` — so only a `developer` run gets
+/// them. [`ModuleRegistry::assemble`] registers these; a test that builds a variant registry of its
 /// own starts from them too. External loading is a later, separately measured step.
 pub(crate) fn linked_modules(developer: bool) -> Vec<Arc<dyn ToolModule>> {
-    let linked: [Arc<dyn ToolModule>; 13] = [
+    let linked: [Arc<dyn ToolModule>; 14] = [
         Arc::new(CropModule::new()),
         Arc::new(PresetsModule::new()),
         Arc::new(RawModule::new()),
@@ -64,6 +65,7 @@ pub(crate) fn linked_modules(developer: bool) -> Vec<Arc<dyn ToolModule>> {
         Arc::new(PerspectiveModule::new()),
         Arc::new(VignetteModule::new()),
         Arc::new(controls_module()),
+        Arc::new(CandidateProofModule::new()),
     ];
     linked
         .into_iter()

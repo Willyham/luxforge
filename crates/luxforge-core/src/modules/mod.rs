@@ -2,6 +2,7 @@
 //! and the compilation of its persisted payloads into host processing primitives. Modules never
 //! write the catalog, never keep an undo stack and never render.
 pub(crate) mod basic;
+mod candidate_proof;
 #[cfg(test)]
 pub(crate) mod brush_consumer;
 mod capabilities_proof;
@@ -58,6 +59,12 @@ pub use basic::BASIC_EFFECT;
 pub(crate) use basic::BasicModule;
 /// Basic's Auto tone: its solver and forward model, public for the fitting rig and measurements.
 pub use basic::auto as auto_tone;
+pub(crate) use candidate_proof::CandidateProofModule;
+#[cfg(test)]
+pub(crate) use candidate_proof::{
+    CANDIDATE_PROOF_MODULE, CANDIDATE_PROOF_TASK, PROOF_PATCH_LABEL, proof_code, proof_coverage,
+    proof_linear, proof_preview,
+};
 pub(crate) use capabilities_proof::CapabilitiesProofModule;
 #[cfg(test)]
 pub(crate) use capabilities_proof::{
