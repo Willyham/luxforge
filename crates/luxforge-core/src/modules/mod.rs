@@ -2,6 +2,7 @@
 //! and the compilation of its persisted payloads into host processing primitives. Modules never
 //! write the catalog, never keep an undo stack and never render.
 pub(crate) mod basic;
+mod candidate_proof;
 #[cfg(test)]
 pub(crate) mod brush_consumer;
 mod capabilities_proof;
@@ -17,7 +18,6 @@ pub(crate) mod lens;
 mod look;
 mod mixer;
 mod perspective;
-mod pixel;
 mod presence;
 mod presets;
 mod processing;
@@ -60,6 +60,12 @@ pub use basic::BASIC_EFFECT;
 pub(crate) use basic::BasicModule;
 /// Basic's Auto tone: its solver and forward model, public for the fitting rig and measurements.
 pub use basic::auto as auto_tone;
+pub(crate) use candidate_proof::CandidateProofModule;
+#[cfg(test)]
+pub(crate) use candidate_proof::{
+    CANDIDATE_PROOF_MODULE, CANDIDATE_PROOF_TASK, PROOF_PATCH_LABEL, proof_code, proof_coverage,
+    proof_linear, proof_preview,
+};
 pub(crate) use capabilities_proof::CapabilitiesProofModule;
 #[cfg(test)]
 pub(crate) use capabilities_proof::{
@@ -118,8 +124,6 @@ pub(crate) use mixer::MixerModule;
 pub use mixer::{MIXER_EFFECT, MIXER_EFFECT_FORMAT};
 pub use perspective::PERSPECTIVE_EFFECT;
 pub(crate) use perspective::PerspectiveModule;
-pub use pixel::PIXEL_EFFECT;
-pub(crate) use pixel::PixelModule;
 pub use presence::PRESENCE_EFFECT;
 pub(crate) use presence::PresenceModule;
 #[cfg(test)]
@@ -144,8 +148,8 @@ pub(crate) use registry::linked_modules;
 pub(crate) use registry::stack_compiles;
 #[cfg(test)]
 pub(crate) use registry::tests::{
-    HELD_ACTION, HELD_EFFECT, HeldModule, PATCH_ACTION, PATCH_MODULE, PatchModule, STAGE_ACTION,
-    STAGE_EFFECT, StageModule, TestModule,
+    HELD_ACTION, HELD_EFFECT, HeldModule, PATCH_ACTION, PATCH_MODULE, PIXEL_STAGE_EFFECT,
+    PatchModule, STAGE_ACTION, STAGE_EFFECT, StageModule, TestModule,
 };
 pub use registry::{ActionRef, QueryRef};
 pub use registry::{ModuleRegistry, Provider, RegistryOptions, insertion_index_among};

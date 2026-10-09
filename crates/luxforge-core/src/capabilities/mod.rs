@@ -4,6 +4,8 @@
 //! contacts or schedules anything. The host is given its secure store and its network transport
 //! (`luxforge-net`'s, in the desktop and `luxforge-json`) through [`host::HostConfig`]. See
 //! `docs/design/module-capabilities.md`.
+#[cfg(test)]
+mod candidate_tests;
 pub mod consent;
 pub(crate) mod context;
 pub mod data;

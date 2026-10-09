@@ -264,13 +264,9 @@ fn a_multi_parameter_actions_slider_sends_nothing_until_release() {
     let (action, parameter) = editor
         .modules
         .iter()
-        // Crop's fields belong to its canvas draft, not the generic multi-field gesture.
-        .filter(|module| {
-            !matches!(
-                module.canvas,
-                Some(luxforge_core::CanvasInteraction::CropFrame { .. })
-            )
-        })
+        // The point fixture's action takes two coordinates and a colour; Crop's fields belong to
+        // its canvas draft and RAW's neutral pick is a commit of its own.
+        .filter(|module| module.id == crate::state::testing::POINT_MODULE)
         .flat_map(|module| module.actions.iter())
         .find(|action| {
             !action.patch
@@ -282,7 +278,7 @@ fn a_multi_parameter_actions_slider_sends_nothing_until_release() {
                 )
         })
         .map(|action| (action.id.clone(), action.parameters[0].name.clone()))
-        .expect("a built-in declares a multi-parameter action led by a slider field");
+        .expect("the point fixture declares a multi-parameter action led by a slider field");
 
     for value in [3.0, 7.0] {
         let _ = testing::slide(&mut editor, &action, &parameter, value);

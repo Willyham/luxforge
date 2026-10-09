@@ -156,6 +156,27 @@ impl EditorService {
         ))
     }
 
+    /// The catalog's candidate store, shared with the tasks that publish into it and the workers
+    /// that read and accept from it.
+    pub(crate) fn candidates(&self) -> &Arc<crate::artifacts::candidates::Candidates> {
+        &self.candidates
+    }
+
+    /// What a task's candidates of `asset_id` are generated against: the asset, its revision now
+    /// and its content dimensions. Copies the cached head; reads no entry.
+    pub(crate) fn candidate_basis(
+        &self,
+        asset_id: &crate::AssetId,
+    ) -> Result<crate::artifacts::candidates::CandidateBasis, Error> {
+        let head = self.head(asset_id)?;
+        Ok(crate::artifacts::candidates::CandidateBasis {
+            asset_id: head.asset.id,
+            revision: head.revision,
+            width: head.asset.width,
+            height: head.asset.height,
+        })
+    }
+
     /// Record an artifact a writer published and keep its verified bytes ready. Idempotent: the
     /// row is inserted once, whoever publishes the same bytes again. `live` says it was published
     /// while this service is open, so no collection removes it before the catalog is reopened; this
@@ -514,6 +535,7 @@ impl EditorService {
             keep,
             live: self.live_artifacts.clone(),
             rows: removed.len(),
+            candidates: self.candidates.clone(),
         })
     }
 }

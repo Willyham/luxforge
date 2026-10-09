@@ -13,7 +13,7 @@
 //! depends on which slider a person touched first. Each unit's equations live in its own file.
 //!
 //! The host places the layer by its effect stage: a colour-stage commit joins the stack before the
-//! geometry tail, like a pixel replacement, and stays at that position for the rest of its life.
+//! geometry tail, and stays at that position for the rest of its life.
 //! Later sets update it in place at the same identity and index.
 //!
 //! The module also answers one read-only query, `neutral-sample`: the neutral picker, which reads a
@@ -232,8 +232,8 @@ impl FieldPatch for Basic {
                     .map(|name| {
                         ParameterDescriptor::pixel_coordinate(name).notes(format!(
                             "the {name} coordinate, in pixels of the stage the Basic layer receives: \
-                             the content stage, the source after EXIF orientation plus any pixel \
-                             replacement before it. Map a rendered pixel to it with render.locate"
+                             the content stage, the source after EXIF orientation plus any layer \
+                             before it. Map a rendered pixel to it with render.locate"
                         ))
                     })
                     .into(),
@@ -383,7 +383,7 @@ mod tests {
     use crate::Stage;
     use crate::modules::{ActionInput, ActionPlan, ToolModule};
     use crate::{Layer, LayerId};
-    use crate::{ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT, modules::check_parameters};
+    use crate::{ORIENTATION_EFFECT, Orientation, modules::check_parameters};
     use luxforge_reference::srgb;
     use serde_json::json;
 
@@ -839,9 +839,9 @@ mod tests {
         );
         assert_eq!(with, without, "the layer's own correction is not sampled");
 
-        // A pixel replacement before the Basic layer *is* part of that input stage, so the picker
-        // asks about the Basic layer's index, not about the content stage's index 0.
-        let stack = [Layer::pixel(0, 0, [1, 2, 3]), strong];
+        // A layer before the Basic layer *is* part of that input stage, so the picker asks about
+        // the Basic layer's index, not about the content stage's index 0.
+        let stack = [Layer::new(crate::MIXER_EFFECT, json!({})), strong];
         let later = Probe::with_patch(11, 11, [128, 128, 128], 3, 3, &patch);
         assert_eq!(
             queried(&later, &stack, 5, 5).expect("a solved patch"),
@@ -849,7 +849,7 @@ mod tests {
         );
         assert!(
             later.asked.borrow().iter().all(|(index, _, _)| *index == 1),
-            "the stage at the Basic layer's index carries the replacement before it"
+            "the stage at the Basic layer's index carries the layer before it"
         );
     }
 
@@ -1054,13 +1054,13 @@ mod tests {
     }
 
     /// The module finds its own layer wherever the host placed it, including a stack that already
-    /// holds a pixel replacement and a geometry tail.
+    /// holds a colour layer before it and a geometry tail.
     #[test]
-    fn the_basic_layer_is_found_among_pixel_and_geometry_layers() {
-        let pixel = Layer::pixel(1, 1, [1, 2, 3]);
+    fn the_basic_layer_is_found_among_colour_and_geometry_layers() {
+        let other = Layer::new(crate::MIXER_EFFECT, json!({}));
         let orientation = Layer::orientation(Orientation::NEUTRAL);
         let basic = basic_layer(json!({"exposure": 1.0}));
-        let stack = [pixel.clone(), basic.clone(), orientation.clone()];
+        let stack = [other.clone(), basic.clone(), orientation.clone()];
         let locate = |layers: &[Layer]| {
             crate::ModuleRegistry::builtin()
                 .own_layer(layers, BASIC_EFFECT, None)
@@ -1068,7 +1068,7 @@ mod tests {
                 .map(|(_, layer)| layer.id.clone())
         };
         assert_eq!(locate(&stack), Some(basic.id.clone()));
-        assert_eq!(locate(&[pixel, orientation]), None);
-        assert!(PIXEL_EFFECT != BASIC_EFFECT && ORIENTATION_EFFECT != BASIC_EFFECT);
+        assert_eq!(locate(&[other, orientation]), None);
+        assert!(ORIENTATION_EFFECT != BASIC_EFFECT);
     }
 }

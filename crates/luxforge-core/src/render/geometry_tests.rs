@@ -451,51 +451,6 @@ fn a_translation_with_a_smaller_output_composes_and_is_bounds_checked() {
 }
 
 #[test]
-fn a_point_replacement_cropped_away_simply_disappears() {
-    let registry = geometry_registry();
-    let source = source(8, 6);
-    let inside = Layer::pixel(4, 3, [250, 1, 2]);
-    let outside = Layer::pixel(0, 0, [3, 251, 4]);
-    for crop in [
-        crop_layer(CropPayload {
-            angle: 0.0,
-            x: 0.25,
-            y: 1.0 / 3.0,
-            width: 0.5,
-            height: 0.5,
-        }),
-        crop_layer(fitted_crop(8, 6, 15.0, [0.25, 0.25, 0.5, 0.5])),
-    ] {
-        let with_outside = Recipe {
-            format: crate::RECIPE_FORMAT,
-            layers: vec![inside.clone(), outside.clone(), crop.clone()],
-            masks: Vec::new(),
-            ..Recipe::default()
-        };
-        let without = Recipe {
-            format: crate::RECIPE_FORMAT,
-            layers: vec![inside.clone(), crop.clone()],
-            masks: Vec::new(),
-            ..Recipe::default()
-        };
-        let rendered = render(&registry, &source, SnapshotId::new(), &with_outside).unwrap();
-        let expected = render(&registry, &source, SnapshotId::new(), &without).unwrap();
-        assert_eq!(rendered.rgba, expected.rgba, "{crop:?}");
-        for y in 0..rendered.height {
-            for x in 0..rendered.width {
-                assert_eq!(
-                    sample(&registry, &source, &with_outside, x, y)
-                        .unwrap()
-                        .rgba,
-                    rendered.pixel(x, y),
-                    "({x}, {y})"
-                );
-            }
-        }
-    }
-}
-
-#[test]
 fn the_frame_limit_applies_to_a_resample_and_point_queries_still_answer() {
     let registry = geometry_registry();
     let source = source(3, 2);
@@ -525,17 +480,13 @@ fn the_frame_limit_applies_to_a_resample_and_point_queries_still_answer() {
 }
 
 #[test]
-fn pixel_layers_are_ordered_exact_and_source_is_immutable() {
+fn rendering_leaves_the_source_unmodified() {
     let source = source(3, 2);
     let original = source.clone();
-    let a = Layer::pixel(1, 0, [200, 201, 202]);
-    let first = rendered(&source, vec![a.clone()]);
-    let second = rendered(&source, vec![a, Layer::pixel(1, 0, [9, 8, 7])]);
-    assert_eq!(first.pixel(1, 0), Some([200, 201, 202, 255]));
-    assert_eq!(second.pixel(1, 0), Some([9, 8, 7, 255]));
-    assert_eq!(first.pixel(0, 0), Some([0, 20, 40, 255]));
+    let turned = rendered(&source, vec![turn(Transform::RotateRight)]);
     assert_eq!(source, original);
-    assert!(rendered(&source, vec![]).pixel(1, 0) != second.pixel(1, 0));
+    assert_ne!(turned.rgba, source.rgba);
+    assert_eq!(rendered(&source, vec![]).rgba, source.rgba);
 }
 
 #[test]
@@ -581,53 +532,22 @@ fn transform_identities_and_operation_order_hold() {
         assert_eq!(collapsed.rgba, source.rgba);
         assert!(Arc::ptr_eq(&collapsed.rgba, &source.rgba));
     }
-    let before = rendered(
-        &source,
-        vec![
-            Layer::pixel(0, 0, [250, 0, 0]),
-            turn(Transform::RotateRight),
-        ],
-    );
-    assert_eq!(before.pixel(2, 0), Some([250, 0, 0, 255]));
-    let after = rendered(
+    // The order of two different operations decides the picture.
+    let turn_then_mirror = rendered(
         &source,
         vec![
             turn(Transform::RotateRight),
-            Layer::pixel(0, 0, [250, 0, 0]),
+            turn(Transform::MirrorHorizontal),
         ],
     );
-    assert_eq!(after.pixel(0, 0), Some([250, 0, 0, 255]));
-    assert_ne!(before.rgba, after.rgba);
-}
-
-#[test]
-fn compiled_recipes_match_stepwise_evaluation_for_interleaved_operations() {
-    let source = source(5, 3);
-    let transforms = [
-        Transform::RotateLeft,
-        Transform::RotateRight,
-        Transform::MirrorHorizontal,
-        Transform::FlipVertical,
-    ];
-    for first in transforms {
-        for second in transforms {
-            for third in transforms {
-                let layers = vec![
-                    Layer::pixel(1, 1, [201, 1, 2]),
-                    turn(first),
-                    Layer::pixel(0, 0, [3, 202, 4]),
-                    turn(second),
-                    Layer::pixel(1, 1, [5, 6, 203]),
-                    turn(third),
-                    Layer::pixel(0, 0, [204, 8, 9]),
-                ];
-                let expected = reference(&source, &layers);
-                let actual = rendered(&source, layers);
-                assert_eq!((actual.width, actual.height), (expected.0, expected.1));
-                assert_eq!(actual.rgba.as_slice(), expected.2);
-            }
-        }
-    }
+    let mirror_then_turn = rendered(
+        &source,
+        vec![
+            turn(Transform::MirrorHorizontal),
+            turn(Transform::RotateRight),
+        ],
+    );
+    assert_ne!(turn_then_mirror.rgba, mirror_then_turn.rgba);
 }
 
 /// One orientation layer holding the composed state renders exactly what the same actions
@@ -690,101 +610,13 @@ fn a_composed_orientation_renders_what_its_separate_action_layers_render() {
 }
 
 #[test]
-fn invalid_coordinates_and_buffers_fail_without_panicking() {
+fn invalid_buffers_fail_without_panicking() {
     let registry = registry();
     let source = source(3, 2);
     let snapshot = Snapshot::original(AssetId::new());
-    let outside = Recipe {
-        format: crate::RECIPE_FORMAT,
-        layers: vec![Layer::pixel(3, 0, [0, 0, 0])],
-        masks: Vec::new(),
-        ..Recipe::default()
-    };
-    assert!(render(&registry, &source, snapshot.id.clone(), &outside).is_err());
-    assert!(
-        sample(&registry, &source, &outside, 0, 0).is_err(),
-        "a sample of the same stack fails too"
-    );
     let malformed = SourceImage {
         rgba: vec![0].into(),
         ..source
     };
     assert!(render(&registry, &malformed, snapshot.id, &Recipe::default()).is_err());
-}
-
-/// A segment without point replacements resolves each output pixel straight from its unmap, and
-/// that is what the full backward composition answers there; a segment with them still finds the
-/// replacement that wins. Every pixel of every segment, and one past each edge, under every
-/// orientation, two exact crops and a resample between them.
-#[test]
-fn resolve_without_replacements_is_the_full_composition() {
-    let registry = geometry_registry();
-    let crop = |x: f64, y: f64, width: f64, height: f64| {
-        crop_layer(CropPayload {
-            angle: 0.0,
-            x,
-            y,
-            width,
-            height,
-        })
-    };
-    let key = |resolved: Option<compiled::Resolved>| {
-        resolved.map(|resolved| (resolved.replacement, resolved.input_x, resolved.input_y))
-    };
-    for turns in 0..4 {
-        for mirror in [false, true] {
-            for pixels in [false, true] {
-                let pixel = |x, y, rgb| pixels.then(|| Layer::pixel(x, y, rgb));
-                let layers: Vec<Layer> = [
-                    pixel(4, 3, [10, 20, 30]),
-                    Some(crop(0.1, 0.2, 0.8, 0.7)),
-                    pixel(1, 1, [40, 50, 60]),
-                    Some(Layer::orientation(Orientation { mirror, turns })),
-                    pixel(0, 0, [70, 80, 90]),
-                    Some(scale_layer(0.8)),
-                    pixel(2, 1, [100, 110, 120]),
-                    Some(Layer::orientation(Orientation {
-                        mirror: !mirror,
-                        turns: 3 - turns,
-                    })),
-                    Some(crop(0.2, 0.0, 0.7, 0.9)),
-                    pixel(0, 2, [130, 140, 150]),
-                ]
-                .into_iter()
-                .flatten()
-                .collect();
-                let recipe = Recipe {
-                    format: crate::RECIPE_FORMAT,
-                    layers,
-                    masks: Vec::new(),
-                    ..Recipe::default()
-                };
-                let compiled = registry.compile(15, 11, &recipe).unwrap();
-                assert_eq!(compiled.segments.len(), 2, "the resample opens a segment");
-                let mut replaced = 0;
-                for (index, segment) in compiled.segments.iter().enumerate() {
-                    assert_eq!(segment.has_pixels, pixels, "segment {index}");
-                    for y in 0..=segment.height {
-                        for x in 0..=segment.width {
-                            let resolved = key(segment.resolve(x, y));
-                            assert_eq!(
-                                resolved,
-                                key(segment.resolve_composed(x, y)),
-                                "turns {turns}, mirror {mirror}, pixels {pixels}, segment \
-                                 {index}, ({x}, {y})"
-                            );
-                            replaced += usize::from(
-                                resolved.is_some_and(|(winner, _, _)| winner.is_some()),
-                            );
-                        }
-                    }
-                }
-                assert_eq!(
-                    replaced > 0,
-                    pixels,
-                    "a replacement wins somewhere when one exists"
-                );
-            }
-        }
-    }
 }

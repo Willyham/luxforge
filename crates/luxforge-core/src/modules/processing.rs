@@ -261,12 +261,6 @@ impl std::fmt::Debug for ColorOperation {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Processing {
     ExactGeometry(ExactGeometry),
-    /// One input-stage pixel, applied through the geometry that follows it.
-    PointReplace {
-        x: u32,
-        y: u32,
-        rgb: [u8; 3],
-    },
     /// Pointwise colour over the whole stage, evaluated in linear-sRGB float by the host.
     Color(ColorOperation),
     /// A bounded neighbourhood of the whole stage, evaluated in linear-sRGB float by the host in

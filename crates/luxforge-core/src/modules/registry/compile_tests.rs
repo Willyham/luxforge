@@ -15,8 +15,8 @@ use serde_json::{Map, Value, json};
 /// Whether a stored layer changes nothing is its module's answer, for every module with a
 /// neutral form: a field patch at its neutral values however they are spelled (the vignette's
 /// is any shape at amount 0), a whole-image crop, the identity orientation and a RAW
-/// development at As shot and 0 EV. A pixel replacement has no neutral form, and a layer whose
-/// provider is missing or unavailable, or whose payload cannot be read, is never neutral.
+/// development at As shot and 0 EV. A layer whose provider is missing or unavailable, or whose
+/// payload cannot be read, is never neutral.
 #[test]
 fn a_layer_is_neutral_by_its_own_modules_rule() {
     let registry = ModuleRegistry::builtin();
@@ -80,7 +80,6 @@ fn a_layer_is_neutral_by_its_own_modules_rule() {
             .layer(LayerId::new()),
             false,
         ),
-        (Layer::pixel(0, 0, [1, 2, 3]), false),
         (layer(BASIC_EFFECT, json!({"gamma": 1})), false),
         (layer("test.nobody", json!({})), false),
     ];
@@ -226,6 +225,50 @@ fn a_stack_holding_the_retired_transform_effect_is_refused_without_being_rewritt
         assert_eq!(error.detail, expected);
     }
     assert_eq!(recipe.layers, vec![retired], "the refused stack is kept");
+}
+
+/// The deleted pixel proof's effect has no provider in any registry, a developer run included, so
+/// a stored stack holding one is refused as an unavailable effect that names the layer, and the
+/// stored layer survives the refusal as it was written.
+#[test]
+fn a_stack_holding_the_deleted_pixel_proof_effect_is_refused_and_kept() {
+    let stored = Layer::new(
+        "luxforge.pixel.replace",
+        json!({"x": 1, "y": 1, "rgb": [9, 9, 9]}),
+    );
+    let recipe = Recipe {
+        format: RECIPE_FORMAT,
+        layers: vec![stored.clone()],
+        masks: Vec::new(),
+        ..Recipe::default()
+    };
+    let expected = format!(
+        "unavailable effect luxforge.pixel.replace (layers {})",
+        stored.id
+    );
+    for registry in [ModuleRegistry::builtin(), ModuleRegistry::developer()] {
+        assert!(registry.effect("luxforge.pixel.replace").is_none());
+        for error in [
+            registry.validate_recipe(&recipe).unwrap_err(),
+            registry.validate_layer(&stored).unwrap_err(),
+            registry.compile(2, 1, &recipe).err().expect("no provider"),
+            render(&registry, &source(), SnapshotId::new(), &recipe).unwrap_err(),
+            sample(&registry, &source(), &recipe, 0, 0).unwrap_err(),
+        ] {
+            assert_eq!(error.kind, ErrorKind::Incompatible);
+            assert_eq!(error.detail, expected);
+            assert_eq!(
+                error.unavailable_effect_id(),
+                Some("luxforge.pixel.replace")
+            );
+        }
+    }
+    let reread: Recipe = serde_json::from_slice(&serde_json::to_vec(&recipe).unwrap()).unwrap();
+    assert_eq!(
+        reread.layers,
+        vec![stored],
+        "the refused stack is kept as written"
+    );
 }
 
 /// A mask reaches a layer only where the layer's input is the content stage the mask is stored
@@ -375,14 +418,27 @@ fn one_layer_per_target_is_what_single_layer_means() {
 /// before it persists one — and is the alternative to the silent omission of rendering it as if it
 /// applied everywhere.
 ///
-/// The live case is a point replacement: no delivered pixel effect declares itself maskable, and
-/// the recipe model lets a stored layer of one carry a mask, so this refusal is what a stack like
-/// that meets. A geometry or finish layer is refused for the earlier reason, that it has no
+/// The case here is a pixel-stage effect that compiles to a warp: the recipe model lets a stored
+/// layer of any effect carry a mask, so this refusal is what a stack like that meets. A geometry or finish layer is refused for the earlier reason, that it has no
 /// content stage to read a mask in, and that refusal is asserted below too so the two cannot both
 /// be removed by accident.
 #[test]
 fn a_mask_this_build_cannot_evaluate_is_refused_by_name() {
-    let registry = ModuleRegistry::developer();
+    let mut registry = ModuleRegistry::developer();
+    registry
+        .register(StageModule::compiling(
+            "test.pixelwarp",
+            "test.pixelwarp.effect",
+            "set-test-pixelwarp",
+            EffectStage::Pixel,
+            0,
+            || {
+                Processing::Warp(crate::modules::WarpStep::Affine([
+                    1.0, 0.0, 0.0, 0.0, 1.0, 0.0,
+                ]))
+            },
+        ))
+        .unwrap();
     let mask = gradient_mask("Mask 1");
     let recipe = |layer: Layer| Recipe {
         format: RECIPE_FORMAT,
@@ -390,7 +446,7 @@ fn a_mask_this_build_cannot_evaluate_is_refused_by_name() {
         masks: vec![mask.clone()],
         ..Recipe::default()
     };
-    let layer = Layer::pixel(1, 1, [9, 9, 9]);
+    let layer = test_layer("test.pixelwarp.effect");
     // Unmasked, the same layer compiles as it always has.
     registry
         .compile(256, 256, &recipe(layer.clone()))
@@ -566,7 +622,7 @@ fn a_layer_naming_a_mask_the_recipe_does_not_carry_is_refused_by_every_compile()
     let mask = Mask::new("Mask 1");
     let layer = Layer {
         mask: Some(mask.id.clone()),
-        ..Layer::pixel(0, 0, [1, 2, 3])
+        ..basic_layer()
     };
     let recipe = Recipe {
         format: RECIPE_FORMAT,
@@ -702,7 +758,7 @@ fn payload_format_and_shape_are_validated_by_the_providing_module() {
     let registry = ModuleRegistry::developer();
     let wrong_format = Layer {
         effect_format: 99,
-        ..Layer::pixel(0, 0, [1, 2, 3])
+        ..basic_layer()
     };
     assert_eq!(
         registry.validate_layer(&wrong_format).unwrap_err().kind,
@@ -710,7 +766,7 @@ fn payload_format_and_shape_are_validated_by_the_providing_module() {
     );
     let wrong_payload = Layer {
         payload: json!({"x": 1}),
-        ..Layer::pixel(0, 0, [1, 2, 3])
+        ..basic_layer()
     };
     assert_eq!(
         registry.validate_layer(&wrong_payload).unwrap_err().kind,
@@ -736,11 +792,7 @@ fn payload_format_and_shape_are_validated_by_the_providing_module() {
             .validate_layer(&Layer::orientation(Orientation::NEUTRAL))
             .is_ok()
     );
-    assert!(
-        registry
-            .validate_layer(&Layer::pixel(0, 0, [1, 2, 3]))
-            .is_ok()
-    );
+    assert!(registry.validate_layer(&basic_layer()).is_ok());
 }
 
 /// The one order the host cannot evaluate: a finish layer is defined in the output coordinates
@@ -1037,14 +1089,14 @@ fn compile_binds_artifacts_in_listed_order_and_refuses_unbound_ones() {
         )
     );
     // An effect that does not declare artifacts cannot be compiled with any.
-    let pixel = Layer {
+    let basic = Layer {
         artifacts: vec![first.id.clone()],
-        ..Layer::pixel(0, 0, [1, 2, 3])
+        ..basic_layer()
     };
     let error = registry
-        .compile_layers(2, 1, &[pixel], &[], &Default::default(), &bound)
+        .compile_layers(2, 1, &[basic], &[], &Default::default(), &bound)
         .err()
-        .expect("a pixel layer never binds an artifact");
+        .expect("a Basic layer never binds an artifact");
     assert_eq!(error.kind, ErrorKind::Validation);
     assert!(error.detail.contains("which its effect does not declare"));
 }

@@ -24,7 +24,7 @@ const MEMORY: (&str, &str) = (
      on the CPU, which is slower. Fewer masked Presence or Detail layers, or Fit, draw on the GPU.",
 );
 const STACK: (&str, &str) = (
-    "Not on the GPU: Pixel",
+    "Not on the GPU: Unprogrammed",
     "The GPU preview cannot draw this layer yet, so this drag is drawn on the CPU.",
 );
 const REFERENCE: (&str, &str) = (
@@ -251,16 +251,116 @@ fn gpu_preview_a_geometry_drag_on_a_fresh_photo_is_planned_for_the_gpu() {
     finish(editor, catalog);
 }
 
-/// A layer the plan cannot hold names itself: over a developer's pixel replacement, which addresses
-/// content pixels no program replaces, a Basic drag's reason is `pixel-stage`, and the notice names
-/// the layer by the label the recipe list gives it.
+/// The effect a test module commits: a colour unit with no GPU program, ordered after Basic.
+pub(super) const UNPROGRAMMED_EFFECT: &str = "test.unprogrammed.effect";
+const UNPROGRAMMED_ACTION: &str = "add-unprogrammed";
+
+/// A colour unit that leaves every pixel as it found it and declares no GPU program.
+#[derive(Debug)]
+struct Unprogrammed;
+
+impl luxforge_core::PointwiseColor for Unprogrammed {
+    fn identity(&self) -> luxforge_core::OperationIdentity {
+        luxforge_core::OperationIdentity::new("app-test.unprogrammed", [])
+    }
+    fn apply_row(&self, _: u32, _: u32, _: &mut [[f32; 3]]) {}
+    fn is_finite(&self) -> bool {
+        true
+    }
+    fn describe(&self) -> String {
+        "unprogrammed".into()
+    }
+}
+
+/// The module that commits and compiles [`UNPROGRAMMED_EFFECT`], a layer the GPU cannot draw.
+pub(super) struct UnprogrammedModule(luxforge_core::ModuleDescriptor);
+
+impl UnprogrammedModule {
+    pub(super) fn registry() -> std::sync::Arc<luxforge_core::ModuleRegistry> {
+        let mut registry = luxforge_core::ModuleRegistry::developer();
+        registry
+            .register(std::sync::Arc::new(Self(luxforge_core::ModuleDescriptor {
+                id: "test.unprogrammed".into(),
+                title: "Unprogrammed".into(),
+                effects: vec![luxforge_core::EffectDescriptor {
+                    order: 100,
+                    ..luxforge_core::EffectDescriptor::new(
+                        UNPROGRAMMED_EFFECT,
+                        luxforge_core::EffectStage::Color,
+                    )
+                }],
+                actions: vec![luxforge_core::ActionDescriptor::new(
+                    UNPROGRAMMED_ACTION,
+                    "Add",
+                    "commits one layer of the effect",
+                )],
+                availability: luxforge_core::Availability::Available,
+                ..luxforge_core::ModuleDescriptor::default()
+            })))
+            .expect("a valid test module");
+        std::sync::Arc::new(registry)
+    }
+}
+
+impl luxforge_core::ToolModule for UnprogrammedModule {
+    fn descriptor(&self) -> &luxforge_core::ModuleDescriptor {
+        &self.0
+    }
+    fn parse(
+        &self,
+        action_id: &str,
+        _: &serde_json::Map<String, Value>,
+    ) -> Result<luxforge_core::ActionInput, luxforge_core::Error> {
+        Ok(luxforge_core::ActionInput {
+            action_id: action_id.into(),
+            parameters: serde_json::Map::new(),
+        })
+    }
+    fn plan(
+        &self,
+        _: &luxforge_core::ActionInput,
+        _: &luxforge_core::StageContext<'_>,
+    ) -> Result<luxforge_core::ActionPlan, luxforge_core::Error> {
+        Ok(luxforge_core::ActionPlan::Commit(
+            luxforge_core::NewLayer::new(UNPROGRAMMED_EFFECT, json!({})),
+        ))
+    }
+    fn validate_payload(&self, _: &str, _: u32, _: &Value) -> Result<(), luxforge_core::Error> {
+        Ok(())
+    }
+    fn describe(
+        &self,
+        _: &str,
+        _: u32,
+        _: &Value,
+    ) -> Result<luxforge_core::LayerReport, luxforge_core::Error> {
+        Ok(luxforge_core::LayerReport::new("unprogrammed"))
+    }
+    fn compile(
+        &self,
+        _: &str,
+        _: u32,
+        _: &Value,
+        _: luxforge_core::CompileStage,
+    ) -> Result<luxforge_core::Processing, luxforge_core::Error> {
+        let unit: std::sync::Arc<dyn luxforge_core::PointwiseColor> =
+            std::sync::Arc::new(Unprogrammed);
+        Ok(luxforge_core::Processing::Color(
+            luxforge_core::ColorOperation::new(vec![unit]),
+        ))
+    }
+}
+
+/// A layer the plan cannot hold names itself: over a colour layer with no GPU program, a Basic
+/// drag's reason is `no-program`, and the notice names the layer by the label the recipe list
+/// gives it.
 #[test]
 fn gpu_preview_the_notice_names_the_layer_the_stack_cannot_draw() {
     let catalog = catalog("notice-stack");
     let _ = std::fs::remove_file(&catalog);
     let (owner, join) = luxforge_core::OwnerHandle::start_with_host(
         &catalog,
-        std::sync::Arc::new(luxforge_core::ModuleRegistry::developer()),
+        UnprogrammedModule::registry(),
         luxforge_core::HostConfig::unconfigured(),
     )
     .unwrap();
@@ -274,12 +374,12 @@ fn gpu_preview_the_notice_names_the_layer_the_stack_cannot_draw() {
         call(
             &owner,
             other,
-            "edit.set-pixel",
-            json!({"asset_id": id, "x": 3, "y": 2, "rgb": [9, 9, 9],
+            &format!("edit.{UNPROGRAMMED_ACTION}"),
+            json!({"asset_id": id,
                    "mutation": mutation(revision(&owner, other, &id).unwrap(),
                                         &request_id("notice"), "agent")}),
         )
-        .expect("a pixel replacement");
+        .expect("a layer with no GPU program");
     }
     let refreshed = crate::app::tasks::refresh(
         &owner,
@@ -295,8 +395,8 @@ fn gpu_preview_the_notice_names_the_layer_the_stack_cannot_draw() {
     editor.gpu.surface = Some(SurfaceReport::default());
     for value in [0.2, 0.4] {
         let _ = slide(&mut editor, ACTION, FIELD, value);
-        assert_eq!(latest_reason(&editor), json!("pixel-stage"));
-        assert_says(&editor, "pixel-stage", Some(STACK));
+        assert_eq!(latest_reason(&editor), json!("no-program"));
+        assert_says(&editor, "no-program", Some(STACK));
     }
     let _ = editor.update(Message::Draft(DraftMessage::Cancel));
     finish(editor, catalog);
