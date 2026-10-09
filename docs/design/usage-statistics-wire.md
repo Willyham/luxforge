@@ -1,8 +1,10 @@
 # Usage statistics wire format
 
 The desktop encoder (`crates/luxforge-core/src/usage/`) and the standalone ingress
-(`services/usage-ingest/`) implement exactly this shape; the ingress is implemented
-([README](../../services/usage-ingest/README.md)), the encoder is in progress. The
+(`services/usage-ingest/`) implement exactly this shape; both are implemented
+([ingress README](../../services/usage-ingest/README.md)). The core also holds an independent strict
+decoder (`usage::decode_batch`) and synthetic valid and invalid batches in
+`crates/luxforge-core/tests/fixtures/usage/`, which both sides accept and refuse alike. The
 [design](usage-statistics.md) is the behavioural contract; this file fixes the key names and ranges. Every object is closed: an unknown key rejects the whole batch.
 
 ## Envelope (all keys required unless marked optional)
