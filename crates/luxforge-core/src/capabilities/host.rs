@@ -83,6 +83,12 @@ pub struct HostConfig {
     /// one, such as `luxforge-json`, whose owner holds the reference renderer's service instead
     /// ([`crate::tiles::ReferenceTiles`]), so every export there is the reference renderer's.
     pub tiles: Option<Arc<dyn crate::tiles::TileService>>,
+    /// The process-wide usage statistics consent runtime ([`crate::usage::consent::Usage`]), shared
+    /// by every catalog owner of the process: its eligibility, collection gate and consented
+    /// identity. Its consent record is read from and written to `preferences.json` under
+    /// [`Self::preferences_dir`]. Every host but an eligible desktop or an explicit test host
+    /// passes a headless one, which is never eligible.
+    pub usage: Arc<crate::usage::consent::Usage>,
 }
 
 impl HostConfig {
@@ -102,6 +108,7 @@ impl HostConfig {
             launch_flags: Default::default(),
             renderer: crate::Renderer::headless(),
             tiles: None,
+            usage: Arc::new(crate::usage::consent::Usage::headless()),
         }
     }
 }
@@ -118,6 +125,7 @@ impl std::fmt::Debug for HostConfig {
             .field("launch_flags", &self.launch_flags)
             .field("renderer", &self.renderer)
             .field("tiles", &self.tiles.as_ref().map(|tiles| tiles.status()))
+            .field("usage", &self.usage)
             .finish()
     }
 }
@@ -308,6 +316,11 @@ impl CapabilityHost {
     /// What the desktop's launch resolved for each launch flag.
     pub(crate) fn launch_flags(&self) -> &crate::flags::LaunchFlags {
         &self.config.launch_flags
+    }
+
+    /// The process-wide usage statistics consent runtime ([`HostConfig::usage`]).
+    pub(crate) fn usage(&self) -> &crate::usage::consent::Usage {
+        &self.config.usage
     }
 
     /// The renderer the host said it draws with when it started ([`HostConfig::renderer`]).
