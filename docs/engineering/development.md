@@ -195,6 +195,8 @@ Every evidence command refuses an existing output directory: use a fresh `artifa
 
 The check also refuses a stale row: one that reads no file, names a path that does not exist, or shares another row's name.
 
+`check-repository` also reads each standalone service package under `services/` (today `services/usage-ingest`): a package with its own empty `[workspace]` and `Cargo.lock`, listed in the root workspace's `exclude`, GPL-3.0-or-later, with a `NOTICE.md`, whose every dependency in every table is pinned `=x.y.z` (no path, git or Luxforge crate) and whose lockfile holds only checksummed crates.io releases beside the local package and is not merged into the desktop `Cargo.lock`. A service's tests run with `cargo test --manifest-path services/NAME/Cargo.toml`; `cargo xtask check` and the desktop builds do not build it. `cargo xtask audit` runs the same licence, source and advisory policy over each service's lockfile, with no advisory exceptions.
+
 A task that finishes a concept adds the rule that keeps it single as a row of one of these tables, with a test that shows an allowed and a refused path; it never writes a bespoke check. A deliberate new home for something a rule confines is a change to that row's allowed paths, made in review.
 
 ### When to verify

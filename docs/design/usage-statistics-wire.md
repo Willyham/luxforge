@@ -1,7 +1,8 @@
 # Usage statistics wire format
 
 The desktop encoder (`crates/luxforge-core/src/usage/`) and the standalone ingress
-(`services/usage-ingest/`) implement exactly this shape; neither exists yet. The
+(`services/usage-ingest/`) implement exactly this shape; the ingress is implemented
+([README](../../services/usage-ingest/README.md)), the encoder is in progress. The
 [design](usage-statistics.md) is the behavioural contract; this file fixes the key names and ranges. Every object is closed: an unknown key rejects the whole batch.
 
 ## Envelope (all keys required unless marked optional)
@@ -20,8 +21,8 @@ The desktop encoder (`crates/luxforge-core/src/usage/`) and the standalone ingre
 | `events` | array of 1 to 512 event objects |
 
 Body at most 65536 bytes, `Content-Type: application/json` (an optional `; charset=utf-8` is
-accepted), nesting depth at most 4 (envelope → device → os/cpu/gpus → gpu object; event objects are
-flat).
+accepted), nesting depth at most 4 below the envelope (envelope → device → os/cpu/gpus → gpu object →
+`driver_version`, the fifth container including the envelope; event objects are flat), checked before parsing.
 
 ## Device
 
