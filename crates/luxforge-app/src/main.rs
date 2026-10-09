@@ -82,6 +82,9 @@ struct Config {
     /// Why the live session could not be started or registered at launch (`app/lifecycle.rs`),
     /// which the status bar shows and the log records.
     live_problem: Option<String>,
+    /// This launch may show the usage statistics notice and the Settings sheet's Privacy tab:
+    /// the eligibility its host is started with ([`app::usage`]).
+    usage_eligible: bool,
 }
 
 impl Config {
