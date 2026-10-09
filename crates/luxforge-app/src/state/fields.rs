@@ -148,6 +148,12 @@ fn seed_controls(owner: ControlOwner<'_>, controls: &[Control], fields: &mut Fie
                     seed(&range.action, parameter);
                 }
             }
+            // A wheel's hue, saturation and luminance are its own number fields too.
+            Control::Wheel(wheel) => {
+                for parameter in wheel.parameters() {
+                    seed(&wheel.action, parameter);
+                }
+            }
             // None carries a field of its own: a group's fields are its children's, an action
             // button submits the fields already seeded, a picker only enters its module's canvas
             // mode, a preset row submits a library preset's own settings, name and identity, and a
@@ -792,6 +798,9 @@ mod tests {
                 "set-controls.red",
                 "set-controls.rgb",
                 "set-controls.rgb-fields",
+                "set-controls.wheel-hue",
+                "set-controls.wheel-luminance",
+                "set-controls.wheel-saturation",
                 "set-curve.luminance",
                 "set-detail.colour",
                 "set-detail.colour-detail",
@@ -809,6 +818,20 @@ mod tests {
                 "set-mixer.blue-hue",
                 "set-mixer.blue-luminance",
                 "set-mixer.blue-saturation",
+                "set-mixer.grade-balance",
+                "set-mixer.grade-blending",
+                "set-mixer.grade-global-hue",
+                "set-mixer.grade-global-luminance",
+                "set-mixer.grade-global-saturation",
+                "set-mixer.grade-highlights-hue",
+                "set-mixer.grade-highlights-luminance",
+                "set-mixer.grade-highlights-saturation",
+                "set-mixer.grade-midtones-hue",
+                "set-mixer.grade-midtones-luminance",
+                "set-mixer.grade-midtones-saturation",
+                "set-mixer.grade-shadows-hue",
+                "set-mixer.grade-shadows-luminance",
+                "set-mixer.grade-shadows-saturation",
                 "set-mixer.green-hue",
                 "set-mixer.green-luminance",
                 "set-mixer.green-saturation",

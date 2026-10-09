@@ -10,7 +10,8 @@ use crate::{
     *,
 };
 use luxforge_evidence::{
-    self as script, ControlsStep, CurveStep, CurveStepEvent, GroupStep, PickerStep, SliderEnd,
+    self as script, ControlsStep, CurveStep, CurveStepEvent, GroupStep, PickerStep, PreviewStep,
+    SliderEnd, TabStep,
 };
 
 const MODULE: &str = "luxforge.controls";
@@ -23,6 +24,39 @@ const PIXEL_MODULE: &str = "luxforge.pixel";
 /// The label the module reset earns. A commit of the proof's own patch earns its field's label,
 /// as every field-patch module's does: the field's name and its value.
 const RESET: &str = "Reset Controls";
+
+/// The proof's wheel: its hue and saturation fields, the label a patch of both earns, and the
+/// nested group whose tab row shows it compact and large.
+const WHEEL_HUE: &str = "wheel-hue";
+const WHEEL_SATURATION: &str = "wheel-saturation";
+const WHEEL_TINT: &str = "Wheel tint";
+const WHEEL_GROUP: [&str; 2] = ["Control vocabulary", "Colour wheel"];
+/// Where the tools panel shows the wheel, between the proof's own fields and its curve.
+const WHEEL_SCROLL: f64 = 0.45;
+/// The entry the history step previews: the Original, which shows the wheel at its defaults.
+const WHEEL_HISTORY: u64 = 0;
+
+/// One wheel gesture through `positions`, Shift held when `shift`.
+fn wheel(positions: Vec<[f32; 2]>, shift: bool, finish: SliderEnd) -> script::Step {
+    script::Step::Controls(ControlsStep::Wheel {
+        action: ACTION.into(),
+        hue: WHEEL_HUE.into(),
+        positions,
+        shift,
+        command: false,
+        option: false,
+        finish,
+    })
+}
+
+/// The wheel group's `index`th view, selected as its tab row does.
+fn tab(index: usize) -> script::Step {
+    script::Step::Tab(TabStep {
+        module: MODULE.into(),
+        group: WHEEL_GROUP.map(String::from).into(),
+        index,
+    })
+}
 
 /// Every frame, in order: the open, then one per interaction. Opening, scrolling and drafting
 /// create no history; one release or one discrete event makes exactly one entry.
@@ -200,6 +234,61 @@ pub fn plan(_: &[PathBuf]) -> Plan {
                 value: json!("two"),
             }),
         ),
+        // The colour wheel: its nested Colour wheel group shows two tabs over the same three fields.
+        // A drag drafts hue and saturation together through one draft and commits one entry.
+        view("wheel-scrolled", script::Step::tools_scroll(WHEEL_SCROLL)),
+        view(
+            "wheel-drag",
+            wheel(vec![[0.5, 0.0], [-0.25, -0.433]], false, SliderEnd::Open),
+        )
+        .draft(ACTION, json!({WHEEL_HUE: 120.0, WHEEL_SATURATION: 50.0})),
+        set(
+            "wheel-release",
+            WHEEL_TINT,
+            wheel(vec![[-0.25, -0.433]], false, SliderEnd::Release),
+        )
+        .field(ACTION, WHEEL_HUE, "120")
+        .field(ACTION, WHEEL_SATURATION, "50"),
+        // Through the centre: the angle is undefined there, so the hue it had is kept.
+        set(
+            "wheel-centre",
+            WHEEL_TINT,
+            wheel(vec![[0.0, 0.0]], false, SliderEnd::Release),
+        )
+        .field(ACTION, WHEEL_HUE, "120")
+        .field(ACTION, WHEEL_SATURATION, "0"),
+        // Escape restores the committed values and commits nothing.
+        view(
+            "wheel-cancel",
+            wheel(vec![[0.0, 0.6], [0.0, 0.7]], false, SliderEnd::Cancel),
+        )
+        .no_draft()
+        .field(ACTION, WHEEL_HUE, "120")
+        .field(ACTION, WHEEL_SATURATION, "0"),
+        // Shift keeps the hue while the saturation follows the pointer to 0.8 of the rim.
+        set(
+            "wheel-shift",
+            WHEEL_TINT,
+            wheel(vec![[0.8, 0.0]], true, SliderEnd::Release),
+        )
+        .field(ACTION, WHEEL_HUE, "120")
+        .field(ACTION, WHEEL_SATURATION, "80"),
+        // Another client's edit of the same fields moves the wheel.
+        commit(
+            "wheel-external",
+            script::Step::agent(
+                format!("edit.{ACTION}"),
+                json!({WHEEL_HUE: 240.0, WHEEL_SATURATION: 30.0}),
+            ),
+        )
+        .label(WHEEL_TINT),
+        // The Large view: the same fields on a large wheel with their numbers. Selecting a view is
+        // session state alone.
+        view("view-large", tab(1)),
+        // A historical entry shows its own values, disabled.
+        view("wheel-history", PreviewStep::Sequence(WHEEL_HISTORY).into()),
+        view("wheel-current", PreviewStep::Current.into()),
+        view("view-compact", tab(0)),
         // The proof's controls are its module's only group, which the panel draws without a
         // header and cannot collapse; group disclosure is a group of a module with several.
         view(
@@ -243,7 +332,7 @@ fn control_model<'a>(frame: &'a Value, kind: &str, parameter: &str) -> Option<&'
         .find(|model| model["action"] == ACTION && model["parameter"] == parameter)
 }
 
-fn sidebar_difference(first: &Frame, second: &Frame) -> Result<u32> {
+pub(crate) fn sidebar_difference(first: &Frame, second: &Frame) -> Result<u32> {
     let frame = second;
     let first = first.image()?;
     let second = second.image()?;
@@ -396,6 +485,79 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
                 .is_none(),
         "A group of a multi-group module did not collapse and expand",
     )?;
+    // The wheel: one draft of both fields while dragged, its model following the committed and
+    // external values, and its views selected as session state with no history or frame.
+    let wheel_model = |step: &str| -> Result<Value> {
+        at(step)?["state"]["control_ui"]["wheels"]
+            .as_array()
+            .and_then(|wheels| {
+                wheels
+                    .iter()
+                    .find(|wheel| wheel["hue_parameter"] == WHEEL_HUE)
+                    .cloned()
+            })
+            .ok_or_else(|| format!("The {step} frame reports no wheel").into())
+    };
+    ensure(
+        wheel_model("wheel-drag")?["dragging"] == true,
+        "The dragged wheel is not drawn as dragging",
+    )?;
+    ensure(
+        wheel_model("wheel-centre")?["hue"] == json!(120.0)
+            && wheel_model("wheel-centre")?["saturation"] == json!(0.0),
+        "A drag through the centre did not keep the wheel's hue",
+    )?;
+    ensure(
+        wheel_model("wheel-external")?["hue"] == json!(240.0)
+            && wheel_model("wheel-external")?["saturation"] == json!(30.0),
+        "Another client's edit did not move the wheel",
+    )?;
+    ensure(
+        wheel_model("wheel-history")?["hue"] == json!(0.0)
+            && wheel_model("wheel-current")?["hue"] == json!(240.0),
+        "The previewed Original and the current entry do not show their own wheel values",
+    )?;
+    let views =
+        |step: &str| -> Result<Value> { Ok(at(step)?["state"]["workspace"]["views"].clone()) };
+    let large = json!([{"module": MODULE, "group": WHEEL_GROUP, "view": "Large"}]);
+    let compact = json!([{"module": MODULE, "group": WHEEL_GROUP, "view": "Compact"}]);
+    ensure(
+        views("view-large")? == large && views("view-compact")? == compact,
+        "The session's view selection does not record the Large and Compact views",
+    )?;
+    let visible = |step: &str| -> Result<Value> {
+        Ok(at(step)?["state"]["control_ui"]["tab_rows"]
+            .as_array()
+            .and_then(|rows| rows.iter().find(|row| row["group"] == json!(WHEEL_GROUP)))
+            .map(|row| row["visible"].clone())
+            .unwrap_or(Value::Null))
+    };
+    ensure(
+        visible("wheel-scrolled")? == "Compact"
+            && visible("view-large")? == "Large"
+            && visible("view-compact")? == "Compact",
+        "The wheel group's tab row did not show the selected view",
+    )?;
+    // The two views draw the same fields differently: the large wheel and its numbers replace the
+    // compact wheel in the tools panel.
+    ensure(
+        sidebar_difference(at("wheel-external")?, at("view-large")?)? >= 100,
+        "The Large view did not change the tools panel",
+    )?;
+    ensure(
+        sidebar_difference(at("wheel-current")?, at("view-compact")?)? >= 100,
+        "The Compact view did not change the tools panel back",
+    )?;
+    for (step, before) in [
+        ("view-large", "wheel-external"),
+        ("view-compact", "wheel-current"),
+    ] {
+        ensure(
+            at(step)?["state"]["requested_generation"]
+                == at(before)?["state"]["requested_generation"],
+            format!("Selecting the view in {step} asked for a frame"),
+        )?;
+    }
     let scrolled = at("pixel-scrolled")?;
     ensure(
         scrolled["state"]["tools_scroll"] == json!(1.0),
@@ -418,6 +580,19 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
                 .iter()
                 .any(|event| event["event"] == "preview_displayed"),
         "Control drafts or their displayed frames are not correlated in the log",
+    )?;
+    // Each view selection is logged with the identity it was keyed by.
+    let selected: Vec<&Value> = events
+        .iter()
+        .filter(|event| event["event"] == "view_selected")
+        .collect();
+    ensure(
+        selected.len() == 2
+            && selected.iter().all(|event| {
+                event["detail"]["module"] == MODULE
+                    && event["detail"]["group"] == json!(WHEEL_GROUP)
+            }),
+        format!("Expected two logged view selections of the wheel group, found {selected:?}"),
     )?;
     checks.write(&launch.evidence, "controls", json!({}))
 }

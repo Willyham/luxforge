@@ -38,9 +38,21 @@ pub static GPU_PROGRAMS: &[&crate::GpuProgram] = &[
     &look::LOOK_PROGRAM,
     &curve::TONE_CURVE_PROGRAM,
     &mixer::MIXER_PROGRAM,
+    &mixer::GRADE_PROGRAM,
     &vignette::VIGNETTE_PROGRAM,
     &presence::PRESENCE_PROGRAM,
 ];
+/// The current payload format marker of a built-in effect: the shared [`crate::EFFECT_FORMAT`],
+/// except for an effect whose payload changed meaning and declares its own (the RAW development
+/// and the colour mixer). What [`crate::Layer::new`] stamps on a layer it builds directly;
+/// `current_effect_formats_match_the_builtin_descriptors` holds it to the registry's descriptors.
+pub fn current_effect_format(effect_id: &str) -> u32 {
+    if effect_id == MIXER_EFFECT {
+        return mixer::MIXER_EFFECT_FORMAT;
+    }
+    raw::current_format(effect_id).unwrap_or(crate::EFFECT_FORMAT)
+}
+
 pub use basic::BASIC_EFFECT;
 pub(crate) use basic::BasicModule;
 /// Basic's Auto tone: its solver and forward model, public for the fitting rig and measurements.
@@ -75,7 +87,7 @@ pub use descriptor::{
 };
 pub use descriptor::{
     ChoiceControl, ColorControl, ControlVariant, IdentityKind, RangeControl, ResolvedControl,
-    ResolvedReset, TaskControl, ToggleControl,
+    ResolvedReset, TaskControl, ToggleControl, WheelControl, WheelStyle,
 };
 pub use descriptor::{Chord, HOST_CHORDS, host_chord};
 pub(crate) use descriptor::{
@@ -96,8 +108,8 @@ pub use lens::LENS_EFFECT;
 pub(crate) use lens::{LENS_MODULE, LensModule};
 pub use look::LOOK_EFFECT;
 pub(crate) use look::LookModule;
-pub use mixer::MIXER_EFFECT;
 pub(crate) use mixer::MixerModule;
+pub use mixer::{MIXER_EFFECT, MIXER_EFFECT_FORMAT};
 pub use perspective::PERSPECTIVE_EFFECT;
 pub(crate) use perspective::PerspectiveModule;
 pub use pixel::PIXEL_EFFECT;

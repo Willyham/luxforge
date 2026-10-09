@@ -10,7 +10,8 @@
 //! mutating service handler reports beside its answer ([`Mutated`]); nothing is routed any other
 //! way.
 use super::{
-    ClientSession, MASK_MODE, MaskOverlayColour, MaskOverlayMode, POINTER_MODE, PROTOCOL,
+    ClientSession, MASK_MODE, MAX_VIEW_SELECTIONS, MaskOverlayColour, MaskOverlayMode,
+    POINTER_MODE, PROTOCOL, ViewSelection,
     owner::{self, Call, Owner},
     params::{self, Envelope, HostParams, NoParams, ParamSchema, RevisionOf, host_params, parse},
 };
@@ -766,13 +767,13 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "workspace.set",
         WorkspaceSet,
         workspace_set,
-        "per-client screen preference: panels, canvas mode, the thirds guide and overlays; needs no asset and changes no history or frame; returns the session"
+        "per-client screen preference: panels, canvas mode, the thirds guide, overlays and the view each declared tab row shows (views, keyed by module and group label path, checked against module.list's descriptors); needs no asset and changes no recipe, history or frame; a refused field writes nothing; returns the session"
     ),
     service!(
         "session.state",
         NoParams,
         |service, session, _| session_value(service, session),
-        "this client's selection, view, workspace state and session revision, and renderer {record, reason}: which renderer draws the desktop's picture on this machine, the same in every client's session and set by no method (schema.list's renderer block lists its values, and the reasons an export's result names in the same shape)"
+        "this client's selection, view, workspace state (with the views its tab rows show) and session revision, and renderer {record, reason}: which renderer draws the desktop's picture on this machine, the same in every client's session and set by no method (schema.list's renderer block lists its values, and the reasons an export's result names in the same shape)"
     ),
     service!(
         "resources.read",
@@ -1950,6 +1951,7 @@ host_params! {
         mask_overlay: Option<String> = enumeration(MaskOverlayMode::ALL.map(MaskOverlayMode::as_str)).notes("what the canvas draws of the selected mask"),
         mask_handles: Option<bool> = boolean().notes("show mask gradient handles independently of coverage; on by default"),
         mask_overlay_colour: Option<String> = enumeration(MaskOverlayColour::ALL.map(MaskOverlayColour::as_str)).notes("the tint the mask overlay is drawn in"),
+        views: Option<Vec<ViewSelection>> = json("[{module, group, view}], at most 64: the view each named tab row shows; module is a registered module id, group the label path from its top level to a group that declares layout: tabs (empty for the module's own tabs, as module.list's layout says), view the label of one of that row's child groups; each entry replaces that row's choice, others keep theirs, and a row with no choice shows its first view; an unknown module, group or view is refused by name and nothing is written; presentation state only: no recipe field, history entry or frame"),
     }
 }
 
@@ -2431,6 +2433,71 @@ fn canvas_modes(registry: &ModuleRegistry) -> Vec<String> {
     modes
 }
 
+/// The session's view selections with `chosen` applied, each checked against the registry's
+/// descriptors: a registered module, a label path to a tab row it declares and one of that row's
+/// views. Each choice replaces its row's earlier one; the result is sorted by (module, group) and
+/// bounded by [`MAX_VIEW_SELECTIONS`]. Refused by name, writing nothing, on the first bad entry.
+/// `O(chosen × (controls depth + stored))`; reads no recipe.
+fn chosen_views(
+    registry: &ModuleRegistry,
+    stored: &[ViewSelection],
+    chosen: &[ViewSelection],
+) -> Result<Vec<ViewSelection>, Error> {
+    if chosen.len() > MAX_VIEW_SELECTIONS {
+        return Err(Error::validation(format!(
+            "views names {} tab rows; at most {MAX_VIEW_SELECTIONS}",
+            chosen.len()
+        )));
+    }
+    let mut views = stored.to_vec();
+    for (at, selection) in chosen.iter().enumerate() {
+        let ViewSelection {
+            module,
+            group,
+            view,
+        } = selection;
+        let path = group.join(" / ");
+        if chosen[..at]
+            .iter()
+            .any(|earlier| earlier.module == *module && earlier.group == *group)
+        {
+            return Err(Error::validation(format!(
+                "views names the tab row [{path}] of {module} twice"
+            )));
+        }
+        let descriptor = registry
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.id == *module)
+            .ok_or_else(|| Error::validation(format!("views names unknown module {module}")))?;
+        let offered = descriptor.views_at(group).ok_or_else(|| {
+            Error::validation(format!(
+                "views names [{path}] of {module}, which is not a tab row it declares"
+            ))
+        })?;
+        if !offered.contains(&view.as_str()) {
+            return Err(Error::validation(format!(
+                "views names view {view} of [{path}] of {module}; its views are {}",
+                offered.join(", ")
+            )));
+        }
+        match views
+            .iter_mut()
+            .find(|stored| stored.module == *module && stored.group == *group)
+        {
+            Some(stored) => stored.view = view.clone(),
+            None => views.push(selection.clone()),
+        }
+    }
+    if views.len() > MAX_VIEW_SELECTIONS {
+        return Err(Error::resource_limit(format!(
+            "a session holds at most {MAX_VIEW_SELECTIONS} view selections"
+        )));
+    }
+    views.sort();
+    Ok(views)
+}
+
 fn workspace_set(
     service: &mut EditorService,
     session: &mut ClientSession,
@@ -2466,8 +2533,20 @@ fn workspace_set(
             ))
         })?),
     };
+    let views = match &p.views {
+        None => None,
+        Some(chosen) => Some(chosen_views(
+            service.registry(),
+            &session.workspace.views,
+            chosen,
+        )?),
+    };
     if let Some(mode) = p.mode {
         session.workspace.mode = mode;
+    }
+    // A view is which tab of a declared tab row this client shows: no recipe, history or frame.
+    if let Some(views) = views {
+        session.workspace.views = views;
     }
     if let Some(state_panel) = p.state_panel {
         session.workspace.state_panel = state_panel;
@@ -4715,6 +4794,7 @@ mod tests {
                 "mask_overlay": "off",
                 "mask_handles": true,
                 "mask_overlay_colour": "green",
+                "views": [],
             }),
             "a fresh session opens with both panels, the pointer and no overlay"
         );
@@ -4737,6 +4817,7 @@ mod tests {
                 "mask_overlay": "off",
                 "mask_handles": false,
                 "mask_overlay_colour": "green",
+                "views": [],
             })
         );
         assert_eq!(set["revision"], json!(1), "a session change is a revision");
@@ -4791,6 +4872,145 @@ mod tests {
             ok(&mut service, &mut session, "workspace.set", json!({}))["workspace"],
             set["workspace"],
             "an empty request keeps the state"
+        );
+        drop(service);
+        std::fs::remove_file(catalog).unwrap();
+    }
+
+    /// The view a tab row shows is session state keyed by the declared row: `workspace.set`
+    /// validates each choice against the registry's descriptors, refuses an unknown module, row or
+    /// view by name without writing anything, and records no history, recipe or frame.
+    #[test]
+    fn view_selection_round_trips_and_refuses_undeclared_rows_and_views() {
+        let catalog = std::env::temp_dir().join(format!(
+            "luxforge-methods-views-{}.sqlite",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&catalog);
+        let registry = Arc::new(ModuleRegistry::developer());
+        // A module whose own top level is a tab row, whatever its views are called.
+        let tabbed = registry
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.layout == crate::ModuleLayout::Tabs)
+            .map(|descriptor| {
+                let views = descriptor.views_at(&[] as &[&str]).unwrap();
+                (descriptor.id.clone(), views[views.len() - 1].to_owned())
+            })
+            .expect("a built-in module with top-level tabs");
+        let mut service = EditorService::open_with(&catalog, registry).unwrap();
+        let mut session = ClientSession::default();
+        let wheel = json!(["Control vocabulary", "Colour wheel"]);
+        let set = ok(
+            &mut service,
+            &mut session,
+            "workspace.set",
+            json!({"views": [
+                {"module": "luxforge.controls", "group": wheel, "view": "Large"},
+                {"module": tabbed.0, "view": tabbed.1},
+            ]}),
+        );
+        let mut expected = vec![
+            json!({"module": "luxforge.controls", "group": wheel, "view": "Large"}),
+            json!({"module": tabbed.0, "group": [], "view": tabbed.1}),
+        ];
+        expected.sort_by_key(|view| view["module"].as_str().unwrap_or_default().to_owned());
+        assert_eq!(
+            set["workspace"]["views"],
+            json!(expected),
+            "sorted by module"
+        );
+        assert_eq!(set["revision"], json!(1));
+        // A later choice for the same row replaces it and leaves the other.
+        let set = ok(
+            &mut service,
+            &mut session,
+            "workspace.set",
+            json!({"views": [{"module": "luxforge.controls", "group": wheel, "view": "Compact"}]}),
+        );
+        let views = set["workspace"]["views"].as_array().unwrap();
+        assert_eq!(views.len(), 2);
+        assert!(
+            views.contains(
+                &json!({"module": "luxforge.controls", "group": wheel, "view": "Compact"})
+            )
+        );
+        assert_eq!(
+            ok(&mut service, &mut session, "session.state", json!({}))["workspace"],
+            set["workspace"],
+            "session.state reports the selection"
+        );
+        let many: Vec<Value> = (0..=crate::MAX_VIEW_SELECTIONS)
+            .map(|_| json!({"module": "luxforge.controls", "group": wheel, "view": "Large"}))
+            .collect();
+        for (case, params, message) in [
+            (
+                "an unknown module",
+                json!({"views": [{"module": "luxforge.heal", "view": "Large"}]}),
+                "views names unknown module luxforge.heal".to_owned(),
+            ),
+            (
+                "a group that is not a tab row",
+                json!({"views": [{"module": "luxforge.controls", "group": ["Control vocabulary"], "view": "Large"}]}),
+                "views names [Control vocabulary] of luxforge.controls, which is not a tab row it \
+                 declares"
+                    .to_owned(),
+            ),
+            (
+                "a stacked module's own top level",
+                json!({"views": [{"module": "luxforge.controls", "view": "Large"}]}),
+                "views names [] of luxforge.controls, which is not a tab row it declares"
+                    .to_owned(),
+            ),
+            (
+                "an undeclared view",
+                json!({"views": [{"module": "luxforge.controls", "group": wheel, "view": "Huge"}]}),
+                "views names view Huge of [Control vocabulary / Colour wheel] of \
+                 luxforge.controls; its views are Compact, Large"
+                    .to_owned(),
+            ),
+            (
+                "one row twice",
+                json!({"views": [
+                    {"module": "luxforge.controls", "group": wheel, "view": "Large"},
+                    {"module": "luxforge.controls", "group": wheel, "view": "Compact"},
+                ]}),
+                "views names the tab row [Control vocabulary / Colour wheel] of \
+                 luxforge.controls twice"
+                    .to_owned(),
+            ),
+            (
+                "too many",
+                json!({"views": many}),
+                format!(
+                    "views names {} tab rows; at most {}",
+                    crate::MAX_VIEW_SELECTIONS + 1,
+                    crate::MAX_VIEW_SELECTIONS
+                ),
+            ),
+        ] {
+            let error = call(&mut service, &mut session, "workspace.set", params)
+                .error
+                .unwrap_or_else(|| panic!("{case} must be refused"));
+            assert_eq!(error.code, "validation", "{case}");
+            assert!(
+                error.message.contains(&message),
+                "{case}: {}",
+                error.message
+            );
+        }
+        // A refused selection, even one beside a valid change, writes nothing.
+        let error = call(
+            &mut service,
+            &mut session,
+            "workspace.set",
+            json!({"thirds": true, "views": [{"module": "luxforge.heal", "view": "Large"}]}),
+        );
+        assert!(error.error.is_some());
+        assert_eq!(
+            ok(&mut service, &mut session, "session.state", json!({}))["workspace"],
+            set["workspace"],
+            "a refused request changes nothing"
         );
         drop(service);
         std::fs::remove_file(catalog).unwrap();

@@ -1,5 +1,7 @@
 //! The colour mixer module (`luxforge.mixer`) end to end: the frozen fixtures through the real
-//! render path and the RAW linear path, and grey invariance. What the mixer shares with every
+//! render path and the RAW linear path, grey invariance, and the grading fields — their
+//! declaration and format marker, the reference through both render paths, dormant settings, and
+//! history, resets and reopen through the editor service. What the mixer shares with every
 //! field-patch module is proved once, for every such module, by the conformance suite
 //! (`field_patch`), and its order after Basic by the Presence, mixer and vignette chapter of
 //! `editor-acceptance`.
@@ -9,8 +11,12 @@
 //! `1e-5 + 1e-5 * |threshold|` of the exact linear threshold between two codes, where one code of
 //! difference is permitted. Identity stacks and byte sharing are exact with no tolerance at all.
 
-use luxforge_core::{Layer, LinearSettings, MIXER_EFFECT, ModuleRegistry, SnapshotId};
-use luxforge_reference::{self as reference, mixer::RANGE_NAMES};
+use luxforge_core::{
+    AssetId, EditorService, ErrorKind, Layer, LinearSettings, MIXER_EFFECT, MIXER_EFFECT_FORMAT,
+    ModuleRegistry, Mutation, MutationOutcome, ParameterKind, SnapshotId,
+};
+use luxforge_reference::{self as reference, grade, mixer::RANGE_NAMES};
+use luxforge_testbase::paths;
 use luxforge_testkit::fixtures::{self, linear_source_of, recipe, source_of};
 use luxforge_testkit::fixtures::{render, render_linear};
 use serde_json::{Map, Value, json};
@@ -381,4 +387,399 @@ fn production_matches_every_frozen_fixture_case_through_the_real_render_path() {
     }
     // Printed with --nocapture so the handoff can quote a measured figure.
     println!("maximum observed rendered-code deviation {worst} at {worst_case}");
+}
+
+// -------------------------------------------------------------------------------------------
+// Grading: the fourteen fields, the reference through the real render path, dormant settings
+// -------------------------------------------------------------------------------------------
+
+/// The grading fields as the payload names them, wheel by wheel, then Blending and Balance.
+fn grade_fields() -> Vec<String> {
+    grade::WHEEL_NAMES
+        .iter()
+        .flat_map(|wheel| {
+            ["hue", "saturation", "luminance"].map(|property| format!("grade-{wheel}-{property}"))
+        })
+        .chain(["grade-blending".to_owned(), "grade-balance".to_owned()])
+        .collect()
+}
+
+/// `set-mixer` declares all thirty-eight fields in payload order, the grading fields with their
+/// ranges and defaults (Blending 50), and the effect is at its own format marker.
+#[test]
+fn set_mixer_declares_every_hsl_and_grading_field() {
+    let registry = ModuleRegistry::builtin();
+    let module = registry
+        .descriptors()
+        .into_iter()
+        .find(|module| module.id == "luxforge.mixer")
+        .expect("the mixer module");
+    assert_eq!(module.effects[0].format, MIXER_EFFECT_FORMAT);
+    assert_eq!(MIXER_EFFECT_FORMAT, 2);
+    let action = module.action("set-mixer").expect("set-mixer");
+    let names: Vec<&str> = action
+        .parameters
+        .iter()
+        .map(|parameter| parameter.name.as_str())
+        .collect();
+    let expected: Vec<String> = fields().into_iter().chain(grade_fields()).collect();
+    assert_eq!(names, expected);
+    for parameter in &action.parameters[24..] {
+        let (min, max) = match parameter.kind {
+            ParameterKind::Number { min, max } => (min, max),
+            ref other => panic!("{} is {other:?}", parameter.name),
+        };
+        let expected = match parameter.name.rsplit('-').next() {
+            Some("hue") => (0.0, 360.0, 0.0),
+            Some("saturation") => (0.0, 100.0, 0.0),
+            Some("luminance") | Some("balance") => (-100.0, 100.0, 0.0),
+            Some("blending") => (0.0, 100.0, 50.0),
+            other => panic!("unexpected field {other:?}"),
+        };
+        assert_eq!(
+            (min, max, parameter.default.as_ref().and_then(Value::as_f64)),
+            (expected.0, expected.1, Some(expected.2)),
+            "{}",
+            parameter.name
+        );
+    }
+}
+
+/// A stored mixer layer at the shared format 1, the shape before grading, is refused as
+/// incompatible on every path that reads it, and is never rewritten.
+#[test]
+fn a_mixer_layer_at_an_unsupported_format_is_refused() {
+    let registry = ModuleRegistry::builtin();
+    let mut old = layer(json!({"red-hue": 20.0}));
+    old.effect_format = luxforge_core::EFFECT_FORMAT;
+    assert_ne!(old.effect_format, MIXER_EFFECT_FORMAT);
+    let error = registry
+        .layer_report(&old)
+        .expect_err("an unsupported format is refused");
+    assert!(error.contains("unsupported effect format 1"), "{error}");
+    let source = source_of(2, 1, &[[10, 20, 30], [200, 100, 50]]);
+    let error = render(&registry, &source, SnapshotId::new(), &recipe(vec![old]))
+        .expect_err("the stack is refused");
+    assert_eq!(error.kind, ErrorKind::Incompatible, "{error:?}");
+    assert!(
+        error.detail.contains("unsupported effect format 1"),
+        "{error:?}"
+    );
+}
+
+/// The grading parameters of a payload's grading fields, defaults filled.
+fn grade_params(payload: &Map<String, Value>) -> grade::GradeParams {
+    let number =
+        |name: &str, default: f64| payload.get(name).and_then(Value::as_f64).unwrap_or(default);
+    grade::GradeParams {
+        wheels: std::array::from_fn(|wheel| {
+            let name = grade::WHEEL_NAMES[wheel];
+            grade::Wheel {
+                hue: number(&format!("grade-{name}-hue"), 0.0),
+                saturation: number(&format!("grade-{name}-saturation"), 0.0),
+                luminance: number(&format!("grade-{name}-luminance"), 0.0),
+            }
+        }),
+        blending: number("grade-blending", 50.0),
+        balance: number("grade-balance", 0.0),
+    }
+}
+
+/// The HSL parameters of a payload's HSL fields.
+fn hsl_params(payload: &Map<String, Value>) -> reference::mixer::MixerParams {
+    let mut params = reference::mixer::MixerParams::neutral();
+    for (range, name) in RANGE_NAMES.iter().enumerate() {
+        let number = |property: &str| {
+            payload
+                .get(&format!("{name}-{property}"))
+                .and_then(Value::as_f64)
+                .unwrap_or(0.0)
+        };
+        params.hue[range] = number("hue");
+        params.saturation[range] = number("saturation");
+        params.luminance[range] = number("luminance");
+    }
+    params
+}
+
+/// Grading payloads across the contract: every wheel, luminance alone, opposing tints, Blending and
+/// Balance extremes, the hue seam, and grading over moved HSL fields.
+fn grading_payloads() -> Vec<(&'static str, Value)> {
+    vec![
+        (
+            "shadows-teal",
+            json!({"grade-shadows-hue": 190, "grade-shadows-saturation": 80}),
+        ),
+        (
+            "midtones-seam",
+            json!({"grade-midtones-hue": 360, "grade-midtones-saturation": 100}),
+        ),
+        (
+            "highlights-gold-dim",
+            json!({"grade-highlights-hue": 45, "grade-highlights-saturation": 60, "grade-highlights-luminance": -100}),
+        ),
+        (
+            "global-blue-odd-overlap",
+            json!({"grade-global-hue": 240, "grade-global-saturation": 50, "grade-blending": 0, "grade-balance": 100}),
+        ),
+        ("shadows-lift", json!({"grade-shadows-luminance": 100})),
+        (
+            "split-full-blend",
+            json!({"grade-shadows-hue": 20, "grade-shadows-saturation": 100, "grade-highlights-hue": 200, "grade-highlights-saturation": 100, "grade-blending": 100, "grade-balance": -60}),
+        ),
+        (
+            "with-hsl",
+            json!({"orange-hue": -40, "blue-saturation": 60, "red-luminance": -30, "grade-midtones-hue": 30, "grade-midtones-saturation": 40, "grade-global-luminance": 25}),
+        ),
+    ]
+}
+
+/// Production versus the f64 references (HSL, then grading) on the colourful image, through the
+/// 8-bit path and the RAW linear path: every rendered code equals the reference's code except
+/// within the shared code band of a threshold.
+#[test]
+fn grading_matches_the_reference_through_the_real_render_path() {
+    let registry = ModuleRegistry::builtin();
+    let (width, height, pixels) = colourful_image();
+    let source = source_of(width, height, &pixels);
+    let decoded: Vec<[f64; 3]> = pixels
+        .iter()
+        .map(|pixel| pixel.map(reference::srgb::decode))
+        .collect();
+    let linear = linear_source_of(width, height, &decoded);
+    for (name, payload) in grading_payloads() {
+        let object = payload.as_object().expect("an object");
+        let (hsl, grading) = (hsl_params(object), grade_params(object));
+        assert!(grading.is_active(), "{name}");
+        let stack = recipe(vec![layer(payload.clone())]);
+        let eight = render(&registry, &source, SnapshotId::new(), &stack)
+            .unwrap_or_else(|error| panic!("{name}: {error}"));
+        let raw = render_linear(
+            &registry,
+            &linear,
+            SnapshotId::new(),
+            &stack,
+            LinearSettings::default(),
+        )
+        .unwrap_or_else(|error| panic!("{name} (linear): {error}"));
+        for (path, rendered) in [("8-bit", &eight), ("linear", &raw)] {
+            for (index, input) in decoded.iter().enumerate() {
+                let (x, y) = (index as u32 % width, index as u32 / width);
+                let pixel = rendered.pixel(x, y).expect("a pixel");
+                assert_eq!(pixel[3], 255, "{name}: alpha is never touched");
+                let expected = grade::apply(reference::mixer::mix(*input, &hsl), &grading);
+                for channel in 0..3 {
+                    let code = reference::srgb::code(expected[channel]);
+                    fixtures::assert_code_near_threshold(
+                        pixel[channel],
+                        code,
+                        expected[channel],
+                        CODE_BAND,
+                        &format!("{name} {path} pixel {index} channel {channel}"),
+                    );
+                }
+            }
+        }
+    }
+}
+
+/// A hue, Blending or Balance with every grading amount at zero is a kept setting that changes no
+/// pixel: an HSL layer renders byte for byte the same with or without them, and a layer holding
+/// only them renders exactly the source.
+#[test]
+fn dormant_grading_settings_change_no_pixel() {
+    let registry = ModuleRegistry::builtin();
+    let (width, height, pixels) = colourful_image();
+    let source = source_of(width, height, &pixels);
+    let dormant = json!({
+        "grade-shadows-hue": 210, "grade-midtones-hue": 360, "grade-highlights-hue": 45,
+        "grade-global-hue": 120, "grade-blending": 0, "grade-balance": -100,
+    });
+    let hsl = json!({"orange-hue": 35, "aqua-saturation": -60, "purple-luminance": 20});
+    let mut both = hsl.as_object().cloned().expect("an object");
+    both.extend(dormant.as_object().cloned().expect("an object"));
+    let bytes = |stack| {
+        render(&registry, &source, SnapshotId::new(), &recipe(stack))
+            .expect("a render")
+            .rgba
+            .to_vec()
+    };
+    assert_eq!(
+        bytes(vec![layer(hsl)]),
+        bytes(vec![layer(Value::Object(both))])
+    );
+    assert_eq!(bytes(vec![layer(dormant.clone())]), bytes(Vec::new()));
+    let report = registry.layer_report(&layer(dormant)).expect("described");
+    assert!(
+        !report.neutral,
+        "a dormant setting is a stored, custom setting"
+    );
+    assert_eq!(report.values["grade-blending"], json!(0.0));
+}
+
+fn mutation(revision: u64, request: &str) -> Mutation {
+    fixtures::mutation(revision, request, "mixer-test")
+}
+
+fn mixer_values(service: &EditorService, asset: &AssetId) -> Map<String, Value> {
+    let registry = ModuleRegistry::builtin();
+    let stack = service
+        .state(asset)
+        .expect("state")
+        .current_entry
+        .snapshot
+        .recipe
+        .layers;
+    let mixers: Vec<&Layer> = stack
+        .iter()
+        .filter(|layer| layer.effect_id == MIXER_EFFECT)
+        .collect();
+    match mixers.as_slice() {
+        [] => Map::new(),
+        [one] => {
+            assert_eq!(one.effect_format, MIXER_EFFECT_FORMAT);
+            registry.layer_report(one).expect("described").values
+        }
+        more => panic!("{} mixer layers", more.len()),
+    }
+}
+
+/// Through the editor service: a dormant hue commits a layer and survives a later edit, undo/redo
+/// and reopen; a wheel's two-field patch is one entry; the Grading reset keeps HSL and the HSL
+/// group resets keep grading; the module reset clears both, Blending back to 50.
+#[test]
+fn grading_state_survives_history_resets_and_reopen() {
+    let path = paths::temp_catalog("mixer-grading");
+    let mut service = EditorService::open(&path).expect("a catalog");
+    let asset = service.import(&paths::jpeg()).expect("an import").asset.id;
+    let mut revision = 0;
+    let mut act = |service: &mut EditorService, request: &str, action: &str, parameters: Value| {
+        let result = service
+            .apply_action(&asset, mutation(revision, request), action, parameters)
+            .unwrap_or_else(|error| panic!("{request}: {error:?}"));
+        revision = result.revision;
+        result
+    };
+
+    // A dormant hue on a photo without a mixer layer is a kept setting: it commits.
+    act(
+        &mut service,
+        "dormant",
+        "set-mixer",
+        json!({"grade-shadows-hue": 210}),
+    );
+    assert_eq!(
+        mixer_values(&service, &asset)["grade-shadows-hue"],
+        json!(210.0)
+    );
+    let label = |service: &EditorService| service.state(&asset).expect("state").current_entry.label;
+    assert_eq!(label(&service), "Shadows hue 210");
+
+    // A wheel's hue and saturation in one patch are one entry.
+    let before = service
+        .history(&asset, None, 100)
+        .expect("history")
+        .entries
+        .len();
+    act(
+        &mut service,
+        "wheel",
+        "set-mixer",
+        json!({"grade-midtones-hue": 30, "grade-midtones-saturation": 45}),
+    );
+    assert_eq!(
+        service
+            .history(&asset, None, 100)
+            .expect("history")
+            .entries
+            .len(),
+        before + 1
+    );
+    act(&mut service, "hsl", "set-mixer", json!({"red-hue": 20}));
+    let values = mixer_values(&service, &asset);
+    assert_eq!(
+        values["grade-shadows-hue"],
+        json!(210.0),
+        "the dormant hue is kept"
+    );
+    assert_eq!(values["grade-midtones-saturation"], json!(45.0));
+
+    // Reset Grading keeps HSL, and its label says so.
+    let grading_reset: Map<String, Value> = ModuleRegistry::builtin()
+        .descriptors()
+        .into_iter()
+        .find(|module| module.id == "luxforge.mixer")
+        .expect("the mixer")
+        .action("set-mixer")
+        .expect("set-mixer")
+        .parameters
+        .iter()
+        .filter(|parameter| parameter.name.starts_with("grade-"))
+        .map(|parameter| {
+            (
+                parameter.name.clone(),
+                parameter.default.clone().expect("a default"),
+            )
+        })
+        .collect();
+    assert_eq!(grading_reset["grade-blending"], json!(50.0));
+    act(
+        &mut service,
+        "reset-grading",
+        "set-mixer",
+        Value::Object(grading_reset),
+    );
+    assert_eq!(label(&service), "Reset Grading");
+    let values = mixer_values(&service, &asset);
+    assert_eq!(values["red-hue"], json!(20.0));
+    assert_eq!(values["grade-shadows-hue"], json!(0.0));
+    assert_eq!(values["grade-blending"], json!(50.0));
+
+    // Undo brings the grading back exactly, redo resets it again.
+    let result = service
+        .undo(&asset, mutation(revision, "undo"))
+        .expect("undo");
+    revision = result.revision;
+    assert_eq!(
+        mixer_values(&service, &asset)["grade-shadows-hue"],
+        json!(210.0)
+    );
+    let result = service
+        .redo(&asset, mutation(revision, "redo"))
+        .expect("redo");
+    revision = result.revision;
+    assert_eq!(
+        mixer_values(&service, &asset)["grade-shadows-hue"],
+        json!(0.0)
+    );
+    let result = service
+        .undo(&asset, mutation(revision, "undo-again"))
+        .expect("undo");
+    revision = result.revision;
+
+    // Reopen keeps every field and the format.
+    drop(service);
+    let mut service = EditorService::open(&path).expect("reopened");
+    let values = mixer_values(&service, &asset);
+    assert_eq!(values["grade-shadows-hue"], json!(210.0));
+    assert_eq!(values["grade-midtones-hue"], json!(30.0));
+    assert_eq!(values["red-hue"], json!(20.0));
+
+    // The module reset clears HSL and grading together.
+    let result = service
+        .apply_action(
+            &asset,
+            mutation(revision, "reset"),
+            "reset-mixer",
+            json!({}),
+        )
+        .expect("reset");
+    assert_eq!(result.outcome, MutationOutcome::Applied);
+    let values = mixer_values(&service, &asset);
+    assert!(
+        values.iter().all(|(name, value)| *value
+            == json!(if name == "grade-blending" { 50.0 } else { 0.0 })),
+        "{values:?}"
+    );
+    let _ = std::fs::remove_file(&path);
 }

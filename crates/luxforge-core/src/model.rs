@@ -173,15 +173,17 @@ pub struct Layer {
 }
 
 impl Layer {
-    /// A layer of `effect_id` holding `payload` at [`EFFECT_FORMAT`], with a new identity, no mask
-    /// and no artifacts. The host builds the layers a plan commits itself, from the effect's
-    /// declared format and the request's target; this is for a stack assembled directly, such as a
-    /// fixture or a module's own constructor.
+    /// A layer of `effect_id` holding `payload` at the effect's current format
+    /// ([`crate::current_effect_format`]), with a new identity, no mask and no artifacts. The host
+    /// builds the layers a plan commits itself, from the effect's declared format and the
+    /// request's target; this is for a stack assembled directly, such as a fixture or a module's
+    /// own constructor.
     pub fn new(effect_id: impl Into<String>, payload: Value) -> Self {
+        let effect_id = effect_id.into();
         Self {
             id: LayerId::new(),
-            effect_id: effect_id.into(),
-            effect_format: EFFECT_FORMAT,
+            effect_format: crate::modules::current_effect_format(&effect_id),
+            effect_id,
             payload,
             mask: None,
             artifacts: Vec::new(),

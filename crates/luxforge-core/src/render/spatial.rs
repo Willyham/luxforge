@@ -2942,7 +2942,7 @@ mod tests {
             Layer {
                 id: LayerId::new(),
                 effect_id: crate::MIXER_EFFECT.into(),
-                effect_format: EFFECT_FORMAT,
+                effect_format: crate::MIXER_EFFECT_FORMAT,
                 payload: json!({"red-hue": 20.0, "aqua-saturation": -35.0, "blue-luminance": 15.0}),
                 mask: None,
                 artifacts: Vec::new(),

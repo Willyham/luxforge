@@ -497,14 +497,25 @@ mod tests {
                 "Detail \u{00b7} Sharpening",
                 "Detail \u{00b7} Noise reduction",
                 "Presence \u{00b7} Presence",
-                "Colour mixer \u{00b7} Hue",
-                "Colour mixer \u{00b7} Saturation",
-                "Colour mixer \u{00b7} Luminance",
+                "Colour mixer \u{00b7} HSL",
+                "Colour mixer \u{00b7} Grading",
                 "Vignette \u{00b7} Vignette",
             ],
             "RAW, transforms, crop and the pixel proof declare no field patch; Perspective's patch is not presettable"
         );
         assert_eq!(ordinary.groups[1].id, "luxforge.basic/tone");
+        for (id, count) in [("luxforge.mixer/hsl", 24), ("luxforge.mixer/grading", 14)] {
+            let group = ordinary.group(id).expect("mixer capture group");
+            let fields = &group.fields["set-mixer"];
+            assert_eq!(fields.len(), count);
+            assert_eq!(
+                fields
+                    .iter()
+                    .collect::<std::collections::BTreeSet<_>>()
+                    .len(),
+                count
+            );
+        }
     }
 
     #[test]

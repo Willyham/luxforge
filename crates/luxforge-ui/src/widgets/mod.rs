@@ -49,6 +49,7 @@ mod tab_row;
 mod text;
 mod toggle;
 mod truncated_text;
+mod wheel;
 
 // -- Select: the thumbnail grid.
 mod thumbnail_grid;
@@ -136,6 +137,10 @@ pub use tab_row::{Tab, TabRowModel, tab_row};
 pub use text::{caption, error_caption, label, section_label, title};
 pub use toggle::{ToggleModel, compact_toggle, switch, toggle};
 pub use truncated_text::truncated_text;
+pub use wheel::{
+    COMPACT_DIAMETER, Grab, LARGE_DIAMETER, WheelEvent, WheelModel, WheelModifiers, hue_at,
+    point_at, wheel,
+};
 
 // -- Select: the thumbnail grid's exports.
 pub(crate) use thumbnail_grid::LineKind as GridLineKind;

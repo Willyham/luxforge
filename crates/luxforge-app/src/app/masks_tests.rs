@@ -198,9 +198,10 @@ fn new_mask_tools_lock_history_versions_presets_and_local_panel_controls() {
                 parameter: "exposure".into(),
             }),
             Message::Control(ControlMessage::ToggleSection("luxforge.basic".into())),
-            Message::Control(ControlMessage::SelectTab {
+            Message::Control(ControlMessage::SelectView {
                 module_id: "luxforge.basic".into(),
-                index: 1,
+                group: Vec::new(),
+                view: "Tone".into(),
             }),
             Message::Performance(PerformanceMessage::Toggle),
         ] {

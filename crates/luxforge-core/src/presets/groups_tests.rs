@@ -39,9 +39,8 @@ fn the_builtin_groups_have_stable_ids_in_registry_order_and_white_balance_is_per
             "luxforge.detail/sharpening",
             "luxforge.detail/noise-reduction",
             "luxforge.presence/presence",
-            "luxforge.mixer/hue",
-            "luxforge.mixer/saturation",
-            "luxforge.mixer/luminance",
+            "luxforge.mixer/hsl",
+            "luxforge.mixer/grading",
             "luxforge.vignette/vignette",
         ]
     );
@@ -333,7 +332,7 @@ fn a_photos_groups_are_custom_or_original_against_the_named_entry() {
         .filter(|(_, state)| *state == GroupState::Custom)
         .map(|(id, _)| id)
         .collect();
-    assert_eq!(custom, ["luxforge.basic/tone", "luxforge.mixer/hue"]);
+    assert_eq!(custom, ["luxforge.basic/tone", "luxforge.mixer/hsl"]);
     // The earlier entry still reads as it was.
     assert_eq!(
         service
@@ -343,7 +342,7 @@ fn a_photos_groups_are_custom_or_original_against_the_named_entry() {
         at_original.groups
     );
     // Capture by groups is capture by their fields.
-    let named = ["luxforge.basic/tone", "luxforge.mixer/hue"];
+    let named = ["luxforge.basic/tone", "luxforge.mixer/hsl"];
     let fields = groups.capture_fields(&named).unwrap();
     assert_eq!(
         service.capture_preset(&asset, &edited, &fields).unwrap()["set-basic"]["exposure"],
@@ -351,6 +350,33 @@ fn a_photos_groups_are_custom_or_original_against_the_named_entry() {
     );
     drop(service);
     std::fs::remove_file(path).expect("the catalog is removed");
+}
+
+/// Tab views and their duplicate wheel/number presentations form two capture groups, preserving
+/// every field once. Capturing a grade reaches the same settings the preset applies.
+#[test]
+fn grading_views_capture_all_four_wheels_once_and_keep_hsl_separate() {
+    let groups = builtin();
+    let hsl = groups.group("luxforge.mixer/hsl").unwrap();
+    let grading = groups.group("luxforge.mixer/grading").unwrap();
+    assert_eq!(hsl.fields["set-mixer"].len(), 24);
+    assert_eq!(grading.fields["set-mixer"].len(), 14);
+    let fields = &grading.fields["set-mixer"];
+    assert_eq!(
+        fields
+            .iter()
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        14
+    );
+    for band in ["shadows", "midtones", "highlights", "global"] {
+        for channel in ["hue", "saturation", "luminance"] {
+            assert!(fields.contains(&format!("grade-{band}-{channel}")));
+        }
+    }
+    assert!(fields.contains(&"grade-blending".into()));
+    assert!(fields.contains(&"grade-balance".into()));
+    assert!(hsl.default_checked && grading.default_checked);
 }
 
 /// A group capture refuses on this entry is Refused with capture's own reason, and the others are

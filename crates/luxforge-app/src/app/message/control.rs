@@ -1,6 +1,6 @@
 //! Generated controls.
 use crate::app::controls::CurveSampleIdentity;
-use luxforge_ui::{ColorPickerEvent, CurveEditorEvent};
+use luxforge_ui::{ColorPickerEvent, CurveEditorEvent, WheelEvent};
 use serde_json::Value;
 
 /// A generated control or a tools-panel section changed. Handled in `app/controls.rs`.
@@ -105,11 +105,31 @@ pub(crate) enum ControlMessage {
         module_id: String,
         path: Vec<usize>,
     },
-    /// Selects a tab in a module whose descriptor declares `layout: tabs`. Per-client view state
-    /// exactly like `ToggleGroup`: it changes no recipe and sends no request.
-    SelectTab {
+    /// Show one view of a tab row: the module's own (`group` empty) or a nested group that
+    /// declares `layout: tabs`, by its label path. It is this client's session view state, sent
+    /// through `workspace.set` exactly as an API client selects one: no recipe field, history
+    /// entry or frame.
+    SelectView {
         module_id: String,
-        index: usize,
+        group: Vec<String>,
+        view: String,
+    },
+    /// A hue and saturation wheel of `action`, keyed by its hue parameter, reported `event`.
+    Wheel {
+        action: String,
+        hue: String,
+        event: WheelEvent,
+    },
+    /// An arrow key on a focused wheel: Left and Right turn its hue, Up and Down move its
+    /// saturation, by one step, ten with Shift or the fine step with Option. A draft like a drag,
+    /// released with the key.
+    WheelNudge {
+        action: String,
+        hue: String,
+        saturation: bool,
+        direction: i8,
+        shift: bool,
+        option: bool,
     },
     Picker {
         action: String,
@@ -181,6 +201,9 @@ impl ControlMessage {
             }
             | Self::ResetField { action, parameter }
             | Self::EditValue { action, parameter } => Some((action, parameter)),
+            Self::Wheel { action, hue, .. } | Self::WheelNudge { action, hue, .. } => {
+                Some((action, hue))
+            }
             Self::Submit {
                 action,
                 parameter: Some(parameter),
@@ -189,7 +212,7 @@ impl ControlMessage {
                 parameter: None, ..
             }
             | Self::ToggleGroup { .. }
-            | Self::SelectTab { .. }
+            | Self::SelectView { .. }
             | Self::CurveSampled { .. }
             | Self::QueryChoiceSearch { .. }
             | Self::QueryChoicePage { .. }

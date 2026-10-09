@@ -99,14 +99,14 @@ fn proof_is_opt_in_and_each_control_field_has_an_independent_json_action() {
     // their declared defaults, here every field of the vocabulary.
     let group_reset = &proof["controls"][0]["reset"];
     assert_eq!(group_reset["action"], "set-controls");
-    assert_eq!(group_reset["preset"].as_object().unwrap().len(), 11);
+    assert_eq!(group_reset["preset"].as_object().unwrap().len(), 14);
     assert_eq!(group_reset["preset"]["mode"], "one");
     assert_eq!(group_reset["preset"]["rgb"], json!([64, 128, 192]));
 
     let schema = call(&owner, client, "schema.list", json!({})).unwrap();
     let set = &schema["methods"]["edit.set-controls"];
     assert_eq!(set["patch"], true);
-    assert_eq!(set["parameters"].as_array().unwrap().len(), 11);
+    assert_eq!(set["parameters"].as_array().unwrap().len(), 14);
     assert_eq!(
         schema["methods"]["edit.reset-controls"]["parameters"],
         json!([])

@@ -32,7 +32,7 @@ pub use types::{
 };
 pub use types::{
     ChoiceControl, ColorControl, ControlVariant, IdentityKind, RangeControl, ResolvedControl,
-    ResolvedReset, TaskControl, ToggleControl,
+    ResolvedReset, TaskControl, ToggleControl, WheelControl, WheelStyle,
 };
 pub(crate) use types::{MAX_SECRET_LENGTH, PRESET_SETTINGS, SETTINGS_ORIGIN};
 pub(crate) use validate::{

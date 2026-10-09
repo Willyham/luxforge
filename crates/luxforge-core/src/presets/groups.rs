@@ -222,7 +222,14 @@ pub fn settings_groups<'a>(
     for module in &modules {
         let mut drafts = Vec::new();
         let mut loose = None;
-        collect(module, &module.controls, None, &mut drafts, &mut loose);
+        collect(
+            module,
+            &module.controls,
+            None,
+            false,
+            &mut drafts,
+            &mut loose,
+        );
         let mut ids: Vec<String> = Vec::new();
         for draft in drafts.into_iter().filter(|draft| !draft.fields.is_empty()) {
             let base = match draft.label {
@@ -342,19 +349,40 @@ fn collect<'d>(
     module: &'d ModuleDescriptor,
     controls: &'d [Control],
     group: Option<usize>,
+    absorb: bool,
     drafts: &mut Vec<Draft<'d>>,
     loose: &mut Option<usize>,
 ) {
     for control in controls {
         let fields: Vec<(&str, &str)> = match control {
             Control::Group(declared) => {
-                drafts.push(Draft {
-                    label: Some(&declared.label),
-                    per_photo: declared.per_photo,
-                    fields: Vec::new(),
-                });
-                let index = drafts.len() - 1;
-                collect(module, &declared.controls, Some(index), drafts, loose);
+                let index = if absorb || declared.view {
+                    group.unwrap_or_else(|| {
+                        *loose.get_or_insert_with(|| {
+                            drafts.push(Draft {
+                                label: None,
+                                per_photo: false,
+                                fields: Vec::new(),
+                            });
+                            drafts.len() - 1
+                        })
+                    })
+                } else {
+                    drafts.push(Draft {
+                        label: Some(&declared.label),
+                        per_photo: declared.per_photo,
+                        fields: Vec::new(),
+                    });
+                    drafts.len() - 1
+                };
+                collect(
+                    module,
+                    &declared.controls,
+                    Some(index),
+                    absorb || declared.view || declared.layout == crate::ModuleLayout::Tabs,
+                    drafts,
+                    loose,
+                );
                 continue;
             }
             Control::Number(number) => vec![(&number.action, &number.parameter)],
@@ -365,6 +393,10 @@ fn collect<'d>(
                 .channels
                 .iter()
                 .map(|channel| (curve.action.as_str(), channel.parameter.as_str()))
+                .collect(),
+            Control::Wheel(wheel) => wheel
+                .parameters()
+                .map(|parameter| (wheel.action.as_str(), parameter))
                 .collect(),
             // A band's fields are presettable through the number controls that declare them, and
             // no other kind carries a field.
@@ -393,7 +425,9 @@ fn collect<'d>(
                     drafts.len() - 1
                 }),
             };
-            drafts[index].fields.push((action, parameter));
+            if !drafts[index].fields.contains(&(action, parameter)) {
+                drafts[index].fields.push((action, parameter));
+            }
         }
     }
 }
