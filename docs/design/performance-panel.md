@@ -73,6 +73,8 @@ Optional keys (`detail`, `asset_id`, `job_id`, `phase`, `progress` as `{"fractio
 
 ## Resource counters
 
+**Planned consumer:** [optional usage statistics](usage-statistics.md) will reuse this process-wide sampler for consented `process.sample` events at most once per minute of presented activity, even with Performance collapsed. It will reuse fresh panel reports and omit unavailable counters, with no extra panel timer or GUI redraw. This consumer is not implemented and does not change the panel's current sampling policy.
+
 A new leaf crate, `crates/luxforge-process`, holds the platform code. It is the second crate allowed `unsafe` (as `luxforge-raw` is, with `unsafe_op_in_unsafe_fn = "deny"`), keeps every `unsafe` block beside a `SAFETY:` comment and exposes a safe API. It adds no crate that is not already in `Cargo.lock`; direct dependencies are pinned to the locked versions.
 
 | Counter | macOS (owner's M4) | Linux | Windows |

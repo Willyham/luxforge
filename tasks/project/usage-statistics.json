@@ -1,0 +1,878 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "usage-statistics",
+  "title": "Optional pseudonymous usage and performance statistics",
+  "objective": "Plan a once-only desktop opt-in notice and Settings controls, full-app timelines of typed events with periodic performance samples, linked by a random persistent installation ID, a per-launch session ID and a keyed per-image ID in Develop and approved OS/app/CPU/GPU/memory context, with no PII, IP tracking or photo/metadata information; deliver bounded best-effort HTTPS batches to api.luxforge.app with an open-source local backend reference and final native/privacy evidence.",
+  "context_summary": "The owner requested planning only: explicit once-only consent, full-app usage/import/performance counts, api.luxforge.app, quiet best-effort background batching and Settings opt-in/out. The additional instruction requires a unique persistent ID, app/OS versions and CPU/GPU/device details for performance diagnosis/targeting, with no PII, IP addresses or photo/metadata information. On 2026-10-09 the owner added that a usage timeline linking one installation's or session's events in order is acceptable and useful as long as there is no PII; the owner then asked for a stable per-image ID in Develop, removed the hourly and daily caps, and asked for a disclosure that says only that events are tracked for debugging and analytics, with no PII. The design therefore uses timed, sequenced typed events, a random in-memory session ID per launch, a random opt-in installation ID stable across launches, cleared on successful opt-out, bounded approved device fields, no photo-derived labels and pseudonymous rather than fully anonymous reporting. Protocol is delegated: finite HTTPS JSON batches and a self-hosted Vector/ClickHouse/Grafana reference. Protected host authority prevents ordinary clients enabling consent; production reporting needs a packaged clean build and a checked-in activation switch that stays off until the real endpoint passes the deployment checklist; no durable report queue or replay exists. IP-based logging, hashing, enrichment and rate limiting are excluded at every hop; packet routing addresses necessarily exist but never become statistics/log records. Routine types/layout/static event/model mapping and backend packages are delegated within docs/design/usage-statistics.md. Implementation awaits a separate instruction; the roadmap high-tier minimum and current-main re-review apply. Consent, the event registry and independent ingress are initially runnable; working local client delivery precedes final native/performance/backend activation qualification. Real DNS/TLS/hosting and absent private RAW/native inputs affect only live/final qualification and stay unrun. Proposed services/ paths are future outputs. No further question/approval/research task is inserted.",
+  "tasks": [
+    {
+      "id": "TASK-001",
+      "description": "Implement protected persistent usage consent, the once-only startup claim and schema-described host commands.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Produce the authoritative consent store and runtime generation/eligibility seam consumed by TASK-004 and TASK-007; no desktop notice or network delivery in this task.",
+        "Extend the existing bounded preferences store with the current usage_statistics record. Missing means off/unasked; unsupported/malformed data is refused unchanged. Persist a disabled prompt claim before returning show_prompt, using the configuration lock so concurrent processes have only one winner.",
+        "Register usage.read, usage.prompt.claim and usage.set with the ordinary mutation envelope. Enable requires existing ClientAuthority permission authority and the exact current disclosure version; ordinary clients may disable. Generic preferences.set/null cannot change or reset this protected record.",
+        "Disable the runtime gate before an off write and stay off if it fails; enable only after successful persistence. A duplicate earlier enable must not reapply consent after revocation. Read/claim failures fail closed without rewriting files.",
+        "Define process-wide host eligibility so debug/developer, hidden/background/evidence/test and headless hosts remain off; isolated test eligibility is explicitly injectable and cannot use the production destination. Statistics data classes/destination changes invalidate enabled consent without resetting prompt_shown.",
+        "Add no preferences file watch or polling. Expose an off-owner stored-record read that the worker uses before detaching a window and before every network handoff: a stored opt-out or an installation ID different from the in-memory one ends the generation, clears buffers and stops producers, so another process's revocation is never followed by an upload.",
+        "Implement build identity and activation as the design states: cargo xtask package embeds the clean source revision at build time, the release is the version plus the revision's first 12 hex characters, and unrevisioned or dirty builds are ineligible. Add one checked-in production activation switch, off; while it is off every launch is ineligible (no claim, notice, Privacy tab or collection) and usage.read reports inactive destination. Explicit test eligibility with a loopback receiver works without the switch or a packaged build. Do not turn the switch on.",
+        "Generate a cryptographically random UUIDv4 only on successfully persisted enable; store it with consent, reuse it across launches/upgrades/catalog changes, clear it on successful opt-out and create a fresh ID on later opt-in. Failure cannot silently replace or expose the old ID. The same persisted enable creates a 32-byte random image_key stored and removed with the installation ID; usage.read and preferences.read never return it. Include this lifecycle in schemas and local read state; never log IDs or the key."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Usage statistics design",
+          "target": "docs/design/usage-statistics.md",
+          "relevance": "Settled scope, proposed commands, privacy allowlist, collection and delivery bounds, backend contract and evidence"
+        },
+        {
+          "kind": "file",
+          "label": "Preference persistence",
+          "target": "crates/luxforge-core/src/preferences.rs",
+          "relevance": "Bounded format-marked store, reads and atomic writes"
+        },
+        {
+          "kind": "file",
+          "label": "Host preference handlers",
+          "target": "crates/luxforge-core/src/api/owner.rs",
+          "relevance": "PreferencesSet/preferences_set and shared host authority"
+        },
+        {
+          "kind": "file",
+          "label": "Command registry",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "relevance": "Discovery, parameter schemas, retry/mutation routing"
+        },
+        {
+          "kind": "file",
+          "label": "Existing preference tests",
+          "target": "crates/luxforge-core/src/api/owner/preferences_tests.rs",
+          "relevance": "File preservation, defaults and owner behavior"
+        },
+        {
+          "kind": "file",
+          "label": "Existing consent authority",
+          "target": "docs/design/module-capabilities.md",
+          "locator": "Capability and consent contract",
+          "relevance": "Same-user API access cannot grant permission"
+        },
+        {
+          "kind": "file",
+          "label": "Visibility and monitoring",
+          "target": "docs/design/visibility-and-monitoring.md",
+          "relevance": "Background/evidence eligibility and native wake seams"
+        },
+        {
+          "kind": "file",
+          "label": "Packaging",
+          "target": "xtask/src/package.rs",
+          "relevance": "Already computes the source revision and dirty state for build.json; embed the clean revision in the executable"
+        }
+      ],
+      "acceptance_criteria": [
+        "Absent consent, ineligible hosts, read failures and scope-version mismatch collect/send nothing; existing preferences, catalogs and recipes are preserved.",
+        "Two instances over one retained writable configuration produce exactly one new prompt claim; duplicate requests, relaunch, dismissal bookkeeping and catalog changes never create another automatic claim.",
+        "Schema discovery describes every new operation and authority requirement. Untrusted enable and generic-preference/reset bypasses are rejected; authorized enable persists before taking effect.",
+        "Off is immediate even on persistence failure, effective/stored state is honest, and stale/deduplicated replies cannot re-enable a revoked generation.",
+        "Consent changes reach the local supervisor and open clients; a stored opt-out or changed installation ID from another process ends this process's generation at the next pre-detach or pre-handoff check, with no watch or polling timer.",
+        "No ID exists before agreement; an enabled ID survives relaunch/upgrade/catalog change, is cleared on saved opt-out, and rotates on a later opt-in without causing another prompt. Failed writes preserve the file and fail closed in process.",
+        "With the activation switch off, or in an unrevisioned or dirty build, usage.read reports the fixed reason and no claim, notice, collection or network work occurs; a packaged build reports version+12-hex revision, and explicit test eligibility still works over loopback.",
+        "The image key exists exactly while an installation ID does, rotates with it, and never appears in a read, schema example, log or event."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add focused core/store/owner authority, concurrent claim, retry-after-revoke, read-only/corrupt file and generation tests using isolated roots.",
+          "Use network/producer spies to verify every suppressed host case performs zero work; inspect schemas and all generic reset paths."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core usage",
+          "tools/cargo-cached test -p xtask package"
+        ],
+        "expected_results": [
+          "Focused consent tests pass; no real consent, external endpoint or image data is touched."
+        ]
+      }
+    },
+    {
+      "id": "TASK-002",
+      "description": "Implement the typed event/device registry, bounded event banks and strict pseudonymous wire encoder with privacy fixtures.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Produce the producer/snapshot interface consumed by TASK-004, TASK-005 and TASK-006, plus checked-in current schema and synthetic valid/invalid examples. This is executable implementation of the design contract, not another contract-review task.",
+        "Resolve the finite built-in tool/operation enum against current shipped modules. All strings originate in static enums; do not expose arbitrary event JSON, command arguments, module descriptors, IDs or labels.",
+        "Implement fixed-size event records (typed name, enum fields, bounded integers, session sequence number and session-relative millisecond time) in two banks of at most 512 events each. Combined statistics buffers/control/serialized capacity is 256 KiB; one body is 64 KiB and 512 events. A full bank or contention drops the event, counts it in dropped and still consumes its sequence number. State must not grow with image count or time offline.",
+        "Producers accept an eligibility/generation seam, do bounded non-blocking work and drop on contention/full capacity. Disabled producers allocate nothing. Worker serialization and snapshotting cannot hold a producer on a blocking lock.",
+        "Emit only the current envelope (installation ID, session ID, session_start to the second, batch_seq, dropped, release, device) and events in seq order with exactly their registry fields. To meet the body size, omit process.sample events first and then the newest events, counting them as dropped; never create a second request or partial document.",
+        "Keep client encoding strict and backend validation independent; fixtures must describe only the latest schema. No compatibility library, general telemetry SDK or server dependency enters the core.",
+        "Encode exactly one canonical UUIDv4 installation ID, one in-memory UUIDv4 session ID created when collection becomes effective in a launch (new per launch and per off/on, never persisted), the 32-hex image field on the events the design lists (HMAC-SHA-256 under the image key over the catalog fingerprint, truncated to 16 bytes, implemented over the locked sha2 crate with RFC 4231 test vectors) and a device profile capped at 2 KiB: app/OS versions, architecture, normalized CPU vendor/model/core counts, memory capacity band and at most two existing GPU adapter model/backend/version profiles. No free-form system strings, hardware UUIDs/serials, IPs or photo resolution/format labels. Profile capacity is included in the 256 KiB total. TASK-006 supplies validated probe values. The release field is the bounded version+12-hex-revision string from TASK-001."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Usage statistics design",
+          "target": "docs/design/usage-statistics.md",
+          "relevance": "Settled scope, proposed commands, privacy allowlist, collection and delivery bounds, backend contract and evidence"
+        },
+        {
+          "kind": "file",
+          "label": "Core public surface",
+          "target": "crates/luxforge-core/src/lib.rs",
+          "relevance": "Expose the narrow host collection/snapshot seam"
+        },
+        {
+          "kind": "file",
+          "label": "Activity categories",
+          "target": "crates/luxforge-core/src/activity.rs",
+          "relevance": "Existing fixed job kinds/outcomes; details/IDs are excluded"
+        },
+        {
+          "kind": "file",
+          "label": "Resource report meanings",
+          "target": "crates/luxforge-core/src/resources.rs",
+          "relevance": "Platform memory kinds and omitted unsupported values"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Owner/UI work, bounded storage, worker homes, idle behavior and measurement"
+        }
+      ],
+      "acceptance_criteria": [
+        "Every allowed event/field/device combination validates against the checked-in schema; unknown events or fields, arbitrary strings, non-UUIDv4 IDs, malformed image IDs or an image field on an event that may not carry one, photo attributes, IPs, hardware serials/UUIDs, non-increasing seq, decreasing t and invalid numeric/version ranges/lengths are refused.",
+        "Independent expected examples prove events are encoded in the order recorded with correct seq/t, that drops and omitted events appear as seq gaps and in dropped, and that each batch contains only unsent events.",
+        "All allocation capacities obey the stated caps under producer floods, contention and oversized windows; disabled mode creates no collector storage.",
+        "Sentinel photo/path/EXIF/actor/recipe/preset/error/hostname/IP/serial values and editing values cannot enter the typed API or serialized body; only the approved installation, session and keyed image IDs and bounded device context identify reporting configurations or photographs, and the image key and raw fingerprint never appear.",
+        "Producers cannot block or perform filesystem/network/formatting work; lost observations remain local diagnostics."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add focused event-bank, ordering, sequence-gap, generation, concurrent flood and capacity tests, with independently written expected batches.",
+          "Inspect typed producer signatures and run privacy sentinel/schema-negative fixtures; reconcile application-owned allocation capacity separately from thread/TLS overhead.",
+          "Exercise canonical ID/device fixtures, unknown/raw model/driver/version strings, at-most-two GPU profiles, device-context size and profile-change generation tests."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core usage"
+        ],
+        "expected_results": [
+          "Registry/encoder/bounds tests pass with deterministic synthetic data and no network."
+        ]
+      }
+    },
+    {
+      "id": "TASK-003",
+      "description": "Build the standalone stateless ingestion validator for the chosen HTTPS batch contract.",
+      "status": "ready",
+      "dependencies": [],
+      "extra_context": [
+        "Proposed output: services/usage-ingest/, a standalone Rust package with its own empty [workspace] table and Cargo.lock outside the root workspace, so desktop builds, core tests and cargo xtask check gain no server dependency. Extend the repository's pinning, notice and advisory checks to its lockfile. The HTTP framework is delegated; project code remains GPL-3.0-or-later.",
+        "Implement POST /v1/usage/batches, strict latest-only decoding, content/body/depth/event-count/range/field and seq/t ordering checks and whole-batch rejection. Backend implementation can proceed independently from the client using the design's contract; TASK-011 later reconciles actual client fixtures.",
+        "Accept no account or embedded desktop secret. Bound public-route concurrency, time, global limits and downstream buffers. An optional bounded rate limiter may use the approved reporting ID with 15-minute expiry, but never IP addresses or hashes, even transiently. Do not retain IPs, headers, bodies, reject payloads or installation/session IDs in logs/traces.",
+        "Normalize an accepted batch into one row per event (installation ID, session ID, session_start, batch_seq, seq, t, event name and registry fields, server receive time to the second) and one release/device profile per session, replaced when a later batch carries a changed profile. No raw body, photo data or other identifier is forwarded. IDs appear only in the approved private bodies/rows.",
+        "Return an empty 202/204 for bounded in-memory acceptance without promising durability; refuse/drop on pressure. Forward once to the private collector and do not add a durable ingest spool. Replies cannot alter desktop consent or collect more data.",
+        "Prepare a local fake downstream and functional tests; DNS, certificates and production deployment are not inputs to this task."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Usage statistics design",
+          "target": "docs/design/usage-statistics.md",
+          "relevance": "Settled scope, proposed commands, privacy allowlist, collection and delivery bounds, backend contract and evidence"
+        },
+        {
+          "kind": "file",
+          "label": "Wire and ingress contract",
+          "target": "docs/design/usage-statistics.md",
+          "locator": "Wire protocol",
+          "relevance": "Exact payload, refusal and normalized-row semantics"
+        },
+        {
+          "kind": "file",
+          "label": "Backend privacy boundary",
+          "target": "docs/design/usage-statistics.md",
+          "locator": "Open-source backend reference",
+          "relevance": "Open-source topology, ingress/logging and no-IP-tracking constraints"
+        },
+        {
+          "kind": "file",
+          "label": "Desktop dependency boundary",
+          "target": "Cargo.toml",
+          "relevance": "Keep backend packages out of the desktop workspace dependency graph"
+        }
+      ],
+      "acceptance_criteria": [
+        "Synthetic valid requests become exactly the expected normalized numeric rows; invalid/unsupported/unknown batches forward nothing and receive the specified status.",
+        "Body size, concurrency, parser depth, global/reporting-ID limits, table TTL, forwarding queue and request time are bounded under malformed/flood/unavailable-downstream cases, with no IP-keyed tracking.",
+        "No log, trace, row or downstream field contains a sentinel IP, hostname, hardware serial/UUID, photo attribute, private value, raw request body or request ID; the random reporting ID is present only in its approved private field.",
+        "Only the statistics route is affected by its limits; there is no authentication credential embedded in the client and no arbitrary ingest endpoint exposed.",
+        "The standalone service has pinned open-source dependencies/notices, runnable local instructions and no desktop/core dependency."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Implement and run the service's own focused tests, with a fake downstream and adversarial protocol/pressure/privacy fixtures.",
+          "Inspect all logger/error/TLS-proxy hooks and capture the emitted row schema; record the actual build/test commands in the new service README once they exist."
+        ],
+        "commands": [
+          "tools/cargo-cached test --manifest-path services/usage-ingest/Cargo.toml",
+          "tools/cargo-cached xtask check-repository"
+        ],
+        "expected_results": [
+          "Independent local validator tests prove acceptance/refusal, bounded forwarding and metadata stripping; no hosted service is published."
+        ]
+      }
+    },
+    {
+      "id": "TASK-004",
+      "description": "Connect consented event windows to one bounded background sender using the existing transport.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001",
+        "TASK-002"
+      ],
+      "extra_context": [
+        "Consume TASK-001 consent/generation/eligibility and TASK-002 snapshots. Use capabilities::transport::Transport with luxforge-net's existing HttpTransport and cancellable JobControl; no second HTTP/TLS stack or analytics SDK.",
+        "Create at most one statistics worker/request, entirely off owner/UI/Rayon. Fixed destination is https://api.luxforge.app/v1/usage/batches; redirects/cookies/auth/compression are absent. Tests inject loopback transport/config and cannot contact production.",
+        "Implement nonempty scheduling at ten minutes after a window's first event or at 512 events, plus 0-60 s jitter, with attempts at least 60 seconds apart and no hourly or daily request or byte cap (owner, 2026-10-09); 64 KiB bodies, 1 KiB response bodies and 2/2/5 s timeout limits. A window that fills before the next attempt is allowed drops further events. Increment batch_seq for every detached batch, including ones later discarded, so losses are visible.",
+        "Drop every detached batch after its one attempt, including ambiguous failures. Apply the fixed fresh-data cooldown, 429 Retry-After clamp and terminal 3xx/other-4xx session suspension; no health check or retry of previously sent bytes.",
+        "Respect native visibility, 30-minute oldest-contribution expiry and generation cancellation. Empty/disabled/hidden states have no send timer, and no worker event wakes the UI. Use the TASK-001 stored-record read before detaching and immediately before each network handoff; an opt-out or changed installation ID discards everything in this generation.",
+        "Quit cancels/discards without joining a network operation on the UI close path; preserve existing preference-close behavior. Cross-process revocation and failed off writes must keep the effective runtime off.",
+        "Include the already cached bounded device context and persistent reporting ID in ordinary batches; there is no metadata handshake or extra device endpoint. Do not put the ID in URLs/headers/logs. Drop or detach an old-profile window on adapter changes without forcing an early request; off clears all profile buffers."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Usage statistics design",
+          "target": "docs/design/usage-statistics.md",
+          "relevance": "Settled scope, proposed commands, privacy allowlist, collection and delivery bounds, backend contract and evidence"
+        },
+        {
+          "kind": "file",
+          "label": "Existing checked HTTPS transport",
+          "target": "crates/luxforge-net/src/transport.rs",
+          "relevance": "Cancellation, bounds, lazy TLS and direct public-address policy"
+        },
+        {
+          "kind": "file",
+          "label": "Transport interface",
+          "target": "crates/luxforge-core/src/capabilities/transport.rs",
+          "relevance": "SendOptions, redirects and response limits"
+        },
+        {
+          "kind": "file",
+          "label": "Cancellation lifecycle",
+          "target": "crates/luxforge-core/src/jobs.rs",
+          "relevance": "Reuse JobControl without exposing a telemetry job/progress panel"
+        },
+        {
+          "kind": "file",
+          "label": "Native visibility policy",
+          "target": "docs/design/visibility-and-monitoring.md",
+          "relevance": "Sampling/sending suppression and coalesced wakes"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Owner/UI work, bounded storage, worker homes, idle behavior and measurement"
+        }
+      ],
+      "acceptance_criteria": [
+        "Fake-clock tests prove jitter, 60-second minimum spacing under event floods, the absence of any hourly/daily cap, one in-flight request, no empty batches, no catch-up burst and bounded long-offline memory.",
+        "Success, 408/429/5xx, DNS/TLS/socket failure, redirects, unsupported endpoint/schema and oversize responses obey the policy; ambiguous bodies are never retransmitted.",
+        "Before-consent, headless/evidence/hidden/background/debug modes create no real network activity; current revoked data is absent after off/on.",
+        "Opt-out while serialization/resolution/connect/write/read is active prevents later handoffs and cancels the current JobControl under transport bounds; late callbacks cannot restart it.",
+        "Closing never waits for an upload, and sending/sampling status adds no GUI messages, redraws, status-bar warnings or connectivity probes."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Use injected fake transport and monotonic clocks/randomness to test the entire scheduling/failure state machine.",
+          "Run focused existing transport cancellation/TLS tests plus usage-specific socket/size tests on local endpoints; exercise immediate close and revoke races."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core usage",
+          "tools/cargo-cached test -p luxforge-net usage"
+        ],
+        "expected_results": [
+          "Sender tests pass without production traffic, UI blocking or retained failed batches."
+        ]
+      }
+    },
+    {
+      "id": "TASK-005",
+      "description": "Instrument shipped operations at their authoritative boundaries, with a checked-in coverage inventory.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002"
+      ],
+      "extra_context": [
+        "Deliver a checked-in coverage inventory (proposed docs/engineering/usage-statistics-coverage.md) mapping every current user-facing command/action and GUI-local workspace operation to an approved typed producer or explicit read/internal/privacy exemption.",
+        "Emit at authoritative shared success/transaction boundaries, not a click log or serialized events.since. Deduplicated retries emit once, automatic sub-operations do not emit a second user operation, and GUI/shortcut/palette/API paths converge on the same events.",
+        "tool.commit means one event per built-in group a committed transaction changed, never draft ticks or parameter values. images.added carries the count of newly committed original photo rows per add operation; reopening, directory indexing, skipped/failed rows and thumbnails add nothing. Export's operation.end carries the count of completed outputs. Also emit session.start, app.presented, app.idle, workspace.enter, image.open, interaction and preview.settled as the design defines them, with the image field exactly where the design lists it. Compute the image ID once when a photograph is adopted, from the catalog fingerprint already held, never from a file read, filename or metadata.",
+        "Cover Select/Develop navigation, masks/brush/gradients, history/versions, presets/copy-paste, catalog organization/Locate, settings and available batch paths. Do not prebuild metrics for future editing modules or export formats.",
+        "Publish durations/outcomes from existing asynchronous completion seams with the consent generation captured at start. Pre-consent or revoked in-flight work must not appear in a later generation.",
+        "Use the core's disabled sink until host integration is ready, so this task does not depend on the sender or desktop notice.",
+        "The no-photo-information instruction removes all source format/resolution/size/camera labels, filenames and metadata: events record what kind of operation happened, when, and in Develop the keyed image ID, never anything that names or describes the photograph, and no editing values."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Usage statistics design",
+          "target": "docs/design/usage-statistics.md",
+          "relevance": "Settled scope, proposed commands, privacy allowlist, collection and delivery bounds, backend contract and evidence"
+        },
+        {
+          "kind": "file",
+          "label": "All registered operations",
+          "target": "crates/luxforge-core/src/api/methods.rs",
+          "relevance": "Coverage/classification and shared command boundaries"
+        },
+        {
+          "kind": "file",
+          "label": "Transactions and worker adoption",
+          "target": "crates/luxforge-core/src/api/owner.rs",
+          "relevance": "Success, deduplication, counts and completion reporting"
+        },
+        {
+          "kind": "file",
+          "label": "Pick development",
+          "target": "crates/luxforge-core/src/api/owner/library/develop.rs",
+          "relevance": "New durable original counts rather than indexed-file totals"
+        },
+        {
+          "kind": "file",
+          "label": "Export completion",
+          "target": "crates/luxforge-core/src/api/owner/export.rs",
+          "relevance": "One successfully completed output"
+        },
+        {
+          "kind": "file",
+          "label": "Continuous gesture lifecycle",
+          "target": "crates/luxforge-app/src/app/slider.rs",
+          "relevance": "One completion rather than per-tick collection"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Owner/UI work, bounded storage, worker homes, idle behavior and measurement"
+        }
+      ],
+      "acceptance_criteria": [
+        "Coverage inventory accounts for every shipped operation and exemption, including asynchronous failures, cancellation, API deduplication and GUI-local gestures.",
+        "Equivalent GUI/keyboard/palette/API operations produce the same typed events in the same order; ten drag updates yield one commit, and no-op/cancelled/deduplicated changes yield none.",
+        "A mixed import/develop/reopen/export test yields the expected event sequence: only committed new originals are counted, indexing and skipped/failed items add nothing, and export start/failure carries no completed count.",
+        "Instrumentation captures no arguments, labels, IDs or pixels; inactive producers do no extra work and no statistics operation/poll/read produces events.",
+        "A photograph renamed, moved, relinked or opened from another catalog keeps its image ID within one installation; a different photograph, or the same one after opt-out and opt-in, gets a different ID; multi-photograph exports and scans carry no image."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Add focused boundary tests with an in-memory sink: representative operations for every inventory category, mixed batches and duplicates.",
+          "Inspect owner/UI paths for new waits, allocations, syscalls and image reads."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core usage",
+          "tools/cargo-cached test -p luxforge-app usage"
+        ],
+        "expected_results": [
+          "Coverage/parity/privacy and sampling tests pass with existing image behavior unchanged."
+        ]
+      }
+    },
+    {
+      "id": "TASK-006",
+      "description": "Add consented low-frequency process performance sampling and the approved CPU/GPU/OS/memory device context.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-002"
+      ],
+      "extra_context": [
+        "Produce process.sample events and the validated device profile consumed by TASK-002's encoder and TASK-004's batches. Use the core's disabled sink until host integration, so this task depends on neither the sender nor the desktop notice.",
+        "At most once per minute of presented activity, reuse a fresh existing process report or sample through the same process-wide sampler on the statistics worker. Coordinate freshness with the Performance panel so its system calls are not duplicated; preserve memory kinds and omit unavailable or reset counters. The first CPU/GPU read is a baseline; reset it after hiding, sleep or consent changes. No sleep backfill, per-frame or per-tile stream, and no new GPU or CPU image work.",
+        "Gather the device context once per opted-in launch on a worker through safe platform metadata and the already selected renderer/tile adapter info. Normalize numeric OS/driver versions, CPU/GPU model families, logical/physical cores and memory bands; omit unrecognized strings. Never query hardware serials/UUIDs or network interfaces, create a GPU device, run external commands or poll inventory. Refresh only on existing adapter/path changes, and never relabel observations gathered on a prior adapter."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Usage statistics design",
+          "target": "docs/design/usage-statistics.md",
+          "locator": "Privacy, device context and the event registry",
+          "relevance": "Device field allowlist, normalization and process metric families"
+        },
+        {
+          "kind": "file",
+          "label": "Resource sampling",
+          "target": "docs/design/performance-panel.md",
+          "locator": "Resource counters",
+          "relevance": "Process-wide sampler, platform counter meanings and availability"
+        },
+        {
+          "kind": "file",
+          "label": "Platform counters",
+          "target": "crates/luxforge-process/src/lib.rs",
+          "relevance": "Safe platform counter API to reuse for samples and metadata"
+        },
+        {
+          "kind": "file",
+          "label": "Core resources",
+          "target": "crates/luxforge-core/src/resources.rs",
+          "relevance": "Existing resource reports and adapter information"
+        },
+        {
+          "kind": "file",
+          "label": "Performance panel",
+          "target": "crates/luxforge-app/src/app/performance.rs",
+          "relevance": "Current sampling cadence to coordinate freshness with"
+        },
+        {
+          "kind": "file",
+          "label": "Visibility and monitoring",
+          "target": "docs/design/visibility-and-monitoring.md",
+          "relevance": "Presented-activity and hidden-window rules"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Thread homes, timers and bounded work"
+        }
+      ],
+      "acceptance_criteria": [
+        "Sampling tests prove at most one observation per minute of presented activity, no duplicated system calls when a fresh panel sample exists, correct first baseline and reset behavior, and omission of unavailable data.",
+        "Device context is collected only after consent, encodes known platform/model cases, fits 2 KiB and omits arbitrary/raw strings; no PII/IP/photo fields, new GPU device, owner/UI syscall, external command or inventory timer exists.",
+        "Adapter or renderer-path changes keep metric/profile attribution correct, and consent revocation clears the profile."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Use independently computed resource deltas and fake visibility clocks.",
+          "Exercise known and unknown OS/CPU/GPU/driver fixtures, and inspect owner/UI paths for new syscalls or waits."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-core usage",
+          "tools/cargo-cached test -p luxforge-process usage",
+          "tools/cargo-cached test -p luxforge-app usage"
+        ],
+        "expected_results": [
+          "Focused sampling and device-context tests pass with no real consent, endpoint or image data."
+        ]
+      }
+    },
+    {
+      "id": "TASK-007",
+      "description": "Add the non-blocking startup notice and Settings Privacy controls through the shared consent commands.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-001"
+      ],
+      "extra_context": [
+        "Consume TASK-001 commands and effective/stored consent. Show a startup notice only after the usable workspace and a successful durable claim; do not steal focus or block editing/import/native dialogs.",
+        "Use the design's short disclosure (events are sent for debugging and analytics and never include name, contact details, IP address, photos, filenames or photo metadata) and two neutral actions, Share statistics and No thanks. Escape/close is refusal; a crash or closing before presentation does not cause another automatic prompt.",
+        "Add a Privacy tab, switch, the same short disclosure and a collapsed What is sent list of the event, ID and device fields to existing Settings. Use usage.set, not direct preferences writes or UI-only booleans. Show effective off and actual save failures without a delivery status/warning UI.",
+        "Preserve existing General/Appearance/Experiments behavior and scaling/accessibility. Settings reflects consent changed through the command service; there is no generic reset or hidden enable path.",
+        "Extend the existing evidence step/state model and settings smoke path with isolated explicit test eligibility. Production traffic must remain disabled in every automated run; use an injected local receiver at integration.",
+        "Routine compact notice placement/styles are delegated within the non-modal, accessible contract; no foreground UI automation is authorized.",
+        "The disclosure says only that events are tracked for debugging and analytics and what they never include (owner, 2026-10-09); it never claims the reports are anonymous or contain no personal data. The collapsed list names the installation, session and image IDs and device fields. Successful opt-out removes the local ID and image key; existing backend events expire after 90 days.",
+        "The notice and Privacy tab exist only in eligible launches; with the activation switch off, ordinary builds show neither, while explicit test eligibility shows both."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Usage statistics design",
+          "target": "docs/design/usage-statistics.md",
+          "relevance": "Settled scope, proposed commands, privacy allowlist, collection and delivery bounds, backend contract and evidence"
+        },
+        {
+          "kind": "file",
+          "label": "Settings tab/model",
+          "target": "crates/luxforge-app/src/state/settings.rs",
+          "relevance": "Existing General/Appearance/Experiments derivation"
+        },
+        {
+          "kind": "file",
+          "label": "Settings drawing",
+          "target": "crates/luxforge-app/src/view/settings.rs",
+          "relevance": "Tabs, controls and layout"
+        },
+        {
+          "kind": "file",
+          "label": "Settings messages",
+          "target": "crates/luxforge-app/src/app/message/settings.rs",
+          "relevance": "Drive the same command paths in UI and evidence"
+        },
+        {
+          "kind": "file",
+          "label": "Preference application",
+          "target": "crates/luxforge-app/src/app/preferences.rs",
+          "relevance": "Avoid generic writer rollback re-enabling consent"
+        },
+        {
+          "kind": "file",
+          "label": "Settings behavior tests",
+          "target": "crates/luxforge-app/src/app/settings_tests.rs",
+          "relevance": "Control state, external changes and error handling"
+        },
+        {
+          "kind": "file",
+          "label": "Evidence scripting",
+          "target": "docs/engineering/development.md",
+          "locator": "Evidence scripts",
+          "relevance": "Hidden background launches and correlated state/log/capture"
+        }
+      ],
+      "acceptance_criteria": [
+        "Startup remains usable and the notice has no focus grab, modal wait or preselected agreement; keyboard dismissal and both buttons call the shared protected commands.",
+        "The notice appears at most once over retained preferences; stored enabled/disabled, hidden/headless, corrupt/read-only and concurrent-claim cases behave as specified.",
+        "Privacy can enable only after explicit successful command persistence, and disable immediately; failed off writes stay effectively off while showing truthful stored state.",
+        "External command changes appear in an open sheet; scaling and tab/navigation behavior remain correct with all existing tabs.",
+        "Evidence state records prompt claim/presentation and effective/stored state without IDs or sensitive uploaded data; isolated test launches cannot reach the production origin.",
+        "The notice and Settings show the design's short disclosure, never claiming anonymous or identifier-free reports, and the collapsed list matches the registry's actual event, ID and device fields."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run focused model/message/lifecycle tests, including delayed notice presentation, concurrent claims and failed writes.",
+          "Prepare the extended settings evidence journey for TASK-008; correlate its actions with command state using isolated roots."
+        ],
+        "commands": [
+          "tools/cargo-cached test -p luxforge-app usage",
+          "tools/cargo-cached test -p luxforge-app settings"
+        ],
+        "expected_results": [
+          "Focused desktop tests pass; real rendered behavior is verified at the integration task."
+        ]
+      }
+    },
+    {
+      "id": "TASK-008",
+      "description": "Deliver the integrated working client with local receiver evidence and current user/developer documentation.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-004",
+        "TASK-005",
+        "TASK-006",
+        "TASK-007"
+      ],
+      "extra_context": [
+        "Wire the process-wide supervisor into eligible desktop lifetime and connect shared consent, typed producers, visibility, process samples and the existing HTTPS transport.",
+        "Deliver the useful client first against an injected bounded receiver; the absent public API and later backend/native qualification do not block this output.",
+        "Extend the existing settings/background evidence journey to cover ask once across isolated launches, decline, explicit enable, meaningful GUI/API operations, one event batch whose sequence matches the actions performed and opt-out while sending. No direct GUI binary launch or foreground automation.",
+        "Update current preferences/settings/Performance/architecture designs, user guide, command reference, feature status and coverage inventory to reflect actual delivered behavior. Keep the nonexistent/live-unverified API and missing qualification explicit.",
+        "Review the performance-rules checklist and worker/thread-home allowlists for the implementation. Do not claim performance targets, full GPU evidence or backend deployment from local success.",
+        "Run quick once at completed handoff and rendered at this UI integration point. Backend integration and final performance/corpus work follow, without dependency back into this delivery.",
+        "Leave the production activation switch off; the delivered client is exercised through explicit test eligibility and the local receiver."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Usage statistics design",
+          "target": "docs/design/usage-statistics.md",
+          "relevance": "Settled scope, proposed commands, privacy allowlist, collection and delivery bounds, backend contract and evidence"
+        },
+        {
+          "kind": "file",
+          "label": "Preference behavior",
+          "target": "docs/design/preferences.md",
+          "relevance": "Protected consent exception and generic reset restrictions"
+        },
+        {
+          "kind": "file",
+          "label": "Settings contract",
+          "target": "docs/design/settings-and-flags.md",
+          "relevance": "New Privacy surface, not a feature flag"
+        },
+        {
+          "kind": "file",
+          "label": "Resource collection",
+          "target": "docs/design/performance-panel.md",
+          "relevance": "Optional sampling with correct visibility and no extra panel wakes"
+        },
+        {
+          "kind": "file",
+          "label": "Service ownership/limits",
+          "target": "docs/design/architecture.md",
+          "relevance": "Supervisor, worker and bounded statistics storage"
+        },
+        {
+          "kind": "file",
+          "label": "Guide",
+          "target": "docs/user-guide.md",
+          "relevance": "Describe only delivered operations and privacy choices"
+        },
+        {
+          "kind": "file",
+          "label": "Truthful feature status",
+          "target": "docs/features.md",
+          "relevance": "Working/local evidence and remaining qualification"
+        },
+        {
+          "kind": "file",
+          "label": "Verification workflow",
+          "target": "docs/engineering/development.md",
+          "relevance": "Narrow tests during implementation, shared cache, hidden background launches and final tiers"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Owner/UI work, bounded storage, worker homes, idle behavior and measurement"
+        }
+      ],
+      "acceptance_criteria": [
+        "A rendered background journey proves the displayed notice/switch agree with authoritative state and captured allowlisted events in the order performed; original hashes and image/reference results remain unchanged.",
+        "Normal automated/evidence/headless launches never contact api.luxforge.app, and intentionally eligible integration tests use only isolated preferences and local receiver.",
+        "Opt-out clears/cancels across actual host/worker/GUI integration; network failure creates no UI warning, repeated redraw or close delay.",
+        "Current docs/schemas/coverage and repository worker rules match the implemented output; unresolved native/corpus/live-endpoint checks are named as unrun.",
+        "Completed-work quick and rendered tiers pass within their recorded scope, with retained evidence; local client delivery does not wait for later qualification."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run one isolated multi-launch background settings/usage journey with state/log/capture and local transport evidence, including API/GUI event parity and a revoked upload.",
+          "Review the complete diff, schema discovery, originals preservation and performance checklist; run final quick and rendered tiers. Record unavailable corpus evidence explicitly."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask verify --tier quick --output artifacts/usage-working-quick",
+          "tools/cargo-cached xtask verify --tier rendered --output artifacts/usage-working-rendered"
+        ],
+        "expected_results": [
+          "A usable consented client and honest local rendered evidence are delivered before final qualification; no production service is required."
+        ]
+      }
+    },
+    {
+      "id": "TASK-009",
+      "description": "Prepare the pinned Vector, ClickHouse and private Grafana reference stack with bounded device/profile retention and no IP tracking.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-003"
+      ],
+      "extra_context": [
+        "Proposed output: services/usage-statistics/ with pinned local compose configuration, normalized numeric-row tables/queries, dashboards and a runbook. No production provisioning or deployment.",
+        "Connect TASK-003 private normalized ingress output to Vector HTTP source/ClickHouse JSONEachRow. Keep raw public bodies out of Vector and analytics; bound memory and queues without an unbounded/durable request spool.",
+        "Persist only the approved per-event rows (installation ID, session ID, session_start, batch_seq, seq, t, event fields, receive time to the second) and per-session release/device profiles; expire events, sessions and profiles at 90 days. Queries deduplicate on (session_id, seq). No photo attributes, raw bodies or additional key; no indefinitely retained device inventory.",
+        "Configure every hop/log/trace/database query logger to exclude IPs, reporting IDs, header/body values and rejected payloads; forward no X-Forwarded-For/cookies. Disable access/security logs, CDN/WAF analytics, IP-based limiters and third-party analytics. Global or bounded reporting-ID rate limits are permitted. Dashboard/database/collector access is private and authenticated.",
+        "Provision feature/import/export/outcome/active-time/timing/resource views grouped by app/OS/CPU/GPU/memory cohorts, a per-session timeline view, simple path queries (for example adding images to Develop to a completed export, and what precedes a failed operation) per-image histories across an installation's sessions, and per-installation history for performance debugging. Explain opt-in bias, loss and the missing session tail, and label sessions and installation IDs as such, never unique people/physical devices; no account join or photo lookup; image IDs from different installations are unrelated.",
+        "Backend capacity, finite shared-NAT-friendly rate limits, storage engine/query arrangement and exact pinned packages are delegated. Preserve license notices; do not claim deferred manual audits.",
+        "This work depends on the normalized ingress rows, not desktop delivery or an external account. A local container runtime may be unavailable: prepare all artifacts and record its integration test as unrun until execution is possible, never substitute inspection for a pass."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Usage statistics design",
+          "target": "docs/design/usage-statistics.md",
+          "relevance": "Settled scope, proposed commands, privacy allowlist, collection and delivery bounds, backend contract and evidence"
+        },
+        {
+          "kind": "file",
+          "label": "Backend reference",
+          "target": "docs/design/usage-statistics.md",
+          "locator": "Open-source backend reference",
+          "relevance": "Stack, cohort rows, 90-day retention and logging/privacy constraints"
+        },
+        {
+          "kind": "file",
+          "label": "Event and loss semantics",
+          "target": "docs/design/usage-statistics.md",
+          "locator": "Wire protocol",
+          "relevance": "Event ordering, sequence gaps and estimate limitations"
+        }
+      ],
+      "acceptance_criteria": [
+        "The reference stack ingests synthetic event rows and yields independently expected cohort counts, distributions, session timelines and path results, including duplicate batches and sequence gaps.",
+        "Retention expiry, bounded queues and collector/database pressure are tested; ingestion has no raw-body/archive fallback.",
+        "Captured all-hop logs contain no IP, installation/session ID, User-Agent/header/body/private value or raw payload; stored rows contain only the approved ID/device/event fields, no photo attributes or PII. No third-party analytics or IP-based tracking/limiter exists.",
+        "All packages/images/plugins are pinned open source with notices; dashboards and backend services have no public unauthenticated data access.",
+        "Runbook documents local startup, actual implemented tests, deployment privacy requirements and operational limitations without claiming hosted availability."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run locally with synthetic approved ID/device/event fixtures; verify independent cohort, timeline, path and per-installation SQL results, accelerated 90-day expiry and bounded downstream-pressure behavior.",
+          "Capture proxy/service/container/Vector/database/dashboard logs and network metadata; inspect privacy settings and private network/authentication boundaries."
+        ],
+        "commands": [],
+        "expected_results": [
+          "Local backend configuration and privacy-aware dashboards are reviewable; execution gaps remain explicitly unrun and no hosting is performed."
+        ]
+      }
+    },
+    {
+      "id": "TASK-010",
+      "description": "Qualify native responsiveness, storage/traffic bounds and source preservation after working client delivery.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-008"
+      ],
+      "extra_context": [
+        "Run after feature integration on a quiet M4 in release mode with generated 24 MP/60 MP photographs and available authentic RAW inputs. Compare opted-out and opted-in behavior with fast/slow/offline local receivers.",
+        "Measure producer p50/p95, input-to-frame distributions, idle/hidden CPU, process memory, resource-sampling overhead, TLS/thread-stack overhead, request/body volume and close latency; include drag floods, imports, exports, long cooldowns and opt-out.",
+        "Targets are unmeasured planning budgets: producer p95 <10 microseconds and no sustained interactive latency regression >max(1 ms, 5%). Fix regressions and repeat only affected checks before the final integrated run.",
+        "Prove app-owned statistics capacity <=256 KiB independently of measured TLS/stack overhead. Record request volume with no hourly/daily cap under typical editing and event floods, and validate the 60-second spacing and bounded windows with long fake-clock/flood tests and a real traffic capture; no timing assertion dependent on shared-host load in ordinary unit tests.",
+        "Run finished-work quick and the appropriate timing/full verification with the available corpus scope. Full milestone acceptance requires the actual corpus/native evidence; missing owner manifests or Windows/Linux native hardware remain explicit, without blocking TASK-008 delivery.",
+        "Record current measurement scope/results in the performance spec/design and feature status, not a historical run log. No production reporting or user consent is used for measurement.",
+        "Verify OS/CPU/GPU/driver/profile gathering adds no UI/owner latency or extra GPU device, the profile fits its 2 KiB cap, and actual metadata probes match approved model values without capturing raw system strings. Generated 24/60 MP images are local verification inputs only; their sizes/formats never enter telemetry."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Usage statistics design",
+          "target": "docs/design/usage-statistics.md",
+          "relevance": "Settled scope, proposed commands, privacy allowlist, collection and delivery bounds, backend contract and evidence"
+        },
+        {
+          "kind": "file",
+          "label": "Measurement record",
+          "target": "docs/specs/performance.md",
+          "relevance": "Targets, photo-sized inputs and honest scope"
+        },
+        {
+          "kind": "file",
+          "label": "Native acceptance",
+          "target": "docs/design/usage-statistics.md",
+          "locator": "Acceptance and evidence",
+          "relevance": "Specific on/off cost, buffer and traffic targets"
+        },
+        {
+          "kind": "file",
+          "label": "Performance rules",
+          "target": "docs/engineering/performance-rules.md",
+          "relevance": "Owner/UI work, bounded storage, worker homes, idle behavior and measurement"
+        },
+        {
+          "kind": "file",
+          "label": "Verification workflow",
+          "target": "docs/engineering/development.md",
+          "relevance": "Narrow tests during implementation, shared cache, hidden background launches and final tiers"
+        }
+      ],
+      "acceptance_criteria": [
+        "On/off distributions and retained evidence show the interactive targets met, no statistics-driven redraws, no added disabled/hidden idle timer and no upload-dependent close latency; misses are fixed or remain explicitly unqualified.",
+        "Statistics allocation capacities, network limits, failure/backoff behavior and measured TLS/stack overhead have distinct reported scope; long offline activity cannot cause a backlog.",
+        "Exact/reference image outputs and original hashes are unchanged across enabled/disabled paths with the corpus actually exercised.",
+        "Required quick/timing/full checks have truthful pass/failure/unrun status and native hardware/corpus attribution; no headless result is presented as native GPU evidence."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Use the current editor-performance/editor-latency/measurement tooling after implementation and retain paired release-build traces with local receiver traffic and allocation reports.",
+          "Run quick and final timing/full tiers once at the end, passing the real manifest to full qualification when available; document missing inputs rather than manufacturing a pass."
+        ],
+        "commands": [
+          "tools/cargo-cached xtask verify --tier quick --output artifacts/usage-qualified-quick",
+          "tools/cargo-cached xtask verify --tier timing --output artifacts/usage-qualified-timing"
+        ],
+        "expected_results": [
+          "Measured native budgets and unchanged images are established within explicit scope; absent private/native inputs remain open qualification."
+        ]
+      }
+    },
+    {
+      "id": "TASK-011",
+      "description": "Verify actual client-to-reference-backend privacy and protocol behavior, and prepare the production activation handoff.",
+      "status": "pending",
+      "dependencies": [
+        "TASK-008",
+        "TASK-009"
+      ],
+      "extra_context": [
+        "Exercise TASK-008 encoded batches through TASK-009 local stack; reconcile client registry/schema fixtures with the independent ingress validator and actual normalized rows.",
+        "Test accept/reject, sent-once loss/ambiguous failures, rate/size/cooldown behavior, storage expiry and no metadata retention across all components. Use synthetic opted-in isolated clients, never real users' statistics.",
+        "Produce a concrete deployment/activation checklist and synthetic live-endpoint probe using the implemented contract, with DNS/TLS/route/rate/privacy/retention checks. The probe and deployment instructions must exist before any external deployment request.",
+        "Production DNS/certificates/hosting and turning on the activation switch are external or separately authorized actions outside this request; the checklist names the switch change as its last step. Do not provision, publish or probe a nonexistent production API. Record live delivery as unverified until a real deployment satisfying the disclosure exists.",
+        "This final backend/activation handoff has no dependency back into the working client. It contains no owner-approval or research task; production changes require a separately authorized action.",
+        "Include actual current installation/device fields in acceptance and negative fixtures. Prove ID lifetime/rotation, no photo-derived labels and no IP logging, hashing, enrichment, forwarded metadata or rate-limit state at every hop, including infrastructure defaults. Network packet routing addresses are unavoidable and are not statistics."
+      ],
+      "context_links": [
+        {
+          "kind": "file",
+          "label": "Usage statistics design",
+          "target": "docs/design/usage-statistics.md",
+          "relevance": "Settled scope, proposed commands, privacy allowlist, collection and delivery bounds, backend contract and evidence"
+        },
+        {
+          "kind": "file",
+          "label": "Real endpoint boundary",
+          "target": "docs/design/usage-statistics.md",
+          "locator": "Open-source backend reference",
+          "relevance": "Local preparation versus external hosting inputs"
+        },
+        {
+          "kind": "file",
+          "label": "Delivery scope",
+          "target": "docs/features.md",
+          "relevance": "Distinguish client, local backend and live API evidence"
+        },
+        {
+          "kind": "file",
+          "label": "Roadmap authorization",
+          "target": "docs/plan.md",
+          "relevance": "Planning-only implementation and external activation boundaries"
+        },
+        {
+          "kind": "file",
+          "label": "Verification workflow",
+          "target": "docs/engineering/development.md",
+          "relevance": "Narrow tests during implementation, shared cache, hidden background launches and final tiers"
+        }
+      ],
+      "acceptance_criteria": [
+        "Actual current client bodies are accepted and persisted as exactly expected approved cohort rows; all privacy-negative/unsupported fixture bodies are rejected before forwarding.",
+        "All-hop logs/storage capture and accelerated event/session/profile retention, rate and pressure checks pass with only approved ID/device/event rows and no persistent IPs, IP-indexed tracking, photo data, raw bodies, PII or additional identifiers.",
+        "Deployment runbook and runnable synthetic probe are complete/reviewable; absent production deployment is specifically unverified and cannot be mistaken for client failure.",
+        "Feature status and guide accurately state the implemented privacy guarantees, best-effort estimates, local/backend qualification and remaining live/native evidence."
+      ],
+      "test_strategy": {
+        "approach": "mixed",
+        "steps": [
+          "Run one local end-to-end test with an isolated eligible app, validator, collector/database and dashboard queries, plus malformed/private/pressure fixtures.",
+          "Inspect captured all-hop logs/data/retention and the concrete activation/probe artifacts; run the live probe only after a separately authorized real endpoint deployment."
+        ],
+        "commands": [],
+        "expected_results": [
+          "Local end-to-end protocol/privacy evidence and a deployable handoff are complete; no production hosting or traffic is implied."
+        ]
+      }
+    }
+  ],
+  "execution_waves": [
+    {
+      "wave": 1,
+      "task_ids": [
+        "TASK-001",
+        "TASK-002",
+        "TASK-003"
+      ]
+    },
+    {
+      "wave": 2,
+      "task_ids": [
+        "TASK-004",
+        "TASK-005",
+        "TASK-006",
+        "TASK-007",
+        "TASK-009"
+      ]
+    },
+    {
+      "wave": 3,
+      "task_ids": [
+        "TASK-008"
+      ]
+    },
+    {
+      "wave": 4,
+      "task_ids": [
+        "TASK-010",
+        "TASK-011"
+      ]
+    }
+  ]
+}

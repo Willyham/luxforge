@@ -74,12 +74,13 @@ Import from and alignment with Lightroom Classic.
 
 ### Project (`project/`)
 
-Owner decisions and repository upkeep.
+Owner decisions, host services and repository upkeep.
 
 | Plan | Purpose |
 | --- | --- |
 | [Dependency advisories](project/dependency-advisories.json) | Remove or re-review the two expiring advisory exceptions the dependency audit enforces |
 | [Product decisions](project/product-decisions.json) | Open product questions |
+| [Optional usage statistics](project/usage-statistics.json) ([design](../docs/design/usage-statistics.md)) | Planned once-only opt-in and Settings Privacy controls, protected consent, random persistent ID and approved device details, full-app timelines of typed events linked by installation, session and keyed per-image ID without PII/IP tracking/photo contents or metadata, no hourly/daily caps, bounded best-effort HTTPS batches, production activation off until the real endpoint is deployed, and an independent open-source backend reference; working client before final native/privacy/live qualification. Implementation is not authorized |
 
 The post-consolidation programme, the Tone curve, Detail, Lens and perspective and the live-session CLI are complete and their plans are deleted; their outcome lives in the specs, their designs and [feature status](../docs/features.md).
 

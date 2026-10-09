@@ -211,6 +211,10 @@ The **Appearance** tab chooses the interface's colours. **Luxforge Dark**, the d
 
 Flags are yours, outside any catalog, in the application configuration directory beside the Performance preference. Any client reads and changes them with `flags.list` and `flags.set {flag, value}` (`null` resets), and an open Settings sheet follows another client's change. Developer mode is the one product flag today; developer mode also lists two proof flags, Proof choice and Proof number, which change nothing.
 
+### Planned: optional usage statistics
+
+[Optional usage and performance statistics](design/usage-statistics.md) are planned, not available yet. The design asks once with a non-blocking notice on opening, starts off, and offers Settings › Privacy to opt in or out. It shares which features and tools are used and when, how many images are added and exported, performance samples and approved app/OS/CPU/GPU/memory details in occasional background batches. A random persistent installation ID, a per-launch session ID and, in Develop, an image ID let a session's or an image's activity be followed in order and compared over time. The image ID is a keyed hash that cannot be matched to the file without a key that never leaves the computer. Reports never include names, contact details, IP addresses, photos, filenames, photo metadata or editing values. Opt-out clears unsent data, cancels delivery and removes the local reporting ID and image key; a later opt-in creates fresh ones, so image IDs change too. The ingestion API is not implemented yet, and no build will ask or send until it is deployed.
+
 ### Developer components gallery
 
 Developer mode shows a **Developer** button in the title bar. For the optimized development build,
