@@ -243,17 +243,10 @@ fn an_srgb_patch_is_decoded_to_linear_light() {
             ..patch(SHAPE, [0, 0], &content(SHAPE, 0))
         })
         .unwrap();
-    // The sRGB transfer function, written out here.
+    // The shared test reference's sRGB decode, independent of the core's table.
     let linear: Vec<f32> = codes
         .iter()
-        .map(|code| {
-            let encoded = f64::from(*code) / 255.0;
-            (if encoded <= 0.04045 {
-                encoded / 12.92
-            } else {
-                ((encoded + 0.055) / 1.055).powf(2.4)
-            }) as f32
-        })
+        .map(|code| luxforge_reference::srgb::decode(*code) as f32)
         .collect();
     let reader = store.reader(&sink.job_id, 0).unwrap();
     assert_eq!(
