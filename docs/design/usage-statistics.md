@@ -153,7 +153,7 @@ Empty batches are never sent. Cooldowns do not keep an empty worker ticking. Inc
 
 ## Wire protocol
 
-Choose a small Luxforge JSON schema over HTTPS, carrying **an ordered list of typed events** with the installation and session IDs and approved device context. This uses the current bounded HTTP transport and lets the ingress enforce the entire privacy allowlist without accepting arbitrary event attributes. It is deliberately not advertised as OTLP.
+Choose a small Luxforge JSON schema over HTTPS, carrying **an ordered list of typed events** with the installation and session IDs and approved device context. This uses the current bounded HTTP transport and lets the ingress enforce the entire privacy allowlist without accepting arbitrary event attributes. It is deliberately not advertised as OTLP. The exact keys, enums and ranges are in the [wire format](usage-statistics-wire.md).
 
 The envelope's `session_start` is the client's UTC wall-clock time when the session began, to the second. `batch_seq` counts this session's batches from 0. Each event's `seq` counts this session's events from 0, including dropped ones, and its `t` is milliseconds since `session_start`, so events are ordered by `seq` and `t` never decreases. `dropped` is the number of this window's events that were not sent. A gap in `seq` or `batch_seq` is a lost event or batch.
 
