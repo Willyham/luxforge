@@ -1386,3 +1386,33 @@ fn a_key_step_takes_a_chord_written_as_an_action_shortcut() {
         assert!(parse(&written.to_string()).is_err(), "{key}");
     }
 }
+
+#[test]
+fn usage_steps_round_trip_and_refuse_what_they_do_not_take() {
+    let steps = round_trip(json!([
+        {"usage": "notice"},
+        {"usage": {"answer": "share"}},
+        {"usage": {"answer": "decline"}},
+        {"settings": {"open": true, "tab": "privacy"}},
+        {"usage": {"share": false}},
+        {"usage": {"details": true}},
+    ]));
+    assert_eq!(steps[0], Step::from(UsageStep::Notice));
+    assert_eq!(steps[1], Step::from(UsageStep::Answer(NoticeAnswer::Share)));
+    assert_eq!(steps[3], Step::settings_tab("privacy"));
+    assert_eq!(steps[4], Step::from(UsageStep::Share(false)));
+    for (script, expected) in [
+        (
+            json!({"usage": {"answer": "maybe"}}),
+            "unknown variant `maybe`",
+        ),
+        (json!({"usage": {"share": "yes"}}), "expected a boolean"),
+        (json!({"usage": "reset"}), "unknown variant `reset`"),
+        (
+            json!({"settings": {"open": true, "tab": "telemetry"}}),
+            "settings tab must be one of general, appearance, experiments, privacy",
+        ),
+    ] {
+        refused(json!([script]), expected);
+    }
+}

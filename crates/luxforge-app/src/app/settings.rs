@@ -22,14 +22,21 @@ impl Editor {
     pub(super) fn settings_update(&mut self, message: SettingsMessage) -> Task<Message> {
         match message {
             SettingsMessage::Open(tab) => {
+                // A launch that is not eligible for usage statistics has no Privacy tab to open.
+                let tab = if SettingsTab::shown(self.usage.eligible).any(|shown| shown == tab) {
+                    tab
+                } else {
+                    SettingsTab::General
+                };
                 // The sheet is modal: nothing behind it stays open over it.
                 self.palette.open = false;
                 self.view_state.menu = None;
                 self.settings.open = Some(tab);
                 self.settings.number_text.clear();
                 // What a `luxforge-json` process stored in the library reaches the desktop by no
-                // event, so opening the sheet lists the themes again too.
-                return Task::batch([self.read_flags(), self.list_themes()]);
+                // event, so opening the sheet lists the themes again too, and reads the usage
+                // statistics consent, which another process may have changed.
+                return Task::batch([self.read_flags(), self.list_themes(), self.read_usage()]);
             }
             SettingsMessage::Close => {
                 self.settings.open = None;
@@ -227,6 +234,7 @@ impl Editor {
             .collect();
         json!({
             "open": self.settings.open.map(SettingsTab::name),
+            "tabs": self.workspace.settings.tabs.iter().map(|tab| tab.name()).collect::<Vec<_>>(),
             "general": {"rows": general, "error": self.workspace.settings.preferences_error},
             "appearance": {"rows": themes, "unrecognized": appearance.unrecognized,
                            "loading": appearance.loading, "error": appearance.error,
@@ -241,16 +249,18 @@ impl Editor {
         })
     }
 
-    /// Another client changed a flag, a preference or the theme library. An open sheet reads the
-    /// flags and the preferences again; a closed one reads nothing for a flag, but a preference is
-    /// read again whatever is on screen, since the desktop applies some of them to this session,
-    /// the active theme among them. A theme event lists the library again whether or not the sheet
-    /// is open, since the palette lists the themes too.
+    /// Another client changed a flag, a preference, the theme library or the usage statistics
+    /// consent. An open sheet reads the flags and the preferences again; a closed one reads nothing
+    /// for a flag, but a preference is read again whatever is on screen, since the desktop applies
+    /// some of them to this session, the active theme among them. A theme event lists the library
+    /// again whether or not the sheet is open, since the palette lists the themes too. A consent
+    /// change is read again in an eligible launch, so an open Privacy tab follows it.
     pub(crate) fn settings_changed_elsewhere(
         &mut self,
         flags: bool,
         preferences: bool,
         themes: bool,
+        usage: bool,
     ) -> Task<Message> {
         let listed = if themes {
             self.list_themes()
@@ -264,7 +274,12 @@ impl Editor {
         } else {
             Task::none()
         };
-        Task::batch([listed, read])
+        let consent = if usage {
+            self.read_usage()
+        } else {
+            Task::none()
+        };
+        Task::batch([listed, read, consent])
     }
 }
 

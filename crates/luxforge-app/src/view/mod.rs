@@ -30,6 +30,7 @@ pub(crate) mod state_panel;
 pub(crate) mod status_bar;
 pub(crate) mod title_bar;
 pub(crate) mod tools_panel;
+pub(crate) mod usage;
 mod warped_path;
 
 pub(crate) use gallery::{gallery, page_info as gallery_page_info};
@@ -202,6 +203,11 @@ pub(crate) fn workspace<'a>(
     }
     if let Some(sheet) = copy_settings::confirmation(&model.copy_settings) {
         layers = layers.push(sheet);
+    }
+    // The usage statistics notice sits under the palette and the sheets, which a claimed notice
+    // waits for anyway.
+    if let Some(notice) = &model.usage_notice {
+        layers = layers.push(usage::notice(notice));
     }
     if let Some(overlay) = palette::palette(&model.palette) {
         layers = layers.push(overlay);
