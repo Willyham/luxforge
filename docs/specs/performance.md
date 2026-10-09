@@ -2209,8 +2209,10 @@ and total GPU memory outside the declared services are not newly bounded by thes
 
 ### Paired whole-frame reference costs
 
-`grade-performance --source SOURCE --output NEW --samples 30` runs independent owners
-sequentially, preparing the original once per owner, with one warm-up and 30 samples per workload.
+The figures below were taken with independent owners run sequentially, preparing the original once
+per owner, with one warm-up and 30 samples per workload. `grade-performance` alternates the two
+workloads sample by sample on one owner ([development](../engineering/development.md)), so its
+figures are not directly comparable with these.
 HSL holds red hue 20/21 (alternating to make every commit real) and blue saturation 15.
 The graded workload keeps those HSL values and adds Shadows hue 210/saturation 30,
 Highlights hue 45/saturation 20 and Global luminance 5. Commits use `edit.set-mixer`;

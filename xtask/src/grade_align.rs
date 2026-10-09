@@ -11,16 +11,23 @@
 //!   identity fits with no residual, the tooling's end-to-end self-test.
 //! - `measure --round DIR --output NEW [--lightroom DIR]` renders Luxforge's responses through the
 //!   whole-frame reference renderer on a dense value grid, reads the owner's Lightroom exports of
-//!   the round when a folder is given (`<variant>.tif`, `.tiff`, `.png` or `.jpg`), fits each
-//!   setting with `luxforge_reference::grade_response`, and writes the figures, a summary and a
-//!   contact sheet. Without exports the Lightroom figures are recorded as unmeasured; nothing is
-//!   inferred from names or ranges.
+//!   the round when a folder is given (`<variant>.tif`, `.tiff`, `.png` or `.jpg`, each the
+//!   target's size, the neutral variant's required), fits each setting with
+//!   `luxforge_reference::grade_response`, and writes the figures, a summary and a contact sheet.
+//!   Without exports the Lightroom figures are recorded as unmeasured; nothing is inferred from
+//!   names or ranges.
+//!
+//! `render` and `measure` take only a round whose manifest lists exactly this command's variants,
+//! and render their frames in parallel through one registry and render context.
 //!
 //! Luxforge's side reads the reference renderer's 8-bit display frame and averages each patch's
 //! interior, which is the precision it reports: patch means of 8-bit codes, not a 16-bit terminal
 //! conversion.
 use crate::*;
-use luxforge_core::{Layer, MIXER_EFFECT, ModuleRegistry, RECIPE_FORMAT, Recipe, inspect_preset};
+use luxforge_core::{
+    Layer, MIXER_EFFECT, ModuleRegistry, RECIPE_FORMAT, Raster, Recipe, RenderContext,
+    RenderOptions, SnapshotId, SourceImage, inspect_preset, render,
+};
 use luxforge_reference::grade_response::{self, FitPoint, Response, Sampled};
 use luxforge_reference::{colour, srgb};
 
@@ -191,45 +198,82 @@ fn family(family: &str, value: f64) -> Variant {
     variant
 }
 
-fn families() -> Vec<(String, Vec<f64>, Vec<f64>, bool)> {
-    let grid = |low: f64, high: f64, step: f64| -> Vec<f64> {
-        let count = ((high - low) / step).round() as usize;
-        (0..=count).map(|i| low + i as f64 * step).collect()
+/// One fitted setting: the values the round samples it at, Luxforge's denser grid (holding every
+/// round value), the default its variants move away from, and whether it is a hue.
+struct Family {
+    name: String,
+    round: Vec<f64>,
+    dense: Vec<f64>,
+    default: f64,
+    hue: bool,
+}
+
+fn grid(low: f64, high: f64, step: f64) -> Vec<f64> {
+    let count = ((high - low) / step).round() as usize;
+    (0..=count).map(|i| low + i as f64 * step).collect()
+}
+
+fn families() -> Vec<Family> {
+    let family = |name: String, round: Vec<f64>, dense: Vec<f64>, default: f64, hue: bool| Family {
+        name,
+        round,
+        dense,
+        default,
+        hue,
     };
     let mut families = Vec::new();
     for (wheel, ..) in WHEELS {
-        families.push((
+        families.push(family(
             format!("{wheel}-saturation"),
             SATURATIONS.to_vec(),
             grid(0.0, 100.0, 5.0),
+            0.0,
             false,
         ));
-        families.push((
+        families.push(family(
             format!("{wheel}-luminance"),
             LUMINANCES.to_vec(),
             grid(-100.0, 100.0, 5.0),
+            0.0,
             false,
         ));
-        families.push((
+        families.push(family(
             format!("{wheel}-hue"),
             grid(0.0, 330.0, 30.0),
             grid(0.0, 355.0, 5.0),
+            0.0,
             true,
         ));
     }
-    families.push((
+    families.push(family(
         "blending".into(),
         OVERLAPS.to_vec(),
         grid(0.0, 100.0, 5.0),
+        50.0,
         false,
     ));
-    families.push((
+    families.push(family(
         "balance".into(),
         BALANCES.to_vec(),
         grid(-100.0, 100.0, 5.0),
+        0.0,
         false,
     ));
     families
+}
+
+/// Every variant of a round over `families`, in manifest order.
+fn variants(families: &[Family]) -> Vec<Variant> {
+    families
+        .iter()
+        .flat_map(|f| f.round.iter().map(|value| family(&f.name, *value)))
+        .collect()
+}
+
+/// The variant every response is measured from, every grading field at its default: the round's
+/// own Midtones saturation 0, which is also what Lightroom's neutral export is named for.
+fn neutral() -> Variant {
+    family("midtones-saturation", 0.0)
 }
 
 /// Whether a reader's `set-mixer` fields are the manifest's, comparing numbers by value: a
@@ -244,7 +288,44 @@ fn same_fields(read: Option<&Value>, expected: &Value) -> bool {
         fields.sort_by(|a, b| a.0.cmp(&b.0));
         Some(fields)
     };
-    read.and_then(numbers).is_some() && read.and_then(numbers) == numbers(expected)
+    read.and_then(numbers)
+        .is_some_and(|read| Some(read) == numbers(expected))
+}
+
+/// A round's variants, refused unless its manifest is this command's format and lists exactly
+/// `families`' variants, in order, with the same `set-mixer` fields: a round written by another
+/// version of this command is stale, and rendering or measuring it against today's variants would
+/// pair the wrong settings silently.
+fn round_variants(manifest: &Value, families: &[Family]) -> Result<Vec<Variant>> {
+    ensure(
+        manifest["format"] == json!(FORMAT),
+        "the round manifest is not this command's format; generate a new round",
+    )?;
+    let listed = manifest["variants"]
+        .as_array()
+        .ok_or("the round manifest lists no variants")?;
+    let expected = variants(families);
+    let stale = |what: &str| -> Box<dyn std::error::Error> {
+        format!("the round manifest is stale ({what}); generate a new round").into()
+    };
+    if listed.len() != expected.len() {
+        return Err(stale(&format!(
+            "{} variants, this command's round has {}",
+            listed.len(),
+            expected.len()
+        )));
+    }
+    for (entry, variant) in listed.iter().zip(&expected) {
+        if entry["id"] != json!(variant.id)
+            || !same_fields(Some(&entry["luxforge"]["set-mixer"]), &variant.luxforge())
+        {
+            return Err(stale(&format!(
+                "its {} is not this command's {}",
+                entry["id"], variant.id
+            )));
+        }
+    }
+    Ok(expected)
 }
 
 /// A JPEG of `rgba` with `xmp` as its XMP packet (an APP1 segment after SOI), or none.
@@ -287,62 +368,62 @@ fn target_rgb() -> (u32, u32, Vec<u8>) {
     (width, height, rgb)
 }
 
+const USAGE: &str = "grade-align generate --output NEW | render --round DIR --output NEW | measure --round DIR --output NEW [--lightroom DIR]";
+
 pub fn run(root: &Path, mut a: Args) -> Result {
-    let op =
-        a.0.first()
-            .cloned()
-            .ok_or("grade-align needs generate or measure")?;
+    let op = a.0.first().cloned().ok_or(USAGE)?;
     a.0.remove(0);
+    let families = families();
     match op.to_str() {
         Some("generate") => {
             let out = absolute(root, &a.path("--output")?);
             a.done()?;
-            generate(&out)
+            generate(&out, &families)
         }
         Some("render") => {
             let round = absolute(root, &a.path("--round")?);
             let out = absolute(root, &a.path("--output")?);
             a.done()?;
-            render_round(&round, &out)
+            render_round(&round, &out, &families)
         }
         Some("measure") => {
             let round = absolute(root, &a.path("--round")?);
             let out = absolute(root, &a.path("--output")?);
-            let lightroom = a.value("--lightroom")?.map(|p| absolute(root, Path::new(&p)));
+            let lightroom = a
+                .value("--lightroom")?
+                .map(|p| absolute(root, Path::new(&p)));
             a.done()?;
-            measure(&round, &out, lightroom.as_deref())
+            measure(&round, &out, lightroom.as_deref(), &families)
         }
-        _ => Err("grade-align generate --output NEW | measure --round DIR --output NEW [--lightroom DIR]".into()),
+        _ => Err(USAGE.into()),
     }
 }
 
-fn generate(out: &Path) -> Result {
+/// `generate` over `families`: every family in a real round, fewer in this module's own test.
+fn generate(out: &Path, families: &[Family]) -> Result {
     ensure(!out.exists(), format!("{} already exists", out.display()))?;
     fs::create_dir_all(out.join("variants"))?;
     let (width, height, rgb) = target_rgb();
     fs::write(out.join("target.jpg"), jpeg(width, height, &rgb, None)?)?;
     let registry = ModuleRegistry::builtin();
-    let mut variants = Vec::new();
-    for (name, values, _, _) in families() {
-        for value in values {
-            let variant = family(&name, value);
-            let xmp = variant.xmp();
-            // The reader must map the XMP to exactly the fields the manifest records.
-            let read = inspect_preset(&xmp, None, &registry)?;
-            ensure(
-                same_fields(read.settings.get("set-mixer"), &variant.luxforge())
-                    && read.settings.len() == 1
-                    && read.report.refused.is_empty(),
-                format!("{}: the preset reader maps {:?}", variant.id, read.settings),
-            )?;
-            let file = format!("variants/{}.jpg", variant.id);
-            fs::write(out.join(&file), jpeg(width, height, &rgb, Some(&xmp))?)?;
-            variants.push(json!({
-                "id": variant.id, "family": variant.family, "value": variant.value, "file": file,
-                "lightroom": variant.lightroom().into_iter().map(|(n, v)| (n, json!(v))).collect::<serde_json::Map<_, _>>(),
-                "luxforge": {"set-mixer": variant.luxforge()},
-            }));
-        }
+    let mut written = Vec::new();
+    for variant in variants(families) {
+        let xmp = variant.xmp();
+        // The reader must map the XMP to exactly the fields the manifest records.
+        let read = inspect_preset(&xmp, None, &registry)?;
+        ensure(
+            same_fields(read.settings.get("set-mixer"), &variant.luxforge())
+                && read.settings.len() == 1
+                && read.report.refused.is_empty(),
+            format!("{}: the preset reader maps {:?}", variant.id, read.settings),
+        )?;
+        let file = format!("variants/{}.jpg", variant.id);
+        fs::write(out.join(&file), jpeg(width, height, &rgb, Some(&xmp))?)?;
+        written.push(json!({
+            "id": variant.id, "family": variant.family, "value": variant.value, "file": file,
+            "lightroom": variant.lightroom().into_iter().map(|(n, v)| (n, json!(v))).collect::<serde_json::Map<_, _>>(),
+            "luxforge": {"set-mixer": variant.luxforge()},
+        }));
     }
     write_json(
         &out.join("manifest.json"),
@@ -350,16 +431,36 @@ fn generate(out: &Path) -> Result {
             "format": FORMAT,
             "scope": "Colour grading alignment round: import variants/ into a scratch Lightroom Classic catalog with read metadata from files, select all and export each as 16-bit sRGB TIFF with compression None, full size, no sharpening or metadata, named <variant>.tif, into one folder; then run grade-align measure --lightroom on it. Responses are measured against each editor's own neutral variant.",
             "target": {"file": "target.jpg", "width": width, "height": height, "patch": PATCH, "inset": INSET, "columns": COLUMNS, "patches": patches().len()},
-            "variants": variants,
+            "variants": written,
         }),
     )?;
-    println!("wrote {} variants to {}", variants.len(), out.display());
+    println!("wrote {} variants to {}", written.len(), out.display());
     Ok(())
 }
 
-/// Each patch's interior mean, linear sRGB, of an encoded RGB frame.
-fn patch_means(width: u32, rgb: impl Fn(u32, u32) -> [f64; 3], count: usize) -> Vec<[f64; 3]> {
-    (0..count)
+/// The round target's size: every frame measured, Luxforge's or an export, must be exactly this,
+/// or its patches would be read at the wrong places.
+fn target_size() -> (u32, u32) {
+    layout(patches().len())
+}
+
+/// Refuse a frame that is not the round target's size, naming the layout it must have.
+fn check_size(what: &str, width: u32, height: u32) -> std::result::Result<(), String> {
+    let (expected_width, expected_height) = target_size();
+    if (width, height) == (expected_width, expected_height) {
+        Ok(())
+    } else {
+        Err(format!(
+            "{what} is {width}x{height}, not the round target's {expected_width}x{expected_height} \
+             ({COLUMNS} columns of {PATCH}-pixel patches): export at full size, uncropped"
+        ))
+    }
+}
+
+/// Each patch's interior mean, linear sRGB, of an encoded RGB frame of the target's size (which
+/// the caller has checked, so every index is inside it).
+fn patch_means(rgb: impl Fn(u32, u32) -> [f64; 3]) -> Vec<[f64; 3]> {
+    (0..patches().len())
         .map(|index| {
             let (x0, y0) = patch_origin(index);
             grade_response::patch_mean((y0 + INSET..y0 + PATCH - INSET).flat_map(|y| {
@@ -367,44 +468,113 @@ fn patch_means(width: u32, rgb: impl Fn(u32, u32) -> [f64; 3], count: usize) -> 
                 (x0 + INSET..x0 + PATCH - INSET).map(move |x| rgb(x, y))
             }))
         })
-        .inspect(|_| debug_assert!(width > 0))
         .collect()
 }
 
-/// The Luxforge render of a variant's recipe over the round's target, as an 8-bit RGBA raster.
-fn luxforge_raster(
-    source: &luxforge_core::SourceImage,
-    variant: &Variant,
-) -> Result<luxforge_core::Raster> {
-    let recipe = Recipe {
-        format: RECIPE_FORMAT,
-        layers: vec![Layer::new(MIXER_EFFECT, variant.luxforge())],
-        ..Recipe::default()
-    };
-    crate::basic_acceptance::render(source, &recipe)
+/// The whole-frame reference renderer over a round's target, its registry and render context
+/// built once and shared by every render of a run.
+struct Renderer {
+    registry: ModuleRegistry,
+    context: RenderContext,
+    source: SourceImage,
+}
+
+impl Renderer {
+    fn open(round: &Path) -> Result<Self> {
+        Ok(Self {
+            registry: ModuleRegistry::developer(),
+            context: RenderContext::new(),
+            source: luxforge_core::open_source(&round.join("target.jpg"))?,
+        })
+    }
+
+    /// A variant's recipe over the target as an 8-bit RGBA frame of the target's size.
+    fn raster(&self, variant: &Variant) -> std::result::Result<Raster, String> {
+        let recipe = Recipe {
+            format: RECIPE_FORMAT,
+            layers: vec![Layer::new(MIXER_EFFECT, variant.luxforge())],
+            ..Recipe::default()
+        };
+        let raster = render(
+            &self.registry,
+            &self.source,
+            &recipe,
+            RenderOptions::default(),
+            &self.context,
+        )
+        .and_then(|render| render.frame(SnapshotId::new()))
+        .map_err(|error| format!("{}: {error}", variant.id))?;
+        check_size(
+            &format!("Luxforge's render of {}", variant.id),
+            raster.width,
+            raster.height,
+        )?;
+        Ok(raster)
+    }
+
+    fn means(&self, variant: &Variant) -> std::result::Result<Vec<[f64; 3]>, String> {
+        let raster = self.raster(variant)?;
+        let width = raster.width;
+        Ok(patch_means(|x, y| {
+            let at = ((y * width + x) * 4) as usize;
+            [0, 1, 2].map(|c| srgb::decode(raster.rgba[at + c]))
+        }))
+    }
+}
+
+/// `work` over every item on a bounded pool of scoped threads, one per available core and at most
+/// one per item, each taking the next item as it finishes one; the results in item order, or the
+/// first item's failure. Each worker holds one item's frame at a time.
+fn in_parallel<T: Sync, R: Send>(
+    items: &[T],
+    work: impl Fn(&T) -> std::result::Result<R, String> + Sync,
+) -> Result<Vec<R>> {
+    let workers = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZero::get)
+        .min(items.len())
+        .max(1);
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut results: Vec<Option<std::result::Result<R, String>>> =
+        std::iter::repeat_with(|| None).take(items.len()).collect();
+    std::thread::scope(|scope| -> Result {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let index = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(item) = items.get(index) else {
+                            return done;
+                        };
+                        done.push((index, work(item)));
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            let done = handle.join().map_err(|_| "a grade-align worker panicked")?;
+            for (index, result) in done {
+                results[index] = Some(result);
+            }
+        }
+        Ok(())
+    })?;
+    results
+        .into_iter()
+        .map(|result| Ok(result.ok_or("an item no worker took")??))
+        .collect()
 }
 
 /// `render`: Luxforge's own render of every round variant, written as `<variant>.png` into a new
 /// folder laid out as the owner's Lightroom exports are. Measured as `--lightroom`, it must give
 /// identity fits with no residual: the tooling's end-to-end self-test.
-fn render_round(round: &Path, out: &Path) -> Result {
+fn render_round(round: &Path, out: &Path, families: &[Family]) -> Result {
     ensure(!out.exists(), format!("{} already exists", out.display()))?;
+    let variants = round_variants(&read_json(&round.join("manifest.json"))?, families)?;
     fs::create_dir_all(out)?;
-    let manifest = read_json(&round.join("manifest.json"))?;
-    let source = luxforge_core::open_source(&round.join("target.jpg"))?;
-    let mut written = 0;
-    for entry in manifest["variants"].as_array().ok_or("no variants")? {
-        let family_name = entry["family"].as_str().ok_or("a family")?;
-        let value = entry["value"].as_f64().ok_or("a value")?;
-        let variant = family(family_name, value);
-        ensure(
-            entry["id"] == json!(variant.id),
-            format!(
-                "the manifest's {} is not this command's variant",
-                entry["id"]
-            ),
-        )?;
-        let raster = luxforge_raster(&source, &variant)?;
+    let renderer = Renderer::open(round)?;
+    in_parallel(&variants, |variant| {
+        let raster = renderer.raster(variant)?;
         let rgb: Vec<u8> = raster
             .rgba
             .chunks_exact(4)
@@ -412,26 +582,19 @@ fn render_round(round: &Path, out: &Path) -> Result {
             .collect();
         image::RgbImage::from_raw(raster.width, raster.height, rgb)
             .ok_or("a whole frame")?
-            .save(out.join(format!("{}.png", variant.id)))?;
-        written += 1;
-    }
-    println!("wrote {written} Luxforge renders to {}", out.display());
+            .save(out.join(format!("{}.png", variant.id)))
+            .map_err(|error| format!("{}: {error}", variant.id))
+    })?;
+    println!(
+        "wrote {} Luxforge renders to {}",
+        variants.len(),
+        out.display()
+    );
     Ok(())
 }
 
-fn luxforge_means(source: &luxforge_core::SourceImage, variant: &Variant) -> Result<Vec<[f64; 3]>> {
-    let raster = luxforge_raster(source, variant)?;
-    let width = raster.width;
-    Ok(patch_means(
-        width,
-        |x, y| {
-            let at = ((y * width + x) * 4) as usize;
-            [0, 1, 2].map(|c| srgb::decode(raster.rgba[at + c]))
-        },
-        patches().len(),
-    ))
-}
-
+/// The patch means of the owner's export of `id` in `folder`, `None` when there is none; refused
+/// unless it is the round target's size.
 fn lightroom_means(folder: &Path, id: &str) -> Result<Option<Vec<[f64; 3]>>> {
     let Some(path) = ["tif", "tiff", "png", "jpg"]
         .iter()
@@ -443,29 +606,29 @@ fn lightroom_means(folder: &Path, id: &str) -> Result<Option<Vec<[f64; 3]>>> {
     let is_tiff = path
         .extension()
         .is_some_and(|extension| extension == "tif" || extension == "tiff");
-    let (width, pixels) = if is_tiff {
+    let (width, height, pixels) = if is_tiff {
         let tiff =
             read_tiff(&fs::read(&path)?).map_err(|error| format!("{}: {error}", path.display()))?;
-        (tiff.width, tiff.encoded)
+        (tiff.width, tiff.height, tiff.encoded)
     } else {
         let decoded = image::open(&path)?.to_rgb32f();
         let pixels = decoded
             .pixels()
             .map(|pixel| pixel.0.map(f64::from))
             .collect();
-        (decoded.width(), pixels)
+        (decoded.width(), decoded.height(), pixels)
     };
-    Ok(Some(patch_means(
-        width,
-        |x, y| pixels[(y * width + x) as usize].map(srgb::decode_encoded),
-        patches().len(),
-    )))
+    check_size(&path.display().to_string(), width, height)?;
+    Ok(Some(patch_means(|x, y| {
+        pixels[(y * width + x) as usize].map(srgb::decode_encoded)
+    })))
 }
 
 /// An uncompressed baseline RGB TIFF's pixels, as encoded values in `[0, 1]`.
 #[derive(Debug)]
 struct Tiff {
     width: u32,
+    height: u32,
     encoded: Vec<[f64; 3]>,
 }
 
@@ -580,7 +743,11 @@ fn read_tiff(bytes: &[u8]) -> std::result::Result<Tiff, String> {
             })
         })
         .collect();
-    Ok(Tiff { width, encoded })
+    Ok(Tiff {
+        width,
+        height,
+        encoded,
+    })
 }
 
 fn responses(neutral: &[[f64; 3]], adjusted: &[[f64; 3]]) -> Vec<Response> {
@@ -598,33 +765,63 @@ fn fit_json(points: &[FitPoint]) -> Value {
         .collect::<Vec<_>>())
 }
 
-fn measure(round: &Path, out: &Path, lightroom: Option<&Path>) -> Result {
+/// The distance from a family's default at and beyond which a fitted point counts towards the
+/// alignment programme's C threshold.
+const THRESHOLD_FROM_DEFAULT: f64 = 25.0;
+
+/// The median CIEDE2000 above which a fitted point is a candidate for a behaviour change, the
+/// alignment programme's C threshold.
+const BEHAVIOUR_RESIDUAL: f64 = 2.0;
+
+/// `measure` over `families`, which must be the round's: every family in a real round, fewer in
+/// this module's own test.
+fn measure(round: &Path, out: &Path, lightroom: Option<&Path>, families: &[Family]) -> Result {
     ensure(!out.exists(), format!("{} already exists", out.display()))?;
-    let manifest = read_json(&round.join("manifest.json"))?;
-    ensure(
-        manifest["format"] == json!(FORMAT),
-        "the round manifest is not this command's format",
-    )?;
+    round_variants(&read_json(&round.join("manifest.json"))?, families)?;
+    // Every Lightroom response is measured from the round's own neutral variant, so a folder
+    // without it is refused rather than measured as if no folder had been given.
+    let lightroom_neutral = lightroom
+        .map(|folder| -> Result<Vec<[f64; 3]>> {
+            let id = neutral().id;
+            lightroom_means(folder, &id)?.ok_or_else(|| {
+                format!(
+                    "{} holds no export of the neutral variant {id} (.tif, .tiff, .png or .jpg), \
+                     which every Lightroom response is measured from",
+                    folder.display()
+                )
+                .into()
+            })
+        })
+        .transpose()?;
     fs::create_dir_all(out)?;
-    let source = luxforge_core::open_source(&round.join("target.jpg"))?;
     let count = patches().len();
-    let neutral_variant = Variant::new("neutral".into(), "neutral".into(), 0.0);
-    let luxforge_neutral = luxforge_means(&source, &neutral_variant)?;
-    // Every grading field at its default: the round's own neutral variant.
-    let lightroom_neutral = match lightroom {
-        Some(folder) => lightroom_means(folder, &family("midtones-saturation", 0.0).id)?,
-        None => None,
-    };
+    // Luxforge's side, rendered in parallel: the neutral, then every family's dense grid in
+    // order.
+    let renderer = Renderer::open(round)?;
+    let mut jobs = vec![neutral()];
+    jobs.extend(
+        families
+            .iter()
+            .flat_map(|f| f.dense.iter().map(|value| family(&f.name, *value))),
+    );
+    let mut rendered = in_parallel(&jobs, |variant| renderer.means(variant))?.into_iter();
+    let luxforge_neutral = rendered.next().ok_or("no neutral render")?;
     let mut results = Vec::new();
     let mut sheet: Vec<(String, Vec<[f64; 3]>)> = Vec::new();
-    for (name, round_values, dense, hue) in families() {
+    for Family {
+        name,
+        round: round_values,
+        dense,
+        default,
+        hue,
+    } in families
+    {
         let mut samples = Vec::new();
-        for value in &dense {
-            let means = luxforge_means(&source, &family(&name, *value))?;
-            if round_values.contains(value) {
-                sheet.push((format!("{name} {value}"), means.clone()));
-            }
+        for (value, means) in dense.iter().zip(rendered.by_ref()) {
             samples.push((*value, responses(&luxforge_neutral, &means)));
+            if round_values.contains(value) {
+                sheet.push((format!("{name} {value}"), means));
+            }
         }
         let luxforge_sampled = Sampled {
             neutrals: luxforge_neutral.clone(),
@@ -650,8 +847,8 @@ fn measure(round: &Path, out: &Path, lightroom: Option<&Path>) -> Result {
         let mut missing = Vec::new();
         if let (Some(folder), Some(neutral)) = (lightroom, &lightroom_neutral) {
             let mut samples = Vec::new();
-            for value in &round_values {
-                let id = family(&name, *value).id;
+            for value in round_values {
+                let id = family(name, *value).id;
                 match lightroom_means(folder, &id)? {
                     Some(means) => samples.push((*value, responses(neutral, &means))),
                     None => missing.push(id),
@@ -662,45 +859,52 @@ fn measure(round: &Path, out: &Path, lightroom: Option<&Path>) -> Result {
                     neutrals: neutral.clone(),
                     samples,
                 };
-                let points = if hue {
+                let points = if *hue {
                     grade_response::fit_hue(&luxforge_sampled, &measured)
                 } else {
                     grade_response::fit_monotone(&luxforge_sampled, &measured)
                 };
-                // The alignment programme's C threshold: a median CIEDE2000 above 2 at Lightroom
-                // values of ±25 and beyond, after the best value; hue residuals are degrees.
+                // The alignment programme's C threshold: a median CIEDE2000 above 2 after the best
+                // value, at Lightroom values 25 or more from the family's own default. Measured
+                // from the default, not from zero: Blending's default is 50, so `|value| >= 25`
+                // would judge its untouched default and miss nothing below it, while its 25 and 75
+                // are the settings that move it. Every Blending and Balance variant carries the
+                // same split tone, so their residuals include that tone's own mismatch, which the
+                // Shadows and Highlights saturation families measure on their own; read a flag
+                // here beside theirs. Hue residuals are degrees and are not flagged.
                 let candidate = !hue
-                    && points
-                        .iter()
-                        .any(|p| p.lightroom.abs() >= 25.0 && p.residual > 2.0);
+                    && points.iter().any(|p| {
+                        (p.lightroom - default).abs() >= THRESHOLD_FROM_DEFAULT
+                            && p.residual > BEHAVIOUR_RESIDUAL
+                    });
                 lightroom_fit =
                     json!({"points": fit_json(&points), "behaviour_candidate": candidate});
             }
         }
         results.push(json!({
-            "family": name, "hue": hue, "luxforge_strength": strength,
+            "family": name, "hue": hue, "default": default, "luxforge_strength": strength,
             "lightroom": if lightroom.is_none() { json!("unmeasured: no Lightroom exports were given") } else { lightroom_fit },
             "missing_exports": missing,
         }));
     }
     contact_sheet(&out.join("contact-sheet.png"), &sheet, count)?;
+    let status = if lightroom.is_some() {
+        "measured"
+    } else {
+        "lightroom-unmeasured"
+    };
     write_json(
         &out.join("grade-align.json"),
         &json!({
-            "round": round, "lightroom": lightroom,
-            "status": if lightroom_neutral.is_some() { "measured" } else { "lightroom-unmeasured" },
+            "round": round, "lightroom": lightroom, "status": status,
+            "behaviour_threshold": {"residual_de2000": BEHAVIOUR_RESIDUAL, "from_default": THRESHOLD_FROM_DEFAULT},
             "scope": "Luxforge: the whole-frame reference renderer's 8-bit frame, patch-interior means, responses relative to its own neutral render. Lightroom: the owner's exports of the same round, relative to the neutral variant. Fits: luxforge_reference::grade_response, median CIEDE2000 residuals (hue: degrees). No figure is claimed for anything not measured.",
             "families": results,
         }),
     )?;
     println!(
-        "wrote {} ({})",
-        out.join("grade-align.json").display(),
-        if lightroom_neutral.is_some() {
-            "measured"
-        } else {
-            "Lightroom unmeasured"
-        }
+        "wrote {} ({status})",
+        out.join("grade-align.json").display()
     );
     Ok(())
 }
@@ -738,8 +942,12 @@ mod tests {
         let registry = ModuleRegistry::builtin();
         let families = families();
         assert_eq!(families.len(), 14);
-        for (name, values, dense, _) in families {
-            for value in &values {
+        assert!(variants(&families).iter().any(|v| v.id == neutral().id));
+        for Family {
+            name, round, dense, ..
+        } in families
+        {
+            for value in &round {
                 assert!(
                     dense.contains(value),
                     "{name} {value} is not on Luxforge's grid"
@@ -792,7 +1000,7 @@ mod tests {
             bytes
         };
         let read = read_tiff(&tiff(1)).unwrap();
-        assert_eq!(read.width, 2);
+        assert_eq!((read.width, read.height), (2, 1));
         assert_eq!(read.encoded[0], [0.0, 32768.0 / 65535.0, 1.0]);
         assert_eq!(read.encoded[1][2], 300.0 / 65535.0);
         assert!(
@@ -817,5 +1025,97 @@ mod tests {
         for channel in 0..3 {
             assert!(pixel[channel].abs_diff(expected[channel]) <= 2);
         }
+    }
+
+    /// Two families on short grids: the neutral's own family and Blending, whose default is not 0.
+    fn reduced() -> Vec<Family> {
+        vec![
+            Family {
+                name: "midtones-saturation".into(),
+                round: vec![0.0, 50.0, 100.0],
+                dense: grid(0.0, 100.0, 25.0),
+                default: 0.0,
+                hue: false,
+            },
+            Family {
+                name: "blending".into(),
+                round: vec![25.0, 50.0, 75.0],
+                dense: grid(0.0, 100.0, 25.0),
+                default: 50.0,
+                hue: false,
+            },
+        ]
+    }
+
+    /// The tooling end to end on a reduced round: `generate`, `render`, and `measure` with the
+    /// renders as Lightroom's exports fits every point as identity within its span, with no
+    /// shortfall, missing export or behaviour flag. A folder without the neutral export, an export
+    /// of another size and a round of other variants are each refused by name.
+    #[test]
+    fn a_reduced_round_measures_its_own_renders_as_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let round = directory.path().join("round");
+        let renders = directory.path().join("renders");
+        let families = reduced();
+        generate(&round, &families).unwrap();
+        render_round(&round, &renders, &families).unwrap();
+        let out = directory.path().join("measured");
+        measure(&round, &out, Some(&renders), &families).unwrap();
+        let report = read_json(&out.join("grade-align.json")).unwrap();
+        assert_eq!(report["status"], "measured");
+        let measured = report["families"].as_array().unwrap();
+        assert_eq!(measured.len(), 2);
+        for family in measured {
+            assert_eq!(family["missing_exports"], json!([]), "{family}");
+            let fit = &family["lightroom"];
+            assert_eq!(fit["behaviour_candidate"], false, "{family}");
+            let points = fit["points"].as_array().unwrap();
+            assert_eq!(points.len(), 3, "{family}");
+            for point in points {
+                let value = point["lightroom"].as_f64().unwrap();
+                let span = [0, 1].map(|end| point["span"][end].as_f64().unwrap());
+                assert!(span[0] <= value && value <= span[1], "{point}");
+                assert!(
+                    point["residual"].as_f64().unwrap() < grade_response::SHORTFALL_RESIDUAL,
+                    "{point}"
+                );
+                assert_eq!(point["shortfall"], false, "{point}");
+            }
+        }
+        assert_eq!(measured[1]["default"], 50.0);
+
+        let empty = directory.path().join("empty");
+        fs::create_dir(&empty).unwrap();
+        let error = measure(&round, &directory.path().join("a"), Some(&empty), &families)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("neutral variant midtones-saturation-0"),
+            "{error}"
+        );
+
+        let small = directory.path().join("small");
+        fs::create_dir(&small).unwrap();
+        image::RgbImage::new(10, 10)
+            .save(small.join("midtones-saturation-0.png"))
+            .unwrap();
+        let error = measure(&round, &directory.path().join("b"), Some(&small), &families)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("10x10, not the round target's 576x384"),
+            "{error}"
+        );
+
+        let error = measure(
+            &round,
+            &directory.path().join("c"),
+            None,
+            &super::families(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("stale"), "{error}");
+        assert!(render_round(&round, &directory.path().join("d"), &super::families()).is_err());
     }
 }

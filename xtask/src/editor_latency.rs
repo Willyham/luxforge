@@ -30,8 +30,9 @@
 //! [design]: ../../../docs/design/basic-and-histogram.md
 use crate::{
     scenario::{
-        Launch, Launched, Run,
+        Launch, Launched, Run, drawn_wheel,
         launch::{Flag, Poll, Watched, Watcher, stamp, until_exit, watch},
+        selected_view,
     },
     *,
 };
@@ -108,8 +109,26 @@ struct FieldTarget {
     origin: f64,
     /// `Some` for a curve target: whose curve it is.
     curve: Option<CurveOwner>,
-    /// The hue/saturation control resolved from the module descriptor.
-    wheel: Option<luxforge_core::WheelControl>,
+    /// The hue/saturation control resolved from the module descriptor, and where it is drawn.
+    wheel: Option<WheelTarget>,
+}
+
+/// A measured wheel: its control, and the tab selections that show it drawn on its own.
+#[derive(Clone, Debug)]
+struct WheelTarget {
+    control: luxforge_core::WheelControl,
+    /// The module declaring it.
+    module: String,
+    /// Each tab row on the way to the wheel's own view, outermost first: the row's group label
+    /// path (empty for the module's own tabs), the view the wheel is reached through and its index
+    /// in the row.
+    tabs: Vec<(Vec<String>, String, usize)>,
+}
+
+/// The saturation the scripted wheel gesture sets with `hue`: 20 at hue 0, rising by one for every
+/// three degrees, so every position moves both fields.
+fn wheel_saturation(hue: f64) -> f64 {
+    20.0 + hue / 3.0
 }
 
 impl FieldTarget {
@@ -279,30 +298,78 @@ impl FieldTarget {
         })
     }
 
+    /// The wheel `action` declares over `hue`, drawn where it is largest: a wheel that a tabbed
+    /// view draws large on its own (the mixer's Shadows view) is measured there rather than in a
+    /// view it shares (3-way). The tab selections that reach it are resolved here, from the
+    /// descriptor, so a wheel the panel cannot reach is refused before anything launches.
     fn lookup_wheel(action: &str, hue: &str) -> Result<Self> {
+        use luxforge_core::{Control, WheelControl, WheelStyle};
         let registry = ModuleRegistry::builtin();
         let (module, _) = registry
             .action(action)
             .ok_or_else(|| format!("No module declares the action {action}"))?;
+        let descriptor = module.descriptor();
+        /// Every place the wheel is drawn, with the group label path that holds it.
         fn find(
-            controls: &[luxforge_core::Control],
+            controls: &[Control],
+            path: &mut Vec<String>,
             action: &str,
             hue: &str,
-        ) -> Option<luxforge_core::WheelControl> {
-            controls.iter().find_map(|control| match control {
-                luxforge_core::Control::Group(group) => find(&group.controls, action, hue),
-                luxforge_core::Control::Wheel(wheel)
-                    if wheel.action == action && wheel.hue == hue =>
-                {
-                    Some(wheel.clone())
+            found: &mut Vec<(WheelControl, Vec<String>)>,
+        ) {
+            for control in controls {
+                match control {
+                    Control::Group(group) => {
+                        path.push(group.label.clone());
+                        find(&group.controls, path, action, hue, found);
+                        path.pop();
+                    }
+                    Control::Wheel(wheel) if wheel.action == action && wheel.hue == hue => {
+                        found.push((wheel.clone(), path.clone()));
+                    }
+                    _ => {}
                 }
-                _ => None,
-            })
+            }
         }
-        let wheel = find(&module.descriptor().controls, action, hue)
+        let mut found = Vec::new();
+        find(
+            &descriptor.controls,
+            &mut Vec::new(),
+            action,
+            hue,
+            &mut found,
+        );
+        let index = found
+            .iter()
+            .position(|(wheel, _)| wheel.style == WheelStyle::Large)
+            .unwrap_or(0);
+        let (control, path) = found
+            .into_iter()
+            .nth(index)
             .ok_or_else(|| format!("Action {action} declares no wheel keyed by {hue}"))?;
+        let mut tabs = Vec::new();
+        for depth in 0..path.len() {
+            let group = &path[..depth];
+            // A stacked group needs no selection; a tab row shows the wheel's view only once
+            // that view is selected.
+            let Some(views) = descriptor.views_at(group) else {
+                continue;
+            };
+            let view = &path[depth];
+            let index = views
+                .iter()
+                .position(|label| label == view)
+                .ok_or_else(|| {
+                    format!("The {hue} wheel's view {view} is not in its tab row {group:?}")
+                })?;
+            tabs.push((group.to_vec(), view.clone(), index));
+        }
         let mut field = Self::lookup(action, hue)?;
-        field.wheel = Some(wheel);
+        field.wheel = Some(WheelTarget {
+            control,
+            module: descriptor.id.clone(),
+            tabs,
+        });
         Ok(field)
     }
 
@@ -776,7 +843,7 @@ fn inputs(events: &[Value], control: Control, field: &FieldTarget) -> Result<Vec
                 )?;
                 if let Some(wheel) = &field.wheel {
                     ensure(
-                        event["detail"]["fields"][&wheel.saturation]
+                        event["detail"]["fields"][&wheel.control.saturation]
                             .as_f64()
                             .is_some_and(|saturation| (0.0..=100.0).contains(&saturation)),
                         "A wheel draft.set carried no saturation alongside its hue",
@@ -930,27 +997,12 @@ fn drawn_frames(events: &[Value]) -> Result<Vec<(f64, &Value)>> {
         .collect()
 }
 
-/// The gesture script: one slider step per value, each left open so the step settles on the frame
-/// rendered from that value, then a last value that also releases, which is how a drag ends.
-///
-/// One value per step is deliberate. An open step settles only when the gesture has drained, so
-/// every measured interval is exactly one input, one `draft.set`, one preview job and one frame,
-/// with nothing from the previous input still in flight. A multi-value step measures the driver's
-/// coalescing instead, which [`burst_step`] does separately.
-///
-/// The final step is the release. Its value is a real input like the others, and the commit that
-/// follows it immediately supersedes its drafted preview — that job is requested and never
-/// displayed, which is the queue cancellation this gesture actually performs. Its latency is
-/// therefore excluded from the per-input distribution and measured through to the settled exact
-/// histogram instead.
-/// Point 1 of the target's curve — the proof curve's middle point, or the seeded mid-tone point of
-/// a module's curve — dragged through `points`, each a height the widget publishes in single
-/// precision, through the target's own action and parameter.
-/// Each wheel position changes both fields. Integer hue/radius steps round-trip through
+/// The wheel position for `hue` at [`wheel_saturation`], an offset from the centre in radii with
+/// screen y down. Each position changes both fields. Integer hue/radius steps round-trip through
 /// the shipped widget geometry and its descriptor's numeric snapping.
 fn wheel_position(hue: f64) -> [f32; 2] {
     let angle = hue.to_radians();
-    let radius = (20.0 + hue / 3.0) / 100.0;
+    let radius = wheel_saturation(hue) / 100.0;
     [
         (radius * angle.cos()) as f32,
         (-radius * angle.sin()) as f32,
@@ -969,6 +1021,9 @@ fn wheel_step(field: &FieldTarget, values: &[f64], finish: SliderEnd) -> script:
     })
 }
 
+/// Point 1 of the target's curve — the proof curve's middle point, or the seeded mid-tone point of
+/// a module's curve — dragged through `points`, each a height the widget publishes in single
+/// precision, through the target's own action and parameter.
 fn curve_step(field: &FieldTarget, points: Vec<f64>, finish: SliderEnd) -> script::Step {
     script::Step::Curve(CurveStep {
         action: field.action.clone(),
@@ -981,6 +1036,19 @@ fn curve_step(field: &FieldTarget, points: Vec<f64>, finish: SliderEnd) -> scrip
     })
 }
 
+/// The gesture script: one slider step per value, each left open so the step settles on the frame
+/// rendered from that value, then a last value that also releases, which is how a drag ends.
+///
+/// One value per step is deliberate. An open step settles only when the gesture has drained, so
+/// every measured interval is exactly one input, one `draft.set`, one preview job and one frame,
+/// with nothing from the previous input still in flight. A multi-value step measures the driver's
+/// coalescing instead, which [`burst_step`] does separately.
+///
+/// The final step is the release. Its value is a real input like the others, and the commit that
+/// follows it immediately supersedes its drafted preview — that job is requested and never
+/// displayed, which is the queue cancellation this gesture actually performs. Its latency is
+/// therefore excluded from the per-input distribution and measured through to the settled exact
+/// histogram instead.
 fn gesture_steps(values: &[f64], control: Control, field: &FieldTarget) -> Vec<script::Step> {
     let last = values.len().saturating_sub(1);
     values
@@ -1691,36 +1759,23 @@ fn setup_steps(options: &Options, field: &FieldTarget, source: SourceTag) -> Vec
     steps.extend(curve_view_steps(field, source, options.mask));
     if let Some(wheel) = &field.wheel {
         let registry = ModuleRegistry::builtin();
-        if let Some((provider, _)) = registry.action(&field.action) {
-            let module = provider.descriptor();
-            steps.extend(
-                registry
-                    .descriptors()
-                    .into_iter()
-                    .take_while(|descriptor| descriptor.id != module.id)
-                    .filter(|descriptor| lists_section(descriptor, source, options.mask))
-                    .map(|descriptor| script::Step::section(&descriptor.id, false)),
-            );
-            steps.push(script::Step::section(&module.id, true));
-            steps.push(script::Step::Tab(script::TabStep {
-                module: module.id.clone(),
-                group: Vec::new(),
-                index: 1,
-            }));
-            let views = module
-                .views_at(&["Grading"])
-                .expect("the grading wheel's views");
-            let index = views
-                .iter()
-                .position(|view| *view == wheel.label)
-                .expect("the wheel's individual view");
-            steps.push(script::Step::Tab(script::TabStep {
-                module: module.id.clone(),
-                group: vec!["Grading".into()],
-                index,
-            }));
-            steps.push(script::Step::tools_scroll(0.0));
-        }
+        steps.extend(
+            registry
+                .descriptors()
+                .into_iter()
+                .take_while(|descriptor| descriptor.id != wheel.module)
+                .filter(|descriptor| lists_section(descriptor, source, options.mask))
+                .map(|descriptor| script::Step::section(&descriptor.id, false)),
+        );
+        steps.push(script::Step::section(&wheel.module, true));
+        steps.extend(wheel.tabs.iter().map(|(group, _, index)| {
+            script::Step::Tab(script::TabStep {
+                module: wheel.module.clone(),
+                group: group.clone(),
+                index: *index,
+            })
+        }));
+        steps.push(script::Step::tools_scroll(0.0));
     }
     steps
 }
@@ -3273,49 +3328,37 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         }
     }
 
-    if let Some(wheel) = &field.wheel {
-        let setup = frames
-            .get(setup_steps(options, field, kind).len())
-            .ok_or("No wheel setup frame")?;
-        let module = ModuleRegistry::builtin()
-            .action(&field.action)
-            .map(|(provider, _)| provider.descriptor().id.clone())
-            .ok_or("The measured wheel's provider is unavailable")?;
-        let selected = |group: Value, view: &str| {
-            setup["state"]["workspace"]["views"]
-                .as_array()
-                .is_some_and(|views| {
-                    views.iter().any(|selected| {
-                        selected["module"] == module
-                            && selected["group"] == group
-                            && selected["view"] == view
-                    })
-                })
-        };
-        ensure(
-            setup["state"]["expanded"][&module] == true
-                && setup["state"]["tools_scroll"] == 0.0
-                && selected(json!([]), "Grading")
-                && selected(json!(["Grading"]), &wheel.label)
-                && setup["state"]["control_ui"]["wheels"]
-                    .as_array()
-                    .is_some_and(|wheels| {
-                        wheels.iter().any(|drawn| {
-                            drawn["hue_parameter"] == wheel.hue && drawn["large"] == true
-                        })
-                    }),
-            "The measured wheel was not visible in its individual view before timing",
-        )?;
-        let patches: Vec<_> = events
+    // Every patch a wheel gesture drafted, checked here and kept in the report.
+    let wheel_patches: Vec<&Value> = if field.wheel.is_some() {
+        events
             .iter()
             .filter(|event| event["event"] == "slider_draft_set")
             .map(|event| &event["detail"]["fields"])
-            .collect();
-        for (patch, hue) in patches.iter().zip(&values) {
-            let expected = (20.0 + hue / 3.0) * 10.0;
+            .collect()
+    } else {
+        Vec::new()
+    };
+    if let Some(wheel) = &field.wheel {
+        let setup = &frames
+            .get(setup_steps(options, field, kind).len())
+            .ok_or("No wheel setup frame")?["state"];
+        let large = wheel.control.style == luxforge_core::WheelStyle::Large;
+        ensure(
+            setup["expanded"][&wheel.module] == true
+                && setup["tools_scroll"] == 0.0
+                && wheel
+                    .tabs
+                    .iter()
+                    .all(|(group, view, _)| selected_view(setup, &wheel.module, group, view))
+                && drawn_wheel(setup, &wheel.control.hue)
+                    .is_some_and(|drawn| drawn["large"] == large),
+            "The measured wheel was not visible in its own view before timing",
+        )?;
+        for (patch, hue) in wheel_patches.iter().zip(&values) {
+            let expected = wheel_saturation(*hue) * 10.0;
             ensure(
-                patch[&wheel.hue].as_f64() == Some(*hue)
-                    && patch[&wheel.saturation].as_f64() == Some(expected.round() / 10.0),
+                patch[&wheel.control.hue].as_f64() == Some(*hue)
+                    && patch[&wheel.control.saturation].as_f64() == Some(expected.round() / 10.0),
                 "The wheel did not send both scripted hue and saturation values in one patch",
             )?;
         }
@@ -3752,14 +3795,8 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
     }
     result["zoom_percent"] = json!(options.zoom);
     if let Some(wheel) = &field.wheel {
-        result["wheel"] = serde_json::to_value(wheel)?;
-        result["wheel_draft_patches"] = json!(
-            events
-                .iter()
-                .filter(|event| event["event"] == "slider_draft_set")
-                .map(|event| event["detail"]["fields"].clone())
-                .collect::<Vec<_>>()
-        );
+        result["wheel"] = serde_json::to_value(&wheel.control)?;
+        result["wheel_draft_patches"] = json!(wheel_patches);
         result["queue"]["scripted_wheel_positions"] = json!(
             values
                 .iter()
@@ -5093,15 +5130,48 @@ mod tests {
             .collect()
     }
 
-    /// `--control curve --action set-curve --parameter luminance` resolves the Tone curve's
-    /// registered field: its own action and parameter, owned by `luxforge.curve`, over the curve's
-    /// `0..=1` coordinates, and the launch is an ordinary one.
+    /// `--control wheel` resolves the Shadows wheel's two fields and the tabs of its own large
+    /// view, which the setup selects; any declared wheel resolves its own view, and a field no
+    /// wheel draws is refused. The gesture moves both fields at every scripted position.
     #[test]
     fn wheel_measurement_resolves_two_fields_and_draws_the_individual_view() {
         let field = resolve_field(Control::Wheel, None, None).unwrap();
         let wheel = field.wheel.as_ref().unwrap();
-        assert_eq!(wheel.hue, "grade-shadows-hue");
-        assert_eq!(wheel.saturation, "grade-shadows-saturation");
+        assert_eq!(wheel.control.hue, "grade-shadows-hue");
+        assert_eq!(wheel.control.saturation, "grade-shadows-saturation");
+        assert_eq!(wheel.control.style, luxforge_core::WheelStyle::Large);
+        assert_eq!(wheel.module, "luxforge.mixer");
+        let tab = |group: &[&str], view: &str, index: usize| {
+            (
+                group.iter().map(|label| label.to_string()).collect(),
+                view.to_owned(),
+                index,
+            )
+        };
+        assert_eq!(
+            wheel.tabs,
+            [tab(&[], "Grading", 1), tab(&["Grading"], "Shadows", 1)]
+        );
+        let source = PathBuf::from("unused.jpg");
+        let options = Options {
+            control: Control::Wheel,
+            action: None,
+            parameter: None,
+            ..curve_options(&source, false, None)
+        };
+        let setup = setup_steps(&options, &field, SourceTag::Jpeg);
+        for (group, _, index) in &wheel.tabs {
+            assert!(setup.contains(&script::Step::Tab(script::TabStep {
+                module: wheel.module.clone(),
+                group: group.clone(),
+                index: *index,
+            })));
+        }
+        let global = resolve_field(Control::Wheel, Some("set-mixer"), Some("grade-global-hue"))
+            .unwrap()
+            .wheel
+            .unwrap();
+        assert_eq!(global.tabs[1], tab(&["Grading"], "Global", 4));
         assert!(resolve_field(Control::Wheel, Some("set-mixer"), Some("red-hue")).is_err());
         assert!(resolve_field(Control::Wheel, Some("set-mixer"), None).is_err());
         let values = gesture_values(31, Control::Wheel, &field);
@@ -5124,10 +5194,13 @@ mod tests {
         wrong[0]["detail"]["fields"]
             .as_object_mut()
             .unwrap()
-            .remove(&wheel.saturation);
+            .remove(&wheel.control.saturation);
         assert!(inputs(&wrong, Control::Wheel, &field).is_err());
     }
 
+    /// `--control curve --action set-curve --parameter luminance` resolves the Tone curve's
+    /// registered field: its own action and parameter, owned by `luxforge.curve`, over the curve's
+    /// `0..=1` coordinates, and the launch is an ordinary one.
     #[test]
     fn a_curve_action_and_parameter_resolve_a_module_curve() {
         let field = tone_curve();

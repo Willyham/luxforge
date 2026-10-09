@@ -1,42 +1,14 @@
 //! The grading alignment slice's measures and fits (`crates/luxforge-reference/src/grade_response.rs`)
-//! on cases with known answers: CIEDE2000 against Sharma, Wu and Dalal's published pairs, and
-//! level A fits that must recover a known scale, report a range shortfall, stay monotone through a
-//! noisy sample and recover a known hue rotation.
+//! on cases with known answers: level A fits that must recover a known scale, report a range
+//! shortfall, stay monotone through a noisy sample and recover a known hue rotation. Their
+//! CIEDE2000 is the preview-error measure's, checked against Sharma, Wu and Dalal's published pairs
+//! there.
 
 use luxforge_reference::colour::{self, Oklab};
 use luxforge_reference::grade::{self, GradeParams, Wheel};
 use luxforge_reference::grade_response::{
-    self, Response, Sampled, circular_difference, delta_e_2000, fit_hue, fit_monotone, response,
+    self, Response, Sampled, circular_difference, fit_hue, fit_monotone, response,
 };
-
-/// Sharma, Wu and Dalal (2005), Table 1: pairs 1, 7, 13, 17, 19, 25 and 34 and their published
-/// differences, to four decimals.
-#[test]
-fn ciede2000_matches_the_published_pairs() {
-    for (first, second, expected) in [
-        ([50.0, 2.6772, -79.7751], [50.0, 0.0, -82.7485], 2.0425),
-        ([50.0, 0.0, 0.0], [50.0, -1.0, 2.0], 2.3669),
-        ([50.0, 2.49, -0.001], [50.0, -2.49, 0.0011], 7.2195),
-        ([50.0, 2.5, 0.0], [73.0, 25.0, -18.0], 27.1492),
-        ([50.0, 2.5, 0.0], [50.0, 3.1736, 0.5854], 1.0),
-        (
-            [60.2574, -34.0099, 36.2677],
-            [60.4626, -34.1751, 39.4387],
-            1.2644,
-        ),
-        (
-            [2.0776, 0.0795, -1.1350],
-            [0.9033, -0.0636, -0.5514],
-            0.9082,
-        ),
-    ] {
-        let measured = delta_e_2000(first, second);
-        assert!(
-            (measured - expected).abs() < 5e-5,
-            "{first:?} against {second:?}: {measured}, published {expected}"
-        );
-    }
-}
 
 /// The patches a synthetic round measures: a grey wedge and a hue ring.
 fn patches() -> Vec<[f64; 3]> {
@@ -108,43 +80,23 @@ fn a_known_scale_is_recovered() {
     }
 }
 
-/// An editor twice as strong runs out of Luxforge's range above 50: those points sit at the end of
-/// the range, are flagged as a shortfall and keep a real residual, never clamped silently.
+/// An editor twice as strong runs out of Luxforge's range above 50: its 25 and 50 are matched at
+/// Luxforge's 50 and 100, and its 75 and 100 sit at the end of the range, are flagged as a
+/// shortfall and keep a real residual, never clamped silently.
 #[test]
 fn a_range_shortfall_is_reported() {
     let luxforge = sampled(&grid(5.0), 200.0, |v| v);
-    let stronger = sampled(&[25.0, 50.0, 75.0, 100.0], 200.0, |v| {
-        // The reference's saturation response at twice the value is its tint scaled by two, which
-        // no Luxforge value reaches past 100.
-        v
-    });
-    // Double the other editor's responses directly: a response twice Luxforge's at each value.
-    let doubled = Sampled {
-        neutrals: stronger.neutrals.clone(),
-        samples: stronger
-            .samples
-            .iter()
-            .map(|(value, responses)| {
-                (
-                    *value,
-                    responses
-                        .iter()
-                        .map(|r| Response {
-                            dl: 2.0 * r.dl,
-                            da: 2.0 * r.da,
-                            db: 2.0 * r.db,
-                        })
-                        .collect(),
-                )
-            })
-            .collect(),
-    };
-    let fit = fit_monotone(&luxforge, &doubled);
-    assert!(
-        (fit[0].luxforge - 50.0).abs() <= 1.0 && !fit[0].shortfall,
-        "{:?}",
-        fit[0]
-    );
+    // The reference's tint chroma is linear in saturation and unbounded above 100, so the stronger
+    // editor's response at each value is the reference's at twice it.
+    let stronger = sampled(&[25.0, 50.0, 75.0, 100.0], 200.0, |v| 2.0 * v);
+    let fit = fit_monotone(&luxforge, &stronger);
+    assert_eq!(fit.len(), 4);
+    for (point, expected) in fit[..2].iter().zip([50.0, 100.0]) {
+        assert!(
+            (point.luxforge - expected).abs() <= 1.0 && point.residual < 0.05 && !point.shortfall,
+            "{point:?}"
+        );
+    }
     for point in &fit[2..] {
         assert_eq!(point.luxforge, 100.0, "{point:?}");
         assert!(point.shortfall && point.residual > 0.5, "{point:?}");
