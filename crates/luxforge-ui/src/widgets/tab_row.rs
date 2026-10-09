@@ -1,7 +1,9 @@
 //! A segmented tab row that stands in for a module's stacked group headers when its groups are
 //! parallel views of the same controls (the colour mixer's Hue, Saturation and Luminance).
 //!
-//! One equal-width tab per group on a [`theme::TAB_ROW_HEIGHT`] track, the selected tab raised on
+//! One equal-width tab per group on a [`theme::TAB_ROW_HEIGHT`] track (a row of more than
+//! [`EQUAL_TABS`] tabs, such as the mixer's five grading views, sizes each tab to its label and sets
+//! the labels a step smaller, so every label fits a panel's width), the selected tab raised on
 //! an inset pill, an accent dot on every tab whose group is Custom so a hidden group's edits stay
 //! visible, and the visible group's reset at the row's right. Which tab is selected is the
 //! caller's view state; the widget only draws it.
@@ -33,6 +35,15 @@ pub struct TabRowModel {
     pub enabled: bool,
 }
 
+/// The most tabs a row draws at equal widths and the control text size.
+pub const EQUAL_TABS: usize = 4;
+
+/// A tab's share of a crowded row's width: its label's length, plus the room its padding and an
+/// accent dot take.
+fn crowded_portion(tab: &Tab) -> u16 {
+    u16::try_from(tab.label.chars().count() + 3).unwrap_or(u16::MAX)
+}
+
 /// The height a tab row takes in a section body, its margins included.
 #[cfg(test)]
 pub(crate) const fn tab_row_height() -> f32 {
@@ -47,12 +58,17 @@ pub fn tab_row<'a, M: Clone + 'a>(
     on_reset: M,
 ) -> Element<'a, M> {
     let mut tabs = Row::new().spacing(0.0).height(Length::Fill);
+    let crowded = model.tabs.len() > EQUAL_TABS;
     for (index, tab) in model.tabs.iter().enumerate() {
         let selected = index == model.selected;
         let mut label = row![
             // Semibold, as colour-mixer.png draws every tab: its stems are a semibold's width.
             text(tab.label.clone())
-                .size(theme::SIZE_CONTROL)
+                .size(if crowded {
+                    theme::SIZE_CAPTION
+                } else {
+                    theme::SIZE_CONTROL
+                })
                 .font(theme::FONT_SEMIBOLD)
                 .wrapping(Wrapping::None)
                 .style(theme::ink(if selected {
@@ -70,7 +86,11 @@ pub fn tab_row<'a, M: Clone + 'a>(
         let key = press.clone();
         let control = button(container(label).center(Length::Fill))
             .padding(0)
-            .width(Length::Fill)
+            .width(if crowded {
+                Length::FillPortion(crowded_portion(tab))
+            } else {
+                Length::Fill
+            })
             .height(Length::Fill)
             .style(if selected {
                 tab_selected

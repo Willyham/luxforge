@@ -20,7 +20,6 @@ A persistent list of the work that can start now: each plan below has a validate
 
 | Plan | Ready tasks | Notes | Minimum model |
 | --- | --- | --- | --- |
-| [Colour grading](../tasks/editing/colour-grading.json) ([design](design/colour-grading.md)) | TASK-002 initial grading unit; TASK-003 shared wheels and nested views | Product choices settled; working feature first, reference/Lightroom refinement last; no approval or research gates | High tier |
 | [GPU memory accounting](../tasks/rendering/gpu-memory.json) | TASK-001 measure and bound GPU resources outside the photo-texture ceiling | A measurement: run after feature work, on a quiet host | High tier |
 | [Corrections](../tasks/editing/corrections.json) ([design](design/corrections.md)) | TASK-001 freeze the remaining contract; TASK-002 Clone and Heal numerics | Repair before Detail, spatial GPU tolerance and exclusion from presets are decided; freeze the remaining contract and GPU-evaluable numerics | High tier |
 | [AI editing](../tasks/editing/ai-editing.json) ([design](design/ai-editing.md)) | TASK-002 the prototype on `main` as the harness; TASK-006 the inference port and ONNX Runtime crate; TASK-008 the model-selection mask kind | The GPU-first integration they were sequenced after has merged; the Corrections foundation runs beside the first stage | High tier |
@@ -110,7 +109,7 @@ Continue these rather than starting them again: [GPU-first rendering](../tasks/r
 
 ## Editing tools
 
-**Colour grading in the mixer** (decided, [design](design/colour-grading.md), [plan](../tasks/editing/colour-grading.json)). HSL / Grading tabs with three-way and individual/Global wheels, luminance, masks, Luxforge presets and direct Lightroom mappings. TASK-002 and TASK-003 can start now; TASK-009 hands off the working feature before TASK-010 independent-reference and Lightroom response refinement. Product choices are settled and initial numerical/layout choices belong to the implementer; no approval or research gate remains.
+**Colour grading in the mixer** ([design](design/colour-grading.md), [feature status](features.md)). The feature, independent reference, alignment tooling, native M4 full-tier component coverage and 30-sample 24/60 MP and Nikon Z6 RAW measurements are delivered ([scope and misses](specs/performance.md#colour-grading-qualified-and-measured-on-the-m4)). Outstanding: native Windows/Linux, screen-reader and calibrated-display qualification, and a Lightroom round of `cargo xtask grade-align` from the owner's installation, after which the B policy and C threshold decide any grading response change.
 
 **Tone curve follow-ups** ([design](design/tone-curve.md)). The Tone curve is delivered ([feature status](features.md)).
 - Owner review of the recorded defaults: what the composite acts on, channels, order, endpoints, the point limit, the Lightroom transfer and the editor gestures; below black the curve uses a floor-subtracted ratio (decided 2026-09-30)

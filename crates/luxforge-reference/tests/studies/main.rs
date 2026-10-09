@@ -14,6 +14,8 @@ mod detail_corpus;
 mod dng;
 mod exposure;
 mod geometry;
+mod grade;
+mod grade_response;
 mod look;
 mod mask;
 mod mixer;

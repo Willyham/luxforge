@@ -15,4 +15,9 @@ Synthetic presets for the importer tests in `crates/luxforge-core/src/presets/te
 | `curve-17-points.xmp` | A seventeen-point `ToneCurvePV2012`, refused with its count and never decimated, and a contrast that maps so the preset imports |
 | `curve-decreasing.lrtemplate` | A template whose flat curve array's third point has a lower output than the second, refused as not monotone rather than reordered, beside an exposure that maps |
 | `curve-disabled.xmp` | `EnableToneCurve="False"` with a non-identity `ToneCurvePV2012` (refused as disabled), and a curve name, a parametric region, `CurveRefineSaturation` and a per-channel curve that the switched-off panel makes neutral |
+| `color-grade.xmp` | A Camera Raw 13.2 Color Grading preset: all four wheels' hue and saturation (the Global hue at 360), luminance on every range, Balance, Blending 65 and one HSL value. Every grading setting transfers onto its own `set-mixer` field |
+| `color-grade-partial.xmp` | A Camera Raw 15.4 preset holding only a midtone tint and a shadow luminance without saturation: a patch of exactly those three fields |
+| `split-toning.xmp` | A Camera Raw 12.4 (before Color Grading) split-toning preset with Balance and one HSL value: the split toning transfers with Blending 100 and every later grading control neutral |
+| `split-toning-unversioned.xmp` | Split toning with no Camera Raw version and no Color Grading setting: the grading settings are refused as ambiguous, the vibrance still maps |
+| `split-toning.lrtemplate` | A Process 2012 template with split toning enabled: imports exactly as the 12.4 XMP does, since templates predate Color Grading |
 | `soft-film.lfpreset` | A Luxforge preset document, byte for byte what `export_document` writes for its name, group and settings |

@@ -318,7 +318,13 @@ fn registered_proof_descriptor_generates_the_whole_vocabulary() {
     let signatures: BTreeSet<String> = controls
         .iter()
         .map(|control| match control {
-            ControlModel::Group(_) => panic!("the proof's only group draws no header"),
+            // The proof's only group draws no header; the one nested group is the wheel's tab
+            // row, and its two children are views.
+            ControlModel::Group(group) if group.view => format!("view:{}", group.label),
+            ControlModel::Group(group) => format!("tabs:{}:{:?}", group.label, group.selected),
+            ControlModel::Wheel(wheel) => {
+                format!("wheel:{}", if wheel.large { "large" } else { "compact" })
+            }
             ControlModel::Slider(number) => format!("number:{:?}", number.style),
             ControlModel::Toggle(_) => "toggle".into(),
             ControlModel::Enum(choice) => format!("choice:{:?}", choice.style),
@@ -353,9 +359,135 @@ fn registered_proof_descriptor_generates_the_whole_vocabulary() {
         "action:Default".into(),
         "action:Primary".into(),
         "action:Icon".into(),
+        "tabs:Colour wheel:Some(0)".into(),
+        "view:Compact".into(),
+        "view:Large".into(),
+        "wheel:compact".into(),
+        "wheel:large".into(),
     ]);
     assert_eq!(signatures, expected);
     assert!(proof.descriptor().action(ACTION).unwrap().patch);
+    proof.finish();
+}
+
+/// The wheel group's tab row as the panel derived it: the selected view's label and whether its
+/// wheel is the large one.
+fn wheel_row(editor: &Editor) -> (String, bool) {
+    let mut models = Vec::new();
+    flatten(&editor.workspace.tools.developer[0].controls, &mut models);
+    let row = models
+        .into_iter()
+        .find_map(|model| match model {
+            ControlModel::Group(group) if group.label == "Colour wheel" => Some(group),
+            _ => None,
+        })
+        .expect("the wheel's tab row");
+    assert_eq!(row.labels, ["Control vocabulary", "Colour wheel"]);
+    let visible = row.visible_view().expect("a tabbed group shows a view");
+    let large = visible
+        .controls
+        .iter()
+        .any(|control| matches!(control, ControlModel::Wheel(wheel) if wheel.large));
+    (visible.label.clone(), large)
+}
+
+/// Choosing a view is the session's view state, set through the same `workspace.set` an API
+/// client sends: the desktop sends one request, draws the view the answer holds, and neither the
+/// history, the revision nor the requested frame moves. An API client reads the same selection.
+#[test]
+fn selecting_a_view_is_session_state_with_no_history_or_frame() {
+    let mut proof = Proof::new();
+    assert_eq!(wheel_row(&proof.editor), ("Compact".into(), false));
+    let history = proof.editor.document.history.entries.len();
+    let revision = proof.editor.document.state.as_ref().unwrap().revision;
+    let generation = proof.editor.activity.requested;
+    let select = |view: &str| {
+        Message::Control(ControlMessage::SelectView {
+            module_id: MODULE.into(),
+            group: vec!["Control vocabulary".into(), "Colour wheel".into()],
+            view: view.into(),
+        })
+    };
+    assert_eq!(
+        proof.editor.update(select("Compact")).units(),
+        0,
+        "the view already shown sends nothing"
+    );
+    assert_eq!(
+        proof.editor.update(select("Huge")).units(),
+        0,
+        "an undeclared view sends nothing"
+    );
+    assert_eq!(proof.editor.update(select("Large")).units(), 1);
+    // Answered as the task does: the owner's `workspace.set`, and the session it returns.
+    let views = json!([{"module": MODULE, "group": ["Control vocabulary", "Colour wheel"],
+                        "view": "Large"}]);
+    let (answer, _) = call(
+        &proof.editor.owner,
+        proof.editor.client,
+        "workspace.set",
+        json!({ "views": views }),
+    );
+    let session: luxforge_core::ClientSession = serde_json::from_value(answer).unwrap();
+    let _ = proof.editor.update(Message::View(
+        super::message::view::ViewMessage::WorkspaceUpdated(Ok(session)),
+    ));
+    assert_eq!(wheel_row(&proof.editor), ("Large".into(), true));
+    assert_eq!(proof.editor.document.history.entries.len(), history);
+    assert_eq!(
+        proof.editor.document.state.as_ref().unwrap().revision,
+        revision
+    );
+    assert_eq!(
+        proof.editor.activity.requested, generation,
+        "a view asks for no frame"
+    );
+    assert_eq!(proof.editor.snapshot()["workspace"]["views"], views);
+    let (state, _) = call(
+        &proof.editor.owner,
+        proof.editor.client,
+        "session.state",
+        json!({}),
+    );
+    assert_eq!(
+        state["workspace"]["views"], views,
+        "the API reads the desktop's view"
+    );
+    proof.finish();
+}
+
+/// The preset form offers the proof's one group as one capture group: the wheel's three fields
+/// are captured with it once, and neither the wheel's tab row nor its views is a checkbox.
+#[test]
+fn the_wheels_views_add_no_capture_groups_and_no_duplicate_fields() {
+    let proof = Proof::new();
+    let groups = crate::state::presets::settings_groups(&proof.editor.modules, true).groups;
+    let labels: Vec<&str> = groups.iter().map(|group| group.title.as_str()).collect();
+    // The nested Colour wheel group is a capture group of its own, as any nested group is; its
+    // Compact and Large views are not.
+    assert_eq!(
+        labels,
+        [
+            "Controls \u{00b7} Control vocabulary",
+            "Controls \u{00b7} Colour wheel"
+        ]
+    );
+    let parameters = |index: usize| -> Vec<String> {
+        groups[index]
+            .fields
+            .get(ACTION)
+            .cloned()
+            .unwrap_or_default()
+    };
+    assert_eq!(
+        parameters(1),
+        ["wheel-hue", "wheel-saturation", "wheel-luminance"],
+        "each wheel field is captured once, by its own group"
+    );
+    assert!(
+        parameters(0).iter().all(|name| !name.starts_with("wheel-")),
+        "the enclosing group does not capture the wheel's fields again"
+    );
     proof.finish();
 }
 
@@ -982,11 +1114,12 @@ fn proof_action_styles_and_group_reset_reach_the_same_json_method() {
     // every field-patch group does, the patch of its fields to their defaults, which here is every
     // field and so the same state the module reset reaches.
     let section = &proof.editor.workspace.tools.developer[0];
+    // Its one nested group, the wheel's tab row, keeps its own header and path.
     assert!(
         !section
             .controls
             .iter()
-            .any(|control| matches!(control, ControlModel::Group(_))),
+            .any(|control| matches!(control, ControlModel::Group(group) if group.path == [0])),
         "the module's only group is drawn without a header"
     );
     let Some(luxforge_core::Control::Group(luxforge_core::GroupControl {

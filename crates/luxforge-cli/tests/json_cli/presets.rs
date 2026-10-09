@@ -160,7 +160,7 @@ fn settings_groups_and_capture_by_groups_over_the_pipe() {
 
     let by_groups = client.call(
         "preset.capture",
-        json!({"asset_id": asset, "groups": ["luxforge.basic/white-balance", "luxforge.mixer/hue", "auto-tone"]}),
+        json!({"asset_id": asset, "groups": ["luxforge.basic/white-balance", "luxforge.mixer/hsl", "auto-tone"]}),
     );
     let by_fields = client.call(
         "preset.capture",
@@ -170,7 +170,7 @@ fn settings_groups_and_capture_by_groups_over_the_pipe() {
             "auto-tone": true,
         }}),
     );
-    assert_eq!(listed["groups"][7]["id"], json!("luxforge.mixer/hue"));
+    assert_eq!(listed["groups"][7]["id"], json!("luxforge.mixer/hsl"));
     assert_eq!(by_groups, by_fields);
     assert_eq!(by_groups["settings"]["auto-tone"], json!({}));
     let by_groups = client.call(

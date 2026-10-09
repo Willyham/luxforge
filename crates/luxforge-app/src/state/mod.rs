@@ -3360,7 +3360,11 @@ mod tests {
         }
         assert_eq!(groups(section(&workspace, "luxforge.basic")), 3);
         let mixer = section(&workspace, "luxforge.mixer");
-        assert_eq!(groups(mixer), 3, "a tabbed module keeps its groups as tabs");
+        assert_eq!(
+            groups(mixer),
+            2,
+            "a tabbed module keeps its groups, HSL and Grading, as tabs"
+        );
         assert!(matches!(mixer.layout, tools::SectionLayout::Tabs { .. }));
 
         // The only group has nothing to collapse: a recorded collapse, however it got there,
@@ -3445,9 +3449,8 @@ mod tests {
         assert_eq!(drawn.layout, tools::SectionLayout::Tabs { selected: 0 });
     }
 
-    /// Selecting a tab in a `layout: tabs` module is per-client view state exactly like a group's
-    /// expansion: it changes only that section, changes no recipe and issues no command (the
-    /// message handler that would send one lives outside this crate's UI-independent state).
+    /// The tab a `layout: tabs` module shows is its session's view selection: it changes only that
+    /// section and no recipe.
     #[test]
     fn selecting_a_tab_changes_only_its_own_section_and_no_recipe() {
         let tabs = tabs_descriptor();
@@ -3467,7 +3470,11 @@ mod tests {
             .map(|state| state.current_entry.snapshot.recipe.layers.clone());
         let crop = section(&workspace, "luxforge.crop").clone();
 
-        scene.control_ui.selected_tab.insert(tabs.id.clone(), 1);
+        scene.session.workspace.views = vec![luxforge_core::ViewSelection {
+            module: tabs.id.clone(),
+            group: Vec::new(),
+            view: "Second".into(),
+        }];
         workspace.derive(&scene.inputs());
         let selected = section(&workspace, &tabs.id);
         assert_eq!(selected.layout, tools::SectionLayout::Tabs { selected: 1 });
@@ -3487,14 +3494,14 @@ mod tests {
             "selecting a tab changes no recipe"
         );
 
-        // An out-of-range selection, from a descriptor that shrank since it was stored, clamps to
-        // the last group rather than panicking or pointing past the end.
-        scene.control_ui.selected_tab.insert(tabs.id.clone(), 9);
+        // A selection naming a view the descriptor no longer declares shows the first view rather
+        // than pointing past the end.
+        scene.session.workspace.views[0].view = "Gone".into();
         workspace.derive(&scene.inputs());
         assert_eq!(
             section(&workspace, &tabs.id).layout,
-            tools::SectionLayout::Tabs { selected: 1 },
-            "clamped to the last of the two declared groups"
+            tools::SectionLayout::Tabs { selected: 0 },
+            "an undeclared view shows the first"
         );
     }
 

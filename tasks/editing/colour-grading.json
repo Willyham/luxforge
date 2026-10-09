@@ -3,7 +3,7 @@
   "plan_id": "colour-grading",
   "title": "Colour grading in the mixer",
   "objective": "Extend the existing mixer with Lightroom-familiar tonal and Global grading, shared atomic wheels and numeric/API parity, independently proven CPU/GPU rendering, masks, presets and mapped Lightroom grading documents.",
-  "context_summary": "The owner settled product choices on 2026-10-07 and requested an implementation-ready plan with no approval/research gates. Deliver HSL/Grading tabs with three-way and individual/Global wheels, luminance, masks, Luxforge presets and direct Lightroom preset mappings; retain dormant hue and scoped resets. Initial numerical/layout details are implementer decisions. TASK-001 records the completed contract. TASK-002 and TASK-003 implement numerics and shared controls immediately; TASK-009 hands off the working feature. Only TASK-010 performs independent f64 reference analysis and Lightroom matching/refinement, with no dependency back into initial delivery. Lightroom exports are measurement inputs, not approval gates or prerequisites for feature/tooling implementation. Ordinary correctness tests, GPU-versus-CPU checks and background rendered evidence ship with the feature. Keep current shapes only, bounded work and the roadmap high-tier minimum.",
+  "context_summary": "The owner settled product choices on 2026-10-07 and requested an implementation-ready plan with no approval/research gates. Deliver HSL/Grading tabs with three-way and individual/Global wheels, luminance, masks, Luxforge presets and direct Lightroom preset mappings; retain dormant hue and scoped resets. Initial numerical/layout details are implementer decisions. TASK-001 records the completed contract. TASK-002 through TASK-009 are completed, including native M4 full-tier component coverage and quiet-start 24/60 MP and Nikon Z6 RAW measurements; the scope and misses are in docs/specs/performance.md. Only TASK-010 performs independent f64 reference analysis and Lightroom matching/refinement, with no dependency back into initial delivery. Lightroom exports are measurement inputs, not approval gates or prerequisites for feature/tooling implementation. Ordinary correctness tests, GPU-versus-CPU checks and background rendered evidence ship with the feature. Keep current shapes only, bounded work and the roadmap high-tier minimum.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -91,7 +91,7 @@
     {
       "id": "TASK-002",
       "description": "Implement the initial bounded grading colour unit and its correctness fixtures.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
@@ -100,7 +100,8 @@
         "Use post-HSL perceptual brightness, smooth three-range weights, Balance/Blending, RGB-wheel hue-to-tint conversion, luminance and independent Global composition. Oklab is the initial candidate; handle signed/headroom RAW explicitly and retain alpha.",
         "Keep this outcome independent of the payload declaration: the unit consumes fixed typed coefficients/parameters for the fourteen decided fields. TASK-004 binds it to the API, and TASK-005 ports the same contract to the GPU.",
         "Add ordinary whole-buffer/neutral/finite/continuity tests for the chosen initial equations. Independent f64 analysis, response plots, Lightroom matching and perfection belong exclusively to TASK-010 after delivery.",
-        "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step."
+        "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step.",
+        "Completed: crates/luxforge-core/src/modules/mixer/grade.rs (initial equations documented beside the code and in the design), its whole-buffer, property and frozen-fixture tests against luxforge_reference::grade."
       ],
       "context_links": [
         {
@@ -164,7 +165,7 @@
     {
       "id": "TASK-003",
       "description": "Add semantic hue/saturation wheel and nested view controls through the shared UI paths.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
@@ -174,7 +175,8 @@
         "A wheel updates two declared fields of one action atomically through one draft. Session view selection must never enter recipe history or create photo work. Preserve numeric fallback, inspection, historic/disabled states and current group-tree traversal.",
         "Do not add a generic pad framework, speculative controls or pixel sampling. The widget owns pointer geometry; the core owns parameter validation, transaction state and meaning.",
         "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step.",
-        "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence."
+        "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence.",
+        "Completed: the wheel control, group tab layouts and presentation-only views, field-patch subgroups/views/wheels, session workspace views through workspace.set, the desktop wheel widget and the controls proof with its controls smoke steps. Its own final quick tier was not run; the integrated change's verification covers it."
       ],
       "context_links": [
         {
@@ -262,7 +264,7 @@
     {
       "id": "TASK-004",
       "description": "Extend the mixer payload, API and CPU reference path with grading.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-002"
       ],
@@ -272,7 +274,8 @@
         "Keep the HSL unit followed by grading in the existing colour segment with no added quantization boundary. The host blends a masked layer once; module units do not duplicate coverage.",
         "Raise only the relevant effect/current shape markers. If FieldPatch Spec needs per-effect format declaration, make that contained shared addition. Reject unsupported payloads without rewriting/discarding data; no old-shape reader, migration or historical parity fixtures.",
         "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step.",
-        "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence."
+        "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence.",
+        "Completed: thirty-eight set-mixer fields at the mixer's own format 2 (Spec::format), current_effect_format for directly built layers, compile omitting each unit independently, and core tests for refusal, dormant settings, both render paths, history, resets and reopen."
       ],
       "context_links": [
         {
@@ -355,7 +358,7 @@
     {
       "id": "TASK-005",
       "description": "Implement the grading GPU colour program and verify it against the working CPU renderer.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-004"
       ],
@@ -364,7 +367,8 @@
         "Keep one fixed-size pointwise coefficient pack and current resource limits. Support unmasked/masked colour runs, approximate drag view paths and exact picture/sample/histogram/export GPU paths.",
         "Prove against the working whole-frame CPU renderer within the declared GPU tolerance, and exact neutral bypass separately. A selected comparison has its scope recorded; complete working-feature verification is TASK-009. Independent reference refinement comes later in TASK-010.",
         "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step.",
-        "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence."
+        "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence.",
+        "Completed: grade.wgsl registered as lf_mixer_grade, warmed and planned with the HSL program; gpu_colour_grade_meets_the_pointwise_limits passes on a native Apple M2 (not the owner's M4); four grading recipes added to the GPU corpus."
       ],
       "context_links": [
         {
@@ -434,7 +438,7 @@
     {
       "id": "TASK-006",
       "description": "Integrate HSL and Grading views into the generated mixer workspace.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003",
         "TASK-004",
@@ -446,7 +450,8 @@
         "Use real rendered checks in the background with an isolated catalog. Use the decided individual-wheel fallback at narrow widths, retaining usable targets and theme contrast; rendered layout review is implementer work, without an approval stop.",
         "Update current user-facing docs at this behaviour handoff while clearly marking final qualification still pending.",
         "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step.",
-        "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence."
+        "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence.",
+        "Completed: the mixer's HSL and Grading tabs with 3-way and individual views, wheel, HSL and Grading resets, one capture group each in the preset form, and the design, feature status and user guide updated."
       ],
       "context_links": [
         {
@@ -524,7 +529,7 @@
     {
       "id": "TASK-007",
       "description": "Carry grading through presets and the existing Lightroom mapper.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-004"
       ],
@@ -535,7 +540,8 @@
         "Use actual XMP/lrtemplate examples to distinguish unambiguous legacy split toning from partial modern grading. Legacy translation resets later grade controls and sets Blending 100 only when source semantics prove it. Ambiguous inputs remain reported/refused; old Luxforge shapes stay unsupported.",
         "No Lightroom catalog importer is implemented here. Its future source settings mapping consumes this shared mapper without new parallel logic.",
         "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step.",
-        "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence."
+        "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence.",
+        "Completed: Lightroom grading and split-toning rows as direct transfers, the source-era rule (lrtemplate and Camera Raw before 13.0 are split toning; ambiguous documents refused), new representative fixtures and tests; Luxforge presets carry HSL and Grading separately."
       ],
       "context_links": [
         {
@@ -612,7 +618,7 @@
     {
       "id": "TASK-008",
       "description": "Extend integrated acceptance, smoke and corpus coverage for grading.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-006",
         "TASK-007"
@@ -623,7 +629,8 @@
         "Use real background editor journeys with state/log/capture correlation and actual export.plan/export.jpeg/batch.export flows, not only render-to-buffer substitutes.",
         "Include mask kinds that depend on luminance/colour so layer ordering and coverage inputs are proved, plus stale/cancel/revision race recovery and immutable source hashes.",
         "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step.",
-        "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence."
+        "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence.",
+        "Delivered: grading and nested-HSL smoke, editor-acceptance masks/samples/single and batch exports, grading GPU corpus recipes and the latency harness atomic two-field wheel gesture. Native M4 background rendered journeys and full-corpus GPU gate pass with the supported RAW manifest; wheel captures prove the selected expanded individual view and both fields in each patch. Shared preset/Copy settings derivation captures HSL and Grading independently without duplicate wheel fields."
       ],
       "context_links": [
         {
@@ -713,7 +720,7 @@
     {
       "id": "TASK-009",
       "description": "Hand off the working feature with native verification, measurements and current documentation.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-008"
       ],
@@ -723,7 +730,8 @@
         "Complete the performance-rules checklist for the integrated crates change. Reuse bounded source/texture/worker services; validate no photo work for view-only actions and no hidden-view timer.",
         "Documentation reflects current delivered contracts and scoped evidence only. Native Windows/Linux, screen-reader and calibrated-display claims need native evidence; skips remain incomplete.",
         "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step.",
-        "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence."
+        "Use tools/cargo-cached for Cargo. Run only targeted tests while editing; quick once at a finished handoff. Timing waits until feature work is complete. Keep automated editor launches in the background and use isolated catalogs/evidence.",
+        "Native M4 handoff coverage is complete: 77 full-tier components passed in artifacts/pr5-full-final-20261008, and the three corrected RAW-panel assertions replay successfully plus fresh hardening passes in artifacts/pr5-harness-rechecks-20261008 (qualification.json retains the original failed full status and records all 81 covered components against the unchanged editor binary). GPU release gate: 305 stacks/1,220 at-rest view cells, grading included; motion remains reported under the accepted policy. All 21 grading measurement commands started at load <=8, with 30 samples on 24/60 MP and Nikon Z6 RAW; scoped latency, reference render/sample/export and CPU/GPU resources, RSS and sparse histogram-release misses are in docs/specs/performance.md. No native Windows/Linux or Lightroom response claim."
       ],
       "context_links": [
         {
@@ -823,7 +831,8 @@
         "Real Lightroom measurements consume owner-provided rendered exports when available. Build/test all reference and measurement tooling autonomously with known synthetic inputs; absent exports leave response measurements explicitly unmeasured, without delaying the working feature or tooling handoff.",
         "When measured inputs exist, apply the existing B/C response policy to grading, update conversions and current format markers as needed, and verify the resulting changes. No fabricated measurements, copied Adobe data, private-catalog access or contact-sheet approval requirement.",
         "Minimum implementation model: the roadmap high tier or stronger. Re-review current main and active worktrees before starting; proceed from the settled design without another product or implementation-approval step.",
-        "Use tools/cargo-cached, targeted tests while editing and background native verification for any numerical changes. Measure after those changes are finished."
+        "Use tools/cargo-cached, targeted tests while editing and background native verification for any numerical changes. Measure after those changes are finished.",
+        "Delivered ahead of TASK-009's handoff, with no dependency back into it: the f64 reference and its study and frozen fixture (no discrepancy with production, so no numerical change), luxforge_reference::grade_response with known-answer tests, and cargo xtask grade-align generate/render/measure, self-tested end to end. Remaining: a Lightroom round from the owner's installation, then the B/C decisions it warrants."
       ],
       "context_links": [
         {

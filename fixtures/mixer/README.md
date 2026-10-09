@@ -77,3 +77,15 @@ represents).
 No photograph-derived colour, no rendered images, no per-pixel buffers (the mixer is pointwise, so
 a buffer proves nothing a pixel does not), and no 8-bit expected outputs: the unit's contract is a
 linear-float one and the quantization boundary belongs to the host, not to this unit.
+
+## `grade-cases.json`
+
+The mixer's colour-grading oracle: 39 inputs under 8 parameter sets, 312 cases, computed by the `f64` reference of the initial grading equations (`crates/luxforge-reference/src/grade.rs`, described in [colour grading](../../docs/design/colour-grading.md#initial-numerical-implementation)) and reloaded and recomputed at `1e-12` by `crates/luxforge-reference/tests/studies/grade.rs`:
+
+```sh
+# regenerate (only after an intentional, documented formula change)
+cargo test --package luxforge-reference --test studies -- --ignored generate_grade_fixtures
+```
+
+`wheel_order` is shadows, midtones, highlights, global; each parameter set holds `[hue, saturation, luminance]` per wheel, Blending and Balance. Inputs are linear sRGB: a grey ramp, an Oklab hue wheel at three lightnesses, skin, sky and foliage patches, and above-white and signed values. Sets cover each wheel alone, the 360° seam, luminance lift and dim, opposing full-blend split toning, everything at the narrowest Blending and luminance at every extreme. Production (`crates/luxforge-core/src/modules/mixer/grade_tests.rs`) is held to `1e-5 + 1e-5 * abs(reference)` in linear light.
+

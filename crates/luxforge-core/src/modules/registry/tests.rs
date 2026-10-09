@@ -1135,3 +1135,30 @@ pub(crate) fn staged_registry() -> ModuleRegistry {
     }
     registry
 }
+
+/// The format [`crate::Layer::new`] stamps on a built-in effect's layer is the format that
+/// effect's descriptor declares, for every effect the built-in registry publishes, developer
+/// modules included.
+#[test]
+fn current_effect_formats_match_the_builtin_descriptors() {
+    let registry = ModuleRegistry::assemble(&RegistryOptions {
+        disabled: &[],
+        developer: true,
+        proof_endpoint: None,
+    })
+    .expect("the developer registry");
+    let mut checked = 0;
+    for descriptor in registry.descriptors() {
+        for effect in &descriptor.effects {
+            assert_eq!(
+                crate::current_effect_format(&effect.id),
+                effect.format,
+                "{}",
+                effect.id
+            );
+            checked += 1;
+        }
+    }
+    assert!(checked > 10, "the built-in effects were listed");
+    assert_eq!(crate::current_effect_format(crate::MIXER_EFFECT), 2);
+}

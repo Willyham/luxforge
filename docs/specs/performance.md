@@ -2115,6 +2115,135 @@ The settled-histogram column is the exact phase's cost and stayed where the full
 
 Rendered evidence is the `presence`, `mixer` and `vignette` smoke scenarios (15, 8 and 12 correlated frames at Fit and 100% with the module's own controls visible), and the field-patch conformance suite's checks per module through the JSON method table. A reviewer's render of the owner's 14 MP Sapa drone JPEG through the core alone (release, in memory: dehaze 65 ms, clarity 104 ms, texture 127 ms, all three at +50 672 ms) showed Dehaze +60 and +100 lifting the veil and deepening colour plausibly, Clarity +100 adding local contrast without visible halos at fit and at 100%, and Texture +100 sharpening fine detail with the expected crunch; it is a visual check, not a measurement. On a synthetic haze-free flat field Dehaze +100 drives the field toward black, because the dark-channel prior reads a uniform patch darker than the atmosphere as pure veil and the frozen `OMEGA_MAX = 1` removes all of it; the study records this and real photographs, whose windows contain dark pixels, do not show it.
 
+## Colour grading, qualified and measured on the M4
+
+Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, 8–9 October 2026,
+release `--locked`, warm filesystem cache. The editor binary is SHA-256
+`71e5a914651cc69d70e4edfa31b6c1270496c98b6ede68c59208cc7221e17e7d`, built from
+`f641481a`; the measurement xtask is
+`cae33e5b5c0f1d069bf1dafa1fb8982218191d88dd23dd068df1f58706df4168`, and Cargo.lock is
+`90a552cf01faf8e404c132b2bc429582b567bd355af8c35fe3b2f0e6d677a41f`.
+All 21 measurement commands ran serially behind the host timing lock, with no builds or tests
+overlapping. Each started at a one-minute load of 3.97–7.56, below the 8.0 threshold.
+The 60 MP and RAW reference workloads themselves raised the ending load to 13.67 and 10.91;
+the batch paused until load settled before starting the next native case.
+
+### Native qualification
+
+The supported Nikon Z6, Fujifilm X100VI and Air 2S manifest was supplied to full verification.
+All 81 full-tier components are covered by passing checks: 77 in the full run, the three RAW
+panel checks replayed against their captured state/logs/images with the current action-record
+expectation, and a fresh background hardening run with the current live-session registry
+expectation. The original full command's failed summary is retained; it is not a clean full-run
+exit. The editor binary is unchanged across those checks. The coverage index is
+`artifacts/pr5-harness-rechecks-20261008/qualification.json`, the original full evidence
+`artifacts/pr5-full-final-20261008/summary.json`.
+
+The whole GPU corpus passed the accepted release gate: 305 stacks, 1,220 picture-at-rest
+view cells at Fit, 33%, 50% and 100%, and 305 histogram, sample and export checks, with source
+hashes unchanged. The four grading recipes cover 28 stacks and 112 view cells. Their largest
+picture-at-rest mean / worst block / p99 is 0.0762 / 0.3550 / 0.6469 ΔE00, with absolute signed
+mean ΔL* at most 0.0092. Their largest histogram earth mover's distance is 0.249659 code,
+within 0.25; samples and repeatable GPU exports pass their own limits. Motion remains reported,
+not gated under the owner's policy: 48 of grading's 84 reduced-view cells exceed the comparison
+limits, against both the settled picture and the reference; all 28 at 100% are within them.
+The whole corpus has 572 reduced-view motion cells past a limit. No tolerance was increased.
+The report is `gpu-qualification/run/report.json` inside the full evidence directory.
+
+### Native control latency and resources
+
+`editor-latency --samples 30 --mode drag|commit --action set-mixer --parameter FIELD`
+measures HSL `red-hue`, grading `grade-shadows-luminance`, and the Shadows wheel
+(`--control wheel --parameter grade-shadows-hue`); drag runs use `--warm 1000`.
+Every run launches a hidden background window at Fit, 1440 × 900 logical points,
+2880 × 1800 physical pixels. Each scalar run activates its named field; each wheel run changes
+hue and saturation together in the selected, expanded Shadows view. These are separate control
+workloads, not an additive HSL-plus-grading comparison. All 270 drained drag inputs were drawn
+on the GPU, none held or answered by the reference. Each interval starts at `draft.set` and ends
+at the first draw tagged with that revision; it excludes pointer-device latency and display
+scanout. Commit frame and histogram distributions each contain 30 complete gestures. A drag
+run has two releases, including its coalesced reverse burst: those two histogram observations
+are listed as a range, not treated as a representative tail distribution.
+
+| Photo / control | Drag p50 / p95 ms | Commit frame p50 / p95 ms | Commit histogram p50 / p95 ms | Drag release observations ms (n = 2) |
+| --- | --- | --- | --- | --- |
+| 24 MP JPEG / HSL red hue | 8.14 / 9.26 | 9.18 / 9.47 | 67.55 / 68.14 | 66.01 / 75.40 |
+| 24 MP JPEG / Shadows luminance | 8.24 / 8.45 | 9.20 / 9.53 | 67.35 / 69.10 | 65.72 / 330.58 |
+| 24 MP JPEG / Shadows wheel | 8.71 / 9.01 | 9.81 / 10.18 | 67.40 / 68.13 | 69.89 / 76.17 |
+| 60 MP JPEG / HSL red hue | 8.21 / 9.38 | 9.23 / 9.59 | 142.33 / 143.28 | 148.10 / 150.91 |
+| 60 MP JPEG / Shadows luminance | 8.25 / 9.32 | 9.23 / 10.12 | 142.52 / 150.60 | 139.80 / 150.93 |
+| 60 MP JPEG / Shadows wheel | 8.69 / 9.04 | 9.78 / 10.66 | 142.59 / 150.24 | 145.24 / 150.19 |
+| Nikon Z6 RAW / HSL red hue | 8.31 / 9.36 | 9.13 / 17.45 | 67.81 / 83.79 | 72.20 / 352.04 |
+| Nikon Z6 RAW / Shadows luminance | 8.31 / 8.45 | 9.21 / 16.82 | 67.67 / 84.55 | 71.79 / 369.25 |
+| Nikon Z6 RAW / Shadows wheel | 8.71 / 9.02 | 9.73 / 10.08 | 67.12 / 68.03 | 69.97 / 76.12 |
+
+Every measured drag p95 is below 16 ms. Scalar RAW commit tails reach 17.45 and 16.82 ms;
+this does not establish every commit within one display frame. The 24 MP grading-luminance
+release at 330.58 ms misses the provisional 200 ms histogram target, despite the separate
+30-commit distribution's 69.10 ms p95. RAW HSL and luminance releases reach 352.04 and
+369.25 ms. Those sparse release misses remain findings; they were not removed or reclassified.
+
+The resource rows below take the larger observed value across each control's drag and commit
+runs. RSS is the process sampler's peak at roughly 50 ms intervals, including captures, GPU
+resources and allocator retention, not a CPU-heap measurement. GPU allocation is the final
+native counter, not its peak; on unified memory it must not be added to RSS. CPU seconds cover
+the observed process interval, including setup, captures and commits, not just shader execution.
+
+| Photo / control | Sampled peak RSS MiB | Final GPU allocation MiB | Process CPU seconds |
+| --- | ---: | ---: | ---: |
+| 24 MP JPEG / HSL red hue | 1020.3 | 379.2 | 4.75 |
+| 24 MP JPEG / Shadows luminance | 1022.8 | 379.0 | 4.69 |
+| 24 MP JPEG / Shadows wheel | 1213.2 | 377.0 | 5.06 |
+| 60 MP JPEG / HSL red hue | 1111.0 | 562.9 | 6.16 |
+| 60 MP JPEG / Shadows luminance | 1125.4 | 566.6 | 6.31 |
+| 60 MP JPEG / Shadows wheel | 1362.0 | 514.9 | 6.44 |
+| Nikon Z6 RAW / HSL red hue | 1468.9 | 576.6 | 8.59 |
+| Nikon Z6 RAW / Shadows luminance | 1466.2 | 576.6 | 8.78 |
+| Nikon Z6 RAW / Shadows wheel | 1673.6 | 574.5 | 9.13 |
+
+These repeated-capture gesture workloads exceed the provisional 600 MiB RSS target at 24 MP
+and 1 GiB at 60 MP, HSL baselines included. They do not establish a production working-set
+ceiling or isolate the wheel's own allocation cost. Colour scratch peaks are zero on the JPEGs
+and 5.25 MiB on the RAW. The existing GPU and scratch limits remain unchanged; backend staging
+and total GPU memory outside the declared services are not newly bounded by these observations.
+
+### Paired whole-frame reference costs
+
+`grade-performance --source SOURCE --output NEW --samples 30` runs independent owners
+sequentially, preparing the original once per owner, with one warm-up and 30 samples per workload.
+HSL holds red hue 20/21 (alternating to make every commit real) and blue saturation 15.
+The graded workload keeps those HSL values and adds Shadows hue 210/saturation 30,
+Highlights hue 45/saturation 20 and Global luminance 5. Commits use `edit.set-mixer`;
+whole-frame rendering uses the CPU reference; each centre-point `render.sample` equals that
+frame's byte; each serial `export.jpeg` completes and its temporary output is removed.
+The headless owner has no GPU tile service, so sample and export figures below are reference
+fallback costs, not native GPU sample/export throughput. Every table cell is p50 / p95 over 30
+observations; RSS is sampled between operations, not peak memory.
+
+| Photo / reference workload | Owner commit ms | Whole-frame render ms | Point sample ms | JPEG export ms | RSS between operations MiB |
+| --- | --- | --- | --- | --- | --- |
+| 24 MP JPEG / HSL alone | 4.81 / 6.47 | 92.10 / 101.06 | 0.092 / 0.108 | 154.20 / 179.73 | 235.2 / 235.5 |
+| 24 MP JPEG / HSL + grading | 4.91 / 5.67 | 148.47 / 163.38 | 0.091 / 0.107 | 209.88 / 237.04 | 236.2 / 236.4 |
+| 60 MP JPEG / HSL alone | 4.86 / 5.66 | 214.41 / 238.58 | 0.095 / 0.114 | 347.33 / 381.85 | 508.0 / 508.2 |
+| 60 MP JPEG / HSL + grading | 5.21 / 5.88 | 373.10 / 400.28 | 0.103 / 0.119 | 511.87 / 521.36 | 512.7 / 512.8 |
+| Nikon Z6 RAW / HSL alone | 4.89 / 6.30 | 382.50 / 420.13 | 0.140 / 0.157 | 467.38 / 520.45 | 539.0 / 539.2 |
+| Nikon Z6 RAW / HSL + grading | 4.71 / 5.43 | 487.76 / 510.51 | 0.147 / 0.167 | 574.52 / 589.40 | 464.4 / 464.4 |
+
+Adding this grade raises the reference render's p50 by 56.37 ms at 24 MP, 158.69 ms at 60 MP,
+and 105.25 ms on the Nikon RAW. Samples remain pointwise. The lower graded RAW RSS is an
+observation across sequential owners and allocator retention, not evidence of a memory saving.
+All originals retain their hashes. Reports preserve recipes, source hashes, export jobs, loads,
+CPU/GPU resources and native state/logs/captures under
+`artifacts/pr5-measurements-20261008/`; `summary.json` indexes all 21 reports and `runs.json`
+retains the exact commands. JPEG sources are the generated 6000 × 4000 and 10000 × 6000
+fixtures; the Nikon's upright stage is 4024 × 6048.
+
+The full run's general 24 MP `editor-performance` diagnostic is also retained, at its default
+10 samples per recipe and starting load 3.73. It has no matched pre-grading main build, so no
+whole-editor speedup or absence of regression is claimed. The paired HSL/grade workloads above
+are the feature-cost comparison. Native Windows/Linux, screen-reader, calibrated-display and
+Lightroom response qualification remain open.
+
 ## Brush-heavy recipes across history
 
 Native Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Rust 1.94.0, release `--locked`, warm filesystem cache, catalog on the internal APFS SSD, one process per fixture with its peak memory from `/usr/bin/time -l`. These are recorded measurements of a painting session run once to the per-recipe ceiling, sampled every fifty strokes; the suite gates the curve's shape and square term at 400 strokes (`a_painting_session_grows_with_the_square_of_its_stroke_count`) and the ceiling itself (`a_session_of_long_strokes_ends_at_the_masks_per_recipe_ceiling`), both in `editor/catalog.rs` on the same session harness.
