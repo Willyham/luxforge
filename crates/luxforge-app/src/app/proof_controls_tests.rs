@@ -1339,6 +1339,67 @@ mod curve_editor {
         proof.finish();
     }
 
+    /// The widget publishes a drag straight after the press that added its point, before the add
+    /// has answered. That move opens no draft; the first move after the answer drafts on the
+    /// revision the add made.
+    #[test]
+    fn a_drag_after_an_add_drafts_once_the_add_has_answered() {
+        let mut proof = Proof::new();
+        proof.post_points(json!(THREE));
+        let _ = proof.curve_event(CurveEditorEvent::Add([0.25, 0.25]));
+        assert!(proof.editor.busy, "the add is in flight");
+        let early = proof.curve_event(CurveEditorEvent::Move {
+            index: 1,
+            position: [0.25, 0.4],
+        });
+        assert_eq!(
+            early.units(),
+            0,
+            "nothing is sent while the add is in flight"
+        );
+        assert!(proof.editor.slider_gesture().is_none());
+        assert_eq!(
+            proof.sent_points(),
+            json!([[0.0, 0.0], [0.25, 0.25], [0.5, 0.5], [1.0, 1.0]]),
+            "the held move changes no value"
+        );
+
+        // The add's request, answered as its task would answer it.
+        let request = proof.editor.request_for(ACTION, Some(MASTER)).unwrap();
+        let refreshed = tasks::command_now(
+            &proof.editor.owner,
+            proof.editor.client,
+            proof.asset.clone(),
+            request["method"].as_str().unwrap(),
+            request["params"].clone(),
+            None,
+        )
+        .unwrap();
+        let added = refreshed.state.revision;
+        let _ = proof
+            .editor
+            .update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(
+                refreshed,
+            )))));
+        assert!(!proof.editor.busy);
+
+        let _ = proof.curve_event(CurveEditorEvent::Move {
+            index: 1,
+            position: [0.25, 0.375],
+        });
+        assert!(proof.editor.slider_gesture().is_some(), "the drag drafts");
+        assert_eq!(
+            proof.editor.document.state.as_ref().unwrap().revision,
+            added,
+            "on the revision the add made"
+        );
+        assert_eq!(
+            proof.sent_points(),
+            json!([[0.0, 0.0], [0.25, 0.375], [0.5, 0.5], [1.0, 1.0]])
+        );
+        proof.finish();
+    }
+
     #[test]
     fn removing_a_point_clears_the_selection() {
         let mut proof = Proof::new();
