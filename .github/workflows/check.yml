@@ -140,6 +140,9 @@ jobs:
         env:
           WGPU_BACKEND: vulkan
           WINIT_UNIX_BACKEND: x11
+          # This lane proves rendering behavior, not speed. Avoid spending its bounded
+          # script deadlines in LLVM optimization of lavapipe's cold shaders.
+          GALLIVM_PERF: nopt
       - name: Retain development artifact
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

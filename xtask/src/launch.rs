@@ -262,6 +262,11 @@ pub fn draw_on_a_software_adapter() {
     SOFTWARE.store(true, std::sync::atomic::Ordering::Release);
 }
 
+/// Whether this harness run explicitly adopted a software adapter.
+pub fn software_adapter_requested() -> bool {
+    SOFTWARE.load(std::sync::atomic::Ordering::Acquire)
+}
+
 /// The background bundle's identifier, which names the per-application caches macOS keeps for
 /// it, Metal's compiled shaders among them. Evidence of a cold shader cache sets a fresh suffix
 /// through [`BUNDLE_SUFFIX_ENV`], whose caches start empty, without touching any other cache.

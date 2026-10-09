@@ -1683,6 +1683,15 @@ rates and wall-time savings remain unmeasured.
 
 The scenario list is written out in the workflow because `smoke --list` says which scenarios need a supplied RAW but not which run on software Vulkan. The GPU-stage journeys use small fixtures: `large24` and `large60` stay in native rendered verification, where photo-sized GPU correctness belongs. The `no-gpu-render` journey retains its 24 MP reference-renderer fixture. Every retained scenario runs even if an earlier one fails; a failed journey or a successful journey that does not record only `Cpu` adapters fails the lane at the end. Artifacts from every attempted journey are retained. The repeated-open check correlates the retained source version, upload count and ready GPU boundary, allowing the first capture to show the reference while that same boundary compiles.
 
+The software lane sets Mesa's `GALLIVM_PERF=nopt` to skip LLVM optimization of cold
+shaders. It is functional evidence with that compiler setting, never a timing qualification.
+`smoke --editor-software-adapter` gives ordinary scenario launches at least 300 seconds,
+matching the editor's scripted-evidence deadline and retaining longer scenario deadlines.
+A captured software GPU frame's time must be finite,
+nonnegative and below 120 seconds, with its status text and timing record still correlated;
+native frames retain the five-second plausibility bound. Pixel, state and adapter checks
+remain required.
+
 Locally, `cargo xtask doctor` lists the adapters a built release editor sees, through the same `--gpu-adapters`. Inspect actual run results for the tested commit; a configured step is not a passing result. Latest hosted macOS checks, release acceptance and packaging, dependency policy, and Linux no-adapter checks, release acceptance and packaging [pass](https://github.com/Willyham/luxforge/actions/runs/37797956119). The retained Linux software-adapter journeys await a passing hosted result; native Windows/Linux desktop checks remain open on the [roadmap](../plan.md).
 
 ### Lens edge annotations
