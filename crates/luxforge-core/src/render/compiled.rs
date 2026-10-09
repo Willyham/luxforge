@@ -3,6 +3,7 @@
 
 use super::{
     Byte, Evaluation, PixelDomain, RenderContext, SpatialEntry,
+    repair_entry::RepairEntry,
     linear::{LinearRows, LinearScratch, TAP_BLOCK_PIXELS},
     map::WarpStep,
     nearest_index, resample_frame,
@@ -32,6 +33,10 @@ pub(crate) enum Entry {
     Resample(ResampleEntry),
     /// A neighbourhood boundary at the same dimensions as the stage it receives.
     Spatial(SpatialEntry),
+    /// The repair stage's Clone and Heal operations, at the same dimensions as the stage it
+    /// receives, each reading a bounded region of it that may lie anywhere
+    /// ([`RepairEntry::reads`]).
+    Repair(RepairEntry),
 }
 
 /// A resample boundary: the resample, over the whole stages it was compiled against.
@@ -93,6 +98,25 @@ impl Entry {
         Self::Spatial(SpatialEntry::new(operation))
     }
 
+    /// A repair boundary over the stage it receives.
+    pub(crate) fn repair(table: crate::modules::RepairTable, stage: Stage) -> Self {
+        Self::Repair(RepairEntry::new(table, stage))
+    }
+
+    /// Whether this boundary writes a frame of the stage it receives that a read through it is
+    /// answered from: a spatial operation or a repair. A resample's pixels are pulled.
+    pub(crate) fn materializes(&self) -> bool {
+        matches!(self, Self::Spatial(_) | Self::Repair(_))
+    }
+
+    /// The repair this boundary runs, if it is one.
+    pub(crate) fn repair_entry(&self) -> Option<&RepairEntry> {
+        match self {
+            Self::Repair(entry) => Some(entry),
+            _ => None,
+        }
+    }
+
     pub(crate) fn spatial_tagged(operation: SpatialOperation, stage: crate::EffectStage) -> Self {
         let mut entry = SpatialEntry::new(operation);
         entry.stage = stage;
@@ -106,7 +130,7 @@ impl Entry {
                 width: entry.resample.output_width,
                 height: entry.resample.output_height,
             },
-            Self::Spatial(_) => received,
+            Self::Spatial(_) | Self::Repair(_) => received,
         }
     }
 
@@ -115,7 +139,7 @@ impl Entry {
     pub(crate) fn held(&self, received: Stage) -> Region {
         match self {
             Self::Resample(entry) => entry.window(),
-            Self::Spatial(_) => Region::whole(received),
+            Self::Spatial(_) | Self::Repair(_) => Region::whole(received),
         }
     }
 
@@ -127,6 +151,7 @@ impl Entry {
         match self {
             Self::Resample(entry) => entry.reads(window, received),
             Self::Spatial(entry) => Some(entry.halo_reads(window, received)),
+            Self::Repair(entry) => Some(entry.window_reads(window)),
         }
     }
 
@@ -147,6 +172,7 @@ impl Entry {
                 .reads(read, received)
                 .ok_or(RegionFallback::UnplannableGeometry),
             Self::Spatial(entry) => Ok(entry.halo_reads(read, received)),
+            Self::Repair(entry) => Ok(entry.window_reads(read)),
         }
     }
 
@@ -162,7 +188,7 @@ impl Entry {
                     nearest_index(v, received.height),
                 )
             }
-            Self::Spatial(_) => (x, y),
+            Self::Spatial(_) | Self::Repair(_) => (x, y),
         }
     }
 
@@ -188,7 +214,7 @@ impl Entry {
     ) -> Result<D::Pixel, Error> {
         match self {
             Self::Resample(entry) => evaluation.resample_pixel(index, entry, x, y),
-            Self::Spatial(_) => evaluation.spatial_entry_pixel(index, x, y),
+            Self::Spatial(_) | Self::Repair(_) => evaluation.spatial_entry_pixel(index, x, y),
         }
     }
 
@@ -204,6 +230,7 @@ impl Entry {
         match self {
             Self::Resample(_) => Ok(None),
             Self::Spatial(entry) => evaluation.spatial_frame(index, entry, cancel).map(Some),
+            Self::Repair(entry) => evaluation.repair_frame(index, entry, cancel).map(Some),
         }
     }
 
@@ -216,7 +243,7 @@ impl Entry {
         index: usize,
     ) -> Result<Vec<Option<crate::modules::Global>>, Error> {
         match self {
-            Self::Resample(_) => Ok(Vec::new()),
+            Self::Resample(_) | Self::Repair(_) => Ok(Vec::new()),
             Self::Spatial(entry) => evaluation.spatial_globals(index, entry),
         }
     }
@@ -257,6 +284,9 @@ impl Entry {
             Self::Spatial(entry) => super::byte::spatial_frame(
                 domain, entry, input, received, tiling, cancel, context, wide,
             ),
+            Self::Repair(entry) => {
+                super::byte::repair_frame(domain, entry, input, received, cancel, context, wide)
+            }
         }
     }
 
@@ -265,7 +295,7 @@ impl Entry {
     pub(super) fn linear_scratch(&self) -> usize {
         match self {
             Self::Resample(_) => TAP_BLOCK_PIXELS as usize * std::mem::size_of::<[f64; 3]>(),
-            Self::Spatial(_) => 0,
+            Self::Spatial(_) | Self::Repair(_) => 0,
         }
     }
 
@@ -282,7 +312,7 @@ impl Entry {
     ) -> Result<(), Error> {
         match self {
             Self::Resample(entry) => rows.load_resampled(entry, scratch, y0, chunk),
-            Self::Spatial(_) => rows.load_pulled(scratch, y0, chunk),
+            Self::Spatial(_) | Self::Repair(_) => rows.load_pulled(scratch, y0, chunk),
         }
     }
 
@@ -291,7 +321,7 @@ impl Entry {
     pub(crate) fn blends(&self) -> bool {
         match self {
             Self::Resample(_) => true,
-            Self::Spatial(_) => false,
+            Self::Spatial(_) | Self::Repair(_) => false,
         }
     }
 
@@ -299,7 +329,7 @@ impl Entry {
     /// answered from; `None` for a resample, which a point query pulls through.
     pub(crate) fn spatial_operation(&self) -> Option<&SpatialOperation> {
         match self {
-            Self::Resample(_) => None,
+            Self::Resample(_) | Self::Repair(_) => None,
             Self::Spatial(entry) => Some(&entry.operation),
         }
     }
@@ -446,7 +476,7 @@ impl Compiled {
         prefix
             .segments
             .iter()
-            .rposition(|segment| matches!(&segment.entry, Some(Entry::Spatial(_))))
+            .rposition(|segment| segment.entry.as_ref().is_some_and(Entry::materializes))
             .and_then(|index| {
                 super::byte::byte_frame_widths(self)
                     .get(index)
@@ -483,7 +513,7 @@ impl Compiled {
         self.spatial_before(self.segments.len())
     }
 
-    /// Whether a segment entered through a spatial operation ([`Entry::spatial_operation`]) comes
+    /// Whether a segment entered through a spatial operation or a repair ([`Entry::materializes`]) comes
     /// before segment `index`, so that the stage `index` reads comes through that operation's
     /// whole frame rather than from the source alone.
     pub(crate) fn spatial_before(&self, index: usize) -> bool {
@@ -491,7 +521,7 @@ impl Compiled {
             segment
                 .entry
                 .as_ref()
-                .is_some_and(|entry| entry.spatial_operation().is_some())
+                .is_some_and(Entry::materializes)
         })
     }
 }

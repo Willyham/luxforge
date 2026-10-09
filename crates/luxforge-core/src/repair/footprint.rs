@@ -122,6 +122,33 @@ fn pixel_range(low: f64, high: f64, h: f64, limit: u32) -> Option<(u32, u32)> {
     ))
 }
 
+/// Every pixel whose coverage may be above zero for `segments` at `radius` content heights: the
+/// footprint's support, without its index. `O(segments)`, so the host's region planning reads it
+/// on the catalog owner without building a footprint.
+pub(crate) fn support(segments: &[Segment], radius: f64, stage: Stage) -> Region {
+    let h = f64::from(stage.height);
+    let mut support: Option<(u32, u32, u32, u32)> = None;
+    for segment in segments {
+        let [u0, v0, u1, v1] = segment.bounds();
+        let (Some((x0, x1)), Some((y0, y1))) = (
+            pixel_range(u0 - radius, u1 + radius, h, stage.width),
+            pixel_range(v0 - radius, v1 + radius, h, stage.height),
+        ) else {
+            continue;
+        };
+        support = Some(match support {
+            None => (x0, y0, x1, y1),
+            Some((a, b, c, d)) => (a.min(x0), b.min(y0), c.max(x1), d.max(y1)),
+        });
+    }
+    support.map_or(Region::EMPTY, |(x0, y0, x1, y1)| Region {
+        x0,
+        y0,
+        width: x1 - x0 + 1,
+        height: y1 - y0 + 1,
+    })
+}
+
 /// A footprint bound to a stage.
 #[derive(Clone, Debug)]
 pub(crate) struct Footprint {
@@ -153,26 +180,7 @@ impl Footprint {
     ) -> Self {
         let segments = segments(points, stage);
         let h = f64::from(stage.height);
-        let mut support: Option<(u32, u32, u32, u32)> = None;
-        for segment in &segments {
-            let [u0, v0, u1, v1] = segment.bounds();
-            let (Some((x0, x1)), Some((y0, y1))) = (
-                pixel_range(u0 - radius, u1 + radius, h, stage.width),
-                pixel_range(v0 - radius, v1 + radius, h, stage.height),
-            ) else {
-                continue;
-            };
-            support = Some(match support {
-                None => (x0, y0, x1, y1),
-                Some((a, b, c, d)) => (a.min(x0), b.min(y0), c.max(x1), d.max(y1)),
-            });
-        }
-        let support = support.map_or(Region::EMPTY, |(x0, y0, x1, y1)| Region {
-            x0,
-            y0,
-            width: x1 - x0 + 1,
-            height: y1 - y0 + 1,
-        });
+        let support = support(&segments, radius, stage);
         let side = support.width.max(support.height);
         let cell = (radius * h)
             .ceil()

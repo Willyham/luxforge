@@ -22,7 +22,7 @@ impl TestModule {
             id: id.into(),
             title: "Test".into(),
             hint: None,
-            effects: vec![EffectDescriptor::new(effect, EffectStage::Pixel)],
+            effects: vec![EffectDescriptor::new(effect, EffectStage::Repair)],
             actions: vec![ActionDescriptor::new(action, "Test action", "test")],
             queries: Vec::new(),
             controls: Vec::new(),
@@ -1121,7 +1121,7 @@ pub(crate) const SPATIAL_EFFECT: &str = "test.spatial.effect";
 
 pub(crate) const FINISH_EFFECT: &str = "test.finish.effect";
 
-pub(crate) const PIXEL_STAGE_EFFECT: &str = "test.pixel.effect";
+pub(crate) const REPAIR_STAGE_EFFECT: &str = "test.repair.effect";
 
 /// The developer registry plus one pixel-stage effect, one colour effect of order 10, one spatial
 /// effect and one finish effect, which is every stage that has no delivered effect and two orders
@@ -1131,9 +1131,9 @@ pub(crate) fn staged_registry() -> ModuleRegistry {
     for (id, effect, action, stage, order) in [
         (
             "test.pixel",
-            PIXEL_STAGE_EFFECT,
+            REPAIR_STAGE_EFFECT,
             "set-test-pixel",
-            EffectStage::Pixel,
+            EffectStage::Repair,
             0,
         ),
         (

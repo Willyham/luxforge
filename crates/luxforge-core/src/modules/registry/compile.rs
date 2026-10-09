@@ -40,6 +40,7 @@ impl ModuleRegistry {
         recipe.validate()?;
         recipe.validate_mask_table()?;
         self.validate_masked_stages(recipe)?;
+        self.validate_repair_run(&recipe.layers)?;
         for layer in &recipe.layers {
             let module = self
                 .provider(&layer.effect_id)
@@ -70,6 +71,36 @@ impl ModuleRegistry {
                     layer.id,
                     stage.as_str()
                 )));
+            }
+        }
+        Ok(())
+    }
+
+    /// A repair layer reads the developed source and nothing else, so it belongs to the leading run
+    /// of a stack: after an optional source layer, before every other layer
+    /// (`docs/design/corrections.md`, "Module, effect and stage"). Insertion never produces any
+    /// other order; a stack that holds one is refused by name, as it stands, and nothing is
+    /// rewritten or reordered. The refusal is what keeps a repair's input — the source, its
+    /// development and nothing else — well defined for the input grid and a patch's input key.
+    /// `O(layers)` descriptor lookups, no pixel.
+    fn validate_repair_run(&self, layers: &[Layer]) -> Result<(), Error> {
+        let mut leading = true;
+        for (index, layer) in layers.iter().enumerate() {
+            match self.effect_stage(&layer.effect_id) {
+                Some(EffectStage::Source) if index == 0 => {}
+                Some(EffectStage::Repair) if leading => {}
+                Some(EffectStage::Repair) => {
+                    let title = self
+                        .effect(&layer.effect_id)
+                        .map_or(layer.effect_id.as_str(), |(module, _)| {
+                            module.descriptor().title.as_str()
+                        });
+                    return Err(Error::incompatible(format!(
+                        "the {title} layer must follow only the source development (layer {})",
+                        layer.id
+                    )));
+                }
+                _ => leading = false,
             }
         }
         Ok(())
@@ -232,6 +263,7 @@ impl ModuleRegistry {
         // rendering its stack draws exactly what the stack says.
         recipe.validate()?;
         self.validate_masked_stages(recipe)?;
+        self.validate_repair_run(&recipe.layers)?;
         self.compile_layers_sampled(
             source_width,
             source_height,
@@ -460,6 +492,26 @@ impl ModuleRegistry {
                             self.effect_stage(&layer.effect_id)
                                 .unwrap_or(EffectStage::Spatial),
                         )),
+                        stage.width,
+                        stage.height,
+                    ));
+                }
+                Processing::Repair(table) => {
+                    // An emptied layer changes nothing, and nothing is no processing: the stack
+                    // keeps its single pass and the shared source buffer.
+                    if table.is_empty() {
+                        continue;
+                    }
+                    if self.effect_stage(&layer.effect_id) != Some(EffectStage::Repair) {
+                        return Err(Error::internal(format!(
+                            "effect {} compiled a repair table outside the repair stage",
+                            layer.effect_id
+                        )));
+                    }
+                    self.refuse_unevaluated_mask(layer)?;
+                    table.validate()?;
+                    segments.push(Segment::new(
+                        Some(Entry::repair(table, stage)),
                         stage.width,
                         stage.height,
                     ));
