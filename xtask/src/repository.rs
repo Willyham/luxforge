@@ -2257,6 +2257,106 @@ fn rules(root: &Path) -> Result<Applied> {
     Ok(applied)
 }
 
+/// The package a standalone service's `Cargo.lock` registry entries must come from.
+const CRATES_IO: &str = "registry+https://github.com/rust-lang/crates.io-index";
+
+/// The standalone service packages under `services/`, checked as a group: each is a package with
+/// its own empty `[workspace]` and `Cargo.lock`, kept out of the desktop workspace and lockfile,
+/// GPL-3.0-or-later, with a `NOTICE.md`, every dependency pinned to an exact version from
+/// crates.io (no path, git or workspace dependency, so none on the desktop's crates), and a
+/// lockfile whose every other package is a checksummed crates.io release. Returns how many it read.
+fn services(root: &Path) -> Result<usize> {
+    let dir = root.join("services");
+    if !dir.is_dir() {
+        return Ok(0);
+    }
+    let root_manifest = fs::read_to_string(root.join("Cargo.toml"))?;
+    let root_lock = fs::read_to_string(root.join("Cargo.lock"))?;
+    let exact = Regex::new(r#"=\s*"=[0-9]+\.[0-9]+\.[0-9]+"#)?;
+    let own_workspace = Regex::new(r"(?m)^\[workspace\]\s*$")?;
+    let mut refusals = Vec::new();
+    let mut count = 0;
+    let mut names = fs::read_dir(&dir)?
+        .map(|entry| entry.map(|e| e.file_name().to_string_lossy().into_owned()))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    names.sort();
+    for name in names {
+        let path = format!("services/{name}");
+        if !root.join(&path).join("Cargo.toml").is_file() {
+            continue;
+        }
+        count += 1;
+        let manifest = fs::read_to_string(root.join(&path).join("Cargo.toml"))?;
+        let mut refuse = |why: String| refusals.push(format!("{path}: {why}"));
+        if !own_workspace.is_match(&manifest) {
+            refuse("Cargo.toml needs its own empty [workspace] table".into());
+        }
+        if !Regex::new(r#"(?m)^license\s*=\s*"GPL-3\.0-or-later""#)?.is_match(&manifest) {
+            refuse("project code is GPL-3.0-or-later".into());
+        }
+        if !root.join(&path).join("NOTICE.md").is_file() {
+            refuse("NOTICE.md is missing".into());
+        }
+        let excluded = Regex::new(&format!(
+            r#"(?m)^exclude\s*=\s*\[[^\]]*"{}""#,
+            regex::escape(&path)
+        ))?;
+        if !excluded.is_match(&root_manifest) {
+            refuse(format!(
+                "the root [workspace] must list exclude = [\"{path}\"]"
+            ));
+        }
+        let package = Regex::new(r#"(?m)^name\s*=\s*"([^"]+)""#)?
+            .captures(&manifest)
+            .map(|c| c[1].to_owned())
+            .unwrap_or_default();
+        if root_lock.contains(&format!("name = \"{package}\"")) || package.is_empty() {
+            refuse("the desktop Cargo.lock must not contain the service".into());
+        }
+        for dependency in dependencies(&manifest) {
+            let named = dependency.names.join("` as `");
+            if dependency.path || Depends::WorkspaceCrate.refuses(&dependency) {
+                refuse(format!(
+                    "line {}: `{named}` is a path or Luxforge dependency; a service links no \
+                     desktop crate",
+                    dependency.line
+                ));
+            } else if !exact.is_match(&dependency.text) {
+                refuse(format!(
+                    "line {}: `{named}` is not pinned with an exact version (`=x.y.z`)",
+                    dependency.line
+                ));
+            }
+        }
+        match fs::read_to_string(root.join(&path).join("Cargo.lock")) {
+            Err(_) => refuse("Cargo.lock is missing".into()),
+            Ok(lock) => {
+                for block in lock.split("[[package]]").skip(1) {
+                    let field = |key: &str| {
+                        block.lines().find_map(|line| {
+                            line.strip_prefix(key)?
+                                .strip_prefix(" = \"")?
+                                .strip_suffix('"')
+                        })
+                    };
+                    let entry = field("name").unwrap_or("?");
+                    if entry == package {
+                        if field("source").is_some() {
+                            refuse(format!("Cargo.lock: `{entry}` must be the local package"));
+                        }
+                    } else if field("source") != Some(CRATES_IO) || field("checksum").is_none() {
+                        refuse(format!(
+                            "Cargo.lock: `{entry}` is not a checksummed crates.io release"
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    ensure(refusals.is_empty(), refusals.join("\n"))?;
+    Ok(count)
+}
+
 pub fn check(root: &Path) -> Result {
     let s = read_json(&root.join("tools/task-plan.schema.json"))?;
     let plan_paths: Vec<_> = files(&root.join("tasks"))?
@@ -2300,6 +2400,11 @@ pub fn check(root: &Path) -> Result {
         applied.sources.len(),
         DEPENDENCY_RULES.len(),
         applied.manifests.len()
+    );
+    println!(
+        "PASS {} standalone service package(s): own workspace and lockfile, exact pins, \
+         crates.io sources, notice",
+        services(root)?
     );
     Ok(())
 }
@@ -2370,6 +2475,145 @@ mod tests {
         ] {
             assert_eq!(holds_token(line, token, mode), holds, "{token} in {line}");
         }
+    }
+    /// A repository root holding one clean standalone service.
+    fn service_tree() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let service = root.join("services/demo");
+        fs::create_dir_all(&service).unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = []\nexclude = [\"services/demo\"]\n",
+        )
+        .unwrap();
+        fs::write(root.join("Cargo.lock"), "version = 4\n").unwrap();
+        fs::write(
+            service.join("Cargo.toml"),
+            "[workspace]\n\n[package]\nname = \"demo\"\nlicense = \"GPL-3.0-or-later\"\n\n\
+             [dependencies]\na = \"=1.2.3\"\nb = { version = \"=0.1.0\", features = [\"x\"] }\n\n\
+             [dev-dependencies]\nc = { version = \"=2.0.0\", default-features = false }\n",
+        )
+        .unwrap();
+        let entry = |name: &str, source: bool| {
+            let source = if source {
+                format!("source = \"{CRATES_IO}\"\nchecksum = \"00\"\n")
+            } else {
+                String::new()
+            };
+            format!("[[package]]\nname = \"{name}\"\nversion = \"1.0.0\"\n{source}\n")
+        };
+        fs::write(
+            service.join("Cargo.lock"),
+            format!(
+                "version = 4\n\n{}{}{}",
+                entry("a", true),
+                entry("demo", false),
+                entry("z", true)
+            ),
+        )
+        .unwrap();
+        fs::write(service.join("NOTICE.md"), "notice\n").unwrap();
+        tmp
+    }
+
+    #[test]
+    fn standalone_services_are_held_to_their_rules() {
+        let tmp = service_tree();
+        let root = tmp.path();
+        assert_eq!(services(root).unwrap(), 1);
+        assert_eq!(services(tempfile::tempdir().unwrap().path()).unwrap(), 0);
+        let manifest = root.join("services/demo/Cargo.toml");
+        let lock = root.join("services/demo/Cargo.lock");
+        let (clean_manifest, clean_lock) = (
+            fs::read_to_string(&manifest).unwrap(),
+            fs::read_to_string(&lock).unwrap(),
+        );
+        let refused = |label: &str, expected: &str| {
+            let error = services(root).expect_err(label);
+            assert!(error.to_string().contains(expected), "{label}: {error}");
+        };
+        for (label, from, to, expected) in [
+            (
+                "no own workspace",
+                "[workspace]\n",
+                "",
+                "own empty [workspace]",
+            ),
+            ("licence", "GPL-3.0-or-later", "MIT", "GPL-3.0-or-later"),
+            ("range", "\"=1.2.3\"", "\"1.2.3\"", "`a` is not pinned"),
+            ("caret", "\"=1.2.3\"", "\"^1.2.3\"", "`a` is not pinned"),
+            ("inline range", "\"=0.1.0\"", "\"0.1\"", "`b` is not pinned"),
+            ("dev range", "\"=2.0.0\"", "\"2\"", "`c` is not pinned"),
+            (
+                "path",
+                "a = \"=1.2.3\"",
+                "a = { path = \"../a\" }",
+                "path or Luxforge",
+            ),
+            (
+                "workspace crate",
+                "a = \"=1.2.3\"",
+                "luxforge-core = \"=0.0.0\"",
+                "path or Luxforge",
+            ),
+            (
+                "git",
+                "a = \"=1.2.3\"",
+                "a = { git = \"https://x\" }",
+                "`a` is not pinned",
+            ),
+        ] {
+            fs::write(&manifest, clean_manifest.replacen(from, to, 1)).unwrap();
+            refused(label, expected);
+        }
+        fs::write(&manifest, &clean_manifest).unwrap();
+        assert_eq!(services(root).unwrap(), 1);
+        for (label, from, to, expected) in [
+            (
+                "git source",
+                CRATES_IO,
+                "git+https://example.invalid/x",
+                "`a` is not a checksummed",
+            ),
+            (
+                "no checksum",
+                "checksum = \"00\"\n",
+                "",
+                "is not a checksummed",
+            ),
+            (
+                "local package with a source",
+                "name = \"demo\"\nversion = \"1.0.0\"\n",
+                "name = \"demo\"\nversion = \"1.0.0\"\nsource = \"x\"\n",
+                "must be the local package",
+            ),
+        ] {
+            fs::write(&lock, clean_lock.replacen(from, to, 1)).unwrap();
+            refused(label, expected);
+        }
+        fs::remove_file(&lock).unwrap();
+        refused("no lockfile", "Cargo.lock is missing");
+        fs::write(&lock, &clean_lock).unwrap();
+        fs::remove_file(root.join("services/demo/NOTICE.md")).unwrap();
+        refused("no notice", "NOTICE.md is missing");
+        fs::write(root.join("services/demo/NOTICE.md"), "notice\n").unwrap();
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"services/demo\"]\n",
+        )
+        .unwrap();
+        refused("not excluded", "exclude");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nexclude = [\"services/demo\"]\n",
+        )
+        .unwrap();
+        fs::write(root.join("Cargo.lock"), "[[package]]\nname = \"demo\"\n").unwrap();
+        refused(
+            "in the desktop lockfile",
+            "desktop Cargo.lock must not contain",
+        );
     }
     #[test]
     fn manifests_are_read_in_every_spelling() {
