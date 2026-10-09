@@ -301,34 +301,26 @@ pub struct WorkspaceState {
 /// The most view selections one session holds, and one `workspace.set` names.
 pub const MAX_VIEW_SELECTIONS: usize = 64;
 
-/// Which view one tab row shows, keyed by the declared control identity of that row: the module,
-/// and the label path from the module's top level to the group that declares `layout: tabs`
-/// (empty for a module whose own `layout` is `tabs`). `view` is the label of one of that row's
-/// child groups ([`crate::ModuleDescriptor::views_at`]).
+/// Which view one tab row shows, keyed by the declared identities of that row: the module, and the
+/// id of its group that declares `layout: tabs` (absent for a module whose own `layout` is
+/// `tabs`). `view` is the id of one of that row's tabs, a child group or a view
+/// ([`crate::ModuleDescriptor::views_at`]). Labels are for display and never select.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ViewSelection {
     pub module: String,
-    #[serde(default)]
-    pub group: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     pub view: String,
 }
 
 impl WorkspaceState {
-    /// The view the tab row of `module` at the label path `group` shows, when this session chose
-    /// one; a row without a choice shows its first view.
-    pub fn view(&self, module: &str, group: &[impl AsRef<str>]) -> Option<&str> {
+    /// The view the tab row of `module`'s group `group` (`None` for its own top-level row) shows,
+    /// when this session chose one; a row without a choice shows its first view.
+    pub fn view(&self, module: &str, group: Option<&str>) -> Option<&str> {
         self.views
             .iter()
-            .find(|selection| {
-                selection.module == module
-                    && selection.group.len() == group.len()
-                    && selection
-                        .group
-                        .iter()
-                        .zip(group)
-                        .all(|(stored, asked)| stored == asked.as_ref())
-            })
+            .find(|selection| selection.module == module && selection.group.as_deref() == group)
             .map(|selection| selection.view.as_str())
     }
 }

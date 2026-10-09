@@ -2,13 +2,14 @@
 //! field of every kind a field patch holds, drawn by a control of every kind and style, with the
 //! action buttons and the two-channel curve its group lists beside them, and the curve's sample
 //! query; and a nested group whose tab row shows a hue and saturation wheel's three fields in two
-//! presentation-only views, a compact wheel and a large one beside its numbers. It shares every field-patch rule with Basic and the other modules; its stored layer
-//! describes control values but compiles to an identity colour operation, so it cannot change
-//! photo pixels.
+//! presentation-only views, a compact wheel and a large one beside its numbers. It shares every
+//! field-patch rule with Basic and the other modules, and is the field-patch tests' fixture for
+//! nested groups, views and wheels; its stored layer describes control values but compiles to an
+//! identity colour operation, so it cannot change photo pixels.
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, ActionStyle, ChoiceStyle, ColorOperation,
     ColorStyle, Control, CurveBackground, CurveChannel, EffectStage, NumberStyle,
-    ParameterDescriptor, Processing, QueryChoiceControl, RailDecoration, StageContext,
+    ParameterDescriptor, Processing, QueryChoiceControl, RailDecoration, StageContext, WheelStyle,
     field_patch::{
         Field, FieldControl, FieldPatch, FieldPatchModule, Group, Spec, Values, View, Wheel,
     },
@@ -30,15 +31,11 @@ pub(super) const WHEEL_HUE: &str = "wheel-hue";
 pub(super) const WHEEL_SATURATION: &str = "wheel-saturation";
 pub(super) const WHEEL_LUMINANCE: &str = "wheel-luminance";
 /// The nested group that owns the wheel's fields, shown as two tabs over them: a compact wheel,
-/// and a large wheel with the hue and saturation numbers.
+/// and a large wheel with the hue and saturation numbers. Its id names its tab row.
 pub(super) const WHEEL_GROUP: &str = "Colour wheel";
-
-/// The proof's compact wheel: hue, saturation and the luminance rail.
-fn wheel() -> Wheel {
-    Wheel::new("Wheel", WHEEL_HUE, WHEEL_SATURATION)
-        .luminance(WHEEL_LUMINANCE)
-        .history("Wheel tint")
-}
+pub(super) const WHEEL_GROUP_ID: &str = "colour-wheel";
+/// The proof's one wheel, over hue, saturation and the luminance rail.
+const WHEEL: &str = "Wheel";
 
 /// The controls proof's table, identity compilation and curve sampling.
 #[derive(Debug, Default)]
@@ -188,16 +185,20 @@ impl FieldPatch for Controls {
         // one per style, each send a one-field patch.
         .group(
             Group::new("Control vocabulary", names)
-                // The wheel's fields belong to a nested group that shows them as two tabs: the
-                // same three fields in a compact wheel, and in a large one beside the exact
-                // numbers. Both tabs are views; the group alone captures and resets them.
+                // The wheel's fields belong to a nested group that declares the wheel once and
+                // shows it as two tabs: compact, and large beside the exact numbers. Both tabs are
+                // views; the group alone captures and resets the fields.
                 .subgroup(
                     Group::new(WHEEL_GROUP, [WHEEL_HUE, WHEEL_SATURATION, WHEEL_LUMINANCE])
-                        .tabs()
-                        .view(View::new("Compact").wheel(wheel()))
+                        .id(WHEEL_GROUP_ID)
+                        .wheel(
+                            Wheel::new(WHEEL, WHEEL_HUE, WHEEL_SATURATION)
+                                .luminance(WHEEL_LUMINANCE),
+                        )
+                        .view(View::new("compact", "Compact").wheel(WHEEL, WheelStyle::Compact))
                         .view(
-                            View::new("Large")
-                                .wheel(wheel().large())
+                            View::new("large", "Large")
+                                .wheel(WHEEL, WheelStyle::Large)
                                 .field(WHEEL_HUE)
                                 .field(WHEEL_SATURATION),
                         ),

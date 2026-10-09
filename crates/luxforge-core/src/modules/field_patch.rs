@@ -368,14 +368,20 @@ impl Field {
 /// [`Spec`]'s build checks.
 ///
 /// A group draws its own fields' controls, then its subgroups, then its extra controls. A group
-/// with views draws its views instead of its own fields: each view is a presentation-only tab
-/// ([`View`]) that may show any member field, so one field can appear in several views, and every
-/// own field must appear in at least one. A wheel declared on the group draws its bound fields in
-/// place of their own controls, at the position of its hue field.
+/// with views is a tab row of them ([`Group::view`]) and draws its views instead of its own
+/// fields: each view is a presentation-only tab ([`View`]) that may show any member field, so one
+/// field can appear in several views, and every own field must appear in at least one.
+///
+/// A wheel over the group's own fields is declared once, on the group ([`Group::wheel`]), and is
+/// the one source of its label, its history words and its reset. A view draws it by its label in
+/// the view's own style; a group without views draws it in place of its fields' own controls, at
+/// the position of its hue field.
 pub(crate) struct Group {
     label: &'static str,
+    /// What a session selects this group's tab row, or this group as a tab, by
+    /// ([`GroupControl::id`]): required on a group with views or tabs and on each of its tabs.
+    id: Option<&'static str>,
     fields: Vec<&'static str>,
-    collapsed: bool,
     /// The group's values usually belong to one photograph ([`GroupControl::per_photo`]).
     per_photo: bool,
     /// Controls drawn after the group's own field controls, such as Basic's neutral picker or the
@@ -390,7 +396,7 @@ pub(crate) struct Group {
     subgroups: Vec<Group>,
     /// Presentation-only tabs over this group's member fields.
     views: Vec<View>,
-    /// Wheels drawn in place of their fields' own controls in this group's own list.
+    /// The wheels over this group's own fields, each declared once.
     wheels: Vec<Wheel>,
 }
 
@@ -399,8 +405,8 @@ impl Group {
     pub(crate) fn new(label: &'static str, fields: impl IntoIterator<Item = &'static str>) -> Self {
         Self {
             label,
+            id: None,
             fields: fields.into_iter().collect(),
-            collapsed: false,
             per_photo: false,
             extra: Vec::new(),
             reset_variants: Vec::new(),
@@ -411,7 +417,13 @@ impl Group {
         }
     }
 
-    /// The group shows its child groups — its views and subgroups — as one tab row.
+    /// The group's identity, which a group with tabs and every tab declares.
+    pub(crate) fn id(mut self, id: &'static str) -> Self {
+        self.id = Some(id);
+        self
+    }
+
+    /// The group shows its subgroups as one tab row.
     pub(crate) fn tabs(mut self) -> Self {
         self.layout = ModuleLayout::Tabs;
         self
@@ -423,13 +435,6 @@ impl Group {
         self
     }
 
-    /// The group starts collapsed.
-    #[allow(dead_code)]
-    pub(crate) fn collapsed(mut self) -> Self {
-        self.collapsed = true;
-        self
-    }
-
     /// A nested group whose fields are members of this one: its own reset covers exactly its
     /// fields, and this group's reset covers them with the rest.
     pub(crate) fn subgroup(mut self, group: Group) -> Self {
@@ -437,17 +442,22 @@ impl Group {
         self
     }
 
-    /// A presentation-only view over this group's member fields.
+    /// A presentation-only view over this group's member fields, which makes the group a tab row
+    /// of its views.
     pub(crate) fn view(mut self, view: View) -> Self {
         self.views.push(view);
-        self
+        self.tabs()
     }
 
-    /// A wheel drawing two or three of this group's member fields in place of their own controls.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// A wheel over two or three of this group's own fields.
     pub(crate) fn wheel(mut self, wheel: Wheel) -> Self {
         self.wheels.push(wheel);
         self
+    }
+
+    /// The wheel this group declares under `label`.
+    fn declared_wheel(&self, label: &str) -> Option<&Wheel> {
+        self.wheels.iter().find(|wheel| wheel.label == label)
     }
 
     /// Every field of this group and of its subgroups, depth first in declared order.
@@ -468,27 +478,6 @@ impl Group {
         groups
     }
 
-    /// Every wheel this group or one of its views declares, not counting its subgroups'.
-    fn own_wheels(&self) -> Vec<&Wheel> {
-        let mut wheels: Vec<&Wheel> = self.wheels.iter().collect();
-        for view in &self.views {
-            wheels.extend(view.entries.iter().filter_map(|entry| match entry {
-                ViewEntry::Wheel(wheel) => Some(wheel),
-                ViewEntry::Field(_) => None,
-            }));
-        }
-        wheels
-    }
-
-    /// Every wheel this group, one of its views or one of its subgroups declares.
-    fn all_wheels(&self) -> Vec<&Wheel> {
-        let mut wheels = self.own_wheels();
-        for subgroup in &self.subgroups {
-            wheels.extend(subgroup.all_wheels());
-        }
-        wheels
-    }
-
     /// A control drawn after the group's own field controls.
     pub(crate) fn extra(mut self, control: impl Into<Control>) -> Self {
         self.extra.push(control.into());
@@ -506,47 +495,30 @@ impl Group {
 /// A hue and saturation wheel over two or three number fields of the patch: its angle is the hue
 /// field (declared `0..=360`), its radius the saturation field (declared from 0) and, when given,
 /// its rail the luminance field. Its reset is the patch of exactly its fields to their defaults,
-/// labelled `Reset <label>`, and a patch of its hue and saturation (with or without its luminance)
-/// is labelled by its history words: a wheel gesture is one entry, not two.
-#[derive(Clone)]
+/// labelled `Reset <label>`. A patch of exactly its hue and saturation — one gesture on it, one
+/// entry rather than two — reads `<label> tint`, and one of all its fields reads as the wheel,
+/// `<label>`.
 pub(crate) struct Wheel {
     label: &'static str,
     hue: &'static str,
     saturation: &'static str,
     luminance: Option<&'static str>,
-    style: WheelStyle,
-    history: Option<&'static str>,
 }
 
 impl Wheel {
-    /// A compact wheel labelled `label` over the `hue` and `saturation` fields.
+    /// A wheel labelled `label` over the `hue` and `saturation` fields.
     pub(crate) fn new(label: &'static str, hue: &'static str, saturation: &'static str) -> Self {
         Self {
             label,
             hue,
             saturation,
             luminance: None,
-            style: WheelStyle::Compact,
-            history: None,
         }
     }
 
     /// The field drawn as the wheel's luminance rail.
     pub(crate) fn luminance(mut self, luminance: &'static str) -> Self {
         self.luminance = Some(luminance);
-        self
-    }
-
-    /// The large style an individual view draws.
-    pub(crate) fn large(mut self) -> Self {
-        self.style = WheelStyle::Large;
-        self
-    }
-
-    /// What a history entry setting the wheel's hue and saturation is called, `Shadows tint`;
-    /// the wheel's label unless given.
-    pub(crate) fn history(mut self, history: &'static str) -> Self {
-        self.history = Some(history);
         self
     }
 
@@ -559,23 +531,27 @@ impl Wheel {
     }
 }
 
-/// One entry of a [`View`], drawn in its order: a field's own control, or a wheel.
+/// One entry of a [`View`], drawn in its order: a field's own control, or the group's wheel of
+/// that label in this style.
 pub(crate) enum ViewEntry {
     Field(&'static str),
-    Wheel(Wheel),
+    Wheel(&'static str, WheelStyle),
 }
 
 /// A presentation-only tab of a group that declares views: what one view shows of the group's
 /// member fields. A field may be shown by several views and is still captured and reset by its
 /// group alone; a view has no reset and adds no history label.
 pub(crate) struct View {
+    id: &'static str,
     label: &'static str,
     entries: Vec<ViewEntry>,
 }
 
 impl View {
-    pub(crate) fn new(label: &'static str) -> Self {
+    /// A view a session selects by `id`, titled `label`.
+    pub(crate) fn new(id: &'static str, label: &'static str) -> Self {
         Self {
+            id,
             label,
             entries: Vec::new(),
         }
@@ -587,19 +563,22 @@ impl View {
         self
     }
 
-    /// A wheel over member fields.
-    pub(crate) fn wheel(mut self, wheel: Wheel) -> Self {
-        self.entries.push(ViewEntry::Wheel(wheel));
+    /// The group's wheel labelled `label`, drawn in `style`.
+    pub(crate) fn wheel(mut self, label: &'static str, style: WheelStyle) -> Self {
+        self.entries.push(ViewEntry::Wheel(label, style));
         self
     }
 
-    /// Every field this view draws, through a field entry or a wheel.
-    fn shown(&self) -> Vec<&'static str> {
+    /// Every field this view draws of `group`, through a field entry or one of its wheels.
+    fn shown(&self, group: &Group) -> Vec<&'static str> {
         self.entries
             .iter()
             .flat_map(|entry| match entry {
                 ViewEntry::Field(name) => vec![*name],
-                ViewEntry::Wheel(wheel) => wheel.fields(),
+                ViewEntry::Wheel(label, _) => group
+                    .declared_wheel(label)
+                    .map(Wheel::fields)
+                    .unwrap_or_default(),
             })
             .collect()
     }
@@ -798,16 +777,21 @@ impl Spec {
         self.groups.iter().flat_map(Group::tree).collect()
     }
 
-    /// Every wheel any group or view declares, in declaration order.
+    /// Every wheel the groups declare, depth first in declaration order.
     fn wheels(&self) -> Vec<&Wheel> {
-        self.groups.iter().flat_map(Group::all_wheels).collect()
+        self.all_groups()
+            .into_iter()
+            .flat_map(|group| &group.wheels)
+            .collect()
     }
 
     /// Whether the table's fields and its groups agree: every name a group lists is a declared
     /// field, and every field is listed exactly once across the whole group tree, so each field
-    /// has a control and a group reset that resets it; every view and wheel draws only member
-    /// fields of the group that declares it, a group with views shows each of its own fields in
-    /// at least one view, and a wheel's fields are distinct. `O(fields × entries)`, once per build.
+    /// has a control and a group reset that resets it; every wheel binds its group's own fields
+    /// under a label distinct in the group, every view draws member fields and wheels its group
+    /// declares, and a group with views shows each of its own fields and wheels in at least one.
+    /// Whether a wheel binds a field twice, or one its kind cannot draw, is the control
+    /// vocabulary's rule, which the build checks next. `O(fields × entries)`, once per build.
     fn check_groups(&self) -> Result<(), String> {
         let groups = self.all_groups();
         for group in &groups {
@@ -836,48 +820,75 @@ impl Spec {
             }
         }
         for group in &groups {
-            let members = group.members();
-            let member = |name: &str, what: &str| {
-                if members.contains(&name) {
-                    Ok(())
-                } else {
-                    Err(format!(
-                        "{what} of group {} draws {name}, which is not a field of the group",
-                        group.label
-                    ))
-                }
+            let not_a_field = |what: String, name: &str| {
+                Err(format!(
+                    "{what} of group {} draws {name}, which is not a field of the group",
+                    group.label
+                ))
             };
-            for wheel in group.own_wheels() {
-                let fields = wheel.fields();
-                for (at, name) in fields.iter().enumerate() {
-                    member(name, &format!("wheel {}", wheel.label))?;
-                    if fields[..at].contains(name) {
-                        return Err(format!("wheel {} binds {name} twice", wheel.label));
+            for (at, wheel) in group.wheels.iter().enumerate() {
+                let earlier = &group.wheels[..at];
+                if earlier.iter().any(|other| other.label == wheel.label) {
+                    return Err(format!(
+                        "group {} declares two wheels labelled {}",
+                        group.label, wheel.label
+                    ));
+                }
+                for name in wheel.fields() {
+                    if !group.fields.contains(&name) {
+                        return not_a_field(format!("wheel {}", wheel.label), name);
+                    }
+                    if earlier.iter().any(|other| other.fields().contains(&name)) {
+                        return Err(format!(
+                            "field {name} of group {} is bound by two wheels",
+                            group.label
+                        ));
                     }
                 }
             }
+            let members = group.members();
             for view in &group.views {
-                for name in view.shown() {
-                    member(name, &format!("view {}", view.label))?;
+                for entry in &view.entries {
+                    match entry {
+                        ViewEntry::Field(name) if !members.contains(name) => {
+                            return not_a_field(format!("view {}", view.label), name);
+                        }
+                        ViewEntry::Wheel(label, _) if group.declared_wheel(label).is_none() => {
+                            return Err(format!(
+                                "view {} of group {} draws wheel {label}, which the group does \
+                                 not declare",
+                                view.label, group.label
+                            ));
+                        }
+                        _ => {}
+                    }
                 }
             }
-            if !group.views.is_empty() {
-                if let Some(name) = group
-                    .fields
-                    .iter()
-                    .find(|name| !group.views.iter().any(|view| view.shown().contains(name)))
-                {
-                    return Err(format!(
-                        "field {name} of group {} is shown by none of its views",
-                        group.label
-                    ));
-                }
-                if !group.wheels.is_empty() {
-                    return Err(format!(
-                        "group {} declares views, so its wheels belong in a view",
-                        group.label
-                    ));
-                }
+            if group.views.is_empty() {
+                continue;
+            }
+            let shown: Vec<&'static str> = group
+                .views
+                .iter()
+                .flat_map(|view| view.shown(group))
+                .collect();
+            if let Some(name) = group.fields.iter().find(|name| !shown.contains(name)) {
+                return Err(format!(
+                    "field {name} of group {} is shown by none of its views",
+                    group.label
+                ));
+            }
+            if let Some(wheel) = group.wheels.iter().find(|wheel| {
+                !group.views.iter().any(|view| {
+                    view.entries.iter().any(
+                        |entry| matches!(entry, ViewEntry::Wheel(label, _) if *label == wheel.label),
+                    )
+                })
+            }) {
+                return Err(format!(
+                    "wheel {} of group {} is drawn by none of its views",
+                    wheel.label, group.label
+                ));
             }
         }
         Ok(())
@@ -895,7 +906,9 @@ impl Spec {
                     .iter()
                     .find(|wheel| wheel.fields().contains(name))
                 {
-                    Some(wheel) if wheel.hue == *name => controls.push(self.wheel_control(wheel)),
+                    Some(wheel) if wheel.hue == *name => {
+                        controls.push(self.wheel_control(wheel, WheelStyle::Compact))
+                    }
                     Some(_) => {}
                     None => {
                         controls.extend(self.field(name).and_then(|field| field.own_control(set)))
@@ -911,10 +924,12 @@ impl Spec {
                         ViewEntry::Field(name) => {
                             self.field(name).and_then(|field| field.own_control(set))
                         }
-                        ViewEntry::Wheel(wheel) => Some(self.wheel_control(wheel)),
+                        ViewEntry::Wheel(label, style) => group
+                            .declared_wheel(label)
+                            .map(|wheel| self.wheel_control(wheel, *style)),
                     })
                     .collect();
-                controls.push(Control::group(view.label, entries).as_view().into());
+                controls.push(Control::view(view.id, view.label, entries).into());
             }
         }
         controls.extend(
@@ -927,8 +942,11 @@ impl Spec {
         let control = Control::group(group.label, controls)
             .reset(self.defaults_of(&group.members()))
             .group_layout(group.layout)
-            .collapsed(group.collapsed)
             .per_photo(group.per_photo);
+        let control = match group.id {
+            Some(id) => control.id(id),
+            None => control,
+        };
         group
             .reset_variants
             .iter()
@@ -937,11 +955,11 @@ impl Spec {
             .into()
     }
 
-    /// A wheel's control, whose reset patches exactly its fields to their defaults.
-    fn wheel_control(&self, wheel: &Wheel) -> Control {
+    /// A wheel's control in `style`. Its reset is its fields' declared defaults, which the
+    /// descriptor already holds, so no copy of the wheel repeats it.
+    fn wheel_control(&self, wheel: &Wheel, style: WheelStyle) -> Control {
         let control = Control::wheel(&self.set.id, wheel.hue, wheel.saturation, wheel.label)
-            .wheel_style(wheel.style)
-            .wheel_reset(self.defaults_of(&wheel.fields()));
+            .wheel_style(style);
         match wheel.luminance {
             Some(luminance) => control.luminance(luminance),
             None => control,
@@ -1295,6 +1313,11 @@ impl<M: FieldPatch> FieldPatchModule<M> {
     /// Nested groups count: a patch of a subgroup's fields is that subgroup's reset (`Reset Hue`)
     /// and one of its parent's whole membership the parent's (`Reset HSL`). After the groups, a
     /// wheel's fields at their defaults are that wheel's reset (`Reset Shadows`).
+    ///
+    /// A group comes first: it is the declared reset and capture scope, so a wheel over exactly a
+    /// group's fields resets that group and reads as it, whichever control sent the patch (the
+    /// controls proof's `Reset Colour wheel`). [`Self::whole_group`] and [`Self::whole_wheel`]
+    /// keep the same order.
     fn reset_group(&self, sent: &[(&String, Value)]) -> Option<&'static str> {
         let at_defaults = |fields: &[&'static str]| {
             sent.len() == fields.len()
@@ -1320,18 +1343,21 @@ impl<M: FieldPatch> FieldPatchModule<M> {
             })
     }
 
-    /// The wheel a patch sets, when it is one: exactly a wheel's hue and saturation, or all its
-    /// fields, read as the wheel's history words, so one wheel gesture reads as one change.
-    fn whole_wheel(&self, sent: &[(&String, Value)]) -> Option<&'static str> {
+    /// The wheel a patch sets, when it is one: exactly a wheel's hue and saturation, one gesture
+    /// on it, reads `Shadows tint`; exactly all its fields, luminance too, reads as the wheel,
+    /// `Shadows`. Asked after [`Self::whole_group`].
+    fn whole_wheel(&self, sent: &[(&String, Value)]) -> Option<String> {
         let names = |fields: &[&'static str]| {
             sent.len() == fields.len()
                 && sent.iter().all(|(name, _)| fields.contains(&name.as_str()))
         };
-        self.spec
-            .wheels()
-            .into_iter()
-            .find(|wheel| names(&[wheel.hue, wheel.saturation]) || names(&wheel.fields()))
-            .map(|wheel| wheel.history.unwrap_or(wheel.label))
+        self.spec.wheels().into_iter().find_map(|wheel| {
+            if names(&[wheel.hue, wheel.saturation]) {
+                Some(format!("{} tint", wheel.label))
+            } else {
+                names(&wheel.fields()).then(|| wheel.label.to_owned())
+            }
+        })
     }
 
     /// The group a patch sets entirely, when it is one: a patch holding exactly one group's fields
@@ -1524,9 +1550,10 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
         })
     }
 
-    /// The one field a control moved, the group a reset cleared, the group a patch of exactly its
-    /// fields set, a count of the fields a larger patch set, or the module's own reset. An empty
-    /// patch changes nothing and commits no entry, so it keeps the action's title.
+    /// The one field a control moved, the group or wheel a reset cleared, the group or wheel a
+    /// patch of exactly its fields set, a count of the fields a larger patch set, or the module's
+    /// own reset. An empty patch changes nothing and commits no entry, so it keeps the action's
+    /// title.
     fn label(&self, action: &ActionDescriptor, input: &ActionInput) -> String {
         let spec = &self.spec;
         if input.action_id == spec.reset.id {
@@ -1548,11 +1575,13 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
         if let Some(group) = self.reset_group(&sent) {
             return format!("Reset {group}");
         }
-        if let ([_, _, ..], Some(wheel)) = (sent.as_slice(), self.whole_wheel(&sent)) {
-            return wheel.to_owned();
-        }
-        if let ([_, _, ..], Some(group)) = (sent.as_slice(), self.whole_group(&sent)) {
-            return group.to_owned();
+        if sent.len() > 1
+            && let Some(scope) = self
+                .whole_group(&sent)
+                .map(str::to_owned)
+                .or_else(|| self.whole_wheel(&sent))
+        {
+            return scope;
         }
         match sent.as_slice() {
             [(name, value)] => match spec.field(name) {
@@ -1616,7 +1645,7 @@ impl<M: FieldPatch> ToolModule for FieldPatchModule<M> {
 mod tests {
     use super::*;
     use crate::Stage;
-    use crate::modules::{CurveChannel, FixedStage};
+    use crate::modules::{CurveChannel, FixedStage, ViewControl};
     use crate::{EFFECT_FORMAT, Layer, ModuleRegistry};
     use serde_json::json;
 
@@ -2175,330 +2204,217 @@ mod tests {
         }
     }
 
-    /// Nested groups, presentation-only views and wheels, shaped as the colour mixer's HSL and
-    /// Grading tabs are: HSL's two subgroups are reset scopes of their own, and Grading's two
-    /// views show the same fields, one in a compact wheel and one in a large wheel beside its
-    /// numbers.
-    #[derive(Debug, Default)]
-    struct Graded;
+    // Nested groups, views and wheels, through the developer controls proof: its Control
+    // vocabulary group holds the Colour wheel subgroup, which declares one wheel over its three
+    // fields and shows it in two views, compact and large beside the hue and saturation numbers.
+    use super::super::controls::{
+        Controls, SET_CONTROLS, WHEEL_GROUP, WHEEL_GROUP_ID, WHEEL_HUE, WHEEL_LUMINANCE,
+        WHEEL_SATURATION,
+    };
 
-    const GRADED_SET: &str = "set-graded";
-
-    fn shadows() -> Wheel {
-        Wheel::new("Shadows", "shadows-hue", "shadows-saturation")
-            .luminance("shadows-luminance")
-            .history("Shadows tint")
-    }
-
-    fn global() -> Wheel {
-        Wheel::new("Global", "global-hue", "global-saturation")
-    }
-
-    impl FieldPatch for Graded {
-        fn spec() -> Spec {
-            let hue = |name: &'static str, label: &str| {
-                Field::new(
-                    ParameterDescriptor::number(name, 0.0, 360.0).default(0.0),
-                    label,
-                )
-            };
-            let amount = |name: &'static str, label: &str, default: f64| {
-                Field::new(
-                    ParameterDescriptor::number(name, 0.0, 100.0).default(default),
-                    label,
-                )
-            };
-            Spec::new(
-                "luxforge.graded",
-                "Graded",
-                "Nested views",
-                "luxforge.graded.adjust",
-                EffectStage::Color,
-            )
-            .fields([
-                Field::slider("red-hue", "Red", "").history("Red hue"),
-                Field::slider("green-hue", "Green", "").history("Green hue"),
-                Field::slider("red-saturation", "Red", "").history("Red saturation"),
-                Field::slider("green-saturation", "Green", "").history("Green saturation"),
-                hue("shadows-hue", "Hue").history("Shadows hue"),
-                amount("shadows-saturation", "Saturation", 0.0),
-                Field::slider("shadows-luminance", "Luminance", ""),
-                hue("global-hue", "Hue"),
-                amount("global-saturation", "Saturation", 0.0),
-                amount("blending", "Blending", 50.0),
-            ])
-            .group(
-                Group::new("HSL", [])
-                    .tabs()
-                    .subgroup(Group::new("Hue", ["red-hue", "green-hue"]))
-                    .subgroup(Group::new(
-                        "Saturation",
-                        ["red-saturation", "green-saturation"],
-                    )),
-            )
-            .group(
-                Group::new(
-                    "Grading",
-                    [
-                        "shadows-hue",
-                        "shadows-saturation",
-                        "shadows-luminance",
-                        "global-hue",
-                        "global-saturation",
-                        "blending",
-                    ],
-                )
-                .tabs()
-                .view(
-                    View::new("3-way")
-                        .wheel(shadows())
-                        .wheel(global())
-                        .field("blending"),
-                )
-                .view(
-                    View::new("Shadows")
-                        .wheel(shadows().large())
-                        .field("shadows-hue")
-                        .field("shadows-saturation")
-                        .field("blending"),
-                ),
-            )
-        }
-
-        fn compile(&self, _: &Values<'_>, _: crate::CompileStage) -> Result<Processing, Error> {
-            Ok(Processing::Color(ColorOperation::neutral()))
+    /// The controls proof built from `spec`, a change of its own.
+    fn controls_module(spec: Spec) -> FieldPatchModule<Controls> {
+        let (spec, descriptor, shape) = spec.build().expect("the spec builds");
+        FieldPatchModule {
+            module: Controls,
+            spec,
+            descriptor,
+            shape,
         }
     }
 
-    fn reset_preset(control: &Control) -> Value {
-        let reset = match control {
-            Control::Group(group) => group.reset.as_ref(),
-            Control::Wheel(wheel) => wheel.reset.as_ref(),
-            _ => None,
-        };
-        reset.map_or(Value::Null, |reset| Value::Object(reset.preset.clone()))
+    /// The Colour wheel group's own spec, inside a spec of the proof.
+    fn colour_wheel(spec: &mut Spec) -> &mut Group {
+        &mut spec.groups[0].subgroups[0]
     }
 
+    /// The wheel is declared once and drawn by both views: each copy binds the same fields under
+    /// the same label in its view's style, with no reset of its own, and the one reset every copy
+    /// shares is its fields' declared defaults. The group with views is a tab row with an id, and
+    /// each view a tab with its own.
     #[test]
-    fn nested_groups_views_and_wheels_build_one_descriptor_with_their_own_resets() {
-        let module = FieldPatchModule::<Graded>::new();
+    fn a_wheel_declared_once_is_drawn_by_each_view_in_its_style() {
+        let module = FieldPatchModule::<Controls>::new();
         let descriptor = module.descriptor();
-        descriptor
-            .validate()
-            .expect("the built descriptor registers");
-        let [Control::Group(hsl), Control::Group(grading)] = descriptor.controls.as_slice() else {
-            panic!("two top-level groups: {:?}", descriptor.controls);
-        };
-        assert_eq!(hsl.layout, ModuleLayout::Tabs);
+        let group = descriptor.group(WHEEL_GROUP_ID).expect("the Colour wheel group");
         assert_eq!(
-            reset_preset(&descriptor.controls[0]),
-            json!({"red-hue": 0.0, "green-hue": 0.0, "red-saturation": 0.0, "green-saturation": 0.0})
+            (group.label.as_str(), group.layout),
+            (WHEEL_GROUP, ModuleLayout::Tabs)
         );
-        let [hue, saturation] = hsl.controls.as_slice() else {
-            panic!("HSL's two subgroups");
-        };
-        assert_eq!(reset_preset(hue), json!({"red-hue": 0.0, "green-hue": 0.0}));
         assert_eq!(
-            reset_preset(saturation),
-            json!({"red-saturation": 0.0, "green-saturation": 0.0})
+            descriptor.views_at(Some(WHEEL_GROUP_ID)),
+            Some(vec!["compact", "large"])
         );
-        // Grading's reset covers every field its views show, Blending at its default of 50.
-        assert_eq!(grading.layout, ModuleLayout::Tabs);
-        assert_eq!(
-            reset_preset(&descriptor.controls[1]),
-            json!({"shadows-hue": 0.0, "shadows-saturation": 0.0, "shadows-luminance": 0.0,
-                   "global-hue": 0.0, "global-saturation": 0.0, "blending": 50.0})
-        );
-        let [Control::Group(three), Control::Group(single)] = grading.controls.as_slice() else {
-            panic!("Grading's two views");
+        let [Control::View(compact), Control::View(large)] = group.controls.as_slice() else {
+            panic!("two views: {:?}", group.controls);
         };
-        assert!(three.view && single.view);
-        assert!(
-            three.reset.is_none() && single.reset.is_none(),
-            "a view resets nothing"
-        );
-        let kinds = |group: &GroupControl| -> Vec<&str> {
-            group.controls.iter().map(Control::kind_name).collect()
+        let kinds = |view: &ViewControl| -> Vec<&str> {
+            view.controls.iter().map(Control::kind_name).collect()
         };
-        assert_eq!(kinds(three), ["wheel", "wheel", "number"]);
-        assert_eq!(kinds(single), ["wheel", "number", "number", "number"]);
-        let Control::Wheel(compact) = &three.controls[0] else {
-            unreachable!()
-        };
-        let Control::Wheel(large) = &single.controls[0] else {
+        assert_eq!(kinds(compact), ["wheel"]);
+        assert_eq!(kinds(large), ["wheel", "number", "number"]);
+        let (Control::Wheel(small), Control::Wheel(big)) = (&compact.controls[0], &large.controls[0])
+        else {
             unreachable!()
         };
         assert_eq!(
-            (compact.style, large.style),
+            (small.style, big.style),
             (WheelStyle::Compact, WheelStyle::Large)
         );
-        assert_eq!(compact.luminance.as_deref(), Some("shadows-luminance"));
+        assert!(small.same_wheel(big));
+        assert_eq!(small.luminance.as_deref(), Some(WHEEL_LUMINANCE));
+        let reset = descriptor.wheel_reset(big).expect("the wheel's reset");
+        assert_eq!(reset.action, SET_CONTROLS);
         assert_eq!(
-            reset_preset(&three.controls[0]),
-            json!({"shadows-hue": 0.0, "shadows-saturation": 0.0, "shadows-luminance": 0.0}),
-            "a wheel's reset is exactly its own fields"
-        );
-        assert_eq!(
-            reset_preset(&three.controls[1]),
-            json!({"global-hue": 0.0, "global-saturation": 0.0})
+            Value::Object(reset.preset),
+            json!({WHEEL_HUE: 0.0, WHEEL_SATURATION: 0.0, WHEEL_LUMINANCE: 0.0})
         );
     }
 
+    /// One wheel gesture is one entry, `Wheel tint`, and a patch of all a wheel's fields reads as
+    /// the wheel. A group names a patch before a wheel does: Colour wheel's fields are exactly the
+    /// wheel's, so their reset is `Reset Colour wheel` and a patch of all three reads `Colour
+    /// wheel`, however it was sent. Without its luminance the wheel is no group's scope, so its
+    /// own reset reads `Reset Wheel`.
     #[test]
-    fn nested_groups_and_wheels_name_their_history_entries() {
-        let module = FieldPatchModule::<Graded>::new();
-        let action = &module.descriptor().actions[0];
-        let label = |parameters: Value| {
+    fn groups_name_a_patch_before_the_wheels_over_the_same_fields() {
+        let label = |module: &FieldPatchModule<Controls>, parameters: Value| {
             module.label(
-                action,
+                &module.descriptor().actions[0],
                 &ActionInput {
-                    action_id: GRADED_SET.into(),
+                    action_id: SET_CONTROLS.into(),
                     parameters: parameters.as_object().cloned().unwrap(),
                 },
             )
         };
+        let module = FieldPatchModule::<Controls>::new();
         for (parameters, expected) in [
-            (json!({"red-hue": 0, "green-hue": 0}), "Reset Hue"),
+            (json!({WHEEL_HUE: 120, WHEEL_SATURATION: 40}), "Wheel tint"),
             (
-                json!({"red-hue": 0, "green-hue": 0, "red-saturation": 0, "green-saturation": 0}),
-                "Reset HSL",
+                json!({WHEEL_HUE: 0, WHEEL_SATURATION: 0, WHEEL_LUMINANCE: 0}),
+                "Reset Colour wheel",
             ),
             (
-                json!({"shadows-hue": 0, "shadows-saturation": 0, "shadows-luminance": 0,
-                       "global-hue": 0, "global-saturation": 0, "blending": 50}),
-                "Reset Grading",
+                json!({WHEEL_HUE: 120, WHEEL_SATURATION: 40, WHEEL_LUMINANCE: 10}),
+                "Colour wheel",
             ),
-            (
-                json!({"shadows-hue": 0, "shadows-saturation": 0, "shadows-luminance": 0}),
-                "Reset Shadows",
-            ),
-            (
-                json!({"global-hue": 0, "global-saturation": 0}),
-                "Reset Global",
-            ),
-            // One wheel gesture is one entry, named by the wheel.
-            (
-                json!({"shadows-hue": 120, "shadows-saturation": 40}),
-                "Shadows tint",
-            ),
-            (json!({"global-hue": 359, "global-saturation": 5}), "Global"),
-            (json!({"shadows-hue": 30}), "Shadows hue 30"),
-            (json!({"red-hue": 5, "green-hue": -5}), "Hue"),
+            (json!({WHEEL_HUE: 30}), "Wheel hue 30 deg"),
         ] {
-            assert_eq!(label(parameters.clone()), expected, "{parameters}");
+            assert_eq!(label(&module, parameters.clone()), expected, "{parameters}");
         }
+        let mut spec = Controls::spec();
+        colour_wheel(&mut spec).wheels[0].luminance = None;
+        let module = controls_module(spec);
+        assert_eq!(
+            label(&module, json!({WHEEL_HUE: 0, WHEEL_SATURATION: 0})),
+            "Reset Wheel"
+        );
+        assert_eq!(
+            label(&module, json!({WHEEL_HUE: 9, WHEEL_SATURATION: 9})),
+            "Wheel tint"
+        );
     }
 
-    /// A hue at zero saturation is still a setting: it commits and survives as stored state.
-    #[test]
-    fn a_dormant_hue_is_kept() {
-        let registry = ModuleRegistry::new();
-        let stage = FixedStage::new(STAGE).of_kind(SourceTag::Jpeg);
-        let module = FieldPatchModule::<Graded>::new();
-        let input = ActionInput {
-            action_id: GRADED_SET.into(),
-            parameters: json!({"shadows-hue": 200}).as_object().cloned().unwrap(),
-        };
-        let ActionPlan::Commit(new) = module.plan(&input, &stage.context(&[], &registry)).unwrap()
-        else {
-            panic!("a dormant hue commits a layer");
-        };
-        assert_eq!(new.payload, json!({"shadows-hue": 200.0}));
-    }
-
-    /// A spec whose views or wheels draw fields their group does not own, or lose one of its
-    /// fields from every view, is refused when it is built, naming the view, wheel or field.
+    /// A spec whose wheels or views misdraw their group, or lose a field or a wheel from every
+    /// view, is refused when it is built, naming the group, view, wheel or field; and so is one the
+    /// control vocabulary's own rules refuse.
     #[test]
     fn a_spec_is_refused_where_a_view_or_wheel_misdraws_its_group() {
-        type Change = fn(&mut Spec);
-        let refused = |change: Change| {
-            let mut spec = Graded::spec();
-            change(&mut spec);
-            spec.build().err().expect("the spec is refused").detail
-        };
-        let cases: [(Change, &str); 6] = [
+        type Change = fn(&mut Group);
+        let cases: [(Change, &str); 9] = [
             (
-                |spec| {
-                    spec.groups[1].views[0]
+                |group| group.views[0].entries.push(ViewEntry::Field("amount")),
+                "view Compact of group Colour wheel draws amount, which is not a field of the group",
+            ),
+            (
+                |group| {
+                    group
+                        .wheels
+                        .push(Wheel::new("Other", "amount", WHEEL_SATURATION))
+                },
+                "wheel Other of group Colour wheel draws amount, which is not a field of the group",
+            ),
+            (
+                |group| group.wheels.push(Wheel::new("Wheel", WHEEL_HUE, WHEEL_SATURATION)),
+                "group Colour wheel declares two wheels labelled Wheel",
+            ),
+            (
+                |group| group.wheels.push(Wheel::new("Second", WHEEL_HUE, WHEEL_SATURATION)),
+                "field wheel-hue of group Colour wheel is bound by two wheels",
+            ),
+            (
+                |group| {
+                    group.views[0]
                         .entries
-                        .push(ViewEntry::Field("red-hue"))
+                        .push(ViewEntry::Wheel("Missing", WheelStyle::Compact))
                 },
-                "view 3-way of group Grading draws red-hue, which is not a field of the group",
+                "view Compact of group Colour wheel draws wheel Missing, which the group does not \
+                 declare",
             ),
             (
-                |spec| {
-                    spec.groups[1].views[1]
-                        .entries
-                        .push(ViewEntry::Wheel(Wheel::new(
-                            "Red",
-                            "red-hue",
-                            "global-saturation",
-                        )))
-                },
-                "wheel Red of group Grading draws red-hue, which is not a field of the group",
+                |group| group.views.iter_mut().for_each(|view| view.entries.clear()),
+                "field wheel-hue of group Colour wheel is shown by none of its views",
             ),
             (
-                |spec| {
-                    spec.groups[1].views[0].entries.retain(|entry| {
-                        !matches!(entry, ViewEntry::Wheel(wheel) if wheel.label == "Global")
-                    })
+                |group| {
+                    for view in &mut group.views {
+                        view.entries = [WHEEL_HUE, WHEEL_SATURATION, WHEEL_LUMINANCE]
+                            .map(ViewEntry::Field)
+                            .into();
+                    }
                 },
-                "field global-hue of group Grading is shown by none of its views",
+                "wheel Wheel of group Colour wheel is drawn by none of its views",
+            ),
+            // The control vocabulary's own rules are refused at the build too: a wheel binds each
+            // field once, and its angle is a hue of 0..=360 degrees.
+            (
+                |group| {
+                    group.wheels[0] =
+                        Wheel::new("Wheel", WHEEL_HUE, WHEEL_HUE).luminance(WHEEL_LUMINANCE)
+                },
+                "wheel control of action set-controls binds wheel-hue twice",
             ),
             (
-                |spec| {
-                    spec.groups[1].views[0]
-                        .entries
-                        .push(ViewEntry::Wheel(Wheel::new(
-                            "Twice",
-                            "global-hue",
-                            "global-hue",
-                        )))
+                |group| {
+                    group.wheels[0] = Wheel::new("Wheel", WHEEL_SATURATION, WHEEL_HUE)
+                        .luminance(WHEEL_LUMINANCE)
                 },
-                "wheel Twice binds global-hue twice",
-            ),
-            (
-                |spec| spec.groups[1].wheels.push(global()),
-                "group Grading declares views, so its wheels belong in a view",
-            ),
-            // The control vocabulary's own rules are refused at the build too: a wheel's angle
-            // must be a hue of 0..=360 degrees.
-            (
-                |spec| {
-                    spec.groups[1].views[0]
-                        .entries
-                        .push(ViewEntry::Wheel(Wheel::new(
-                            "Saturated",
-                            "global-saturation",
-                            "blending",
-                        )))
-                },
-                "wheel hue global-saturation of action set-graded declares 0..=100, not the \
+                "wheel hue wheel-saturation of action set-controls declares 0..=100, not the \
                  0..=360 degrees a wheel's angle spans",
             ),
         ];
         for (change, expected) in cases {
+            let mut spec = Controls::spec();
+            change(colour_wheel(&mut spec));
             assert_eq!(
-                refused(change),
-                format!("field-patch module luxforge.graded: {expected}")
+                spec.build().err().expect("the spec is refused").detail,
+                format!("field-patch module luxforge.controls: {expected}")
             );
         }
+        // A group with views is a tab row, selected by its id.
+        let mut spec = Controls::spec();
+        colour_wheel(&mut spec).id = None;
+        assert_eq!(
+            spec.build().err().expect("the spec is refused").detail,
+            "field-patch module luxforge.controls: group Colour wheel of module luxforge.controls \
+             declares layout: tabs but no id to select its tabs by"
+        );
     }
 
-    /// A stacked group's wheel draws its fields in place of their own controls, at its hue
+    /// A group without views draws its wheel in place of its fields' own controls, at its hue
     /// field's position.
     #[test]
     fn a_stacked_groups_wheel_replaces_its_fields_own_controls() {
-        let mut spec = Graded::spec();
-        spec.groups[1].views.clear();
-        spec.groups[1].layout = ModuleLayout::Stacked;
-        let grading = spec.groups.remove(1);
-        spec.groups.push(grading.wheel(shadows()));
-        let (_, descriptor, _) = spec.build().expect("a stacked group with a wheel");
-        let Control::Group(grading) = &descriptor.controls[1] else {
-            unreachable!()
-        };
-        let kinds: Vec<&str> = grading.controls.iter().map(Control::kind_name).collect();
-        assert_eq!(kinds, ["wheel", "number", "number", "number"]);
+        let mut spec = Controls::spec();
+        let group = colour_wheel(&mut spec);
+        group.views.clear();
+        group.layout = ModuleLayout::Stacked;
+        let module = controls_module(spec);
+        let group = module
+            .descriptor()
+            .group(WHEEL_GROUP_ID)
+            .expect("the Colour wheel group");
+        let kinds: Vec<&str> = group.controls.iter().map(Control::kind_name).collect();
+        assert_eq!(kinds, ["wheel"]);
     }
 }
