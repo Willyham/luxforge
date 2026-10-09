@@ -1,5 +1,7 @@
 [workspace]
 members = ["crates/luxforge-gpu-types", "crates/luxforge-gpu", "crates/luxforge-raw", "crates/luxforge-process", "crates/luxforge-watch", "crates/luxforge-input", "crates/luxforge-jpeg", "crates/luxforge-core", "crates/luxforge-net", "crates/luxforge-ui", "crates/luxforge-app", "crates/luxforge-cli", "crates/luxforge-evidence", "crates/luxforge-reference", "crates/luxforge-testbase", "crates/luxforge-testkit", "xtask", "xtask/cli"]
+# Standalone packages with their own workspace and lockfile; no desktop build or check builds them.
+exclude = ["services/usage-ingest"]
 resolver = "3"
 
 [workspace.package]
