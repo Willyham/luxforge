@@ -76,8 +76,9 @@ pub(in crate::api::owner) enum Deferred {
     Survey,
 }
 
-/// Hand `ask` to the query thread and answer the call when it has run: the handler's answer.
-pub(super) fn ask(
+/// Hand `ask` to the query thread and answer the call when it has run: the handler's answer. Also
+/// how a candidate chunk is read (`job.read-candidate`), so the owner reads no file's payload.
+pub(in crate::api::owner) fn ask(
     owner: &mut Owner,
     ask: impl FnOnce() -> Resume + Send + 'static,
 ) -> Result<Value, Error> {

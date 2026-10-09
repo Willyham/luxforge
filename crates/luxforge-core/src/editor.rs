@@ -655,6 +655,9 @@ pub struct EditorService {
     checked_manifest: RefCell<Option<SourceSignature>>,
     /// Artifacts published while this service is open, which no collection removes.
     live_artifacts: LiveArtifacts,
+    /// The task jobs' candidate patches, held under `<artifact root>/tmp/candidates/` while this
+    /// service is open and removed when it closes.
+    candidates: Arc<crate::artifacts::candidates::Candidates>,
     /// Where this catalog's index lives: `<catalog stem>.index` beside the catalog file.
     index_dir: PathBuf,
     /// The index database, opened on first use ([`Self::index`]) rather than with the catalog, so
@@ -721,6 +724,13 @@ impl EditorService {
         // The roots follow the catalog file, so moving them together keeps them valid.
         let artifact_root = default_artifact_root(path);
         let index_dir = crate::index::index_dir(path);
+        let live_artifacts = LiveArtifacts::default();
+        let candidates =
+            crate::artifacts::candidates::Candidates::new(crate::artifacts::ArtifactWriter::new(
+                artifact_root.clone(),
+                catalog_id.clone(),
+                live_artifacts.clone(),
+            ));
         Ok(Self {
             connection,
             // Opening starts empty: nothing read before a reopen is trusted after it.
@@ -734,7 +744,8 @@ impl EditorService {
             artifact_root,
             prepared_artifacts: RefCell::new(PreparedArtifacts::new(PREPARED_ARTIFACT_BYTES)),
             checked_manifest: RefCell::new(None),
-            live_artifacts: LiveArtifacts::default(),
+            live_artifacts,
+            candidates,
             index_dir,
             index: RefCell::new(None),
             auto_collapse: false,

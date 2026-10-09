@@ -56,6 +56,7 @@ pub(super) mod export;
 mod export_tests;
 // The catalog's owner-side homes, one file each: the index, preview and library lanes and
 // browse views ([`catalog`]).
+pub(super) mod candidates;
 pub(super) mod files;
 #[cfg(test)]
 mod first_open_tests;
@@ -2611,6 +2612,9 @@ impl Owner {
     /// only the worker knows.
     fn read_job(&self, job_id: &JobId, client: ClientId) -> Result<Value, Error> {
         let mut record = self.jobs.read_for(job_id, client)?;
+        if record.kind == JobKind::Task {
+            record.candidates = Some(self.service.candidates().read_job(job_id));
+        }
         if record.kind == JobKind::Analysis && !record.status.is_finished() {
             record.status = if self.queue.is_pending(job_id) {
                 JobStatus::Queued
@@ -2744,9 +2748,17 @@ pub(super) fn job_cancel(
                 waiter.client == client && waiter.job.as_ref() == Some(job_id)
             });
         }
-        Family::Capability => owner
-            .host
-            .cancel(&mut owner.jobs, job_id, &mut owner.announced)?,
+        Family::Capability => {
+            owner
+                .host
+                .cancel(&mut owner.jobs, job_id, &mut owner.announced)?;
+            // A task's candidates go with its cancel, whether it is still running or finished.
+            let candidates = owner.service.candidates();
+            if kind == JobKind::Task {
+                candidates.cancel(job_id);
+            }
+            candidates.retain(|job_id| owner.jobs.kind(job_id).is_some());
+        }
         Family::Export => {
             owner.jobs.cancel(job_id, export::CANCELLED);
         }
