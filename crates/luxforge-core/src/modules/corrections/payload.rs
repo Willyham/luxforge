@@ -73,15 +73,9 @@ pub(crate) fn identity(id: u32) -> String {
 /// The operation number a `correction-<n>` identity names: `n` decimal in `1..=4294967295` with
 /// no leading zero, as the identity check admits it.
 pub(crate) fn number(identity: &str) -> Result<u32, Error> {
-    identity
-        .strip_prefix("correction-")
-        .filter(|digits| {
-            !digits.is_empty()
-                && !digits.starts_with('0')
-                && digits.bytes().all(|byte| byte.is_ascii_digit())
-        })
-        .and_then(|digits| digits.parse::<u32>().ok())
-        .ok_or_else(|| Error::validation(format!("invalid correction identity {identity}")))
+    crate::CorrectionId::parse(identity)
+        .map(crate::CorrectionId::number)
+        .map_err(|_| Error::validation(format!("invalid correction identity {identity}")))
 }
 
 /// What a Clone/Heal operation does with its source.

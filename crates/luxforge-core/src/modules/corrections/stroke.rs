@@ -65,11 +65,6 @@ impl CorrectionStroke {
         })
     }
 
-    /// The stored positions, in grid steps.
-    pub(crate) fn grid(&self) -> &[[i32; 2]] {
-        &self.points
-    }
-
     /// The anchor: the first stored position (a spot's centre, a stroke's pin), in grid steps.
     pub(crate) fn anchor(&self) -> [i32; 2] {
         self.points[0]
@@ -181,14 +176,14 @@ mod tests {
         assert_eq!(CorrectionStroke::from_stored(&id, &bytes).unwrap(), stroke);
         // A spot is one point.
         let spot = CorrectionStroke::capture(&[[0.5, 0.5]], 0.01).unwrap();
-        assert_eq!(spot.grid().len(), 1);
+        assert_eq!(spot.points().count(), 1);
         // The same posted path at the same radius is the same stroke; another radius is another.
         assert_eq!(
             CorrectionStroke::capture(&[[0.5, 0.5]], 0.01).unwrap().id(),
             spot.id()
         );
         assert_ne!(spot.with_radius(0.02).unwrap().id(), spot.id());
-        assert_eq!(spot.with_radius(0.02).unwrap().grid(), spot.grid());
+        assert!(spot.with_radius(0.02).unwrap().points().eq(spot.points()));
     }
 
     #[test]
