@@ -70,20 +70,14 @@ impl Brush {
     }
 
     /// Set one declared number by name, refusing a value the command's own range would refuse, so a
-    /// key, a nudge and a typed field all land on the same rule.
+    /// key, a nudge and a typed field all land on the same rule — the one rule every brush consumer
+    /// clamps by ([`crate::brush::clamp`]).
     pub(crate) fn set(&mut self, name: &str, value: f64) -> bool {
-        if !value.is_finite() {
-            return false;
-        }
-        let Some(declared) = luxforge_core::mask::commands::find(ADD_STROKE)
-            .and_then(|command| command.action.parameter(name))
+        let Some(value) = luxforge_core::mask::commands::find(ADD_STROKE)
+            .and_then(|command| crate::brush::clamp(&command.action, name, value))
         else {
             return false;
         };
-        let luxforge_core::ParameterKind::Number { min, max } = declared.kind else {
-            return false;
-        };
-        let value = value.clamp(min, max);
         match name {
             "size" => self.size = value,
             "feather" => self.feather = value,
@@ -98,9 +92,7 @@ impl Brush {
     /// nudges are the same call, so the key and the button can never move by different amounts.
     pub(crate) fn nudge(&mut self, name: &str, steps: f64) -> bool {
         let Some(step) = luxforge_core::mask::commands::find(ADD_STROKE)
-            .and_then(|command| command.action.parameter(name))
-            .and_then(|declared| declared.step)
-            .filter(|step| step.is_finite() && *step > 0.0)
+            .and_then(|command| crate::brush::step(&command.action, name))
         else {
             return false;
         };
@@ -286,12 +278,7 @@ impl ShapeEditor for BrushEditor {
         let Some(point) = pointer else {
             return;
         };
-        for (scale, alpha, dashed) in [(1.0, 0.9, false), (1.0 - brush.feather / 100.0, 0.5, true)]
-        {
-            if scale <= 0.0 {
-                continue;
-            }
-            let radius = brush.size * scale;
+        for (radius, alpha, dashed) in crate::brush::cursor_rings(brush.size, brush.feather) {
             pen.ellipse(
                 point,
                 (radius, radius),
