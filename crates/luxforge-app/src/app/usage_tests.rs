@@ -26,6 +26,7 @@ fn read(prompt_shown: bool, enabled: bool, effective: bool) -> UsageRead {
         enabled: Some(enabled),
         effective,
         disclosure_version: 1,
+        destination: None,
         reason: (!effective).then(|| "choice".into()),
     }
 }
