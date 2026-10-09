@@ -3472,8 +3472,8 @@ mod tests {
 
         scene.session.workspace.views = vec![luxforge_core::ViewSelection {
             module: tabs.id.clone(),
-            group: Vec::new(),
-            view: "Second".into(),
+            group: None,
+            view: "second".into(),
         }];
         workspace.derive(&scene.inputs());
         let selected = section(&workspace, &tabs.id);
@@ -3496,7 +3496,7 @@ mod tests {
 
         // A selection naming a view the descriptor no longer declares shows the first view rather
         // than pointing past the end.
-        scene.session.workspace.views[0].view = "Gone".into();
+        scene.session.workspace.views[0].view = "gone".into();
         workspace.derive(&scene.inputs());
         assert_eq!(
             section(&workspace, &tabs.id).layout,

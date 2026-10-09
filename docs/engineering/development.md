@@ -1352,14 +1352,17 @@ Each scenario's plan and checks are documented in its own module (`xtask/src/*_s
 `editor-latency --control wheel` measures the Shadows grading wheel by default; with
 `--action set-mixer --parameter grade-global-hue` (or another declared wheel's hue), it measures
 that wheel. Drag and commit modes send hue and saturation together through the shipped wheel
-geometry, expand the mixer and select the wheel's individual Grading view before timing. Reports
+geometry, expand the mixer and select the tabs of the wheel's own large view before timing. Reports
 check both fields in each patch and that the wheel is drawn; they retain the patches and positions.
 
 `grade-performance --source JPEG_OR_RAW --output NEW --samples 30` compares HSL alone
-(Red hue +20/+21, Blue saturation +15) with the same HSL plus Shadows 210°/30,
+(Red hue +20, Blue saturation +15) with the same HSL plus Shadows 210°/30,
 Highlights 45°/20 and Global luminance +5, in release on a quiet host behind the timing lock.
+Both workloads run on one owner and one prepared original, alternating sample by sample after one
+warm-up of each, so host drift falls on both sides alike; each commit sets its workload's full
+fields (the HSL-only one returns the grade to its defaults), so every commit changes the photo.
 It measures public-owner commits, whole-frame reference renders, verified centre samples and
-serial JPEG export completion, with one warm-up per workload and RSS sampled between operations.
+serial JPEG export completion, with RSS sampled between operations, and writes `result.json`.
 The headless owner uses the reference renderer for samples and export; desktop GPU and peak RSS
 figures come from `editor-latency`. These are scoped workloads, not Lightroom measurements.
 

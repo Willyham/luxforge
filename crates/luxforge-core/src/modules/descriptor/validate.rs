@@ -7,7 +7,7 @@ use super::types::{
     CurveControl, EffectStage, GroupControl, MAX_SECRET_LENGTH, ModuleDescriptor, ModuleLayout,
     NumberControl, PRESET_SETTINGS, ParameterDescriptor, ParameterKind, PickerControl,
     PresetsControl, QueryChoiceControl, RailDecoration, RangeControl, ResetAction, SETTINGS_ORIGIN,
-    TaskControl, ToggleControl, WheelControl,
+    TaskControl, ToggleControl, ViewControl, WheelControl,
 };
 use super::values::check_value;
 use crate::Error;
@@ -505,12 +505,11 @@ impl ModuleDescriptor {
         self.check_variant_shapes(control)?;
         match control {
             Control::Group(GroupControl {
+                id,
                 label,
                 controls,
                 reset,
                 layout,
-                view,
-                variants,
                 ..
             }) => {
                 if label.trim().is_empty() {
@@ -519,22 +518,47 @@ impl ModuleDescriptor {
                         self.id
                     )));
                 }
-                // A view shows fields its enclosing group owns, so it is no reset or capture scope
-                // of its own and has nothing a variant could replace.
-                if *view && (reset.is_some() || !variants.is_empty()) {
+                if let Some(id) = id
+                    && !valid_name(id)
+                {
                     return Err(Error::validation(format!(
-                        "view {label} of module {} declares a reset or variants; a view is \
-                         presentation only",
+                        "group {label} of module {} has invalid id {id}",
                         self.id
                     )));
                 }
                 self.check_reset(reset.as_ref())?;
                 let owner = format!("group {label}");
                 if *layout == ModuleLayout::Tabs {
+                    // A session selects the row's tab by the group's id.
+                    if id.is_none() {
+                        return Err(Error::validation(format!(
+                            "group {label} of module {} declares layout: tabs but no id to \
+                             select its tabs by",
+                            self.id
+                        )));
+                    }
                     self.check_tabs(controls, &owner)?;
                 } else {
                     self.check_no_views(controls, &owner)?;
                 }
+                for child in controls {
+                    self.check_control(child, depth + 1)?;
+                }
+            }
+            // A view is a tab of the row that holds it, which `check_tabs` checks; it lays its own
+            // controls out stacked.
+            Control::View(ViewControl {
+                id,
+                label,
+                controls,
+            }) => {
+                if label.trim().is_empty() || !valid_name(id) {
+                    return Err(Error::validation(format!(
+                        "view {id} of module {} needs a label and a valid id",
+                        self.id
+                    )));
+                }
+                self.check_no_views(controls, &format!("view {label}"))?;
                 for child in controls {
                     self.check_control(child, depth + 1)?;
                 }
@@ -828,8 +852,8 @@ impl ModuleDescriptor {
     }
 
     /// The control tree's own rules: every control against the declarations it binds, every tab
-    /// row's shape, every view's place and every tab row's label path. A field-patch spec runs
-    /// these when it is built, before the module is registered.
+    /// row's shape, every view's place, the groups' ids and the copies of each wheel. A field-patch
+    /// spec runs these when it is built, before the module is registered.
     pub(crate) fn validate_controls(&self) -> Result<(), Error> {
         for control in &self.controls {
             self.check_control(control, 1)?;
@@ -839,21 +863,23 @@ impl ModuleDescriptor {
         } else {
             self.check_no_views(&self.controls, "the top level")?;
         }
-        self.check_view_identities(&self.controls, &mut Vec::new())
+        let mut groups = HashSet::new();
+        let mut wheels: Vec<&WheelControl> = Vec::new();
+        self.check_ids_and_wheels(&self.controls, &mut groups, &mut wheels)
     }
 
-    /// A tab row's controls: at least two, every one a group, with distinct labels, since a view is
-    /// selected by its label ([`ModuleDescriptor::views_at`]). `owner` names where the row is.
+    /// A tab row's controls: at least two, every one a group or a view with an id distinct in the
+    /// row, since a session selects a tab by its id ([`ModuleDescriptor::views_at`]). `owner`
+    /// names where the row is.
     fn check_tabs(&self, controls: &[Control], owner: &str) -> Result<(), Error> {
-        let mut labels = HashSet::with_capacity(controls.len());
-        let distinct_groups = controls.iter().all(|control| match control {
-            Control::Group(group) => labels.insert(group.label.as_str()),
-            _ => false,
-        });
-        if controls.len() < 2 || !distinct_groups {
+        let mut ids = HashSet::with_capacity(controls.len());
+        let distinct = controls
+            .iter()
+            .all(|control| control.tab_id().is_some_and(|id| ids.insert(id)));
+        if controls.len() < 2 || !distinct {
             return Err(Error::validation(format!(
-                "{owner} of module {} declares layout: tabs but needs at least two groups with \
-                 distinct labels",
+                "{owner} of module {} declares layout: tabs but needs at least two groups or \
+                 views, each with an id distinct in the row",
                 self.id
             )));
         }
@@ -863,7 +889,7 @@ impl ModuleDescriptor {
     /// A view is one tab of a tab row, so a stacked list of controls holds none.
     fn check_no_views(&self, controls: &[Control], owner: &str) -> Result<(), Error> {
         match controls.iter().find_map(|control| match control {
-            Control::Group(group) if group.view => Some(&group.label),
+            Control::View(view) => Some(&view.label),
             _ => None,
         }) {
             Some(label) => Err(Error::validation(format!(
@@ -874,33 +900,44 @@ impl ModuleDescriptor {
         }
     }
 
-    /// Every tabbed group is the group its label path names ([`ModuleDescriptor::group_at`]), so a
-    /// session's view selection, keyed by that path, names exactly one tab row. `path` is the
-    /// label path of the group `controls` belong to.
-    fn check_view_identities<'a>(
+    /// Every declared group id is unique in the module, so a session's view selection names
+    /// exactly one tab row ([`ModuleDescriptor::group`]); and every copy of a wheel — each wheel
+    /// that binds the same hue of the same action — is the same wheel in its own style
+    /// ([`WheelControl::same_wheel`]), so its label and its reset are one.
+    /// `O(controls + wheels²)`, and a module draws a handful of wheels.
+    fn check_ids_and_wheels<'a>(
         &self,
         controls: &'a [Control],
-        path: &mut Vec<&'a str>,
+        groups: &mut HashSet<&'a str>,
+        wheels: &mut Vec<&'a WheelControl>,
     ) -> Result<(), Error> {
         for control in controls {
-            let Control::Group(group) = control else {
-                continue;
-            };
-            path.push(&group.label);
-            if group.layout == ModuleLayout::Tabs
-                && !self
-                    .group_at(path)
-                    .is_some_and(|named| std::ptr::eq(named, group))
-            {
-                return Err(Error::validation(format!(
-                    "tabbed group {} of module {} shares its label path with an earlier group, so \
-                     its views cannot be named",
-                    path.join(" / "),
-                    self.id
-                )));
+            match control {
+                Control::Group(GroupControl { id: Some(id), .. }) if !groups.insert(id) => {
+                    return Err(Error::validation(format!(
+                        "module {} declares two groups with id {id}",
+                        self.id
+                    )));
+                }
+                Control::Wheel(wheel) => {
+                    if let Some(first) = wheels
+                        .iter()
+                        .find(|seen| seen.action == wheel.action && seen.hue == wheel.hue)
+                    {
+                        if !first.same_wheel(wheel) {
+                            return Err(Error::validation(format!(
+                                "wheels {} and {} of module {} bind hue {} of action {} but \
+                                 differ in more than their style",
+                                first.label, wheel.label, self.id, wheel.hue, wheel.action
+                            )));
+                        }
+                    } else {
+                        wheels.push(wheel);
+                    }
+                }
+                _ => {}
             }
-            self.check_view_identities(&group.controls, path)?;
-            path.pop();
+            self.check_ids_and_wheels(control.children(), groups, wheels)?;
         }
         Ok(())
     }
@@ -913,7 +950,6 @@ impl ModuleDescriptor {
             hue,
             saturation,
             label,
-            reset,
             ..
         } = wheel;
         if label.trim().is_empty() {
@@ -934,6 +970,13 @@ impl ModuleDescriptor {
             if !matches!(parameter.kind, ParameterKind::Number { .. }) {
                 return Err(Error::validation(format!(
                     "wheel control for {name} of action {action} is not a number"
+                )));
+            }
+            // The wheel's reset is its fields back to their defaults ([`Self::wheel_reset`]).
+            if parameter.default.is_none() {
+                return Err(Error::validation(format!(
+                    "wheel control for {name} of action {action} declares no default for its \
+                     reset to return to"
                 )));
             }
             if names[..at].contains(name) {
@@ -958,19 +1001,6 @@ impl ModuleDescriptor {
             return Err(Error::validation(format!(
                 "wheel saturation {saturation} of action {action} declares {min}..={max}; a \
                  wheel's radius runs from 0 at its centre to a positive rim"
-            )));
-        }
-        self.check_reset(reset.as_ref())?;
-        if let Some(reset) = reset
-            && reset.action == *action
-            && let Some(other) = reset
-                .preset
-                .keys()
-                .find(|name| !names.contains(&name.as_str()))
-        {
-            return Err(Error::validation(format!(
-                "wheel control reset of action {action} names {other}, which the wheel does not \
-                 bind"
             )));
         }
         Ok(())
@@ -1019,7 +1049,7 @@ impl ModuleDescriptor {
         controls
             .iter()
             .map(|control| match control {
-                Control::Group(GroupControl { controls, .. }) => Self::count(controls, kind),
+                Control::Group(_) | Control::View(_) => Self::count(control.children(), kind),
                 control => usize::from(kind(control)),
             })
             .sum()
@@ -1041,8 +1071,7 @@ impl ModuleDescriptor {
         fn bound<'c>(controls: &'c [Control], query: &str) -> Option<&'c QueryChoiceControl> {
             controls.iter().find_map(|control| match control {
                 Control::QueryChoice(control) if control.query == query => Some(control),
-                Control::Group(group) => bound(&group.controls, query),
-                _ => None,
+                control => bound(control.children(), query),
             })
         }
         let Some(control) = bound(&self.controls, query) else {
@@ -1235,10 +1264,7 @@ fn with_variants(controls: &[Control]) -> Option<&Control> {
         if !control.variants().is_empty() {
             return Some(control);
         }
-        match control {
-            Control::Group(GroupControl { controls, .. }) => with_variants(controls),
-            _ => None,
-        }
+        with_variants(control.children())
     })
 }
 

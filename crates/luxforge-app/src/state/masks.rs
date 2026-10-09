@@ -1038,7 +1038,7 @@ fn control_action(control: &Control) -> Option<&str> {
         Control::Action(button) => Some(&button.action),
         Control::Presets(presets) => Some(&presets.action),
         // A group, a picker and a module worker task submit no mask command, so none is offered here.
-        Control::Group(_) | Control::Picker(_) | Control::Task(_) => None,
+        Control::Group(_) | Control::View(_) | Control::Picker(_) | Control::Task(_) => None,
     }
 }
 

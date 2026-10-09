@@ -243,7 +243,7 @@ pub(super) fn descriptor() -> ModuleDescriptor {
             ],
             collapsed: false,
             layout: ModuleLayout::Stacked,
-            view: false,
+            id: None,
             variants: Vec::new(),
             per_photo: false,
         })],
@@ -408,7 +408,7 @@ pub(super) fn presets_cases() -> Vec<(&'static str, ModuleDescriptor, &'static s
                         })],
                         collapsed: false,
                         layout: ModuleLayout::Stacked,
-                        view: false,
+                        id: None,
                         variants: Vec::new(),
                         per_photo: false,
                     }),
@@ -522,7 +522,7 @@ pub(super) fn controls_descriptor() -> ModuleDescriptor {
             reset: None,
             collapsed: true,
             layout: ModuleLayout::Stacked,
-            view: false,
+            id: None,
             variants: Vec::new(),
             per_photo: false,
         }),
@@ -556,12 +556,13 @@ pub(super) fn range_descriptor(control: impl Into<Control>) -> ModuleDescriptor 
     descriptor
 }
 
-/// A descriptor with two top-level groups, each one slider, over the base descriptor's own
-/// declared action: the minimal shape `layout: tabs` accepts.
+/// A descriptor with two top-level groups, each one slider and an id, over the base descriptor's
+/// own declared action: the minimal shape `layout: tabs` accepts.
 pub(super) fn two_group_descriptor() -> ModuleDescriptor {
     let group = |label: &str| {
         Control::Group(GroupControl {
             label: label.into(),
+            id: Some(label.to_lowercase()),
             reset: None,
             controls: vec![Control::Number(NumberControl {
                 action: "set-thing".into(),
@@ -574,7 +575,6 @@ pub(super) fn two_group_descriptor() -> ModuleDescriptor {
             })],
             collapsed: false,
             layout: ModuleLayout::Stacked,
-            view: false,
             variants: Vec::new(),
             per_photo: false,
         })
