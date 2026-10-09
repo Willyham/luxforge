@@ -917,19 +917,20 @@ impl EditorService {
         }
     }
 
-    pub fn apply_pixel(
+    /// Set Basic's exposure: the plain one-field edit the editor tests commit when they need some
+    /// edit to exist and no particular one.
+    #[cfg(test)]
+    pub(crate) fn apply_exposure(
         &mut self,
         asset_id: &AssetId,
         mutation: Mutation,
-        x: u32,
-        y: u32,
-        rgb: [u8; 3],
+        exposure: f64,
     ) -> Result<MutationResult, Error> {
         self.apply_action(
             asset_id,
             mutation,
-            "set-pixel",
-            json!({"x":x,"y":y,"rgb":rgb}),
+            "set-basic",
+            json!({"exposure": exposure}),
         )
     }
 
@@ -1423,9 +1424,8 @@ mod tests {
         },
     };
     use crate::{
-        BoxRect, CROP_EFFECT, CropPayload, CropStage, EffectStage, ModuleRegistry,
-        ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT, Raster, SnapshotId, open_source,
-        render::testing::render,
+        BASIC_EFFECT, BoxRect, CONTROLS_EFFECT, CROP_EFFECT, CropPayload, CropStage, EffectStage,
+        ModuleRegistry, ORIENTATION_EFFECT, Orientation, Raster,
     };
     use serde_json::Map;
     use std::sync::Arc;
@@ -1437,7 +1437,7 @@ mod tests {
             EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let asset = service.import(&fixture()).unwrap().asset.id;
         service
-            .apply_pixel(&asset, mutation(0, "pixel"), 0, 0, [1, 2, 3])
+            .apply_exposure(&asset, mutation(0, "pixel"), 0.1)
             .unwrap();
         service
             .apply_transform(&asset, mutation(1, "right"), Transform::RotateRight)
@@ -1557,7 +1557,7 @@ mod tests {
     /// The planning rule at the service: a transform composes into the orientation layer ahead of
     /// the crop, and a crop never ends the tail: the next transform composes into the same layer and
     /// carries the crop through it, so the turned photograph is exactly the cropped one turned. A
-    /// pixel layer never ends it either, because the host puts it before the tail.
+    /// colour layer never ends it either, because the host puts it before the tail.
     #[test]
     fn a_transform_composes_ahead_of_the_crop_and_carries_it() {
         let catalog = temp("orientation-placement.sqlite");
@@ -1575,9 +1575,9 @@ mod tests {
                 .layers
         };
 
-        // A pixel layer is not a geometry layer, so the first transform appends the tail.
+        // A colour layer is not a geometry layer, so the first transform appends the tail.
         service
-            .apply_pixel(&asset, mutation(0, "pixel"), 0, 0, [1, 2, 3])
+            .apply_exposure(&asset, mutation(0, "pixel"), 0.1)
             .unwrap();
         let at = revision(&service);
         service
@@ -1589,15 +1589,20 @@ mod tests {
                 .iter()
                 .map(|layer| layer.effect_id.as_str())
                 .collect::<Vec<_>>(),
-            [PIXEL_EFFECT, ORIENTATION_EFFECT]
+            [BASIC_EFFECT, ORIENTATION_EFFECT]
         );
         let first_orientation = stack[1].id.clone();
 
-        // A further pixel edit joins the stack before the tail, so the tail is still last and the
+        // A further colour edit joins the stack before the tail, so the tail is still last and the
         // next transform composes into it.
         let at = revision(&service);
         service
-            .apply_pixel(&asset, mutation(at, "pixel-2"), 1, 0, [4, 5, 6])
+            .apply_action(
+                &asset,
+                mutation(at, "controls"),
+                "set-controls",
+                json!({"amount": 1.5}),
+            )
             .unwrap();
         let at = revision(&service);
         service
@@ -1609,7 +1614,7 @@ mod tests {
                 .iter()
                 .map(|layer| layer.effect_id.as_str())
                 .collect::<Vec<_>>(),
-            [PIXEL_EFFECT, PIXEL_EFFECT, ORIENTATION_EFFECT]
+            [BASIC_EFFECT, CONTROLS_EFFECT, ORIENTATION_EFFECT]
         );
         assert_eq!(stack[2].id, first_orientation, "the same layer, in place");
         assert_eq!(stack[2].payload, json!({"mirror": true, "turns": 3}));
@@ -1638,7 +1643,12 @@ mod tests {
                 .iter()
                 .map(|layer| layer.effect_id.as_str())
                 .collect::<Vec<_>>(),
-            [PIXEL_EFFECT, PIXEL_EFFECT, ORIENTATION_EFFECT, CROP_EFFECT],
+            [
+                BASIC_EFFECT,
+                CONTROLS_EFFECT,
+                ORIENTATION_EFFECT,
+                CROP_EFFECT
+            ],
             "one orientation layer, ahead of the crop"
         );
         assert_eq!(stack[2].id, first_orientation, "the same layer, in place");
@@ -1961,26 +1971,26 @@ mod tests {
             ("unknown action", "paint", json!({}), "unknown action paint"),
             (
                 "missing required parameter",
-                "set-pixel",
-                json!({"x":0,"y":0}),
-                "missing required parameter rgb",
+                "select-controls-choice",
+                json!({}),
+                "missing required parameter key",
             ),
             (
                 "unknown parameter",
-                "set-pixel",
-                json!({"x":0,"y":0,"rgb":[1,2,3],"z":1}),
+                "set-controls",
+                json!({"count":1,"z":1}),
                 "unknown parameter z",
             ),
             (
                 "integer out of range",
-                "set-pixel",
-                json!({"x":-1,"y":0,"rgb":[1,2,3]}),
-                "parameter x must be an integer within 0..=16383",
+                "set-controls",
+                json!({"count":-1}),
+                "parameter count must be an integer within 0..=20",
             ),
             (
                 "malformed color",
-                "set-pixel",
-                json!({"x":0,"y":0,"rgb":[1,2]}),
+                "set-controls",
+                json!({"rgb":[1,2]}),
                 "parameter rgb must be three sRGB channels 0..=255",
             ),
             (
@@ -1988,12 +1998,6 @@ mod tests {
                 "transform",
                 json!({"transform":"rotate-sideways"}),
                 "parameter transform must be one of",
-            ),
-            (
-                "outside the content stage",
-                "set-pixel",
-                json!({"x":9000,"y":0,"rgb":[1,2,3]}),
-                "pixel (9000, 0) is outside the 480x320 content stage",
             ),
         ] {
             let error = service
@@ -2024,13 +2028,12 @@ mod tests {
         let mut service =
             EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let asset = service.import(&fixture()).unwrap().asset.id;
-        let original = service.render_current(&asset).unwrap().pixel(0, 0).unwrap();
         let repeated = service
             .apply_action(
                 &asset,
                 mutation(0, "same-value"),
-                "set-pixel",
-                json!({"x":0,"y":0,"rgb":[original[0],original[1],original[2]]}),
+                "set-basic",
+                json!({"exposure":0.0}),
             )
             .unwrap();
         assert_eq!(repeated.outcome, MutationOutcome::NoOp);
@@ -2038,15 +2041,15 @@ mod tests {
             .apply_action(
                 &asset,
                 mutation(0, "action"),
-                "set-pixel",
-                json!({"x":0,"y":0,"rgb":[1,2,3]}),
+                "set-basic",
+                json!({"exposure":0.5}),
             )
             .unwrap();
         let entry = service
             .entry(&asset, &through_action.current_entry_id)
             .unwrap();
-        assert_eq!(entry.action_id, "set-pixel");
-        assert_eq!(entry.parameters, json!({"x":0,"y":0,"rgb":[1,2,3]}));
+        assert_eq!(entry.action_id, "set-basic");
+        assert_eq!(entry.parameters, json!({"exposure":0.5}));
         let rotated = service
             .apply_action(
                 &asset,
@@ -2101,10 +2104,10 @@ mod tests {
             .unwrap();
         let first = service.entry(&asset, &appended.current_entry_id).unwrap();
         let layer_id = first.snapshot.recipe.layers[0].id.clone();
-        // A pixel layer addresses the content stage, so the host puts it before the geometry tail
+        // A colour layer is placed by its stage, so the host puts it before the geometry tail
         // and the shrink layer keeps its own identity and position after it.
         service
-            .apply_pixel(&asset, mutation(1, "pixel"), 10, 10, [1, 2, 3])
+            .apply_exposure(&asset, mutation(1, "pixel"), 0.1)
             .unwrap();
         let updated = service
             .apply_action(&asset, mutation(2, "update"), SHRINK_ACTION, shrink(50, 50))
@@ -2117,8 +2120,8 @@ mod tests {
             "an update adds no layer"
         );
         assert_eq!(
-            entry.snapshot.recipe.layers[0].effect_id, PIXEL_EFFECT,
-            "the pixel layer stays before the geometry tail"
+            entry.snapshot.recipe.layers[0].effect_id, BASIC_EFFECT,
+            "the colour layer stays before the geometry tail"
         );
         assert_eq!(
             entry.snapshot.recipe.layers[1].id, layer_id,
@@ -2255,7 +2258,7 @@ mod tests {
         let before = service.state(&asset).unwrap();
         let (entries, requests) = (rows(&service, "entries"), rows(&service, "requests"));
         let error = service
-            .apply_pixel(&asset, mutation(2, "pixel"), 0, 0, [1, 2, 3])
+            .apply_exposure(&asset, mutation(2, "pixel"), 0.1)
             .expect_err("the stored order has no stage a new layer could address");
         assert_eq!(error.kind, ErrorKind::Validation);
         assert!(
@@ -2315,7 +2318,7 @@ mod tests {
         let registry = ModuleRegistry::builtin();
         let mask = crate::Mask::new("Mask 1");
         let recipe = Recipe {
-            layers: vec![Layer::pixel(0, 0, [1, 2, 3])],
+            layers: vec![Layer::new(crate::BASIC_EFFECT, json!({"exposure": 0.5}))],
             masks: vec![mask.clone()],
             ..Recipe::default()
         };
@@ -2551,17 +2554,17 @@ mod tests {
             let recropped = service.render_current(&asset).unwrap();
             assert_eq!((recropped.width, recropped.height), (160, 240));
 
-            // A pixel edit addresses the content stage, so the host puts it before the crop and a
+            // A colour edit is placed by its stage, so the host puts it before the crop and a
             // rectangle that no longer covers it is accepted instead of rejected.
             let at = revision(&service);
             service
-                .apply_pixel(&asset, mutation(at, "pixel"), 150, 230, [1, 2, 3])
+                .apply_exposure(&asset, mutation(at, "pixel"), 0.1)
                 .unwrap();
             let stack = layers(&service);
             assert_eq!(stack.len(), 3);
             assert_eq!(
-                stack[0].effect_id, PIXEL_EFFECT,
-                "the pixel layer joins the stack before the geometry tail"
+                stack[0].effect_id, BASIC_EFFECT,
+                "the colour layer joins the stack before the geometry tail"
             );
             assert_eq!(stack[1].effect_id, ORIENTATION_EFFECT);
             assert_eq!(stack[2].id, layer_id, "the crop layer stays last");
@@ -2690,274 +2693,6 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 
-    /// A pixel edit addresses the content stage: the source after EXIF orientation. The host puts
-    /// it before the geometry tail, so moving, growing and shrinking the crop never moves the
-    /// edit, is never rejected because of it, and a rectangle that hides it keeps it.
-    #[test]
-    fn a_pixel_edit_holds_its_content_pixel_through_every_crop_change() {
-        let catalog = temp("content-stage.sqlite");
-        let mut service =
-            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
-        let asset = service.import(&fixture()).unwrap().asset.id;
-        let revision = |service: &EditorService| service.state(&asset).unwrap().revision;
-        let layers = |service: &EditorService| -> Vec<Layer> {
-            service
-                .state(&asset)
-                .unwrap()
-                .current_entry
-                .snapshot
-                .recipe
-                .layers
-        };
-
-        // The tail: an angle-zero rectangle at (48, 32) of the 480x320 source, then a quarter turn,
-        // which goes ahead of the crop and carries it: the crop frames the same content at (128, 48)
-        // of the turned 320x480 stage.
-        service
-            .apply_action(
-                &asset,
-                mutation(0, "crop"),
-                "crop",
-                json!({"x":0.1,"y":0.1,"width":0.5,"height":0.5}),
-            )
-            .unwrap();
-        let at = revision(&service);
-        service
-            .apply_transform(&asset, mutation(at, "rotate"), Transform::RotateRight)
-            .unwrap();
-        let before = service.render_current(&asset).unwrap();
-        assert_eq!((before.width, before.height), (160, 240));
-
-        // The edit joins the stack before the tail and shows where its content pixel is drawn.
-        let at = revision(&service);
-        service
-            .apply_pixel(&asset, mutation(at, "visible"), 150, 100, [1, 2, 3])
-            .unwrap();
-        let stack = layers(&service);
-        assert_eq!(
-            stack
-                .iter()
-                .map(|layer| layer.effect_id.as_str())
-                .collect::<Vec<_>>(),
-            [PIXEL_EFFECT, ORIENTATION_EFFECT, CROP_EFFECT]
-        );
-        let edited = service.render_current(&asset).unwrap();
-        // Content (150, 100) is drawn at (219, 150) of the turned stage, less the crop origin.
-        let shown = (219 - 128, 150 - 48);
-        assert_eq!(edited.pixel(shown.0, shown.1), Some([1, 2, 3, 255]));
-        for y in 0..edited.height {
-            for x in 0..edited.width {
-                if (x, y) != shown {
-                    assert_eq!(edited.pixel(x, y), before.pixel(x, y), "({x}, {y})");
-                }
-            }
-        }
-
-        // A content pixel the crop does not cover is accepted and simply not drawn.
-        let at = revision(&service);
-        let hidden = service
-            .apply_pixel(&asset, mutation(at, "hidden"), 150, 230, [4, 5, 6])
-            .unwrap();
-        assert_eq!(hidden.outcome, MutationOutcome::Applied);
-        assert_eq!(layers(&service).len(), 4);
-        assert_eq!(
-            service.render_current(&asset).unwrap().rgba,
-            edited.rgba,
-            "an edit outside the cropped output changes no rendered pixel"
-        );
-
-        // A coordinate outside the content stage is a validation error naming that stage.
-        let at = revision(&service);
-        let error = service
-            .apply_pixel(&asset, mutation(at, "outside"), 500, 10, [7, 8, 9])
-            .expect_err("500 is outside the 480 pixel wide content stage");
-        assert_eq!(error.kind, ErrorKind::Validation);
-        assert_eq!(
-            error.detail,
-            "pixel (500, 10) is outside the 480x320 content stage"
-        );
-
-        // Replacing a content pixel with the value the content already holds is a no-op.
-        let at = revision(&service);
-        assert_eq!(
-            service
-                .apply_pixel(&asset, mutation(at, "same"), 150, 100, [1, 2, 3])
-                .unwrap()
-                .outcome,
-            MutationOutcome::NoOp
-        );
-
-        // Moving and growing the crop keep the same content pixel edited. The crop addresses the
-        // turned stage, where that pixel is drawn at (219, 150).
-        for (request, rectangle, origin, stage) in [
-            (
-                "crop-moved",
-                json!({"x":0.3,"y":0.2,"width":0.5,"height":0.5}),
-                (96u32, 96u32),
-                (160u32, 240u32),
-            ),
-            (
-                "crop-grown",
-                json!({"x":0.0,"y":0.0,"width":1.0,"height":1.0}),
-                (0, 0),
-                (320, 480),
-            ),
-        ] {
-            let at = revision(&service);
-            let result = service
-                .apply_action(&asset, mutation(at, request), "crop", rectangle)
-                .unwrap();
-            assert_eq!(result.outcome, MutationOutcome::Applied, "{request}");
-            let raster = service.render_current(&asset).unwrap();
-            assert_eq!((raster.width, raster.height), stage, "{request}");
-            assert_eq!(
-                raster.pixel(219 - origin.0, 150 - origin.1),
-                Some([1, 2, 3, 255]),
-                "{request}"
-            );
-        }
-
-        // A rectangle that hides the edit is accepted, and growing it back shows it again.
-        let at = revision(&service);
-        let shrunk = service
-            .apply_action(
-                &asset,
-                mutation(at, "crop-shrunk"),
-                "crop",
-                json!({"x":0.0,"y":0.0,"width":0.1,"height":0.1}),
-            )
-            .unwrap();
-        assert_eq!(
-            shrunk.outcome,
-            MutationOutcome::Applied,
-            "a shrink that hides the pixel is accepted"
-        );
-        let hidden = service.render_current(&asset).unwrap();
-        assert_eq!((hidden.width, hidden.height), (32, 48));
-        assert!(
-            hidden
-                .rgba
-                .chunks_exact(4)
-                .all(|pixel| pixel[..3] != [1, 2, 3]),
-            "the hidden edit draws nothing"
-        );
-        let at = revision(&service);
-        service
-            .apply_action(
-                &asset,
-                mutation(at, "crop-regrown"),
-                "crop",
-                json!({"x":0.0,"y":0.0,"width":1.0,"height":1.0}),
-            )
-            .unwrap();
-        assert_eq!(
-            service.render_current(&asset).unwrap().pixel(219, 150),
-            Some([1, 2, 3, 255]),
-            "the edit was hidden, not lost"
-        );
-        drop(service);
-        std::fs::remove_file(catalog).unwrap();
-    }
-
-    /// Through a straightened crop the resample carries the content edit: the rendered frame
-    /// matches the point sampler everywhere, the edit shows as one small cluster of blended output
-    /// pixels, and replacing the content pixel with its content value is still a reported no-op
-    /// although the output shows a different value there.
-    #[test]
-    fn a_content_edit_under_a_straightened_crop_matches_the_reference_sampler() {
-        let catalog = temp("content-angled.sqlite");
-        let source_path = fixture();
-        let mut service =
-            EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
-        let asset = service.import(&source_path).unwrap().asset.id;
-        service
-            .apply_pixel(&asset, mutation(0, "pixel"), 150, 100, [1, 2, 3])
-            .unwrap();
-        let at = service.state(&asset).unwrap().revision;
-        service
-            .apply_action(
-                &asset,
-                mutation(at, "crop-angled"),
-                "crop",
-                json!({"angle":5.0,"x":0.2,"y":0.2,"width":0.6,"height":0.6}),
-            )
-            .unwrap();
-        let recipe = service
-            .state(&asset)
-            .unwrap()
-            .current_entry
-            .snapshot
-            .recipe
-            .clone();
-        assert_eq!(
-            recipe
-                .layers
-                .iter()
-                .map(|layer| layer.effect_id.as_str())
-                .collect::<Vec<_>>(),
-            [PIXEL_EFFECT, CROP_EFFECT],
-            "the edit stays before the crop that resamples it"
-        );
-        let raster = service.render_current(&asset).unwrap();
-        let registry = ModuleRegistry::developer();
-        let source = open_source(&source_path).unwrap();
-
-        // The rendered frame and the point sampler evaluate the same stack by different paths.
-        for y in 0..raster.height {
-            for x in 0..raster.width {
-                assert_eq!(
-                    crate::render::testing::sample(&registry, &source, &recipe, x, y)
-                        .unwrap()
-                        .rgba,
-                    raster.pixel(x, y),
-                    "({x}, {y})"
-                );
-            }
-        }
-
-        // Against the same crop without the edit, the difference is one small cluster.
-        let mut plain = recipe.clone();
-        plain.layers.retain(|layer| layer.effect_id != PIXEL_EFFECT);
-        let unedited = render(&registry, &source, SnapshotId::new(), &plain).unwrap();
-        assert_eq!(
-            (unedited.width, unedited.height),
-            (raster.width, raster.height)
-        );
-        let differing: Vec<(u32, u32)> = (0..raster.height)
-            .flat_map(|y| (0..raster.width).map(move |x| (x, y)))
-            .filter(|(x, y)| raster.pixel(*x, *y) != unedited.pixel(*x, *y))
-            .collect();
-        assert!(
-            !differing.is_empty(),
-            "the resample carries the content edit into the output"
-        );
-        let span = |axis: fn(&(u32, u32)) -> u32| {
-            differing.iter().map(axis).max().unwrap() - differing.iter().map(axis).min().unwrap()
-        };
-        assert!(
-            span(|point| point.0) <= 1 && span(|point| point.1) <= 1,
-            "one content pixel blends into its own neighbourhood: {differing:?}"
-        );
-        assert!(
-            differing
-                .iter()
-                .all(|(x, y)| raster.pixel(*x, *y) != Some([1, 2, 3, 255])),
-            "the output shows the resampled blend, not the stored value"
-        );
-
-        // The no-op is decided in the content stage, not against what the output shows.
-        let at = service.state(&asset).unwrap().revision;
-        assert_eq!(
-            service
-                .apply_pixel(&asset, mutation(at, "same"), 150, 100, [1, 2, 3])
-                .unwrap()
-                .outcome,
-            MutationOutcome::NoOp
-        );
-        drop(service);
-        std::fs::remove_file(catalog).unwrap();
-    }
-
     /// A draft's effective recipe holds the layers its commit stored, apart from the identity the
     /// host gives a newly committed layer. The committed stack is read back from the catalog, whose
     /// JSON parse of a 17-digit double can differ from the value written in its last bit, so the
@@ -3029,10 +2764,10 @@ mod tests {
             EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let state = service.import(&fixture()).unwrap();
         let asset = state.asset.id.clone();
-        // Two layers, so index 1 names a real prefix (the pixel layer) rather than the whole,
+        // Two layers, so index 1 names a real prefix (the Basic layer) rather than the whole,
         // still-empty stack.
         service
-            .apply_pixel(&asset, mutation(0, "pixel"), 0, 0, [10, 20, 30])
+            .apply_exposure(&asset, mutation(0, "pixel"), 1.0)
             .unwrap();
         let at = service.state(&asset).unwrap().revision;
         service
@@ -3043,7 +2778,7 @@ mod tests {
         assert_eq!(
             recipe.layers.len(),
             2,
-            "a pixel layer and the orientation tail"
+            "a Basic layer and the orientation tail"
         );
         let index = 1;
         let image = match service.verified_prepared(&state.asset, &recipe).unwrap() {
@@ -3883,16 +3618,6 @@ mod tests {
                 "Crop Custom",
             ),
             ("crop-reset", json!({}), "Reset crop"),
-            (
-                "set-pixel",
-                json!({"rgb":[1,2,3],"x":360,"y":240}),
-                "Pixel 360, 240",
-            ),
-            (
-                "set-pixel",
-                json!({"rgb":[255,255,255],"x":0,"y":0}),
-                "Pixel 0, 0",
-            ),
             ("set-controls", json!({"amount":1.5}), "Amount +1.50"),
             ("set-controls", json!({"coordinate":20.0}), "Coordinate 20"),
             ("set-controls", json!({"count":3}), "Count 3"),

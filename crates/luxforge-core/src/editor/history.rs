@@ -789,7 +789,7 @@ mod tests {
         let catalog = temp("journey.sqlite");
         let source_path = fixture();
         let source_bytes = std::fs::read(&source_path).unwrap();
-        let (asset, original, a, b);
+        let (asset, original, a, b, shown_b);
         {
             let mut service =
                 EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
@@ -797,32 +797,24 @@ mod tests {
             asset = state.asset.id.clone();
             original = state.current_entry.id.clone();
             let result = service
-                .apply_pixel(&asset, mutation(0, "a"), 0, 0, [1, 2, 3])
+                .apply_exposure(&asset, mutation(0, "a"), 0.1)
                 .unwrap();
             a = result.current_entry_id;
             let result = service
-                .apply_pixel(&asset, mutation(1, "b"), 0, 0, [4, 5, 6])
+                .apply_exposure(&asset, mutation(1, "b"), 0.4)
                 .unwrap();
             b = result.current_entry_id;
-            assert_eq!(
-                service.render_current(&asset).unwrap().pixel(0, 0),
-                Some([4, 5, 6, 255])
-            );
+            shown_b = service.render_current(&asset).unwrap().pixel(0, 0);
             // A historical preview reads that entry's own stack and moves nothing that is committed.
-            assert_eq!(
-                service.render_entry(&asset, &a).unwrap().pixel(0, 0),
-                Some([1, 2, 3, 255])
-            );
+            let shown_a = service.render_entry(&asset, &a).unwrap().pixel(0, 0);
+            assert_ne!(shown_a, shown_b, "each exposure shows its own pixel");
             assert_eq!(service.state(&asset).unwrap().current_entry.id, b);
             service.undo(&asset, mutation(2, "undo")).unwrap();
-            assert_eq!(
-                service.render_current(&asset).unwrap().pixel(0, 0),
-                Some([1, 2, 3, 255])
-            );
+            assert_eq!(service.render_current(&asset).unwrap().pixel(0, 0), shown_a);
             service.redo(&asset, mutation(3, "redo")).unwrap();
             service.restore(&asset, mutation(4, "restore"), &a).unwrap();
             service
-                .apply_pixel(&asset, mutation(5, "c"), 1, 0, [7, 8, 9])
+                .apply_exposure(&asset, mutation(5, "c"), 0.7)
                 .unwrap();
             assert_eq!(service.history(&asset, None, 20).unwrap().entries.len(), 5);
         }
@@ -844,7 +836,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             service.render_entry(&asset, &b).unwrap().pixel(0, 0),
-            Some([4, 5, 6, 255])
+            shown_b
         );
         assert_eq!(std::fs::read(source_path).unwrap(), source_bytes);
         drop(service);
@@ -858,33 +850,26 @@ mod tests {
             EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let state = service.import(&fixture()).unwrap();
         let asset = state.asset.id;
-        let original_pixel = service.render_current(&asset).unwrap().pixel(0, 0).unwrap();
         let no_op = service
-            .apply_pixel(
-                &asset,
-                mutation(0, "noop"),
-                0,
-                0,
-                [original_pixel[0], original_pixel[1], original_pixel[2]],
-            )
+            .apply_exposure(&asset, mutation(0, "noop"), 0.0)
             .unwrap();
         assert_eq!(no_op.outcome, MutationOutcome::NoOp);
         let first = service
-            .apply_pixel(&asset, mutation(0, "same"), 0, 0, [1, 2, 3])
+            .apply_exposure(&asset, mutation(0, "same"), 0.1)
             .unwrap();
         let retry = service
-            .apply_pixel(&asset, mutation(0, "same"), 0, 0, [1, 2, 3])
+            .apply_exposure(&asset, mutation(0, "same"), 0.1)
             .unwrap();
         assert_eq!(first.current_entry_id, retry.current_entry_id);
         assert!(retry.deduplicated);
         assert!(
             service
-                .apply_pixel(&asset, mutation(0, "same"), 0, 0, [9, 9, 9])
+                .apply_exposure(&asset, mutation(0, "same"), 0.9)
                 .is_err()
         );
         assert_eq!(
             service
-                .apply_pixel(&asset, mutation(0, "stale"), 1, 0, [9, 9, 9])
+                .apply_exposure(&asset, mutation(0, "stale"), 0.9)
                 .unwrap_err()
                 .kind,
             ErrorKind::Conflict
@@ -912,15 +897,15 @@ mod tests {
                 EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
             asset = service.import(&fixture()).unwrap().asset.id;
             a = service
-                .apply_pixel(&asset, mutation(0, "a"), 0, 0, [1, 2, 3])
+                .apply_exposure(&asset, mutation(0, "a"), 0.1)
                 .unwrap()
                 .current_entry_id;
             service
-                .apply_pixel(&asset, mutation(1, "b"), 1, 0, [4, 5, 6])
+                .apply_exposure(&asset, mutation(1, "b"), 0.4)
                 .unwrap();
             service.undo(&asset, mutation(2, "undo")).unwrap();
             service
-                .apply_pixel(&asset, mutation(3, "c"), 2, 0, [7, 8, 9])
+                .apply_exposure(&asset, mutation(3, "c"), 0.7)
                 .unwrap();
             restored = service
                 .restore(&asset, mutation(4, "restore"), &a)
@@ -979,7 +964,7 @@ mod tests {
             asset = state.asset.id.clone();
             original = state.current_entry.id.clone();
             a = service
-                .apply_pixel(&asset, mutation(0, "a"), 0, 0, [1, 2, 3])
+                .apply_exposure(&asset, mutation(0, "a"), 0.1)
                 .unwrap()
                 .current_entry_id;
             let created = service
@@ -1029,8 +1014,8 @@ mod tests {
             .prepare(&service.entry_needs(&asset, None).unwrap())
             .unwrap();
         assert_eq!(
-            service.render_current(&asset).unwrap().pixel(0, 0),
-            Some([1, 2, 3, 255])
+            service.render_current(&asset).unwrap().rgba,
+            service.render_entry(&asset, &a).unwrap().rgba
         );
         assert_eq!(
             service.delete_version(&asset, "keeper").unwrap().outcome,
@@ -1058,16 +1043,16 @@ mod tests {
         let asset = state.asset.id;
         let original = state.current_entry.id;
         let a = service
-            .apply_pixel(&asset, mutation(0, "a"), 0, 0, [1, 2, 3])
+            .apply_exposure(&asset, mutation(0, "a"), 0.1)
             .unwrap()
             .current_entry_id;
         let b = service
-            .apply_pixel(&asset, mutation(1, "b"), 1, 0, [4, 5, 6])
+            .apply_exposure(&asset, mutation(1, "b"), 0.4)
             .unwrap()
             .current_entry_id;
         service.undo(&asset, mutation(2, "undo")).unwrap();
         let c = service
-            .apply_pixel(&asset, mutation(3, "c"), 2, 0, [7, 8, 9])
+            .apply_exposure(&asset, mutation(3, "c"), 0.7)
             .unwrap()
             .current_entry_id;
         let ids = |lineage: Lineage| -> Vec<EntryId> {
@@ -1122,10 +1107,10 @@ mod tests {
         let label =
             |service: &EditorService, entry: &EntryId| service.entry(&asset, entry).unwrap().label;
         let pixel = service
-            .apply_pixel(&asset, mutation(0, "pixel"), 3, 4, [1, 2, 3])
+            .apply_exposure(&asset, mutation(0, "pixel"), 0.1)
             .unwrap()
             .current_entry_id;
-        assert_eq!(label(&service, &pixel), "Pixel 3, 4");
+        assert_eq!(label(&service, &pixel), "Exposure +0.10 EV");
         // The requested action renders the label; the entry stores the durable transform identity.
         let rotated = service
             .apply_transform(&asset, mutation(1, "rotate"), Transform::RotateLeft)
@@ -1190,7 +1175,7 @@ mod tests {
                 "Crop 16:9",
                 "Crop 3.5°",
                 "Rotate left",
-                "Pixel 3, 4",
+                "Exposure +0.10 EV",
                 "Original",
             ]
         );
@@ -1214,7 +1199,7 @@ mod tests {
             .unwrap();
         assert!(
             service
-                .apply_pixel(&asset, mutation(0, "will-fail"), 0, 0, [1, 2, 3])
+                .apply_exposure(&asset, mutation(0, "will-fail"), 0.1)
                 .is_err()
         );
         assert_eq!(service.state(&asset).unwrap(), before);
@@ -1225,7 +1210,7 @@ mod tests {
             .unwrap();
         assert!(
             service
-                .apply_pixel(&asset, mutation(0, "will-fail"), 0, 0, [1, 2, 3])
+                .apply_exposure(&asset, mutation(0, "will-fail"), 0.1)
                 .is_ok(),
             "a failed transaction must not retain a false request result"
         );
@@ -1241,11 +1226,11 @@ mod tests {
         let state = service.import(&fixture()).unwrap();
         let asset = state.asset.id;
         let a = service
-            .apply_pixel(&asset, mutation(0, "a"), 0, 0, [1, 2, 3])
+            .apply_exposure(&asset, mutation(0, "a"), 0.1)
             .unwrap()
             .current_entry_id;
         let b = service
-            .apply_pixel(&asset, mutation(1, "b"), 0, 0, [4, 5, 6])
+            .apply_exposure(&asset, mutation(1, "b"), 0.4)
             .unwrap()
             .current_entry_id;
         service
@@ -1254,8 +1239,8 @@ mod tests {
         service.undo(&asset, mutation(3, "undo-restore")).unwrap();
         assert_eq!(service.state(&asset).unwrap().current_entry.id, b);
         assert_eq!(
-            service.render_current(&asset).unwrap().pixel(0, 0),
-            Some([4, 5, 6, 255])
+            service.render_current(&asset).unwrap().rgba,
+            service.render_entry(&asset, &b).unwrap().rgba
         );
         drop(service);
         std::fs::remove_file(catalog).unwrap();
@@ -1401,7 +1386,7 @@ mod tests {
         let asset = service.import(&fixture()).unwrap().asset.id;
         assert_eq!(validations::take(), 1, "an import");
         let pixel = service
-            .apply_pixel(&asset, mutation(0, "pixel"), 0, 0, [1, 2, 3])
+            .apply_exposure(&asset, mutation(0, "pixel"), 0.1)
             .unwrap()
             .current_entry_id;
         assert_eq!(validations::take(), 1, "an action");
@@ -1456,11 +1441,11 @@ mod tests {
             EditorService::open_with(&catalog, Arc::new(ModuleRegistry::developer())).unwrap();
         let asset = service.import(&fixture()).unwrap().asset.id;
         let a = service
-            .apply_pixel(&asset, mutation(0, "a"), 0, 0, [1, 2, 3])
+            .apply_exposure(&asset, mutation(0, "a"), 0.1)
             .unwrap()
             .current_entry_id;
         service
-            .apply_pixel(&asset, mutation(1, "b"), 0, 0, [4, 5, 6])
+            .apply_exposure(&asset, mutation(1, "b"), 0.4)
             .unwrap();
         service
             .connection
@@ -1481,7 +1466,7 @@ mod tests {
         };
         let attempts: [(&str, Attempt); 4] = [
             ("an action", |service, asset, _| {
-                service.apply_pixel(asset, mutation(2, "concurrent-action"), 1, 1, [7, 8, 9])
+                service.apply_exposure(asset, mutation(2, "concurrent-action"), 0.7)
             }),
             ("a restore", |service, asset, target| {
                 service.restore(asset, mutation(2, "concurrent-restore"), target)

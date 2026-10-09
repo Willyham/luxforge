@@ -363,9 +363,6 @@ fn stand_in(
             "a GPU preview boundary reads outside the frame its segment receives",
         ));
     }
-    let has_pixels = operations
-        .iter()
-        .any(|operation| matches!(operation, Processing::PointReplace { .. }));
     let has_color = operations
         .iter()
         .any(|operation| matches!(operation, Processing::Color(_)));
@@ -375,7 +372,6 @@ fn stand_in(
         geometry,
         width: held.width,
         height: held.height,
-        has_pixels,
         has_color,
         output_origin: (held.x0, held.y0),
     })

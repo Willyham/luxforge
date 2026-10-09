@@ -1,5 +1,5 @@
 //! The Basic module's Exposure parameter end to end: the compiled colour unit against the
-//! independent f64 corpus, mixed geometry/replacement order, and the placement of the one Basic
+//! independent f64 corpus, mixed geometry/colour order, and the placement of the one Basic
 //! layer before the geometry tail.
 //!
 //! Numerical rule, from the design's numerical contract and `fixtures/basic/README.md`: the band
@@ -9,7 +9,7 @@
 use super::{basic_layer, mutation};
 use luxforge_core::{
     BASIC_EFFECT, CROP_EFFECT, EditorService, Layer, ModuleRegistry, MutationOutcome,
-    ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT, SnapshotId, SourceImage, Transform,
+    ORIENTATION_EFFECT, Orientation, SnapshotId, SourceImage, Transform,
 };
 use luxforge_reference::{RefOp, evaluate_pixel, exposure, srgb};
 use luxforge_testbase::paths;
@@ -101,7 +101,7 @@ fn every_corpus_case_renders_through_a_real_basic_layer() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Mixed order with replacements and exact geometry
+// Mixed order with exact geometry
 // ---------------------------------------------------------------------------------------------
 
 #[derive(Deserialize)]
@@ -110,15 +110,7 @@ struct MixedOrder {
     height: u32,
     base_rgba: Vec<u8>,
     ev: f64,
-    replace: Replace,
     cases: BTreeMap<String, MixedCase>,
-}
-
-#[derive(Deserialize)]
-struct Replace {
-    x: u32,
-    y: u32,
-    rgb: [u8; 3],
 }
 
 #[derive(Deserialize)]
@@ -130,8 +122,8 @@ struct MixedCase {
     expected_rgba: Vec<u8>,
 }
 
-/// `fixtures/basic/mixed-order.json` through real layers: a replacement before the Basic layer is
-/// processed by it, one after it is not, and an exact mirror commutes with the colour operation.
+/// `fixtures/basic/mixed-order.json` through real layers: an exact mirror commutes with the colour
+/// operation.
 #[test]
 fn mixed_order_cases_reproduce_exactly_through_real_layers() {
     let raw =
@@ -146,13 +138,12 @@ fn mixed_order_cases_reproduce_exactly_through_real_layers() {
         capture: Default::default(),
     };
     let registry = ModuleRegistry::developer();
-    assert_eq!(file.cases.len(), 4, "every committed case is exercised");
+    assert_eq!(file.cases.len(), 2, "every committed case is exercised");
     for (name, case) in &file.cases {
         let layers: Vec<Layer> = case
             .order
             .iter()
             .map(|step| match step.as_str() {
-                "point_replace" => Layer::pixel(file.replace.x, file.replace.y, file.replace.rgb),
                 "exposure" => exposure_layer(file.ev),
                 "mirror" => Layer::orientation(Orientation::of(Transform::MirrorHorizontal)),
                 other => panic!("{name}: unknown step {other}"),
@@ -177,8 +168,7 @@ fn mixed_order_cases_reproduce_exactly_through_real_layers() {
 // The editing journey through the host's one action path
 // ---------------------------------------------------------------------------------------------
 
-/// The Basic layer joins a stack that already holds a pixel replacement and a geometry tail, at the
-/// colour insertion index before that tail, and a later set updates it there in place with every
+/// The Basic layer joins a stack that already holds a geometry tail, at the colour insertion index before that tail, and a later set updates it there in place with every
 /// other layer untouched. What a set that changes nothing writes and what a reset keeps are the
 /// conformance suite's.
 #[test]
@@ -192,20 +182,12 @@ fn the_first_set_places_one_layer_before_the_geometry_tail_and_later_sets_update
     let asset = service.import(&paths::jpeg()).expect("an import").asset.id;
 
     service
-        .apply_action(
-            &asset,
-            mutation(0, "pixel"),
-            "set-pixel",
-            json!({"x": 2, "y": 3, "rgb": [9, 9, 9]}),
-        )
-        .expect("a pixel edit");
-    service
-        .apply_transform(&asset, mutation(1, "rotate"), Transform::RotateRight)
+        .apply_transform(&asset, mutation(0, "rotate"), Transform::RotateRight)
         .expect("a rotation");
     service
         .apply_action(
             &asset,
-            mutation(2, "crop"),
+            mutation(1, "crop"),
             "crop",
             json!({"x": 0.0, "y": 0.0, "width": 0.5, "height": 0.5}),
         )
@@ -216,14 +198,14 @@ fn the_first_set_places_one_layer_before_the_geometry_tail_and_later_sets_update
             .iter()
             .map(|layer| layer.effect_id.as_str())
             .collect::<Vec<_>>(),
-        [PIXEL_EFFECT, ORIENTATION_EFFECT, CROP_EFFECT],
-        "the stack under test holds a replacement and a geometry tail"
+        [ORIENTATION_EFFECT, CROP_EFFECT],
+        "the stack under test holds a geometry tail"
     );
 
     let first = service
         .apply_action(
             &asset,
-            mutation(3, "expose"),
+            mutation(2, "expose"),
             "set-basic",
             json!({"exposure": 0.5}),
         )
@@ -235,29 +217,29 @@ fn the_first_set_places_one_layer_before_the_geometry_tail_and_later_sets_update
             .iter()
             .map(|layer| layer.effect_id.as_str())
             .collect::<Vec<_>>(),
-        [PIXEL_EFFECT, BASIC_EFFECT, ORIENTATION_EFFECT, CROP_EFFECT],
-        "a colour layer joins the stack before the geometry tail, after the replacement"
+        [BASIC_EFFECT, ORIENTATION_EFFECT, CROP_EFFECT],
+        "a colour layer joins the stack before the geometry tail"
     );
-    let basic = stack[1].clone();
+    let basic = stack[0].clone();
     assert_eq!(basic.payload, json!({"exposure": 0.5}));
 
     // A second set updates that same layer at the same index; nothing else moves.
     service
         .apply_action(
             &asset,
-            mutation(4, "expose-again"),
+            mutation(3, "expose-again"),
             "set-basic",
             json!({"exposure": -1.25}),
         )
         .expect("a second exposure");
     let stack = layers(&service, &asset);
-    assert_eq!(stack.len(), 4, "no second Basic layer was added");
-    assert_eq!(stack[1].id, basic.id, "the layer keeps its identity");
-    assert_eq!(stack[1].payload, json!({"exposure": -1.25}));
+    assert_eq!(stack.len(), 3, "no second Basic layer was added");
+    assert_eq!(stack[0].id, basic.id, "the layer keeps its identity");
+    assert_eq!(stack[0].payload, json!({"exposure": -1.25}));
     let others: Vec<Layer> = stack
         .iter()
         .enumerate()
-        .filter(|(index, _)| *index != 1)
+        .filter(|(index, _)| *index != 0)
         .map(|(_, layer)| layer.clone())
         .collect();
     assert_eq!(

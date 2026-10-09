@@ -1641,7 +1641,7 @@ mod tests {
         let (action, x, _) = tools::point_pick(&modules).expect("a canvas pick");
         let (action, x) = (action.to_owned(), x.to_owned());
         let mut scene = Scene::new(modules).all_expanded().opened(Vec::new());
-        // The pixel proof tool declares the only number controls today, so its section is listed.
+        // The point fixture declares number fields, so its developer section is listed.
         scene.developer = true;
         scene.fields.set(&action, &x, "007".into());
         let workspace = scene.derive();
@@ -1804,7 +1804,7 @@ mod tests {
             .collect();
         assert!(
             !developer.is_empty(),
-            "the pixel proof module marks itself as a developer tool"
+            "the point fixture marks itself as a developer tool"
         );
         let workspace = scene.derive();
         assert!(workspace.tools.developer.is_empty());
@@ -1896,7 +1896,7 @@ mod tests {
             }
         }
         assert!(
-            !section(&workspace, "luxforge.pixel").pickers()[0].selected,
+            !section(&workspace, crate::state::testing::POINT_MODULE).pickers()[0].selected,
             "another module's picker is not selected by the Basic mode"
         );
     }
@@ -3338,7 +3338,11 @@ mod tests {
                 .filter(|control| matches!(control, ControlModel::Group(_)))
                 .count()
         };
-        for id in ["luxforge.pixel", "luxforge.presence", "luxforge.vignette"] {
+        for id in [
+            crate::state::testing::POINT_MODULE,
+            "luxforge.presence",
+            "luxforge.vignette",
+        ] {
             let module = modules.iter().find(|module| module.id == id).unwrap();
             let [luxforge_core::Control::Group(luxforge_core::GroupControl { controls, .. })] =
                 module.controls.as_slice()
