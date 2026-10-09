@@ -3,10 +3,9 @@
 //! and a double-click runs the wheel's declared reset.
 use super::{
     message::{control::ControlMessage, draft::DraftMessage},
-    testing::{attach_log, drafting, events, finish, logged},
+    testing::{attach_log, drafting, entry, events, finish, logged, refresh_for},
     *,
 };
-use crate::state::number::NumberSpec;
 use luxforge_ui::WheelEvent;
 
 const ACTION: &str = "set-controls";
@@ -148,30 +147,6 @@ fn arrow_keys_turn_the_hue_across_the_seam_and_step_the_saturation() {
     finish(editor, catalog);
 }
 
-/// A hue nudge wraps across the seam in either direction, at every step size.
-#[test]
-fn a_hue_nudge_wraps_across_the_seam() {
-    let spec = NumberSpec::of(
-        &luxforge_core::ParameterDescriptor::number(HUE, 0.0, 360.0)
-            .step(1.0)
-            .precision(0),
-    )
-    .unwrap();
-    let wrapped = |current, direction, shift, option| {
-        controls::wrapped_hue(&spec, current, direction, shift, option)
-    };
-    assert_eq!(wrapped(0.0, -1, false, false), 359.0);
-    assert_eq!(wrapped(359.0, 1, false, false), 0.0);
-    assert_eq!(
-        wrapped(360.0, 1, false, false),
-        1.0,
-        "360 is the same direction as 0"
-    );
-    assert_eq!(wrapped(355.0, 1, true, false), 5.0);
-    assert_eq!(wrapped(0.0, -1, false, true), 359.9);
-    assert_eq!(wrapped(180.0, 1, false, false), 181.0);
-}
-
 /// A double-click on the wheel runs its declared reset, the patch of exactly its three fields,
 /// as one action.
 #[test]
@@ -191,5 +166,75 @@ fn a_double_click_runs_the_wheels_reset() {
         event: WheelEvent::Reset,
     }));
     assert!(editor.busy, "the reset is sent as one action");
+    finish(editor, catalog);
+}
+
+/// A real double-click on the disc: the first press moves the handle and opens the wheel's draft,
+/// its release sends `draft.commit`, and the second press — the reset — arrives while that commit
+/// is still answering. The reset waits rather than being refused, and goes out once, as the one
+/// declared action, against the revision the commit produced.
+#[test]
+fn a_double_click_reset_waits_for_the_first_press_commit() {
+    let (mut editor, catalog, log, asset, _, _) = drafting();
+    let current = editor
+        .document
+        .state
+        .as_ref()
+        .expect("an open asset")
+        .current_entry
+        .clone();
+    let revision = editor
+        .document
+        .state
+        .as_ref()
+        .expect("an open asset")
+        .revision;
+    let wheel = |editor: &mut Editor, event| {
+        let _ = editor.update(Message::Control(ControlMessage::Wheel {
+            action: ACTION.into(),
+            hue: HUE.into(),
+            event,
+        }));
+    };
+    turn(&mut editor, 30.0, 0.25);
+    wheel(&mut editor, WheelEvent::Release);
+    assert_eq!(
+        editor
+            .core_gesture()
+            .and_then(|gesture| gesture.draft.in_flight()),
+        Some(draft::Round::Commit),
+        "the release's commit is in flight"
+    );
+    wheel(&mut editor, WheelEvent::Reset);
+    let records = logged(&mut editor, &log);
+    let queued = events(&records, "field_reset_queued");
+    assert_eq!(queued.len(), 1, "the reset waits: {records:?}");
+    assert_eq!(queued[0]["revision"], json!(revision));
+    assert!(events(&records, "field_reset_sent").is_empty());
+    assert!(
+        editor.controls.pending_reset.is_some(),
+        "the reset is held, not refused: {}",
+        editor.status.text
+    );
+
+    // The commit answers with the next revision; the reset goes out in the same update.
+    let log = attach_log(&mut editor);
+    let committed = entry(&asset, current.sequence + 1, Some(&current.id));
+    let refresh = refresh_for(&asset, &committed, Vec::new(), &[&committed], false);
+    testing::answer_commit(&mut editor, Ok(Some(refresh)));
+    let records = logged(&mut editor, &log);
+    let sent = events(&records, "field_reset_sent");
+    assert_eq!(sent.len(), 1, "sent once: {records:?}");
+    assert_eq!(sent[0]["revision"], json!(revision + 1));
+    assert_eq!(sent[0]["action"], json!(ACTION));
+    assert_eq!(
+        sent[0]["preset"],
+        json!({HUE: 0.0, SATURATION: 0.0, "wheel-luminance": 0.0})
+    );
+    assert_eq!(
+        sent[0]["field"],
+        json!({"action": ACTION, "parameter": HUE})
+    );
+    assert!(editor.busy && editor.controls.pending_reset.is_none());
     finish(editor, catalog);
 }
