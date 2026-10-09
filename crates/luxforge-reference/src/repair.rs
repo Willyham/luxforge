@@ -532,10 +532,45 @@ pub struct Problem {
     pub alpha: Vec<f64>,
 }
 
+/// The solve's rectangle `[x0, y0, x1)` x `[y0, y1)` in stage pixels: a function of the path's box
+/// and the radius alone, so every implementation anchors the levels identically without reading a
+/// pixel. With `(u0, v0, u1, v1)` the segments' mask-space box and `R` the radius:
+///
+/// ```text
+/// x0 = max(0, floor((u0 - R) H - 0.5) - 1)      x1 = min(W, floor((u1 + R) H - 0.5) + 3)
+/// y0 = max(0, floor((v0 - R) H - 0.5) - 1)      y1 = min(H, floor((v1 + R) H - 0.5) + 3)
+/// ```
+///
+/// It holds every pixel whose centre is within `R` of the path and the one-pixel ring around them:
+/// the footprint's first column is at least `ceil((u0 - R) H - 0.5)`, which the rounding of the
+/// product can move by less than one. `None` when it holds no pixel.
+pub fn solve_rect(op: &Compiled, stage: &Stage) -> Option<[usize; 4]> {
+    let (mut u0, mut v0, mut u1, mut v1) = (
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    );
+    for s in &op.segments {
+        u0 = u0.min(s.ax.min(s.ax + s.ex));
+        v0 = v0.min(s.ay.min(s.ay + s.ey));
+        u1 = u1.max(s.ax.max(s.ax + s.ex));
+        v1 = v1.max(s.ay.max(s.ay + s.ey));
+    }
+    let h = f64::from(stage.height);
+    let low = |a: f64| ((a - op.radius) * h - 0.5).floor() - 1.0;
+    let high = |b: f64| ((b + op.radius) * h - 0.5).floor() + 3.0;
+    let x0 = low(u0).max(0.0);
+    let y0 = low(v0).max(0.0);
+    let x1 = high(u1).min(f64::from(stage.width));
+    let y1 = high(v1).min(h);
+    (x0 < x1 && y0 < y1).then_some([x0 as usize, y0 as usize, x1 as usize, y1 as usize])
+}
+
 /// The finest level of `op`'s solve over `image`, or `None` when no pixel is repaired.
 ///
 /// - The footprint `Ω`: pixels with coverage above zero and a valid source.
-/// - The rectangle: `Ω`'s bounding box grown by one pixel on every side, clipped to the stage.
+/// - The rectangle: [`solve_rect`], which holds `Ω` and the ring around it.
 /// - Unknown: a pixel of `Ω`. Fixed: a pixel not in `Ω`, with a valid source, 4-adjacent to one
 ///   that is, holding `d = E(I(q)) - E(I(q + delta))` per channel, `E` the sRGB encode extended
 ///   over the real line (`srgb::encode_extended`). Outside: every other pixel.
@@ -543,24 +578,20 @@ pub fn problem(image: &Image, op: &Compiled) -> Option<Problem> {
     let stage = image.stage();
     let (w, h) = (image.width, image.height);
     let mut alpha = vec![0.0; w * h];
-    let (mut x0, mut y0, mut x1, mut y1) = (usize::MAX, usize::MAX, 0, 0);
+    let mut any = false;
     for y in 0..h {
         for x in 0..w {
             let a = op.alpha(&stage, x, y);
             if a > 0.0 {
                 alpha[y * w + x] = a;
-                x0 = x0.min(x);
-                y0 = y0.min(y);
-                x1 = x1.max(x + 1);
-                y1 = y1.max(y + 1);
+                any = true;
             }
         }
     }
-    if x0 == usize::MAX {
+    if !any {
         return None;
     }
-    let (x0, y0) = (x0.saturating_sub(1), y0.saturating_sub(1));
-    let (x1, y1) = ((x1 + 1).min(w), (y1 + 1).min(h));
+    let [x0, y0, x1, y1] = solve_rect(op, &stage)?;
     let (lw, lh) = (x1 - x0, y1 - y0);
     let mut level = Level {
         width: lw,
