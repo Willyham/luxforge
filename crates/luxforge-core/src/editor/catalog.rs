@@ -897,6 +897,7 @@ impl EditorService {
             keep,
             live,
             rows: emptied.artifacts.len(),
+            candidates: self.candidates.clone(),
         });
         Ok((emptied, collection))
     }
