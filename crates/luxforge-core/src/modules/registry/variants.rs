@@ -8,7 +8,7 @@
 use super::ModuleRegistry;
 use crate::{
     Error, ErrorKind, SourceTag,
-    modules::{Control, GroupControl, ModuleDescriptor, NumberControl},
+    modules::{Control, ModuleDescriptor, NumberControl},
 };
 
 /// A field one control variant supersedes: parameter `parameter` of action `action`, whose number
@@ -35,13 +35,11 @@ impl Superseded<'_> {
     }
 }
 
-/// Every control of `controls`, groups included, depth first in declaration order.
+/// Every control of `controls`, groups and views included, depth first in declaration order.
 fn walk<'d>(controls: &'d [Control], visit: &mut impl FnMut(&'d Control)) {
     for control in controls {
         visit(control);
-        if let Control::Group(GroupControl { controls, .. }) = control {
-            walk(controls, visit);
-        }
+        walk(control.children(), visit);
     }
 }
 

@@ -28,6 +28,8 @@ const SHADOWS_LUMINANCE: &str = "grade-shadows-luminance";
 const GLOBAL_HUE: &str = "grade-global-hue";
 const GLOBAL_SATURATION: &str = "grade-global-saturation";
 const GRADING: &str = "Grading";
+/// The id the Grading group's tab row, and the Grading tab of the module's own row, are selected by.
+const GRADING_ID: &str = "grading";
 /// The mixer scenario's generated hue wheel.
 pub const FIXTURE: &str = crate::mixer_smoke::FIXTURE;
 
@@ -35,7 +37,7 @@ pub const FIXTURE: &str = crate::mixer_smoke::FIXTURE;
 fn module_tab(index: usize) -> script::Step {
     script::Step::Tab(TabStep {
         module: MODULE.into(),
-        group: Vec::new(),
+        group: None,
         index,
     })
 }
@@ -44,7 +46,7 @@ fn module_tab(index: usize) -> script::Step {
 fn grading_view(index: usize) -> script::Step {
     script::Step::Tab(TabStep {
         module: MODULE.into(),
-        group: vec![GRADING.into()],
+        group: Some(GRADING_ID.into()),
         index,
     })
 }
@@ -226,15 +228,20 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     // View selection is session state: recorded, drawn, and never a frame.
     let global = at("global-view")?.state();
     ensure(
-        selected_view(global, MODULE, &[] as &[&str], GRADING)
-            && selected_view(global, MODULE, &[GRADING], "Global"),
+        selected_view(global, MODULE, None, GRADING_ID)
+            && selected_view(global, MODULE, Some(GRADING_ID), "global"),
         format!(
             "The session did not record the Global view: {}",
             global["workspace"]["views"]
         ),
     )?;
     ensure(
-        selected_view(at("three-way-view")?.state(), MODULE, &[GRADING], "3-way"),
+        selected_view(
+            at("three-way-view")?.state(),
+            MODULE,
+            Some(GRADING_ID),
+            "three-way",
+        ),
         "The session did not record the 3-way view",
     )?;
     // The views draw differently: Global's one large wheel replaces the 3-way view's three, and

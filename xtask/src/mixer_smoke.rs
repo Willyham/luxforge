@@ -27,8 +27,8 @@ const SET_MIXER: &str = "set-mixer";
 const RED_HUE: &str = "red-hue";
 const AQUA_SATURATION: &str = "aqua-saturation";
 const SATURATION_GROUP: &str = "Saturation";
-/// The module's HSL tab, whose own tab row shows Hue, Saturation and Luminance.
-const HSL_GROUP: &str = "HSL";
+/// The id of the module's HSL tab, whose own tab row shows Hue, Saturation and Luminance.
+const HSL_GROUP: &str = "hsl";
 pub const FIXTURE: &str = "fixtures/generated/hue-wheel.jpg";
 
 /// The wheel's own east point (angle 0), where the mixer's red range is centred.
@@ -143,7 +143,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             "saturation-tab",
             TabStep {
                 module: MIXER_MODULE.into(),
-                group: vec![HSL_GROUP.into()],
+                group: Some(HSL_GROUP.into()),
                 index: 1,
             },
         )
@@ -153,7 +153,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             "luminance-tab",
             TabStep {
                 module: MIXER_MODULE.into(),
-                group: vec![HSL_GROUP.into()],
+                group: Some(HSL_GROUP.into()),
                 index: 2,
             },
         )
@@ -241,12 +241,12 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
 
     // The Saturation and Luminance tabs of the HSL tab's own row, each session view state alone.
     for (step, view) in [
-        ("saturation-tab", "Saturation"),
-        ("luminance-tab", "Luminance"),
+        ("saturation-tab", "saturation"),
+        ("luminance-tab", "luminance"),
     ] {
         let state = launch.at(step)?.state();
         ensure(
-            selected_view(state, MIXER_MODULE, &[HSL_GROUP], view),
+            selected_view(state, MIXER_MODULE, Some(HSL_GROUP), view),
             format!(
                 "The {step} step selected {}, not {view}",
                 state["workspace"]["views"]

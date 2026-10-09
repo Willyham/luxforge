@@ -12,8 +12,8 @@
 //! difference is permitted. Identity stacks and byte sharing are exact with no tolerance at all.
 
 use luxforge_core::{
-    AssetId, EditorService, ErrorKind, Layer, LinearSettings, MIXER_EFFECT, MIXER_EFFECT_FORMAT,
-    ModuleRegistry, Mutation, MutationOutcome, ParameterKind, SnapshotId,
+    AssetId, EditorService, ErrorKind, Layer, LinearSettings, MIXER_EFFECT, ModuleRegistry,
+    Mutation, MutationOutcome, SnapshotId, current_effect_format,
 };
 use luxforge_reference::{self as reference, grade, mixer::RANGE_NAMES};
 use luxforge_testbase::paths;
@@ -404,8 +404,8 @@ fn grade_fields() -> Vec<String> {
         .collect()
 }
 
-/// `set-mixer` declares all thirty-eight fields in payload order, the grading fields with their
-/// ranges and defaults (Blending 50), and the effect is at its own format marker.
+/// `set-mixer` declares all thirty-eight fields in the reference's payload order; their ranges
+/// and defaults are the descriptor snapshot's (`fixtures/modules/builtin-descriptors.json`).
 #[test]
 fn set_mixer_declares_every_hsl_and_grading_field() {
     let registry = ModuleRegistry::builtin();
@@ -414,8 +414,6 @@ fn set_mixer_declares_every_hsl_and_grading_field() {
         .into_iter()
         .find(|module| module.id == "luxforge.mixer")
         .expect("the mixer module");
-    assert_eq!(module.effects[0].format, MIXER_EFFECT_FORMAT);
-    assert_eq!(MIXER_EFFECT_FORMAT, 2);
     let action = module.action("set-mixer").expect("set-mixer");
     let names: Vec<&str> = action
         .parameters
@@ -424,25 +422,6 @@ fn set_mixer_declares_every_hsl_and_grading_field() {
         .collect();
     let expected: Vec<String> = fields().into_iter().chain(grade_fields()).collect();
     assert_eq!(names, expected);
-    for parameter in &action.parameters[24..] {
-        let (min, max) = match parameter.kind {
-            ParameterKind::Number { min, max } => (min, max),
-            ref other => panic!("{} is {other:?}", parameter.name),
-        };
-        let expected = match parameter.name.rsplit('-').next() {
-            Some("hue") => (0.0, 360.0, 0.0),
-            Some("saturation") => (0.0, 100.0, 0.0),
-            Some("luminance") | Some("balance") => (-100.0, 100.0, 0.0),
-            Some("blending") => (0.0, 100.0, 50.0),
-            other => panic!("unexpected field {other:?}"),
-        };
-        assert_eq!(
-            (min, max, parameter.default.as_ref().and_then(Value::as_f64)),
-            (expected.0, expected.1, Some(expected.2)),
-            "{}",
-            parameter.name
-        );
-    }
 }
 
 /// A stored mixer layer at the shared format 1, the shape before grading, is refused as
@@ -452,7 +431,7 @@ fn a_mixer_layer_at_an_unsupported_format_is_refused() {
     let registry = ModuleRegistry::builtin();
     let mut old = layer(json!({"red-hue": 20.0}));
     old.effect_format = luxforge_core::EFFECT_FORMAT;
-    assert_ne!(old.effect_format, MIXER_EFFECT_FORMAT);
+    assert_ne!(old.effect_format, current_effect_format(MIXER_EFFECT));
     let error = registry
         .layer_report(&old)
         .expect_err("an unsupported format is refused");
@@ -637,7 +616,7 @@ fn mixer_values(service: &EditorService, asset: &AssetId) -> Map<String, Value> 
     match mixers.as_slice() {
         [] => Map::new(),
         [one] => {
-            assert_eq!(one.effect_format, MIXER_EFFECT_FORMAT);
+            assert_eq!(one.effect_format, current_effect_format(MIXER_EFFECT));
             registry.layer_report(one).expect("described").values
         }
         more => panic!("{} mixer layers", more.len()),

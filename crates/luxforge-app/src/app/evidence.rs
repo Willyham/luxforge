@@ -3421,7 +3421,7 @@ impl Editor {
     /// captured at once.
     fn tab_step(&mut self, step: TabStep) -> Task<Message> {
         let Some(views) = crate::state::tools::module_of(&self.modules, &step.module)
-            .and_then(|module| module.views_at(&step.group))
+            .and_then(|module| module.views_at(step.group.as_deref()))
             .map(|views| views.into_iter().map(str::to_owned).collect::<Vec<_>>())
         else {
             return self.fail_step("the module declares no such tab row");
@@ -3432,7 +3432,7 @@ impl Editor {
         let shown = self
             .session
             .workspace
-            .view(&step.module, &step.group)
+            .view(&step.module, step.group.as_deref())
             .and_then(|chosen| views.iter().position(|offered| offered == chosen))
             .unwrap_or(0);
         let task = self.update(Message::Control(ControlMessage::SelectView {

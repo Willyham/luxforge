@@ -1250,14 +1250,14 @@ pub struct GroupStep {
     pub expanded: bool,
 }
 
-/// The view a tab row shows, as its tab row selects it: the row of `module` at the label path
-/// `group` (empty for the module's own tabs), its `index`th view.
+/// The view a tab row shows, as its tab row selects it: the row of `module`'s group of id `group`
+/// (absent for the module's own tabs), its `index`th view.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TabStep {
     pub module: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub group: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
     pub index: usize,
 }
 
