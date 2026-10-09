@@ -7,6 +7,8 @@
 //! The two side panels collapse independently through the session's own workspace state; the canvas
 //! takes whatever remains. Every region is styled from [`luxforge_ui::theme`], never an ad hoc
 //! colour, and the window carries no outer padding: the canvas pads its photo itself.
+#[cfg_attr(not(test), allow(dead_code))]
+mod brush_overlay;
 pub(crate) mod canvas;
 pub(crate) mod canvas_view;
 mod capabilities;
