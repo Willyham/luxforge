@@ -9,6 +9,8 @@ pub mod gate;
 pub mod image_id;
 pub mod registry;
 
+pub use consent::{Active, ConsentReader, InstallationId, StoredConsent, Usage, UsageState};
+pub use eligibility::{BuildIdentity, Eligibility, LaunchMode, Reason, TestReceiver};
 pub use gate::{Gate, Generation};
 
 /// The disclosure the startup notice and Settings › Privacy describe. Consent saved for another
