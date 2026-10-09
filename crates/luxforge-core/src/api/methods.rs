@@ -18,9 +18,10 @@ use super::{
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
-    ActionRef, AnalysisSelection, ArtifactId, AssetId, ComponentId, DraftId, EditorService,
-    EntryId, Error, HistorySelection, MAX_PRESET_BYTES, MAX_PRESET_NAME, MaskId, ModuleRegistry,
-    Mutation, MutationOutcome, MutationResult, ParameterDescriptor, PixelSample, PresetId, Zoom,
+    ActionRef, AnalysisSelection, ArtifactId, AssetId, ComponentId, CorrectionId, DraftId,
+    EditorService, EntryId, Error, HistorySelection, MAX_PRESET_BYTES, MAX_PRESET_NAME, MaskId,
+    ModuleRegistry, Mutation, MutationOutcome, MutationResult, ParameterDescriptor, PixelSample,
+    PresetId, Zoom,
     capabilities::{
         grants,
         host::{
@@ -1962,6 +1963,9 @@ host_params! {
         /// The mask and component a `mask.*` gesture edits. A module action's draft takes neither.
         mask: Option<MaskId> = mask().notes("the mask a mask.* gesture edits, or the mask an action of a maskable effect drafts through"),
         component: Option<ComponentId> = component().notes("the component inside that mask, for a mask.* gesture only"),
+        /// The correction an operation-bound module action edits, sent as that action's declared
+        /// correction identity parameter.
+        operation: Option<CorrectionId> = correction().notes("the correction an operation-bound module action edits (a pin, source or size drag of one correction), sent as the action's own correction identity parameter; refused for an action that names none and for a correction the current layer does not hold"),
     }
 }
 
@@ -2420,7 +2424,8 @@ fn canvas_modes(registry: &ModuleRegistry) -> Vec<String> {
             .filter_map(|pick| match pick {
                 crate::CanvasInteraction::SampleApply { action, .. } => Some(action.clone()),
                 crate::CanvasInteraction::PointPick { .. }
-                | crate::CanvasInteraction::CropFrame { .. } => None,
+                | crate::CanvasInteraction::CropFrame { .. }
+                | crate::CanvasInteraction::BrushMask { .. } => None,
             }),
     );
     modes.extend(
@@ -2672,7 +2677,7 @@ fn draft_begin(
     // commit instead of committing blind. It is checked by the checks its commit runs, and a draft
     // its commit would refuse for what the photo is — a RAW development on a JPEG — is refused
     // here, in the commit's words, rather than at its first preview.
-    let target = [
+    let mut target: crate::DraftTarget = [
         ("mask", p.mask.map(|mask| mask.as_str().to_owned())),
         (
             "component",
@@ -2682,6 +2687,23 @@ fn draft_begin(
     .into_iter()
     .filter_map(|(name, identity)| identity.map(|identity| (name.to_owned(), identity)))
     .collect();
+    // A correction is named by whichever parameter the action declares as its correction
+    // identity, read from the declaration as every draft target is ([`crate::declared_target`]).
+    if let Some(operation) = p.operation
+        && let Some(action) = service.registry().resolve_action(&p.action)
+    {
+        let named = crate::declared_target(action.descriptor(), |kind| {
+            (kind == crate::IdentityKind::Correction).then(|| operation.to_string())
+        });
+        if named.is_empty() {
+            return Err(Error::validation(format!(
+                "action {} names no correction; operation is the correction an \
+                 operation-bound action edits",
+                p.action
+            )));
+        }
+        target.extend(named);
+    }
     let target = service.draft_target(&p.asset_id, &p.action, target)?;
     let revision = service.revision(&p.asset_id)?;
     let mut draft = crate::Draft::new(&p.action, p.asset_id, revision);
@@ -4262,6 +4284,7 @@ mod tests {
                     artifacts: false,
                     single: false,
                     sources: Vec::new(),
+                    operations: None,
                 }],
                 actions: vec![crate::ActionDescriptor {
                     id: "test-angle".into(),
@@ -4356,6 +4379,7 @@ mod tests {
                     artifacts: false,
                     single: false,
                     sources: Vec::new(),
+                    operations: None,
                 }],
                 actions: vec![crate::ActionDescriptor {
                     id: MARK_ACTION.into(),

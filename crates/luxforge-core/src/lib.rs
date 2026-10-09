@@ -83,29 +83,30 @@ pub use editor::{
     ActionResult, AssetRecord, DraftStamp, EditorService, EditorState, Evaluation, FirstOpen,
     HistoryPage, LayerDescription, Lineage, LineageStep, MASK_FIELD, MutationOutcome,
     MutationResult, PixelInput, PixelSample, RawInterpretation, RecipeDescription, SkippedSetting,
-    SourceKind, SourceTag, Version,
+    SourceKind, SourceTag, Version, operations_limit,
 };
 pub use error::{AnalysisRefusal, Error, ErrorKind, Preparation, PreparationNeeds};
 pub use export::{CaptureInfo, CaptureMetadata};
 pub use mask::MASK_GPU_PROGRAMS;
 pub use model::{
-    AssetId, COMPONENTS_PER_MASK, Component, ComponentId, ComponentMode, DraftId, EFFECT_FORMAT,
-    EntryId, HistoryEntry, HistoryRow, JobId, Layer, LayerId, MASKS_PER_RECIPE, Mask, MaskId,
-    Mutation, MutationRequest, Orientation, PresetId, RECIPE_FORMAT, Recipe, Snapshot, SnapshotId,
-    Transform,
+    AssetId, COMPONENTS_PER_MASK, Component, ComponentId, ComponentMode, CorrectionId, DraftId,
+    EFFECT_FORMAT, EntryId, HistoryEntry, HistoryRow, JobId, Layer, LayerId, MASKS_PER_RECIPE,
+    Mask, MaskId, Mutation, MutationRequest, Orientation, PresetId, RECIPE_FORMAT, Recipe,
+    Snapshot, SnapshotId, Transform,
 };
 /// Basic's Auto tone solver and forward model, which the fitting rig and the measurements call.
 pub use modules::auto_tone;
 pub use modules::{
     ActionControl, ActionDescriptor, ActionInput, ActionPlan, ActionRef, ActionStyle,
-    AnalysisAction, Availability, BASIC_EFFECT, BoxRect, CONTROLS_EFFECT, CROP_EFFECT,
-    CURVE_EFFECT, CanvasInteraction, CapabilityModule, ChoiceControl, ChoiceStyle, ColorControl,
-    ColorOperation, ColorStyle, CompileStage, Control, ControlVariant, CropAspect, CropPayload,
-    CropStage, CurveBackground, CurveChannel, CurveControl, DETAIL_EFFECT, Edge, EffectDescriptor,
-    EffectStage, ExactGeometry, GPU_PROGRAMS, GroupControl, IdentityKind, LENS_EFFECT, LOOK_EFFECT,
-    LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE, MAX_MASKED_SPATIAL_LAYERS, MAX_SOURCE_NAME,
-    MIN_ANGLE, MIXER_EFFECT, MIXER_EFFECT_FORMAT, ModuleDescriptor, ModuleLayout, ModuleRegistry,
-    NewLayer, NumberControl, NumberStyle, ORIENTATION_EFFECT, OperationIdentity, OutputRect,
+    AnalysisAction, Availability, BASIC_EFFECT, BoxRect, BrushEdit, BrushSource, CONTROLS_EFFECT,
+    CROP_EFFECT, CURVE_EFFECT, CanvasInteraction, CapabilityModule, ChoiceControl, ChoiceStyle,
+    ColorControl, ColorOperation, ColorStyle, CompileStage, Control, ControlVariant, CropAspect,
+    CropPayload, CropStage, CurveBackground, CurveChannel, CurveControl, DETAIL_EFFECT, Edge,
+    EffectDescriptor, EffectOperations, EffectStage, ExactGeometry, GPU_PROGRAMS, GroupControl,
+    IdentityKind, LENS_EFFECT, LOOK_EFFECT, LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE,
+    MAX_MASKED_SPATIAL_LAYERS, MAX_OPERATIONS, MAX_SOURCE_NAME, MIN_ANGLE, MIXER_EFFECT,
+    MIXER_EFFECT_FORMAT, ModuleDescriptor, ModuleLayout, ModuleRegistry, NewLayer, NumberControl,
+    NumberStyle, OPERATIONS_FIELD, ORIENTATION_EFFECT, OperationIdentity, OutputRect,
     PERSPECTIVE_EFFECT, PIXEL_EFFECT, PRESENCE_EFFECT, PROOF_GENERATE_PATH, PROOF_PALETTE,
     PROOF_PALETTE_PATH, ParameterDescriptor, ParameterKind, PickerControl, PointwiseColor,
     PresetsControl, Processing, Provider, QueryChoiceControl, QueryRef, RailDecoration,
