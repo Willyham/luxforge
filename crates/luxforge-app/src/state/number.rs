@@ -26,6 +26,9 @@ pub(crate) struct NumberSpec {
     /// Where a bipolar rail's fill grows from: the declared zero, else 0 clamped into the range.
     pub(crate) zero: f64,
     pub(crate) integer: bool,
+    /// The range is a circle, as a wheel's hue is: its ends are one direction, so a nudge past one
+    /// comes round from the other rather than stopping ([`Self::wrapping`]).
+    pub(crate) wraps: bool,
 }
 
 impl NumberSpec {
@@ -66,6 +69,7 @@ impl NumberSpec {
             fine_decimals,
             zero: parameter.zero.unwrap_or(0.0_f64.clamp(min, max)),
             integer,
+            wraps: false,
         })
     }
 
@@ -139,8 +143,19 @@ impl NumberSpec {
         }
     }
 
+    /// This spec over a range whose ends are one direction, as the hue a wheel binds is: the core
+    /// declares a wheel's hue exactly `0..=360`, with 0 and 360 the same direction.
+    pub(crate) fn wrapping(self) -> Self {
+        Self {
+            wraps: true,
+            ..self
+        }
+    }
+
     /// One nudge from `current` in `direction`: the step, ten steps with Shift, the fine step
-    /// with Option, clamped into the hard range.
+    /// with Option, clamped into the hard range. A wrapping spec comes round across the seam
+    /// instead, never landing on its maximum: 359 and one step more is 0, and 0 and one step less
+    /// is 359.
     pub(crate) fn nudged(&self, current: f64, direction: i8, shift: bool, option: bool) -> f64 {
         let step = if option {
             self.fine_step
@@ -149,7 +164,17 @@ impl NumberSpec {
         } else {
             self.step
         };
-        (current + f64::from(direction.signum()) * step).clamp(self.min, self.max)
+        let next = current + f64::from(direction.signum()) * step;
+        let span = self.max - self.min;
+        if self.wraps && span > 0.0 && (next < self.min || next >= self.max) {
+            // The wrap's rounding residue stays on the declared decimals.
+            round_to(
+                (next - self.min).rem_euclid(span) + self.min,
+                self.fine_decimals,
+            )
+        } else {
+            next.clamp(self.min, self.max)
+        }
     }
 
     /// A number as the request carries it: an integer parameter's is a whole number.
@@ -307,6 +332,34 @@ mod tests {
         assert_eq!(spec.format(12.0), "12");
 
         assert!(NumberSpec::of(&ParameterDescriptor::boolean("on")).is_none());
+    }
+
+    /// A wrapping spec's nudge comes round across the seam in either direction, at every step
+    /// size, and never lands on the maximum, which is the same direction as the minimum.
+    #[test]
+    fn a_wrapping_nudge_comes_round_across_the_seam() {
+        let hue = ParameterDescriptor::number("hue", 0.0, 360.0)
+            .step(1.0)
+            .precision(0);
+        let spec = NumberSpec::of(&hue).expect("a number");
+        assert_eq!(
+            spec.nudged(0.0, -1, false, false),
+            0.0,
+            "clamped by default"
+        );
+        let spec = spec.wrapping();
+        let nudged =
+            |current, direction, shift, option| spec.nudged(current, direction, shift, option);
+        assert_eq!(nudged(0.0, -1, false, false), 359.0);
+        assert_eq!(nudged(359.0, 1, false, false), 0.0);
+        assert_eq!(
+            nudged(360.0, 1, false, false),
+            1.0,
+            "360 is the direction of 0"
+        );
+        assert_eq!(nudged(355.0, 1, true, false), 5.0);
+        assert_eq!(nudged(0.0, -1, false, true), 359.9);
+        assert_eq!(nudged(180.0, 1, false, false), 181.0);
     }
 
     /// The exact complaint this exists for: iced's own snapping to a 0.01 step lands next to the
