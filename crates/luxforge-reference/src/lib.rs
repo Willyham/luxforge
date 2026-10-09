@@ -2,7 +2,7 @@
 //! against: the sRGB transfer function in [`srgb`], exposure here, and one module per study
 //! (colour, the Tone curve, the DNG corrections, the RAW look, mask, mixer, the mixer's grading,
 //! Presence, the preview
-//! error measure, range, tone, vignette, white balance), and the declared tolerance of each output
+//! error measure, range, the Clone and Heal repairs, tone, vignette, white balance), and the declared tolerance of each output
 //! kind against the reference renderer in [`tolerance`].
 //!
 //! Every reference is written directly from its study's formulas — the standard sRGB transfer
@@ -31,6 +31,7 @@ pub mod mixer;
 pub mod presence;
 pub mod preview_error;
 pub mod range;
+pub mod repair;
 mod rng;
 pub mod srgb;
 pub mod tolerance;
