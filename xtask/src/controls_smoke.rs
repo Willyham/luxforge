@@ -6,7 +6,10 @@
 //! module reset. Its checks correlate history revisions and values with captures and verify that
 //! the identity proof preserves the displayed photograph.
 use crate::{
-    scenario::{Checked, Checks, Frame, Plan, Run, Step, pixels, plan::only},
+    scenario::{
+        Checked, Checks, Frame, Plan, Run, Step, asked_no_frame, drawn_wheel, pixels, plan::only,
+        selected_view,
+    },
     *,
 };
 use luxforge_evidence::{
@@ -488,14 +491,8 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     // The wheel: one draft of both fields while dragged, its model following the committed and
     // external values, and its views selected as session state with no history or frame.
     let wheel_model = |step: &str| -> Result<Value> {
-        at(step)?["state"]["control_ui"]["wheels"]
-            .as_array()
-            .and_then(|wheels| {
-                wheels
-                    .iter()
-                    .find(|wheel| wheel["hue_parameter"] == WHEEL_HUE)
-                    .cloned()
-            })
+        drawn_wheel(at(step)?.state(), WHEEL_HUE)
+            .cloned()
             .ok_or_else(|| format!("The {step} frame reports no wheel").into())
     };
     ensure(
@@ -517,12 +514,9 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             && wheel_model("wheel-current")?["hue"] == json!(240.0),
         "The previewed Original and the current entry do not show their own wheel values",
     )?;
-    let views =
-        |step: &str| -> Result<Value> { Ok(at(step)?["state"]["workspace"]["views"].clone()) };
-    let large = json!([{"module": MODULE, "group": WHEEL_GROUP, "view": "Large"}]);
-    let compact = json!([{"module": MODULE, "group": WHEEL_GROUP, "view": "Compact"}]);
     ensure(
-        views("view-large")? == large && views("view-compact")? == compact,
+        selected_view(at("view-large")?.state(), MODULE, &WHEEL_GROUP, "Large")
+            && selected_view(at("view-compact")?.state(), MODULE, &WHEEL_GROUP, "Compact"),
         "The session's view selection does not record the Large and Compact views",
     )?;
     let visible = |step: &str| -> Result<Value> {
@@ -553,8 +547,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         ("view-compact", "wheel-current"),
     ] {
         ensure(
-            at(step)?["state"]["requested_generation"]
-                == at(before)?["state"]["requested_generation"],
+            asked_no_frame(at(before)?.state(), at(step)?.state()),
             format!("Selecting the view in {step} asked for a frame"),
         )?;
     }

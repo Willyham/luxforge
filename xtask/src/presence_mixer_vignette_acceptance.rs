@@ -32,18 +32,25 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
     let presence = section(
         &fixture,
         &out.join("presence-catalog.sqlite"),
+        None,
         presence_placement,
     )?;
-    let mixer = section(&fixture, &out.join("mixer-catalog.sqlite"), mixer_order)?;
-    let grading = section_in(
+    let mixer = section(
+        &fixture,
+        &out.join("mixer-catalog.sqlite"),
+        None,
+        mixer_order,
+    )?;
+    let grading = section(
         &fixture,
         &out.join("grading-catalog.sqlite"),
-        out,
+        Some(&out.join("grading-exports")),
         grading_journey,
     )?;
     let vignette = section(
         &fixture,
         &out.join("vignette-catalog.sqlite"),
+        None,
         vignette_recentring,
     )?;
     ensure(
@@ -64,25 +71,25 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
 }
 
 /// What one module's section receives: the owner, the editing client, the imported asset, its
-/// Original entry and the decoded fixture, and where it records what it showed.
-type Section =
-    fn(&OwnerHandle, ClientId, &Value, &Value, &SourceImage, &mut dyn FnMut(&str, Value)) -> Result;
-
-/// What the grading section receives: [`Section`]'s arguments and a fresh folder for its exports.
-type ExportingSection = fn(
+/// Original entry and the decoded fixture, the new folder it was given for what it writes, if any,
+/// and where it records what it showed.
+type Section = fn(
     &OwnerHandle,
     ClientId,
     &Value,
     &Value,
     &SourceImage,
-    &Path,
+    Option<&Path>,
     &mut dyn FnMut(&str, Value),
 ) -> Result;
 
-/// [`section`] for a section that writes exports, into a new folder under `out`.
-fn section_in(fixture: &Path, catalog: &Path, out: &Path, run: ExportingSection) -> Result<Value> {
-    let exports = out.join("grading-exports");
-    fs::create_dir(&exports)?;
+/// One module's section against its own catalog: a new owner, one client and the fixture imported
+/// once, and `scratch`, created new, for a section that writes files such as exports. The owner is
+/// stopped however the section ends.
+fn section(fixture: &Path, catalog: &Path, scratch: Option<&Path>, run: Section) -> Result<Value> {
+    if let Some(scratch) = scratch {
+        fs::create_dir(scratch)?;
+    }
     let source = luxforge_core::open_source(fixture)?;
     let total = Instant::now();
     let mut checks = Vec::new();
@@ -100,34 +107,9 @@ fn section_in(fixture: &Path, catalog: &Path, out: &Path, run: ExportingSection)
             &asset,
             &original,
             &source,
-            &exports,
+            scratch,
             &mut record,
         )
-    })();
-    owner.stop();
-    join.join().map_err(|_| "The owner thread panicked")?;
-    outcome?;
-    Ok(json!({
-        "checks": checks,
-        "elapsed_ms": total.elapsed().as_secs_f64() * 1000.0,
-    }))
-}
-
-/// One module's section against its own catalog: a new owner, one client and the fixture imported
-/// once. The owner is stopped however the section ends.
-fn section(fixture: &Path, catalog: &Path, run: Section) -> Result<Value> {
-    let source = luxforge_core::open_source(fixture)?;
-    let total = Instant::now();
-    let mut checks = Vec::new();
-    let (owner, join) = OwnerHandle::start(catalog)?;
-    let outcome = (|| -> Result {
-        let editor = owner.register();
-        let imported = open(&owner, editor, fixture)?;
-        let asset = imported["asset"]["id"].clone();
-        let original = imported["current_entry"]["id"].clone();
-        let mut record =
-            |shows: &str, detail: Value| checks.push(json!({"shows": shows, "detail": detail}));
-        run(&owner, editor, &asset, &original, &source, &mut record)
     })();
     owner.stop();
     join.join().map_err(|_| "The owner thread panicked")?;
@@ -167,6 +149,7 @@ fn presence_placement(
     asset: &Value,
     original: &Value,
     _: &SourceImage,
+    _: Option<&Path>,
     record: &mut dyn FnMut(&str, Value),
 ) -> Result {
     // Presence always follows the colour run (Basic, then the mixer) whichever order the three
@@ -239,6 +222,7 @@ fn mixer_order(
     asset: &Value,
     original: &Value,
     _: &SourceImage,
+    _: Option<&Path>,
     record: &mut dyn FnMut(&str, Value),
 ) -> Result {
     // The mixer always follows Basic, whichever was touched first.
@@ -336,9 +320,11 @@ fn grading_journey(
     asset: &Value,
     _: &Value,
     source: &SourceImage,
-    exports: &Path,
+    exports: Option<&Path>,
     record: &mut dyn FnMut(&str, Value),
 ) -> Result {
+    let exports =
+        exports.ok_or("The grading section writes its exports into a folder of its own")?;
     let entries = |owner: &OwnerHandle| -> Result<usize> {
         Ok(
             call(owner, editor, "history.list", json!({"asset_id": asset}))?["entries"]
@@ -536,6 +522,7 @@ fn vignette_recentring(
     asset: &Value,
     _: &Value,
     source: &SourceImage,
+    _: Option<&Path>,
     record: &mut dyn FnMut(&str, Value),
 ) -> Result {
     // A vignette recomputes its mask on the stage a crop produces, not the one it was committed

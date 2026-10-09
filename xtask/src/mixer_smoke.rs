@@ -9,7 +9,9 @@
 //! different colour family entirely, which is what [`patch_mean`] samples at
 //! [`OPPOSITE_ANGLE_DEG`] as an unaffected control for a red-hue edit.
 use crate::{
-    scenario::{Checked, Checks, Frame, Plan, Run, Step, Tolerance, pixels, plan::only},
+    scenario::{
+        Checked, Checks, Frame, Plan, Run, Step, Tolerance, pixels, plan::only, selected_view,
+    },
     *,
 };
 use luxforge_core::MIXER_EFFECT;
@@ -242,12 +244,13 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         ("saturation-tab", "Saturation"),
         ("luminance-tab", "Luminance"),
     ] {
-        let views = &launch.at(step)?.state()["workspace"]["views"];
+        let state = launch.at(step)?.state();
         ensure(
-            views.as_array().is_some_and(|rows| {
-                rows.contains(&json!({"module": MIXER_MODULE, "group": [HSL_GROUP], "view": view}))
-            }),
-            format!("The {step} step selected {views}, not {view}"),
+            selected_view(state, MIXER_MODULE, &[HSL_GROUP], view),
+            format!(
+                "The {step} step selected {}, not {view}",
+                state["workspace"]["views"]
+            ),
         )?;
     }
 
