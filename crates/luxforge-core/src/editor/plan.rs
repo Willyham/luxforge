@@ -1484,6 +1484,22 @@ pub(crate) fn prefix(layers: &[Layer], index: usize) -> Result<&[Layer], Error> 
     })
 }
 
+/// The refusal of a new operation on a layer that already holds the most its effect declares
+/// ([`crate::EffectDescriptor::operations`]): `resource-limit: 100 corrections is this photograph's
+/// limit`, with `data: {limit}`. The one wording `draft.begin` and a module's own commit use, so a
+/// refusal before a draft opens and one at the commit say the same thing.
+pub fn operations_limit(operations: crate::EffectOperations) -> Error {
+    let noun = match operations.identity {
+        crate::IdentityKind::Correction => "corrections",
+        _ => "operations",
+    };
+    Error::resource_limit(format!(
+        "{} {noun} is this photograph's limit",
+        operations.max
+    ))
+    .with_data(json!({"limit": operations.max}))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4189,20 +4205,4 @@ mod tests {
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }
-}
-
-/// The refusal of a new operation on a layer that already holds the most its effect declares
-/// ([`crate::EffectDescriptor::operations`]): `resource-limit: 100 corrections is this photograph's
-/// limit`, with `data: {limit}`. The one wording `draft.begin` and a module's own commit use, so a
-/// refusal before a draft opens and one at the commit say the same thing.
-pub fn operations_limit(operations: crate::EffectOperations) -> Error {
-    let noun = match operations.identity {
-        crate::IdentityKind::Correction => "corrections",
-        _ => "operations",
-    };
-    Error::resource_limit(format!(
-        "{} {noun} is this photograph's limit",
-        operations.max
-    ))
-    .with_data(json!({"limit": operations.max}))
 }
