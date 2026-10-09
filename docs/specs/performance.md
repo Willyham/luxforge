@@ -349,7 +349,6 @@ Every harness command's default run is a functional run: it proves the journey a
 | S0 sampled peak RSS (empty / 24 / 60 MP) | 111 / 506 / 772 MiB; 965 MiB after sixteen 60 MP loads |
 | S0 idle CPU after settling | 0.033% of one core over 30 s |
 | Core import of a 24 / 60 MP JPEG | 55 / 118 ms |
-| Pixel edit after a rotate on 24 MP | 0.2 ms (sampling path) |
 | Core one transform on 24 MP after the module registry (p50 / p95, 20 samples) | 12.2 / 13.5 ms; 200 composed transforms 11.4 / 11.9 ms; registration of the built-in modules 0.18 ms and first render after open 0.05 ms on the 480×320 fixture (release acceptance run) |
 | Editor RSS after M1/M2 journey with a small fixture | about 101 MiB, 0.2% CPU idle |
 
@@ -3270,9 +3269,9 @@ boundary are pulled, never materialized, a bounded rectangle at a time with thei
 its rows: a spatial operation's input one row of its tile region at a time, and a straightened
 crop's taps one block of 64 output columns by the chunk's rows at a time, through the rectangle of
 at most 16,384 pixels those taps read, so each pixel before the resample is evaluated about once
-per block instead of once per tap. A segment with a point replacement is pulled pixel by pixel.
+per block instead of once per tap.
 Complete-buffer tests compare the rows with the point evaluator for Basic, Mixer and their combined
-recipe, a viewed source, a partial final chunk, replacements on either side of a colour run, colour
+recipe, a viewed source, a partial final chunk, colour
 after a straightened crop at 4 and -30 degrees and after Presence, masked colour and a masked
 Presence layer before a crop, on a stage narrower than one tap block and on one several blocks
 wide.

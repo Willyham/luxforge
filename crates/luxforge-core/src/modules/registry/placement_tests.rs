@@ -3,7 +3,6 @@ use super::{tests::*, *};
 use crate::modules::raw::RAW_EFFECT;
 use crate::{
     BASIC_EFFECT, CROP_EFFECT, EFFECT_FORMAT, Layer, MaskId, ORIENTATION_EFFECT, Orientation,
-    PIXEL_EFFECT,
     modules::{CropPayload, EffectStage, ModuleDescriptor},
 };
 use serde_json::json;
@@ -21,7 +20,7 @@ fn a_modules_own_layer_is_found_for_its_target_only() {
     let in_first = bound(basic_layer(), &first);
     let crop = Layer::crop(CropPayload::NEUTRAL);
     let stack = [
-        Layer::pixel(0, 0, [1, 2, 3]),
+        Layer::orientation(Orientation::NEUTRAL),
         global.clone(),
         in_first.clone(),
         crop.clone(),
@@ -67,7 +66,7 @@ fn a_modules_own_layer_is_found_for_its_target_only() {
     ] {
         assert!(registry.effect_single(effect), "{effect}");
     }
-    for effect in [crate::PIXEL_EFFECT, ORIENTATION_EFFECT, RAW_EFFECT] {
+    for effect in [ORIENTATION_EFFECT, RAW_EFFECT] {
         assert!(!registry.effect_single(effect), "{effect}");
     }
 }
@@ -177,7 +176,7 @@ fn sorting_masked_layers_moves_only_them() {
     let in_first = bound(basic_layer(), &first);
     let in_second = bound(basic_layer(), &second);
     let mut layers = vec![
-        Layer::pixel(0, 0, [1, 2, 3]),
+        Layer::orientation(Orientation::NEUTRAL),
         global.clone(),
         in_first.clone(),
         in_second.clone(),
@@ -207,7 +206,11 @@ fn sorting_masked_layers_moves_only_them() {
         "only the masked layers moved"
     );
     // A stack with no masked layers is untouched, and so is a stack whose masks are unchanged.
-    let mut unmasked = vec![Layer::pixel(0, 0, [1, 2, 3]), global.clone(), crop.clone()];
+    let mut unmasked = vec![
+        Layer::orientation(Orientation::NEUTRAL),
+        global.clone(),
+        crop.clone(),
+    ];
     let before = identities(&unmasked);
     registry.sort_masked_layers(&mut unmasked, &[first, second]);
     assert_eq!(identities(&unmasked), before);
@@ -215,8 +218,8 @@ fn sorting_masked_layers_moves_only_them() {
 
 #[test]
 fn a_pixel_layer_joins_the_stack_before_the_first_geometry_layer() {
-    let registry = ModuleRegistry::developer();
-    let pixel = || Layer::pixel(0, 0, [1, 2, 3]);
+    let registry = staged_registry();
+    let pixel = || test_layer(PIXEL_STAGE_EFFECT);
     let turn = || {
         Layer::orientation(Orientation {
             mirror: false,
@@ -289,7 +292,7 @@ fn a_pixel_layer_joins_the_stack_before_the_first_geometry_layer() {
         // A client reading the same rule from its module list places every effect alike.
         let listed: Vec<ModuleDescriptor> = registry.descriptors().into_iter().cloned().collect();
         for effect in [
-            PIXEL_EFFECT,
+            PIXEL_STAGE_EFFECT,
             ORIENTATION_EFFECT,
             CROP_EFFECT,
             crate::VIGNETTE_EFFECT,
@@ -303,13 +306,13 @@ fn a_pixel_layer_joins_the_stack_before_the_first_geometry_layer() {
         }
         // The host reads the same rule from an effect's own descriptor.
         assert_eq!(
-            registry.insertion_index_for(&layers, PIXEL_EFFECT),
+            registry.insertion_index_for(&layers, PIXEL_STAGE_EFFECT),
             expected,
             "{case}: the pixel effect's own placement"
         );
     }
     assert_eq!(
-        registry.effect_stage(PIXEL_EFFECT),
+        registry.effect_stage(PIXEL_STAGE_EFFECT),
         Some(EffectStage::Pixel)
     );
     assert_eq!(
@@ -327,7 +330,7 @@ fn a_pixel_layer_joins_the_stack_before_the_first_geometry_layer() {
 fn every_stage_joins_the_region_the_placement_table_names() {
     let registry = staged_registry();
     let source = || test_layer(RAW_EFFECT);
-    let pixel = || Layer::pixel(0, 0, [1, 2, 3]);
+    let pixel = || test_layer(PIXEL_STAGE_EFFECT);
     let basic = || test_layer(BASIC_EFFECT);
     let mixer = || test_layer(MIXER_EFFECT);
     let spatial = || test_layer(SPATIAL_EFFECT);
@@ -412,7 +415,7 @@ fn every_stage_joins_the_region_the_placement_table_names() {
         // The same answers through the effects' own descriptors.
         assert_eq!(
             [
-                registry.insertion_index_for(&layers, PIXEL_EFFECT),
+                registry.insertion_index_for(&layers, PIXEL_STAGE_EFFECT),
                 registry.insertion_index_for(&layers, BASIC_EFFECT),
                 registry.insertion_index_for(&layers, MIXER_EFFECT),
                 registry.insertion_index_for(&layers, SPATIAL_EFFECT),

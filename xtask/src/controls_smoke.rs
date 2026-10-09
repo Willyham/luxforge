@@ -18,9 +18,6 @@ const MODULE: &str = "luxforge.controls";
 const ACTION: &str = "set-controls";
 const EFFECT: &str = "luxforge.controls.identity";
 
-/// The developer pixel proof, whose section the script shows last: X and Y as px fields.
-const PIXEL_MODULE: &str = "luxforge.pixel";
-
 /// The label the module reset earns. A commit of the proof's own patch earns its field's label,
 /// as every field-patch module's does: the field's name and its value.
 const RESET: &str = "Reset Controls";
@@ -311,13 +308,6 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             .commits(1)
             .label(RESET)
             .payload(EFFECT, json!({})),
-        // The pixel proof's section on its own: X and Y as labelled px fields, RGB, the picker
-        // and Apply pixel.
-        view("controls-collapsed", script::Step::section(MODULE, false)).collapsed(MODULE),
-        view("pixel-expanded", script::Step::section(PIXEL_MODULE, true)).expanded(PIXEL_MODULE),
-        view("pixel-scrolled", script::Step::tools_scroll(1.0))
-            .expanded(PIXEL_MODULE)
-            .collapsed(MODULE),
     ])
 }
 
@@ -558,16 +548,6 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
             format!("Selecting the view in {step} asked for a frame"),
         )?;
     }
-    let scrolled = at("pixel-scrolled")?;
-    ensure(
-        scrolled["state"]["tools_scroll"] == json!(1.0),
-        "The pixel proof's section was not shown on its own at the panel's end",
-    )?;
-    ensure(
-        scrolled["state"]["controls"]["set-pixel.x"].is_string()
-            && scrolled["state"]["controls"]["set-pixel.y"].is_string(),
-        "The pixel proof's X and Y fields are not in the captured state",
-    )?;
     let events = &launch.events;
     ensure(
         // A draft's frame is a preview job's, or a tick the GPU draws with none.

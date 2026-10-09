@@ -209,7 +209,7 @@ fn schema_list_names_developer_only_methods_only_in_developer_mode() {
         );
     }
     assert!(
-        generated.contains(&"edit.set-pixel".to_owned()),
+        generated.contains(&"edit.set-controls".to_owned()),
         "{generated:?}"
     );
     for method in &generated {

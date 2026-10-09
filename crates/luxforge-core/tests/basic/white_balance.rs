@@ -443,7 +443,7 @@ fn the_picker_reads_the_stage_before_the_basic_layer() {
     let params = json!({"asset_id": asset, "x": x, "y": y});
     let before = call(&owner, client, "query.neutral-sample", params.clone()).unwrap();
 
-    // A strong white balance, then a pixel replacement and a quarter turn on top of it.
+    // A strong white balance, then a quarter turn on top of it.
     call(
         &owner,
         client,

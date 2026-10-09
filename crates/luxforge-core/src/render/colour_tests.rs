@@ -383,14 +383,7 @@ fn a_render_returns_the_frame_its_last_pass_wrote() {
         for (case, layers) in [
             ("a colour pass", vec![colour.clone()]),
             ("an exact transform", vec![turn.clone(), colour.clone()]),
-            (
-                "a resample",
-                vec![
-                    colour.clone(),
-                    crop.clone(),
-                    Layer::pixel(3, 4, [250, 1, 2]),
-                ],
-            ),
+            ("a resample", vec![colour.clone(), crop.clone()]),
             ("a spatial boundary", vec![presence.clone(), turn.clone()]),
         ] {
             let recipe = recipe(layers);
@@ -459,10 +452,7 @@ fn a_pass_over_the_source_loads_its_rows_and_leaves_the_source_alone() {
     for (case, layers) in [
         ("a colour pass through the identity", vec![colour.clone()]),
         ("a straight crop", vec![crop.clone()]),
-        (
-            "a straight crop around a colour pass and a replacement",
-            vec![colour, Layer::pixel(3, 4, [250, 1, 2]), crop],
-        ),
+        ("a straight crop after a colour pass", vec![colour, crop]),
     ] {
         let recipe = Recipe {
             format: crate::RECIPE_FORMAT,
@@ -595,53 +585,6 @@ fn two_consecutive_colour_operations_keep_values_outside_the_range_between_them(
         source.rgba.as_ref(),
         "consecutive operations fuse into one run, so +3 EV does not clip before −3 EV"
     );
-    // Separating them with a point replacement does clip, because a replacement is a boundary.
-    let separated = colour_recipe(vec![
-        exposure_layer(&[3.0]),
-        Layer::pixel(0, 0, [1, 2, 3]),
-        exposure_layer(&[-3.0]),
-    ]);
-    let clipped = render(&registry, &source, SnapshotId::new(), &separated).unwrap();
-    assert_ne!(clipped.rgba.as_ref(), source.rgba.as_ref());
-}
-
-#[test]
-fn mask_colour_input_retains_replacement_boundaries_and_terminal_bytes() {
-    let registry = colour_registry();
-    let source = greys();
-    let context = RenderContext::new();
-    for tail in [false, true] {
-        let mut layers = vec![exposure_layer(&[0.5]), Layer::pixel(0, 0, [10, 20, 30])];
-        if tail {
-            layers.push(exposure_layer(&[-0.5]));
-        }
-        let recipe = colour_recipe(layers);
-        let compiled = registry
-            .compile(source.width, source.height, &recipe)
-            .unwrap();
-        let input = prefix_pixels(
-            RenderSource::Byte(&source),
-            compiled,
-            &context,
-            &crate::Cancel::never(),
-            false,
-            MaskInputMode::ColourRun,
-        )
-        .unwrap();
-        // The replacement is elsewhere, but it still ends the previous run at eight bits. Its
-        // white pixel therefore reaches the following operation as one, never sqrt(2).
-        let expected = if tail { (-0.5_f64).exp2() as f32 } else { 1.0 };
-        assert_eq!(
-            input.linear(255, 0).unwrap(),
-            Some([f64::from(expected); 3])
-        );
-        for x in [0, 128, 255] {
-            assert_eq!(
-                input.rgba(x, 0).unwrap(),
-                sample(&registry, &source, &recipe, x, 0).unwrap().rgba
-            );
-        }
-    }
 }
 
 #[test]
@@ -701,42 +644,6 @@ fn mask_colour_input_after_raw_resample_uses_f32_at_run_entry() {
         .unwrap()
         .rgba
     );
-}
-
-#[test]
-fn a_replacement_before_a_colour_operation_is_exposed_and_one_after_it_is_not() {
-    let registry = colour_registry();
-    let source = gradient(8, 6);
-    let rgb = [10, 120, 200];
-    let recipe = colour_recipe(vec![
-        Layer::pixel(1, 1, rgb),
-        exposure_layer(&[1.0]),
-        Layer::pixel(2, 1, rgb),
-    ]);
-    let raster = render(&registry, &source, SnapshotId::new(), &recipe).unwrap();
-    let mut exposed = [0; 3];
-    for (channel, slot) in exposed.iter_mut().enumerate() {
-        *slot = colour_reference(rgb[channel], &[1.0]).0;
-    }
-    assert_eq!(
-        raster.pixel(1, 1).map(|p| [p[0], p[1], p[2]]),
-        Some(exposed),
-        "the replacement before the colour operation is processed by it"
-    );
-    assert_eq!(
-        raster.pixel(2, 1).map(|p| [p[0], p[1], p[2]]),
-        Some(rgb),
-        "the replacement after it keeps its exact bytes"
-    );
-    for y in 0..raster.height {
-        for x in 0..raster.width {
-            assert_eq!(
-                sample(&registry, &source, &recipe, x, y).unwrap().rgba,
-                raster.pixel(x, y),
-                "({x}, {y})"
-            );
-        }
-    }
 }
 
 #[test]

@@ -16,7 +16,6 @@ pub(crate) mod lens;
 mod look;
 mod mixer;
 mod perspective;
-mod pixel;
 mod presence;
 mod presets;
 mod processing;
@@ -115,8 +114,6 @@ pub(crate) use mixer::MixerModule;
 pub use mixer::{MIXER_EFFECT, MIXER_EFFECT_FORMAT};
 pub use perspective::PERSPECTIVE_EFFECT;
 pub(crate) use perspective::PerspectiveModule;
-pub use pixel::PIXEL_EFFECT;
-pub(crate) use pixel::PixelModule;
 pub use presence::PRESENCE_EFFECT;
 pub(crate) use presence::PresenceModule;
 #[cfg(test)]
@@ -141,8 +138,8 @@ pub(crate) use registry::linked_modules;
 pub(crate) use registry::stack_compiles;
 #[cfg(test)]
 pub(crate) use registry::tests::{
-    HELD_ACTION, HELD_EFFECT, HeldModule, PATCH_ACTION, PATCH_MODULE, PatchModule, STAGE_ACTION,
-    STAGE_EFFECT, StageModule, TestModule,
+    HELD_ACTION, HELD_EFFECT, HeldModule, PATCH_ACTION, PATCH_MODULE, PIXEL_STAGE_EFFECT,
+    PatchModule, STAGE_ACTION, STAGE_EFFECT, StageModule, TestModule,
 };
 pub use registry::{ActionRef, QueryRef};
 pub use registry::{ModuleRegistry, Provider, RegistryOptions, insertion_index_among};

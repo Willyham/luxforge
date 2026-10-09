@@ -4,9 +4,9 @@ use super::coverage::{MaskOverlayRequest, mask_overlay_for};
 use super::*;
 use crate::{
     ActivityBoard, AssetId, BASIC_EFFECT, BoxRect, Cancel, CropStage, EFFECT_FORMAT, EntryId,
-    Evaluation, HistoryEntry, Layer, LayerId, Mask, ModuleRegistry, Orientation, PIXEL_EFFECT,
-    ProxyBounds, RECIPE_FORMAT, Recipe, RenderContext, RenderOptions, Snapshot, SnapshotId,
-    SourceImage, Transform, render,
+    Evaluation, HistoryEntry, Layer, LayerId, Mask, ModuleRegistry, Orientation, ProxyBounds,
+    RECIPE_FORMAT, Recipe, RenderContext, RenderOptions, Snapshot, SnapshotId, SourceImage,
+    Transform, render,
 };
 use crate::{Component, ComponentMode};
 use luxforge_testbase::{wait_for, wait_until};
@@ -14,16 +14,41 @@ use serde_json::json;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+/// The developer registry plus one pixel-stage effect, which no delivered module declares: the
+/// stack a proxy cannot rescale.
+fn registry() -> Arc<ModuleRegistry> {
+    let mut registry = ModuleRegistry::developer();
+    registry
+        .register(crate::modules::StageModule::shared(
+            "test.pixel",
+            crate::modules::PIXEL_STAGE_EFFECT,
+            "set-test-pixel",
+            crate::EffectStage::Pixel,
+            0,
+        ))
+        .unwrap();
+    Arc::new(registry)
+}
+
+fn pixel_stage_layer() -> Layer {
+    Layer::new(crate::modules::PIXEL_STAGE_EFFECT, json!({}))
+}
+
 fn job(color: u8, analyse: bool) -> PreviewJob {
     let asset = AssetId::new();
     let original = Snapshot::original(asset.clone());
-    let snapshot = original.append(Layer::pixel(0, 0, [color, 0, 0])).unwrap();
+    let snapshot = original
+        .append(Layer::new(
+            BASIC_EFFECT,
+            json!({"exposure": f64::from(color) / 10.0}),
+        ))
+        .unwrap();
     let entry = HistoryEntry {
         id: EntryId::new(),
         asset_id: asset,
         sequence: u64::from(color),
-        action_id: "set-pixel".into(),
-        label: "Pixel 0, 0".into(),
+        action_id: "set-basic".into(),
+        label: "Exposure".into(),
         parameters: json!({}),
         actor: "test".into(),
         timestamp_ms: 0,
@@ -44,7 +69,7 @@ fn job(color: u8, analyse: bool) -> PreviewJob {
         capture: Default::default(),
     });
     let evaluation = Evaluation::new(
-        Arc::new(ModuleRegistry::developer()),
+        registry(),
         RenderContext::new(),
         source,
         entry,
@@ -222,7 +247,7 @@ fn stacked_with_masks(
         restore_target: None,
     };
     let evaluation = Evaluation::new(
-        Arc::new(ModuleRegistry::developer()),
+        registry(),
         RenderContext::new(),
         source,
         entry,
@@ -990,7 +1015,7 @@ fn a_job_without_a_proxy_phase_yields_one_exact_result_and_says_why() {
     }
 
     // An ineligible stack: the layer that made it so is named.
-    let pixel = vec![Layer::pixel(0, 0, [9, 9, 9])];
+    let pixel = vec![pixel_stage_layer()];
     let result = only(
         &mut queue,
         moving(stacked(64, 48, pixel, Some(bounds(8, 8)))),
@@ -999,7 +1024,10 @@ fn a_job_without_a_proxy_phase_yields_one_exact_result_and_says_why() {
         .exact()
         .and_then(|exact| exact.proxy_declined.clone())
         .expect("a reason");
-    assert!(reason.contains(PIXEL_EFFECT), "{reason}");
+    assert!(
+        reason.contains(crate::modules::PIXEL_STAGE_EFFECT),
+        "{reason}"
+    );
     assert!(reason.contains("layer 0"), "{reason}");
 
     // Bounds the stage already fits: there is no proxy smaller than the source to build.
@@ -1013,7 +1041,7 @@ fn a_job_without_a_proxy_phase_yields_one_exact_result_and_says_why() {
 
     // A truncated job is judged on the prefix it renders: an ineligible layer inside the prefix
     // declines its proxy exactly as it declines a whole stack's.
-    let mut pixel = vec![Layer::pixel(0, 0, [9, 9, 9])];
+    let mut pixel = vec![pixel_stage_layer()];
     pixel.extend(eligible_layers(64, 48));
     let mut truncated = stacked(64, 48, pixel, Some(bounds(8, 8)));
     truncated.layer_count = Some(1);
@@ -1022,7 +1050,10 @@ fn a_job_without_a_proxy_phase_yields_one_exact_result_and_says_why() {
         .exact()
         .and_then(|exact| exact.proxy_declined.clone())
         .expect("a reason");
-    assert!(reason.contains(PIXEL_EFFECT), "{reason}");
+    assert!(
+        reason.contains(crate::modules::PIXEL_STAGE_EFFECT),
+        "{reason}"
+    );
 }
 
 /// A truncated job that offers bounds — a crop draft's input stage at Fit — has a proxy phase of
@@ -1038,7 +1069,7 @@ fn a_truncated_job_with_bounds_has_its_prefixs_own_proxy_phase() {
     // The crop's input stage is the orientation and the Basic layer ahead of the crop; a pixel
     // layer after the crop makes the whole stack ineligible for a proxy.
     let mut layers = eligible_layers(64, 48);
-    layers.push(Layer::pixel(0, 0, [9, 9, 9]));
+    layers.push(pixel_stage_layer());
     let count = 2;
     let mut job = stacked(64, 48, layers, Some(display));
     job.layer_count = Some(count);
@@ -1660,7 +1691,6 @@ fn raw_job(white_balance: Option<crate::WhiteBalanceApproximation>) -> PreviewJo
         .collect();
     let image = LinearImage::with_fingerprint(width, height, planes, "sha256:raw-wb").unwrap();
     let mut job = rebuilt(job(1, true), |parts| {
-        // The stock test job carries a pixel-stage layer, which is not proxy-eligible.
         parts.recipe.layers.clear();
         parts.source = PreviewSource::Raw {
             image,
@@ -1829,8 +1859,7 @@ fn a_cached_raw_proxy_renders_at_the_exposure_of_the_job_that_hits_it() {
     };
     let job_at = |ev: f64, analyse: bool| {
         let mut job = rebuilt(job(1, analyse), |parts| {
-            // The stock test job carries a pixel-stage layer, which is not proxy-eligible; one
-            // Basic exposure is the stack under test.
+            // One Basic exposure is the stack under test.
             parts.recipe.layers = vec![crate::Layer {
                 id: crate::LayerId::new(),
                 effect_id: crate::BASIC_EFFECT.into(),

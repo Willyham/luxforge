@@ -369,7 +369,10 @@ mod tests {
         let edited = entry
             .snapshot
             .clone()
-            .append(Layer::pixel(0, 0, [1, 2, 3]))
+            .append(Layer::new(
+                "test.layer",
+                json!({"x": 0, "y": 0, "rgb": [1, 2, 3]}),
+            ))
             .unwrap()
             .recipe;
         let a = identity(&asset, &entry, &empty);

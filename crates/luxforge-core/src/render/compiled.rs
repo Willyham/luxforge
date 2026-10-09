@@ -316,7 +316,6 @@ pub(crate) struct Segment {
     pub(crate) geometry: ExactGeometry,
     pub(crate) width: u32,
     pub(crate) height: u32,
-    pub(crate) has_pixels: bool,
     pub(crate) has_color: bool,
     /// The segment output's first pixel in its original uncut output stage. Pointwise finish
     /// units read these original coordinates even when a GPU boundary's reference keeps only a
@@ -340,7 +339,6 @@ impl Segment {
             geometry: ExactGeometry::identity(width, height),
             width,
             height,
-            has_pixels: false,
             has_color: false,
             output_origin: (0, 0),
         }
@@ -354,12 +352,6 @@ impl Segment {
         self.width = output.width;
         self.height = output.height;
         self.geometry = ExactGeometry::identity(output.width, output.height);
-    }
-
-    /// Whether this pass writes anything into its frame. An identity pass that does not shares the
-    /// source allocation instead of copying it.
-    pub(super) fn writes_pixels(&self) -> bool {
-        self.has_pixels || self.has_color
     }
 }
 
@@ -504,110 +496,13 @@ impl Compiled {
     }
 }
 
-/// Where one segment-output pixel comes from: the input-frame pixel it reads and the replacement
-/// that wins there, with that replacement's position in the operation list. The position decides
-/// which colour runs still reach the pixel: a replacement overwrites everything the runs before it
-/// produced, and only the runs after it process the replaced value.
-pub(super) struct Resolved {
-    pub(super) replacement: Option<(usize, [u8; 3])>,
-    pub(super) input_x: u32,
-    pub(super) input_y: u32,
-}
-
 impl Segment {
-    /// Where output pixel `(x, y)` comes from, or `None` outside the output stage. A segment
-    /// without point replacements has none to find, so it answers straight from the unmap; one
-    /// with them walks its operations backwards, composing the geometry each replacement is
-    /// carried through, as [`mapped_replacements`] does.
-    pub(super) fn resolve(&self, x: u32, y: u32) -> Option<Resolved> {
+    /// The input-frame pixel output pixel `(x, y)` reads through the segment's exact geometry, or
+    /// `None` outside the output stage.
+    pub(super) fn resolve(&self, x: u32, y: u32) -> Option<(u32, u32)> {
         if x >= self.width || y >= self.height {
             return None;
         }
-        let (input_x, input_y) = self.geometry.unmap(x, y);
-        if !self.has_pixels {
-            return Some(Resolved {
-                replacement: None,
-                input_x,
-                input_y,
-            });
-        }
-        self.replacement_at(x, y, input_x, input_y)
+        Some(self.geometry.unmap(x, y))
     }
-
-    /// The walk [`Self::resolve`] takes for a segment with replacements: every operation's
-    /// geometry composed backwards from the output, and the last replacement that lands on
-    /// `(x, y)`, if any.
-    fn replacement_at(&self, x: u32, y: u32, input_x: u32, input_y: u32) -> Option<Resolved> {
-        let mut suffix = ExactGeometry::identity(self.width, self.height);
-        for (index, operation) in self.operations.iter().enumerate().rev() {
-            match operation {
-                Processing::ExactGeometry(step) => suffix = step.then(suffix),
-                Processing::PointReplace {
-                    x: pixel_x,
-                    y: pixel_y,
-                    rgb,
-                } if suffix.map(*pixel_x, *pixel_y) == Some((x, y)) => {
-                    return Some(Resolved {
-                        replacement: Some((index, *rgb)),
-                        input_x,
-                        input_y,
-                    });
-                }
-                // A point replacement mapping outside this stage was cropped away.
-                Processing::PointReplace { .. } => {}
-                // Colour is applied to the resolved value, not to the coordinate walk, and a
-                // resample or spatial operation is the next segment's entry, never one of its
-                // operations.
-                Processing::Color(_)
-                | Processing::Spatial(_)
-                | Processing::Resample(_)
-                | Processing::Warp(_) => {}
-            }
-        }
-        Some(Resolved {
-            replacement: None,
-            input_x,
-            input_y,
-        })
-    }
-
-    /// [`Self::resolve`] by the full composition whatever the segment holds: the reference the
-    /// shortcut for a segment without replacements is held to.
-    #[cfg(test)]
-    pub(super) fn resolve_composed(&self, x: u32, y: u32) -> Option<Resolved> {
-        if x >= self.width || y >= self.height {
-            return None;
-        }
-        let (input_x, input_y) = self.geometry.unmap(x, y);
-        self.replacement_at(x, y, input_x, input_y)
-    }
-}
-
-/// Where each of one segment's point replacements lands in its output frame, in stack order, with
-/// its position in the operation list. One backward walk accumulates the suffix geometry that
-/// carries each replacement; a replacement a later crop discards is simply absent. The result is
-/// bounded by the layer count and reads no pixels.
-pub(super) fn mapped_replacements(segment: &Segment) -> Vec<(usize, u32, u32, [u8; 3])> {
-    let mut suffix = ExactGeometry::identity(segment.width, segment.height);
-    let mut mapped = Vec::new();
-    for (index, operation) in segment.operations.iter().enumerate().rev() {
-        match operation {
-            Processing::ExactGeometry(step) => suffix = step.then(suffix),
-            Processing::PointReplace {
-                x: pixel_x,
-                y: pixel_y,
-                rgb,
-            } => {
-                if let Some((x, y)) = suffix.map(*pixel_x, *pixel_y) {
-                    mapped.push((index, x, y, *rgb));
-                }
-            }
-            Processing::Color(_)
-            | Processing::Spatial(_)
-            | Processing::Resample(_)
-            | Processing::Warp(_) => {}
-        }
-    }
-    mapped.reverse();
-    mapped
 }

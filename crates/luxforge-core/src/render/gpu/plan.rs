@@ -157,9 +157,6 @@ impl GpuAnswer {
 /// order is the one answered.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GpuFallback {
-    /// A pixel-stage layer is in the stack: its payload addresses content pixels, which no proxy
-    /// stage has and no program replaces.
-    PixelStage { layer: usize },
     /// The boundary layer is a source or geometry effect: its draft changes the content stage or
     /// the geometry itself, which a plan from its input cannot hold.
     BoundaryStage { layer: usize, stage: EffectStage },
@@ -194,7 +191,6 @@ impl GpuFallback {
     /// A stable kebab-case name for the reason, for session state and evidence.
     pub fn code(&self) -> &'static str {
         match self {
-            Self::PixelStage { .. } => "pixel-stage",
             Self::BoundaryStage { .. } => "boundary-stage",
             Self::SpatialUnit { .. } => "spatial-unit",
             Self::SpatialChain { .. } => "spatial-chain",
@@ -210,8 +206,7 @@ impl GpuFallback {
     /// The layer the reason names; `None` for [`Self::Unchanged`], which names none.
     pub fn layer(&self) -> Option<usize> {
         match self {
-            Self::PixelStage { layer }
-            | Self::BoundaryStage { layer, .. }
+            Self::BoundaryStage { layer, .. }
             | Self::SpatialUnit { layer }
             | Self::SpatialChain { layer }
             | Self::BetweenResamples { layer }
@@ -226,7 +221,6 @@ impl GpuFallback {
 impl std::fmt::Display for GpuFallback {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::PixelStage { layer } => write!(f, "layer {layer} is a pixel-stage layer"),
             Self::BoundaryStage { layer, stage } => write!(
                 f,
                 "layer {layer} is a {} effect, whose draft the plan cannot start from",
@@ -800,18 +794,6 @@ impl Compiled {
                 Error::internal(format!("layer {boundary} has no compiled position"))
             })?,
         };
-        // A stack-level reason first: a pixel-stage layer anywhere.
-        for (index, segment) in self.segments.iter().enumerate() {
-            if let Some(operation) = segment
-                .operations
-                .iter()
-                .position(|operation| matches!(operation, Processing::PointReplace { .. }))
-            {
-                return Ok(Err(GpuFallback::PixelStage {
-                    layer: self.layer_at(index, operation),
-                }));
-            }
-        }
         if let (false, Some(stage @ (EffectStage::Source | EffectStage::Geometry))) =
             (planning.source, stage)
         {
@@ -873,12 +855,8 @@ impl Compiled {
                         Err(fallback) => return Ok(Err(fallback)),
                     }
                 }
-                // Refused above; a spatial operation, resample or warp is an entry, never an
-                // operation.
-                Processing::PointReplace { .. }
-                | Processing::Spatial(_)
-                | Processing::Resample(_)
-                | Processing::Warp(_) => {}
+                // A spatial operation, resample or warp is an entry, never an operation.
+                Processing::Spatial(_) | Processing::Resample(_) | Processing::Warp(_) => {}
             }
         }
 
@@ -981,10 +959,7 @@ impl Compiled {
                         Ok(operation) => step.after.push(operation),
                         Err(fallback) => return Ok(Err(fallback)),
                     },
-                    Processing::PointReplace { .. }
-                    | Processing::Spatial(_)
-                    | Processing::Resample(_)
-                    | Processing::Warp(_) => {}
+                    Processing::Spatial(_) | Processing::Resample(_) | Processing::Warp(_) => {}
                 }
             }
             tail_reads = (all, chained.stage());

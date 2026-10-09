@@ -107,16 +107,15 @@ pub use modules::{
     MAX_MASKED_SPATIAL_LAYERS, MAX_OPERATIONS, MAX_SOURCE_NAME, MIN_ANGLE, MIXER_EFFECT,
     MIXER_EFFECT_FORMAT, ModuleDescriptor, ModuleLayout, ModuleRegistry, NewLayer, NumberControl,
     NumberStyle, OPERATIONS_FIELD, ORIENTATION_EFFECT, OperationIdentity, OutputRect,
-    PERSPECTIVE_EFFECT, PIXEL_EFFECT, PRESENCE_EFFECT, PROOF_GENERATE_PATH, PROOF_PALETTE,
-    PROOF_PALETTE_PATH, ParameterDescriptor, ParameterKind, PickerControl, PointwiseColor,
-    PresetsControl, Processing, Provider, QueryChoiceControl, QueryRef, RailDecoration,
-    RangeControl, RawModule, RawPayload, Region, RegistryOptions, Resample, ResetAction,
-    ResolvedControl, ResolvedReset, SamplingScale, SettingsOrigin, SpatialOperation, Stage,
-    StageContext, StageQuestions, TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT,
-    WheelControl, WheelStyle, WhiteBalanceMode, check_parameters, check_value, controls_module,
-    current_effect_format, gains_from_temperature_tint, guide_angle, insertion_index_among,
-    largest_with_ratio_inside, palette_bytes, resolve_control, resolve_group_reset,
-    temperature_tint_from_gains,
+    PERSPECTIVE_EFFECT, PRESENCE_EFFECT, PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH,
+    ParameterDescriptor, ParameterKind, PickerControl, PointwiseColor, PresetsControl, Processing,
+    Provider, QueryChoiceControl, QueryRef, RailDecoration, RangeControl, RawModule, RawPayload,
+    Region, RegistryOptions, Resample, ResetAction, ResolvedControl, ResolvedReset, SamplingScale,
+    SettingsOrigin, SpatialOperation, Stage, StageContext, StageQuestions, TaskControl,
+    ToggleControl, ToolModule, VIGNETTE_EFFECT, WheelControl, WheelStyle, WhiteBalanceMode,
+    check_parameters, check_value, controls_module, current_effect_format,
+    gains_from_temperature_tint, guide_angle, insertion_index_among, largest_with_ratio_inside,
+    palette_bytes, resolve_control, resolve_group_reset, temperature_tint_from_gains,
 };
 pub use modules::{Chord, HOST_CHORDS, host_chord};
 pub use modules::{OriginalContext, OriginalLayer, OriginalPreferences};
@@ -841,7 +840,7 @@ pub mod qualification {
 
 // The crate root paths the core itself uses.
 pub(crate) use editor::{AnalysisPlan, AnalysisSelection};
-pub(crate) use model::{JobStatus, MAX_MASK_NAME, POINTS_PER_MASK, PixelReplace};
+pub(crate) use model::{JobStatus, MAX_MASK_NAME, POINTS_PER_MASK};
 pub(crate) use modules::{
     MAX_PRESET_NAME, MAX_SETTINGS_ACTIONS, MAX_SETTINGS_FIELDS, Superseded, lightroom_to_luxforge,
     valid_name,
