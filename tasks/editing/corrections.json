@@ -152,7 +152,8 @@
         "Current spatial work reads an output rectangle plus a bounded halo. Clone may read a distant source rectangle, and Heal needs per-patch scratch/iterations; declare and reserve all input regions and GPU resources rather than inflating MAX_SPATIAL_HALO or allocating unbounded intermediates. Entry::plan_gpu_window and SpatialEntry::halo_reads currently return one halo-grown rectangle; staged sweeps split by accumulated reach and staged-light dependencies, and GpuChange recognises mask-local changes while other operation-word changes become Anywhere. Extend these contracts for distant reads, source-to-destination change propagation and a Heal solve changing its whole patch; a brush tip rectangle alone cannot describe them. Extend the reference mask-input prefix in render/input_grid.rs to include repair in the chosen placement and key, rather than falling back to per-cell spatial evaluation.",
         "Reuse rendering limits, shared pool and reserve-before-allocate rules. The reference renderer's 256 MiB spatial budget paces its tiles; the GPU-preview budget is 2 GiB, the tile worker has its own separate 2 GiB budget and a held boundary is bounded to 256 MiB. Declare and charge repair reads, stage textures and solves on both devices. Any new budget or reduced-stage approximation needs the frozen contract and measurement, not an assumption.",
         "New CPU reference passes use their own luxforge_raw::RenderPass and measured parallel gate; RAW development scheduling is not a render executor. Answer the performance-rules checklist at the finished handoff.",
-        "Extend GPU stage classification and plan_warm_list for repair and operation actions: current warm-up enumerates Color/Finish and Restoration/Spatial drags, and first-use layers only for field-patch actions. Warm repair strokes and source-handle edits at open and after commits; merely adding WGSL does not cover the first tick."
+        "Extend GPU stage classification and plan_warm_list for repair and operation actions: current warm-up enumerates Color/Finish and Restoration/Spatial drags, and first-use layers only for field-patch actions. Warm repair strokes and source-handle edits at open and after commits; merely adding WGSL does not cover the first tick.",
+        "The Corrections workspace proposes 100 corrections per photograph (owner review pending). Size the repair pass so many operations evaluate in one dispatch, for example from a bounded operation table with per-operation source windows, rather than one charged output plane per operation; publish the declared limit for the desktop and refusal instead of hard-coding it."
       ],
       "context_links": [
         {
@@ -239,6 +240,13 @@
           "label": "Mask input grids",
           "target": "crates/luxforge-core/src/render/input_grid.rs",
           "relevance": "Reference whole-frame prefix and input-key changes for the chosen repair placement."
+        },
+        {
+          "kind": "file",
+          "label": "Corrections workspace",
+          "target": "docs/design/corrections-workspace.md",
+          "relevance": "Capacity target and why stacking needs it.",
+          "locator": "Capacity"
         }
       ],
       "acceptance_criteria": [
@@ -277,7 +285,8 @@
         "Generalize mask_draft/brush.rs plumbing instead of creating a second brush, store or draft system. Corrections owns its radius/opacity/feather/source parameters; the mask brush keeps its flow/colour-limit behaviour.",
         "Use the shared core geometry map and warped-path drawing for capture, source handles and overlays through Lens/Perspective/crop/straighten/orientation. Correlate mapping to the displayed entry/draft, and refuse invalid or stale mappings.",
         "This task can prove the generic descriptor/capture with a test consumer before the module exists. The actual production section, operation selection and smoke journey are the offline workflow task; expose no placeholder feature.",
-        "Existing mask strokes draw on GPU chains through incremental change rectangles; preserve that consumer while adding repair declarations. Its measured paint cost is not a Corrections result. Correlate overlay, drafted action, GPU frame and fallback reason; test-consumer capture alone does not qualify production repair pixels."
+        "Existing mask strokes draw on GPU chains through incremental change rectangles; preserve that consumer while adding repair declarations. Its measured paint cost is not a Corrections result. Correlate overlay, drafted action, GPU frame and fallback reason; test-consumer capture alone does not qualify production repair pixels.",
+        "The desktop interaction is designed in the Corrections workspace: the brush is always in hand, a press away from a pin always adds, ⌥-click sets a persistent source with a following crosshair, ⌘-drag places a spot and pulls out its source, ⇧-click draws straight strokes, and pins/source pins/size handles select and drag with one draft per gesture. Bind capture, hit order and handle drags to those rules; no numeric ID entry, no right-click source."
       ],
       "context_links": [
         {
@@ -334,6 +343,13 @@
           "label": "Development verification",
           "target": "docs/engineering/development.md",
           "relevance": "Targeted edit-loop tests, quick handoffs, background rendered evidence and final measurement."
+        },
+        {
+          "kind": "file",
+          "label": "Corrections workspace",
+          "target": "docs/design/corrections-workspace.md",
+          "relevance": "Gestures, modifiers, hit order and handle drags the capture must support.",
+          "locator": "The canvas"
         }
       ],
       "acceptance_criteria": [
@@ -372,7 +388,8 @@
         "The catalog is format 13. Files enter through pick.develop/source.prepare/job.adopt; EditorService::import is the blocking helper for the same flow. Preparation and artifact binding remain the shared paths; module code never reads an original or writes catalog tables.",
         "catalog.empty-removed currently gates its conservative stroke-address scan on the serialized strokes key. Preserve that declared carrier shape or extend discovery, with mixed mask/repair and cross-photograph retention tests; do not add a second store or collector.",
         "Same-byte source.locate/folder recovery preserves edits and identities. Missing/offline/changed originals fail source verification. Library Remove/Put back and undo retain edits; Send back refuses an edited photograph.",
-        "Follow the frozen preset-eligibility policy through the existing ActionDescriptor::preset/ModuleRegistry::patch_action gate. Ordinary adjustment preset application must retain correction layers/resources and invoke the same upstream recomputation/invalidation rules; no new photo-bound retouch preset importer is added."
+        "Follow the frozen preset-eligibility policy through the existing ActionDescriptor::preset/ModuleRegistry::patch_action gate. Ordinary adjustment preset application must retain correction layers/resources and invoke the same upstream recomputation/invalidation rules; no new photo-bound retouch preset importer is added.",
+        "Implement the workspace's contract changes: add-correction with source omitted resolves an automatic source on a render worker against the request's revision (never on the owner or UI thread) and stores it as an ordinary offset with source-origin auto/set; update-correction accepts a replacement path to move the destination while preserving the source position; query.correction-sources returns ranked candidates without writing. The candidate set, rejection rules, score and tie-break are deterministic and need exact reference fixtures; no-source is an explicit outcome."
       ],
       "context_links": [
         {
@@ -423,6 +440,13 @@
           "target": "crates/luxforge-core/src/modules/registry/lookups.rs",
           "locator": "patch_action",
           "relevance": "The delivered preset flag gate for capture, validation/import and composite application."
+        },
+        {
+          "kind": "file",
+          "label": "Corrections workspace",
+          "target": "docs/design/corrections-workspace.md",
+          "relevance": "Automatic source search and the API changes it needs.",
+          "locator": "Automatic sources"
         }
       ],
       "acceptance_criteria": [
@@ -431,7 +455,8 @@
         "Repair stroke references are validated, stored once and hydrated correctly across draft/commit/restore/reopen; missing/corrupt/wrong-type references fail explicitly without erasing history.",
         "Clone/Heal recompute after source-development and earlier-operation changes, carry through nonlinear geometry and crop/orientation, and never recursively sample their own output.",
         "Library Remove/Put back/undo, same-byte Locate and missing-source refusal preserve operations; Empty Removed collects only strokes unreferenced by every surviving entry, including other photographs and masks.",
-        "Preset capture/import/create/apply honours the frozen correction eligibility policy; applying ordinary adjustment presets preserves repairs and shared resources, with recomputation or patch invalidation for upstream changes."
+        "Preset capture/import/create/apply honours the frozen correction eligibility policy; applying ordinary adjustment presets preserves repairs and shared resources, with recomputation or patch invalidation for upstream changes.",
+        "Automatic sources resolve deterministically off the owner/UI threads, are stored once and never move after upstream edits; query.correction-sources ranks the same candidates the add uses; moving a destination preserves its source position; no-source is an explicit outcome."
       ],
       "test_strategy": {
         "approach": "integration",
@@ -461,7 +486,8 @@
         "This is the first usable offline handoff; it depends on neither frozen patches nor settings/credentials/models. Use the generated section and current start/release refusal, draft and event-refresh contracts.",
         "Add a dedicated background-only Corrections smoke scenario, independent pixel/state checks and rendered-tier registration before running the tier. Existing scenarios alone cannot prove a tool that is new.",
         "Include Select rendered previews, filmstrip, history preview, Locate and library Remove/Put back in the production journey. Reuse entry-keyed preview planning and off-editor-cache preparation. Developed grid/large tiers stream full-resolution tiles through the same GPU tile service as export and reduce its bands, recording the renderer and falling back to a fresh reference render with a named reason.",
-        "Extend the current mask-only editor-latency paint mode or add a declared Corrections mode, and register its brush/commit/source-handle measurements in the timing/full verification plan. No timing tier or editor-wide distribution runs in this implementation task."
+        "Extend the current mask-only editor-latency paint mode or add a declared Corrections mode, and register its brush/commit/source-handle measurements in the timing/full verification plan. No timing tier or editor-wide distribution runs in this implementation task.",
+        "Build the Corrections workspace design and its boards (docs/design/corrections/): the Q mode and its band under the histogram, the New correction group separate from the selected row's expanded settings, the stack list with drag reorder and row menu, kind+number names instead of IDs, pins and handles on the canvas, the key map (⌫, /, arrows, ⌥ arrows, [ ], H, the Escape order), the draft bar only during drafts, the no-source notice that keeps the painted stroke, and the limit refusal."
       ],
       "context_links": [
         {
@@ -511,9 +537,22 @@
           "label": "Latency harness",
           "target": "xtask/src/editor_latency.rs",
           "relevance": "Current paint mode is mask-specific and needs a Corrections consumer."
+        },
+        {
+          "kind": "file",
+          "label": "Corrections workspace",
+          "target": "docs/design/corrections-workspace.md",
+          "relevance": "Mode, canvas, panel, keys, notices and smoke-journey acceptance for the desktop workflow."
+        },
+        {
+          "kind": "file",
+          "label": "Corrections boards",
+          "target": "docs/design/corrections/html/index.html",
+          "relevance": "Proposed boards: placing, selected and stacked, painting from a set source, components and states."
         }
       ],
       "acceptance_criteria": [
+        "The workspace matches the Corrections workspace design and boards: every press away from a pin adds one correction, sources are automatic unless set, selection and edits happen through pins, handles and stack rows without IDs, and each gesture and key in its tables commits exactly one entry with its label, with per-row UI/API parity.",
         "The generated Corrections section selects Clone/Heal, paints and selects/edits/removes/reorders operations and moves source handles; immediate overlays and previews retain usable input without UI-thread frame work.",
         "Apply/release, Cancel, Discard/Reapply, switching photos/workspaces and external edits follow the one draft/refusal lifecycle and commit the same semantic actions as API clients.",
         "Native hidden-window M4 captures correlate mode, selected operation/source, geometry, rendered pixels, history and logs; direct API reproduces the same journey, undo/redo/restore/reopen and real JPEG export.",
