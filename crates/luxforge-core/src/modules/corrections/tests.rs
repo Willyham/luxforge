@@ -98,12 +98,6 @@ impl Session {
     }
 }
 
-impl Drop for Session {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.catalog);
-    }
-}
-
 /// A spot at `(x, y)` sampled from `(sx, sy)`.
 pub(super) fn spot(x: f64, y: f64, sx: f64, sy: f64) -> Value {
     json!({"points": [[x, y]], "radius": 0.02, "source-x": sx, "source-y": sy})
@@ -407,4 +401,397 @@ fn the_corrections_query_answers_the_layer_as_stored() {
             "source-origin": "set",
         })
     );
+}
+
+/// Render the current entry, preparing the source it asks for first, as a client does.
+fn rendered(service: &mut EditorService, asset: &AssetId) -> Result<crate::Raster, crate::Error> {
+    match service.render_current(asset) {
+        Err(error) if error.kind == ErrorKind::PreparationRequired => {
+            let needs = error
+                .needs()
+                .expect("a refusal names what it needs")
+                .clone();
+            service.prepare(&needs)?;
+            service.render_current(asset)
+        }
+        result => result,
+    }
+}
+
+/// The number of strokes the catalog's store holds.
+fn stored_strokes(service: &EditorService) -> i64 {
+    service
+        .connection
+        .query_row("SELECT count(*) FROM strokes", [], |row| row.get(0))
+        .unwrap()
+}
+
+#[test]
+fn history_versions_and_reopen_keep_every_operation_and_its_stroke() {
+    let mut session = Session::new("corrections-history.sqlite");
+    session.ok("add-correction", spot(0.5, 0.5, 0.3, 0.4));
+    let one = session
+        .service
+        .state(&session.asset)
+        .unwrap()
+        .current_entry
+        .id;
+    session.ok("add-correction", spot(0.2, 0.2, 0.6, 0.6));
+    // Feather and opacity write no stroke; moving writes one more.
+    session.ok(
+        "update-correction",
+        json!({"operation": "correction-1", "opacity": 50}),
+    );
+    assert_eq!(stored_strokes(&session.service), 2, "each stroke once");
+    session.ok(
+        "update-correction",
+        json!({"operation": "correction-1", "points": [[0.55, 0.5]]}),
+    );
+    assert_eq!(stored_strokes(&session.service), 3);
+    let latest = session.corrections();
+    let current = session
+        .service
+        .state(&session.asset)
+        .unwrap()
+        .current_entry
+        .id;
+
+    // History preview: an earlier entry answers its own operations.
+    let earlier = session
+        .service
+        .run_query(&session.asset, &one, "corrections", json!({}))
+        .unwrap();
+    assert_eq!(earlier["operations"].as_array().unwrap().len(), 1);
+    assert_eq!(earlier["next"], 2);
+
+    // Undo and redo.
+    let revision = session.revision();
+    session
+        .service
+        .undo(&session.asset, mutation(revision, "undo"))
+        .unwrap();
+    assert_eq!(session.payload().unwrap().operations[0].opacity, 50);
+    assert_eq!(
+        session.payload().unwrap().operations[0].offset,
+        [quantize(0.3) - quantize(0.5), quantize(0.4) - quantize(0.5)]
+    );
+    let revision = session.revision();
+    session
+        .service
+        .redo(&session.asset, mutation(revision, "redo"))
+        .unwrap();
+    assert_eq!(session.corrections(), latest);
+
+    // A version names the latest entry; restoring the first entry and then the version.
+    session
+        .service
+        .create_version(&session.asset, "Cleaned", None, "test")
+        .unwrap();
+    let revision = session.revision();
+    session
+        .service
+        .restore(&session.asset, mutation(revision, "restore-one"), &one)
+        .unwrap();
+    assert_eq!(session.payload().unwrap().operations.len(), 1);
+    let revision = session.revision();
+    session
+        .service
+        .restore(
+            &session.asset,
+            mutation(revision, "restore-version"),
+            &current,
+        )
+        .unwrap();
+    assert_eq!(session.corrections(), latest);
+    assert_eq!(
+        stored_strokes(&session.service),
+        3,
+        "restores write no stroke"
+    );
+
+    // Reopened, every entry reads its strokes back from the store.
+    let Session {
+        service,
+        asset,
+        catalog,
+        ..
+    } = session;
+    drop(service);
+    let reopened = EditorService::open(&catalog).unwrap();
+    let entry = reopened.state(&asset).unwrap().current_entry.id;
+    assert_eq!(
+        reopened
+            .run_query(&asset, &entry, "corrections", json!({}))
+            .unwrap(),
+        latest
+    );
+    assert_eq!(
+        reopened
+            .run_query(&asset, &one, "corrections", json!({}))
+            .unwrap(),
+        earlier
+    );
+}
+
+#[test]
+fn a_missing_or_corrupt_stroke_is_refused_naming_its_operation_and_history_stays_readable() {
+    for corrupt in [false, true] {
+        let mut session = Session::new(&format!("corrections-broken-{corrupt}.sqlite"));
+        session.ok("add-correction", spot(0.5, 0.5, 0.3, 0.4));
+        let stroke = session.payload().unwrap().operations[0].stroke.clone();
+        let Session {
+            service,
+            asset,
+            catalog,
+            ..
+        } = session;
+        let connection = &service.connection;
+        connection
+            .execute(
+                "DELETE FROM strokes WHERE id=?1",
+                rusqlite::params![stroke.as_str()],
+            )
+            .unwrap();
+        if corrupt {
+            // A mask brush stroke's bytes under this address: the wrong type, and not its content.
+            connection
+                .execute(
+                    "INSERT INTO strokes (id,stroke_json) VALUES (?1,?2)",
+                    rusqlite::params![
+                        stroke.as_str(),
+                        r#"{"points":[[8192,8192]],"size":328,"feather":50,"flow":100,"erase":false}"#
+                    ],
+                )
+                .unwrap();
+        }
+        drop(service);
+        let mut service = EditorService::open(&catalog).unwrap();
+        let state = service.state(&asset).unwrap();
+        assert_eq!(state.current_entry.label, "Add Heal 1");
+        assert_eq!(service.history(&asset, None, 10).unwrap().entries.len(), 2);
+        let entry = state.current_entry.id;
+        let refused = service
+            .run_query(&asset, &entry, "corrections", json!({}))
+            .unwrap_err();
+        assert_eq!(refused.kind, ErrorKind::Incompatible, "{refused:?}");
+        assert!(
+            refused
+                .detail
+                .contains("referenced by operation correction-1 of Corrections"),
+            "{}",
+            refused.detail
+        );
+        let render = rendered(&mut service, &asset).unwrap_err();
+        assert_eq!(render.kind, ErrorKind::Incompatible);
+        assert!(
+            render
+                .detail
+                .contains("referenced by operation correction-1 of Corrections"),
+            "{}",
+            render.detail
+        );
+        let mut session = Session {
+            service,
+            asset,
+            catalog,
+            requests: 1,
+        };
+        let edit = session.refused(
+            "update-correction",
+            json!({"operation": "correction-1", "opacity": 10}),
+        );
+        assert_eq!(edit.kind, ErrorKind::Incompatible, "{edit:?}");
+    }
+}
+
+#[test]
+fn a_photograph_with_corrections_is_never_rendered_without_them() {
+    let mut session = Session::new("corrections-render.sqlite");
+    let before = session.service.render_current(&session.asset).unwrap();
+    session.ok("add-correction", spot(0.5, 0.5, 0.3, 0.4));
+    let refused = session.service.render_current(&session.asset).unwrap_err();
+    assert_eq!(refused.kind, ErrorKind::Incompatible);
+    assert!(
+        refused.detail.contains("cannot render Corrections yet"),
+        "{}",
+        refused.detail
+    );
+    // An empty repair layer changes nothing and renders the photograph as it was.
+    session.ok("reset-corrections", json!({}));
+    let after = session.service.render_current(&session.asset).unwrap();
+    let differing = before
+        .rgba
+        .iter()
+        .zip(after.rgba.iter())
+        .filter(|(a, b)| a != b)
+        .count();
+    let worst = before
+        .rgba
+        .iter()
+        .zip(after.rgba.iter())
+        .map(|(a, b)| a.abs_diff(*b))
+        .max();
+    assert_eq!(
+        (differing, worst, after.width, after.height),
+        (0, Some(0), before.width, before.height)
+    );
+}
+
+#[test]
+fn the_hundred_and_first_add_is_refused_before_and_at_commit() {
+    let mut session = Session::new("corrections-limit.sqlite");
+    for index in 0..100 {
+        let x = 0.05 + 0.009 * index as f64;
+        session.ok("add-correction", spot(x, 0.5, x, 0.2));
+    }
+    assert_eq!(session.payload().unwrap().operations.len(), 100);
+    let refused = session.refused("add-correction", spot(0.5, 0.8, 0.5, 0.3));
+    assert_eq!(refused.kind, ErrorKind::ResourceLimit);
+    assert_eq!(refused.detail, "100 corrections is this photograph's limit");
+    assert_eq!(refused.data.as_deref(), Some(&json!({"limit": 100})));
+    // draft.begin refuses the same before any draft opens; an edit of one still begins.
+    let begun = session
+        .service
+        .draft_target(&session.asset, "add-correction", crate::DraftTarget::new())
+        .unwrap_err();
+    assert_eq!(begun.detail, refused.detail);
+    let target = crate::DraftTarget::from([("operation".to_owned(), "correction-7".to_owned())]);
+    session
+        .service
+        .draft_target(&session.asset, "update-correction", target)
+        .unwrap();
+    let unknown = crate::DraftTarget::from([("operation".to_owned(), "correction-700".to_owned())]);
+    assert_eq!(
+        session
+            .service
+            .draft_target(&session.asset, "update-correction", unknown)
+            .unwrap_err()
+            .detail,
+        "no correction correction-700 in this photograph"
+    );
+}
+
+#[test]
+fn a_draft_previews_a_set_source_and_plans_nothing_for_an_automatic_one() {
+    let mut session = Session::new("corrections-draft.sqlite");
+    let revision = session.revision();
+    let mut draft = crate::Draft::new("add-correction", session.asset.clone(), revision);
+    draft.fields = json!({"points": [[0.5, 0.5]], "radius": 0.02})
+        .as_object()
+        .unwrap()
+        .clone();
+    let (automatic, _) = session
+        .service
+        .draft_recipe(&session.asset, &draft)
+        .unwrap();
+    let current = session.service.state(&session.asset).unwrap().current_entry;
+    assert_eq!(automatic, current.snapshot.recipe, "no read, no change");
+    draft.fields.insert("source-x".into(), json!(0.3));
+    draft.fields.insert("source-y".into(), json!(0.4));
+    let (set, _) = session
+        .service
+        .draft_recipe(&session.asset, &draft)
+        .unwrap();
+    let committed = session.ok("add-correction", spot(0.5, 0.5, 0.3, 0.4));
+    assert_eq!(committed.answer["correction"]["operation"], "correction-1");
+    let current = session.service.state(&session.asset).unwrap().current_entry;
+    let layers = |recipe: &crate::Recipe| -> Vec<Value> {
+        recipe
+            .layers
+            .iter()
+            .map(|layer| layer.payload.clone())
+            .collect()
+    };
+    assert_eq!(
+        layers(&set),
+        layers(&current.snapshot.recipe),
+        "the draft equals its commit"
+    );
+}
+
+#[test]
+fn consecutive_updates_of_one_field_collapse_and_adds_never_do() {
+    let mut session = Session::new("corrections-collapse.sqlite");
+    session.service.set_auto_collapse(true);
+    session.ok("add-correction", spot(0.5, 0.5, 0.3, 0.4));
+    session.ok("add-correction", spot(0.2, 0.5, 0.2, 0.3));
+    for opacity in [90, 70, 60] {
+        session.ok(
+            "update-correction",
+            json!({"operation": "correction-1", "opacity": opacity}),
+        );
+    }
+    assert_eq!(
+        session.labels(),
+        vec![
+            "Heal 1 · Opacity 60",
+            "Add Heal 2",
+            "Add Heal 1",
+            "Original"
+        ]
+    );
+    // Returning the field to where the run began writes nothing and answers the operation.
+    let back = session.ok(
+        "update-correction",
+        json!({"operation": "correction-1", "opacity": 100}),
+    );
+    assert_eq!(back.answer["correction"]["operation"], "correction-1");
+    assert_eq!(
+        session.labels(),
+        vec!["Add Heal 2", "Add Heal 1", "Original"]
+    );
+}
+
+#[test]
+fn presets_never_carry_corrections_and_an_ordinary_preset_keeps_them() {
+    let mut session = Session::new("corrections-presets.sqlite");
+    session.ok("add-correction", spot(0.5, 0.5, 0.3, 0.4));
+    let registry = session.service.registry().clone();
+    for action in [
+        "add-correction",
+        "update-correction",
+        "delete-correction",
+        "reorder-correction",
+        "reset-corrections",
+    ] {
+        assert!(registry.settings_action(action).is_err(), "{action}");
+    }
+    let refused = session.refused(
+        "apply-settings",
+        json!({"origin": {"kind": "preset", "name": "Spots"},
+               "settings": {"update-correction": {"operation": "correction-1", "opacity": 10}}}),
+    );
+    assert_eq!(refused.kind, ErrorKind::Validation, "{refused:?}");
+    let before = session.payload().unwrap();
+    session.ok(
+        "apply-settings",
+        json!({"origin": {"kind": "preset", "name": "Bright"},
+               "settings": {"set-basic": {"exposure": 0.5}}}),
+    );
+    assert_eq!(session.label(), "Preset: Bright");
+    assert_eq!(
+        session.payload().unwrap(),
+        before,
+        "the repair layer is kept as it was"
+    );
+    assert_eq!(
+        session.corrections()["operations"][0]["operation"],
+        "correction-1"
+    );
+}
+
+#[test]
+fn an_automatic_source_is_refused_by_name_while_the_search_is_unavailable() {
+    let mut session = Session::new("corrections-auto.sqlite");
+    let refused = session.refused(
+        "add-correction",
+        json!({"points": [[0.5, 0.5]], "radius": 0.02}),
+    );
+    assert_eq!(refused.kind, ErrorKind::Incompatible, "{refused:?}");
+    assert!(
+        refused.detail.contains("automatic source search"),
+        "{}",
+        refused.detail
+    );
+    assert!(session.payload().is_none());
 }
