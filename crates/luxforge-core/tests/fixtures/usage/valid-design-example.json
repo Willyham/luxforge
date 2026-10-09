@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "disclosure_version": 1,
+  "release": "0.0.0+9d4138ca1f2e",
+  "installation_id": "c9a10716-1b78-4cbe-8d1c-b8309e5e7247",
+  "session_id": "5f0c2e3a-8d47-4b6e-9a1f-2c7d9e4b1a60",
+  "session_start": "2026-10-09T14:03:12Z",
+  "batch_seq": 2,
+  "dropped": 0,
+  "device": {
+    "os": {"family": "macos", "version": [15, 5]},
+    "arch": "arm64",
+    "cpu": {"vendor": "apple", "generation": 4, "tier": "pro",
+            "physical_cores": 12, "logical_cores": 12},
+    "memory_gib_band": 32,
+    "gpus": [{"vendor": "apple", "backend": "metal", "type": "integrated",
+              "generation": 4, "tier": "pro", "unified_memory": true}],
+    "renderer": "gpu"
+  },
+  "events": [
+    {"seq": 41, "t": 1203400, "name": "workspace.enter", "workspace": "develop"},
+    {"seq": 42, "t": 1219050, "name": "tool.commit", "tool": "basic",
+     "image": "3f9c2a7e5b1d48c09e6f1a2b3c4d5e6f"},
+    {"seq": 43, "t": 1260000, "name": "process.sample", "cpu_percent": 37,
+     "memory_mib": 2140, "memory_kind": "footprint"},
+    {"seq": 44, "t": 1284711, "name": "operation.end", "operation": "export",
+     "outcome": "completed", "duration_ms": 812, "count": 1,
+     "image": "3f9c2a7e5b1d48c09e6f1a2b3c4d5e6f"}
+  ]
+}
