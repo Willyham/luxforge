@@ -52,6 +52,8 @@ One built-in module, `luxforge.corrections` (title `Corrections`, hint `Clone an
 | Reset | `reset-corrections` |
 | Canvas | `brush-mask` ([interaction](#the-brush-mask-interaction)), title `Corrections`, shortcut `Q`, icon `heal` |
 
+`operations` is a new optional `EffectDescriptor` field, serialized only when declared: `{identity, max}` says the effect's layer holds an ordered list of at most `max` operations that the module mints and addresses by `identity`. Registration accepts it only with `single: true`, `max` in `1..=1000` and `identity: correction` (the one module-addressable identity kind). It is how the host admits the identity into the module's declarations and how a client learns the limit.
+
 Generated methods: `edit.add-correction`, `edit.update-correction`, `edit.delete-correction`, `edit.reorder-correction`, `edit.reset-corrections`, `edit.accept-correction-patch`, `query.corrections`, `query.correction-sources`.
 
 **The repair stage replaces `pixel`.** `EffectStage::Pixel` is renamed `EffectStage::Repair`, serialized `repair`, in the same slot (TASK-003, after the proof is deleted). No stored data names a stage — a layer stores its effect identity — so the rename rewrites nothing. The rename is deliberate: every consumer of `pixel` assumed a pointwise, content-pixel-addressed layer, and a repair layer is neither, so each match arm is revisited rather than inherited:
