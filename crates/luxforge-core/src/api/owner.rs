@@ -51,6 +51,8 @@ mod artifact_tests;
 mod catalog;
 #[cfg(test)]
 mod catalog_tests;
+#[cfg(test)]
+mod corrections_tests;
 pub(super) mod export;
 #[cfg(test)]
 mod export_tests;
