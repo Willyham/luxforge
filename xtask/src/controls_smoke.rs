@@ -33,7 +33,7 @@ const RESET: &str = "Reset Controls";
 const WHEEL_HUE: &str = "wheel-hue";
 const WHEEL_SATURATION: &str = "wheel-saturation";
 const WHEEL_TINT: &str = "Wheel tint";
-const WHEEL_GROUP: [&str; 2] = ["Control vocabulary", "Colour wheel"];
+const WHEEL_GROUP: &str = "colour-wheel";
 /// Where the tools panel shows the wheel, between the proof's own fields and its curve.
 const WHEEL_SCROLL: f64 = 0.45;
 /// The entry the history step previews: the Original, which shows the wheel at its defaults.
@@ -56,7 +56,7 @@ fn wheel(positions: Vec<[f32; 2]>, shift: bool, finish: SliderEnd) -> script::St
 fn tab(index: usize) -> script::Step {
     script::Step::Tab(TabStep {
         module: MODULE.into(),
-        group: WHEEL_GROUP.map(String::from).into(),
+        group: Some(WHEEL_GROUP.into()),
         index,
     })
 }
@@ -515,8 +515,17 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         "The previewed Original and the current entry do not show their own wheel values",
     )?;
     ensure(
-        selected_view(at("view-large")?.state(), MODULE, &WHEEL_GROUP, "Large")
-            && selected_view(at("view-compact")?.state(), MODULE, &WHEEL_GROUP, "Compact"),
+        selected_view(
+            at("view-large")?.state(),
+            MODULE,
+            Some(WHEEL_GROUP),
+            "large",
+        ) && selected_view(
+            at("view-compact")?.state(),
+            MODULE,
+            Some(WHEEL_GROUP),
+            "compact",
+        ),
         "The session's view selection does not record the Large and Compact views",
     )?;
     let visible = |step: &str| -> Result<Value> {

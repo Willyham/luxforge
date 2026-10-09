@@ -90,14 +90,13 @@ pub fn drawn_wheel<'a>(state: &'a Value, hue: &str) -> Option<&'a Value> {
         .find(|wheel| wheel["hue_parameter"] == hue)
 }
 
-/// Whether a frame's state records `view` selected in `module`'s tab row at `group`, the label
-/// path of the tabbed group (empty for the module's own tabs). The one place a view selection's
-/// shape is read.
-pub fn selected_view(state: &Value, module: &str, group: &[impl AsRef<str>], view: &str) -> bool {
-    let group: Vec<&str> = group.iter().map(AsRef::as_ref).collect();
+/// Whether a frame's state records the view of id `view` selected in `module`'s tab row of the
+/// group of id `group` (`None` for the module's own tabs). The one place a view selection's shape
+/// is read.
+pub fn selected_view(state: &Value, module: &str, group: Option<&str>, view: &str) -> bool {
     state["workspace"]["views"].as_array().is_some_and(|rows| {
         rows.iter().any(|row| {
-            row["module"] == module && row["group"] == json!(group) && row["view"] == view
+            row["module"] == module && row["group"].as_str() == group && row["view"] == view
         })
     })
 }

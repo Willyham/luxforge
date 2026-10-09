@@ -159,7 +159,9 @@ pub(crate) fn tabs_descriptor() -> ModuleDescriptor {
             .notes("test")
     };
     let group = |label: &str, name: &str| -> Control {
-        Control::group(label, vec![Control::number(SET, name, label).into()]).into()
+        Control::group(label, vec![Control::number(SET, name, label).into()])
+            .id(name)
+            .into()
     };
     let descriptor = ModuleDescriptor {
         id: "fixture.tabs".into(),

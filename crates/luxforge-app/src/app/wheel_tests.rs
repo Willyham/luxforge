@@ -153,7 +153,7 @@ fn arrow_keys_turn_the_hue_across_the_seam_and_step_the_saturation() {
 fn a_double_click_runs_the_wheels_reset() {
     let (mut editor, catalog, _, _, _, _) = drafting();
     let reset = controls::wheel_of(&editor.modules, ACTION, HUE)
-        .and_then(|wheel| wheel.reset.clone())
+        .and_then(|wheel| controls::wheel_reset(&editor.modules, wheel))
         .expect("the proof's wheel declares its reset");
     assert_eq!(
         Value::Object(reset.preset.clone()),

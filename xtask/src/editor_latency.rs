@@ -119,10 +119,10 @@ struct WheelTarget {
     control: luxforge_core::WheelControl,
     /// The module declaring it.
     module: String,
-    /// Each tab row on the way to the wheel's own view, outermost first: the row's group label
-    /// path (empty for the module's own tabs), the view the wheel is reached through and its index
-    /// in the row.
-    tabs: Vec<(Vec<String>, String, usize)>,
+    /// Each tab row on the way to the wheel's own view, outermost first: the id of the row's group
+    /// (`None` for the module's own tabs), the id of the view the wheel is reached through and its
+    /// index in the row.
+    tabs: Vec<(Option<String>, String, usize)>,
 }
 
 /// The saturation the scripted wheel gesture sets with `hue`: 20 at hue 0, rising by one for every
@@ -309,31 +309,43 @@ impl FieldTarget {
             .action(action)
             .ok_or_else(|| format!("No module declares the action {action}"))?;
         let descriptor = module.descriptor();
-        /// Every place the wheel is drawn, with the group label path that holds it.
+        /// A tab on the way to a wheel: the id of its row's group (`None` for the module's own
+        /// row) and its own id.
+        type Tab = (Option<String>, String);
+        /// Every place the wheel is drawn, with the tabs that reach it. `row` is the tab row
+        /// `controls` make up, when they make one.
         fn find(
             controls: &[Control],
-            path: &mut Vec<String>,
+            row: Option<Option<String>>,
+            path: &mut Vec<Tab>,
             action: &str,
             hue: &str,
-            found: &mut Vec<(WheelControl, Vec<String>)>,
+            found: &mut Vec<(WheelControl, Vec<Tab>)>,
         ) {
             for control in controls {
+                let tab = row.clone().zip(control.tab_id().map(str::to_owned));
+                path.extend(tab.clone());
                 match control {
                     Control::Group(group) => {
-                        path.push(group.label.clone());
-                        find(&group.controls, path, action, hue, found);
-                        path.pop();
+                        let tabs = group.layout == luxforge_core::ModuleLayout::Tabs;
+                        let row = tabs.then(|| group.id.clone());
+                        find(&group.controls, row, path, action, hue, found);
                     }
+                    Control::View(view) => find(&view.controls, None, path, action, hue, found),
                     Control::Wheel(wheel) if wheel.action == action && wheel.hue == hue => {
                         found.push((wheel.clone(), path.clone()));
                     }
                     _ => {}
+                }
+                if tab.is_some() {
+                    path.pop();
                 }
             }
         }
         let mut found = Vec::new();
         find(
             &descriptor.controls,
+            (descriptor.layout == luxforge_core::ModuleLayout::Tabs).then_some(None),
             &mut Vec::new(),
             action,
             hue,
@@ -347,22 +359,16 @@ impl FieldTarget {
             .into_iter()
             .nth(index)
             .ok_or_else(|| format!("Action {action} declares no wheel keyed by {hue}"))?;
+        // A tab row shows the wheel's view only once that view is selected.
         let mut tabs = Vec::new();
-        for depth in 0..path.len() {
-            let group = &path[..depth];
-            // A stacked group needs no selection; a tab row shows the wheel's view only once
-            // that view is selected.
-            let Some(views) = descriptor.views_at(group) else {
-                continue;
-            };
-            let view = &path[depth];
-            let index = views
-                .iter()
-                .position(|label| label == view)
+        for (group, view) in path {
+            let index = descriptor
+                .views_at(group.as_deref())
+                .and_then(|views| views.iter().position(|id| *id == view))
                 .ok_or_else(|| {
                     format!("The {hue} wheel's view {view} is not in its tab row {group:?}")
                 })?;
-            tabs.push((group.to_vec(), view.clone(), index));
+            tabs.push((group, view, index));
         }
         let mut field = Self::lookup(action, hue)?;
         field.wheel = Some(WheelTarget {
@@ -3346,10 +3352,9 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         ensure(
             setup["expanded"][&wheel.module] == true
                 && setup["tools_scroll"] == 0.0
-                && wheel
-                    .tabs
-                    .iter()
-                    .all(|(group, view, _)| selected_view(setup, &wheel.module, group, view))
+                && wheel.tabs.iter().all(|(group, view, _)| {
+                    selected_view(setup, &wheel.module, group.as_deref(), view)
+                })
                 && drawn_wheel(setup, &wheel.control.hue)
                     .is_some_and(|drawn| drawn["large"] == large),
             "The measured wheel was not visible in its own view before timing",
@@ -5141,16 +5146,12 @@ mod tests {
         assert_eq!(wheel.control.saturation, "grade-shadows-saturation");
         assert_eq!(wheel.control.style, luxforge_core::WheelStyle::Large);
         assert_eq!(wheel.module, "luxforge.mixer");
-        let tab = |group: &[&str], view: &str, index: usize| {
-            (
-                group.iter().map(|label| label.to_string()).collect(),
-                view.to_owned(),
-                index,
-            )
+        let tab = |group: Option<&str>, view: &str, index: usize| {
+            (group.map(str::to_owned), view.to_owned(), index)
         };
         assert_eq!(
             wheel.tabs,
-            [tab(&[], "Grading", 1), tab(&["Grading"], "Shadows", 1)]
+            [tab(None, "grading", 1), tab(Some("grading"), "shadows", 1)]
         );
         let source = PathBuf::from("unused.jpg");
         let options = Options {
@@ -5171,7 +5172,7 @@ mod tests {
             .unwrap()
             .wheel
             .unwrap();
-        assert_eq!(global.tabs[1], tab(&["Grading"], "Global", 4));
+        assert_eq!(global.tabs[1], tab(Some("grading"), "global", 4));
         assert!(resolve_field(Control::Wheel, Some("set-mixer"), Some("red-hue")).is_err());
         assert!(resolve_field(Control::Wheel, Some("set-mixer"), None).is_err());
         let values = gesture_values(31, Control::Wheel, &field);

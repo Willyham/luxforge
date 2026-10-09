@@ -2987,8 +2987,9 @@ mod tests {
     use super::*;
     use crate::api::ApiResponse;
     use crate::{
-        ActionInput, ActionPlan, Availability, Control, EFFECT_FORMAT, EffectDescriptor, EffectStage,
-        ExactGeometry, ModuleDescriptor, ParameterDescriptor, Processing, StageContext, ToolModule,
+        ActionInput, ActionPlan, Availability, Control, EFFECT_FORMAT, EffectDescriptor,
+        EffectStage, ExactGeometry, ModuleDescriptor, ParameterDescriptor, Processing,
+        StageContext, ToolModule,
         editor::mutation_json,
         modules::{PATCH_ACTION, PATCH_MODULE, PatchModule},
     };
@@ -5054,9 +5055,7 @@ mod tests {
         ] {
             assert_eq!(
                 chosen_views(&registry, stored, &chosen).unwrap_err().detail,
-                format!(
-                    "views names more tab rows than the {MAX_VIEW_SELECTIONS} a session holds"
-                )
+                format!("views names more tab rows than the {MAX_VIEW_SELECTIONS} a session holds")
             );
         }
     }
