@@ -96,6 +96,7 @@ impl<'a> Iterator for ColorRuns<'a> {
                     Processing::Color(_) => last = index,
                     Processing::ExactGeometry(_)
                     | Processing::Spatial(_)
+                    | Processing::Repair(_)
                     | Processing::Resample(_)
                     | Processing::Warp(_) => {}
                 }

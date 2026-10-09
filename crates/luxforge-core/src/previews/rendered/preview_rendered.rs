@@ -413,9 +413,9 @@ fn a_pixel_stage_stack_is_rendered_exactly_and_area_averaged() {
     registry
         .register(crate::modules::StageModule::shared(
             "test.pixel",
-            crate::modules::PIXEL_STAGE_EFFECT,
+            crate::modules::REPAIR_STAGE_EFFECT,
             "set-test-pixel",
-            crate::EffectStage::Pixel,
+            crate::EffectStage::Repair,
             0,
         ))
         .unwrap();

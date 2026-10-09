@@ -401,7 +401,7 @@ pub(crate) fn steps_to_units(steps: i32) -> f64 {
     f64::from(steps) / COORDINATE_STEPS_PER_UNIT
 }
 
-fn in_grid(value: i32) -> bool {
+pub(crate) fn in_grid(value: i32) -> bool {
     (GRID_MIN..=GRID_MAX).contains(&value)
 }
 

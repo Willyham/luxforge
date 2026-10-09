@@ -4,6 +4,7 @@
 //! The neighbourhood primitive is large enough to live next door, in
 //! [`spatial`](super::spatial): [`SpatialOperation`] and the [`SpatialUnit`](super::SpatialUnit)
 //! trait it holds are re-exported through this module's parent alongside everything here.
+use super::repair::RepairTable;
 use super::spatial::SpatialOperation;
 use crate::mask_field::MaskField;
 use crate::render::gpu::GpuDescription;
@@ -267,6 +268,11 @@ pub enum Processing {
     /// tiles. Like a resample it is a stage boundary: it reads the frame the segment before it
     /// produced and writes the next one, at the same dimensions.
     Spatial(SpatialOperation),
+    /// The repair stage's ordered Clone and Heal operations ([`RepairTable`]), each reading a
+    /// bounded region of its input that may lie anywhere in the stage. A stage boundary like a
+    /// spatial operation: it reads the frame the segment before it produced and writes the next
+    /// one, at the same dimensions. Only a `repair`-stage effect compiles to it.
+    Repair(RepairTable),
     Resample(Resample),
     Warp(WarpStep),
 }

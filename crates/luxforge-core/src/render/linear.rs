@@ -245,7 +245,7 @@ impl<'a> Linear<'a> {
                 reader: evaluation.domain.reader,
                 white_balance: evaluation.domain.white_balance,
             }),
-            Some(Entry::Spatial(_)) => {
+            Some(Entry::Spatial(_) | Entry::Repair(_)) => {
                 let frame = evaluation
                     .frame
                     .as_ref()

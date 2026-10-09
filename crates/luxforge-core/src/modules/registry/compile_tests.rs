@@ -364,7 +364,7 @@ fn a_maskable_effect_is_refused_at_the_geometry_and_finish_stages() {
     }
     for stage in [
         EffectStage::Source,
-        EffectStage::Pixel,
+        EffectStage::Repair,
         EffectStage::Color,
         EffectStage::Spatial,
     ] {
@@ -430,7 +430,7 @@ fn a_mask_this_build_cannot_evaluate_is_refused_by_name() {
             "test.pixelwarp",
             "test.pixelwarp.effect",
             "set-test-pixelwarp",
-            EffectStage::Pixel,
+            EffectStage::Repair,
             0,
             || {
                 Processing::Warp(crate::modules::WarpStep::Affine([

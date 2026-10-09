@@ -22,6 +22,7 @@ mod presets;
 mod processing;
 mod raw;
 mod registry;
+mod repair;
 mod spatial;
 mod vignette;
 
@@ -145,7 +146,7 @@ pub(crate) use registry::linked_modules;
 pub(crate) use registry::stack_compiles;
 #[cfg(test)]
 pub(crate) use registry::tests::{
-    HELD_ACTION, HELD_EFFECT, HeldModule, PATCH_ACTION, PATCH_MODULE, PIXEL_STAGE_EFFECT,
+    HELD_ACTION, HELD_EFFECT, HeldModule, PATCH_ACTION, PATCH_MODULE, REPAIR_STAGE_EFFECT,
     PatchModule, STAGE_ACTION, STAGE_EFFECT, StageModule, TestModule,
 };
 pub use registry::{ActionRef, QueryRef};
@@ -155,6 +156,9 @@ pub(crate) use spatial::{
     ESTIMATE_REDUCTION, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes,
     PlanesMut, Reduction, SPATIAL_BUDGET_BYTES, SpatialUnit,
 };
+pub use repair::{MAX_REPAIR_OPERATIONS, RepairTable};
+#[allow(unused_imports, reason = "the Corrections module (TASK-005) compiles into these")]
+pub(crate) use repair::{REPAIR_OFFSET_MAX, REPAIR_RADIUS_MAX, RepairKind, RepairOperation};
 pub use spatial::{MAX_MASKED_SPATIAL_LAYERS, Region, SpatialOperation};
 pub use vignette::VIGNETTE_EFFECT;
 pub(crate) use vignette::VignetteModule;

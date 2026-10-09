@@ -21,9 +21,9 @@ fn registry() -> Arc<ModuleRegistry> {
     registry
         .register(crate::modules::StageModule::shared(
             "test.pixel",
-            crate::modules::PIXEL_STAGE_EFFECT,
+            crate::modules::REPAIR_STAGE_EFFECT,
             "set-test-pixel",
-            crate::EffectStage::Pixel,
+            crate::EffectStage::Repair,
             0,
         ))
         .unwrap();
@@ -31,7 +31,7 @@ fn registry() -> Arc<ModuleRegistry> {
 }
 
 fn pixel_stage_layer() -> Layer {
-    Layer::new(crate::modules::PIXEL_STAGE_EFFECT, json!({}))
+    Layer::new(crate::modules::REPAIR_STAGE_EFFECT, json!({}))
 }
 
 fn job(color: u8, analyse: bool) -> PreviewJob {
@@ -1025,7 +1025,7 @@ fn a_job_without_a_proxy_phase_yields_one_exact_result_and_says_why() {
         .and_then(|exact| exact.proxy_declined.clone())
         .expect("a reason");
     assert!(
-        reason.contains(crate::modules::PIXEL_STAGE_EFFECT),
+        reason.contains(crate::modules::REPAIR_STAGE_EFFECT),
         "{reason}"
     );
     assert!(reason.contains("layer 0"), "{reason}");
@@ -1051,7 +1051,7 @@ fn a_job_without_a_proxy_phase_yields_one_exact_result_and_says_why() {
         .and_then(|exact| exact.proxy_declined.clone())
         .expect("a reason");
     assert!(
-        reason.contains(crate::modules::PIXEL_STAGE_EFFECT),
+        reason.contains(crate::modules::REPAIR_STAGE_EFFECT),
         "{reason}"
     );
 }

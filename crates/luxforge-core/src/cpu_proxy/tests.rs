@@ -503,9 +503,9 @@ fn a_pixel_stage_layer_makes_a_stack_ineligible_and_is_named() {
     registry
         .register(crate::modules::StageModule::shared(
             "test.pixel",
-            crate::modules::PIXEL_STAGE_EFFECT,
+            crate::modules::REPAIR_STAGE_EFFECT,
             "set-test-pixel",
-            crate::EffectStage::Pixel,
+            crate::EffectStage::Repair,
             0,
         ))
         .unwrap();
@@ -523,7 +523,7 @@ fn a_pixel_stage_layer_makes_a_stack_ineligible_and_is_named() {
 
     let ineligible = recipe(vec![
         Layer::orientation(Orientation::NEUTRAL),
-        Layer::new(crate::modules::PIXEL_STAGE_EFFECT, json!({})),
+        Layer::new(crate::modules::REPAIR_STAGE_EFFECT, json!({})),
         fitted_crop_layer(480, 320, 0.0),
     ]);
     let error = registry
@@ -531,7 +531,7 @@ fn a_pixel_stage_layer_makes_a_stack_ineligible_and_is_named() {
         .expect_err("a pixel-stage effect addresses content pixels");
     assert_eq!(error.kind, ErrorKind::Validation);
     assert!(
-        error.detail.contains(crate::modules::PIXEL_STAGE_EFFECT),
+        error.detail.contains(crate::modules::REPAIR_STAGE_EFFECT),
         "{error}"
     );
     assert!(error.detail.contains("layer 1"), "{error}");
