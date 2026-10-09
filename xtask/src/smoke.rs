@@ -1345,7 +1345,15 @@ fn launch_of(
     if let Some((file, watch)) = spec.watch {
         launch = launch.watch(Box::new(watch)).keep(file);
     }
-    if let Some(deadline) = spec.deadline {
+    if launch::software_adapter_requested() {
+        // Functional software rendering includes cold LLVM shader compilation. Keep it
+        // bounded by the editor's five-minute script deadline rather than native timings.
+        launch = launch.deadline(
+            spec.deadline
+                .unwrap_or_default()
+                .max(Duration::from_secs(300)),
+        );
+    } else if let Some(deadline) = spec.deadline {
         launch = launch.deadline(deadline);
     }
     launch
@@ -1568,7 +1576,7 @@ fn gpu_identity(run: &mut Run, launches: &[Checked]) -> Result {
         let ms = bar["gpu_ms"].as_f64().unwrap_or(f64::NAN);
         ensure(
             ms.is_finite()
-                && (0.0..RENDER_MS_BOUND).contains(&ms)
+                && (0.0..gpu_render_ms_bound(frame.state())).contains(&ms)
                 && gpu["gpu_preview_frame_us"].as_f64().map(|us| us / 1000.0) == Some(ms)
                 && bar["render"] == json!(frame_gpu_text(ms, frame.state()))
                 && gpu["plan_fallback"].is_null(),
@@ -1634,6 +1642,16 @@ pub fn check_empty(evidence: &Path) -> Result {
 /// bound exists to catch a figure that is not a render time at all, such as the time since the last
 /// request, which grows with the length of the run.
 pub const RENDER_MS_BOUND: f64 = 5000.0;
+
+/// A software frame can include cold LLVM shader compilation; it is functional evidence,
+/// not a native rendering time. Its figure must still be finite, bounded and correlated.
+fn gpu_render_ms_bound(state: &Value) -> f64 {
+    if state["renderer"]["software"] == json!(true) {
+        120_000.0
+    } else {
+        RENDER_MS_BOUND
+    }
+}
 
 /// The status bar's wording of one frame's render time, exactly as the editor's
 /// `state::status::RenderTime` formats it, so a captured frame's text is checked against its own
@@ -1742,13 +1760,16 @@ pub fn expect_render_times<F: Borrow<Value>>(events: &[Value], frames: &[F]) -> 
         // render's: a drag drawn on the GPU from its first tick.
         if let Some(gpu_ms) = bar["gpu_ms"].as_f64() {
             ensure(
-                text == frame_gpu_text(gpu_ms, &frame["state"]),
+                gpu_ms.is_finite()
+                    && (0.0..gpu_render_ms_bound(&frame["state"])).contains(&gpu_ms)
+                    && text == frame_gpu_text(gpu_ms, &frame["state"]),
                 format!(
                     "{}: the status bar says {text:?} for a GPU frame of {gpu_ms} ms",
                     frame["file"]
                 ),
             )?;
-            shown.push(json!({"frame":frame["file"],"render":text,"gpu_ms":gpu_ms}));
+            shown.push(json!({"frame":frame["file"],"render":text,"gpu_ms":gpu_ms,
+                "bound_ms":gpu_render_ms_bound(&frame["state"])}));
             continue;
         }
         let Some(ms) = bar["render_ms"].as_f64() else {
@@ -1812,6 +1833,31 @@ fn reused_picture_current(state: &Value, first: &Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn software_gpu_times_remain_bounded_and_correlated() {
+        // Retained hosted lavapipe evidence: a cold identity shader took 14.7 seconds.
+        let frame = |ms: f64, software: bool| {
+            json!({"file": "frame-1.png", "state": {
+                "renderer": {"software": software},
+                "status_bar": {"gpu_ms": ms,
+                    "render": if software {format!("Software {}", gpu_text(ms, false))}
+                        else {gpu_text(ms, false)}}
+            }})
+        };
+        let events = [json!({"event": "preview_displayed", "detail": {
+            "path": "gpu", "render_ms": null
+        }})];
+        let software = frame(14_740.016, true);
+        assert!(expect_render_times(&events, std::slice::from_ref(&software)).is_ok());
+        assert!(expect_render_times(&events, &[frame(14_740.016, false)]).is_err());
+        for ms in [-1.0, 120_000.0, 500_000.0] {
+            assert!(expect_render_times(&events, &[frame(ms, true)]).is_err());
+        }
+        let mut wrong = software;
+        wrong["state"]["status_bar"]["render"] = json!("Software GPU preview · 1 ms");
+        assert!(expect_render_times(&events, &[wrong]).is_err());
+    }
 
     /// A cold first capture draws the reference while its resident GPU boundary compiles.
     /// Reopens may draw that same boundary, but never another source or an unready/blank frame.
