@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Freeze the remaining Corrections contract against the current module, catalog, geometry and GPU-first interfaces, preserving settled owner decisions.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "The owner has already decided the repair stage relative to source/colour, deletion of PointReplace, stale patches kept rendering and provider-profile consent. Do not reopen these or restore the old fail-on-stale, licence gate or two-provider rollout.",
