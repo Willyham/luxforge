@@ -75,6 +75,17 @@ pub fn cargo_command() -> Command {
 }
 
 pub fn cargo(root: &Path, op: &str, release: bool) -> Result {
+    cargo_with(root, op, release, |_| {})
+}
+
+/// [`cargo`], with `configure` given the command before it runs, as `cargo xtask package` sets the
+/// build's embedded source revision.
+pub fn cargo_with(
+    root: &Path,
+    op: &str,
+    release: bool,
+    configure: impl FnOnce(&mut Command),
+) -> Result {
     let mut args = match op {
         "build" => vec![
             "build",
@@ -99,7 +110,10 @@ pub fn cargo(root: &Path, op: &str, release: bool) -> Result {
     if release {
         args.push("--release")
     }
-    let status = cargo_command().args(&args).current_dir(root).status()?;
+    let mut command = cargo_command();
+    command.args(&args).current_dir(root);
+    configure(&mut command);
+    let status = command.status()?;
     ensure(
         status.success(),
         format!("Command {args:?} failed: {status}"),
