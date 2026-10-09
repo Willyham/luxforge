@@ -26,7 +26,7 @@ mod testing;
 mod tests;
 
 #[cfg_attr(not(test), allow(unused_imports))]
-pub(crate) use binding::{BrushBinding, BrushSettings, clamp, step};
+pub(crate) use binding::{BrushBinding, BrushSettings, EditRequest, clamp, step};
 pub(crate) use capture::StrokeCapture;
 #[cfg(test)]
 pub(crate) use capture::counts;

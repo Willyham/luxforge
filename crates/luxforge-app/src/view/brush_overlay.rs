@@ -302,7 +302,10 @@ mod tests {
             })
             .collect();
         // A stored path, as the list query reads it: the host's decimation at its radius.
-        let path = luxforge_core::path::decimate(&raw, 0.02).unwrap();
+        let path = crate::brush::StrokeCapture::of(&raw)
+            .posted(0.02)
+            .unwrap()
+            .to_vec();
         let stroke = held(path.clone(), 0.02, None);
         let drawn = outline(&placement, &stroke);
         assert!(drawn.segments.len() <= 1024, "{}", drawn.segments.len());
