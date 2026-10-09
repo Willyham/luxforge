@@ -27,11 +27,9 @@ pub(super) fn color_chunk_rows(width: u32) -> usize {
 
 pub(super) const NON_FINITE_COLOR: &str = "colour processing produced a non-finite value";
 
-/// One maximal run of colour operations in a segment's operation list: every operation between two
-/// point replacements, which is the span the host evaluates as one unbroken float pass. Exact
-/// geometry is already composed into the segment's single raster pass and commutes with pointwise
-/// colour, so it does not break a run; a point replacement does, because a replacement written
-/// before a run is processed by it and one written after it is not.
+/// One maximal run of colour operations in a segment's operation list, which is the span the host
+/// evaluates as one unbroken float pass. Exact geometry is already composed into the segment's
+/// single raster pass and commutes with pointwise colour, so it does not break a run.
 #[derive(Clone, Copy)]
 pub(crate) struct ColorRun<'a> {
     /// The index of this run's first colour operation in the segment's operation list.
@@ -62,12 +60,6 @@ impl<'a> ColorRun<'a> {
                 Processing::Color(operation) => Some((self.start + offset, operation)),
                 _ => None,
             })
-    }
-
-    pub(super) fn followed_by_replace(self) -> bool {
-        self.operations[self.end + 1..]
-            .iter()
-            .any(|op| matches!(op, Processing::PointReplace { .. }))
     }
 
     /// Whether any operation of this run is modulated by a mask, which is what decides whether the
@@ -102,7 +94,6 @@ impl<'a> Iterator for ColorRuns<'a> {
             for (index, operation) in self.operations.iter().enumerate().skip(start) {
                 match operation {
                     Processing::Color(_) => last = index,
-                    Processing::PointReplace { .. } => break,
                     Processing::ExactGeometry(_)
                     | Processing::Spatial(_)
                     | Processing::Resample(_)
@@ -137,7 +128,7 @@ pub(super) fn color_runs(segment: &Segment) -> ColorRuns<'_> {
 /// A mask is compiled against the stage its layer receives — the content stage, for every layer that
 /// may carry one — while a colour run is applied to the frame its segment produces, after the
 /// segment's exact geometry has been composed into one pass. The two differ by exactly the exact
-/// steps that follow the operation, which is the same suffix a point replacement is mapped through
+/// steps that follow the operation: a suffix
 /// ([performance rule 3](../../../../docs/engineering/performance-rules.md)). Composing that suffix costs
 /// `O(operations)` integer multiplies, allocates nothing, and is exact: `a`, `b`, `c`, `d` are a
 /// signed permutation, so `unmap` is the mapping's exact inverse and a mask lands on the same content

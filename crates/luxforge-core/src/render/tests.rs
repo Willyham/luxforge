@@ -4,8 +4,8 @@
 use super::testing::render;
 use super::*;
 use crate::{
-    EFFECT_FORMAT, Error, Layer, LayerId, ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT,
-    PixelReplace, PointwiseColor, Recipe, SnapshotId, SourceImage, Transform,
+    EFFECT_FORMAT, Error, Layer, LayerId, ORIENTATION_EFFECT, Orientation, PointwiseColor, Recipe,
+    SnapshotId, SourceImage, Transform,
     modules::{
         ActionInput, ActionPlan, Availability, BoxRect, ColorOperation, CropPayload, CropStage,
         EffectDescriptor, EffectStage, ExactGeometry, ModuleDescriptor, ModuleRegistry, Processing,
@@ -76,11 +76,6 @@ pub(crate) fn reference(source: &SourceImage, layers: &[Layer]) -> (u32, u32, Ve
     let mut rgba = source.rgba.as_ref().to_vec();
     for layer in layers {
         match layer.effect_id.as_str() {
-            PIXEL_EFFECT => {
-                let pixel: PixelReplace = serde_json::from_value(layer.payload.clone()).unwrap();
-                let offset = ((pixel.y * width + pixel.x) * 4) as usize;
-                rgba[offset..offset + 3].copy_from_slice(&pixel.rgb);
-            }
             ORIENTATION_EFFECT => {
                 for transform in steps(&layer.payload) {
                     let (next_width, next_height) = match transform {

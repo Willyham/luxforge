@@ -85,37 +85,26 @@ impl MaskInputGrid for GridInput {
             return Ok(None);
         }
         let segment = &self.suffix.segments[0];
-        let Some(resolved) = segment.resolve(x, y) else {
+        if segment.resolve(x, y).is_none() {
             return Ok(None);
-        };
-        let after = resolved.replacement.map_or(0, |(index, _)| index + 1);
+        }
         macro_rules! suffix {
             ($domain:ty, $pixel:expr) => {{
                 let mut pixel = $pixel;
-                if let Some((_, rgb)) = resolved.replacement {
-                    pixel = <$domain>::replace(pixel, rgb);
-                }
                 if self.mode == super::MaskInputMode::ColourRun {
                     return super::pipeline::colour_input::<$domain>(
                         pixel,
-                        color_runs(segment).filter(|run| run.start >= after),
+                        color_runs(segment),
                         x,
                         y,
-                        self.grid.key.wide && !segment.has_pixels,
                     )
                     .map(Some);
                 }
                 if segment.has_color {
-                    pixel = <$domain>::colour(
-                        pixel,
-                        color_runs(segment).filter(|run| run.start >= after),
-                        x,
-                        y,
-                        self.grid.key.wide && !segment.has_pixels,
-                    )?;
+                    pixel =
+                        <$domain>::colour(pixel, color_runs(segment), x, y, self.grid.key.wide)?;
                 }
-                let pixel =
-                    <$domain>::finish_width(pixel, self.grid.key.wide && !segment.has_pixels)?;
+                let pixel = <$domain>::finish_width(pixel, self.grid.key.wide)?;
                 Ok(Some(<$domain>::linear(pixel)))
             }};
         }
@@ -330,7 +319,7 @@ fn build<D: PixelDomain, P: Copy>(
             "an input grid prefix must end at a restoration boundary",
         ));
     }
-    if segment.writes_pixels() {
+    if segment.has_color {
         return Err(Error::internal("an input grid prefix has a pointwise tail"));
     }
     let evaluation = Evaluation::framed(
@@ -728,7 +717,9 @@ mod tests {
         let mut keys = Vec::new();
         for wide in [true, false] {
             if !wide {
-                recipe.layers.push(Layer::pixel(0, 0, [12, 34, 56]));
+                // A neutral Basic layer compiles to no colour, so the restoration segment holds
+                // none and its input is handed over at eight bits.
+                recipe.layers[1].payload = json!({"exposure": 0.0});
             }
             let compiled = registry.compile(jpeg.width, jpeg.height, &recipe).unwrap();
             assert_eq!(compiled.prefix_spatial_input_wide(&compiled), wide);

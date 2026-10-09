@@ -491,9 +491,8 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
     };
     let total = Instant::now();
 
-    // The journey commits `edit.set-pixel`, whose pixel proof only a developer registry serves.
     let (owner, join) =
-        OwnerHandle::start_with(&catalog, std::sync::Arc::new(ModuleRegistry::developer()))?;
+        OwnerHandle::start_with(&catalog, std::sync::Arc::new(ModuleRegistry::builtin()))?;
     let mut join = Some(join);
     let outcome = (|| -> Result<Value> {
         let editor = owner.register();
@@ -927,83 +926,7 @@ pub fn run(root: &Path, out: &Path) -> Result<Value> {
             }),
         );
 
-        // 7b. A point replacement before and after the Basic layer (mixed-order.json semantics).
-        call(
-            &owner,
-            editor,
-            "history.restore",
-            json!({"asset_id": asset, "mutation": mutation(client::revision(&owner, editor, &asset)?, "restore-for-pixels"), "entry_id": original}),
-        )?;
-        let before_point = (10u32, 10u32);
-        let after_point = (20u32, 20u32);
-        let literal = [10u8, 20, 30];
-        let revision = client::revision(&owner, editor, &asset)?;
-        call(
-            &owner,
-            editor,
-            "edit.set-pixel",
-            json!({"asset_id": asset, "mutation": mutation(revision, "pixel-before"), "x": before_point.0, "y": before_point.1, "rgb": literal}),
-        )?;
-        let exposure_only = Basic {
-            exposure: 1.0,
-            ..Basic::default()
-        };
-        let revision = client::revision(&owner, editor, &asset)?;
-        call(
-            &owner,
-            editor,
-            "edit.set-basic",
-            json!({"asset_id": asset, "mutation": mutation(revision, "basic-between-pixels"), "exposure": 1.0}),
-        )?;
-        let revision = client::revision(&owner, editor, &asset)?;
-        call(
-            &owner,
-            editor,
-            "edit.set-pixel",
-            json!({"asset_id": asset, "mutation": mutation(revision, "pixel-after"), "x": after_point.0, "y": after_point.1, "rgb": literal}),
-        )?;
-        let recipe = client::recipe(&owner, editor, &asset)?;
-        let order: Vec<String> = recipe
-            .layers
-            .iter()
-            .map(|layer| layer.effect_id.clone())
-            .collect();
-        ensure(
-            order
-                == [
-                    luxforge_core::PIXEL_EFFECT,
-                    BASIC_EFFECT,
-                    luxforge_core::PIXEL_EFFECT,
-                ],
-            format!("The point-replacement stack is ordered {order:?}"),
-        )?;
-        let mixed_order = render(&source, &recipe)?;
-        let exposed_literal = exposure_only.pixel(literal);
-        let before_pixel = mixed_order
-            .pixel(before_point.0, before_point.1)
-            .ok_or("No pixel")?;
-        let after_pixel = mixed_order
-            .pixel(after_point.0, after_point.1)
-            .ok_or("No pixel")?;
-        for channel in 0..3 {
-            ensure(
-                (i32::from(before_pixel[channel]) - i32::from(exposed_literal[channel])).abs()
-                    <= CODE_TOLERANCE,
-                format!(
-                    "A replacement before the Basic layer was not exposed: {before_pixel:?} against {exposed_literal:?}"
-                ),
-            )?;
-        }
-        ensure(
-            [after_pixel[0], after_pixel[1], after_pixel[2]] == literal,
-            format!("A replacement after the Basic layer was changed: {after_pixel:?}"),
-        )?;
-        record(
-            "a point replacement before the Basic layer is processed by it and one after it is not, exactly as mixed-order.json states",
-            json!({"literal": literal, "before": before_pixel, "exposed_literal": exposed_literal, "after": after_pixel, "stack": order}),
-        );
-
-        // 7c. Basic under an orientation layer: the exact transform is a pure permutation of the
+        // 7b. Basic under an orientation layer: the exact transform is a pure permutation of the
         //      coloured stage, so the two compose without interpolation.
         call(
             &owner,

@@ -47,7 +47,8 @@ mod test_support;
 pub(crate) use source::original_work;
 #[cfg(test)]
 pub(crate) use test_support::{
-    distinct_jpeg, mutation, mutation_json, recast_as_raw, synthetic_raw_metadata,
+    SAMPLE_EFFECT, SampleModule, distinct_jpeg, mutation, mutation_json, recast_as_raw,
+    synthetic_raw_metadata,
 };
 
 pub(crate) use catalog::{
