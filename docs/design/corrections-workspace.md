@@ -1,12 +1,12 @@
 # Corrections in the Develop workspace
 
-Status: **proposal for owner review, 2026-10-09; not implemented.** This is the design of the Corrections mode, its canvas gestures, its panel and its keys. What a correction *is* stays the [Corrections design](corrections.md)'s: the repair stage before Detail, ordered Clone/Heal operations that each sample only the operations before them, content-space paths in the shared stroke store, the `draft.*` lifecycle and `preset: false`. This design adds what the person sees and does, plus the three contract changes it needs: automatic sources, moving a correction's destination, and a larger operation limit.
+Status: **decided by the owner on 2026-10-09, with the defaults under [decisions](#decisions); not implemented.** This is the design of the Corrections mode, its canvas gestures, its panel and its keys. What a correction *is* stays the [Corrections design](corrections.md)'s: the repair stage before Detail, ordered Clone/Heal operations that each sample only the operations before them, content-space paths in the shared stroke store, the `draft.*` lifecycle and `preset: false`. This design adds what the person sees and does, plus the three contract changes it needs: automatic sources, moving a correction's destination, and a larger operation limit.
 
 Where something isn't specified here, the reference is Lightroom Classic's Healing tool, for familiarity rather than as a checklist. The modifier keys follow Photoshop and Lightroom wherever the two agree.
 
 ## Boards
 
-Proposed boards, drawn at 1440 × 900 logical points and rendered at 2×. Each one is also a standalone HTML page under [corrections/html](corrections/html/index.html). The photograph is the owner's Sapa drone JPEG at 27%. The repairs drawn on it are real offsets of its own pixels, so they blend as Clone would. Names, values and history are illustrative.
+Boards, drawn at 1440 × 900 logical points and rendered at 2×. Each one is also a standalone HTML page under [corrections/html](corrections/html/index.html). The photograph is the owner's Sapa drone JPEG at 27%. The repairs drawn on it are real offsets of its own pixels, so they blend as Clone would. Names, values and history are illustrative.
 
 | Board | Shows |
 | --- | --- |
@@ -143,7 +143,7 @@ Every gesture above has a semantic equivalent through the same command service. 
 
 ## Capacity
 
-Dust spotting and distraction removal routinely need dozens of corrections, and an eight-operation ceiling makes the stacking principle hollow. **Proposed default: 100 corrections per photograph**, checked before a draft starts, with the `resource-limit` refusal above. Reaching it needs the repair pass to evaluate many operations in one dispatch, for example from a bounded operation table and per-operation source windows, rather than one charged output plane per operation. That rendering change belongs to the processing primitive's task and is measured there. Until it lands, the band and the refusal use whatever limit the core declares; the number is never hard-coded in the desktop.
+Dust spotting and distraction removal routinely need dozens of corrections, and an eight-operation ceiling makes the stacking principle hollow. **Decided (owner, 2026-10-09): 100 corrections per photograph**, checked before a draft starts, with the `resource-limit` refusal above. Reaching it needs the repair pass to evaluate many operations in one dispatch, for example from a bounded operation table and per-operation source windows, rather than one charged output plane per operation. That rendering change belongs to the processing primitive's task and is measured there. Until it lands, the band and the refusal use whatever limit the core declares; the number is never hard-coded in the desktop.
 
 ## Visual language
 
@@ -157,7 +157,10 @@ An interim panel was tried on a branch and rejected by the owner on 2026-10-09. 
 
 The background-only `corrections` smoke scenario covers each journey with correlated state, log and capture: click spot with automatic source, painted stroke, `⇧`-click, `⌥`-click then live-painted Clone, `⌘`-drag, selection by pin and by row, pin drag, source drag, spot resize, `/`, `⌫`, row drag and `⌥↑`, `H`, the Escape order, a stroke stacked across an earlier correction whose pixels show that it sampled the earlier repair, the no-source notice and the limit refusal. Each committing gesture is checked as exactly one entry with the label above. UI/API parity is verified per row of the [programmability table](#programmability). The automatic search has exact reference fixtures for its candidate set, rejection rules, score and tie-break. Overlays are checked through crop, straighten and a Lens/Perspective warp. Interaction latency (input to overlay, release to repaired frame, handle drag and the automatic search) is measured with the brush on 24/60 MP JPEG and qualified RAW on the M4 once the feature is complete.
 
-## Recorded defaults awaiting the owner
+## Decisions
+
+Accepted by the owner on 2026-10-09, with the rest of this design:
+
 
 1. **Capacity**: 100 corrections per photograph (above), replacing the initial eight.
 2. **A set source persists**: it is used by following corrections until **Auto** or Escape, as Photoshop's aligned clone does, rather than for one correction only.

@@ -486,6 +486,18 @@ Requested for planning by the owner on 2026-10-07 ([design](design/hdr-merge.md)
 
 The owner selected **RAW brackets only** and **automatic alignment and deghosting** for the first implementation. JPEG bracket inputs are outside this plan; the existing SDR JPEG export remains available for merged results. Numerical/backend/layout details are delegated within the contract, so the storage, radiance and alignment tasks can start independently once implementation is authorized. This planning request does not authorize implementation.
 
+## Corrections workspace
+
+Decided by the owner on 2026-10-09, accepting the [Corrections workspace](design/corrections-workspace.md) design and its boards as the target for the offline Clone/Heal desktop workflow:
+
+- **A press away from a pin adds a correction**, over earlier ones included; corrections stack and each samples the ones below it. People see `Heal 5`, never an operation ID.
+- **Sources are automatic** unless set: a deterministic search resolves one once, on a render worker, and stores it as an ordinary offset; `/` takes the next-ranked one.
+- **Modifiers**: `⌥`-click sets the source, `⌘`-drag places a spot and pulls out its source, `⇧` draws straight strokes. A set source persists until Auto or Escape.
+- **Pins and handles** select, move, resample and resize. Moving a correction keeps its source in place, and a stroke's pin is at its first point.
+- **100 corrections per photograph**, replacing the initial engineering ceiling of eight.
+
+An interim implementation built on a branch before this design is set aside, not merged; Corrections is implemented again from the [task plan](../tasks/editing/corrections.json).
+
 ## Open product questions
 
 [Product decisions](../tasks/project/product-decisions.json) carries the storage, external-module, workload, Presence, GPU reconciliation, themes and Lightroom-authorization tasks. The other recorded defaults remain proposals in their designs; they acquire no additional decision task.
