@@ -2795,41 +2795,6 @@ mod tests {
     }
 
     #[test]
-    fn a_replacement_before_a_spatial_layer_is_blurred_and_one_after_it_is_not() {
-        let source = gradient(80, 60);
-        let registry = spatial_registry();
-        let before = [10_u8, 200, 30];
-        let after = [250_u8, 5, 120];
-        let stack = recipe(vec![
-            Layer::pixel(20, 15, before),
-            spatial_layer(&["blur:2"]),
-            Layer::pixel(60, 40, after),
-        ]);
-        let mut input = source.rgba.as_ref().to_vec();
-        let offset = ((15 * 80 + 20) * 4) as usize;
-        input[offset..offset + 3].copy_from_slice(&before);
-        let mut expected = reference_chain(80, 60, decode_frame(&input), &[RefUnit::Blur(2)]);
-        // The replacement after the operation overwrites the blurred value exactly.
-        expected[(40 * 80 + 60) as usize] =
-            std::array::from_fn(|channel| decode_reference(f64::from(after[channel]) / 255.0));
-        let raster = render_tiled(
-            &registry,
-            &source,
-            SnapshotId::new(),
-            &stack,
-            &Cancel::new(),
-            32,
-        )
-        .unwrap();
-        assert_frame(&raster, &expected, "replacement around a spatial layer");
-        assert_eq!(
-            raster.pixel(60, 40).unwrap()[..3],
-            after,
-            "the replacement after the operation is written as it stands"
-        );
-    }
-
-    #[test]
     fn slow_a_crop_resample_after_a_spatial_layer_resamples_the_blurred_frame() {
         let source = gradient(80, 60);
         let registry = spatial_registry();

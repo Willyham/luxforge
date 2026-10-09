@@ -15,6 +15,11 @@ use crate::crop_draft::{Corner, Handle};
 use crate::state::tools::{ControlModel, NumberControlStyle, SliderControl};
 use luxforge_core::{ClientSession, HistoryEntry, HistorySelection};
 
+/// A layer ahead of the crop, whose output stage the crop's input stage includes.
+fn earlier_layer() -> luxforge_core::Layer {
+    luxforge_core::Layer::new(luxforge_core::BASIC_EFFECT, json!({"exposure": 0.5}))
+}
+
 /// The crop angle's declared step: one press of its − or + button.
 const STEP: f64 = 0.5;
 
@@ -226,7 +231,7 @@ fn a_draft_opens_at_once_on_the_existing_crop_layers_row() {
         width: 0.4,
         height: 0.3,
     };
-    let earlier = luxforge_core::Layer::pixel(0, 0, [1, 2, 3]);
+    let earlier = earlier_layer();
     let crop = crop_layer(payload);
     let (mut editor, catalog, _, _) = opened(
         vec![earlier, crop.clone(), crop_layer(CropPayload::NEUTRAL)],
@@ -236,7 +241,10 @@ fn a_draft_opens_at_once_on_the_existing_crop_layers_row() {
     let _ = editor.update(Message::Crop(CropMessage::Start));
     let draft = editor.crop().expect("the frame opened with the start");
     assert_eq!(draft.layer, Some(crop.id.clone()));
-    assert_eq!(draft.layer_index, 1, "the stage is the pixel edit's output");
+    assert_eq!(
+        draft.layer_index, 1,
+        "the stage is the earlier layer's output"
+    );
     assert_eq!((draft.stage.width, draft.stage.height), CROP_SOURCE);
     assert_eq!(draft.stage.angle, 7.0);
     let reopened = CropStage {
@@ -272,7 +280,7 @@ fn a_draft_opens_at_once_on_the_existing_crop_layers_row() {
 /// step and refits the rectangle, only the release logs a draft change, and nothing commits.
 #[test]
 fn a_drag_on_the_angle_rail_drafts_the_angle_and_logs_once_on_release() {
-    let (mut editor, catalog, _, _) = opened(vec![luxforge_core::Layer::pixel(0, 0, [9, 9, 9])], 2);
+    let (mut editor, catalog, _, _) = opened(vec![earlier_layer()], 2);
     let _ = editor.update(Message::Crop(CropMessage::Start));
     open_crop(&mut editor);
     let log = crate::app::testing::attach_log(&mut editor);
@@ -374,7 +382,7 @@ fn a_double_click_on_the_angle_rail_resets_the_angle_as_one_change() {
 /// it again, and text that is not a number keeps it open for correcting.
 #[test]
 fn the_angle_box_opens_for_typing_and_closes_on_a_submitted_number() {
-    let (mut editor, catalog, _, _) = opened(vec![luxforge_core::Layer::pixel(0, 0, [9, 9, 9])], 2);
+    let (mut editor, catalog, _, _) = opened(vec![earlier_layer()], 2);
     let _ = editor.update(Message::Crop(CropMessage::Start));
     open_crop(&mut editor);
     let frame = crop_frame(&editor.modules).expect("a crop frame");
@@ -404,7 +412,7 @@ fn the_angle_box_opens_for_typing_and_closes_on_a_submitted_number() {
 
 #[test]
 fn a_stack_without_a_crop_layer_drafts_a_neutral_crop_at_the_end() {
-    let (mut editor, catalog, _, _) = opened(vec![luxforge_core::Layer::pixel(0, 0, [9, 9, 9])], 2);
+    let (mut editor, catalog, _, _) = opened(vec![earlier_layer()], 2);
     let _ = editor.update(Message::Crop(CropMessage::Start));
     let draft = editor.crop().expect("an opened draft");
     assert!(draft.layer.is_none());
@@ -948,7 +956,7 @@ fn a_draft_opens_behind_every_transform_ahead_of_its_crop() {
     });
     let (mut editor, catalog, _, _) = opened(
         vec![
-            luxforge_core::Layer::pixel(0, 0, [1, 2, 3]),
+            earlier_layer(),
             luxforge_core::Layer::orientation(right),
             crop.clone(),
         ],
@@ -959,7 +967,7 @@ fn a_draft_opens_behind_every_transform_ahead_of_its_crop() {
     assert_eq!(draft.layer, Some(crop.id));
     assert_eq!(
         draft.layer_index, 2,
-        "the pixel edit and the turn are shown"
+        "the earlier layer and the turn are shown"
     );
     assert_eq!(draft.ahead, right);
     assert_eq!(
@@ -981,10 +989,7 @@ fn a_first_draft_stops_before_a_finish_layer() {
         artifacts: Vec::new(),
         mask: None,
     };
-    let (mut editor, catalog, _, _) = opened(
-        vec![luxforge_core::Layer::pixel(0, 0, [1, 2, 3]), finish_layer],
-        2,
-    );
+    let (mut editor, catalog, _, _) = opened(vec![earlier_layer(), finish_layer], 2);
     let finishing = luxforge_core::ModuleDescriptor {
         id: "luxforge.vignette".into(),
         effects: vec![luxforge_core::EffectDescriptor {
@@ -1864,11 +1869,10 @@ fn a_raw_develops_again_while_a_crop_draft_is_open() {
 
 /// A crop draft's input stage asked for with the GPU is planned with its prefix's picture at rest:
 /// the layers before the crop, from the source, their tiles reduced to the stage's display bounds,
-/// covering the prefix's whole output stage. A prefix the GPU cannot draw — a developer's pixel
-/// replacement — names why in the plan and its tiles, and the job's own frame is the reference's.
+/// covering the prefix's whole output stage.
 #[test]
 fn a_crop_drafts_input_stage_is_planned_as_its_prefixs_picture_at_rest() {
-    use luxforge_core::{GpuAnswer, GpuFallback, PreviewRequest, ProxyBounds};
+    use luxforge_core::{PreviewRequest, ProxyBounds};
     use luxforge_testkit::client::{call, mutation, request_id, revision};
     let catalog = luxforge_testbase::paths::temp_path("crop-stage-rest.sqlite");
     let (owner, join) = luxforge_core::OwnerHandle::start_with_host(
@@ -1960,22 +1964,6 @@ fn a_crop_drafts_input_stage_is_planned_as_its_prefixs_picture_at_rest() {
     )
     .unwrap();
     assert!(plain.gpu_rest.is_none());
-    // A pixel replacement in the prefix: the plan names it, and so do the tiles.
-    commit("edit.set-pixel", json!({"x": 3, "y": 2, "rgb": [9, 9, 9]}));
-    let job = stage(crop_at());
-    let rest = job.gpu_rest.as_deref().expect("the prefix's plan");
-    assert!(
-        matches!(
-            rest.view.answer,
-            GpuAnswer::Fallback(GpuFallback::PixelStage { .. })
-        ),
-        "{:?}",
-        rest.view.answer.fallback()
-    );
-    assert!(matches!(
-        rest.tiles,
-        Some(Err(GpuFallback::PixelStage { .. }))
-    ));
     owner.stop();
     let _ = join.join();
     let _ = std::fs::remove_file(&catalog);

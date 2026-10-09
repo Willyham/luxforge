@@ -77,9 +77,9 @@ impl ModuleRegistry {
 
     /// Refuse a layer whose mask this build cannot evaluate.
     ///
-    /// A mask reaches a colour operation and a spatial operation, and nothing else: a point
-    /// replacement writes one stored pixel and has no blend to perform, so there is nothing for a
-    /// coverage to modulate. (A geometry or finish layer cannot carry a mask at all, for the earlier
+    /// A mask reaches a colour operation and a spatial operation, and nothing else: a warp or
+    /// resample moves pixels and has no blend to perform, so there is nothing for a coverage to
+    /// modulate. (A geometry or finish layer cannot carry a mask at all, for the earlier
     /// reason that it has no content stage to read one in; that is
     /// [`Self::validate_masked_stages`].) A mask this build cannot evaluate must never be silently
     /// omitted from a frame or an export, so such a stack is refused by name wherever it would be
@@ -390,17 +390,6 @@ impl ModuleRegistry {
                     segment.height = output.height;
                     segment.operations.push(Processing::ExactGeometry(step));
                 }
-                Processing::PointReplace { x, y, rgb } => {
-                    // A point replacement has no blend to perform, so a mask on one would be a mask
-                    // this build cannot evaluate. No delivered pixel-stage effect declares itself
-                    // maskable; refusing by name is what keeps a later one from silently rendering
-                    // its replacement everywhere instead of through the selection.
-                    self.refuse_unevaluated_mask(layer)?;
-                    segment.has_pixels = true;
-                    segment
-                        .operations
-                        .push(Processing::PointReplace { x, y, rgb });
-                }
                 Processing::Color(operation) => {
                     if operation.len() > MAX_COLOR_UNITS {
                         return Err(Error::validation(format!(
@@ -481,7 +470,6 @@ impl ModuleRegistry {
                         continue;
                     }
                     if let Some(entry) = segment.entry.as_mut()
-                        && !segment.has_pixels
                         && !segment.has_color
                         && segment.geometry.is_identity(stage.width, stage.height)
                         && entry.fuse(step, output)?
@@ -504,7 +492,6 @@ impl ModuleRegistry {
                 }
                 Processing::Resample(resample) => {
                     if let Mapping::Affine(matrix) = &resample.map
-                        && !segment.has_pixels
                         && !segment.has_color
                         && segment.geometry.is_identity(stage.width, stage.height)
                         && let Some(entry) = segment.entry.as_mut()

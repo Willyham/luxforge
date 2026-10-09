@@ -149,11 +149,6 @@ impl WhiteBalanceApproximation {
     }
 }
 
-#[inline]
-fn decode_rgb(value: [u8; 3]) -> [f64; 3] {
-    value.map(srgb::decode_u8)
-}
-
 /// What the terminal boundary refuses a non-finite value with.
 const NON_FINITE_TERMINAL: &str = "linear evaluation produced a non-finite value";
 
@@ -201,9 +196,8 @@ pub(super) fn check_resamples(compiled: &Compiled) -> Result<(), Error> {
 /// The linear domain: a developed RAW's planes in signed unbounded linear sRGB, with any approximate
 /// white balance applied to each source pixel in `f64`. A segment with colour is `f32` from its
 /// entry to its end; one without hands its entry to the terminal as it is, `f32` read from the
-/// planes or a spatial frame and `f64` from a blend, a white-balance product or a replacement.
-/// Nothing is quantized before the terminal boundary, so a replacement is decoded rather than
-/// quantized at, a resample blends in `f64`, and a spatial operation's `f32` output is read back
+/// planes or a spatial frame and `f64` from a blend or a white-balance product.
+/// Nothing is quantized before the terminal boundary, so a resample blends in `f64`, and a spatial operation's `f32` output is read back
 /// exactly. There is no alpha.
 #[derive(Clone, Copy)]
 pub(crate) struct Linear<'a> {
@@ -397,11 +391,6 @@ impl PixelDomain for Linear<'_> {
         self.adjust_source_pixel(pixel.map(f64::from))
     }
 
-    #[inline]
-    fn replace(_: [f64; 3], rgb: [u8; 3]) -> [f64; 3] {
-        decode_rgb(rgb)
-    }
-
     /// The colour phases are the byte path's, applied to one linear pixel: every run processes the
     /// value in place and nothing is quantized between runs, which is the whole point of the linear
     /// path: a scene value above 1 or below 0 survives to the next unit and only the terminal
@@ -454,7 +443,7 @@ impl PixelDomain for Linear<'_> {
         }
     }
 
-    /// A segment without replacements whose entry is planes ([`Linear::entry_planes`]) reads each
+    /// A segment whose entry is planes ([`Linear::entry_planes`]) reads each
     /// row of `region` by walking them: a colour segment's row as `f32` straight into the colour
     /// scratch, through its runs and the finite check, then widened once; one without colour each
     /// value as its entry pixel and [`Self::finish`]. Row by row, so each row's entry, colour and
@@ -467,9 +456,6 @@ impl PixelDomain for Linear<'_> {
         scratch: &mut RowScratch,
     ) -> Option<Result<(), Error>> {
         let segment = &evaluation.compiled.segments[index];
-        if segment.has_pixels {
-            return None;
-        }
         let planes = Self::entry_planes(evaluation, index)?;
         let walk = planes.walk(segment.geometry, region)?;
         Some((0..walk.rows()).try_for_each(|row| {
@@ -490,7 +476,7 @@ impl PixelDomain for Linear<'_> {
         }))
     }
 
-    /// A segment without replacements whose entry is planes ([`Linear::entry_planes`]) fills each
+    /// A segment whose entry is planes ([`Linear::entry_planes`]) fills each
     /// row of the planes a spatial operation reads by walking them, in `f32` from the planes to
     /// the spatial input: a colour segment's row through its runs and the finite check, one
     /// without colour each value checked as [`Self::finish`] checks it and narrowed as
@@ -503,9 +489,6 @@ impl PixelDomain for Linear<'_> {
         parallelism: Parallelism,
     ) -> Option<Result<(), Error>> {
         let segment = &evaluation.compiled.segments[index];
-        if segment.has_pixels {
-            return None;
-        }
         let entry = Self::entry_planes(evaluation, index)?;
         let walk = entry.walk(segment.geometry, region)?;
         let len = region.pixels() as usize;
@@ -736,8 +719,8 @@ pub(super) const TAP_BLOCK_PIXELS: u64 = 16 * 1024;
 
 /// The last segment's rows on the linear path. A segment with colour holds its rows as `f32`
 /// between its entry and the terminal boundary, exactly the value [`Linear::colour`] converts a
-/// pixel to; one without colour has nothing to hold, so its entry and replacements go straight to
-/// terminal bytes.
+/// pixel to; one without colour has nothing to hold, so its entry goes straight to terminal
+/// bytes.
 pub(super) struct LinearRows<'e, 'x, 's> {
     evaluation: &'e Evaluation<'x, Linear<'s>>,
     index: usize,
@@ -1024,16 +1007,6 @@ impl SegmentRows for LinearRows<'_, '_, '_> {
         }
     }
 
-    fn replace(
-        &self,
-        scratch: &mut Self::Scratch,
-        chunk: &mut [u8],
-        offset: usize,
-        rgb: [u8; 3],
-    ) -> Result<(), Error> {
-        self.put(&mut scratch.rows, chunk, offset, decode_rgb(rgb))
-    }
-
     fn run(
         &self,
         scratch: &mut Self::Scratch,
@@ -1300,10 +1273,6 @@ mod tests {
         let registry = ModuleRegistry::developer();
         let settings = LinearSettings::default();
         for recipe in [
-            Recipe {
-                layers: vec![Layer::pixel(1, 1, [30, 60, 90])],
-                ..Recipe::default()
-            },
             Recipe {
                 layers: vec![Layer::orientation(crate::Orientation {
                     mirror: false,
@@ -1624,7 +1593,7 @@ mod tests {
     fn regions_read_as_pulled(evaluation: &Evaluation<'_, Linear<'_>>, what: &str) {
         let mut read = 0;
         for (index, segment) in evaluation.compiled.segments.iter().enumerate() {
-            if segment.has_pixels || Linear::entry_planes(evaluation, index).is_none() {
+            if Linear::entry_planes(evaluation, index).is_none() {
                 continue;
             }
             read += 1;
@@ -2137,7 +2106,7 @@ mod tests {
     }
 
     #[test]
-    fn bilinear_preserves_headroom_and_point_replace_decodes_at_its_stage() {
+    fn bilinear_preserves_headroom() {
         let corners = [
             [2.0, -1.0, 0.0],
             [0.0, 1.0, 2.0],
@@ -2165,32 +2134,6 @@ mod tests {
         for (actual, expected) in actual.into_iter().zip(expected) {
             assert!((actual - expected).abs() < 1.0e-15);
         }
-
-        let source = image(2, 2, &[[0.0, 0.0, 0.0]; 4]);
-        let recipe = Recipe {
-            format: crate::RECIPE_FORMAT,
-            layers: vec![Layer::pixel(1, 0, [128, 64, 255])],
-            masks: Vec::new(),
-            ..Recipe::default()
-        };
-        let sample = sample_linear(
-            &ModuleRegistry::developer(),
-            &source,
-            &recipe,
-            LinearSettings::default(),
-            1,
-            0,
-        )
-        .unwrap();
-        assert_eq!(
-            sample.rgba,
-            Some([
-                reference_srgb(srgb::decode_u8(128)),
-                reference_srgb(srgb::decode_u8(64)),
-                255,
-                255
-            ])
-        );
     }
 
     // -----------------------------------------------------------------------------------------

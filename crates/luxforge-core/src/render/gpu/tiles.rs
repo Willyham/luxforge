@@ -39,7 +39,7 @@
 //!   encoded, so their linear values are clamped to `[0, 1]` as an encoded value is; a colour layer
 //!   receives its colour run's unclamped value, and the linear path clamps nothing.
 //! - **What the GPU cannot draw** answers its reason ([`TileFallback::Plan`]), and the reference
-//!   renders the read or the export: the plan's own fallback (`pixel-stage`, `no-program`,
+//!   renders the read or the export: the plan's own fallback (`boundary-stage`, `no-program`,
 //!   `disabled-program`, ...), and as `unplannable` a stack that does not
 //!   compile, a stack the window planner cannot cut and a source drafted under an approximate
 //!   white balance, which the GPU source does not hold.

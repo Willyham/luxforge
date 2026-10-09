@@ -239,9 +239,6 @@ fn compiled_units(
         )),
         Processing::Warp(step) => Ok(usize::from(!step.is_identity())),
         Processing::Resample(_) => Ok(1),
-        other => Err(format!(
-            "{payload} compiled to {other:?}, which is not field-patch processing"
-        )),
     }
 }
 
