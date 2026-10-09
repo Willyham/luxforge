@@ -5,10 +5,10 @@ use super::{
     query, table,
 };
 use crate::{
-    ActionDescriptor, ActionInput, ActionPlan, Availability, CanvasInteraction, EffectDescriptor,
-    EffectStage, Error, IdentityKind, Layer, LayerReport, ModuleDescriptor, ParameterDescriptor,
-    Processing, ResetAction, StageContext, ToolModule,
-    modules::EffectOperations,
+    ActionDescriptor, ActionInput, ActionPlan, Availability, BrushEdit, BrushSource,
+    CanvasInteraction, EffectDescriptor, EffectOperations, EffectStage, Error, IdentityKind, Layer,
+    LayerReport, ModuleDescriptor, ParameterDescriptor, Processing, ResetAction, StageContext,
+    ToolModule,
     path::{POINTS_PER_STROKE, POSTED_POINTS_PER_STROKE},
 };
 use serde_json::{Map, Value};
@@ -51,12 +51,16 @@ fn points() -> ParameterDescriptor {
 }
 
 fn radius() -> ParameterDescriptor {
-    ParameterDescriptor::number("radius", super::stroke::RADIUS_MIN, super::stroke::RADIUS_MAX)
-        .unit("content heights")
-        .notes(
-            "the brush radius in content heights, so a spot is round at any aspect ratio; a \
+    ParameterDescriptor::number(
+        "radius",
+        super::stroke::RADIUS_MIN,
+        super::stroke::RADIUS_MAX,
+    )
+    .unit("content heights")
+    .notes(
+        "the brush radius in content heights, so a spot is round at any aspect ratio; a \
              resize keeps the stored positions",
-        )
+    )
 }
 
 fn mode() -> ParameterDescriptor {
@@ -228,17 +232,27 @@ impl CorrectionsModule {
     }
 }
 
-/// The brush that paints corrections ([`CanvasInteraction::BrushMask`]).
+/// The brush that paints corrections ([`CanvasInteraction::BrushMask`]): a new path drafts
+/// `add-correction`; pins, source handles and the size handle draft `update-correction` on one
+/// correction; `query.corrections` lists what to draw and `query.correction-sources` ranks sources.
 fn canvas() -> CanvasInteraction {
     CanvasInteraction::BrushMask {
         action: ADD.into(),
         points: "points".into(),
         radius: "radius".into(),
-        feather: "feather".into(),
-        opacity: "opacity".into(),
-        source_x: Some("source-x".into()),
-        source_y: Some("source-y".into()),
-        update: Some(UPDATE.into()),
+        feather: Some("feather".into()),
+        opacity: Some("opacity".into()),
+        mode: Some("mode".into()),
+        source: Some(BrushSource {
+            x: "source-x".into(),
+            y: "source-y".into(),
+            query: SOURCES.into(),
+        }),
+        edit: Some(BrushEdit {
+            action: UPDATE.into(),
+            operation: OPERATION.into(),
+            list: LIST.into(),
+        }),
         title: "Corrections".into(),
         shortcut: Some("Q".into()),
         icon: Some("heal".into()),
@@ -246,7 +260,11 @@ fn canvas() -> CanvasInteraction {
 }
 
 /// The stored payload of a repair layer, refused by name when it is not this effect's or format's.
-pub(crate) fn stored(effect_id: &str, format: u32, payload: &Value) -> Result<RepairPayload, Error> {
+pub(crate) fn stored(
+    effect_id: &str,
+    format: u32,
+    payload: &Value,
+) -> Result<RepairPayload, Error> {
     if effect_id != CORRECTIONS_EFFECT {
         return Err(Error::unavailable_effect(effect_id, &[]));
     }
@@ -259,7 +277,9 @@ pub(crate) fn stored(effect_id: &str, format: u32, payload: &Value) -> Result<Re
 }
 
 /// The repair layer of `layers`, read: its index and payload, or `None` when the stack holds none.
-pub(crate) fn repair_layer(layers: &[Layer]) -> Result<Option<(usize, &Layer, RepairPayload)>, Error> {
+pub(crate) fn repair_layer(
+    layers: &[Layer],
+) -> Result<Option<(usize, &Layer, RepairPayload)>, Error> {
     layers
         .iter()
         .enumerate()
@@ -276,7 +296,11 @@ impl ToolModule for CorrectionsModule {
         &self.descriptor
     }
 
-    fn parse(&self, action_id: &str, parameters: &Map<String, Value>) -> Result<ActionInput, Error> {
+    fn parse(
+        &self,
+        action_id: &str,
+        parameters: &Map<String, Value>,
+    ) -> Result<ActionInput, Error> {
         actions::parse(action_id, parameters)
     }
 
@@ -288,7 +312,12 @@ impl ToolModule for CorrectionsModule {
         stored(effect_id, format, payload).map(drop)
     }
 
-    fn describe(&self, effect_id: &str, format: u32, payload: &Value) -> Result<LayerReport, Error> {
+    fn describe(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &Value,
+    ) -> Result<LayerReport, Error> {
         let payload = stored(effect_id, format, payload)?;
         let summary = match payload.operations.len() {
             0 => "No corrections".to_owned(),

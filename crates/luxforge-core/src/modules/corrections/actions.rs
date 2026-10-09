@@ -14,7 +14,10 @@ use serde_json::{Map, Value, json};
 
 /// Normalize a checked request: the action's own pairing rules, which no declared range states —
 /// a source is both coordinates or neither, and `source-origin` comes only with one.
-pub(super) fn parse(action_id: &str, parameters: &Map<String, Value>) -> Result<ActionInput, Error> {
+pub(super) fn parse(
+    action_id: &str,
+    parameters: &Map<String, Value>,
+) -> Result<ActionInput, Error> {
     match action_id {
         ADD | UPDATE => {
             let sent = |name: &str| parameters.contains_key(name);
@@ -56,7 +59,10 @@ fn integer(parameters: &Map<String, Value>, name: &str) -> Option<u8> {
 }
 
 fn source(parameters: &Map<String, Value>) -> Option<[f64; 2]> {
-    Some([number(parameters, "source-x")?, number(parameters, "source-y")?])
+    Some([
+        number(parameters, "source-x")?,
+        number(parameters, "source-y")?,
+    ])
 }
 
 fn kind(parameters: &Map<String, Value>) -> Result<Option<OperationKind>, Error> {
@@ -113,7 +119,9 @@ pub(super) fn plan(input: &ActionInput, context: &StageContext<'_>) -> Result<Ac
         None => (context.insertion_index_for(CORRECTIONS_EFFECT), None),
     };
     let current = match layer {
-        Some(layer) => super::module::stored(&layer.effect_id, layer.effect_format, &layer.payload)?,
+        Some(layer) => {
+            super::module::stored(&layer.effect_id, layer.effect_format, &layer.payload)?
+        }
         None => RepairPayload::default(),
     };
     let parameters = &input.parameters;
@@ -236,12 +244,13 @@ fn add(
     Ok(Some(next))
 }
 
-/// The refusal of an add at the operation limit, which `draft.begin` refuses in the same words.
+/// The refusal of an add at the operation limit, in the words `draft.begin` refuses it with
+/// ([`crate::operations_limit`]).
 pub(crate) fn limit_refusal() -> Error {
-    Error::resource_limit(format!(
-        "{MAX_CORRECTIONS} corrections is this photograph's limit"
-    ))
-    .with_data(json!({"limit": MAX_CORRECTIONS}))
+    crate::operations_limit(crate::EffectOperations {
+        identity: crate::IdentityKind::Correction,
+        max: MAX_CORRECTIONS as u32,
+    })
 }
 
 /// The automatic source of a new top operation drawn with `stroke`: rank 1 of
@@ -295,7 +304,9 @@ fn update(
     let radius = number(parameters, "radius");
     let stroke = match (parameters.get("points"), radius) {
         // A new path is captured at the resulting radius.
-        (Some(path), _) => CorrectionStroke::capture(&points(path)?, radius.unwrap_or(stored.radius()))?,
+        (Some(path), _) => {
+            CorrectionStroke::capture(&points(path)?, radius.unwrap_or(stored.radius()))?
+        }
         (None, Some(radius)) => stored.with_radius(radius)?,
         (None, None) => stored.clone(),
     };

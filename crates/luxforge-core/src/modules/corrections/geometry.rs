@@ -18,7 +18,12 @@ pub(crate) type Footprint = [f64; 4];
 pub(crate) fn footprint(stroke: &CorrectionStroke, stage: Stage) -> Footprint {
     let aspect = f64::from(stage.width) / f64::from(stage.height);
     let radius = stroke.radius();
-    let mut bounds = [f64::INFINITY, f64::INFINITY, f64::NEG_INFINITY, f64::NEG_INFINITY];
+    let mut bounds = [
+        f64::INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NEG_INFINITY,
+    ];
     for [x, y] in stroke.points() {
         bounds = [
             bounds[0].min(x),

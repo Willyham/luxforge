@@ -881,6 +881,7 @@ fn the_one_assembly_serves_test_modules_only_in_developer_mode() {
         [
             "luxforge.crop",
             "luxforge.presets",
+            "luxforge.corrections",
             "luxforge.pixel",
             "luxforge.raw",
             "luxforge.look",
@@ -1024,7 +1025,7 @@ fn a_built_in_registered_unavailable_keeps_its_declarations_and_reports_why() {
 
 /// Every module that checks a stored layer's effect against its own refuses a foreign one as the
 /// one unavailable-effect refusal, whose data names the effect: the field-patch modules, the look,
-/// pixel,
+/// pixel, Corrections,
 /// transform, crop and the capability proof. The RAW module refuses a foreign layer as an invalid
 /// RAW source layer and the presets module as one it has no effect for; neither is this refusal.
 #[test]
@@ -1041,9 +1042,9 @@ fn every_payload_check_names_a_foreign_effect_in_its_data() {
         .collect();
     assert_eq!(
         modules.len(),
-        12,
+        13,
         "basic, look, curve, detail, presence, mixer, lens, perspective, vignette, pixel, crop, \
-         controls"
+         controls, corrections"
     );
     modules.push(&proof);
     for module in modules {

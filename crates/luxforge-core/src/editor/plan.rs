@@ -4073,13 +4073,39 @@ mod tests {
                 json!({"key":"two"}),
                 "Select controls choice",
             ),
+            (
+                "add-correction",
+                json!({"points":[[0.5,0.5]],"radius":0.02,"source-x":0.3,"source-y":0.4}),
+                "Add Heal 1",
+            ),
+            (
+                "add-correction",
+                json!({"points":[[0.2,0.6]],"radius":0.01,"mode":"clone","source-x":0.2,"source-y":0.3}),
+                "Add Clone 2",
+            ),
+            (
+                "update-correction",
+                json!({"operation":"correction-1","opacity":80}),
+                "Heal 1 · Opacity 80",
+            ),
+            (
+                "reorder-correction",
+                json!({"operation":"correction-2","index":0}),
+                "Reorder Clone 2",
+            ),
+            (
+                "delete-correction",
+                json!({"operation":"correction-1"}),
+                "Delete Heal 1",
+            ),
+            ("reset-corrections", json!({}), "Reset corrections"),
         ];
-        for (action, parameters, label) in &semantic_table {
+        for (index, (action, parameters, label)) in semantic_table.iter().enumerate() {
             let revision = service.state(&asset).unwrap().revision;
             service
                 .apply_action(
                     &asset,
-                    mutation(revision, action),
+                    mutation(revision, &format!("{action}-{index}")),
                     action,
                     parameters.clone(),
                 )

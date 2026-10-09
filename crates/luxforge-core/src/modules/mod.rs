@@ -71,7 +71,7 @@ pub use capabilities_proof::{
 pub use capability::CapabilityModule;
 pub use controls::{CONTROLS_EFFECT, controls_module};
 pub use corrections::CORRECTIONS_EFFECT;
-pub(crate) use corrections::{CorrectionStroke, RepairCarrier};
+pub(crate) use corrections::{CorrectionsModule, RepairCarrier};
 pub(crate) use crop::CropModule;
 pub use crop::ORIENTATION_EFFECT;
 pub use crop::geometry::{
