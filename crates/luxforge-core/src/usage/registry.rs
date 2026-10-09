@@ -56,8 +56,9 @@ pub const MAX_DURATION_MS: u32 = 86_400_000;
 pub const MAX_PERCENT: u32 = 102_400;
 /// Memory is clipped to 16 TiB, in MiB.
 pub const MAX_MEMORY_MIB: u32 = 16_777_216;
-/// The most photographs one `images.added` or export `count` reports.
-pub const MAX_COUNT: u32 = 1_000_000;
+/// The most photographs one `images.added` or export `count` reports: a million, a wire range (not
+/// a parallel threshold, which `luxforge-raw`'s limits own).
+pub const MAX_COUNT: u32 = 10u32.pow(6);
 /// The schema this encoder writes and the validator accepts; no other.
 pub const SCHEMA: u32 = 1;
 
@@ -96,7 +97,8 @@ impl Tool {
     /// shipped adjustment tool: an external or developer module, Presets, or an unknown identity.
     pub fn from_module_id(module: &str) -> Option<Self> {
         Some(match module {
-            "luxforge.basic" | "luxforge.raw" => Self::Basic,
+            "luxforge.basic" => Self::Basic,
+            raw if raw == crate::modules::RAW_MODULE => Self::Basic,
             "luxforge.crop" => Self::Crop,
             "luxforge.curve" => Self::Curve,
             "luxforge.detail" => Self::Detail,
@@ -332,7 +334,11 @@ mod tests {
         let object = registry.as_object().expect("an object");
         let mut keys: Vec<&String> = object.keys().collect();
         keys.sort();
-        assert_eq!(keys, ["feature", "tool"], "registry.json holds tool and feature only");
+        assert_eq!(
+            keys,
+            ["feature", "tool"],
+            "registry.json holds tool and feature only"
+        );
         object[key]
             .as_array()
             .expect("an array")
@@ -380,7 +386,15 @@ mod tests {
         for name in EventName::ALL {
             assert_eq!(EventName::parse(name.as_str()), Some(*name));
         }
-        for unknown in ["", "Basic", "basic ", "luxforge.basic", "pixel", "presets", "heal"] {
+        for unknown in [
+            "",
+            "Basic",
+            "basic ",
+            "luxforge.basic",
+            "pixel",
+            "presets",
+            "heal",
+        ] {
             assert_eq!(Tool::parse(unknown), None, "{unknown:?}");
         }
         assert_eq!(Feature::parse("ZOOM"), None);
@@ -402,7 +416,11 @@ mod tests {
         mapped.sort();
         mapped.dedup();
         assert_eq!(mapped, Tool::ALL, "every tool is a shipped module's");
-        assert_eq!(Tool::from_module_id("luxforge.pixel"), None, "a developer proof");
+        assert_eq!(
+            Tool::from_module_id("luxforge.pixel"),
+            None,
+            "a developer proof"
+        );
         assert_eq!(Tool::from_module_id("example.external"), None);
     }
 }
