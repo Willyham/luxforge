@@ -192,6 +192,11 @@ pub(crate) struct Preferences {
     /// theme library holds, and Luxforge Dark's as absent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) theme: Option<String>,
+    /// The protected usage statistics consent ([`crate::usage::consent`]). Only
+    /// [`crate::usage::consent::Usage`] writes it, through [`PreferenceStore::update_usage`]: no
+    /// [`PreferenceChange`] names it, so `preferences.set`, its `null` and every reset keep it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) usage_statistics: Option<crate::usage::consent::UsageRecord>,
 }
 
 /// What the Settings sheet's General rows show, compared before and after a write to decide
@@ -301,6 +306,9 @@ impl Preferences {
             return Err(format!(
                 "theme must be a theme id of 1..={MAX_THEME_ID} printable characters"
             ));
+        }
+        if let Some(record) = &self.usage_statistics {
+            record.check()?;
         }
         for (name, path) in [
             ("catalog", &self.catalog),
@@ -427,6 +435,23 @@ impl PreferenceStore {
                 change.apply(preferences);
                 preferences.check().map_err(Error::validation)?;
                 Ok((before, preferences.clone()))
+            })
+    }
+
+    /// One locked read-modify-write of the protected usage statistics record alone, leaving every
+    /// preference as it was. `apply` sees the record as stored (`None` when absent); a file that
+    /// cannot be read, an `apply` that fails, or a result that breaks a rule writes nothing.
+    pub(crate) fn update_usage<R>(
+        &self,
+        apply: impl FnOnce(&mut Option<crate::usage::consent::UsageRecord>) -> Result<R, Error>,
+    ) -> Result<R, Error> {
+        self.0
+            .as_ref()
+            .ok_or_else(|| Error::not_ready("no user preference directory is configured"))?
+            .transact(|preferences| {
+                let answer = apply(&mut preferences.usage_statistics)?;
+                preferences.check().map_err(Error::validation)?;
+                Ok(answer)
             })
     }
 
