@@ -5,8 +5,8 @@
 //! of the brush in the hand, and commits all three of its edits through the one command that carries
 //! a path — which of the three it is, is what the identities the draft names say.
 use super::editor::{DISTANCE_DECIMALS, DrawnShape, Pen, ShapeEditor, WHOLE, compact};
-use luxforge_core::mask::commands::GeometryOp;
 use crate::brush::StrokeCapture;
+use luxforge_core::mask::commands::GeometryOp;
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
 

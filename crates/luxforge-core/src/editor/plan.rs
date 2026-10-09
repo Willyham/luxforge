@@ -623,7 +623,69 @@ impl EditorService {
         }
         check_target(declared, &request)?;
         self.check_draft(asset_id, action_id, mask.as_ref(), &Map::new())?;
+        if let ActionRef::Module(provider, declared) = action {
+            self.check_operation_target(asset_id, provider.descriptor(), declared, &target)?;
+        }
         Ok(target)
+    }
+
+    /// What `draft.begin` refuses of a module action over an operation list
+    /// ([`crate::EffectDescriptor::operations`]) before any draft opens, in the words its commit
+    /// would use (`docs/design/corrections.md`, "Identity and drafts"):
+    ///
+    /// - a field patch begun on a correction the current layer does not hold: the target alone is
+    ///   planned, exactly as the commit plans it with no field set, so the module that owns the list
+    ///   resolves the identity and refuses an unknown one in its own words;
+    /// - the brush's new-path action ([`crate::CanvasInteraction::BrushMask`]'s `action`) on a
+    ///   layer already at the declared limit, with [`operations_limit`]'s `resource-limit`.
+    ///
+    /// Reads the asset's head and, for a correction target, plans one request that reads no pixel;
+    /// writes nothing.
+    fn check_operation_target(
+        &self,
+        asset_id: &AssetId,
+        module: &crate::ModuleDescriptor,
+        action: &crate::ActionDescriptor,
+        target: &DraftTarget,
+    ) -> Result<(), Error> {
+        let names_correction = action.parameters.iter().any(|parameter| {
+            parameter.kind.module_identity().is_some() && target.contains_key(&parameter.name)
+        });
+        if names_correction && action.patch {
+            let mut draft = Draft::new(&action.id, asset_id.clone(), self.revision(asset_id)?);
+            draft.target = target.clone();
+            self.planned_draft(asset_id, &draft)?;
+        }
+        let adds = matches!(
+            &module.canvas,
+            Some(crate::CanvasInteraction::BrushMask { action: adding, .. }) if *adding == action.id
+        );
+        if !adds {
+            return Ok(());
+        }
+        for effect in &module.effects {
+            let Some(operations) = effect.operations else {
+                continue;
+            };
+            let head = self.head(asset_id)?;
+            let entry = self.shared_entry(asset_id, &head.current)?;
+            let held = entry
+                .snapshot
+                .recipe
+                .layers
+                .iter()
+                .filter(|layer| layer.effect_id == effect.id && layer.mask.is_none())
+                .map(|layer| {
+                    layer.payload[crate::OPERATIONS_FIELD]
+                        .as_array()
+                        .map_or(0, Vec::len)
+                })
+                .sum::<usize>();
+            if held >= operations.max as usize {
+                return Err(operations_limit(operations));
+            }
+        }
+        Ok(())
     }
 
     /// The recipe an open draft would produce: the current snapshot with the draft's action planned
@@ -4013,4 +4075,20 @@ mod tests {
         drop(service);
         std::fs::remove_file(catalog).unwrap();
     }
+}
+
+/// The refusal of a new operation on a layer that already holds the most its effect declares
+/// ([`crate::EffectDescriptor::operations`]): `resource-limit: 100 corrections is this photograph's
+/// limit`, with `data: {limit}`. The one wording `draft.begin` and a module's own commit use, so a
+/// refusal before a draft opens and one at the commit say the same thing.
+pub fn operations_limit(operations: crate::EffectOperations) -> Error {
+    let noun = match operations.identity {
+        crate::IdentityKind::Correction => "corrections",
+        _ => "operations",
+    };
+    Error::resource_limit(format!(
+        "{} {noun} is this photograph's limit",
+        operations.max
+    ))
+    .with_data(json!({"limit": operations.max}))
 }

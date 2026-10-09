@@ -1601,6 +1601,7 @@ fn a_curve_module_that_does_not_apply_to_the_photo_queries_no_samples() {
         artifacts: false,
         single: false,
         sources: vec![luxforge_core::SourceTag::Raw],
+        operations: None,
     }];
     let (mut editor, catalog) = sampling(vec![raw_only]);
     assert_eq!(editor.workspace.tools.all().count(), 0);

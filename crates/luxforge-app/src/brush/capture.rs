@@ -237,7 +237,11 @@ mod tests {
         for _ in 0..100 {
             assert!(!stroke.paint((0.6, 0.6)));
         }
-        assert_eq!(stroke.captured(), captured, "a failed capture takes nothing more");
+        assert_eq!(
+            stroke.captured(),
+            captured,
+            "a failed capture takes nothing more"
+        );
         assert_eq!(stroke.capture_error(RADIUS).unwrap().detail, error.detail);
         stroke.press((0.4, 0.5));
         assert!(stroke.capture_error(RADIUS).is_none());
