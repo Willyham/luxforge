@@ -193,7 +193,9 @@ static CANVAS: LazyLock<Vec<CanvasInteraction>> = LazyLock::new(|| {
 pub fn canvas_pick(mode: &str) -> Option<&'static CanvasInteraction> {
     CANVAS.iter().find(|pick| match pick {
         CanvasInteraction::SampleApply { action, .. } => action == mode,
-        CanvasInteraction::PointPick { .. } | CanvasInteraction::CropFrame { .. } => false,
+        CanvasInteraction::PointPick { .. }
+        | CanvasInteraction::CropFrame { .. }
+        | CanvasInteraction::BrushMask { .. } => false,
     })
 }
 

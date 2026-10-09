@@ -91,8 +91,8 @@ pub use mask::MASK_GPU_PROGRAMS;
 pub use model::{
     AssetId, COMPONENTS_PER_MASK, Component, ComponentId, ComponentMode, DraftId, EFFECT_FORMAT,
     EntryId, HistoryEntry, HistoryRow, JobId, Layer, LayerId, MASKS_PER_RECIPE, Mask, MaskId,
-    Mutation, MutationRequest, Orientation, PresetId, RECIPE_FORMAT, Recipe, Snapshot, SnapshotId,
-    Transform,
+    Mutation, MutationRequest, OperationId, Orientation, PresetId, RECIPE_FORMAT, Recipe, Snapshot,
+    SnapshotId, Transform,
 };
 /// Basic's Auto tone solver and forward model, which the fitting rig and the measurements call.
 pub use modules::auto_tone;
@@ -105,17 +105,17 @@ pub use modules::{
     EffectStage, ExactGeometry, GPU_PROGRAMS, GroupControl, IdentityKind, LENS_EFFECT, LOOK_EFFECT,
     LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE, MAX_MASKED_SPATIAL_LAYERS, MAX_SOURCE_NAME,
     MIN_ANGLE, MIXER_EFFECT, MIXER_EFFECT_FORMAT, ModuleDescriptor, ModuleLayout, ModuleRegistry,
-    NewLayer, NumberControl, NumberStyle, ORIENTATION_EFFECT, OperationIdentity, OutputRect,
-    PERSPECTIVE_EFFECT, PIXEL_EFFECT, PRESENCE_EFFECT, PROOF_GENERATE_PATH, PROOF_PALETTE,
-    PROOF_PALETTE_PATH, ParameterDescriptor, ParameterKind, PickerControl, PointwiseColor,
-    PresetsControl, Processing, Provider, QueryChoiceControl, QueryRef, RailDecoration,
-    RangeControl, RawModule, RawPayload, Region, RegistryOptions, Resample, ResetAction,
-    ResolvedControl, ResolvedReset, SamplingScale, SettingsOrigin, SpatialOperation, Stage,
-    StageContext, StageQuestions, TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT,
-    WheelControl, WheelStyle, WhiteBalanceMode, check_parameters, check_value, controls_module,
-    current_effect_format, gains_from_temperature_tint, guide_angle, insertion_index_among,
-    largest_with_ratio_inside, palette_bytes, resolve_control, resolve_group_reset,
-    temperature_tint_from_gains,
+    NewLayer, NumberControl, NumberStyle, OPERATION_PARAMETER, ORIENTATION_EFFECT,
+    OperationIdentity, OutputRect, PERSPECTIVE_EFFECT, PIXEL_EFFECT, PRESENCE_EFFECT,
+    PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH, ParameterDescriptor, ParameterKind,
+    PickerControl, PointwiseColor, PresetsControl, Processing, Provider, QueryChoiceControl,
+    QueryRef, RailDecoration, RangeControl, RawModule, RawPayload, Region, RegistryOptions,
+    Resample, ResetAction, ResolvedControl, ResolvedReset, SamplingScale, SettingsOrigin,
+    SpatialOperation, Stage, StageContext, StageQuestions, TaskControl, ToggleControl, ToolModule,
+    VIGNETTE_EFFECT, WheelControl, WheelStyle, WhiteBalanceMode, check_parameters, check_value,
+    controls_module, current_effect_format, gains_from_temperature_tint, guide_angle,
+    insertion_index_among, largest_with_ratio_inside, palette_bytes, resolve_control,
+    resolve_group_reset, temperature_tint_from_gains,
 };
 pub use modules::{Chord, HOST_CHORDS, host_chord};
 pub use modules::{OriginalContext, OriginalLayer, OriginalPreferences};

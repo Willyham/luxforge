@@ -100,6 +100,14 @@ identifier!(JobId, "job-");
 identifier!(PresetId, "preset-");
 identifier!(MaskId, "mask-");
 identifier!(ComponentId, "component-");
+identifier!(
+    /// One operation of a module's ordered operation list, such as a correction: minted by the
+    /// module that owns the list when an operation is added, stable for that operation's life and
+    /// named by the `operation` identity parameter of the module's own actions
+    /// ([`crate::IdentityKind::Operation`]).
+    OperationId,
+    "operation-"
+);
 
 /// The lifecycle every job in Luxforge moves through — source, analysis, capability and export jobs
 /// alike, all records of the one job table (`crate::jobs`) — and the one `status` key `job.read`

@@ -5,9 +5,9 @@ use super::chord::{Chord, host_chord};
 use super::types::{
     ActionControl, ActionDescriptor, CanvasInteraction, ChoiceControl, ColorControl, Control,
     CurveControl, EffectStage, GroupControl, MAX_SECRET_LENGTH, ModuleDescriptor, ModuleLayout,
-    NumberControl, PRESET_SETTINGS, ParameterDescriptor, ParameterKind, PickerControl,
-    PresetsControl, QueryChoiceControl, RailDecoration, RangeControl, ResetAction, SETTINGS_ORIGIN,
-    TaskControl, ToggleControl, WheelControl,
+    NumberControl, OPERATION_PARAMETER, PRESET_SETTINGS, ParameterDescriptor, ParameterKind,
+    PickerControl, PresetsControl, QueryChoiceControl, RailDecoration, RangeControl, ResetAction,
+    SETTINGS_ORIGIN, TaskControl, ToggleControl, WheelControl,
 };
 use super::values::check_value;
 use crate::Error;
@@ -319,9 +319,125 @@ impl ModuleDescriptor {
                 // Fitting a ratio needs the draft angle, so the fit action declares one too.
                 self.canvas_number(fit, angle)?;
             }
+            Some(CanvasInteraction::BrushMask {
+                action,
+                points,
+                radius,
+                feather,
+                opacity,
+                source_x,
+                source_y,
+                update,
+                title,
+                shortcut,
+                icon,
+            }) => {
+                self.check_canvas_mode(title, shortcut.as_deref(), icon.as_deref())?;
+                let source = match (source_x, source_y) {
+                    (Some(x), Some(y)) => Some((x, y)),
+                    (None, None) => None,
+                    _ => {
+                        return Err(Error::validation(format!(
+                            "brush-mask canvas of module {} binds one source coordinate without \
+                             the other",
+                            self.id
+                        )));
+                    }
+                };
+                let numbers: Vec<&String> = [radius, feather, opacity]
+                    .into_iter()
+                    .chain(source.into_iter().flat_map(|(x, y)| [x, y]))
+                    .collect();
+                let mut bound = HashSet::with_capacity(numbers.len() + 1);
+                if let Some(twice) = std::iter::once(points)
+                    .chain(numbers.iter().copied())
+                    .find(|name| !bound.insert(name.as_str()))
+                {
+                    return Err(Error::validation(format!(
+                        "brush-mask canvas of module {} binds parameter {twice} twice",
+                        self.id
+                    )));
+                }
+                // A new path is one gesture's whole request: it is not a field patch over stored
+                // state, and it names no operation, because adding one is what mints it.
+                let add = self.declared_action(action)?;
+                if add.patch {
+                    return Err(Error::validation(format!(
+                        "brush-mask action {action} is a field patch; a painted path is added whole"
+                    )));
+                }
+                // A painted path is one photograph's geometry, so no preset carries it.
+                if add.preset {
+                    return Err(Error::validation(format!(
+                        "brush-mask action {action} paints one photograph's path and must \
+                         declare preset: false"
+                    )));
+                }
+                if let Some(identity) = add
+                    .parameters
+                    .iter()
+                    .find(|parameter| parameter.kind.is_identity())
+                {
+                    return Err(Error::validation(format!(
+                        "brush-mask action {action} declares identity {}; a new path names no \
+                         operation",
+                        identity.name
+                    )));
+                }
+                self.canvas_points(add, points)?;
+                for name in &numbers {
+                    self.canvas_number(add, name)?;
+                }
+                if let Some(update) = update {
+                    let edit = self.declared_action(update)?;
+                    // The patch edits one stored path by its operation, so it is a field patch
+                    // that requires the identity, and each bound field means what it means on the
+                    // add: the same kind and range, so a dragged value is valid for both.
+                    if !edit.patch {
+                        return Err(Error::validation(format!(
+                            "brush-mask update {update} is not a field patch"
+                        )));
+                    }
+                    if !edit
+                        .parameter(OPERATION_PARAMETER)
+                        .is_some_and(|parameter| {
+                            parameter.required && parameter.kind.module_identity()
+                        })
+                    {
+                        return Err(Error::validation(format!(
+                            "brush-mask update {update} does not require an operation identity \
+                             named {OPERATION_PARAMETER}"
+                        )));
+                    }
+                    for name in std::iter::once(points).chain(numbers.iter().copied()) {
+                        let on_add = self.declared_parameter(add, name)?;
+                        let on_update = self.declared_parameter(edit, name)?;
+                        if on_add.kind != on_update.kind {
+                            return Err(Error::validation(format!(
+                                "brush-mask parameter {name} of update {update} is not declared \
+                                 as action {action} declares it"
+                            )));
+                        }
+                    }
+                }
+            }
             None => {}
         }
         Ok(())
+    }
+
+    /// A brush's path parameter is a declared `points` path, bounded by the host's per-stroke limit
+    /// ([`check_declaration`] has already held its bounds to that limit).
+    fn canvas_points(&self, action: &ActionDescriptor, name: &str) -> Result<(), Error> {
+        let parameter = self.declared_parameter(action, name)?;
+        if matches!(parameter.kind, ParameterKind::Points { .. }) {
+            Ok(())
+        } else {
+            Err(Error::validation(format!(
+                "canvas parameter {name} of action {} is not a points path",
+                action.id
+            )))
+        }
     }
 
     /// A canvas mode needs a name for the mode strip, its optional shortcut is exactly one
@@ -753,7 +869,9 @@ impl ModuleDescriptor {
                 match &self.canvas {
                     Some(CanvasInteraction::PointPick { .. })
                     | Some(CanvasInteraction::SampleApply { .. }) => {}
-                    Some(CanvasInteraction::CropFrame { .. }) | None => {
+                    Some(CanvasInteraction::CropFrame { .. })
+                    | Some(CanvasInteraction::BrushMask { .. })
+                    | None => {
                         return Err(Error::validation(format!(
                             "module {} declares a picker control without a point-pick or sample-apply canvas",
                             self.id
@@ -1180,7 +1298,24 @@ fn check_declared<'a>(
             declared.id
         )));
     }
-    declared_parameters(declarer, kind, &declared.id, &declared.parameters)
+    declared_parameters(declarer, kind, &declared.id, &declared.parameters)?;
+    // An operation is one photograph's: its identity, and the geometry and sources an action on it
+    // carries, mean nothing on another photograph, so no preset may capture or apply an action
+    // that names one (`docs/design/corrections.md`, decided 2026-10-07).
+    if declarer == Declarer::Module
+        && kind == "action"
+        && declared.preset
+        && let Some(parameter) = declared
+            .parameters
+            .iter()
+            .find(|parameter| parameter.kind.module_identity())
+    {
+        return Err(Error::validation(format!(
+            "{kind} {} names an operation through parameter {} and must declare preset: false",
+            declared.id, parameter.name
+        )));
+    }
+    Ok(())
 }
 
 /// An action's shortcut holds `Command`, so it never takes a letter a canvas mode or a text field
@@ -1283,8 +1418,19 @@ fn declared_parameters(
             )));
         }
         // An identity names one of the host's own objects, which only the host's commands address;
-        // a module edits through the host's `mask` target and never names a mask itself.
-        if !host && parameter.kind.host_only() {
+        // a module edits through the host's `mask` target and never names a mask itself. The one
+        // exception is the identity of an operation in the module's own ordered list, which its
+        // actions and queries name — never a task's or a setting's — under the one name a draft
+        // targets it by.
+        let operation = parameter.kind.module_identity();
+        if operation && parameter.name != OPERATION_PARAMETER {
+            return Err(Error::validation(format!(
+                "parameter {} of {kind} {id} declares an operation identity, which is named {}",
+                parameter.name, OPERATION_PARAMETER
+            )));
+        }
+        let admitted = operation && matches!(kind, "action" | "query");
+        if !host && parameter.kind.host_only() && !admitted {
             return Err(Error::validation(format!(
                 "parameter {} of {kind} {id} declares kind {}, which only a host command declares",
                 parameter.name,
