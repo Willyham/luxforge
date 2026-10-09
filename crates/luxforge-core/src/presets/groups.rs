@@ -4,19 +4,21 @@
 //! and the desktop draws its checkboxes from it, so every client offers the same groups under the
 //! same identities with the same defaults, refusals and per-kind skips.
 //!
-//! A group is one control group whose value controls belong to a presettable field patch, or a
-//! module's patch controls declared outside any group. Its identity is the module's and the
-//! group's label (`luxforge.basic/tone`), or the module's alone for its loose controls. A group's
-//! request (`fields`) names controls as the photo's section shows them; capture resolves it per
-//! source kind exactly as [`EditorService::capture_preset`] does, and what a set captured on one
-//! kind loses on another is the composite plan's own skip rule: a step whose module does not apply
-//! to the target's kind, and a field a control variant supersedes there.
+//! A group is one capture scope of control groups whose value controls belong to a presettable
+//! field patch, or a module's patch controls declared outside any group. Scopes follow which
+//! groups own fields, never how a client lays them out ([`collect`]). Its identity is the module's
+//! and the scope's label (`luxforge.basic/tone`), or the module's alone for its loose controls. A
+//! group's request (`fields`) names controls as the photo's section shows them; capture resolves
+//! it per source kind exactly as [`EditorService::capture_preset`] does, and what a set captured on
+//! one kind loses on another is the composite plan's own skip rule: a step whose module does not
+//! apply to the target's kind, and a field a control variant supersedes there.
 //!
 //! Everything here walks descriptors: `O(modules × controls)` with no stack read, except the
 //! per-photo answer, which reads one entry's stored payloads once and captures each group from
 //! them: no source is opened and nothing is rendered or sampled.
 use crate::{
-    ActionDescriptor, AssetId, Control, EditorService, EntryId, Error, ModuleDescriptor, SourceTag,
+    ActionDescriptor, AssetId, Control, EditorService, EntryId, Error, GroupControl,
+    ModuleDescriptor, SourceTag,
     modules::{
         Superseded, not_applicable, settings_action_in, superseded_in, superseded_refusal_in,
     },
@@ -341,94 +343,110 @@ struct Draft<'d> {
     fields: Vec<(&'d str, &'d str)>,
 }
 
-/// One module's groups, one per control group in declaration order. A value control belongs to
-/// the group that encloses it, or, at the module's top level, to the module's own loose group,
-/// which is placed where the first such control is. A field counts when its action is a
-/// presettable field patch the same module declares, with that parameter.
+/// One module's groups, one per capture scope in declaration order. Every top-level group is a
+/// scope, and so is a nested group, unless an enclosing group owns no fields directly: such a
+/// group (HSL, which holds only its Hue, Saturation and Luminance groups) gathers everything nested
+/// in it as one scope, per photo when any group it gathers is. A view is never a scope: its fields
+/// are its holder's. A value control outside every group belongs to the module's own loose group,
+/// which is placed where the first such control is. Layout is presentation and decides nothing
+/// here. A field counts when its action is a presettable field patch the same module declares,
+/// with that parameter; [`settings_groups`] drops a field a scope reaches twice.
 fn collect<'d>(
     module: &'d ModuleDescriptor,
     controls: &'d [Control],
-    group: Option<usize>,
-    absorb: bool,
+    scope: Option<usize>,
+    gathered: bool,
     drafts: &mut Vec<Draft<'d>>,
     loose: &mut Option<usize>,
 ) {
     for control in controls {
-        let fields: Vec<(&str, &str)> = match control {
-            Control::Group(declared) => {
-                let index = if absorb || declared.view {
-                    group.unwrap_or_else(|| {
-                        *loose.get_or_insert_with(|| {
-                            drafts.push(Draft {
-                                label: None,
-                                per_photo: false,
-                                fields: Vec::new(),
-                            });
-                            drafts.len() - 1
-                        })
-                    })
-                } else {
-                    drafts.push(Draft {
-                        label: Some(&declared.label),
-                        per_photo: declared.per_photo,
-                        fields: Vec::new(),
-                    });
-                    drafts.len() - 1
-                };
-                collect(
-                    module,
-                    &declared.controls,
-                    Some(index),
-                    absorb || declared.view || declared.layout == crate::ModuleLayout::Tabs,
-                    drafts,
-                    loose,
-                );
-                continue;
+        let Control::Group(declared) = control else {
+            for (action, parameter) in control_fields(control) {
+                let presettable = module.action(action).is_some_and(|declared| {
+                    declared.patch && declared.preset && declared.parameter(parameter).is_some()
+                });
+                if presettable {
+                    let index = scope_or_loose(scope, drafts, loose);
+                    drafts[index].fields.push((action, parameter));
+                }
             }
-            Control::Number(number) => vec![(&number.action, &number.parameter)],
-            Control::Toggle(toggle) => vec![(&toggle.action, &toggle.parameter)],
-            Control::Choice(choice) => vec![(&choice.action, &choice.parameter)],
-            Control::Color(color) => vec![(&color.action, &color.parameter)],
-            Control::Curve(curve) => curve
-                .channels
-                .iter()
-                .map(|channel| (curve.action.as_str(), channel.parameter.as_str()))
-                .collect(),
-            Control::Wheel(wheel) => wheel
-                .parameters()
-                .map(|parameter| (wheel.action.as_str(), parameter))
-                .collect(),
-            // A band's fields are presettable through the number controls that declare them, and
-            // no other kind carries a field.
-            Control::Range(_)
-            | Control::Action(_)
-            | Control::Picker(_)
-            | Control::Task(_)
-            | Control::Presets(_)
-            | Control::QueryChoice(_) => Vec::new(),
+            continue;
         };
-        for (action, parameter) in fields {
-            let presettable = module.action(action).is_some_and(|declared| {
-                declared.patch && declared.preset && declared.parameter(parameter).is_some()
+        let (index, gathers) = if declared.view || gathered {
+            let index = scope_or_loose(scope, drafts, loose);
+            drafts[index].per_photo |= declared.per_photo;
+            (index, true)
+        } else {
+            drafts.push(Draft {
+                label: Some(&declared.label),
+                per_photo: declared.per_photo,
+                fields: Vec::new(),
             });
-            if !presettable {
-                continue;
-            }
-            let index = match group {
-                Some(index) => index,
-                None => *loose.get_or_insert_with(|| {
-                    drafts.push(Draft {
-                        label: None,
-                        per_photo: false,
-                        fields: Vec::new(),
-                    });
-                    drafts.len() - 1
-                }),
-            };
-            if !drafts[index].fields.contains(&(action, parameter)) {
-                drafts[index].fields.push((action, parameter));
-            }
-        }
+            (drafts.len() - 1, !owns_fields(declared))
+        };
+        collect(
+            module,
+            &declared.controls,
+            Some(index),
+            gathers,
+            drafts,
+            loose,
+        );
+    }
+}
+
+/// The enclosing scope's draft, or the module's loose group, added on first use.
+fn scope_or_loose(
+    scope: Option<usize>,
+    drafts: &mut Vec<Draft<'_>>,
+    loose: &mut Option<usize>,
+) -> usize {
+    scope.unwrap_or_else(|| {
+        *loose.get_or_insert_with(|| {
+            drafts.push(Draft {
+                label: None,
+                per_photo: false,
+                fields: Vec::new(),
+            });
+            drafts.len() - 1
+        })
+    })
+}
+
+/// Whether a group owns fields directly: a value control of its own, or a view, whose fields are
+/// the group's.
+fn owns_fields(group: &GroupControl) -> bool {
+    group.controls.iter().any(|control| match control {
+        Control::Group(child) => child.view,
+        other => !control_fields(other).is_empty(),
+    })
+}
+
+/// The `(action, field)` pairs a value control edits; none for a group or any other kind.
+fn control_fields(control: &Control) -> Vec<(&str, &str)> {
+    match control {
+        Control::Number(number) => vec![(&number.action, &number.parameter)],
+        Control::Toggle(toggle) => vec![(&toggle.action, &toggle.parameter)],
+        Control::Choice(choice) => vec![(&choice.action, &choice.parameter)],
+        Control::Color(color) => vec![(&color.action, &color.parameter)],
+        Control::Curve(curve) => curve
+            .channels
+            .iter()
+            .map(|channel| (curve.action.as_str(), channel.parameter.as_str()))
+            .collect(),
+        Control::Wheel(wheel) => wheel
+            .parameters()
+            .map(|parameter| (wheel.action.as_str(), parameter))
+            .collect(),
+        // A band's fields are presettable through the number controls that declare them, and no
+        // other kind carries a field.
+        Control::Group(_)
+        | Control::Range(_)
+        | Control::Action(_)
+        | Control::Picker(_)
+        | Control::Task(_)
+        | Control::Presets(_)
+        | Control::QueryChoice(_) => Vec::new(),
     }
 }
 
