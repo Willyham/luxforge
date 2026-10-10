@@ -81,7 +81,7 @@
     {
       "id": "TASK-002",
       "description": "Select and freeze the Clone and Heal numerical contract against independent references.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Clone/Heal are useful offline even if AI delivery is delayed. Study the exact CPU reference in the current byte/linear domains and a solver that the GPU implementation can reproduce within the declared tolerance.",
