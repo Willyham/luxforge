@@ -202,9 +202,11 @@ fn usage_concurrent_floods_stay_within_the_banks_and_every_seq_is_stored_or_drop
             totals.0 + 1,
             "every stored event is in exactly one batch"
         );
+        // Drops while the active window is empty carry over into the next window, so the last
+        // (empty) window may still hold some.
         assert_eq!(
-            dropped,
-            totals.1 as u64 + u64::from(session.window().dropped)
+            dropped + u64::from(session.window().dropped),
+            totals.1 as u64
         );
         assert_eq!(session.diagnostics().dropped, totals.1 as u64);
     });

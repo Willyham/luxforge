@@ -194,11 +194,11 @@ pub(crate) mod usage;
 pub(crate) mod usage_device;
 #[cfg(test)]
 mod usage_device_tests;
-#[cfg(test)]
-mod usage_tests;
 mod usage_events;
 #[cfg(test)]
 mod usage_events_tests;
+#[cfg(test)]
+mod usage_tests;
 mod view_state;
 #[cfg(test)]
 mod view_state_tests;

@@ -1073,6 +1073,8 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-core/src/latest.rs",
             "crates/luxforge-core/src/tiles/reference.rs",
             "crates/luxforge-core/src/tiles/analysis.rs",
+            // The one usage statistics worker, alive only while collection is effective.
+            "crates/luxforge-core/src/usage/supervisor.rs",
             // The catalog's bounded workers: the index lane and its watchers, the preview lane,
             // and the develop lane (`docs/design/catalog.md`, "Architecture").
             "crates/luxforge-core/src/index",
