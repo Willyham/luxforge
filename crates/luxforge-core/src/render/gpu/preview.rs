@@ -1396,6 +1396,18 @@ fn plan_tiles(
                 height: side.min(output.height - y0),
             };
             match window_of(rect) {
+                // A repair whose source lies far from its destination reads a window the device
+                // cannot hold as one texture: the reference draws the picture, named.
+                Ok(window)
+                    if window.width > DEVICE_TEXTURE_SIDE
+                        || window.height > DEVICE_TEXTURE_SIDE =>
+                {
+                    return Ok(Err(GpuFallback::Unplannable(format!(
+                        "the picture at rest's tile at ({x0}, {y0}) reads a {}x{} window, past \
+                         the device's {DEVICE_TEXTURE_SIDE}-texel side",
+                        window.width, window.height
+                    ))));
+                }
                 Ok(window) => tiles.push(RestTile { rect, window }),
                 Err(reason) => {
                     return Ok(Err(GpuFallback::Unplannable(format!(
