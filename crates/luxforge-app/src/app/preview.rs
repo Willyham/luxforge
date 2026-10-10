@@ -2156,6 +2156,15 @@ impl Editor {
         });
         let raster = frame.raster();
         let picture = self.displayed_picture();
+        // The open photograph's committed picture at rest, drawn by the reference renderer: a
+        // settled preview, timed as the status bar times it. A zoom's hand-over, a drag's frame
+        // and a frame under the GPU's picture are not.
+        if !zoom && draft_revision.is_none() && picture == "reference" && frame.proxy().is_none() {
+            self.usage_preview_settled(
+                luxforge_core::usage::Renderer::Reference,
+                frame.render_ms(),
+            );
+        }
         self.event("preview_displayed", || {
             json!({
                 "entry_id":entry,

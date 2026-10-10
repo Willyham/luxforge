@@ -105,7 +105,9 @@ fn usage_a_develop_counts_only_the_photographs_it_created_and_a_retry_counts_non
     let nothing_new = open(&mut jobs, JobKind::DevelopPicks);
     jobs.finish(
         &nothing_new,
-        Ok(Output::Value(json!({"developed": [], "failed": [], "changes": []}))),
+        Ok(Output::Value(
+            json!({"developed": [], "failed": [], "changes": []}),
+        )),
     );
     assert_eq!(
         recorded(&collector),
@@ -137,7 +139,9 @@ fn usage_a_batch_export_counts_what_it_wrote_only_when_it_completes() {
     let ends: Vec<_> = recorded(&collector)
         .into_iter()
         .map(|kind| match kind {
-            EventKind::OperationEnd(end) => (end.operation(), end.outcome(), end.count(), end.image()),
+            EventKind::OperationEnd(end) => {
+                (end.operation(), end.outcome(), end.count(), end.image())
+            }
             other => panic!("{other:?}"),
         })
         .collect();

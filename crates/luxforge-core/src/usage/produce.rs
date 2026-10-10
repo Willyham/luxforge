@@ -174,8 +174,15 @@ fn group<'a>(
     registry: &'a ModuleRegistry,
     recipe: &'a Recipe,
     tool: Tool,
-) -> impl Iterator<Item = (&'a String, u32, &'a serde_json::Value, &'a Option<crate::MaskId>, &'a Vec<crate::ArtifactId>)>
-{
+) -> impl Iterator<
+    Item = (
+        &'a String,
+        u32,
+        &'a serde_json::Value,
+        &'a Option<crate::MaskId>,
+        &'a Vec<crate::ArtifactId>,
+    ),
+> {
     recipe
         .layers
         .iter()

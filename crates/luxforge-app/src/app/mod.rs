@@ -188,6 +188,9 @@ pub(crate) mod themes;
 #[cfg(test)]
 mod themes_tests;
 pub(crate) mod thumbnails;
+mod usage_events;
+#[cfg(test)]
+mod usage_events_tests;
 mod view_state;
 #[cfg(test)]
 mod view_state_tests;
@@ -469,6 +472,8 @@ pub(crate) struct Editor {
     /// The interface's theme, which Iced reads again after every update and hands to every style
     /// function and canvas draw. An Iced value, so it lives here rather than in the view model.
     pub(crate) theme: luxforge_ui::Theme,
+    /// The open photograph's usage image ID, kept for the GUI-local events that act on it.
+    pub(crate) usage_image: usage_events::UsageImage,
 }
 
 /// What the hooks compare the state a message left behind with: the state before it was
@@ -677,6 +682,7 @@ impl Editor {
             renderer: renderer::RendererReport::new(config.launch_renderer()),
             workspace: Default::default(),
             theme: luxforge_ui::Theme::luxforge_dark(),
+            usage_image: Default::default(),
         };
         // The workers wake the event loop through one channel instead of a poll. The closure is
         // installed once and stays valid for the life of the process; the subscription that carries
