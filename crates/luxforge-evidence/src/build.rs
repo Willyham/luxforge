@@ -44,6 +44,7 @@ step_from! {
     MissingStep => Missing,
     LoupeStep => Loupe,
     GridScrollStep => GridScroll,
+    CorrectionStep => Correction,
 }
 
 impl Step {
