@@ -1818,7 +1818,8 @@ pub struct GpuWarmList {
 /// warm their program sequences before a drag begins, in the order they are to compile, the light
 /// links their ticks compute, and how many of the plans, from the first, are the open stack's
 /// ([`GpuWarmList`]). The open stack's first: when a layer is masked, the stack's own plan, which a
-/// stroke or a shape moved draws; a drag of each colour or finish layer the stack holds; then a
+/// stroke or a shape moved draws; a Corrections gesture's plans ([`super::repair::warm_plans`]);
+/// a drag of each colour or finish layer the stack holds; then a
 /// drag of each restoration or spatial layer it holds. Then the rest of the program set: the first
 /// drag of each patch module that applies to the photo's kind and that the stack does not hold
 /// yet, over the neutral layer its module names, colour and finish modules first,
@@ -1915,6 +1916,13 @@ pub(crate) fn plan_warm_list(evaluation: &Evaluation, view: GpuView) -> Result<G
     {
         links = fresh(&plan, &links);
         plans.push(*plan);
+    }
+    // A Corrections gesture's plans: the stack's repair links, a new top Heal and Clone, an
+    // update drag, or the first Heal and Clone where a repair layer would go
+    // ([`super::repair::warm_plans`]), at open and after every commit, since a commit is a new
+    // evaluation.
+    for plan in super::repair::warm_plans(registry, recipe, &fit.compiled, fit.request())? {
+        join(plan, &mut plans, &mut links);
     }
     // A drag's plan with the lights it draws with.
     let dragged = |planned: &Recipe, request: GpuPlanRequest| -> Result<GpuAnswer, Error> {

@@ -45,6 +45,7 @@ pub static GPU_PROGRAMS: &[&crate::GpuProgram] = &[
     &mixer::GRADE_PROGRAM,
     &vignette::VIGNETTE_PROGRAM,
     &presence::PRESENCE_PROGRAM,
+    &crate::render::gpu::REPAIR_PROGRAM,
 ];
 /// The current payload format marker of a built-in effect: the shared [`crate::EFFECT_FORMAT`],
 /// except for an effect whose payload changed meaning and declares its own (the RAW development

@@ -274,7 +274,8 @@ mod tests {
 
     #[test]
     fn a_payload_breaking_a_rule_is_refused_by_name() {
-        let cases: Vec<(&str, Box<dyn Fn(&mut Value)>)> = vec![
+        type Change = Box<dyn Fn(&mut Value)>;
+        let cases: Vec<(&str, Change)> = vec![
             ("is not below next 2", Box::new(|p| p["next"] = json!(2))),
             ("next 0", Box::new(|p| p["next"] = json!(0))),
             (

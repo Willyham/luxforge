@@ -2481,7 +2481,7 @@
             },
             "order": 0,
             "single": true,
-            "stage": "pixel"
+            "stage": "repair"
           }
         ],
         "hint": "Clone and Heal",
