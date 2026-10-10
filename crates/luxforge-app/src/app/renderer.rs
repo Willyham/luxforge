@@ -270,6 +270,7 @@ impl Editor {
         ) {
             self.renderer.adapter = WindowAdapter::Named { backend, name };
         }
+        self.usage_observe();
     }
 }
 
@@ -329,6 +330,8 @@ fn report(editor: &mut Editor) -> Task<Message> {
     }
     editor.renderer.reported = renderer;
     editor.renderer.in_flight = true;
+    // The usage statistics device profile follows the renderer that draws.
+    editor.usage_observe();
     let stage = editor.gpu_stage();
     editor.event(
         "renderer_reported",

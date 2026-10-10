@@ -178,6 +178,8 @@ impl Editor {
             // AppKit reports the pointer in the system's points; the layout is in logical pixels,
             // which are the interface size's multiple of them.
             ViewMessage::Pinch(input) => {
+                // A trackpad pinch reaches no raw event filter: it is a deliberate interaction.
+                super::usage_supervisor::interacted();
                 let scale = f64::from(self.view_state.interface_scale());
                 return self.pinch(luxforge_input::Pinch {
                     x: input.x / scale,

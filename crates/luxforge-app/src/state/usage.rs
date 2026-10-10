@@ -136,6 +136,28 @@ pub(crate) struct UsageRead {
     /// Why this process does not collect, as one fixed reason.
     #[serde(default)]
     pub(crate) reason: Option<String>,
+    /// The statistics worker's bounded counts and delivery state, as `usage.read` reports them;
+    /// absent from a claim's or a write's state.
+    #[serde(default)]
+    pub(crate) diagnostics: Option<UsageDiagnostics>,
+}
+
+/// `usage.read`'s `diagnostics`: counts and a fixed delivery state, never an identifier or error
+/// text.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub(crate) struct UsageDiagnostics {
+    #[serde(default)]
+    pub(crate) recorded: u64,
+    #[serde(default)]
+    pub(crate) dropped: u64,
+    #[serde(default)]
+    pub(crate) sent: u64,
+    #[serde(default)]
+    pub(crate) attempts: u64,
+    #[serde(default)]
+    pub(crate) accepted: u64,
+    #[serde(default)]
+    pub(crate) delivery: Option<serde_json::Value>,
 }
 
 /// An owner answer as the consent it reports: `usage.read`'s whole answer, or the `state` field of
@@ -348,6 +370,7 @@ mod tests {
             disclosure_version: 1,
             destination: None,
             reason: reason.map(str::to_owned),
+            diagnostics: None,
         }
     }
 
@@ -512,6 +535,7 @@ mod tests {
             parsed,
             UsageRead {
                 destination: Some("http://127.0.0.1:9/".into()),
+                diagnostics: Some(UsageDiagnostics::default()),
                 ..read(true, true, None)
             }
         );

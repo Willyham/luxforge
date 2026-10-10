@@ -17,7 +17,7 @@ use crate::{
     performance_smoke as performance, presence_smoke as presence, presets_smoke as presets,
     raw_panel_smoke as raw_panel, resolve_missing_smoke as resolve_missing,
     scenario::{Checked, Checks, Fixture, Launch, Plan, Run, Step, launch::Guard},
-    select_smoke as select, settings_smoke as settings, theme_smoke as theme,
+    select_smoke as select, settings_smoke as settings, theme_smoke as theme, usage_smoke as usage,
     viewport_smoke as viewport, vignette_smoke as vignette, visibility_smoke as visibility,
     workspace_smoke as workspace, zoom_smoke as zoom, *,
 };
@@ -942,6 +942,36 @@ pub static SCENARIOS: &[Scenario] = &[
         note: None,
         // The catalog step names a folder inside the launch's own evidence directory.
         own: Some(settings::run),
+    },
+    Scenario {
+        name: usage::SCENARIO,
+        about: "Usage statistics end to end over one isolated configuration and a loopback receiver: the notice once and declined, no notice the next launch, opted in through Privacy, GUI operations and a luxforge-ctl edit captured in one batch in the order performed, and an opt-out through the live session cancelling a held upload with nothing sent after; the next launch keeps the opt-out",
+        launches: &[
+            LaunchSpec {
+                name: usage::ASK,
+                plan: usage::ask_plan,
+                usage_receiver: Some("http://127.0.0.1:9/v1/usage/batches"),
+                ..APP
+            },
+            LaunchSpec {
+                name: usage::WORK,
+                plan: usage::work_plan,
+                usage_receiver: Some("http://127.0.0.1:9/v1/usage/batches"),
+                ..APP
+            },
+            LaunchSpec {
+                name: usage::AFTER,
+                plan: usage::after_plan,
+                usage_receiver: Some("http://127.0.0.1:9/v1/usage/batches"),
+                ..APP
+            },
+        ],
+        verify: usage::verify,
+        source: Source::Fixtures(&[usage::FIXTURE]),
+        window: Some(PANELLED),
+        note: Some(usage::NOTE),
+        // The receiver and the live-session client run in this process beside the launches.
+        own: Some(usage::run),
     },
     Scenario {
         name: theme::SCENARIO,

@@ -123,6 +123,8 @@ pub(crate) struct Evidence {
     /// When a `wait` step's frame may be captured. The evidence tick checks it, so a wait adds no
     /// timer of its own.
     pub(crate) wait_until: Option<Instant>,
+    /// A running usage `await` step, which the evidence tick checks as it checks a `wait`.
+    pub(crate) usage_await: Option<usage::UsageAwaiting>,
     /// A running `gpu_warmed` step, which the evidence tick checks as it checks a `wait`.
     pub(crate) warm_wait: Option<WarmWait>,
     /// The run's second client, registered on the owner at the first `agent` step and disconnected
@@ -226,6 +228,7 @@ impl Evidence {
             tools_scroll: None,
             capability_wait: None,
             wait_until: None,
+            usage_await: None,
             warm_wait: None,
             agent: None,
             agent_wait: None,
@@ -953,6 +956,7 @@ impl Editor {
                     std::process::exit(3);
                 }
                 self.wait_elapsed();
+                return self.usage_await_tick();
             }
             EvidenceMessage::ViewIdleDeadline => return self.view_idle_deadline(),
             EvidenceMessage::IdleDeadline => return self.idle_deadline(),
@@ -1214,6 +1218,8 @@ impl Editor {
             record
         };
         self.event("script_step", || record);
+        // A script step stands in for a person's deliberate operation.
+        super::usage_supervisor::interacted();
         match step {
             Step::Api { method, params } => self.api_step(method, params),
             Step::Agent { method, params } => self.agent_step(method, params),
@@ -1341,6 +1347,7 @@ impl Editor {
             Step::Preference(fields) => self.preference_step(fields),
             Step::Usage(step) => self.usage_step(step),
             Step::Wait { ms } => self.wait_step(ms),
+            Step::Open { path } => self.open_step(path),
             Step::GpuWarmed { quiet_ms, ms } => self.warm_wait_step(quiet_ms, ms),
             Step::Key { key } => self.key_step(key),
             Step::Pan { x, y } => self.pan_step(x, y),
@@ -3505,6 +3512,18 @@ impl Editor {
             evidence.wait_until = Some(Instant::now() + Duration::from_millis(ms));
         }
         Task::none()
+    }
+
+    /// Open a file as Open… does, with the script's path in place of the dialog's answer. The
+    /// request's end arms the capture, as each `--open`'s does.
+    fn open_step(&mut self, path: String) -> Task<Message> {
+        let Ok(path) = std::path::absolute(&path) else {
+            return self.fail_step(format!("{path} cannot be made absolute"));
+        };
+        if !path.is_file() {
+            return self.fail_step(format!("{} is not a file", path.display()));
+        }
+        self.open(path)
     }
 
     fn warm_wait_step(&mut self, quiet_ms: u64, ms: u64) -> Task<Message> {
@@ -6259,6 +6278,7 @@ mod tests {
             tools_scroll: None,
             capability_wait: None,
             wait_until: None,
+            usage_await: None,
             warm_wait: None,
             agent: None,
             agent_wait: None,

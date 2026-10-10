@@ -190,13 +190,15 @@ pub(crate) mod themes;
 mod themes_tests;
 pub(crate) mod thumbnails;
 pub(crate) mod usage;
-#[allow(dead_code)]
 pub(crate) mod usage_device;
 #[cfg(test)]
 mod usage_device_tests;
 mod usage_events;
 #[cfg(test)]
 mod usage_events_tests;
+pub(crate) mod usage_supervisor;
+#[cfg(test)]
+mod usage_supervisor_tests;
 #[cfg(test)]
 mod usage_tests;
 mod view_state;
@@ -484,6 +486,9 @@ pub(crate) struct Editor {
     pub(crate) usage: state::usage::Usage,
     /// The open photograph's usage image ID, kept for the GUI-local events that act on it.
     pub(crate) usage_image: usage_events::UsageImage,
+    /// The window visibility last reported to the usage statistics supervisor
+    /// ([`usage_supervisor`]), once the native gate is ready.
+    pub(crate) usage_reported_presented: Option<bool>,
 }
 
 /// What the hooks compare the state a message left behind with: the state before it was
@@ -698,6 +703,7 @@ impl Editor {
                 ..Default::default()
             },
             usage_image: Default::default(),
+            usage_reported_presented: None,
         };
         // The workers wake the event loop through one channel instead of a poll. The closure is
         // installed once and stays valid for the life of the process; the subscription that carries
@@ -752,6 +758,12 @@ impl Editor {
         );
         let launch = editor.renderer.launch();
         editor.event("launch_renderer", || renderer::launch_record(launch));
+        // What the launch knows of its renderer before the surface checks its stage, for the
+        // usage statistics device profile; a refused stage's path is already final.
+        editor.usage_observe();
+        if editor.usage.eligible {
+            editor.event("usage_supervisor", usage_supervisor::summary);
+        }
         if let Some(problem) = &config.live_problem {
             editor.event("live_session_problem", || json!({"problem": problem}));
         }
