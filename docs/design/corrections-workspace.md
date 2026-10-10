@@ -1,6 +1,6 @@
 # Corrections in the Develop workspace
 
-Status: **decided by the owner on 2026-10-09, with the defaults under [decisions](#decisions); implemented in the desktop, with the gaps under [not yet delivered](#not-yet-delivered); M4 and corpus qualification and the interaction timing are open.** This is the design of the Corrections mode, its canvas gestures, its panel and its keys. What a correction *is* stays the [Corrections design](corrections.md)'s: the repair stage before Detail, ordered Clone/Heal operations that each sample only the operations before them, content-space paths in the shared stroke store, the `draft.*` lifecycle and `preset: false`. This design adds what the person sees and does, plus the three contract changes it needs: automatic sources, moving a correction's destination, and a larger operation limit.
+Status: **decided by the owner on 2026-10-09, with the defaults under [decisions](#decisions); implemented in the desktop, with the gaps under [not yet delivered](#not-yet-delivered); qualified on the M4 against the corpus and on JPEG and RAW (TASK-012); the interaction timing and the owner's blinded review are open.** This is the design of the Corrections mode, its canvas gestures, its panel and its keys. What a correction *is* stays the [Corrections design](corrections.md)'s: the repair stage before Detail, ordered Clone/Heal operations that each sample only the operations before them, content-space paths in the shared stroke store, the `draft.*` lifecycle and `preset: false`. This design adds what the person sees and does, plus the three contract changes it needs: automatic sources, moving a correction's destination, and a larger operation limit.
 
 Where something isn't specified here, the reference is Lightroom Classic's Healing tool, for familiarity rather than as a checklist. The modifier keys follow Photoshop and Lightroom wherever the two agree.
 
@@ -155,7 +155,7 @@ An interim panel was tried on a branch and rejected by the owner on 2026-10-09. 
 
 ## Not yet delivered
 
-Nothing in this design is missing from the desktop. Open work is qualification, not behaviour: interaction timing and corpus qualification on the M4 (see [Acceptance](#acceptance)), and a Lens profile warp, which the smoke scenario does not exercise because its fixture carries no detected profile.
+Nothing in this design is missing from the desktop. Open work is the interaction timing on the M4 (see [Acceptance](#acceptance)) and the owner's blinded review of the automatic source ([numerics](corrections-numerics.md#the-corpus-review-task-012)). The `raw-corrections` scenario runs the journeys on each supplied RAW, the overlay through the Z6's and Air 2S's lens profile warp among them ([performance](../specs/performance.md#corrections-qualified-on-the-m4)).
 
 ## Acceptance
 

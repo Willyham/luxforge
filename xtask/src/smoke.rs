@@ -5,12 +5,12 @@
 //! and `verify`'s rendered tier all read the table, so a new scenario is one row.
 use crate::{
     basic_smoke as basic, capabilities_smoke as capabilities, controls_smoke as controls,
-    corrections_smoke as corrections, crop_smoke as crop, curve_smoke as curve,
-    detail_smoke as detail, develop_picks_smoke as develop_picks, export_smoke as export,
-    filmstrip_smoke as filmstrip, gallery_smoke as gallery, gpu_preview_smoke as gpu_preview,
-    gpu_preview_zoom_smoke as gpu_preview_zoom, grading_smoke as grading,
-    histogram_smoke as histogram, information_smoke as information, lens_smoke as lens,
-    look_smoke as look, loupe_smoke as loupe, mask_brush_smoke as mask_brush,
+    corrections_raw_smoke as raw_corrections, corrections_smoke as corrections, crop_smoke as crop,
+    curve_smoke as curve, detail_smoke as detail, develop_picks_smoke as develop_picks,
+    export_smoke as export, filmstrip_smoke as filmstrip, gallery_smoke as gallery,
+    gpu_preview_smoke as gpu_preview, gpu_preview_zoom_smoke as gpu_preview_zoom,
+    grading_smoke as grading, histogram_smoke as histogram, information_smoke as information,
+    lens_smoke as lens, look_smoke as look, loupe_smoke as loupe, mask_brush_smoke as mask_brush,
     mask_combine_smoke as mask_combine, mask_interactions_smoke as mask_interactions,
     mask_panel_smoke as mask_panel, mask_range_smoke as mask_range, mask_smoke as mask,
     minify_smoke as minify, mixer_smoke as mixer, no_gpu_render_smoke as no_gpu_render,
@@ -1121,6 +1121,37 @@ pub static SCENARIOS: &[Scenario] = &[
         own: None,
     },
     Scenario {
+        name: raw_corrections::SCENARIO,
+        about: "Corrections on a supplied RAW: automatic Heals, a set-source Clone, history, versions, Restore, reopen, Select's preview, Remove and Put back, the overlay through the lens profile and a warp, GPU, reference and batch exports, and Locate",
+        launches: &[
+            LaunchSpec {
+                name: "launch1",
+                script: "script1.json",
+                plan: raw_corrections::launch1,
+                ..APP
+            },
+            LaunchSpec {
+                name: "launch2",
+                script: "script2.json",
+                plan: raw_corrections::launch2,
+                catalog: Some("launch1"),
+                ..APP
+            },
+            LaunchSpec {
+                name: "launch3",
+                script: "script3.json",
+                plan: raw_corrections::launch3,
+                catalog: Some("launch1"),
+                ..APP
+            },
+        ],
+        verify: raw_corrections::verify,
+        source: Source::Supplied { listed: false },
+        window: Some(PANELLED),
+        note: Some(raw_corrections::NOTE),
+        own: Some(raw_corrections::run),
+    },
+    Scenario {
         name: look::SCENARIO,
         about: "The RAW look over a supplied RAW file: Standard in the new photograph's Original, Neutral and Standard through the Look section above Basic, an Amount drag, the reset and a double-click, Neutral through the API",
         launches: &[LaunchSpec {
@@ -2145,6 +2176,7 @@ mod tests {
         }
         assert!(find("raw-panel").is_ok_and(|raw| !raw.rendered()));
         assert!(find("look").is_ok_and(|look| !look.rendered()));
+        assert!(find("raw-corrections").is_ok_and(|raw| !raw.rendered()));
         // The filmstrip takes a RAW source, and runs without one, its RAW steps pending.
         assert!(find("filmstrip").is_ok_and(|filmstrip| filmstrip.rendered()));
         assert_eq!(
@@ -2157,6 +2189,7 @@ mod tests {
                 "performance",
                 "filmstrip",
                 "raw-panel",
+                "raw-corrections",
                 "look",
                 "raw-editor"
             ]
