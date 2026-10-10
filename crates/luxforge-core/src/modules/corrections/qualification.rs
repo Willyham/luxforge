@@ -145,3 +145,60 @@ pub fn repair_stack(steps: Vec<QualStep>, after: Vec<Layer>) -> Recipe {
         ..Recipe::default()
     }
 }
+
+/// The CPU reference of `stack`'s repair layer, its first, drawn at a reduced `stage` of a `full`
+/// content stage, as a GPU Fit frame draws the repair stage smaller than its patches were placed
+/// (`docs/design/corrections.md`, "The composite at a reduced stage"): the layer compiled at that
+/// stage against the full one, as the host compiles a proxy, and every operation run in order over
+/// `pixels`, the reduced frame's linear values row by row. The CPU's output, row by row.
+pub fn reduced(
+    stack: &Recipe,
+    stage: (u32, u32),
+    full: (u32, u32),
+    pixels: &[[f32; 3]],
+) -> Vec<[f32; 3]> {
+    use crate::{
+        Cancel, Processing,
+        modules::{CapabilityModule, Region, Stage},
+    };
+    let layer = &stack.layers[0];
+    let bound: Vec<_> = layer
+        .artifacts
+        .iter()
+        .map(|id| stack.artifacts.get(id).cloned().expect("a bound artifact"))
+        .collect();
+    let at = Stage {
+        width: stage.0,
+        height: stage.1,
+    };
+    let compiled = super::CorrectionsModule::new()
+        .compile_bound(
+            &layer.effect_id,
+            layer.effect_format,
+            &layer.payload,
+            crate::CompileStage::sampled(
+                at,
+                Stage {
+                    width: full.0,
+                    height: full.1,
+                },
+            ),
+            &bound,
+            &stack.strokes,
+        )
+        .expect("a repair layer");
+    let Processing::Repair(table) = compiled else {
+        panic!("a repair layer compiles to a repair table");
+    };
+    let entry = crate::render::repair_entry::RepairEntry::new(table, at);
+    let len = pixels.len();
+    let mut values: Vec<f32> = (0..3)
+        .flat_map(|channel| pixels.iter().map(move |pixel| pixel[channel]))
+        .collect();
+    let mut frame = crate::repair::RepairFrame::new(at, Region::whole(at), &mut values)
+        .expect("the whole frame");
+    crate::repair::apply(&mut frame, entry.bound(), &Cancel::never()).expect("the CPU repair");
+    (0..len)
+        .map(|at| [values[at], values[len + at], values[2 * len + at]])
+        .collect()
+}
