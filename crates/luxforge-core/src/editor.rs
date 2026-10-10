@@ -34,6 +34,8 @@ mod catalog;
 mod catalog_rows;
 mod collapse;
 mod corrections;
+pub use corrections::{BatchStaleAcknowledgement, StaleAcknowledgement};
+pub(crate) use corrections::{STALE_UNACKNOWLEDGED, acknowledged};
 mod describe;
 mod entries;
 mod evaluate;

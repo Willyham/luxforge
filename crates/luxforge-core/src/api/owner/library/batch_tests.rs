@@ -1160,3 +1160,145 @@ fn cancelled_batch_paste_keeps_finished_photographs() {
         [1, 0, 0]
     );
 }
+
+/// A frozen patch on `asset` that is stale for `earlier-correction`: a Heal beneath it changed
+/// since it was accepted. Committed through a service of its own while no owner runs.
+fn stale_patch(catalog: &Path, asset: &AssetId) {
+    use crate::{
+        editor::mutation,
+        modules::corrections_patch_testing::{PatchSpec, add_patch},
+    };
+    let mut service = crate::EditorService::open(catalog).unwrap();
+    let revision = service.state(asset).unwrap().revision;
+    service
+        .run_action(
+            asset,
+            mutation(revision, "heal"),
+            "add-correction",
+            json!({"points": [[0.3, 0.3]], "radius": 0.02, "source-x": 0.6, "source-y": 0.6}),
+        )
+        .unwrap();
+    add_patch(&mut service, asset, "patch", PatchSpec::at([10, 10, 16, 16])).unwrap();
+    let revision = service.state(asset).unwrap().revision;
+    service
+        .run_action(
+            asset,
+            mutation(revision, "heal-opacity"),
+            "update-correction",
+            json!({"operation": "correction-1", "opacity": 50}),
+        )
+        .unwrap();
+}
+
+/// A photograph with a stale frozen patch is disclosed by `export.plan` and exported only as
+/// acknowledged: `export.jpeg` refuses it before any job until the request names exactly its frozen
+/// entry and stale corrections, an acknowledgement of an entry a later commit replaced is refused,
+/// and the written file's result echoes what it acknowledged. A batch skips it with its entry and
+/// reasons while it exports the rest, and exports it once the batch acknowledges it.
+#[test]
+fn a_stale_patch_is_exported_only_as_acknowledged_singly_and_in_a_batch() {
+    let mut harness = Harness::new("export-stale");
+    let photographs = [
+        harness.photograph("srgb.jpg", "card/Stale.jpg"),
+        harness.photograph("portrait.jpg", "card/Plain.jpg"),
+    ];
+    harness.stop();
+    stale_patch(&harness.catalog, &photographs[0]);
+    let harness = harness.restart(ModuleRegistry::builtin());
+    let stale = json!([{"operation": "correction-2", "name": "Patch 2", "reasons": ["earlier-correction"]}]);
+    let planned = harness.prepared("export.plan", json!({"asset_id": photographs[0]}));
+    assert_eq!(planned["stale"], stale);
+    let entry = planned["entry_id"].clone();
+    assert_eq!(
+        harness.prepared("export.plan", json!({"asset_id": photographs[1]}))["stale"],
+        json!([])
+    );
+    let out = harness.dir.join("out");
+    fs::create_dir_all(&out).unwrap();
+    let single = |request: &str, acknowledge: Option<Value>| {
+        let mut params = json!({"asset_id": photographs[0], "destination": out.join(format!("{request}.jpg")),
+                                "mutation": envelope(request)});
+        if let Some(acknowledge) = acknowledge {
+            params["acknowledge_stale"] = acknowledge;
+        }
+        params
+    };
+    let refused = harness.refused("export.jpeg", single("bare", None));
+    assert_eq!(refused.code, "conflict");
+    assert_eq!(
+        refused.data,
+        Some(json!({"code": "stale-unacknowledged", "entry_id": entry, "stale": stale}))
+    );
+    for wrong in [
+        json!({"entry_id": entry, "operations": []}),
+        json!({"entry_id": entry, "operations": ["correction-1"]}),
+        json!({"entry_id": crate::EntryId::new(), "operations": ["correction-2"]}),
+    ] {
+        let refused = harness.refused("export.jpeg", single("wrong", Some(wrong.clone())));
+        assert_eq!(refused.code, "conflict", "{wrong}");
+    }
+    assert_eq!(names(&out), Vec::<String>::new(), "nothing was queued");
+    let acknowledge = json!({"entry_id": entry, "operations": ["correction-2"]});
+    let accepted = harness.prepared("export.jpeg", single("acknowledged", Some(acknowledge.clone())));
+    assert_eq!(accepted["acknowledged_stale"], stale);
+    let settled = harness.settle(&accepted["job_id"]);
+    assert_eq!(settled["status"], "ready", "{settled}");
+    assert_eq!(settled["result"]["acknowledged_stale"], stale);
+    assert!(out.join("acknowledged.jpg").is_file());
+    // A plain photograph ignores an acknowledgement it does not need.
+    let plain = harness.prepared(
+        "export.jpeg",
+        json!({"asset_id": photographs[1], "destination": out.join("plain.jpg"),
+               "mutation": envelope("plain"), "acknowledge_stale": acknowledge}),
+    );
+    assert_eq!(plain["acknowledged_stale"], json!([]));
+    harness.settle(&plain["job_id"]);
+
+    // The batch skips the stale photograph, naming its entry and reasons, and exports the other.
+    let folder = harness.dir.join("batch");
+    fs::create_dir_all(&folder).unwrap();
+    let started = harness.ok(
+        "batch.export",
+        json!({"targets": assets(&photographs), "destination": folder, "mutation": envelope("batch")}),
+    );
+    let report = harness.settle(&started["job_id"])["result"].clone();
+    assert_eq!(report["done"], json!([photographs[1]]));
+    let skipped = &report["skipped"][0];
+    assert_eq!(
+        (
+            skipped["asset_id"].clone(),
+            skipped["code"].clone(),
+            skipped["entry_id"].clone(),
+            skipped["stale"].clone()
+        ),
+        (json!(photographs[0]), json!("stale-unacknowledged"), entry.clone(), stale)
+    );
+    assert_eq!(names(&folder), ["Plain-edited.jpg"]);
+    // A commit since the plan makes an old acknowledgement name another entry.
+    harness.expose(&photographs[0], 0.25);
+    let refused = harness.refused(
+        "export.jpeg",
+        single("after-commit", Some(json!({"entry_id": entry, "operations": ["correction-2"]}))),
+    );
+    assert_eq!(refused.code, "conflict");
+    let current = harness.prepared("export.plan", json!({"asset_id": photographs[0]}))["entry_id"].clone();
+    // Acknowledged, the batch exports both.
+    let again = harness.dir.join("again");
+    fs::create_dir_all(&again).unwrap();
+    let started = harness.ok(
+        "batch.export",
+        json!({"targets": assets(&photographs), "destination": again, "mutation": envelope("batch-2"),
+               "acknowledge_stale": [{"asset_id": photographs[0], "entry_id": current, "operations": ["correction-2"]}]}),
+    );
+    let report = harness.settle(&started["job_id"])["result"].clone();
+    assert_eq!(report["skipped"], json!([]), "{report}");
+    assert_eq!(names(&again), ["Plain-edited.jpg", "Stale-edited.jpg"]);
+    let doubled = harness.refused(
+        "batch.export",
+        json!({"targets": assets(&photographs), "destination": again, "mutation": envelope("batch-3"),
+               "acknowledge_stale": [
+                   {"asset_id": photographs[0], "entry_id": current, "operations": ["correction-2"]},
+                   {"asset_id": photographs[0], "entry_id": current, "operations": ["correction-2"]}]}),
+    );
+    assert_eq!(doubled.code, "validation");
+}

@@ -753,6 +753,14 @@ pub struct BatchSkip {
     pub asset_id: AssetId,
     pub code: String,
     pub reason: String,
+    /// For a photograph skipped `stale-unacknowledged`: the entry the export would have written,
+    /// which an acknowledgement names.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entry_id: Option<crate::EntryId>,
+    /// For a photograph skipped `stale-unacknowledged`: its stale frozen patches with their
+    /// reasons, which an acknowledgement names exactly.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stale: Vec<crate::StaleCorrection>,
 }
 
 /// A photograph a batch settings set was applied to without some of its settings, and which: the
