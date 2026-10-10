@@ -6,6 +6,8 @@ Luxforge has a small, typed **feature flag** registry that gates features and ex
 
 ## Scope
 
+**Planned:** [optional usage statistics](usage-statistics.md) adds a Privacy tab, shown only in launches eligible to report, and permission-aware consent controls. It is not a feature flag and is not implemented; the existing General, Appearance and Experiments tabs retain their current behavior.
+
 In scope: the flag registry, its storage beside the existing user preferences, `flags.list` and `flags.set`, launch-time resolution, developer mode as a flag, the Settings surface with its Experiments tab, the palette and keyboard routes to it, evidence steps and a rendered smoke scenario.
 
 Out of scope: remote or percentage rollouts, per-catalog or per-photo flags, flags in `luxforge-json`'s own launch, and the GPU renderer, which is the renderer of record and neither a flag nor a preference ([GPU-first](gpu-first.md)). The person's preferences are designed in [preferences](preferences.md).

@@ -35,7 +35,7 @@ pub use types::{
 pub use types::{
     BrushEdit, BrushSource, ChoiceControl, ColorControl, ControlVariant, EffectOperations,
     IdentityKind, MAX_OPERATIONS, OPERATIONS_FIELD, RangeControl, ResolvedControl, ResolvedReset,
-    TaskControl, ToggleControl, WheelControl, WheelStyle,
+    TaskControl, ToggleControl, ViewControl, WheelControl, WheelStyle,
 };
 pub(crate) use types::{MAX_SECRET_LENGTH, PRESET_SETTINGS, SETTINGS_ORIGIN};
 pub(crate) use validate::{

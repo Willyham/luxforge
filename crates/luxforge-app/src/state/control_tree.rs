@@ -13,7 +13,7 @@ pub(crate) trait ControlTree: Sized {
 impl ControlTree for Control {
     fn children(&self) -> Option<&[Self]> {
         match self {
-            Control::Group(luxforge_core::GroupControl { controls, .. }) => Some(controls),
+            Control::Group(_) | Control::View(_) => Some(Control::children(self)),
             _ => None,
         }
     }

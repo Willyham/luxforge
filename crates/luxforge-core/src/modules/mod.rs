@@ -42,20 +42,25 @@ pub static GPU_PROGRAMS: &[&crate::GpuProgram] = &[
     &look::LOOK_PROGRAM,
     &curve::TONE_CURVE_PROGRAM,
     &mixer::MIXER_PROGRAM,
-    &mixer::GRADE_PROGRAM,
     &vignette::VIGNETTE_PROGRAM,
     &presence::PRESENCE_PROGRAM,
     &crate::repair::REPAIR_PROGRAM,
 ];
-/// The current payload format marker of a built-in effect: the shared [`crate::EFFECT_FORMAT`],
-/// except for an effect whose payload changed meaning and declares its own (the RAW development
-/// and the colour mixer). What [`crate::Layer::new`] stamps on a layer it builds directly;
+/// The built-in effects whose payload changed meaning, each with the format marker it declares
+/// now; every other built-in effect is at the shared [`crate::EFFECT_FORMAT`].
+const BUILTIN_FORMATS: &[(&str, u32)] = &[
+    raw::RAW_BUILTIN_FORMAT,
+    (MIXER_EFFECT, mixer::MIXER_EFFECT_FORMAT),
+];
+
+/// The current payload format marker of a built-in effect ([`BUILTIN_FORMATS`]). What
+/// [`crate::Layer::new`] stamps on a layer it builds directly;
 /// `current_effect_formats_match_the_builtin_descriptors` holds it to the registry's descriptors.
 pub fn current_effect_format(effect_id: &str) -> u32 {
-    if effect_id == MIXER_EFFECT {
-        return mixer::MIXER_EFFECT_FORMAT;
-    }
-    raw::current_format(effect_id).unwrap_or(crate::EFFECT_FORMAT)
+    BUILTIN_FORMATS
+        .iter()
+        .find(|(effect, _)| *effect == effect_id)
+        .map_or(crate::EFFECT_FORMAT, |(_, format)| *format)
 }
 
 pub use basic::BASIC_EFFECT;
@@ -108,7 +113,7 @@ pub use descriptor::{
 pub use descriptor::{
     BrushEdit, BrushSource, ChoiceControl, ColorControl, ControlVariant, EffectOperations,
     IdentityKind, MAX_OPERATIONS, OPERATIONS_FIELD, RangeControl, ResolvedControl, ResolvedReset,
-    TaskControl, ToggleControl, WheelControl, WheelStyle,
+    TaskControl, ToggleControl, ViewControl, WheelControl, WheelStyle,
 };
 pub use descriptor::{Chord, HOST_CHORDS, host_chord};
 pub(crate) use descriptor::{
@@ -129,8 +134,8 @@ pub use lens::LENS_EFFECT;
 pub(crate) use lens::{LENS_MODULE, LensModule};
 pub use look::LOOK_EFFECT;
 pub(crate) use look::LookModule;
+pub use mixer::MIXER_EFFECT;
 pub(crate) use mixer::MixerModule;
-pub use mixer::{MIXER_EFFECT, MIXER_EFFECT_FORMAT};
 pub use perspective::PERSPECTIVE_EFFECT;
 pub(crate) use perspective::PerspectiveModule;
 pub use presence::PRESENCE_EFFECT;

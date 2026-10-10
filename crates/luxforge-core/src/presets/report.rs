@@ -1,7 +1,7 @@
 //! The per-setting import report: what was carried, what was neutral, what Luxforge cannot
 //! reproduce and what it refused, one entry per setting the file holds.
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 /// Every setting of an imported file except preset metadata, in exactly one of four lists, each
 /// sorted by setting name.
@@ -22,6 +22,24 @@ pub struct ImportReport {
     /// Values Luxforge has a related control for but cannot carry: out of range, from another
     /// process version, disabled in the preset or without a calibrated conversion.
     pub refused: Vec<ReportedSetting>,
+    /// Values the file implies as a whole rather than holds as settings, so they are in none of
+    /// the four lists and no count: a split-toning document's Blending 100 and the controls Color
+    /// Grading added at 0. Listed only when there is one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub derived: Vec<DerivedSettings>,
+}
+
+/// Fields an import writes because of what the whole file is, not because of one of its settings.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DerivedSettings {
+    /// Why the file implies these values.
+    pub reason: String,
+    /// The values, as a settings set holds them.
+    pub settings: Map<String, Value>,
+    /// Why the values are not in the preset's settings, when they are not.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused: Option<String>,
 }
 
 /// One value transfer: the same number on the Luxforge control with the same name, range and
@@ -74,7 +92,9 @@ impl ImportReport {
     /// Whether some effect of the file is not reproduced: anything unsupported or refused.
     #[cfg(test)]
     pub(crate) fn partial(&self) -> bool {
-        !self.unsupported.is_empty() || !self.refused.is_empty()
+        !self.unsupported.is_empty()
+            || !self.refused.is_empty()
+            || self.derived.iter().any(|derived| derived.refused.is_some())
     }
 }
 
