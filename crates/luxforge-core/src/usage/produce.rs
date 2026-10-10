@@ -8,8 +8,10 @@
 //!
 //! The keyed image ID of a photograph is computed once, when it is adopted as a client's open
 //! photograph ([`Producer::adopt`]), from the catalog fingerprint the adoption already holds, and
-//! kept here beside its asset for the events that act on it. A commit to a photograph no client has
-//! open computes its ID from the fingerprint its state holds (one HMAC) without keeping it.
+//! kept here beside its asset for the events that act on it; the adoption's ask is usually
+//! answered by the collector's memo of the last ID, which the open's preparation outcome just
+//! computed ([`Collector::image_id`]). A commit to a photograph no client has open computes its ID
+//! from the fingerprint its state holds (at most one HMAC) without keeping it.
 use super::{Collector, EventKind, Feature, Generation, ImageId, Recorded, Tool};
 use crate::{AssetId, ModuleRegistry, Recipe};
 use std::sync::Arc;

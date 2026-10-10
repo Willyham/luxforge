@@ -1263,6 +1263,106 @@ fn usage_the_sampler_runs_only_while_presented_and_active_and_hears_every_change
 }
 
 #[test]
+fn usage_visibility_changes_and_a_minute_without_interaction_are_recorded_in_order() {
+    let log = Arc::new(Mutex::new(Vec::new()));
+    let mut harness = Harness::with(
+        Parts::new("presence", eligible()),
+        Box::new(FakeSampler {
+            log: log.clone(),
+            ..FakeSampler::default()
+        }),
+    );
+    harness.enable("on");
+    // The first report is the launch's state: nothing is recorded for it.
+    harness.shared.set_presented(true);
+    harness.step();
+    harness.clock.advance(30 * SECOND);
+    harness.shared.interacted();
+    harness.step();
+    assert_eq!(
+        harness.deadline,
+        Some(MINUTE),
+        "the sampler's minute comes first"
+    );
+    harness.run_until(MINUTE + 30 * SECOND - SECOND);
+    assert!(
+        !harness.shared.lock().idle,
+        "a minute since the interaction has not passed"
+    );
+    harness.run_until(MINUTE + 31 * SECOND);
+    assert!(harness.shared.lock().idle, "idle at its own deadline");
+    assert_eq!(
+        harness.deadline,
+        Some(10 * MINUTE),
+        "idle: only the window's send time is left, no sampling or idle timer"
+    );
+    harness.clock.advance(5 * SECOND);
+    harness.shared.interacted();
+    harness.shared.interacted();
+    harness.shared.set_presented(false);
+    harness.shared.set_presented(false);
+    harness.step();
+    assert_eq!(harness.deadline, None, "hidden: no idle deadline");
+    harness.clock.advance(15 * MINUTE);
+    harness.step();
+    assert!(
+        !harness.shared.lock().idle,
+        "hidden time never becomes idle by itself"
+    );
+    assert_eq!(harness.transport.count(), 0);
+    harness.shared.set_presented(true);
+    harness.step();
+    // Shown after a quarter of an hour with no interaction: idle at once, and the due window,
+    // which holds every transition in order, goes.
+    assert!(harness.shared.lock().idle);
+    let sent = harness.transport.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(
+        sent[0]
+            .batch
+            .events
+            .iter()
+            .map(|event| event.kind)
+            .filter(|kind| !matches!(kind, EventKind::ProcessSample(_)))
+            .collect::<Vec<_>>(),
+        [
+            EventKind::SessionStart {
+                trigger: Trigger::OptIn
+            },
+            EventKind::AppIdle { state: Idle::Idle },
+            EventKind::AppIdle {
+                state: Idle::Active
+            },
+            EventKind::AppPresented {
+                state: Presented::Hidden
+            },
+            EventKind::AppPresented {
+                state: Presented::Visible
+            },
+            EventKind::AppIdle { state: Idle::Idle },
+        ]
+    );
+    assert_eq!(
+        *log.lock().unwrap(),
+        // The interaction and the hide reached the sampler in one step, visibility first.
+        ["shown", "idle", "hidden", "active", "shown", "idle"]
+    );
+}
+
+#[test]
+fn usage_a_host_without_a_window_records_no_visibility_or_idleness() {
+    let mut harness = Harness::new("windowless");
+    harness.shared.interacted();
+    harness.run_until(5 * MINUTE);
+    assert!(!harness.shared.lock().idle);
+    assert_eq!(
+        harness.session().unwrap().window().len,
+        1,
+        "session.start only"
+    );
+}
+
+#[test]
 fn usage_the_process_sampler_plugs_in_and_parks_while_off_or_hidden() {
     let collector = Collector::new();
     let mut sampler: Box<dyn Sampling> = Box::new(sampler::Sampler::new());

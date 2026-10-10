@@ -26,13 +26,20 @@
 //! discards without joining the worker. Nothing here wakes the GUI: delivery state is only the
 //! bounded counts [`Usage::set_diagnostics`] reports through `usage.read`.
 //!
+//! The host reports its window's visibility ([`Supervisor::set_presented`]) and each deliberate
+//! interaction ([`Supervisor::interacted`]). After the first report, a change of visibility records
+//! `app.presented`; a presented window with no interaction for [`IDLE_AFTER`] is idle, which the
+//! worker notices at its own deadline and records as `app.idle` (an interaction records its end),
+//! and the sampler pauses while it lasts. Neither adds a timer of its own beyond that one deadline.
+//!
 //! The monotonic clock stops while macOS sleeps, so the worker compares it with the wall clock at
 //! each wake and starts a new session after a sleep longer than [`SLEEP_GAP`], discarding the
 //! window recorded before it. A device profile change discards the window recorded under the old
 //! profile without forcing an early request.
 use super::{
-    Active, Collector, ConsentReader, DeviceProfile, Diagnostics, Gate, Generation, Release,
-    ReportId, Session, SessionClock, SessionStart, Trigger, Usage, device,
+    Active, Collector, ConsentReader, DeviceProfile, Diagnostics, EventKind, Gate, Generation,
+    Idle, Presented, Release, ReportId, Session, SessionClock, SessionStart, Trigger, Usage,
+    device,
     encode::BodyBuffer,
     sampler,
     sender::{self, Cooldown, Delivery, Suspension, Verdict},
@@ -58,6 +65,8 @@ pub const SLEEP_GAP: Duration = Duration::from_secs(10);
 /// The shortest wait the worker schedules, so a deadline that has passed without anything to do
 /// cannot spin it.
 const MIN_WAIT: Duration = Duration::from_secs(1);
+/// A presented window with no deliberate interaction for this long is idle (`app.idle`).
+pub const IDLE_AFTER: Duration = Duration::from_secs(60);
 /// The reason a request is cancelled with when consent ends.
 const REVOKED: &str = "usage statistics were turned off";
 /// The reason a request is cancelled with when the application quits.
@@ -476,21 +485,26 @@ impl Supervisor {
     }
 
     /// Whether the window can be seen (neither minimized nor hidden). A hidden window starts no
-    /// upload and keeps no timer.
+    /// upload and keeps no timer. The first report is the window's state at launch; each later
+    /// change records `app.presented` in the current session, if there is one. Reporting also
+    /// starts idle tracking ([`Supervisor::interacted`]): a host that draws no window has neither.
     pub fn set_presented(&self, presented: bool) {
-        self.shared.signal(|state| state.presented = presented);
+        self.shared.set_presented(presented);
+    }
+
+    /// A deliberate interaction: a key press, a click, a scroll or an operation a script performs
+    /// for a person. Cheap enough for every input event: a lock and a clock read, and a wake only
+    /// when it ends an idle period, which records `app.idle` `active`. The worker decides idleness
+    /// itself, at its own deadline a minute after the last interaction while the window is
+    /// presented; no timer polls for it.
+    pub fn interacted(&self) {
+        self.shared.interacted();
     }
 
     /// The renderer's adapter or path changed: the worker gathers the device profile again and
     /// discards the window recorded under the old one.
     pub fn device_changed(&self) {
         self.shared.signal(|state| state.device_changed = true);
-    }
-
-    /// The person went idle (a minute without deliberate interaction) or became active again: the
-    /// sampler pauses while idle.
-    pub fn set_idle(&self, idle: bool) {
-        self.shared.signal(|state| state.idle = idle);
     }
 
     /// The system woke from sleep: the worker checks for the gap at once rather than at its next
@@ -531,7 +545,13 @@ struct Shared {
 struct State {
     quit: bool,
     presented: bool,
+    /// The host has reported its window's visibility: later changes are recorded, and idleness is
+    /// tracked.
+    windowed: bool,
+    /// No deliberate interaction for [`IDLE_AFTER`] while presented; the sampler pauses.
     idle: bool,
+    /// The last deliberate interaction, on the supervisor's monotonic clock.
+    last_interaction: Duration,
     device_changed: bool,
     /// The running worker's thread, to unpark.
     worker: Option<Thread>,
@@ -546,6 +566,8 @@ struct Signals {
     quit: bool,
     presented: bool,
     idle: bool,
+    /// When the window becomes idle without further interaction, while idleness is tracked.
+    idle_due: Option<Duration>,
     device_changed: bool,
     worker: Option<Thread>,
 }
@@ -661,6 +683,7 @@ impl Shared {
             quit: state.quit,
             presented: state.presented,
             idle: state.idle,
+            idle_due: (state.windowed && !state.idle).then(|| state.last_interaction + IDLE_AFTER),
             device_changed: std::mem::take(&mut state.device_changed),
             worker: state.worker.clone(),
         }
@@ -668,6 +691,60 @@ impl Shared {
 
     fn quitting(&self) -> bool {
         self.lock().quit
+    }
+
+    /// [`Supervisor::set_presented`].
+    fn set_presented(&self, presented: bool) {
+        self.signal(|state| {
+            if state.windowed && state.presented != presented {
+                self.collector.record(EventKind::AppPresented {
+                    state: if presented {
+                        Presented::Visible
+                    } else {
+                        Presented::Hidden
+                    },
+                });
+            }
+            if !state.windowed {
+                state.windowed = true;
+                state.last_interaction = self.clock.monotonic();
+            }
+            state.presented = presented;
+        });
+    }
+
+    /// [`Supervisor::interacted`].
+    fn interacted(&self) {
+        let mut state = self.lock();
+        if !state.windowed {
+            return;
+        }
+        state.last_interaction = self.clock.monotonic();
+        if state.idle {
+            state.idle = false;
+            self.collector.record(EventKind::AppIdle {
+                state: Idle::Active,
+            });
+            if let Some(worker) = &state.worker {
+                worker.unpark();
+            }
+        }
+    }
+
+    /// The worker's idle deadline passed: unless an interaction came meanwhile, the window is idle
+    /// from now, recorded as `app.idle` `idle`. Answers whether it is idle.
+    fn go_idle(&self, now: Duration) -> bool {
+        let mut state = self.lock();
+        if state.windowed
+            && !state.idle
+            && state.presented
+            && now >= state.last_interaction + IDLE_AFTER
+        {
+            state.idle = true;
+            self.collector
+                .record(EventKind::AppIdle { state: Idle::Idle });
+        }
+        state.idle
     }
 
     fn publish(&self, generation: Generation, job: Arc<JobControl>) {
@@ -763,6 +840,8 @@ struct Machine {
     no_device: Option<Generation>,
     /// The sampler's next deadline.
     sample_due: Option<Duration>,
+    /// When the window becomes idle, unless someone interacts first.
+    idle_due: Option<Duration>,
     buffers: Option<Buffers>,
     live: Option<Live>,
     presented: bool,
@@ -805,6 +884,7 @@ impl Machine {
             profile: None,
             no_device: None,
             sample_due: None,
+            idle_due: None,
             buffers: None,
             live: None,
             presented: false,
@@ -851,7 +931,6 @@ impl Machine {
         }
         self.presented = signals.presented;
         self.sampler.set_presented(signals.presented);
-        self.sampler.set_idle(signals.idle);
         if self.live.is_none() {
             if !self.begin(shared, &active, active.trigger, now, wall, &signals.worker) {
                 return self.after_begin_failed(shared, &active);
@@ -859,6 +938,13 @@ impl Machine {
         } else if slept {
             self.restart(shared, &active, now, wall, &signals.worker);
         }
+        // Idleness is decided here, in the session it belongs to, at the deadline below.
+        let idle = match signals.idle_due {
+            Some(due) if signals.presented && now >= due => shared.go_idle(now),
+            _ => signals.idle,
+        };
+        self.idle_due = signals.idle_due.filter(|_| !idle);
+        self.sampler.set_idle(idle);
         if signals.device_changed && !self.gather(shared, true) {
             return Step::Off;
         }
@@ -1010,6 +1096,7 @@ impl Machine {
         self.device.clear();
         self.observed = None;
         self.sample_due = None;
+        self.idle_due = None;
         let now = self.clock.monotonic();
         self.publish(shared, now);
     }
@@ -1087,8 +1174,8 @@ impl Machine {
         Some(earliest)
     }
 
-    /// The next deadline: none while hidden; otherwise the window's send or expiry time and the
-    /// sampler's.
+    /// The next deadline: none while hidden; otherwise the window's send or expiry time, the
+    /// sampler's and the moment the window becomes idle.
     fn deadline(&self, now: Duration) -> Option<Duration> {
         if !self.presented {
             return None;
@@ -1097,7 +1184,8 @@ impl Machine {
         let send = self.earliest().filter(|_| self.suspended.is_none());
         let expiry = window.map(|first| first + sender::WINDOW_AGE);
         let sample = self.live.as_ref().and(self.sample_due);
-        [send, expiry, sample]
+        let idle = self.live.as_ref().and(self.idle_due);
+        [send, expiry, sample, idle]
             .into_iter()
             .flatten()
             .min()

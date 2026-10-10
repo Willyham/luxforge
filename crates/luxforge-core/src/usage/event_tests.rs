@@ -352,3 +352,42 @@ fn usage_the_image_id_is_keyed_by_the_session_and_absent_while_off() {
     collector.start(Trigger::OptIn, start(), SessionClock::manual().0, key(2));
     assert_ne!(collector.image_id(&fingerprint), Some(id));
 }
+
+#[test]
+fn usage_the_last_image_id_is_remembered_within_its_session_only() {
+    let fingerprint = "c".repeat(64);
+    let other = "d".repeat(64);
+    let collector = Collector::new();
+    let session = collector.start(Trigger::OptIn, start(), SessionClock::manual().0, key(1));
+    let id = collector.image_id(&fingerprint).expect("on: an ID");
+    assert_eq!(Some(id), key(1).image_id_of_hex(&fingerprint));
+    assert_eq!(collector.image_id(&fingerprint.to_uppercase()), Some(id));
+    // The second ask is answered from the memo, not computed again: a planted answer comes back.
+    let planted = ImageId::from_bytes([7; 16]);
+    lock(&session.image_memo)
+        .as_mut()
+        .expect("remembered")
+        .image = planted;
+    assert_eq!(collector.image_id(&fingerprint), Some(planted));
+    // Another photograph replaces it, and the first is computed again.
+    let other_id = collector.image_id(&other).expect("an ID");
+    assert_eq!(Some(other_id), key(1).image_id_of_hex(&other));
+    assert_eq!(collector.image_id(&fingerprint), Some(id));
+    // A memo another thread holds is passed by: the ID is computed, without waiting.
+    let held = lock(&session.image_memo);
+    assert_eq!(collector.image_id(&other), Some(other_id));
+    drop(held);
+    // A new session never answers from the last one's memo, with the same key or a new one.
+    lock(&session.image_memo)
+        .as_mut()
+        .expect("remembered")
+        .image = planted;
+    collector.start(Trigger::Launch, start(), SessionClock::manual().0, key(1));
+    assert_eq!(collector.image_id(&fingerprint), Some(id));
+    collector.stop();
+    collector.start(Trigger::OptIn, start(), SessionClock::manual().0, key(2));
+    let renewed = collector.image_id(&fingerprint).expect("an ID");
+    assert_ne!(renewed, id);
+    assert_eq!(Some(renewed), key(2).image_id_of_hex(&fingerprint));
+    assert!(!format!("{session:?}").contains(&fingerprint));
+}
