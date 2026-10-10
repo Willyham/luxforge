@@ -151,6 +151,12 @@ pub struct GpuSpatial {
     /// that reads no light. A step reading a light is redrawn whole when the light changes,
     /// wherever its input did.
     pub light: Option<usize>,
+    /// The storage block its kernels and applies read: a repair step's operation table. `None`
+    /// for an operation of units, whose words hold everything.
+    pub block: Option<std::sync::Arc<[u32]>>,
+    /// A repair step's operations and reach ([`super::repair::GpuRepair`]); `None` for an
+    /// operation of units.
+    pub repair: Option<std::sync::Arc<super::repair::GpuRepair>>,
 }
 
 impl GpuSpatial {
@@ -197,6 +203,8 @@ pub(crate) fn compose(
         after: Vec::new(),
         halos: Vec::new(),
         light: None,
+        block: None,
+        repair: None,
     };
     // Scratch planes the units before this one wrote, free for this one.
     let mut free: Vec<usize> = Vec::new();
@@ -533,7 +541,7 @@ fn links(
     let mut held: Vec<GpuSpatial> = Vec::new();
     let mut left_out = Vec::new();
     for (spatial, entry) in plan.spatial.iter().zip(spatial_entries(compiled, 0)) {
-        if let Some(passes) = light_passes(entry, request.stage) {
+        if let Some(passes) = entry.and_then(|entry| light_passes(entry, request.stage)) {
             let input = match held.is_empty() {
                 true => GpuLightInput::Source,
                 false => GpuLightInput::Stage {
@@ -739,14 +747,19 @@ pub(super) fn planned(
 
 /// The spatial entries a plan whose boundary lies in segment `first` chains, in order: the
 /// operations of its [`super::GpuPlan::spatial`], one for one, which the walk takes from the
-/// segment after the boundary's while each opens with one.
-fn spatial_entries(compiled: &Compiled, first: usize) -> impl Iterator<Item = &SpatialEntry> {
+/// segment after the boundary's while each opens with one; `None` for a repair, which estimates
+/// no light.
+fn spatial_entries(
+    compiled: &Compiled,
+    first: usize,
+) -> impl Iterator<Item = Option<&SpatialEntry>> {
     compiled
         .segments
         .iter()
         .skip(first + 1)
         .map_while(|segment| match &segment.entry {
-            Some(Entry::Spatial(entry)) => Some(entry),
+            Some(Entry::Spatial(entry)) => Some(Some(entry)),
+            Some(Entry::Repair(_)) => Some(None),
             _ => None,
         })
 }
@@ -806,6 +819,8 @@ fn light_step(layer: usize, passes: GpuLightPasses, clamps: bool) -> Result<GpuS
         after: Vec::new(),
         halos: Vec::new(),
         light: None,
+        block: None,
+        repair: None,
     })
 }
 
@@ -1142,7 +1157,10 @@ mod light_tests {
                 None,
             )
             .unwrap();
-        let entry = spatial_entries(&compiled, 0).next().expect("Presence");
+        let entry = spatial_entries(&compiled, 0)
+            .next()
+            .flatten()
+            .expect("Presence");
         let reading = entry.operation.units()[0].gpu().expect("Dehaze");
         let one = compose(0, vec![reading.clone()], true, None).unwrap();
         assert_eq!(one.light, Some(0));

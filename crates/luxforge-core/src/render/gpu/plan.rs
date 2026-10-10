@@ -872,17 +872,6 @@ impl Compiled {
             }
         }
 
-        // A repair boundary after the plan's boundary: the GPU program for it is not in this
-        // build, so the reference draws the frame with every operation.
-        if let Some(index) = (first + 1..=last)
-            .find(|&index| matches!(self.segments[index].entry, Some(Entry::Repair(_))))
-        {
-            return Ok(Err(GpuFallback::Repair {
-                layer: self.entry_layer(index),
-                why: "this build has no GPU program for Clone and Heal".into(),
-            }));
-        }
-
         // The spatial operations the boundary segment's frame enters, in order, at that frame's
         // stage, while it is the boundary's own texels: nothing but colour lies between them. Each
         // spatial segment's colour operations run on its output before the next one enters; a
@@ -890,7 +879,7 @@ impl Compiled {
         // has no pass.
         let mut spatial: Vec<GpuSpatial> = Vec::new();
         let mut index = first + 1;
-        while let Some(Some(Entry::Spatial(entry))) =
+        while let Some(Some(entry @ (Entry::Spatial(_) | Entry::Repair(_)))) =
             self.segments.get(index).map(|next| &next.entry)
         {
             let layer = self.entry_layer(index);
@@ -924,7 +913,12 @@ impl Compiled {
                     }
                 }
             }
-            match plan_spatial(layer, entry, received, planning)? {
+            let planned = match entry {
+                Entry::Spatial(entry) => plan_spatial(layer, entry, received, planning)?,
+                Entry::Repair(entry) => super::repair::admit(layer, entry, received, planning),
+                Entry::Resample(_) => unreachable!("the loop takes spatial and repair entries"),
+            };
+            match planned {
                 Ok(planned) => {
                     // Each operation is a link of its own on the surface, which binds only its
                     // own applies' planes.
@@ -1003,7 +997,7 @@ impl Compiled {
                 continue;
             }
             if index > content_end
-                && let Some(Entry::Spatial(_)) = &segment.entry
+                && let Some(Entry::Spatial(_) | Entry::Repair(_)) = &segment.entry
             {
                 return Ok(Err(GpuFallback::SpatialUnit {
                     layer: self.entry_layer(index),
