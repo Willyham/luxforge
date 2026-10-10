@@ -1,0 +1,83 @@
+<!--
+  Luxforge usage statistics: ClickHouse users. Passwords come from the environment (see .env.example),
+  never from this file. The built-in default user is removed. The server is reachable only on the
+  private compose network; the admin user can additionally only connect from inside its own container.
+-->
+<clickhouse>
+    <profiles>
+        <luxforge_admin>
+            <log_queries>0</log_queries>
+            <log_query_threads>0</log_query_threads>
+            <log_query_views>0</log_query_views>
+            <date_time_input_format>best_effort</date_time_input_format>
+        </luxforge_admin>
+        <luxforge_writer>
+            <readonly>0</readonly>
+            <log_queries>0</log_queries>
+            <log_query_threads>0</log_query_threads>
+            <log_query_views>0</log_query_views>
+            <date_time_input_format>best_effort</date_time_input_format>
+            <input_format_skip_unknown_fields>0</input_format_skip_unknown_fields>
+            <input_format_null_as_default>1</input_format_null_as_default>
+            <max_memory_usage>500000000</max_memory_usage>
+            <max_execution_time>30</max_execution_time>
+            <max_insert_block_size>100000</max_insert_block_size>
+        </luxforge_writer>
+        <luxforge_reader>
+            <readonly>2</readonly>
+            <log_queries>0</log_queries>
+            <log_query_threads>0</log_query_threads>
+            <log_query_views>0</log_query_views>
+            <max_memory_usage>1000000000</max_memory_usage>
+            <max_execution_time>30</max_execution_time>
+            <max_result_rows>100000</max_result_rows>
+            <result_overflow_mode>break</result_overflow_mode>
+        </luxforge_reader>
+    </profiles>
+
+    <users>
+        <default remove="remove"/>
+
+        <luxforge_admin>
+            <password from_env="LUXFORGE_CLICKHOUSE_ADMIN_PASSWORD"/>
+            <profile>luxforge_admin</profile>
+            <quota>default</quota>
+            <networks>
+                <ip>127.0.0.1</ip>
+                <ip>::1</ip>
+            </networks>
+            <grants>
+                <query>GRANT ALL ON *.*</query>
+            </grants>
+        </luxforge_admin>
+
+        <!-- Vector: may insert into the two landing tables and nothing else. -->
+        <luxforge_writer>
+            <password from_env="LUXFORGE_CLICKHOUSE_WRITER_PASSWORD"/>
+            <profile>luxforge_writer</profile>
+            <quota>default</quota>
+            <networks>
+                <ip>0.0.0.0/0</ip>
+                <ip>::/0</ip>
+            </networks>
+            <grants>
+                <query>GRANT INSERT ON luxforge.events</query>
+                <query>GRANT INSERT ON luxforge.profile_batches</query>
+            </grants>
+        </luxforge_writer>
+
+        <!-- Grafana: read-only queries over the luxforge database. -->
+        <luxforge_reader>
+            <password from_env="LUXFORGE_CLICKHOUSE_READER_PASSWORD"/>
+            <profile>luxforge_reader</profile>
+            <quota>default</quota>
+            <networks>
+                <ip>0.0.0.0/0</ip>
+                <ip>::/0</ip>
+            </networks>
+            <grants>
+                <query>GRANT SELECT ON luxforge.*</query>
+            </grants>
+        </luxforge_reader>
+    </users>
+</clickhouse>

@@ -1,0 +1,100 @@
+# Luxforge usage statistics: Vector receives the ingress's validated NDJSON rows on the private
+# network and writes them to ClickHouse. It is a relay, not a store:
+#   - memory buffers only, with a hard event cap; no disk buffer, no archive, no raw-body fallback;
+#   - the source answers the ingress as soon as a row is in the bounded buffer (waiting for
+#     ClickHouse would hold the ingress's single forwarder for a batch interval per request); a sink
+#     that cannot write retries briefly and then drops the batch, so a slow or stopped ClickHouse
+#     fills the buffer, the source stops answering, and the ingress times out, drops and then
+#     refuses with 429;
+#   - no metadata (path, peer, headers, timestamps) is added to a row: with the new log namespace
+#     the row is exactly the decoded JSON object, and the sink rejects a row with any unknown column;
+#   - no API, no internal metrics, no console or file sink.
+schema:
+  log_namespace: true
+
+api:
+  enabled: false
+
+sources:
+  rows:
+    type: http_server
+    address: 0.0.0.0:8686
+    path: /
+    strict_path: false
+    method: POST
+    headers: []
+    query_parameters: []
+    response_code: 200
+    framing:
+      method: newline_delimited
+    decoding:
+      codec: json
+    keepalive:
+      max_connection_age_secs: 300
+
+transforms:
+  by_table:
+    type: route
+    inputs: [rows]
+    route:
+      events: '%http_server.path == "/events"'
+      profiles: '%http_server.path == "/profiles"'
+
+sinks:
+  clickhouse_events:
+    type: clickhouse
+    inputs: [by_table.events]
+    endpoint: http://clickhouse:8123
+    database: luxforge
+    table: events
+    format: json_each_row
+    date_time_best_effort: true
+    skip_unknown_fields: false
+    healthcheck:
+      enabled: false
+    auth:
+      strategy: basic
+      user: luxforge_writer
+      password: "${LUXFORGE_CLICKHOUSE_WRITER_PASSWORD}"
+    buffer:
+      type: memory
+      max_events: 1024
+      when_full: block
+    batch:
+      max_events: 1024
+      timeout_secs: 1
+    request:
+      timeout_secs: 10
+      retry_attempts: 3
+      retry_initial_backoff_secs: 1
+      retry_max_duration_secs: 4
+      concurrency: 2
+
+  clickhouse_profiles:
+    type: clickhouse
+    inputs: [by_table.profiles]
+    endpoint: http://clickhouse:8123
+    database: luxforge
+    table: profile_batches
+    format: json_each_row
+    date_time_best_effort: true
+    skip_unknown_fields: false
+    healthcheck:
+      enabled: false
+    auth:
+      strategy: basic
+      user: luxforge_writer
+      password: "${LUXFORGE_CLICKHOUSE_WRITER_PASSWORD}"
+    buffer:
+      type: memory
+      max_events: 256
+      when_full: block
+    batch:
+      max_events: 256
+      timeout_secs: 1
+    request:
+      timeout_secs: 10
+      retry_attempts: 3
+      retry_initial_backoff_secs: 1
+      retry_max_duration_secs: 4
+      concurrency: 2
