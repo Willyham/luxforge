@@ -316,14 +316,20 @@ fn finished_job(
     if !job.is_string() {
         return Err(format!("{method} answered no job: {answer}"));
     }
-    let record = luxforge_testbase::try_wait_for(&format!("{method}'s job to end"), || {
-        match call(owner, client, "job.read", json!({"job_id": job})) {
-            Ok(record) if matches!(record["status"].as_str(), Some("queued" | "running")) => None,
-            read => Some(read),
-        }
-    })??;
+    let record =
+        luxforge_testbase::try_wait_for(&format!("{method}'s job to end"), || {
+            match call(owner, client, "job.read", json!({"job_id": job})) {
+                Ok(record) if matches!(record["status"].as_str(), Some("queued" | "running")) => {
+                    None
+                }
+                read => Some(read),
+            }
+        })??;
     if record["status"] != "ready" {
-        return Err(format!("{method}'s job ended {}: {record}", record["status"]));
+        return Err(format!(
+            "{method}'s job ended {}: {record}",
+            record["status"]
+        ));
     }
     Ok(job)
 }
