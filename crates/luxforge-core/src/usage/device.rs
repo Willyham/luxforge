@@ -28,7 +28,8 @@ use super::{
     gate::{Gate, Generation},
     registry::Renderer,
 };
-use luxforge_gpu_types::adapter_facts::GpuFacts;
+/// The normalized facts of one adapter, as `luxforge_gpu::adapters::Adapter::facts` returns them.
+pub use luxforge_gpu_types::adapter_facts::GpuFacts;
 use luxforge_process::system_info::{self as sys, SystemFacts};
 
 /// The renderer path that draws the desktop's picture, with why the reference does.
