@@ -50,13 +50,6 @@ mod previews;
 mod profile;
 mod proxy;
 mod render;
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "the Corrections render integration (TASK-003) wires the repair units in"
-    )
-)]
 mod repair;
 pub mod resources;
 /// Generated catalogs and indexes, written in bulk for `cargo xtask generate-catalog` and tests.
@@ -178,12 +171,7 @@ pub use previews::{DecodedPreview, decode_preview};
 pub mod qualification {
     pub use crate::modules::detail_qualification as detail;
     pub use crate::modules::presence_qualification as presence;
-
-    /// A repair-stage module whose payload is the repair table, for the GPU repair program's
-    /// qualification before a module of the build compiles one.
-    pub mod repair {
-        pub use crate::render::repair_testing::{RepairTestModule, TEST_REPAIR_EFFECT, table_of};
-    }
+    pub use crate::repair::qualification as repair;
 
     /// The picture at rest of `evaluation` on the GPU at `view`, as a displayed stack's job plans
     /// it ([`crate::GpuRest`]): the plan of the whole stack from the source, and the boundary it
