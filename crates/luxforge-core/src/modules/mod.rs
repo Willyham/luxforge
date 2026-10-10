@@ -130,8 +130,8 @@ pub use processing::{
 pub use processing::{ExactGeometry, Resample};
 pub(crate) use raw::lightroom_white_balance::lightroom_to_luxforge;
 pub use raw::white_balance::{gains_from_temperature_tint, temperature_tint_from_gains};
+pub(crate) use raw::{RAW_MODULE, is_raw_development, white_balance_variants};
 pub use raw::{RawModule, RawPayload, WhiteBalanceMode};
-pub(crate) use raw::{is_raw_development, white_balance_variants};
 #[cfg(test)]
 pub(crate) use registry::linked_modules;
 #[cfg(test)]

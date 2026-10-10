@@ -1651,7 +1651,7 @@ Rules for any UI or image check:
 
 ## Packaging
 
-`cargo xtask package` builds an unsigned host development artifact: a ZIP on macOS and Windows or a `.tar.gz` on Linux containing `Luxforge/` with the executable, notices, `build.json` (source revision, dirty state, target, profile, binary and lockfile hashes) and `checksums.txt`. Run smoke against the packaged executable with `--binary`. Packaging is repeatable, not byte-reproducible, and inventory is not a completed license audit. macOS bundles are unsigned and not notarized. No signing, stores or auto-update exist.
+`cargo xtask package` builds an unsigned host development artifact: a ZIP on macOS and Windows or a `.tar.gz` on Linux containing `Luxforge/` with the executable, notices, `build.json` (source revision, dirty state, the reported release, target, profile, binary and lockfile hashes) and `checksums.txt`. The executable of a clean tree embeds its source revision for the [usage statistics build identity](../design/usage-statistics.md#build-identity-and-activation); a dirty tree's embeds none, and its release is `null`. Run smoke against the packaged executable with `--binary`. Packaging is repeatable, not byte-reproducible, and inventory is not a completed license audit. macOS bundles are unsigned and not notarized. No signing, stores or auto-update exist.
 
 ## CI
 
