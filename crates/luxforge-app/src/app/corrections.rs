@@ -274,12 +274,14 @@ pub(crate) struct Corrections {
     pub(crate) last_request: Option<(String, Value)>,
     /// The mode was active after the last message, so entering it is noticed once.
     active: bool,
+    /// `/`'s ranking query is out; its edit follows its answer.
+    ranking: bool,
 }
 
 impl Corrections {
     /// The list query or the map is waiting for an answer.
     pub(crate) fn reading(&self) -> bool {
-        self.listing_asked.is_some() || self.map_stale
+        self.listing_asked.is_some() || self.map_stale || self.ranking
     }
 }
 
@@ -1247,6 +1249,7 @@ impl Editor {
         let (owner, client) = (self.owner.clone(), self.client);
         let asked = operation.clone();
         self.status.text = "Ranking automatic sources\u{2026}".into();
+        self.correction_reads.ranking = true;
         self.event(
             "correction_sources_asked",
             || json!({"operation": operation, "rank": rank}),
@@ -1274,6 +1277,7 @@ impl Editor {
         rank: usize,
         result: Result<Value, String>,
     ) -> Task<Message> {
+        self.correction_reads.ranking = false;
         let answer = match result {
             Ok(answer) => answer,
             Err(error) => {
