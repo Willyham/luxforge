@@ -66,7 +66,7 @@ pub(crate) use preview::{plan_preview_reducing, plan_rest, plan_warm_list};
 #[cfg(test)]
 pub(crate) use program::testing;
 pub use program::{GpuDescription, GpuProgram, GpuProgramKind};
-pub use repair::{GpuRepair, GpuRepairOperation};
+pub use repair::{GpuRepair, GpuRepairOperation, REPAIR_LEVEL_BYTES, REPAIR_PASSES_MAX};
 pub use spatial::{
     GPU_PASS_INPUTS, GPU_SHARED_VALUES, GPU_WORKGROUP_LANES, GpuApply, GpuLight, GpuLightInput,
     GpuLightPasses, GpuLightRestoration, GpuPass, GpuPassShape, GpuPlane, GpuPlaneFormat,
