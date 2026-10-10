@@ -136,7 +136,7 @@ pub(super) fn registry() -> ModuleRegistry {
 /// Clone and Heal operations over the [`WIDTH`] × [`HEIGHT`] stage: independent spots, a Heal
 /// from far across the frame, a Clone over a Heal's output and a source past the edge.
 pub(super) fn corrections() -> Layer {
-    use super::gpu_repair_tests::{op, repair};
+    use super::gpu_repair_plan_tests::{op, repair};
     let size = (WIDTH, HEIGHT);
     repair(vec![
         op(1, true, size, &[[90.0, 60.0]], 9.0, [40.0, 12.0], 50, 100),
