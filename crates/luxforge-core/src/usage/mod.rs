@@ -9,6 +9,7 @@ pub mod encode;
 pub mod event;
 pub mod gate;
 pub mod image_id;
+pub(crate) mod produce;
 pub mod registry;
 pub mod sampler;
 

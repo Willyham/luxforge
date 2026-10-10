@@ -240,6 +240,9 @@ impl EditorService {
             Change::NoOp { skipped } => result.skipped = std::mem::take(skipped),
             Change::Navigate { .. } => {}
         }
+        // What this transaction means to usage statistics, read before the change moves into the
+        // write: nothing at all while collection is off.
+        let usage = self.usage_of(&state, &change, &mutation.actor);
         let artifact_root = &self.artifact_root;
         let moved = write(&mut self.connection, |tx| {
             // The redo list the head moves to, or `None` when it stays where it is.
@@ -310,7 +313,55 @@ impl EditorService {
                 redo,
             );
         }
+        if let Some(committed) = usage {
+            committed.record(&self.usage);
+        }
         Ok(result)
+    }
+
+    /// The usage events a committed change records ([`crate::usage::produce`]): a mask command's
+    /// interaction, then one `tool.commit` per built-in tool group whose layers it changed, each
+    /// with the photograph's image ID. A no-op, a history navigation, a Restore and a first-open
+    /// entry by the `system` actor record none, and a retry never reaches here. `None` while
+    /// collection is off, after one atomic load.
+    fn usage_of(&self, state: &EditorState, change: &Change, actor: &str) -> Option<UsageCommit> {
+        let generation = self.usage.on()?;
+        if actor == "system" {
+            return None;
+        }
+        let (after, action) = match change {
+            Change::Append {
+                recipe,
+                action,
+                restore_target: None,
+                ..
+            } => (
+                std::borrow::Cow::Borrowed(recipe),
+                Some(&action.input.action_id),
+            ),
+            Change::Navigate {
+                target,
+                collapsed: Some(_),
+                ..
+            } => (
+                std::borrow::Cow::Owned(self.entry(&state.asset.id, target).ok()?.snapshot.recipe),
+                None,
+            ),
+            _ => return None,
+        };
+        let image = self
+            .usage
+            .image_of(generation, &state.asset.id, &state.asset.fingerprint)?;
+        Some(UsageCommit {
+            generation,
+            image,
+            feature: action.and_then(|action| crate::usage::produce::mask_feature(action)),
+            tools: crate::usage::produce::changed_tools(
+                self.registry(),
+                &state.current_entry.snapshot.recipe,
+                &after,
+            ),
+        })
     }
 
     /// Commit this stack as one entry through [`Self::mutate`]: how a test writes a stack no action
@@ -705,6 +756,38 @@ pub(super) struct Collapse {
 /// What one action records on the entry it commits: the durable identity and stored parameters the
 /// module parsed, the label the host rendered from the action that was requested, and — for a host
 /// command — what it touched, which its answer reports and its request stores.
+/// What one committed transaction records for usage statistics ([`EditorService::usage_of`]).
+struct UsageCommit {
+    generation: crate::usage::Generation,
+    image: crate::usage::ImageId,
+    feature: Option<crate::usage::Feature>,
+    tools: crate::usage::produce::ToolSet,
+}
+
+impl UsageCommit {
+    fn record(self, producer: &crate::usage::produce::Producer) {
+        use crate::usage::EventKind;
+        if let Some(feature) = self.feature {
+            producer.record(
+                self.generation,
+                EventKind::Interaction {
+                    feature,
+                    image: Some(self.image),
+                },
+            );
+        }
+        for tool in self.tools.iter() {
+            producer.record(
+                self.generation,
+                EventKind::ToolCommit {
+                    tool,
+                    image: self.image,
+                },
+            );
+        }
+    }
+}
+
 pub(super) struct CommittedAction {
     pub(super) input: ActionInput,
     pub(super) label: String,

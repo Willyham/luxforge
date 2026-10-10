@@ -121,6 +121,7 @@ fn usage_a_recorded_session_encodes_to_the_independently_written_batch() {
         Trigger::OptIn,
         SessionStart::parse("2026-10-09T14:03:12Z").unwrap(),
         clock,
+        ImageKey::from_bytes([0x5a; 32]),
     );
     let key = ImageKey::from_bytes([0x5a; 32]);
     let image = key.image_id(&[0x11; 32]);

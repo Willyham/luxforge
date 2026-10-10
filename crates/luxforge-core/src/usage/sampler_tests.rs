@@ -135,7 +135,12 @@ impl Rig {
         let allowance = Rc::new(Cell::new(None));
         let collector = Collector::new();
         let (session_clock, millis) = SessionClock::manual();
-        let session = collector.start(Trigger::OptIn, start(), session_clock);
+        let session = collector.start(
+            Trigger::OptIn,
+            start(),
+            session_clock,
+            crate::usage::ImageKey::from_bytes([0; 32]),
+        );
         let sampler = Sampler::with_source(Fake {
             clock: clock.clone(),
             platform: platform.clone(),
@@ -385,7 +390,12 @@ fn usage_consent_changes_reset_the_baseline() {
     rig.run(40.0);
     rig.collector.stop();
     let (session_clock, millis) = SessionClock::manual();
-    rig.session = rig.collector.start(Trigger::OptIn, start(), session_clock);
+    rig.session = rig.collector.start(
+        Trigger::OptIn,
+        start(),
+        session_clock,
+        crate::usage::ImageKey::from_bytes([0; 32]),
+    );
     rig.millis = millis;
     rig.clock.set(61.0);
     let reads = rig.reads.get();
@@ -576,7 +586,12 @@ fn usage_samples_ignore_a_sampler_that_was_never_presented() {
 fn usage_the_real_source_takes_a_baseline_and_no_sample() {
     let collector = Collector::new();
     let (clock, _) = SessionClock::manual();
-    let session = collector.start(Trigger::OptIn, start(), clock);
+    let session = collector.start(
+        Trigger::OptIn,
+        start(),
+        clock,
+        crate::usage::ImageKey::from_bytes([0; 32]),
+    );
     let mut sampler = Sampler::new();
     sampler.set_presented(true);
     let now = Stamp::now();
