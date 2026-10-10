@@ -124,6 +124,8 @@ pub(crate) struct DraftBar {
     /// The gesture commits each stroke on release, so the bar ends it with Done — put the brush
     /// down — rather than with an Apply that would have nothing left to commit.
     pub(crate) done: bool,
+    /// The gesture commits on release, so the bar offers only Cancel.
+    pub(crate) cancel_only: bool,
 }
 
 /// What an open mask gesture is about, in the words the draft bar and the status line both use.
@@ -438,6 +440,29 @@ fn draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {
     if let Some(draft) = inputs.mask_draft {
         return Some(mask_draft_bar(inputs, draft));
     }
+    // A correction's bar names it in the accent and says what the gesture does; its release
+    // commits, so it offers only Cancel.
+    if let Some(draft) = &inputs.correction_draft {
+        let subject = [draft.verb.as_str(), draft.source.as_str()]
+            .into_iter()
+            .filter(|part| !part.is_empty())
+            .collect::<Vec<_>>()
+            .join(" \u{b7} ");
+        return Some(DraftBar {
+            crop_ratios: Vec::new(),
+            crop_enabled: false,
+            title: draft.name.clone(),
+            subject: Some(subject),
+            kind: None,
+            icon: None,
+            readout: "release commits one entry".into(),
+            can_apply: false,
+            conflicted: inputs.gesture_conflicted,
+            apply_reason: None,
+            done: false,
+            cancel_only: true,
+        });
+    }
     let (title, readout) = match inputs.draft {
         Some(draft) => (
             inputs
@@ -475,6 +500,7 @@ fn draft_bar(inputs: &Inputs<'_>) -> Option<DraftBar> {
         conflicted: inputs.gesture_conflicted,
         apply_reason: inputs.apply_refusal.clone(),
         done: false,
+        cancel_only: false,
     })
 }
 
@@ -497,6 +523,7 @@ fn mask_draft_bar(inputs: &Inputs<'_>, draft: &MaskDraft) -> DraftBar {
         conflicted: inputs.gesture_conflicted,
         apply_reason: inputs.apply_refusal.clone().filter(|_| !done),
         done,
+        cancel_only: false,
     }
 }
 
@@ -531,6 +558,31 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
                 ("Reapply".into(), NoticeAction::ReapplyGesture),
             ],
         });
+    }
+    // The Corrections workspace's two notices: an add waiting for a source keeps its stroke and is
+    // finished with `⌥`-click or cancelled; a press at the limit was refused before any draft.
+    if super::corrections::is_brush_mode(inputs.modules, &inputs.session.workspace.mode) {
+        match &inputs.corrections.notice {
+            Some(super::corrections::CorrectionNotice::NoSource { reason }) => {
+                notices.push(Notice {
+                    tone: NoticeTone::Warning,
+                    icon: NoticeIcon::Spark,
+                    title: "No automatic source fits".into(),
+                    body: format!("\u{2325}-click one to finish \u{b7} {reason}"),
+                    actions: vec![("Cancel".into(), NoticeAction::DiscardGesture)],
+                });
+            }
+            Some(super::corrections::CorrectionNotice::Limit { text, code }) => {
+                notices.push(Notice {
+                    tone: NoticeTone::Neutral,
+                    icon: NoticeIcon::Triangle,
+                    title: text.clone(),
+                    body: code.clone(),
+                    actions: Vec::new(),
+                });
+            }
+            None => {}
+        }
     }
     if inputs.draft.is_some() && !super::at_current(inputs.document.state.as_ref(), inputs.session)
     {

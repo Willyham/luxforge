@@ -3,6 +3,7 @@
 //! controls use, so a script proves the real paths rather than a parallel implementation.
 use crate::app::Before;
 use crate::app::outcome::{Outcome, Presented, Requested};
+mod corrections;
 mod develop;
 mod grid;
 mod long_work;
@@ -547,6 +548,9 @@ pub(crate) enum Settle {
     Develop,
     /// The large previews Develop decodes ahead of a move are decoded.
     DevelopAhead,
+    /// The Corrections workspace has finished what a step started: its draft ended or was refused,
+    /// its request answered, and its list and pins describe the entry on screen.
+    Corrections,
 }
 
 impl Settle {
@@ -584,6 +588,7 @@ impl Settle {
             Self::LongWork => "long_work",
             Self::Develop => "develop",
             Self::DevelopAhead => "develop_ahead",
+            Self::Corrections => "corrections",
         }
     }
 
@@ -1337,6 +1342,7 @@ impl Editor {
             Step::Pan { x, y } => self.pan_step(x, y),
             Step::Capability(step) => self.capability_step(step),
             Step::Mask(step) => self.mask_step(step),
+            Step::Correction(step) => self.correction_step(step),
             Step::Export(step) => self.export_step(step),
             Step::Select(step) => self.select_step(step),
             Step::Missing(step) => self.missing_step(step),
@@ -4275,17 +4281,25 @@ impl Editor {
                 Err(reason) => return self.fail_step(reason),
             }
         } else {
-            let pressed = if key == luxforge_evidence::KEY_ESCAPE {
-                Key::Named(Named::Escape)
-            } else {
-                Key::Character(key.to_lowercase().into())
+            let (modifiers, name) = match key.split_once('+') {
+                Some(("Option", rest)) => (Modifiers::ALT, rest),
+                Some(("Shift", rest)) if !rest.is_empty() => (Modifiers::SHIFT, rest),
+                _ => (Modifiers::empty(), key.as_str()),
+            };
+            let pressed = match name {
+                luxforge_evidence::KEY_ESCAPE => Key::Named(Named::Escape),
+                "Backspace" => Key::Named(Named::Backspace),
+                "Return" => Key::Named(Named::Enter),
+                "ArrowUp" => Key::Named(Named::ArrowUp),
+                "ArrowDown" => Key::Named(Named::ArrowDown),
+                other => Key::Character(other.to_lowercase().into()),
             };
             iced::Event::Keyboard(KeyEvent::KeyPressed {
                 key: pressed.clone(),
                 modified_key: pressed,
                 physical_key: Physical::Unidentified(NativeCode::Unidentified),
                 location: Location::Standard,
-                modifiers: Modifiers::empty(),
+                modifiers,
                 text: None,
                 repeat: false,
             })
@@ -4311,11 +4325,28 @@ impl Editor {
                 self.await_step(Settle::Session);
                 self.dispatch(Message::Key(event, status))
             }
+            // Entering the Corrections mode waits for its list and pins as well as the session.
+            Some(Message::View(ViewMessage::SetMode(mode)))
+                if mode != self.session.workspace.mode
+                    && crate::state::corrections::is_brush_mode(&self.modules, &mode) =>
+            {
+                self.await_step(Settle::Corrections);
+                self.dispatch(Message::Key(event, status))
+            }
             Some(Message::View(ViewMessage::SetMode(mode)))
                 if mode != self.session.workspace.mode =>
             {
                 self.await_step(Settle::Session);
                 self.dispatch(Message::Key(event, status))
+            }
+            // A Corrections key waits for what it started.
+            Some(Message::Corrections(_)) | Some(Message::Draft(_))
+                if self.corrections_active() =>
+            {
+                self.await_step(Settle::Corrections);
+                let task = self.dispatch(Message::Key(event, status));
+                self.settle_corrections();
+                task
             }
             // A Select key waits for what it asked the owner for; a refused switch has nothing to
             // wait for and is captured with its reason.
@@ -5666,6 +5697,7 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
 /// Fit.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     editor.settle_when_quiet();
+    editor.settle_corrections();
     editor.settle_capability();
     editor.settle_agent_host();
     let arrows = editor.loupe_arrows_when_warm();
