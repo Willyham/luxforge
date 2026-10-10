@@ -2,7 +2,7 @@
 //! press on the photograph, a handle drag or a band control, sent through the message the canvas or
 //! the band sends, and captured once its draft has ended, its request has answered and the list and
 //! pins of the entry on screen have been read again.
-use super::{content_point, text};
+use super::{content_point, positive, text};
 use serde::{Deserialize, Serialize};
 
 /// The modifiers a scripted press holds, written as the keys they are: `["alt"]`, `["command"]`,
@@ -32,8 +32,10 @@ pub enum CorrectionHandle {
 /// `"to"` drags through positions before the release, which paints a stroke (or, with `command`,
 /// pulls out a spot's source); `"modifiers": ["alt"]` sets the source; `"release": false` leaves the
 /// button down so a drafted frame is captured. `{"release": [x, y]}` lets a held press go.
-/// `{"pin": 0}` presses the top row's pin, which selects it. `{"drag": {"handle": "source", "to":
-/// [[x, y], …]}}` drags the selected correction's handle through positions. `{"row": 1}` selects a
+/// `"interval_ms": 24` on a press or a drag sends its positions one per 24 ms in real time rather
+/// than in one update, for a latency measurement. `{"pin": 0}` presses the top row's pin, which
+/// selects it. `{"drag": {"handle": "source", "to": [[x, y], …]}}` drags the selected correction's
+/// handle through positions. `{"row": 1}` selects a
 /// row, `{"row": null}` clears the selection. `{"row_field": {"row": 0, "name": "opacity", "fraction":
 /// 0.8}}` drags a selected row's slider there and lets go. `{"row_kind": {"row": 0, "kind": "clone"}}`
 /// chooses a row's kind. `{"reorder": {"row": 2, "to": 0}}` drags a row to a list position.
@@ -71,6 +73,11 @@ pub struct PressStep {
     pub modifiers: Vec<PressModifier>,
     #[serde(default = "super::yes", skip_serializing_if = "super::is_true")]
     pub release: bool,
+    /// Send the press, each later position and the release one per this many milliseconds, in
+    /// real time, instead of in one update, which is what a **latency** measurement needs: each
+    /// position is then its own input with its own `draft.set`, as under a hand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_ms: Option<u64>,
 }
 
 /// A drag of the selected correction's handle.
@@ -79,6 +86,10 @@ pub struct PressStep {
 pub struct DragStep {
     pub handle: CorrectionHandle,
     pub to: Vec<[f64; 2]>,
+    /// Send the handle's press and each position one per this many milliseconds, in real time,
+    /// as [`PressStep::interval_ms`] does.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval_ms: Option<u64>,
 }
 
 /// A selected row's slider dragged to a rail position and let go.
@@ -103,6 +114,7 @@ impl CorrectionStep {
         match self {
             Self::Press(press) => {
                 content_point(press.at, "correction press at")?;
+                positive(press.interval_ms, "correction press interval_ms")?;
                 press
                     .to
                     .iter()
@@ -113,6 +125,7 @@ impl CorrectionStep {
                 if drag.to.is_empty() {
                     return Err("correction drag needs at least one position".into());
                 }
+                positive(drag.interval_ms, "correction drag interval_ms")?;
                 drag.to
                     .iter()
                     .try_for_each(|point| content_point(*point, "correction drag to"))
@@ -122,7 +135,10 @@ impl CorrectionStep {
                 fraction(step.fraction, "correction row_field fraction")
             }
             Self::RowKind { kind, .. } | Self::Kind(kind) => text(kind, "correction kind"),
-            Self::Field { name, fraction: value } => {
+            Self::Field {
+                name,
+                fraction: value,
+            } => {
                 text(name, "correction field name")?;
                 fraction(*value, "correction field fraction")
             }
@@ -134,6 +150,48 @@ impl CorrectionStep {
             | Self::NewSource
             | Self::Delete
             | Self::Reset => Ok(()),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{CorrectionStep, Step, parse, write};
+    use serde_json::json;
+
+    /// A paced press and drag round-trip with their interval, and an unpaced one writes none, so
+    /// the scripts written before pacing are unchanged.
+    #[test]
+    fn paced_presses_and_drags_round_trip_and_unpaced_ones_write_no_interval() {
+        let value = json!([
+            {"correction":{"press":{"at":[0.3,0.4],"to":[[0.35,0.4]]}}},
+            {"correction":{"press":{"at":[0.3,0.4],"to":[[0.35,0.4]],"interval_ms":24}}},
+            {"correction":{"drag":{"handle":"source","to":[[0.5,0.5]]}}},
+            {"correction":{"drag":{"handle":"source","to":[[0.5,0.5]],"interval_ms":24}}},
+        ]);
+        let steps = parse(&value.to_string()).unwrap();
+        let Step::Correction(CorrectionStep::Press(press)) = &steps[1] else {
+            panic!("a press: {:?}", steps[1]);
+        };
+        assert_eq!(press.interval_ms, Some(24));
+        let Step::Correction(CorrectionStep::Drag(drag)) = &steps[3] else {
+            panic!("a drag: {:?}", steps[3]);
+        };
+        assert_eq!(drag.interval_ms, Some(24));
+        assert_eq!(write(&steps), value);
+    }
+
+    #[test]
+    fn a_zero_interval_is_refused() {
+        for step in [
+            json!({"correction":{"press":{"at":[0.3,0.4],"interval_ms":0}}}),
+            json!({"correction":{"drag":{"handle":"pin","to":[[0.5,0.5]],"interval_ms":0}}}),
+        ] {
+            let error = parse(&json!([step]).to_string()).unwrap_err();
+            assert!(
+                error.contains("interval_ms is a positive integer"),
+                "{error}"
+            );
         }
     }
 }

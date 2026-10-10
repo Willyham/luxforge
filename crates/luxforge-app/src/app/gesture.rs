@@ -1063,7 +1063,34 @@ impl Editor {
                     detail
                 });
             }
-            Kind::Crop(_) | Kind::Correction(_) => {}
+            Kind::Correction(correction) => {
+                // As a mask stroke's: an add's `positions` is how much of its path the frame
+                // carries; a handle or field edit has no path and records none.
+                let positions = match &correction.op {
+                    crate::app::corrections::CorrectionOp::Add { path, .. } => {
+                        Some(path.captured())
+                    }
+                    _ => None,
+                };
+                self.event("correction_draft_preview", || {
+                    let mut detail = json!({
+                        "generation":generation,
+                        "draft_revision":draft_revision,
+                        "positions":positions,
+                    });
+                    if let Some(requested_at) = requested_at {
+                        let legs = round_trip.legs_ms(requested_at);
+                        detail["round_trip_ms"] = json!({
+                            "executor_wait":legs[0],
+                            "draft_set":legs[1],
+                            "preview_job":legs[2],
+                            "return_to_queue":legs[3],
+                        });
+                    }
+                    detail
+                });
+            }
+            Kind::Crop(_) => {}
         }
     }
 
