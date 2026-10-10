@@ -412,18 +412,18 @@ fn usage_a_profile_is_gathered_once_and_changes_only_with_the_adapter() {
     gate.enable();
     let mut context = DeviceContext::new();
     let probes = std::cell::Cell::new(0);
-    let mut probe = || {
+    let probe = || {
         probes.set(probes.get() + 1);
         mac()
     };
     assert_eq!(
-        context.update_with(&gate, &[m4_pro()], RendererPath::Gpu, &mut probe),
+        context.update_with(&gate, &[m4_pro()], RendererPath::Gpu, probe),
         Ok(Update::Changed)
     );
     let first = *context.profile(&gate).expect("held");
     assert_eq!(context.revision(), 1);
     assert_eq!(
-        context.update_with(&gate, &[m4_pro()], RendererPath::Gpu, &mut probe),
+        context.update_with(&gate, &[m4_pro()], RendererPath::Gpu, probe),
         Ok(Update::Unchanged)
     );
     assert_eq!(context.revision(), 1);
@@ -433,7 +433,7 @@ fn usage_a_profile_is_gathered_once_and_changes_only_with_the_adapter() {
             &gate,
             &[m4_pro()],
             RendererPath::Reference(Some(RendererFallback::AdapterLost)),
-            &mut probe
+            probe
         ),
         Ok(Update::Changed)
     );
@@ -450,12 +450,12 @@ fn usage_revocation_clears_the_held_profile_at_once_and_a_new_opt_in_starts_over
     let first = gate.enable();
     let mut context = DeviceContext::new();
     let probes = std::cell::Cell::new(0);
-    let mut probe = || {
+    let probe = || {
         probes.set(probes.get() + 1);
         mac()
     };
     context
-        .update_with(&gate, &[m4_pro()], RendererPath::Gpu, &mut probe)
+        .update_with(&gate, &[m4_pro()], RendererPath::Gpu, probe)
         .unwrap();
     assert!(context.profile(&gate).is_some());
 
@@ -466,7 +466,7 @@ fn usage_revocation_clears_the_held_profile_at_once_and_a_new_opt_in_starts_over
         "invisible before anyone clears it"
     );
     assert_eq!(
-        context.update_with(&gate, &[m4_pro()], RendererPath::Gpu, &mut probe),
+        context.update_with(&gate, &[m4_pro()], RendererPath::Gpu, probe),
         Err(GatherError::NotConsented)
     );
     assert!(context.is_empty(), "the update drops it");
@@ -474,7 +474,7 @@ fn usage_revocation_clears_the_held_profile_at_once_and_a_new_opt_in_starts_over
     let second = gate.enable();
     assert_ne!(first, second);
     context
-        .update_with(&gate, &[m4_pro()], RendererPath::Gpu, &mut probe)
+        .update_with(&gate, &[m4_pro()], RendererPath::Gpu, probe)
         .unwrap();
     assert_eq!(probes.get(), 2, "the new consent period gathers again");
 
@@ -484,7 +484,7 @@ fn usage_revocation_clears_the_held_profile_at_once_and_a_new_opt_in_starts_over
     gate.enable();
     assert_eq!(context.profile(&gate), None);
     context
-        .update_with(&gate, &[m4_pro()], RendererPath::Gpu, &mut probe)
+        .update_with(&gate, &[m4_pro()], RendererPath::Gpu, probe)
         .unwrap();
     assert_eq!(probes.get(), 3);
 }

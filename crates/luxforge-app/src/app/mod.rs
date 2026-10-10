@@ -156,6 +156,7 @@ mod remembered_tests;
 pub(crate) mod renderer;
 #[cfg(test)]
 mod renderer_tests;
+// Consumed by the usage statistics supervisor, which a later task adds.
 pub(crate) mod select;
 pub(crate) mod select_catalog;
 #[cfg(test)]
@@ -188,6 +189,10 @@ pub(crate) mod themes;
 #[cfg(test)]
 mod themes_tests;
 pub(crate) mod thumbnails;
+#[allow(dead_code)]
+pub(crate) mod usage_device;
+#[cfg(test)]
+mod usage_device_tests;
 mod view_state;
 #[cfg(test)]
 mod view_state_tests;
