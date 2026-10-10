@@ -40,7 +40,6 @@ impl ModuleRegistry {
         recipe.validate()?;
         recipe.validate_mask_table()?;
         self.validate_masked_stages(recipe)?;
-        self.validate_repair_run(&recipe.layers)?;
         for layer in &recipe.layers {
             let module = self
                 .provider(&layer.effect_id)
@@ -48,6 +47,7 @@ impl ModuleRegistry {
             self.check_artifacts(layer)?;
             module.validate_payload(&layer.effect_id, layer.effect_format, &layer.payload)?;
         }
+        self.validate_repair_run(&recipe.layers)?;
         Ok(())
     }
 
@@ -263,7 +263,6 @@ impl ModuleRegistry {
         // rendering its stack draws exactly what the stack says.
         recipe.validate()?;
         self.validate_masked_stages(recipe)?;
-        self.validate_repair_run(&recipe.layers)?;
         self.compile_layers_sampled(
             source_width,
             source_height,
@@ -393,6 +392,10 @@ impl ModuleRegistry {
             let module = self
                 .provider(&layer.effect_id)
                 .ok_or_else(|| self.unavailable_in(layers, &layer.effect_id))?;
+            if index + 1 == layers.len() {
+                // Every provider is available: the order of the stack is the next refusal.
+                self.validate_repair_run(layers)?;
+            }
             if self.effect_single(&layer.effect_id)
                 && !single_effects.insert((layer.effect_id.as_str(), layer.mask.as_ref()))
             {

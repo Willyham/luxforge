@@ -2164,7 +2164,7 @@ mod tests {
             ),
             (
                 |spec| spec.effect.stage = EffectStage::Repair,
-                "a field patch cannot own a pixel effect",
+                "a field patch cannot own a repair effect",
             ),
         ];
         for (change, expected) in cases {

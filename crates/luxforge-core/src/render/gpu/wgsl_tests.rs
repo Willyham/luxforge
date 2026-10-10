@@ -58,6 +58,7 @@ fn spatial_functions(program: &GpuProgram) -> (Vec<&'static str>, Vec<&'static s
     match program.entry {
         "lf_presence" => crate::modules::presence_gpu_functions(),
         "lf_detail" => crate::modules::detail_gpu_functions(),
+        "lf_repair" => super::repair::functions(),
         other => panic!("{other}: name the kernels and applies its descriptions use"),
     }
 }
