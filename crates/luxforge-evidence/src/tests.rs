@@ -1396,7 +1396,26 @@ fn usage_steps_round_trip_and_refuse_what_they_do_not_take() {
         {"settings": {"open": true, "tab": "privacy"}},
         {"usage": {"share": false}},
         {"usage": {"details": true}},
+        {"usage": {"advance": 660}},
+        {"usage": {"await": {"accepted": 1, "edited": true, "timeout_ms": 20000}}},
+        {"open": {"path": "fixtures/a.jpg"}},
     ]));
+    assert_eq!(steps[6], Step::from(UsageStep::Advance(660)));
+    assert_eq!(
+        steps[7],
+        Step::from(UsageStep::Await(UsageAwait {
+            accepted: Some(1),
+            edited: true,
+            timeout_ms: Some(20_000),
+            ..UsageAwait::default()
+        }))
+    );
+    assert_eq!(
+        steps[8],
+        Step::Open {
+            path: "fixtures/a.jpg".into()
+        }
+    );
     assert_eq!(steps[0], Step::from(UsageStep::Notice));
     assert_eq!(steps[1], Step::from(UsageStep::Answer(NoticeAnswer::Share)));
     assert_eq!(steps[3], Step::settings_tab("privacy"));
@@ -1408,6 +1427,23 @@ fn usage_steps_round_trip_and_refuse_what_they_do_not_take() {
         ),
         (json!({"usage": {"share": "yes"}}), "expected a boolean"),
         (json!({"usage": "reset"}), "unknown variant `reset`"),
+        (
+            json!({"usage": {"advance": 0}}),
+            "usage advance takes whole seconds",
+        ),
+        (
+            json!({"usage": {"await": {}}}),
+            "needs at least one condition",
+        ),
+        (
+            json!({"usage": {"await": {"accepted": 1, "timeout_ms": 60000}}}),
+            "timeout_ms takes an integer",
+        ),
+        (
+            json!({"usage": {"await": {"sent": 1}}}),
+            "unknown field `sent`",
+        ),
+        (json!({"open": {"path": ""}}), "open path"),
         (
             json!({"settings": {"open": true, "tab": "telemetry"}}),
             "settings tab must be one of general, appearance, experiments, privacy",

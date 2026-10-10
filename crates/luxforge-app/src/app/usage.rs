@@ -172,6 +172,7 @@ impl Editor {
                     Err(reason) => self.usage.read_error = Some(reason),
                 }
                 self.outcome(Outcome::UsageAnswered);
+                self.usage_await_answered();
             }
             UsageMessage::Set(enabled) => {
                 if self.usage.writing.is_some() {
@@ -290,6 +291,7 @@ impl Editor {
             "effective": read.map(|read| read.effective),
             "reason": read.and_then(|read| read.reason.clone()),
             "destination": read.and_then(|read| read.destination.clone()),
+            "diagnostics": read.and_then(|read| read.diagnostics.clone()),
             "read_error": usage.read_error,
             "privacy": privacy,
             "writes_outstanding": usage.writes_outstanding(),

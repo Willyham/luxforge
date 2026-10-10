@@ -815,6 +815,18 @@ pub(super) fn raw_event(
     status: iced::event::Status,
     _: iced::window::Id,
 ) -> Option<Message> {
+    // A key press, a button press, a scroll or a touch is a deliberate interaction for usage
+    // statistics' idleness: one cheap call, and no message of its own. A pointer move is not.
+    if matches!(
+        event,
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { .. })
+            | iced::Event::Mouse(
+                iced::mouse::Event::ButtonPressed(_) | iced::mouse::Event::WheelScrolled { .. }
+            )
+            | iced::Event::Touch(iced::touch::Event::FingerPressed { .. })
+    ) {
+        super::usage_supervisor::interacted();
+    }
     match &event {
         iced::Event::Keyboard(_)
         | iced::Event::Window(

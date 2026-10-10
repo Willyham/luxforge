@@ -183,6 +183,8 @@ pub struct Launch {
     /// A loopback receiver for usage statistics: explicit test eligibility, so the launch shows
     /// the startup notice and the Privacy tab. It never names the production origin.
     usage_receiver: Option<String>,
+    /// An earlier evidence run's configuration directory, carried into this one.
+    evidence_config: Option<PathBuf>,
     sources: Vec<PathBuf>,
     script: Option<(Value, ScriptFile)>,
     window: Option<[String; 2]>,
@@ -206,6 +208,7 @@ impl Launch {
             developer: false,
             endpoint: None,
             usage_receiver: None,
+            evidence_config: None,
             sources: Vec::new(),
             script: None,
             window: None,
@@ -285,6 +288,13 @@ impl Launch {
     /// Give the launch explicit usage statistics test eligibility with this loopback receiver.
     pub fn usage_receiver(mut self, url: &str) -> Self {
         self.usage_receiver = Some(url.into());
+        self
+    }
+
+    /// Keep an earlier evidence launch's configuration (`<its evidence>/host/config`) as this
+    /// one's, so what it stored is what this launch reads. Passed beside `--evidence-dir`.
+    pub fn evidence_config(mut self, dir: &Path) -> Self {
+        self.evidence_config = Some(dir.into());
         self
     }
 
@@ -411,13 +421,18 @@ impl Launch {
                         args.extend(["--disable-module".into(), module.into()]);
                     }
                 }
-                Flag::Evidence => match &self.evidence {
-                    Evidence::Named(name) => {
-                        args.extend(["--evidence-dir".into(), out.join(name).into()]);
+                Flag::Evidence => {
+                    match &self.evidence {
+                        Evidence::Named(name) => {
+                            args.extend(["--evidence-dir".into(), out.join(name).into()]);
+                        }
+                        Evidence::At(dir) => args.extend(["--evidence-dir".into(), dir.into()]),
+                        Evidence::None => {}
                     }
-                    Evidence::At(dir) => args.extend(["--evidence-dir".into(), dir.into()]),
-                    Evidence::None => {}
-                },
+                    if let Some(dir) = &self.evidence_config {
+                        args.extend(["--evidence-config".into(), dir.into()]);
+                    }
+                }
                 Flag::GpuIdentity => {
                     if self.gpu_identity {
                         args.push("--evidence-gpu-identity".into());
@@ -658,6 +673,14 @@ impl Run {
     /// The sources [`Run::hash`] hashed: what the run opens.
     pub fn sources(&self) -> &[PathBuf] {
         &self.sources
+    }
+
+    /// The editor executable a new run launches; `None` in a replay.
+    pub fn binary(&self) -> Option<&Path> {
+        match &self.mode {
+            Mode::Launch { bin, .. } => Some(bin),
+            Mode::Replay { .. } => None,
+        }
     }
 
     /// Whether each launch is the recorded one rather than a new process.

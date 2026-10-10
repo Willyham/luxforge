@@ -123,6 +123,14 @@ pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
     let host = host_config(&config, tiles);
     // The notice and the Privacy tab exist exactly where the host can act on them.
     config.usage_eligible = host.usage_consent.eligibility().is_eligible();
+    // The process's statistics supervisor, for an eligible launch only, registered before the
+    // owner reads the stored consent. A hidden launch's window is presented only as an evidence
+    // run's invisible window is, by the visibility gate's override.
+    super::usage_supervisor::start(
+        &host,
+        config.usage_receiver.is_some(),
+        !config.hidden || config.evidence.is_some(),
+    );
     let (owner, join) =
         OwnerHandle::start_with_host(&catalog, registry, host).map_err(|error| {
             match error.kind {
@@ -260,6 +268,8 @@ impl Editor {
             "shutdown",
             || json!({"while_loading":self.activity.pending}),
         );
+        // Statistics are cancelled and discarded, never sent on the way out or waited for.
+        super::usage_supervisor::shutdown();
         self.live_server.take();
         self.owner.disconnect(self.client);
         self.owner.stop();

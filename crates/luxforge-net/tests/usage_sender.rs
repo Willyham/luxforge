@@ -156,7 +156,9 @@ fn usage_a_batch_reaches_a_loopback_receiver_as_one_bare_json_post() {
     host.first_attempt();
     let counts = host.usage.diagnostics();
     assert_eq!((counts.attempts, counts.accepted), (1, 1));
-    assert_eq!(counts.sent, 2, "session.start and one event");
+    // The twelve minutes the clock jumps pass the idle deadline first: the window is presented
+    // and nobody interacted, so the worker records `app.idle` before it sends.
+    assert_eq!(counts.sent, 3, "session.start, one event and app.idle");
     let requests = server.requests();
     assert_eq!(requests.len(), 1);
     let request = &requests[0];
@@ -171,7 +173,11 @@ fn usage_a_batch_reaches_a_loopback_receiver_as_one_bare_json_post() {
     assert_eq!(batch.installation_id.to_wire(), INSTALLATION.as_bytes());
     assert_eq!(batch.session_id, session);
     assert_eq!(batch.batch_seq, 0);
-    assert_eq!(batch.events.len(), 2);
+    assert_eq!(batch.events.len(), 3);
+    assert_eq!(
+        batch.events[2].kind,
+        EventKind::AppIdle { state: Idle::Idle }
+    );
     // The IDs travel only in the body: never in the URL or a header.
     let session = String::from_utf8_lossy(&session.to_wire()).into_owned();
     for id in [INSTALLATION, session.as_str()] {
@@ -203,9 +209,10 @@ fn usage_a_full_window_stays_within_the_64_kib_body_limit() {
     let body = &requests[0].body;
     assert!(body.len() <= 64 * 1024, "{} bytes", body.len());
     let batch = decode_batch(body).unwrap();
-    // 512 events fit the window; the body limit left out the newest of them, counted as dropped.
-    assert_eq!(batch.events.len() as u32 + batch.dropped, 600 + 1);
-    assert!(batch.dropped > 600 + 1 - 512);
+    // 512 events fit the window; the body limit left out the newest of them, counted as dropped,
+    // as is the `app.idle` the clock's jump made due once the window was full.
+    assert_eq!(batch.events.len() as u32 + batch.dropped, 600 + 2);
+    assert!(batch.dropped > 600 + 2 - 512);
     assert_eq!(host.usage.diagnostics().accepted, 1);
 }
 
