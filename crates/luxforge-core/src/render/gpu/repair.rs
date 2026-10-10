@@ -249,6 +249,26 @@ fn block(entry: &RepairEntry) -> Arc<[u32]> {
     words.into()
 }
 
+/// Every kernel and the apply a repair step names, for the core's WGSL validation, which calls
+/// each.
+#[cfg(test)]
+pub(crate) fn functions() -> (Vec<&'static str>, Vec<&'static str>) {
+    (
+        vec![
+            "lf_repair_clone",
+            "lf_repair_heal_setup",
+            "lf_repair_heal_coarse",
+            "lf_repair_heal_descend",
+            "lf_repair_heal_sweep",
+            "lf_repair_heal_clear",
+            "lf_repair_heal_restrict",
+            "lf_repair_heal_prolong",
+            "lf_repair_heal_composite",
+        ],
+        vec!["lf_repair_apply"],
+    )
+}
+
 /// The level sizes of a solve rectangle of `width × height` cells: halved rounding up until one
 /// cell remains.
 fn level_sizes(width: u32, height: u32) -> Vec<(u32, u32)> {

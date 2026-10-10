@@ -631,26 +631,43 @@ fn every_window_of_a_repair_frame_is_the_whole_frames() {
 }
 
 #[test]
-fn a_gpu_plan_of_a_repair_stack_names_its_fallback() {
+fn a_gpu_plan_draws_a_repair_and_names_a_solve_it_cannot_hold() {
     let source = textured(64, 48, 6);
-    let ops = varied_ops(stage_of(&source));
+    let stage = stage_of(&source);
+    let ops = varied_ops(stage);
     let registry = repair_registry();
-    let recipe = recipe(vec![
+    let stack = recipe(vec![
         repair_layer(&ops),
         Layer::new(crate::BASIC_EFFECT, json!({"exposure": 0.3})),
     ]);
-    let stage = stage_of(&source);
     let answer = crate::gpu_plan(
         &registry,
-        &recipe,
+        &stack,
         crate::GpuPlanRequest::exact(1, stage).from_source(),
     )
     .unwrap();
-    match answer.fallback() {
-        Some(fallback) => {
-            assert_eq!(fallback.code(), "repair");
-            assert_eq!(fallback.layer(), Some(0));
-        }
-        None => panic!("a repair stack has no GPU program yet"),
-    }
+    let plan = answer.plan().expect("a repair stack has a GPU plan");
+    let step = &plan.spatial[0];
+    let repair = step.repair.as_ref().expect("the repair step");
+    assert_eq!(step.layer, 0);
+    assert_eq!(repair.operations.len(), ops.len());
+    assert!(step.block.as_ref().is_some_and(|block| block[0] == ops.len() as u32));
+    // The Basic layer runs on the repair's output.
+    assert_eq!(plan.operations().count(), 1);
+    // A Heal of a quarter of a large frame's height needs more level planes than a step may hold:
+    // the reference draws it, by name.
+    let large = Stage {
+        width: 9000,
+        height: 6000,
+    };
+    let heal = Op::new(4, RepairKind::Heal, large, &[[4500.0, 3000.0]], 1500.0, [2000.0, 0.0]);
+    let answer = crate::gpu_plan(
+        &registry,
+        &recipe(vec![repair_layer(&[heal])]),
+        crate::GpuPlanRequest::exact(0, large).from_source(),
+    )
+    .unwrap();
+    let fallback = answer.fallback().expect("past the level budget");
+    assert_eq!(fallback.code(), "repair");
+    assert!(fallback.to_string().contains("Heal 4"), "{fallback}");
 }
