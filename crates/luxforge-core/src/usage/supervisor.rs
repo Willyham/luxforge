@@ -585,6 +585,7 @@ impl Shared {
             clock,
             randomness,
         } = config;
+        usage.set_release(release);
         let machine = match release {
             Some(release) => Some(Machine::new(
                 ConsentReader::new(preferences_dir),

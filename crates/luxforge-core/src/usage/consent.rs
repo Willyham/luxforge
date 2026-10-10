@@ -391,6 +391,9 @@ pub struct Usage {
     diagnostics: Mutex<Diagnostics>,
     /// The statistics worker's current session ID, which `usage.read` answers while collecting.
     session_id: Mutex<Option<ReportId>>,
+    /// The release the statistics supervisor's batches report, when it was given one other than the
+    /// build's ([`Usage::set_release`]).
+    reported_release: Mutex<Option<Release>>,
     /// Called after every change of the effective state, outside every lock of this runtime.
     watcher: Mutex<Option<Watcher>>,
 }
@@ -427,6 +430,7 @@ impl Usage {
             revocations: AtomicU64::new(0),
             diagnostics: Mutex::new(Diagnostics::default()),
             session_id: Mutex::new(None),
+            reported_release: Mutex::new(None),
             watcher: Mutex::new(None),
         }
     }
@@ -493,6 +497,15 @@ impl Usage {
         self.eligibility
             .release()
             .and_then(|release| Release::parse(&release))
+    }
+
+    /// Record the release the statistics supervisor's batches report, so `usage.read` answers the
+    /// release a batch carries: the build's, or a test host's own.
+    pub fn set_release(&self, release: Option<Release>) {
+        *self
+            .reported_release
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = release;
     }
 
     /// The gate every producer checks first: one atomic load.
@@ -614,7 +627,12 @@ impl Usage {
             effective,
             disclosure_version: DISCLOSURE_VERSION,
             destination: self.eligibility.destination().to_owned(),
-            release: self.eligibility.release(),
+            release: self
+                .reported_release
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .map(|release| release.as_str().to_owned())
+                .or_else(|| self.eligibility.release()),
             installation_id,
             session_id: self
                 .session_id()
