@@ -275,11 +275,11 @@ fn a_raw_repair_keeps_continuous_values_exactly() {
     let expected = reference::apply(&input, &ops.iter().map(Op::reference).collect::<Vec<_>>());
     let mut beyond = 0;
     for (index, value) in expected.pixels.iter().enumerate() {
-        for channel in 0..3 {
+        for (channel, expected) in value.iter().enumerate() {
             let held = frame.planes[channel * plane + index];
             assert_eq!(
                 held.to_bits(),
-                (value[channel] as f32).to_bits(),
+                (*expected as f32).to_bits(),
                 "pixel {index} channel {channel}"
             );
             beyond += usize::from(!(0.0..=1.0).contains(&held));
@@ -382,7 +382,7 @@ fn a_resampling_crop_reads_the_repaired_content() {
     )
     .unwrap();
     let bytes = SourceImage {
-        rgba: repaired.rgba.clone().into(),
+        rgba: repaired.rgba.clone(),
         fingerprint: "sha256:repaired".into(),
         ..source.clone()
     };
