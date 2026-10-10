@@ -16,7 +16,7 @@ use crate::{
         gesture::{CoreGesture, Kind, Starting},
         message::{
             Message,
-            corrections::{CanvasHit, CorrectionMessage},
+            corrections::{CanvasHit, CorrectionMessage, TypingEdit},
             view::ViewMessage,
         },
         outcome::Outcome,
@@ -27,12 +27,14 @@ use crate::{
         MapRefusal, Modifiers, Moved, Released, StrokeCapture, ViewPoint,
     },
     state::corrections::{
-        self as model, CorrectionNotice, DraftingCorrection, Listed, ListingBody, RowDrag,
-        brush_module, kind_title, offset_phrase, source_phrase,
+        self as model, CorrectionNotice, CorrectionTyping, DraftingCorrection, Listed, ListingBody,
+        RowDrag, TypingTarget, brush_module, kind_title, offset_phrase, source_phrase,
     },
 };
 use iced::Task;
-use luxforge_core::{AssetId, DraftTarget, EntryId, ErrorKind, MappingDescriptor, POINTER_MODE};
+use luxforge_core::{
+    AssetId, DraftTarget, EntryId, ErrorKind, MappingDescriptor, POINTER_MODE, Zoom,
+};
 use serde_json::{Map, Value, json};
 
 /// `[` and `]` change the brush size by this factor, and `⇧[`/`⇧]` the feather by this much.
@@ -504,8 +506,8 @@ impl Editor {
                 Task::none()
             }
             CorrectionMessage::Select(operation) => {
-                self.correction_select(operation);
-                Task::none()
+                self.correction_select(operation.clone());
+                self.correction_reveal(operation.as_deref())
             }
             CorrectionMessage::RowKind { operation, kind } => {
                 let Some(name) = binding.mode.clone() else {
@@ -548,7 +550,8 @@ impl Editor {
             }
             CorrectionMessage::Step(step) => {
                 self.correction_walk(step);
-                Task::none()
+                let selected = self.corrections.selected.clone();
+                self.correction_reveal(selected.as_deref())
             }
             CorrectionMessage::Shift(step) => {
                 let Some((operation, index)) = self.corrections.selected.as_ref().and_then(|id| {
@@ -625,14 +628,20 @@ impl Editor {
                 Task::none()
             }
             CorrectionMessage::ToggleHidden => {
-                self.corrections.hidden = !self.corrections.hidden;
+                // The session's one handles key, as Masks' `H` toggles it: shared by the windows
+                // of the session, and the same `workspace.set` anyone can send.
+                self.session.workspace.mask_handles = !self.session.workspace.mask_handles;
                 self.corrections.hovered = None;
-                self.say(if self.corrections.hidden {
-                    "Pins and outlines hidden \u{b7} H shows them".into()
-                } else {
+                self.say(if self.session.workspace.mask_handles {
                     "Pins and outlines shown".into()
+                } else {
+                    "Pins and outlines hidden \u{b7} H shows them".into()
                 });
-                Task::none()
+                tasks::workspace_task(
+                    self.owner.clone(),
+                    self.client,
+                    json!({"mask_handles": self.session.workspace.mask_handles}),
+                )
             }
             CorrectionMessage::Nudge { feather, up } => {
                 let mut settings = self.new_settings(&binding);
@@ -662,7 +671,85 @@ impl Editor {
                 self.correction_listed(asset, entry, result);
                 Task::none()
             }
+            CorrectionMessage::Typing(edit) => self.correction_typing(&binding, edit),
             CorrectionMessage::Nothing => Task::none(),
+        }
+    }
+
+    /// One edit of the band's typed slider field. Beginning opens it on the value as the slider
+    /// shows it; Enter applies what it reads as one New correction setting or one direct edit of
+    /// the selected correction, the same entry a slider release commits.
+    fn correction_typing(&mut self, binding: &BrushBinding, edit: TypingEdit) -> Task<Message> {
+        match edit {
+            TypingEdit::Begin(target) => {
+                self.view_state.menu = None;
+                let model = &self.workspace.corrections;
+                let fields: &[model::BandSlider] = match &target {
+                    TypingTarget::New(_) => &model.new_fields,
+                    TypingTarget::Row { operation, .. } => model
+                        .rows
+                        .iter()
+                        .find(|row| &row.operation == operation)
+                        .and_then(|row| row.expanded.as_ref())
+                        .map_or(&[][..], |expanded| expanded.fields.as_slice()),
+                };
+                let Some(field) = fields.iter().find(|field| field.target == target) else {
+                    return Task::none();
+                };
+                let seed = field.text.trim_end_matches("px").trim().to_owned();
+                let focus = iced::widget::Id::from(target.field_id());
+                self.corrections.typing = Some(CorrectionTyping {
+                    target,
+                    text: seed.clone(),
+                    seed,
+                });
+                iced::widget::operation::focus(focus)
+            }
+            TypingEdit::Text(text) => {
+                if let Some(typing) = &mut self.corrections.typing {
+                    typing.text = text;
+                }
+                Task::none()
+            }
+            TypingEdit::Cancel => {
+                self.corrections.typing = None;
+                Task::none()
+            }
+            TypingEdit::Submit => {
+                let Some(CorrectionTyping { target, text, seed }) = self.corrections.typing.clone()
+                else {
+                    return Task::none();
+                };
+                let name = match &target {
+                    TypingTarget::New(name) | TypingTarget::Row { name, .. } => name.clone(),
+                };
+                let value =
+                    match model::typed_value(binding, &name, &text, self.correction_content()) {
+                        Ok(value) => value,
+                        Err(reason) => {
+                            self.status.text = reason;
+                            return Task::none();
+                        }
+                    };
+                self.corrections.typing = None;
+                if text.trim() == seed {
+                    return Task::none();
+                }
+                match target {
+                    TypingTarget::New(name) => {
+                        let mut settings = self.new_settings(binding);
+                        binding.set(&mut settings, &name, value);
+                        self.corrections.settings = Some(settings);
+                        Task::none()
+                    }
+                    TypingTarget::Row { operation, name } => {
+                        let Some(sent) = binding.edit_value(&name, value) else {
+                            return Task::none();
+                        };
+                        self.correction_edit(binding, &operation, [(name, sent)])
+                    }
+                }
+            }
         }
     }
 
@@ -671,12 +758,64 @@ impl Editor {
     fn correction_select(&mut self, operation: Option<String>) {
         if self.corrections.selected != operation {
             self.corrections.ranking = None;
+            // A row's field is closed with its row.
+            if matches!(
+                self.corrections.typing,
+                Some(CorrectionTyping {
+                    target: TypingTarget::Row { .. },
+                    ..
+                })
+            ) {
+                self.corrections.typing = None;
+            }
         }
         self.corrections.selected = operation;
         self.correction_reads.line = None;
         if let Some(line) = self.correction_status() {
             self.status.text = line;
         }
+    }
+
+    /// Scroll the photograph so a correction's pin is in view when it is not, through the session's
+    /// own `view.set` pan. At Fit the whole photograph is in view and nothing moves. The pin is
+    /// placed through the core's map, so a crop, a straighten or a warp puts it where it is drawn.
+    fn correction_reveal(&mut self, operation: Option<&str>) -> Task<Message> {
+        let Some(operation) = operation else {
+            return Task::none();
+        };
+        let Zoom::Percent { value } = self.session.preview.view.zoom else {
+            return Task::none();
+        };
+        let Some(map) = self.correction_reads.map.as_ref() else {
+            return Task::none();
+        };
+        let Some(anchor) = self
+            .correction_listing()
+            .and_then(|listing| listing.find(operation))
+            .and_then(Listed::anchor)
+        else {
+            return Task::none();
+        };
+        let Some(point) = map.to_output(anchor[0], anchor[1]) else {
+            return Task::none();
+        };
+        let [left, top, right, bottom] = crate::layout::canvas_logical(
+            self.view_state.window,
+            self.session.workspace.state_panel,
+            self.session.workspace.tools_panel,
+            self.filmstrip_shown(),
+        );
+        let scale = value / 100.0 / self.view_state.scale_factor;
+        let Some(pan) = super::view_zoom::revealed_pan(
+            map.output(),
+            (right - left, bottom - top),
+            scale,
+            point,
+            self.view_state.local_pan,
+        ) else {
+            return Task::none();
+        };
+        self.reveal_pan(pan)
     }
 
     /// `↑`/`↓`: the correction above or below the selected one in the list, or the top one when
@@ -1487,6 +1626,14 @@ impl Editor {
         {
             self.corrections.selected = None;
         }
+        if let Some(CorrectionTyping {
+            target: TypingTarget::Row { operation, .. },
+            ..
+        }) = &self.corrections.typing
+            && !held.contains(operation)
+        {
+            self.corrections.typing = None;
+        }
         if self
             .corrections
             .hovered
@@ -1548,7 +1695,7 @@ impl Editor {
             operations,
             selected: self.corrections.selected.as_deref(),
             hovered: self.corrections.hovered.as_deref(),
-            hidden: self.corrections.hidden,
+            hidden: !self.session.workspace.mask_handles,
             radius: settings.radius,
             feather: settings.feather.unwrap_or(0.0),
             source: self.corrections.source,
@@ -1580,10 +1727,36 @@ impl Editor {
                 "automatic": gesture.automatic(),
             })
         });
+        // Where each pin is placed: the anchor in normalized content coordinates and the output
+        // stage pixel the retained map puts it at, which a harness holds against the core's own
+        // `render.transform` and the drawn capture.
+        let pins: Vec<Value> = self
+            .correction_listing()
+            .zip(self.correction_reads.map.as_ref())
+            .map(|(listing, map)| {
+                listing
+                    .body
+                    .operations
+                    .iter()
+                    .map(|listed| {
+                        let anchor = listed.anchor();
+                        json!({
+                            "operation": listed.operation,
+                            "content": anchor,
+                            "radius": listed.radius,
+                            "output": anchor.and_then(|at| map.to_output(at[0], at[1])),
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         json!({
             "mode": self.corrections_active(),
+            "pins": pins,
+            "output": self.correction_reads.map.as_ref().map(|map| map.output()),
             "selected": self.corrections.selected,
-            "hidden": self.corrections.hidden,
+            "hidden": !self.session.workspace.mask_handles,
+            "typing": self.corrections.typing.as_ref().map(|typing| json!({"target": typing.target.summary(), "text": typing.text})),
             "source": match self.corrections.source {
                 crate::brush::SourceChoice::Auto => json!("auto"),
                 crate::brush::SourceChoice::Pending(at) => json!({"pending": at}),
@@ -1602,6 +1775,7 @@ impl Editor {
 /// out of it, put down whatever the mode held.
 pub(super) fn after_message(editor: &mut Editor, before: &Before) -> Task<Message> {
     let active = editor.corrections_active();
+    log_overlay_drawn(editor, active);
     let entered = active && !editor.correction_reads.active;
     editor.correction_reads.active = active;
     if entered && let Some(line) = editor.correction_status() {
@@ -1611,6 +1785,7 @@ pub(super) fn after_message(editor: &mut Editor, before: &Before) -> Task<Messag
         editor.correction_reads.held = None;
         editor.corrections.hovered = None;
         editor.corrections.drag = None;
+        editor.corrections.typing = None;
         editor.correction_reads.line = None;
         if editor.correction_gesture().is_none() {
             editor.corrections.notice = None;
@@ -1695,4 +1870,31 @@ pub(super) fn after_message(editor: &mut Editor, before: &Before) -> Task<Messag
         ));
     }
     Task::batch(tasks)
+}
+
+/// While a run logs events and the mode is on screen: log the overlay draw the canvas stamped since
+/// the last message, once, at the draw's own instant on the run's clock, and arm the stamp for the
+/// first draw after this message. One event per message at most, and none outside the mode or a
+/// logging run.
+fn log_overlay_drawn(editor: &mut Editor, active: bool) {
+    if editor.log.diagnostics.is_none() && !editor.log.verbose {
+        return;
+    }
+    let drawn = if active {
+        crate::view::corrections_canvas::rearm_overlay_stamp()
+    } else {
+        None
+    };
+    let Some(drawn) = drawn else {
+        return;
+    };
+    let drawn_ms = drawn
+        .at
+        .saturating_duration_since(editor.log.started)
+        .as_secs_f64()
+        * 1000.0;
+    editor.event(
+        "correction_overlay_drawn",
+        || json!({"drawn_ms": drawn_ms, "pins": drawn.pins, "live_points": drawn.live_points}),
+    );
 }

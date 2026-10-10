@@ -48,6 +48,41 @@ pub fn segmented<'a, M: Clone + 'a>(
     )
 }
 
+/// A [`segmented`] control that spans the width it is given, its options sharing it equally with
+/// their labels centred: the New correction group's Heal | Clone, as the boards draw it.
+pub fn segmented_fill<'a, M: Clone + 'a>(
+    model: &SegmentedModel,
+    on_select: impl Fn(usize) -> M + 'a,
+) -> Element<'a, M> {
+    let segments = model
+        .options
+        .iter()
+        .enumerate()
+        .map(|(index, option)| {
+            button(
+                container(segment_label(option.clone(), theme::SIZE_CONTROL))
+                    .center_x(Length::Fill)
+                    .center_y(Length::Fill),
+            )
+            .padding([0.0, theme::SEGMENT_PADDING])
+            .width(Length::Fill)
+            .height(Length::Fixed(theme::SEGMENT_HEIGHT))
+            .style(theme::segment(index == model.selected))
+            .on_press_maybe(model.enabled.then(|| on_select(index)))
+            .into()
+        })
+        .collect::<Vec<Element<'a, M>>>();
+    container(
+        Row::with_children(segments)
+            .spacing(theme::SEGMENT_INSET)
+            .align_y(Alignment::Center),
+    )
+    .padding(theme::SEGMENT_INSET)
+    .width(Length::Fill)
+    .style(theme::segment_track)
+    .into()
+}
+
 /// One segment: its label at control size, [`theme::SEGMENT_HEIGHT`] tall with
 /// [`theme::SEGMENT_PADDING`] either side, selected or not. `None` disables it.
 pub fn segment<'a, M: Clone + 'a>(
@@ -204,6 +239,14 @@ mod tests {
             chevron_segment("18%".into(), true, Some(())),
             chevron_segment("18%".into(), false, None),
         ]);
+        let _: Element<'_, ()> = segmented_fill(
+            &SegmentedModel {
+                options: vec!["Heal".into(), "Clone".into()],
+                selected: 0,
+                enabled: true,
+            },
+            |_| (),
+        );
         // The workspace switch's keyed segments.
         let _: Element<'_, ()> = segment_track(vec![
             keyed_segment("Select".into(), "G".into(), true, Some(())),
