@@ -807,9 +807,10 @@ fn gpu_colour_mixer_meets_the_pointwise_limits() {
     );
 }
 
-/// The grading unit over every range alone at full strength and both luminance extremes, Global,
-/// the hue seam, Blending and Balance extremes, luminance alone, opposing tints and grading over
-/// moved HSL fields, which then runs the HSL program first in the same layer.
+/// The mixer program's grading stage over every range alone at full strength and both luminance
+/// extremes, Global, the hue seam, Blending and Balance extremes, luminance alone, Global folded
+/// into the tonal luminance at a shared and a separate width, Global's luminance alone, opposing
+/// tints and grading over moved HSL fields, where the HSL stage runs first in the same round trip.
 #[test]
 fn gpu_colour_grade_meets_the_pointwise_limits() {
     let mut cases = Vec::new();
@@ -859,6 +860,24 @@ fn gpu_colour_grade_meets_the_pointwise_limits() {
             }),
         ),
     ));
+    for blending in [50, 10] {
+        cases.push((
+            format!("Global folded into the tonal luminance, blending {blending}"),
+            Layer::new(
+                MIXER_EFFECT,
+                json!({
+                    "grade-shadows-hue": 190, "grade-shadows-saturation": 60,
+                    "grade-shadows-luminance": -50, "grade-midtones-luminance": 60,
+                    "grade-highlights-luminance": 30, "grade-global-luminance": -40,
+                    "grade-blending": blending
+                }),
+            ),
+        ));
+    }
+    cases.push((
+        "Global luminance alone".to_owned(),
+        Layer::new(MIXER_EFFECT, json!({"grade-global-luminance": 100})),
+    ));
     cases.push((
         "grading over HSL".to_owned(),
         Layer::new(
@@ -877,7 +896,7 @@ fn gpu_colour_grade_meets_the_pointwise_limits() {
     ));
     qualify(
         "gpu_colour_grade_meets_the_pointwise_limits",
-        "lf_mixer_grade",
+        "lf_mixer_mixer",
         cases,
         GRID,
     );

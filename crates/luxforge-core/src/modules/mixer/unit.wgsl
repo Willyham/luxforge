@@ -1,12 +1,19 @@
 // The colour mixer's one pointwise unit on the GPU, beside its CPU unit in `unit.rs`: one Oklab
-// round trip per pixel, the hue warp, the chroma factor and the L gamma response evaluated once on
-// the input pixel, in the same f32 arithmetic and order as `Mixer::apply_row`. The Oklab
+// round trip per pixel around the HSL stage and then the grading stage (`grade.rs`), each run only
+// when its stage flag is set, in the same f32 arithmetic and order as `Mixer::apply_row`. The Oklab
 // conversion is `crate::colour::oklab`'s, restated because a program declares every name it uses;
 // its matrices are the same published digits, narrowed to f32 as that module narrows them.
 //
-// Words: 0 to 31 the hue warp's displacement cubic [c0, c1, c2, c3] per segment, in wheel order;
-// 32 to 39 each range's chroma gain (saturation / 100 * k_s); 40 to 47 each range's luminance
-// amount (luminance / 100). Each is the f32 the CPU unit holds.
+// Words: 0 the stage flags (bit 0 the HSL stage, bit 1 the grading stage; with neither the pixel
+// passes untouched). The HSL stage's 48 from word 1: 0 to 31 the hue warp's displacement cubic
+// [c0, c1, c2, c3] per segment, in wheel order; 32 to 39 each range's chroma gain
+// (saturation / 100 * k_s); 40 to 47 each range's luminance amount (luminance / 100). The grading
+// stage's 20 from word 49: 0 and 1 the shadow/midtone and midtone/highlight boundaries; 2 the tint
+// weights' inverse width; 3 the luminance weights' inverse width; 4 to 11 the shadows, midtones,
+// highlights and global (a, b) tints; 12 to 14 the tonal luminance exponent amounts; 15 the Global
+// amount folded into them; 16 Global's own gamma exponent (1 skips it); 17 the black lift; 18 the
+// lift and dim's scale; 19 its flags (bit 0 the tonal exponent, bit 1 the luminance weights are
+// the tint weights, bit 2 the lift and dim). Each is the f32 or the integer the CPU unit holds.
 
 // The frozen range centres and the gaps between them, in degrees: the f64 values the CPU unit
 // narrows, written to every digit so they narrow to the same f32.
@@ -109,27 +116,32 @@ fn lf_mixer_mixer_wrap(degrees: f32) -> f32 {
     return degrees;
 }
 
-// The Oklab L response for a weighted amount m: a gamma on the [0, 1] part of L, any excess
-// passed through.
-fn lf_mixer_mixer_luminance(l: f32, amount: f32) -> f32 {
-    let gamma = exp2(-amount);
+// The cubic smoothstep of x clamped to [0, 1]: the chroma ramp's and the tonal transitions'.
+fn lf_mixer_mixer_smooth(x: f32) -> f32 {
+    let c = clamp(x, 0.0, 1.0);
+    return c * c * (3.0 - 2.0 * c);
+}
+
+// The gamma l^exponent on the [0, 1] part of l, any excess passed through: the HSL luminance
+// response's and the grading gammas'. WGSL leaves pow(0, y) undefined, so black is written as 0.
+fn lf_mixer_mixer_power(l: f32, exponent: f32) -> f32 {
     let core = clamp(l, 0.0, 1.0);
     var lifted = 0.0;
     if core > 0.0 {
-        lifted = pow(core, gamma);
+        lifted = pow(core, exponent);
     }
     return lifted + (l - core);
 }
 
-fn lf_mixer_mixer(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> {
-    let lab = lf_mixer_mixer_to_oklab(rgb);
+// The HSL stage on an Oklab pixel: the hue warp, the chroma factor and the L gamma response
+// evaluated once on the stage's input, `Hsl::apply`. `words` is the stage's first word.
+fn lf_mixer_mixer_hsl(lab: vec3<f32>, words: u32) -> vec3<f32> {
     if lab.y == 0.0 && lab.z == 0.0 {
-        return lf_mixer_mixer_from_oklab(lab);
+        return lab;
     }
     // The chroma ramp: 0 on the achromatic axis, smoothstep to 1 at the ramp's edge.
     let chroma = sqrt(lab.y * lab.y + lab.z * lab.z);
-    let ramp_t = clamp(chroma / lf_mixer_mixer_chroma_ramp_edge, 0.0, 1.0);
-    let ramp = ramp_t * ramp_t * (3.0 - 2.0 * ramp_t);
+    let ramp = lf_mixer_mixer_smooth(chroma / lf_mixer_mixer_chroma_ramp_edge);
     let hue = lf_mixer_mixer_wrap(atan2(lab.z, lab.y) * 57.29577951308232);
     // The segment: the centre most recently passed going counter-clockwise, by argmin over the
     // wrapped distances, and the fraction across its gap.
@@ -167,7 +179,67 @@ fn lf_mixer_mixer(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec
     }
     var l = lab.x;
     if amount != 0.0 {
-        l = lf_mixer_mixer_luminance(lab.x, amount);
+        l = lf_mixer_mixer_power(lab.x, exp2(-amount));
     }
-    return lf_mixer_mixer_from_oklab(vec3<f32>(l, a, b));
+    return vec3<f32>(l, a, b);
+}
+
+// The grading stage's shadow, midtone and highlight weights of t at one inverse width.
+fn lf_mixer_mixer_grade_weights(t: f32, inverse_width: f32, words: u32) -> vec3<f32> {
+    let rise = lf_mixer_mixer_smooth((t - lf_f32(words)) * inverse_width + 0.5);
+    let high = lf_mixer_mixer_smooth((t - lf_f32(words + 1u)) * inverse_width + 0.5);
+    return vec3<f32>(1.0 - rise, rise - high, high);
+}
+
+// The grading stage on an Oklab pixel: the tonal weights read once from the stage's input
+// lightness, the luminance responses and the enveloped tint, `Coefficients::apply` in `grade.rs`.
+// `words` is the stage's first word.
+fn lf_mixer_mixer_grade(lab: vec3<f32>, words: u32) -> vec3<f32> {
+    let t = clamp(lab.x, 0.0, 1.0);
+    let w = lf_mixer_mixer_grade_weights(t, lf_f32(words + 2u), words);
+    let flags = lf_word(words + 19u);
+    var l = lab.x;
+    if (flags & 1u) != 0u {
+        var v = w;
+        if (flags & 2u) == 0u {
+            v = lf_mixer_mixer_grade_weights(t, lf_f32(words + 3u), words);
+        }
+        let amount = v.x * lf_f32(words + 12u) + v.y * lf_f32(words + 13u)
+            + v.z * lf_f32(words + 14u) + lf_f32(words + 15u);
+        if amount != 0.0 {
+            l = lf_mixer_mixer_power(l, exp2(-amount));
+        }
+    }
+    if (flags & 4u) != 0u {
+        let core = clamp(l, 0.0, 1.0);
+        l = lf_f32(words + 17u) + lf_f32(words + 18u) * core + (l - core);
+    }
+    let global = lf_f32(words + 16u);
+    if global != 1.0 {
+        l = lf_mixer_mixer_power(l, global);
+    }
+    let x = 2.0 * clamp(l, 0.0, 1.0) - 1.0;
+    let x2 = x * x;
+    let x4 = x2 * x2;
+    let envelope = 1.0 - x4 * x4;
+    let a = w.x * lf_f32(words + 4u) + w.y * lf_f32(words + 6u) + w.z * lf_f32(words + 8u)
+        + lf_f32(words + 10u);
+    let b = w.x * lf_f32(words + 5u) + w.y * lf_f32(words + 7u) + w.z * lf_f32(words + 9u)
+        + lf_f32(words + 11u);
+    return vec3<f32>(l, lab.y + envelope * a, lab.z + envelope * b);
+}
+
+fn lf_mixer_mixer(rgb: vec3<f32>, pos: vec2<f32>, words: u32, block: u32) -> vec3<f32> {
+    let stages = lf_word(words);
+    if stages == 0u {
+        return rgb;
+    }
+    var lab = lf_mixer_mixer_to_oklab(rgb);
+    if (stages & 1u) != 0u {
+        lab = lf_mixer_mixer_hsl(lab, words + 1u);
+    }
+    if (stages & 2u) != 0u {
+        lab = lf_mixer_mixer_grade(lab, words + 49u);
+    }
+    return lf_mixer_mixer_from_oklab(lab);
 }

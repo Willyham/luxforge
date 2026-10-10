@@ -8,17 +8,16 @@
 //! object `{}`. The module owns exactly one layer of `luxforge.mixer.hsl` per target, at its own
 //! format marker [`MIXER_EFFECT_FORMAT`], declared order 10 so a mixer layer always follows the
 //! Basic layer in the colour run (`docs/design/presence-mixer-vignette.md`, "Placement and stage
-//! order"). The layer compiles to the HSL unit, whose equations are frozen in
-//! `docs/design/mixer-study.md` and implemented in [`unit::Mixer`], followed by the grading unit
-//! (`docs/design/colour-grading.md`, implemented in [`grade::Grade`]) in the same unbroken colour
-//! run; each is omitted when it would change nothing. This file owns only the field table, the
-//! controls' rails and the compilation into those units.
+//! order"). The layer compiles to one colour unit, [`unit::Mixer`]: one Oklab round trip around
+//! the HSL stage, whose equations are frozen in `docs/design/mixer-study.md` and implemented in
+//! [`unit::Hsl`], followed by the grading stage (`docs/design/colour-grading.md`, implemented in
+//! [`grade::Grade`]); each stage is omitted when it would change nothing. This file owns only the
+//! field table, the controls' rails and the compilation into that unit.
 mod grade;
 mod unit;
 
-/// The mixer's GPU programs, which [`super::GPU_PROGRAMS`] lists: the HSL unit's and the grading
-/// unit's.
-pub(crate) use grade::PROGRAM as GRADE_PROGRAM;
+/// The mixer's GPU program, which [`super::GPU_PROGRAMS`] lists: its one colour unit's, HSL and
+/// grading together.
 pub(crate) use unit::PROGRAM as MIXER_PROGRAM;
 
 use super::{
@@ -275,16 +274,15 @@ impl FieldPatch for Mixer {
     /// Only a layer with a field away from its default reaches here, unless the GPU shape asks for
     /// every unit; the shared field patch compiles an all-default one to no units.
     ///
-    /// The HSL unit runs first and the grading unit second, in one unbroken colour run. Each is
-    /// added only when it changes a pixel: HSL when any of its twenty-four fields is moved, grading
-    /// when any saturation or luminance amount is ([`grade::Grading::is_active`]), so a layer
-    /// holding only a dormant hue, Blending or Balance compiles to no units and an HSL-only layer
-    /// renders exactly as it did before grading existed. In the GPU shape both are added, a neutral
-    /// one as its identity, so a drag that leaves or returns to neutral keeps one program sequence
+    /// One colour unit, one Oklab round trip, with the HSL stage first and the grading stage
+    /// second. Each stage is present only when it changes a pixel: HSL when any of its twenty-four
+    /// fields is moved, grading when any saturation or luminance amount is
+    /// ([`grade::Grading::is_active`]), so a layer holding only a dormant hue, Blending or Balance
+    /// compiles to no units and an HSL-only layer renders exactly as it did before grading
+    /// existed. In the GPU shape the unit is compiled even with neither stage, as the identity, so
+    /// a drag that leaves or returns to neutral keeps one program sequence
     /// (`CompileStage::gpu_shape`); no CPU compile asks for it.
     fn compile(&self, values: &Values<'_>, at: crate::CompileStage) -> Result<Processing, Error> {
-        let every = at.gpu_shape;
-        let mut units: Vec<Arc<dyn PointwiseColor>> = Vec::new();
         // HSL_FIELDS is hue, then saturation, then luminance, each over the eight ranges in order.
         let property = |offset: usize| -> [f64; unit::RANGE_COUNT] {
             std::array::from_fn(|range| values.number(HSL_FIELDS[offset + range]))
@@ -294,13 +292,16 @@ impl FieldPatch for Mixer {
             property(unit::RANGE_COUNT),
             property(2 * unit::RANGE_COUNT),
         );
-        let hsl_moved = HSL_FIELDS.iter().any(|name| values.number(name) != NEUTRAL);
-        if every || hsl_moved {
-            units.push(Arc::new(unit::Mixer::new(hue, saturation, luminance)));
-        }
+        let hsl_moved = [hue, saturation, luminance]
+            .iter()
+            .flatten()
+            .any(|value| *value != NEUTRAL);
+        let hsl = hsl_moved.then(|| unit::Hsl::new(hue, saturation, luminance));
         let grading = grading(values);
-        if every || grading.is_active() {
-            units.push(Arc::new(grade::Grade::new(grading)));
+        let grade = grading.is_active().then(|| grade::Grade::new(grading));
+        let mut units: Vec<Arc<dyn PointwiseColor>> = Vec::new();
+        if at.gpu_shape || hsl.is_some() || grade.is_some() {
+            units.push(Arc::new(unit::Mixer::new(hsl, grade)));
         }
         Ok(Processing::Color(ColorOperation::new(units)))
     }
@@ -350,7 +351,7 @@ fn grading_group() -> Group {
 /// The fourteen grading values a payload holds, defaults filled.
 fn grading(values: &Values<'_>) -> grade::Grading {
     grade::Grading {
-        wheels: WHEELS.map(|wheel| grade::Wheel {
+        wheels: WHEELS.map(|wheel| grade::WheelValues {
             hue: values.number(wheel.hue),
             saturation: values.number(wheel.saturation),
             luminance: values.number(wheel.luminance),
@@ -498,7 +499,7 @@ mod tests {
         }
     }
 
-    fn units(payload: serde_json::Value, gpu_shape: bool) -> Vec<String> {
+    fn compiled(payload: serde_json::Value, gpu_shape: bool) -> Vec<Arc<dyn PointwiseColor>> {
         let module = MixerModule::new();
         match module
             .compile(
@@ -509,37 +510,47 @@ mod tests {
             )
             .unwrap()
         {
-            Processing::Color(operation) => operation
-                .units()
-                .iter()
-                .map(|unit| {
-                    let description = unit.describe();
-                    description.split('(').next().unwrap_or_default().to_owned()
-                })
-                .collect(),
+            Processing::Color(operation) => operation.units().to_vec(),
             other => panic!("expected a colour operation, got {other:?}"),
         }
     }
 
-    /// HSL and grading compile to their own units, HSL first, each only when it changes a pixel: a
-    /// dormant hue, Blending or Balance compiles to nothing, and the GPU shape holds both.
+    fn units(payload: serde_json::Value, gpu_shape: bool) -> Vec<String> {
+        compiled(payload, gpu_shape)
+            .iter()
+            .map(|unit| unit.describe())
+            .collect()
+    }
+
+    fn identity(payload: serde_json::Value, gpu_shape: bool) -> crate::OperationIdentity {
+        let units = compiled(payload, gpu_shape);
+        assert_eq!(units.len(), 1);
+        units[0].identity()
+    }
+
+    /// A layer compiles to one unit holding each stage only when it changes a pixel, HSL first: a
+    /// dormant hue, Blending or Balance compiles to nothing, and the GPU shape holds the unit with
+    /// neither stage.
     #[test]
-    fn each_unit_compiles_only_when_it_changes_a_pixel() {
-        assert_eq!(units(json!({"red-hue": 20.0}), false), ["mixer"]);
+    fn each_stage_compiles_only_when_it_changes_a_pixel() {
+        assert_eq!(
+            units(json!({"red-hue": 20.0}), false),
+            ["mixer(red-hue:+20)"]
+        );
         assert_eq!(
             units(json!({"grade-midtones-saturation": 20.0}), false),
-            ["grade"]
+            ["mixer(grade-midtones-saturation:+20)"]
         );
         assert_eq!(
             units(json!({"grade-shadows-luminance": -5.0}), false),
-            ["grade"]
+            ["mixer(grade-shadows-luminance:-5)"]
         );
         assert_eq!(
             units(
                 json!({"red-hue": 20.0, "grade-global-saturation": 5.0}),
                 false
             ),
-            ["mixer", "grade"]
+            ["mixer(red-hue:+20, grade-global-saturation:+5)"]
         );
         assert!(
             units(
@@ -548,10 +559,40 @@ mod tests {
             )
             .is_empty()
         );
-        assert_eq!(units(json!({}), true), ["mixer", "grade"]);
+        assert_eq!(units(json!({}), true), ["mixer(neutral)"]);
         assert_eq!(
             units(json!({"grade-shadows-hue": 200.0}), true),
-            ["mixer", "grade"]
+            ["mixer(neutral)"]
+        );
+    }
+
+    /// The compiled unit's identity is its stage flags and coefficients: a dormant grading edit
+    /// changes none of it, while a Blending the active grading reads does.
+    #[test]
+    fn a_dormant_edit_keeps_the_identity() {
+        let with = |base: &serde_json::Value, extra: serde_json::Value| {
+            let mut payload = base.as_object().unwrap().clone();
+            payload.extend(extra.as_object().unwrap().clone());
+            serde_json::Value::Object(payload)
+        };
+        let dormant =
+            json!({"grade-shadows-hue": 200.0, "grade-blending": 10.0, "grade-balance": 40.0});
+        let hsl = json!({"red-hue": 20.0});
+        for gpu_shape in [false, true] {
+            assert_eq!(
+                identity(with(&hsl, dormant.clone()), gpu_shape),
+                identity(hsl.clone(), gpu_shape)
+            );
+        }
+        assert_eq!(identity(dormant, true), identity(json!({}), true));
+        let grade = json!({"grade-midtones-saturation": 20.0});
+        assert_eq!(
+            identity(with(&grade, json!({"grade-shadows-hue": 200.0})), false),
+            identity(grade.clone(), false)
+        );
+        assert_ne!(
+            identity(with(&grade, json!({"grade-blending": 10.0})), false),
+            identity(grade, false)
         );
     }
 
