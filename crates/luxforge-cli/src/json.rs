@@ -26,6 +26,10 @@ Serves one JSON-lines client on standard input and output.
                          feature.";
 
 fn main() {
+    if luxforge_cli::version_requested(std::env::args_os().skip(1)) {
+        println!("luxforge-json {}", luxforge_cli::VERSION);
+        return;
+    }
     if let Err(error) = run() {
         eprintln!(
             "{}",

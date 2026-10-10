@@ -74,12 +74,14 @@ Import from and alignment with Lightroom Classic.
 
 ### Project (`project/`)
 
-Owner decisions and repository upkeep.
+Owner decisions, release preparation and repository upkeep.
 
 | Plan | Purpose |
 | --- | --- |
 | [Dependency advisories](project/dependency-advisories.json) | Remove or re-review the two expiring advisory exceptions the dependency audit enforces |
 | [Product decisions](project/product-decisions.json) | Open product questions |
+| [Tag-triggered builds](project/tag-release-builds.json) ([design](../docs/design/tag-release-builds.md)) | Implemented guarded one-command initiation from clean synchronized main, versioned macOS/Linux build candidates, short/full SemVer tag identity, optional signing/notarization, integrity checks and automatic pre-release CI; hosted credentials and actual hosted/native qualification remain external inputs |
+| [v0.1 release preparation](project/release-v0-1.json) ([design](../docs/design/release-v0.1.md)) | Version/identity, complete source/notices, distribution advisory review, macOS bundle/signing and Linux tarball/desktop integration, packet verification/pre-release publication, installation/help and final native/corpus/install qualification; macOS and Linux chosen together; paid Apple membership active, signing setup reported complete with profile `luxforge-notarization`, identity/profile validation and native Linux qualification outstanding, owner-pushed tags request automatic pre-release publication |
 
 The post-consolidation programme, the Tone curve, Detail, Lens and perspective and the live-session CLI are complete and their plans are deleted; their outcome lives in the specs, their designs and [feature status](../docs/features.md).
 

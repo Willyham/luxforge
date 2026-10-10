@@ -826,7 +826,7 @@ pub fn run(
             return 0;
         }
         Ok(Parsed::Version) => {
-            let _ = writeln!(stdout, "luxforge-ctl {}", env!("CARGO_PKG_VERSION"));
+            let _ = writeln!(stdout, "luxforge-ctl {}", crate::VERSION);
             return 0;
         }
         Ok(Parsed::Run(invocation)) => invocation,

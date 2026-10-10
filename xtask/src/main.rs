@@ -61,6 +61,8 @@ mod raw;
 mod raw_camera;
 mod raw_editor;
 mod raw_panel_smoke;
+mod release_build;
+mod release_sign;
 mod resolve_missing_smoke;
 mod scenario;
 mod select_catalog_smoke;
@@ -172,6 +174,37 @@ fn main_result() -> Result {
     let op = args.next().unwrap_or_else(|| "help".into());
     let mut a = Args(args.collect());
     match op.to_str().ok_or("Invalid command")? {
+        "release" => xtask_cli::release::run(&root, &mut a)?,
+        "release-tag" => xtask_cli::release_tag::run(&mut a)?,
+        "release-build" => {
+            let tag = a.value("--tag")?.ok_or("Required: --tag")?;
+            let number = a
+                .value("--build-number")?
+                .ok_or("Required: --build-number")?;
+            let out = absolute(&root, &a.path("--output")?);
+            let allow_dirty = a.flag("--allow-dirty");
+            a.done()?;
+            release_build::build(
+                &root,
+                &out,
+                tag.to_str().ok_or("Tag encoding")?,
+                number.to_str().ok_or("Build number encoding")?,
+                allow_dirty,
+            )?;
+        }
+        "release-sign" => release_sign::run(&root, &mut a)?,
+        "release-assemble" => {
+            let tag = a.value("--tag")?.ok_or("Required: --tag")?;
+            let input = absolute(&root, &a.path("--input")?);
+            let out = absolute(&root, &a.path("--output")?);
+            a.done()?;
+            xtask_cli::release_artifacts::assemble(
+                &root,
+                &input,
+                &out,
+                tag.to_str().ok_or("Tag encoding")?,
+            )?;
+        }
         "auto-tone-fit" => auto_tone_fit::run(&mut a)?,
         "develop" => {
             let debug = a.flag("--debug");

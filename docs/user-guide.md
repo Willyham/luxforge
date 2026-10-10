@@ -1,6 +1,6 @@
 # Luxforge user guide
 
-The Develop workspace opens JPEG and the camera recording modes listed in the bundled RAW catalog, with exact transforms, crop/straighten, persistent history and the JSON API. On a RAW photo the same Basic section sets the white balance on the sensor data, in kelvin. [Exporting](#exporting) writes the photograph on screen to a new JPEG. Locate and MCP are planned; a Rust CLI for the live editor session is specified and awaits implementation authorization ([feature status](features.md)).
+The Develop workspace opens JPEG and the camera recording modes listed in the bundled RAW catalog, with exact transforms, crop/straighten, persistent history and the JSON API. On a RAW photo the same Basic section sets the white balance on the sensor data, in kelvin. [Exporting](#exporting) writes the photograph on screen to a new JPEG. Locate and the live-session CLI are implemented; MCP remains planned ([feature status](features.md)).
 
 JPEG Basic exposure, tone, white balance and colour controls are built, with the neutral picker, and so are the histogram and clipping inspector that share their [design](design/basic-and-histogram.md), and the Presence, Colour mixer and Vignette sections of their own [design](design/presence-mixer-vignette.md). [Presets](design/presets.md) save and apply those settings, and import Lightroom Classic presets.
 
@@ -14,6 +14,8 @@ and acquisition target; the bundled camera catalog above still defines which
 RAW files the editor opens. Phone HEIC and Apple ProRAW support remain unqualified.
 
 ## Start the editor
+
+There are no published downloads yet. Initial [v0.1 release preparation](design/release-v0.1.md) targets Apple silicon macOS and x86-64 Linux together; [`cargo xtask release TAG`](engineering/releases.md) requires clean synchronized main and passes quick checks before pushing a tag; its hosted builds automatically publish pre-release build candidates, optionally signed/notarized on macOS. Public distribution and native installation qualification remain open. The instructions below run a developer build.
 
 macOS is the primary platform. Linux has automated build and functional checks; native desktop qualification remains open. Windows support will come later, and Windows CI is disabled. See [platform status](engineering/platforms.md).
 
