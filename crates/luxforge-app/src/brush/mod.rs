@@ -11,31 +11,29 @@
 //! `⌥`, the hit order of pins and handles, a persistent set source and handle drags — are
 //! [`gesture`]'s. Nothing here holds a framework type or calls the host.
 //!
-//! The declared brush's mode, band and canvas are the Corrections workspace's, which this build
-//! does not draw yet, so outside the tests only the mask brush reaches this module: the declared
-//! half is exercised by its test consumer until that workspace lands.
-#[cfg_attr(not(test), allow(dead_code))]
+//! The declared brush's mode, band and canvas are the Corrections workspace's
+//! ([`crate::app::corrections`]).
 mod binding;
 mod capture;
-#[cfg_attr(not(test), allow(dead_code))]
 mod gesture;
 mod map;
 #[cfg(test)]
-mod testing;
+pub(crate) mod testing;
 #[cfg(test)]
 mod tests;
 
-#[cfg_attr(not(test), allow(unused_imports))]
-pub(crate) use binding::{BrushBinding, BrushSettings, EditRequest, clamp, step};
+#[cfg(test)]
+pub(crate) use binding::EditRequest;
+pub(crate) use binding::{BrushBinding, BrushSettings, clamp, step};
 pub(crate) use capture::StrokeCapture;
 #[cfg(test)]
 pub(crate) use capture::counts;
-#[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use gesture::{
-    BrushGesture, CLICK_SLOP, HIT_RADIUS, Handle, HandleChange, HandleEdit, HeldOperation, Hit,
-    Modifiers, Moved, Released, SourceChoice, ViewPoint, hit,
+    BrushGesture, Handle, HandleChange, HandleEdit, HeldOperation, Hit, Modifiers, Moved, Released,
+    SourceChoice, ViewPoint, hit,
 };
-#[cfg_attr(not(test), allow(unused_imports))]
+#[cfg(test)]
+pub(crate) use gesture::{CLICK_SLOP, HIT_RADIUS};
 pub(crate) use map::{ContentMap, Displayed, MapRefusal};
 
 /// The brush cursor's two rings for a radius (units of the content height) and a feather (percent

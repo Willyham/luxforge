@@ -64,6 +64,9 @@ pub enum DraftFinish {
     /// whose every stroke already committed on release, so there is nothing left to apply and
     /// nothing to discard, only a tool to put down.
     Done,
+    /// Cancel alone with its `esc` hint: a gesture whose release commits, such as a correction
+    /// being painted, which the bar can only discard.
+    Cancel,
 }
 
 /// The draft bar: the lead in the accent, what the gesture edits, the readout, a rule, then the
@@ -112,6 +115,10 @@ pub fn draft_bar<'a, M: Clone + 'a>(
     match model.finish {
         DraftFinish::Done => children.push(labelled_button(
             &button("Done", "esc", ButtonTone::Primary, true),
+            Some(on_cancel),
+        )),
+        DraftFinish::Cancel => children.push(labelled_button(
+            &button("Cancel", "esc", ButtonTone::Control, true),
             Some(on_cancel),
         )),
         DraftFinish::Apply => {

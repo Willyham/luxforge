@@ -1755,6 +1755,10 @@ fn a_collapsed_sections_snapshot_equals_its_open_sections() {
         .tools
         .all()
         .filter(|section| !section.expanded)
+        // The Corrections section's disclosure enters its mode rather than expanding.
+        .filter(|section| {
+            !crate::state::corrections::is_brush_mode(&editor.modules, &section.module_id)
+        })
         .map(|section| section.module_id.clone())
         .collect();
     assert!(closed.len() > 3, "several sections start collapsed");
@@ -1777,7 +1781,8 @@ fn a_collapsed_sections_snapshot_equals_its_open_sections() {
             module.clone(),
         )));
     }
-    assert!(editor.workspace.tools.all().all(|section| section.expanded));
+    assert!(editor.workspace.tools.all().all(|section| section.expanded
+        || crate::state::corrections::is_brush_mode(&editor.modules, &section.module_id)));
     assert_eq!(before, report(&editor));
     finish(editor, catalog);
 }

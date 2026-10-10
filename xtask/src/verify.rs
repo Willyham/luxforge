@@ -42,6 +42,12 @@ fn twenty_four_mp() -> String {
     format!("fixtures/generated/{}", fixtures::TABLE[0].file)
 }
 
+/// The 60 MP generated workload's path, `fixtures::TABLE`'s second entry, as [`twenty_four_mp`]
+/// names the first.
+fn sixty_mp() -> String {
+    format!("fixtures/generated/{}", fixtures::TABLE[1].file)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Tier {
     Quick,
@@ -432,6 +438,25 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
             binary: true,
             ..spec("editor-latency-burst", "timing", &[])
         });
+        // The Corrections workspace's brush stroke, its commit and a source-handle drag, at both
+        // generated photo sizes: a repair's cost grows with the frame it is drafted over.
+        for (name, source) in [
+            ("editor-latency-corrections", twenty_four_mp()),
+            ("editor-latency-corrections-60mp", sixty_mp()),
+        ] {
+            specs.push(Spec {
+                args: vec![
+                    "editor-latency".into(),
+                    "--source".into(),
+                    source,
+                    "--mode".into(),
+                    "corrections".into(),
+                ],
+                result: Some("latency.json"),
+                binary: true,
+                ..spec(name, "timing", &[])
+            });
+        }
         specs.push(Spec {
             result: Some("measurements.json"),
             binary: true,
@@ -1605,6 +1630,8 @@ mod tests {
                 "editor-performance",
                 "editor-latency",
                 "editor-latency-burst",
+                "editor-latency-corrections",
+                "editor-latency-corrections-60mp",
                 "measure"
             ]
         );
@@ -1615,7 +1642,7 @@ mod tests {
         // Every rendered scenario, then the RAW components and hardening, then the timing
         // components last.
         assert_eq!(
-            &full[full.len() - 7..],
+            &full[full.len() - 9..],
             [
                 "raw-editor",
                 "raw-authentic",
@@ -1623,17 +1650,46 @@ mod tests {
                 "editor-performance",
                 "editor-latency",
                 "editor-latency-burst",
+                "editor-latency-corrections",
+                "editor-latency-corrections-60mp",
                 "measure"
             ]
         );
         assert_eq!(
             full.len(),
-            2 + smoke::SCENARIOS.iter().filter(|s| s.rendered()).count() + 1 + 7
+            2 + smoke::SCENARIOS.iter().filter(|s| s.rendered()).count() + 1 + 9
         );
         // Missing generated fixtures are produced first, and only where a tier needs them.
         assert_eq!(names(Tier::Quick, None, false)[0], "check");
         assert_eq!(names(Tier::Rendered, None, false)[0], "generate-fixtures");
         assert_eq!(names(Tier::Timing, None, false)[0], "generate-fixtures");
+    }
+    /// The Corrections latency runs once per generated photo size, on the release binary, and its
+    /// report is read for rows like every other `editor-latency` run's.
+    #[test]
+    fn timing_measures_corrections_at_24_and_60_megapixels() {
+        let timing = plan(Tier::Timing, None, true);
+        for (name, source) in [
+            ("editor-latency-corrections", "fixtures/generated/24mp.jpg"),
+            (
+                "editor-latency-corrections-60mp",
+                "fixtures/generated/60mp.jpg",
+            ),
+        ] {
+            let spec = timing.iter().find(|spec| spec.name == name).unwrap();
+            assert_eq!(
+                spec.args,
+                [
+                    "editor-latency",
+                    "--source",
+                    source,
+                    "--mode",
+                    "corrections"
+                ]
+            );
+            assert_eq!((spec.tier, spec.result), ("timing", Some("latency.json")));
+            assert!(spec.binary && spec.output);
+        }
     }
     #[test]
     fn full_adds_raw_editor_detail_and_panel_per_source_and_one_raw_performance_run() {
@@ -1647,7 +1703,7 @@ mod tests {
         // around `raw-authentic`, and one RAW `performance` run over the first source, all before
         // the timing tier, with `hardening` last in `full`'s own part of the plan.
         assert_eq!(
-            &names[names.len() - 15..],
+            &names[names.len() - 17..],
             [
                 "raw-editor-z6",
                 "raw-editor-x100vi",
@@ -1663,6 +1719,8 @@ mod tests {
                 "editor-performance",
                 "editor-latency",
                 "editor-latency-burst",
+                "editor-latency-corrections",
+                "editor-latency-corrections-60mp",
                 "measure",
             ]
         );
