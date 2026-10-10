@@ -851,6 +851,7 @@ fn group_module_and_field_resets_each_run_one_declared_action() {
                         }
                         luxforge_core::Control::Wheel(wheel) => into.extend(wheel.parameters()),
                         luxforge_core::Control::Group(group) => drawn(&group.controls, into),
+                        luxforge_core::Control::View(view) => drawn(&view.controls, into),
                         _ => {}
                     }
                 }
