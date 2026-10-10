@@ -14,9 +14,10 @@
 //!   `preview_displayed` after the `correction_draft_commit` it raised, which is the repaired frame;
 //! - **source drag**: the drag's drafted frames and its own release to its repaired frame.
 //!
-//! The Corrections overlay (pins, outlines and the source link) is drawn from the gesture's own
-//! state in the update that takes the input and logs no event of its own, so no input-to-overlay
-//! figure is read; the report names it as unmeasured rather than standing a drafted frame in for it.
+//! - **overlay**: each `correction_position` to the first `correction_overlay_drawn` at or after it.
+//!   The desktop logs that event, at the draw's own instant, for the first draw of the overlay (pins,
+//!   outlines and the source link) after each message while a run logs; a run whose log holds none
+//!   reports the figure as unmeasured rather than standing a drafted frame in for it.
 //!
 //! A refused render is a failed measurement, never a pass: every `preview_failed`, refused commit or
 //! refused press in a measured window is listed, the report is written with `"status": "failed"`
@@ -202,6 +203,35 @@ fn repaired(events: &[Value]) -> Result<(Option<f64>, Option<f64>, Option<&'stat
     ))
 }
 
+/// Each position to the first overlay draw at or after it: `correction_overlay_drawn`'s own
+/// `drawn_ms` less the position's `elapsed_ms`. A position no draw follows in the window has none,
+/// and the draws are counted beside the figure.
+fn overlay_latencies(events: &[Value]) -> Result<(Vec<f64>, usize)> {
+    let mut draws = Vec::new();
+    for event in events
+        .iter()
+        .filter(|event| event["event"] == "correction_overlay_drawn")
+    {
+        draws.push(
+            event["detail"]["drawn_ms"]
+                .as_f64()
+                .ok_or("A correction_overlay_drawn event carries no drawn_ms")?,
+        );
+    }
+    draws.sort_by(f64::total_cmp);
+    let mut latencies = Vec::new();
+    for event in events
+        .iter()
+        .filter(|event| event["event"] == CORRECTION.position)
+    {
+        let at = elapsed(event)?;
+        if let Some(drawn) = draws.iter().find(|drawn| **drawn >= at) {
+            latencies.push(drawn - at);
+        }
+    }
+    Ok((latencies, draws.len()))
+}
+
 /// Every refusal a measured window logged: a preview job's (`preview_failed`, with its code), a
 /// commit's (`correction_draft_refused`) and a press's (`correction_press_refused`,
 /// `correction_limit_refused`).
@@ -294,6 +324,12 @@ fn gesture(prefix: &str, label: &str, events: &[Value], positions: bool) -> Resu
     } else {
         None
     };
+    let (overlay, overlay_draws) = overlay_latencies(events)?;
+    rows.push(stats::row(
+        &name("position_to_overlay_drawn"),
+        "ms",
+        overlay,
+    ));
     let (release_to_frame, commit_to_frame, unrepaired) = repaired(events)?;
     rows.push(stats::row(
         &name("release_to_repaired_frame"),
@@ -356,6 +392,7 @@ fn gesture(prefix: &str, label: &str, events: &[Value], positions: bool) -> Resu
         "superseded": (queued + gpu_ticks).saturating_sub(latencies.len()),
         "unpreviewed_sets": sets.saturating_sub(queued + gpu_ticks),
         "positions_carried_to_the_screen": carried,
+        "overlay_draws": overlay_draws,
         "tick_paths": {"gpu": gpu_tick_count, "cpu_reasons": cpu_reasons},
         "refusals": refused,
     });
@@ -441,6 +478,18 @@ fn report(
     }
     let frames = app["frames"].as_array().map_or(&[][..], Vec::as_slice);
     let last = frames.last().unwrap_or(&Value::Null);
+    let overlay_draws = events
+        .iter()
+        .filter(|event| event["event"] == "correction_overlay_drawn")
+        .count();
+    let not_measured = if overlay_draws == 0 {
+        json!([{
+            "metric": "input_to_overlay",
+            "reason": "The run's log holds no correction_overlay_drawn event, so no input-to-overlay figure is read; brush_input_to_presented_frame is the drafted repair's, not the overlay's.",
+        }])
+    } else {
+        json!([])
+    };
     let brush_p95 = stats::Distribution::of(brush_latencies).map(|d| d.p95);
     let result = json!({
         "status": if failures.is_empty() { "passed" } else { "failed" },
@@ -457,14 +506,12 @@ fn report(
         "detail_layer": options.detail,
         "presence_layer": options.presence,
         "reference_renderer": options.no_gpu_render,
-        "method": format!("Background evidence launch of the release binary, warm filesystem cache. The Corrections mode is entered with Q and the New correction source set with an ⌥-click at {SOURCE_AT:?}. One brush stroke of {} positions is then handed to the desktop one per {INTERVAL_MS} ms in real time with that set source, so each position drafts a repair: the first tick presses, each later one moves and the last releases, one stroke and one history entry. Its release commits and selects it, and its source handle is dragged through {} positions at the same pace. Each correction_draft_set is paired with its preview job and displayed frame by the generation correction_draft_preview names, or, drawn on the GPU, with the GPU tick of its own update and the surface's first draw of that tick's plan; each stroke position with the first presented frame whose draft.set carried it; each release with the first undrafted preview_displayed after the correction_draft_commit it raised. Neither presented nor drawn is display scanout.", options.samples, options.samples),
+        "method": format!("Background evidence launch of the release binary, warm filesystem cache. The Corrections mode is entered with Q and the New correction source set with an ⌥-click at {SOURCE_AT:?}. One brush stroke of {} positions is then handed to the desktop one per {INTERVAL_MS} ms in real time with that set source, so each position drafts a repair: the first tick presses, each later one moves and the last releases, one stroke and one history entry. Its release commits and selects it, and its source handle is dragged through {} positions at the same pace. Each correction_draft_set is paired with its preview job and displayed frame by the generation correction_draft_preview names, or, drawn on the GPU, with the GPU tick of its own update and the surface's first draw of that tick's plan; each stroke position with the first presented frame whose draft.set carried it; each release with the first undrafted preview_displayed after the correction_draft_commit it raised. Each position is also paired with the first correction_overlay_drawn at or after it, the desktop's log of the overlay canvas's first draw after each message at the draw's own instant. Neither presented nor drawn is display scanout.", options.samples, options.samples),
         "stroke": {"path": "x = 0.35 + 0.25t, y = 0.6 + 0.04 sin(4πt), t in 0..1", "source_set_at": SOURCE_AT},
         "source_drag": {"handle": "source", "path": format!("from the selected correction's source handle through x = {} + 0.15t, y = {} - 0.1t", SOURCE_AT[0], SOURCE_AT[1])},
         "gestures": sections,
-        "not_measured": [{
-            "metric": "input_to_overlay",
-            "reason": "The Corrections overlay is drawn from the gesture's own state in the update that takes the input and logs no event of its own, so no input-to-overlay figure is read; brush_input_to_presented_frame is the drafted repair's, not the overlay's.",
-        }],
+        "overlay_draws": overlay_draws,
+        "not_measured": not_measured,
         "provisional_input_to_frame_target": {"p95_below_ms": 16.0, "acceptable_below_ms": 32.0,
             "measured_p95_ms": brush_p95,
             "met": brush_p95.map(|ms| ms < 16.0), "acceptable": brush_p95.map(|ms| ms < 32.0),
@@ -478,6 +525,7 @@ fn report(
             "The ⌥-click set a source before the measured stroke",
             "Every drafted interval pairs one correction_draft_set with the frame of the generation or GPU tick it raised",
             "Every release reaches an undrafted presented frame after its commit",
+            "Every position pairs with the first overlay draw at or after it, when the run logged overlay draws",
             "No render, commit or press was refused in a measured gesture",
             "Source SHA-256 is unchanged",
         ],
@@ -708,6 +756,34 @@ mod tests {
         );
         assert!(stats::distribution(&result, "source_drag_position_to_presented_frame").is_none());
         assert_eq!(result["not_measured"][0]["metric"], "input_to_overlay");
+        assert_eq!(result["overlay_draws"], 0);
+    }
+
+    /// With the desktop's overlay draws in the log each position pairs with the first draw at or
+    /// after it, and the figure is no longer listed as unmeasured.
+    #[test]
+    fn positions_pair_with_the_first_overlay_draw_at_or_after_them() {
+        let mut events = vec![json!({"event": "correction_source_set", "elapsed_ms": 0.5})];
+        events.extend(paced("press", 100.0));
+        // Positions at 101 and 125; draws at 104 (for the first), 131 (for the second) and 150.
+        for drawn in [104.0, 131.0, 150.0] {
+            events.push(
+                json!({"event": "correction_overlay_drawn", "elapsed_ms": drawn + 3.0,
+                "detail": {"drawn_ms": drawn, "pins": 1, "live_points": 2}}),
+            );
+        }
+        events.extend(paced("drag", 1000.0));
+        let source = Path::new("photo.jpg");
+        let (result, failures) = report(&events, &app(3), 3, &options(source)).unwrap();
+        assert!(failures.is_empty(), "{failures:?}");
+        let overlay = row(&result, "brush_position_to_overlay_drawn");
+        assert_eq!(overlay["count"], 2);
+        assert_eq!(overlay["min"], 3.0);
+        assert_eq!(overlay["max"], 6.0);
+        assert_eq!(result["gestures"]["brush"]["overlay_draws"], 3);
+        assert_eq!(result["gestures"]["source_drag"]["overlay_draws"], 0);
+        assert_eq!(result["overlay_draws"], 3);
+        assert!(result["not_measured"].as_array().unwrap().is_empty());
     }
 
     /// A refused render is a failure the report lists, never a pass: here every drafted frame of

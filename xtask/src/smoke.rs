@@ -850,7 +850,7 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: corrections::SCENARIO,
-        about: "Every Corrections gesture and key, the stacking principle read from pixels, export, Select, Remove and Put back, and the limit",
+        about: "Every Corrections gesture and key, the stacking principle read from pixels, export, Select, Remove and Put back, the limit, the overlay through crop, straighten and perspective, and Locate after the original moves",
         launches: &[
             LaunchSpec {
                 name: "launch1",
@@ -878,12 +878,19 @@ pub static SCENARIOS: &[Scenario] = &[
                 catalog: Some("launch3"),
                 ..APP
             },
+            LaunchSpec {
+                name: "launch5",
+                script: "script5.json",
+                plan: corrections::launch5,
+                catalog: Some("launch1"),
+                ..APP
+            },
         ],
         verify: corrections::verify,
         source: Source::Fixtures(&[corrections::FIXTURE]),
         window: Some(PANELLED),
         note: Some(corrections::NOTE),
-        own: None,
+        own: Some(corrections::run),
     },
     Scenario {
         name: mask_range::SCENARIO,
@@ -1285,10 +1292,23 @@ pub fn launch_all(run: Run, scenario: &Scenario, sources: Vec<PathBuf>) -> Resul
 /// are hashed: a row whose plans read more than its sources, as `raw-editor`'s read its source's
 /// manifest entry, plans in its own function and launches through this one.
 pub fn launch_planned(
+    run: Run,
+    scenario: &Scenario,
+    sources: Vec<PathBuf>,
+    plans: impl FnOnce(&mut Run, &[PathBuf]) -> Result<Vec<Plan>>,
+) -> Result {
+    launch_planned_then(run, scenario, sources, plans, |_, _| Ok(()))
+}
+
+/// [`launch_planned`] with launches of the row's own to make after its listed ones and before its
+/// checks: `then` makes them, in the run and over the launches already checked, which it extends.
+/// `corrections` moves an original between launches that way, which a list of launches cannot say.
+pub fn launch_planned_then(
     mut run: Run,
     scenario: &Scenario,
     sources: Vec<PathBuf>,
     plans: impl FnOnce(&mut Run, &[PathBuf]) -> Result<Vec<Plan>>,
+    then: impl FnOnce(&mut Run, &mut Vec<Checked>) -> Result,
 ) -> Result {
     if let Some(note) = scenario.note {
         run.note(note);
@@ -1324,6 +1344,7 @@ pub fn launch_planned(
                 .dir;
             checked.push(plan.check(&evidence)?);
         }
+        then(run, &mut checked)?;
         (scenario.verify)(run, &checked)?;
         run.sources_unchanged()?;
         // The adapter that drew the run, identified as wgpu describes it: its device type tells a
@@ -1345,7 +1366,7 @@ pub fn launch_planned(
 }
 
 /// The launch `spec` makes over `sources` in a run whose output directory is `out`.
-fn launch_of(
+pub(crate) fn launch_of(
     scenario: &Scenario,
     spec: &LaunchSpec,
     plan: &Plan,
