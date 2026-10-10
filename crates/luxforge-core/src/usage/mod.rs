@@ -12,8 +12,12 @@ pub mod image_id;
 pub(crate) mod produce;
 pub mod registry;
 pub mod sampler;
+pub mod sender;
+pub mod supervisor;
 
-pub use consent::{Active, ConsentReader, InstallationId, StoredConsent, Usage, UsageState};
+pub use consent::{
+    Active, ConsentReader, InstallationId, StoredConsent, Usage, UsageState, Watcher,
+};
 pub use device_profile::{
     AppleTier, Arch, CpuProfile, CpuVendor, DeviceProfile, GpuBackend, GpuProfile, GpuType,
     GpuVendor, LinuxDistro, MacBuild, MemoryBand, OsFamily, OsProfile, ProfileError,
@@ -33,6 +37,11 @@ pub use image_id::{ImageId, ImageKey};
 pub use registry::{
     EventName, Feature, Idle, MemoryKind, Operation, Outcome, Presented, Renderer, Tool, Trigger,
     Workspace,
+};
+pub use sender::{Cooldown, Delivery, Suspension};
+pub use supervisor::{
+    Clock, Config as SupervisorConfig, DeviceFn, DeviceSource, DeviceUnavailable, GatheredDevice,
+    ManualClock, NoSampling, Randomness, Sampling, Supervisor, SystemClock, SystemRandomness,
 };
 
 /// The disclosure the startup notice and Settings › Privacy describe. Consent saved for another
