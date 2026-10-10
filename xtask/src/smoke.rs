@@ -72,6 +72,9 @@ pub struct LaunchSpec {
     /// Refuse the editor's GPU stage, as a machine whose adapter cannot run it does.
     pub no_gpu_render: bool,
     pub developer: bool,
+    /// A loopback receiver giving the launch explicit usage statistics test eligibility, so it
+    /// shows the startup notice and the Privacy tab.
+    pub usage_receiver: Option<&'static str>,
     /// A watcher to wait with, and the file what it records is kept in.
     pub watch: Option<(&'static str, Watch)>,
     /// A process deadline of its own in place of the run's.
@@ -88,6 +91,7 @@ pub const APP: LaunchSpec = LaunchSpec {
     gpu_identity: false,
     no_gpu_render: false,
     developer: false,
+    usage_receiver: None,
     watch: None,
     deadline: None,
 };
@@ -922,12 +926,14 @@ pub static SCENARIOS: &[Scenario] = &[
     },
     Scenario {
         name: "settings",
-        about: "The Settings sheet's Experiments tab: every flag kind changed, refused, reset and read back; the General rows: the canvas background drawn, the interface size scaling the title bar, the mask overlay colour, the lens switch and a catalog folder's relaunch note",
+        about: "The Settings sheet's Experiments tab: every flag kind changed, refused, reset and read back; the usage statistics notice claimed and answered and the Privacy switch off and on, under test eligibility with a loopback receiver; the General rows: the canvas background drawn, the interface size scaling the title bar, the mask overlay colour, the lens switch and a catalog folder's relaunch note",
         launches: &[LaunchSpec {
             plan: settings::plan,
             // The proof flags, which the choice and number controls are checked on, are listed
             // only by a host that serves the test modules.
             developer: true,
+            // The startup notice and the Privacy tab, which only an eligible launch shows.
+            usage_receiver: Some(settings::USAGE_RECEIVER),
             ..APP
         }],
         verify: settings::verify,
@@ -1334,6 +1340,9 @@ fn launch_of(
     }
     if spec.developer {
         launch = launch.developer();
+    }
+    if let Some(url) = spec.usage_receiver {
+        launch = launch.usage_receiver(url);
     }
     launch = launch.open_all(sources);
     if plan.scripted() {
