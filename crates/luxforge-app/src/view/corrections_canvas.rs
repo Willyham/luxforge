@@ -566,10 +566,10 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
         // held down on one.
         if let Some(point) = cursor.position_in(bounds)
             && let Some((x, y)) = self.placement.content_point(point)
-            && !(shown
-                && !state.pressed
-                && !matches!(self.hit_at(point, state.modifiers), CanvasHit::Add))
-            && !(state.pressed && !self.data.painting)
+            && (!shown
+                || state.pressed
+                || matches!(self.hit_at(point, state.modifiers), CanvasHit::Add))
+            && (!state.pressed || self.data.painting)
         {
             self.cursor(&mut frame, [x, y], point, state.modifiers);
         }

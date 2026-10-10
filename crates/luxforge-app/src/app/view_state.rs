@@ -265,7 +265,7 @@ impl Editor {
         }
         // This arm asks the session to follow the mode explicitly, having cleared the
         // generic catch-up in `sync_mode`, so the same field is never asked for twice.
-        return workspace_task(self.owner.clone(), self.client, json!({ "mode": mode }));
+        workspace_task(self.owner.clone(), self.client, json!({ "mode": mode }))
     }
 
     /// Ask the session for a percentage zoom, as the 100% segment and a zoom stop do.
