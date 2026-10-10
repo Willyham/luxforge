@@ -42,6 +42,7 @@ The person's preferences live outside every catalog, in the host's `preferences.
 - `preferences.set` has no `usage_statistics` parameter, so naming it, `null` or not, is refused, and no value or reset of another preference changes the record. `flags.set` keeps it too.
 - `preferences.read` and `preferences.set` answer it as `{prompt_shown, enabled, disclosure_version?, installation_id?}`, `{prompt_shown: false, enabled: false}` when absent, and never with its `image_key`.
 - `usage.prompt.claim` and `usage.set` each make one locked read-modify-write of the record alone, leaving every preference as it was. Their rules, and `usage.read`, are in the [usage statistics design](usage-statistics.md#settings-and-programmatic-parity).
+- The desktop's statistics supervisor, started in an eligible launch, rereads the record from the same configuration directory off the owner before detaching a window and before each upload, and never writes it ([implemented integration](usage-statistics.md#implemented-integration)). An evidence launch given `--evidence-config` keeps an earlier evidence run's configuration, so a choice one launch stored is the one the next reads.
 
 ### Checks
 

@@ -11,7 +11,7 @@ A test in the core (`usage_every_registered_command_is_in_the_coverage_inventory
 - **Commits.** `tool.commit` is one event per built-in tool group whose layers a committed transaction changed (a layer added, removed, reordered or with another payload, format, mask or artifacts; a layer's identity alone is not a change), in the registry's tool order, with the photograph's image ID. History navigation, a Restore, a no-op and a first-open entry by the `system` actor record none.
 - **Continuous gestures.** A drag or a drawn mask is one draft: its ticks (`draft.set`) record nothing, `draft.commit` records its commits once, and a cancelled draft records nothing.
 - **Automatic work.** The histogram analysis, maintenance, restoring the remembered workspace at launch and a desktop storing its remembered panels, brush, window or Performance state record nothing.
-- **Images.** The keyed image ID is computed when a photograph is adopted as a client's open photograph (`job.adopt`), from the catalog fingerprint the adoption already holds, and kept beside the photograph; a commit to a photograph no client has open computes it from the fingerprint its state holds. An `interaction` carries the image only when it acts on a photograph a client has open. A multi-photograph export, a scan and an add carry none.
+- **Images.** The keyed image ID is computed when a photograph is adopted as a client's open photograph (`job.adopt`), from the catalog fingerprint the adoption already holds, and kept beside the photograph; a commit to a photograph no client has open computes it from the fingerprint its state holds. The session remembers the last fingerprint and the ID it gave (one entry, in memory, ended with the session, so a new key never reuses it), so one open's preparation outcome, adoption and the desktop's GUI-local producers cost one HMAC between them. An `interaction` carries the image only when it acts on a photograph a client has open. A multi-photograph export, a scan and an add carry none.
 - **Generations.** A job and an Auto tone solve capture the consent generation when they start and record their outcome only in that generation, so work begun before an opt-in or across a revocation records nothing.
 - **Statistics never count themselves.** `usage.*` commands and their reads record nothing.
 
@@ -20,14 +20,15 @@ A test in the core (`usage_every_registered_command_is_in_the_coverage_inventory
 | Event | Recorded by | When |
 | --- | --- | --- |
 | `session.start` | the statistics supervisor | when a session begins (not part of this inventory's producers) |
-| `app.presented`, `app.idle` | the statistics supervisor, from window visibility and interaction | not yet recorded (open: no producer exists yet) |
+| `app.presented` | the statistics supervisor, from the desktop's visibility reports | each change of visibility after the first report, which is the window's state at launch; off macOS the desktop has no native minimize or hide facts, so it stays at that state |
+| `app.idle` | the statistics supervisor, from the desktop's deliberate interactions (key, mouse button, wheel and touch presses, trackpad pinches, evidence script steps) | `idle` when a presented window has had no interaction for one minute, noticed at the worker's own deadline; `active` at the next interaction. A host that reports no visibility records neither |
 | `workspace.enter` | desktop | a deliberate switch between Select and Develop; the launch's first workspace is not one |
 | `image.open` | core, `job.adopt` | every adoption, so a reopen records it again |
 | `interaction` | core (commands) and desktop (GUI-local gestures) | the tables below |
 | `tool.commit` | core, the editor service's commit | one per changed built-in group per committed transaction |
-| `images.added` | core, the `develop-picks` job's terminal outcome | the photographs it created, when there is one; linked, relinked, failed and skipped files add nothing |
+| `images.added` | core, the `develop-picks` job's terminal outcome | the photographs its committed batches created, when there is one, whether it completed, was cancelled or failed; linked, relinked, failed and skipped files and a retry's answer add nothing |
 | `operation.end` | core: the `prepare`, `export`, `batch-export` and `index-refresh` jobs; the Auto tone solve | the terminal outcome and duration from the start; an export's `count` is the files written, only when it completes |
-| `preview.settled` | desktop | the open photograph's committed picture is first on screen at rest: the GPU's picture at rest drawn in tiles (`gpu`), timed as the status bar's "GPU render" figure, or the reference renderer's whole frame when it is the picture (`reference`), timed as its render; a drag's frames, a zoom's hand-over and a frame under the GPU's picture are not |
+| `preview.settled` | desktop | the open photograph's committed picture is first on screen at rest: the GPU's picture at rest drawn in tiles (`gpu`), timed as the status bar's "GPU render" figure, or the reference renderer's whole frame when it is the picture (`reference`), timed as its render; a drag's frames, a zoom's hand-over and a frame under the GPU's picture are not. A photograph the GPU draws whole rather than in tiles, such as a small JPEG, records none (open) |
 | `process.sample` | the statistics worker | not part of this inventory |
 
 ## GUI-local operations
@@ -59,7 +60,7 @@ Shortcuts and palette entries for a command (`⌘Z`, the palette's Undo, a modul
 
 ## Asynchronous outcomes
 
-A job records its terminal outcome once, through the job table's one finishing path: `completed` when ready, `cancelled` when a client cancelled it, its last client left it or a newer request superseded it, `refused` for a validation, conflict, consent, authority, readiness, resource-limit, preparation or availability error, and `failed` otherwise. A job's acceptance and its outcome are two events for an export and a Develop (`interaction`, then `operation.end` or `images.added`); a refused request is neither. A cancelled Develop keeps the photographs it committed but reports none as added (open: its partial count is not in its error). An Auto tone solve records `completed`, `cancelled` (superseded or disconnected) or `failed`.
+A job records its terminal outcome once, through the job table's one finishing path: `completed` when ready, `cancelled` when a client cancelled it, its last client left it or a newer request superseded it, `refused` for a validation, conflict, consent, authority, readiness, resource-limit, preparation or availability error, and `failed` otherwise. A job's acceptance and its outcome are two events for an export and a Develop (`interaction`, then `operation.end` or `images.added`); a refused request is neither. A cancelled or failed Develop keeps the photographs its committed batches created and reports them as added: the count accumulates on the owner as each batch commits, and its user-facing error is unchanged. An Auto tone solve records `completed`, `cancelled` (superseded or disconnected) or `failed`.
 
 ## Registered commands
 
@@ -204,7 +205,7 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `module.settings.set` | Exempt (privacy) | Module capability administration: names a module, a profile, a resource or a secret, and no shipped adjustment tool has capability settings; no registry value. |
 | `module.settings.set-secret` | Exempt (privacy) | Module capability administration: names a module, a profile, a resource or a secret, and no shipped adjustment tool has capability settings; no registry value. |
 | `module.status` | Exempt (read) | Reads module status. |
-| `pick.develop` | `interaction` `develop-picks`; `images.added` | The interaction when accepted (opening a file is a Develop of it); the job's count of newly created photographs, when there is one. Linked and relinked files, failures and a retry's answer add nothing. |
+| `pick.develop` | `interaction` `develop-picks`; `images.added` | The interaction when accepted (opening a file is a Develop of it); the job's count of newly created photographs, when there is one, however it ended. Linked and relinked files, failures and a retry's answer add nothing. |
 | `pick.list` | Exempt (read) | Lists picks. |
 | `pick.plan` | Exempt (read) | Plans a Develop of picks; its `pick.develop` is the operation. |
 | `pick.set` | `interaction` pick-set | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
