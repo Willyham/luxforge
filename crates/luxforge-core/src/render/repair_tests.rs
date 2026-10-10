@@ -738,7 +738,11 @@ fn a_gpu_plan_draws_a_repair_and_names_a_solve_it_cannot_hold() {
     let repair = step.repair.as_ref().expect("the repair step");
     assert_eq!(step.layer, 0);
     assert_eq!(repair.operations.len(), ops.len());
-    assert!(step.block.as_ref().is_some_and(|block| block[0] == ops.len() as u32));
+    assert!(
+        step.block
+            .as_ref()
+            .is_some_and(|block| block[0] == ops.len() as u32)
+    );
     // The Basic layer runs on the repair's output.
     assert_eq!(plan.operations().count(), 1);
     // A Heal of a quarter of a large frame's height needs more level planes than a step may hold:
@@ -747,7 +751,14 @@ fn a_gpu_plan_draws_a_repair_and_names_a_solve_it_cannot_hold() {
         width: 9000,
         height: 6000,
     };
-    let heal = Op::new(4, RepairKind::Heal, large, &[[4500.0, 3000.0]], 1500.0, [2000.0, 0.0]);
+    let heal = Op::new(
+        4,
+        RepairKind::Heal,
+        large,
+        &[[4500.0, 3000.0]],
+        1500.0,
+        [2000.0, 0.0],
+    );
     let answer = crate::gpu_plan(
         &registry,
         &recipe(vec![repair_layer(&[heal])]),
@@ -810,8 +821,22 @@ fn the_warm_list_covers_repair_gestures_at_open_and_first_use() {
     // A stack holding two corrections: its own links, an update drag, and a new top Heal and
     // Clone, each a repair step of the table and one more operation.
     let ops = vec![
-        Op::new(1, RepairKind::Heal, stage, &[[30.0, 30.0]], 5.0, [20.0, 0.0]),
-        Op::new(2, RepairKind::Clone, stage, &[[80.0, 60.0]], 4.0, [-20.0, 5.0]),
+        Op::new(
+            1,
+            RepairKind::Heal,
+            stage,
+            &[[30.0, 30.0]],
+            5.0,
+            [20.0, 0.0],
+        ),
+        Op::new(
+            2,
+            RepairKind::Clone,
+            stage,
+            &[[80.0, 60.0]],
+            4.0,
+            [-20.0, 5.0],
+        ),
     ];
     let held = evaluation_of(
         &source,
@@ -822,7 +847,10 @@ fn the_warm_list_covers_repair_gestures_at_open_and_first_use() {
     );
     let warm = super::gpu::plan_warm_list(&held, crate::GpuView::Fit(bounds)).unwrap();
     let counts: Vec<usize> = warm.plans.iter().filter_map(repairs).collect();
-    assert!(counts.contains(&2), "the stack's own repair links: {counts:?}");
+    assert!(
+        counts.contains(&2),
+        "the stack's own repair links: {counts:?}"
+    );
     assert!(counts.contains(&3), "a drafted top operation: {counts:?}");
     let kernels = |count: usize| -> Vec<&'static str> {
         warm.plans

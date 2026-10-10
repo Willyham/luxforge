@@ -298,7 +298,9 @@ pub(crate) fn warm_plans(
                     .descriptor()
                     .effects
                     .iter()
-                    .find(|effect| effect.stage == EffectStage::Repair && !provider.descriptor().developer)
+                    .find(|effect| {
+                        effect.stage == EffectStage::Repair && !provider.descriptor().developer
+                    })
                     .map(|effect| effect.id.clone())
             });
             match effect {
@@ -311,7 +313,12 @@ pub(crate) fn warm_plans(
         .as_ref()
         .map(|table| table.operations().to_vec())
         .unwrap_or_default();
-    let next = rows.iter().map(|row| row.id).max().unwrap_or(0).saturating_add(1);
+    let next = rows
+        .iter()
+        .map(|row| row.id)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
     let spot = |id: u32, kind: RepairKind| RepairOperation {
         id,
         kind,
@@ -397,7 +404,10 @@ fn with_table(
     let first = compiled.segments.first()?;
     let (segment, position) = match compiled.layers.get(layer) {
         Some(&start) => start,
-        None => (compiled.segments.len() - 1, compiled.segments.last()?.operations.len()),
+        None => (
+            compiled.segments.len() - 1,
+            compiled.segments.last()?.operations.len(),
+        ),
     };
     if segment != 0 || first.entry.is_some() {
         return None;
