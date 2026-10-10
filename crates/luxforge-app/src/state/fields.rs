@@ -159,6 +159,7 @@ fn seed_controls(owner: ControlOwner<'_>, controls: &[Control], fields: &mut Fie
             // mode, a preset row submits a library preset's own settings, name and identity, and a
             // task sends the open asset and a profile.
             Control::Group(_)
+            | Control::View(_)
             | Control::Action(_)
             | Control::Picker(_)
             | Control::Presets(_)
