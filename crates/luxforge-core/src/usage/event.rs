@@ -15,6 +15,10 @@
 //! Every record takes its `seq` and `t` while holding the active bank's lock, and the worker swaps
 //! banks only while holding it too, so within a window and across windows `seq` strictly increases
 //! and `t` never decreases in recording order.
+//!
+//! The worker learns of new events without polling: the event that makes a window nonempty and the
+//! one that fills it unpark the worker's thread ([`Session::set_waker`]), a non-blocking wake that
+//! a later park consumes even if the worker was not parked yet.
 use super::{
     Gate, Generation,
     encode::{ReportId, SessionStart},
@@ -26,9 +30,10 @@ use super::{
 };
 use std::{
     sync::{
-        Arc, Mutex, MutexGuard, PoisonError, RwLock, TryLockError,
+        Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, TryLockError,
         atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
+    thread::Thread,
     time::{Duration, Instant},
 };
 
@@ -352,12 +357,20 @@ impl SessionClock {
     }
 }
 
-/// Local diagnostics `usage.read` may report: counts only.
+/// Local diagnostics `usage.read` may report: counts and the delivery state, never an error text.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Diagnostics {
     pub recorded: u64,
+    /// Events not sent: dropped by a producer, omitted by the body limit, or in a window discarded
+    /// without an attempt.
     pub dropped: u64,
+    /// Events in batches the receiver accepted.
     pub sent: u64,
+    /// Upload attempts, each one batch handed to the transport.
+    pub attempts: u64,
+    /// Attempts the receiver accepted.
+    pub accepted: u64,
+    pub delivery: super::sender::Delivery,
 }
 
 /// One session: its random ID, start time, sequence counters and two banks of at most
@@ -379,6 +392,8 @@ pub struct Session {
     recorded: AtomicU64,
     dropped: AtomicU64,
     sent: AtomicU64,
+    /// The statistics worker, unparked when a window becomes nonempty or full.
+    waker: OnceLock<Thread>,
 }
 
 impl Session {
@@ -406,6 +421,7 @@ impl Session {
             recorded: AtomicU64::new(0),
             dropped: AtomicU64::new(0),
             sent: AtomicU64::new(0),
+            waker: OnceLock::new(),
         };
         let mut first = lock(&session.banks[0]);
         session.next_seq.store(1, Ordering::Relaxed);
@@ -461,9 +477,21 @@ impl Session {
         let t = self.clock.now_ms();
         // Within the capacity reserved at start, so this never reallocates.
         bank.push(Event { seq, t, kind });
+        let len = bank.len();
         drop(bank);
         self.recorded.fetch_add(1, Ordering::Relaxed);
+        if (len == 1 || len == MAX_EVENTS)
+            && let Some(worker) = self.waker.get()
+        {
+            worker.unpark();
+        }
         Recorded::Stored(seq)
+    }
+
+    /// The statistics worker to unpark when a window becomes nonempty (its flush is to be
+    /// scheduled) or full (it is due). Set once; later calls change nothing.
+    pub fn set_waker(&self, worker: Thread) {
+        let _ = self.waker.set(worker);
     }
 
     fn drop_event(&self) -> Recorded {
@@ -528,6 +556,7 @@ impl Session {
             recorded: self.recorded.load(Ordering::Relaxed),
             dropped: self.dropped.load(Ordering::Relaxed),
             sent: self.sent.load(Ordering::Relaxed),
+            ..Diagnostics::default()
         }
     }
 
