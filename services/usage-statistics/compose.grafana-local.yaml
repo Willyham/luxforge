@@ -1,0 +1,14 @@
+# Optional: view the private Grafana from this machine only.
+#   docker compose -f compose.yaml -f compose.grafana-local.yaml up -d
+# Publishing a port needs a network with a route out, so this override gives the Grafana container
+# one. Its telemetry, update checks and plugin downloads stay off (see compose.yaml), but the
+# container is no longer isolated from the internet. Do not use it on a server; there, reach Grafana
+# through an SSH tunnel or a private reverse proxy that logs no client addresses.
+services:
+  grafana:
+    ports:
+      - "127.0.0.1:${LUXFORGE_GRAFANA_PORT:-3000}:3000"
+    networks: [viz, grafana-local]
+
+networks:
+  grafana-local: {}
