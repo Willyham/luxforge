@@ -738,11 +738,7 @@ fn a_gpu_plan_draws_a_repair_and_names_a_solve_it_cannot_hold() {
     let repair = step.repair.as_ref().expect("the repair step");
     assert_eq!(step.layer, 0);
     assert_eq!(repair.operations.len(), ops.len());
-    assert!(
-        step.block
-            .as_ref()
-            .is_some_and(|block| !block.is_empty())
-    );
+    assert!(step.block.as_ref().is_some_and(|block| !block.is_empty()));
     // The Basic layer runs on the repair's output.
     assert_eq!(plan.operations().count(), 1);
     // A Heal of a quarter of a large frame's height needs more level planes than a step may hold:
@@ -872,7 +868,11 @@ fn the_warm_list_covers_repair_gestures_at_open_and_first_use() {
             .unwrap();
     let mut sizes: Vec<usize> = planned.iter().filter_map(repairs).collect();
     sizes.sort_unstable();
-    assert_eq!(sizes, vec![2, 2, 3, 3], "own, update, a top Heal and a top Clone");
+    assert_eq!(
+        sizes,
+        vec![2, 2, 3, 3],
+        "own, update, a top Heal and a top Clone"
+    );
     // A stack with none: the first Heal and Clone where the repair layer would go.
     let bare = evaluation_of(
         &source,
@@ -956,7 +956,9 @@ fn a_hundred_corrections_plan_in_few_groups_and_bounded_passes() {
             crate::GpuPlanRequest::exact(0, stage).from_source(),
         )
         .unwrap();
-        let plan = answer.plan().expect("a hundred corrections draw on the GPU");
+        let plan = answer
+            .plan()
+            .expect("a hundred corrections draw on the GPU");
         let passes = plan.spatial[0].passes.len();
         eprintln!(
             "{}x{}: {} groups, {passes} passes",
@@ -964,7 +966,10 @@ fn a_hundred_corrections_plan_in_few_groups_and_bounded_passes() {
             stage.height,
             groups.len()
         );
-        assert!(passes <= super::gpu::repair::REPAIR_PASSES_MAX, "{passes} passes");
+        assert!(
+            passes <= super::gpu::repair::REPAIR_PASSES_MAX,
+            "{passes} passes"
+        );
         // Every operation is in exactly one group, and two in one group never conflict.
         let mut seen: Vec<usize> = groups.iter().flatten().copied().collect();
         seen.sort_unstable();

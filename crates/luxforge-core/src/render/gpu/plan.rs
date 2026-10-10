@@ -735,9 +735,7 @@ pub(crate) fn anchored_over(compiled: &Compiled, window: Region, anchor: GpuAnch
         .and_then(Entry::repair_entry);
     let window = anchored(window, anchor);
     match repair {
-        Some(repair) if anchor != GpuAnchor::NONE => {
-            anchored(repair.closure_once(window), anchor)
-        }
+        Some(repair) if anchor != GpuAnchor::NONE => anchored(repair.closure_once(window), anchor),
         _ => window,
     }
 }

@@ -43,9 +43,7 @@
 //!   `disabled-program`, ...), and as `unplannable` a stack that does not
 //!   compile, a stack the window planner cannot cut and a source drafted under an approximate
 //!   white balance, which the GPU source does not hold.
-use super::{
-    GpuAnchor, GpuAnswer, GpuFallback, GpuGeometry, GpuPlan, GpuPlanRequest, RestTile,
-};
+use super::{GpuAnchor, GpuAnswer, GpuFallback, GpuGeometry, GpuPlan, GpuPlanRequest, RestTile};
 use crate::{
     BoundaryFormat, Error, Evaluation, PreviewSource, ProxyIdentity, Recipe,
     colour::srgb::quantize_pixel,
@@ -668,7 +666,11 @@ mod tests {
                     let window = WindowPlan::of_gpu_rect(compiled, (width, height), read.tile.rect)
                         .unwrap()
                         .reads(0);
-                    assert_eq!(read.tile.window, crate::render::gpu::anchored(window, anchor), "{at}");
+                    assert_eq!(
+                        read.tile.window,
+                        crate::render::gpu::anchored(window, anchor),
+                        "{at}"
+                    );
                     let held = read.tile.window;
                     assert_eq!(held.x0 % anchor.multiple.0, 0, "{at}: anchored across");
                     assert_eq!(held.y0 % anchor.multiple.1, 0, "{at}: anchored down");

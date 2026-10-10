@@ -64,22 +64,85 @@ fn cases(size: (u32, u32)) -> Vec<(&'static str, Vec<Value>)> {
         (
             "independent clones",
             vec![
-                op(1, false, size, &[[0.2 * w, 0.3 * h]], 8.0, [40.0, 10.0], 50, 100),
-                op(2, false, size, &[[0.6 * w, 0.7 * h]], 6.0, [-30.0, -20.0], 0, 100),
-                op(3, false, size, &[[0.8 * w, 0.2 * h]], 10.0, [0.0, 50.0], 80, 70),
+                op(
+                    1,
+                    false,
+                    size,
+                    &[[0.2 * w, 0.3 * h]],
+                    8.0,
+                    [40.0, 10.0],
+                    50,
+                    100,
+                ),
+                op(
+                    2,
+                    false,
+                    size,
+                    &[[0.6 * w, 0.7 * h]],
+                    6.0,
+                    [-30.0, -20.0],
+                    0,
+                    100,
+                ),
+                op(
+                    3,
+                    false,
+                    size,
+                    &[[0.8 * w, 0.2 * h]],
+                    10.0,
+                    [0.0, 50.0],
+                    80,
+                    70,
+                ),
             ],
         ),
         (
             "a clone reading another's output",
             vec![
-                op(1, false, size, &[[0.4 * w, 0.4 * h]], 12.0, [30.0, 0.0], 50, 100),
-                op(2, false, size, &[[0.4 * w + 30.0, 0.4 * h]], 12.0, [0.0, 40.0], 50, 100),
-                op(3, false, size, &[[0.4 * w, 0.4 * h + 5.0]], 8.0, [-0.3 * w, 0.0], 40, 100),
+                op(
+                    1,
+                    false,
+                    size,
+                    &[[0.4 * w, 0.4 * h]],
+                    12.0,
+                    [30.0, 0.0],
+                    50,
+                    100,
+                ),
+                op(
+                    2,
+                    false,
+                    size,
+                    &[[0.4 * w + 30.0, 0.4 * h]],
+                    12.0,
+                    [0.0, 40.0],
+                    50,
+                    100,
+                ),
+                op(
+                    3,
+                    false,
+                    size,
+                    &[[0.4 * w, 0.4 * h + 5.0]],
+                    8.0,
+                    [-0.3 * w, 0.0],
+                    40,
+                    100,
+                ),
             ],
         ),
         (
             "a heal spot",
-            vec![op(1, true, size, &[[0.5 * w, 0.5 * h]], 14.0, [36.0, -12.0], 50, 100)],
+            vec![op(
+                1,
+                true,
+                size,
+                &[[0.5 * w, 0.5 * h]],
+                14.0,
+                [36.0, -12.0],
+                50,
+                100,
+            )],
         ),
         (
             "a heal stroke from far",
@@ -87,7 +150,11 @@ fn cases(size: (u32, u32)) -> Vec<(&'static str, Vec<Value>)> {
                 1,
                 true,
                 size,
-                &[[0.2 * w, 0.6 * h], [0.35 * w, 0.65 * h], [0.5 * w, 0.62 * h]],
+                &[
+                    [0.2 * w, 0.6 * h],
+                    [0.35 * w, 0.65 * h],
+                    [0.5 * w, 0.62 * h],
+                ],
                 7.0,
                 [0.3 * w, -0.4 * h],
                 30,
@@ -97,18 +164,81 @@ fn cases(size: (u32, u32)) -> Vec<(&'static str, Vec<Value>)> {
         (
             "edges and clipped sources",
             vec![
-                op(1, true, size, &[[3.0, 4.0]], 9.0, [w - 12.0, h - 10.0], 50, 100),
-                op(2, false, size, &[[w - 5.0, h - 4.0]], 9.0, [12.0, 8.0], 0, 100),
-                op(3, true, size, &[[w - 6.0, 0.5 * h]], 8.0, [10.0, 0.0], 50, 100),
+                op(
+                    1,
+                    true,
+                    size,
+                    &[[3.0, 4.0]],
+                    9.0,
+                    [w - 12.0, h - 10.0],
+                    50,
+                    100,
+                ),
+                op(
+                    2,
+                    false,
+                    size,
+                    &[[w - 5.0, h - 4.0]],
+                    9.0,
+                    [12.0, 8.0],
+                    0,
+                    100,
+                ),
+                op(
+                    3,
+                    true,
+                    size,
+                    &[[w - 6.0, 0.5 * h]],
+                    8.0,
+                    [10.0, 0.0],
+                    50,
+                    100,
+                ),
             ],
         ),
         (
             "overlapping heals and clones",
             vec![
-                op(5, true, size, &[[0.3 * w, 0.4 * h]], 12.0, [30.0, -8.0], 50, 100),
-                op(2, false, size, &[[0.25 * w, 0.4 * h], [0.36 * w, 0.44 * h]], 6.0, [-20.0, 30.0], 0, 60),
-                op(9, true, size, &[[0.3 * w + 6.0, 0.4 * h]], 9.0, [0.0, 0.3 * h], 20, 100),
-                op(7, false, size, &[[0.7 * w, 0.3 * h]], 2.0, [3.0, 0.0], 50, 100),
+                op(
+                    5,
+                    true,
+                    size,
+                    &[[0.3 * w, 0.4 * h]],
+                    12.0,
+                    [30.0, -8.0],
+                    50,
+                    100,
+                ),
+                op(
+                    2,
+                    false,
+                    size,
+                    &[[0.25 * w, 0.4 * h], [0.36 * w, 0.44 * h]],
+                    6.0,
+                    [-20.0, 30.0],
+                    0,
+                    60,
+                ),
+                op(
+                    9,
+                    true,
+                    size,
+                    &[[0.3 * w + 6.0, 0.4 * h]],
+                    9.0,
+                    [0.0, 0.3 * h],
+                    20,
+                    100,
+                ),
+                op(
+                    7,
+                    false,
+                    size,
+                    &[[0.7 * w, 0.3 * h]],
+                    2.0,
+                    [3.0, 0.0],
+                    50,
+                    100,
+                ),
             ],
         ),
     ]
@@ -152,10 +282,13 @@ fn plan_of(
     size: (u32, u32),
     linear: bool,
 ) -> luxforge_core::GpuPlan {
-    let request = GpuPlanRequest::exact(0, Stage {
-        width: size.0,
-        height: size.1,
-    })
+    let request = GpuPlanRequest::exact(
+        0,
+        Stage {
+            width: size.0,
+            height: size.1,
+        },
+    )
     .from_source()
     .qualifying();
     let request = if linear { request.linear() } else { request };
@@ -204,7 +337,11 @@ fn byte_case(
     .and_then(|render| render.frame(SnapshotId::new()))
     .expect("the CPU frame");
     let plan = plan_of(registry, stack, size, false);
-    assert!(plan.spatial.first().is_some_and(|step| step.repair.is_some()));
+    assert!(
+        plan.spatial
+            .first()
+            .is_some_and(|step| step.repair.is_some())
+    );
     let converted = surface_plan(&plan, boundary(width, height, 1, &texels).unwrap()).unwrap();
     lit(qualifier, &PreviewSource::Jpeg(image.clone()), &converted).unwrap();
     let gpu = qualifier.evaluate(&converted).unwrap();
@@ -256,7 +393,8 @@ fn linear_case(
     lit(qualifier, &preview, &converted).expect("the plan's lights");
     let gpu = qualifier.evaluate(&converted).expect("a readback");
     assert!(
-        gpu.iter().all(|texel| texel[..3].iter().all(|v| v.is_finite())),
+        gpu.iter()
+            .all(|texel| texel[..3].iter().all(|v| v.is_finite())),
         "a finite frame"
     );
     let program = codes(gpu.iter().map(|texel| [texel[0], texel[1], texel[2]]));
@@ -282,7 +420,10 @@ fn gpu_repair_plan_meets_the_spatial_limits() {
                 ("", Vec::new()),
                 (
                     " before Basic",
-                    vec![Layer::new(BASIC_EFFECT, json!({"exposure": 0.6, "contrast": 25}))],
+                    vec![Layer::new(
+                        BASIC_EFFECT,
+                        json!({"exposure": 0.6, "contrast": 25}),
+                    )],
                 ),
                 (
                     " before Detail",
@@ -296,8 +437,14 @@ fn gpu_repair_plan_meets_the_spatial_limits() {
                     ..Recipe::default()
                 };
                 for (path, measured) in [
-                    ("byte", byte_case(&qualifier, &registry, &stack, size, &pixels)),
-                    ("linear", linear_case(&qualifier, &registry, &stack, size, &pixels)),
+                    (
+                        "byte",
+                        byte_case(&qualifier, &registry, &stack, size, &pixels),
+                    ),
+                    (
+                        "linear",
+                        linear_case(&qualifier, &registry, &stack, size, &pixels),
+                    ),
                 ] {
                     let label = format!("{name}{tail} on the {path} path at {}x{}", size.0, size.1);
                     let passed = preview_error::verdict(&measured, Class::Spatial).passed();
@@ -315,7 +462,10 @@ fn gpu_repair_plan_meets_the_spatial_limits() {
         }
     }
     eprintln!("{test}: worst of {}: {}", all.len(), figures(&worst(&all)));
-    assert!(missed.is_empty(), "cases missing the spatial limits: {missed:?}");
+    assert!(
+        missed.is_empty(),
+        "cases missing the spatial limits: {missed:?}"
+    );
 }
 
 /// A Corrections gesture's ticks evaluated incrementally, as one slot draws them
@@ -336,20 +486,55 @@ fn gpu_repair_ticks_draw_what_whole_evaluations_draw() {
     let held_boundary = boundary(size.0, size.1, 1, &pixels).expect("a boundary");
     let (w, h) = (f64::from(size.0), f64::from(size.1));
     let stroke: Vec<[f64; 2]> = (0..8)
-        .map(|k| [0.2 * w + 12.0 * f64::from(k), 0.7 * h + 3.0 * f64::from(k % 3)])
+        .map(|k| {
+            [
+                0.2 * w + 12.0 * f64::from(k),
+                0.7 * h + 3.0 * f64::from(k % 3),
+            ]
+        })
         .collect();
     let stack = |painted: usize, source: f64, opacity: u8| {
         let mut ops = vec![
-            op(1, false, size, &[[0.6 * w, 0.3 * h]], 10.0, [source, 30.0], 40, opacity),
-            op(2, true, size, &[[0.75 * w, 0.6 * h]], 12.0, [-50.0, 0.0], 50, 100),
+            op(
+                1,
+                false,
+                size,
+                &[[0.6 * w, 0.3 * h]],
+                10.0,
+                [source, 30.0],
+                40,
+                opacity,
+            ),
+            op(
+                2,
+                true,
+                size,
+                &[[0.75 * w, 0.6 * h]],
+                12.0,
+                [-50.0, 0.0],
+                50,
+                100,
+            ),
         ];
         if painted > 0 {
-            ops.push(op(3, true, size, &stroke[..painted], 6.0, [0.0, -60.0], 50, 100));
+            ops.push(op(
+                3,
+                true,
+                size,
+                &stroke[..painted],
+                6.0,
+                [0.0, -60.0],
+                50,
+                100,
+            ));
         }
         Recipe {
             layers: vec![
                 repair(ops),
-                Layer::new(DETAIL_EFFECT, json!({"sharpening": 50.0, "luminance": 30.0})),
+                Layer::new(
+                    DETAIL_EFFECT,
+                    json!({"sharpening": 50.0, "luminance": 30.0}),
+                ),
             ],
             ..Recipe::default()
         }
@@ -384,7 +569,10 @@ fn gpu_repair_ticks_draw_what_whole_evaluations_draw() {
         .map(|(plan, _)| qualifier.evaluate(plan).expect("a readback"))
         .collect();
     super::gpu_qualification::held_to_whole(&qualifier, &ticks, &whole, &|number| {
-        format!("tick {number} {:?} over {:?}", order[number], ticks[number].1)
+        format!(
+            "tick {number} {:?} over {:?}",
+            order[number], ticks[number].1
+        )
     });
     let largest = shares.iter().copied().fold(0.0, f64::max);
     eprintln!(
@@ -392,7 +580,10 @@ fn gpu_repair_ticks_draw_what_whole_evaluations_draw() {
         shares.len(),
         100.0 * largest
     );
-    assert!(largest < 0.25, "a tick changes about its corrections' own area");
+    assert!(
+        largest < 0.25,
+        "a tick changes about its corrections' own area"
+    );
 }
 
 /// A hundred corrections as an agent filling a photograph places them, over a `size` stage: spots
@@ -445,8 +636,14 @@ fn gpu_repair_a_hundred_corrections_meet_the_spatial_limits() {
     let passes = plan.spatial[0].passes.len();
     let mut missed = Vec::new();
     for (path, measured) in [
-        ("byte", byte_case(&qualifier, &registry, &stack, size, &pixels)),
-        ("linear", linear_case(&qualifier, &registry, &stack, size, &pixels)),
+        (
+            "byte",
+            byte_case(&qualifier, &registry, &stack, size, &pixels),
+        ),
+        (
+            "linear",
+            linear_case(&qualifier, &registry, &stack, size, &pixels),
+        ),
     ] {
         let passed = preview_error::verdict(&measured, Class::Spatial).passed();
         eprintln!("{test}: {path}: {passes} passes: {}", figures(&measured));
@@ -454,6 +651,9 @@ fn gpu_repair_a_hundred_corrections_meet_the_spatial_limits() {
             missed.push(path);
         }
     }
-    assert!(passes <= luxforge_core::REPAIR_PASSES_MAX, "{passes} passes");
+    assert!(
+        passes <= luxforge_core::REPAIR_PASSES_MAX,
+        "{passes} passes"
+    );
     assert!(missed.is_empty(), "{missed:?}");
 }

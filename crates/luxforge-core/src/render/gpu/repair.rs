@@ -18,8 +18,7 @@
 //! tiles)` for the groups' blocks, no pixel read.
 use super::{
     GpuFallback, GpuPass, GpuPassShape, GpuPlane, GpuPlaneFormat, GpuPlaneSize, GpuSpatial,
-    plan::Planning,
-    spatial::GpuApply,
+    plan::Planning, spatial::GpuApply,
 };
 use crate::{
     modules::{Region, RepairKind, Stage},
@@ -229,7 +228,8 @@ pub(crate) fn plan_repair(layer: usize, entry: &RepairEntry, linear: bool) -> Gp
         }
         record(described.apply_words, 0);
         for pass in &described.passes {
-            let mut inputs: Vec<usize> = pass.inputs.iter().map(|&plane| planes_at + plane).collect();
+            let mut inputs: Vec<usize> =
+                pass.inputs.iter().map(|&plane| planes_at + plane).collect();
             let reads_source = match (pass.reads_source, state) {
                 (true, Some(plane)) => {
                     let slot = inputs.len() as u32;
@@ -302,7 +302,9 @@ pub(crate) fn plan_repair(layer: usize, entry: &RepairEntry, linear: bool) -> Gp
         .map(|regions| {
             let dx = regions.delta[0].unsigned_abs();
             let dy = regions.delta[1].unsigned_abs();
-            u32::try_from(dx.max(dy)).unwrap_or(u32::MAX).saturating_add(1)
+            u32::try_from(dx.max(dy))
+                .unwrap_or(u32::MAX)
+                .saturating_add(1)
         })
         .max()
         .unwrap_or(0);
@@ -545,4 +547,3 @@ fn with_table(
     compiled.layers = layers.into_boxed_slice();
     Some(compiled)
 }
-
