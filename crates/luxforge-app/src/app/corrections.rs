@@ -35,9 +35,6 @@ use iced::Task;
 use luxforge_core::{AssetId, DraftTarget, EntryId, ErrorKind, MappingDescriptor, POINTER_MODE};
 use serde_json::{Map, Value, json};
 
-/// The radius a brush starts at when its declaration gives none: a dust spot's size, in content
-/// heights (about 100 px across on a 2,400 px-high photograph).
-const DEFAULT_RADIUS: f64 = 0.02;
 /// `[` and `]` change the brush size by this factor, and `⇧[`/`⇧]` the feather by this much.
 const SIZE_FACTOR: f64 = 1.1;
 const FEATHER_STEP: f64 = 10.0;
@@ -376,18 +373,7 @@ impl Editor {
 
     /// The settings the next press adds with.
     fn new_settings(&self, binding: &BrushBinding) -> BrushSettings {
-        self.corrections.settings.clone().unwrap_or_else(|| {
-            let mut settings = binding.settings();
-            let declared = binding
-                .action
-                .parameter(&binding.radius)
-                .and_then(|parameter| parameter.default.as_ref())
-                .is_some();
-            if !declared {
-                binding.set(&mut settings, &binding.radius.clone(), DEFAULT_RADIUS);
-            }
-            settings
-        })
+        self.corrections.settings_or(binding)
     }
 
     /// What the band and draft bar say of the open gesture.

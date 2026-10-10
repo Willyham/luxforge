@@ -347,6 +347,7 @@ impl Editor {
             && !self.correction_reads.reading()
             && self.sync.poll.idle()
             && !self.presentation.queue.is_busy()
+            && !self.drag_frame_waiting()
             && (self.presentation.presented_generation == self.presentation.preview_generation
                 || self.presentation.render_error.is_some())
     }
