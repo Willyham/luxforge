@@ -12,11 +12,13 @@ pub mod image_id;
 pub mod registry;
 pub mod sampler;
 
+pub use consent::{Active, ConsentReader, InstallationId, StoredConsent, Usage, UsageState};
 pub use device_profile::{
     AppleTier, Arch, CpuProfile, CpuVendor, DeviceProfile, GpuBackend, GpuProfile, GpuType,
     GpuVendor, LinuxDistro, MacBuild, MemoryBand, OsFamily, OsProfile, ProfileError,
     RendererFallback, Version,
 };
+pub use eligibility::{BuildIdentity, Eligibility, LaunchMode, Reason, TestReceiver};
 pub use encode::{
     Batch, BodyBuffer, EncodeError, Encoded, Envelope, Release, ReportId, SchemaError,
     SessionStart, decode_batch, encode_batch,
