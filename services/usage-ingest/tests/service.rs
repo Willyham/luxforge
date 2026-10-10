@@ -86,6 +86,7 @@ async fn a_valid_batch_becomes_exactly_the_expected_rows() {
     let expected_profile = json!({
         "received_at": "2026-10-09T14:03:12Z", "installation_id": INSTALLATION,
         "session_id": SESSION, "release": "0.0.0+9d4138ca1f2e",
+        "batch_seq": 2, "dropped": 0,
         "os_family": "macos", "os_version": [15, 5], "os_build": null, "os_distro": null,
         "os_distro_version": null, "os_kernel": null, "arch": "arm64",
         "cpu_vendor": "apple", "cpu_physical_cores": 12, "cpu_logical_cores": 12,
@@ -105,6 +106,26 @@ async fn a_valid_batch_becomes_exactly_the_expected_rows() {
     let text = std::str::from_utf8(&records[1].body).unwrap();
     assert!(text.starts_with("{\"received_at\":\"2026-10-09T14:03:12Z\",\"installation_id\":"));
     assert!(text.ends_with("\"renderer\":\"gpu\",\"renderer_fallback\":null}\n"));
+    server.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_profile_row_carries_the_batch_sequence_and_dropped_count() {
+    let downstream = Downstream::start(Mode::Ok).await;
+    let (server, _) = start(test_config(&downstream.url()), ManualClock::new()).await;
+    let mut body = batch();
+    body["dropped"] = json!(4_294_967_295u64);
+    assert_eq!(post_json(server.local_addr(), &body).await.status, 202);
+    let records = downstream.wait_for(2).await;
+    let profile = lines(&records[1].body);
+    assert_eq!(profile[0]["batch_seq"], 2);
+    assert_eq!(profile[0]["dropped"], 4_294_967_295u64);
+    // The event rows do not carry it.
+    assert!(
+        lines(&records[0].body)
+            .iter()
+            .all(|row| row.get("dropped").is_none())
+    );
     server.shutdown().await;
 }
 
