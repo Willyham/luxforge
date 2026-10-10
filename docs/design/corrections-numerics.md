@@ -174,31 +174,31 @@ The search is deterministic for one input buffer. The GPU tile service may draw 
 
 ## Costs
 
-Measured on the M4 Pro on a host shared with other agents' builds (one-minute load 57 to 126 during these runs, so every figure is an upper bound and noisy). Release builds. The timing distributions the contract requires wait for the integrated feature and a quiet host.
+Measured on the M4 Pro on a host shared with other agents' builds (one-minute loads up to 126 during these runs, so every figure is an upper bound and noisy). Release builds. The timing distributions the contract requires wait for the integrated feature and a quiet host.
 
 **GPU tick** (`gpu_repair_tick_cost`): a Heal stroke painted over 24 ticks, each adding a segment, every pass run whole each tick, through the qualifier's throughput timing (later ticks submitted without waiting). "Frame" is the same boundary with nothing to repair; "Detail" is Detail (luminance 40, colour 40, sharpening 50) evaluated incrementally where each tick's destination changed, the work the accepted repair-before-Detail placement adds downstream of a repair tick.
 
 | Boundary | Stroke | Passes, levels | Planes | Tick | Frame | Detail over the change |
 | --- | --- | --- | --- | --- | --- | --- |
-| 24 MP whole (6000 x 4000) | r = 40 px | 220, 8 | 19 MiB | 6.4 to 8.5 ms | 4.5 to 7.3 ms | 0.15 to 0.88 ms (0.7% of the boundary; 5.0 to 6.4 ms whole) |
-| 24 MP whole | r = 150 px | 284, 10 | 76 MiB | 10.2 to 11.7 ms | 4.6 to 4.7 ms | 0.28 to 3.3 ms (2.8%) |
-| 24 MP whole | a spot of r = 0.25 H (1,000 px) | 348, 12 | 270 MiB | 38.2 ms | 6.1 ms | 1.2 ms (16.7%) |
-| 60 MP, 4096 x 2560 at 100% | r = 60 px | 220, 8 | 29 MiB | 4.7 to 7.6 ms | 2.0 to 2.5 ms | 0.20 to 0.49 ms (2.4%) |
-| 24 MP at Fit (1716 x 1144) | r = 11 px | 156, 6 | 7 MiB | 1.7 to 2.3 ms | 0.4 to 1.3 ms | 0.16 to 0.21 ms (0.7%) |
+| 24 MP whole (6000 x 4000) | r = 40 px | 220, 8 | 19 MiB | 6.4 to 8.5 ms | 4.5 to 7.3 ms | 0.15 to 1.0 ms (0.7% of the boundary; 5.0 to 6.4 ms whole) |
+| 24 MP whole | r = 150 px | 284, 10 | 76 MiB | 10.2 to 11.7 ms | 4.6 to 6.1 ms | 0.28 to 3.3 ms (2.8%) |
+| 24 MP whole | a spot of r = 0.25 H (1,000 px) | 348, 12 | 270 MiB | 34.9 to 38.2 ms | 5.0 to 6.1 ms | 1.1 to 1.2 ms (16.7%) |
+| 60 MP, 4096 x 2560 at 100% | r = 60 px | 220, 8 | 29 MiB | 4.7 to 7.7 ms | 2.0 to 3.8 ms | 0.20 to 0.62 ms (2.4%) |
+| 24 MP at Fit (1716 x 1144) | r = 11 px | 156, 6 | 7 MiB | 1.7 to 4.2 ms | 0.4 to 1.6 ms | 0.16 to 2.2 ms (0.7%) |
 
-Each range is two runs at one-minute loads of about 57 and 80. A repair tick adds about 1 ms at Fit, 2 to 6 ms over a whole 24 MP boundary for a 40 to 150 px brush and 32 ms for a quarter-height spot, whose solve covers 3.2 MP; encoding takes 0.07 to 1.8 ms (6.9 ms for the quarter-height spot's 50,000 tiles). At Fit the cost is mostly pass overhead (several µs a pass over tiny coarse levels), which the workgroup bottom above would cut. Detail's rerun over the changed destination is a fraction of a millisecond to about a millisecond at these loads (one 3.3 ms outlier): the placement before Detail costs Detail's passes over the repair's change grown by Detail's reach, not a whole Detail frame, provided TASK-003 reports the repair change as `Inside` the destination. A Heal tick changes its whole destination, so the change, and Detail's rerun, grows with the stroke; Presence links after Detail grow it again by their reach. A quarter-height Heal is about 40 ms a tick at full resolution, past a display frame; at Fit the same spot is a 286 px Heal on a 1716 x 1144 stage.
+Each range is up to three runs; no run had a quiet host (one-minute loads of 57, 80, and 2.5 rising to 88 during the third), so the ranges' upper ends are contention and the lower ends the better estimate. The distributions the contract requires wait for the integrated feature on a quiet host. A repair tick adds about 1 ms at Fit, 2 to 6 ms over a whole 24 MP boundary for a 40 to 150 px brush and about 30 ms for a quarter-height spot, whose solve covers 3.2 MP; encoding takes 0.07 to 3.5 ms (4 to 6.9 ms for the quarter-height spot's 50,000 tiles). At Fit the cost is mostly pass overhead (several µs a pass over tiny coarse levels), which the workgroup bottom above would cut. Detail's rerun over the changed destination is 0.15 to 1.1 ms at the lower ends (2 to 3 ms under the heaviest contention): the placement before Detail costs Detail's passes over the repair's change grown by Detail's reach, not a whole Detail frame, provided TASK-003 reports the repair change as `Inside` the destination. A Heal tick changes its whole destination, so the change, and Detail's rerun, grows with the stroke; Presence links after Detail grow it again by their reach. A quarter-height Heal is 35 to 38 ms a tick at full resolution, past a display frame; at Fit the same spot is a 286 px Heal on a 1716 x 1144 stage.
 
-**CPU reference units** (`repair::tests::photo_sized_cost`, single thread, the frame holding each operation's declared reads):
+**CPU reference units** (`repair::tests::photo_sized_cost`, single thread, the frame holding each operation's declared reads; the final code, load rising from 2.5 to 74 during the run):
 
 | Case | 24 MP Heal | 24 MP Clone | 60 MP Heal | 60 MP Clone |
 | --- | --- | --- | --- | --- |
-| Spot r = 50 px | 4 ms | 0.1 ms | 2.5 ms | 0.1 ms |
-| Spot r = 200 px | 37 to 43 ms | 1.4 to 3.8 ms | 83 to 115 ms | 1.4 ms |
-| Spot r = 0.25 H (1,000 / 1,584 px) | 2.0 to 2.5 s | 31 to 106 ms | 3.5 to 12 s | 99 to 568 ms |
-| Stroke across the frame, r = 12 px | 0.33 s | 0.11 s | 0.82 s | 0.10 s |
-| Stroke r = 100 px over 2,000 px | 0.25 to 0.77 s | 7 to 42 ms | 0.50 to 0.76 s | 7 to 57 ms |
+| Spot r = 50 px | 4.2 ms | 0.09 ms | 2.0 ms | 0.09 ms |
+| Spot r = 200 px | 30 ms | 1.3 ms | 65 ms | 1.3 ms |
+| Spot r = 0.25 H (1,000 / 1,584 px) | 1.6 s | 50 ms | 7.8 s (3.5 s on an earlier, less loaded run) | 0.30 s |
+| Stroke across the frame, r = 12 px | 0.13 s | 8 ms | 0.36 s | 91 ms |
+| Stroke r = 100 px over 2,000 px | 0.24 s | 6 ms | 0.45 s | 6 ms |
 
-The ranges are two runs at different host loads. The automatic search: its plan 0.01 to 3 ms; the reduction of its region 2 ms (spot r = 50 px, 0.3 MP read) to 0.2 to 0.45 s (a quarter-height spot or a broad stroke, 18 to 56 MP read on the CPU); the ranking 0.04 to 7 ms. A stroke across the frame plans to `no-source` with nothing read. The CPU solve is serial; parallelizing a half iteration across tiles is TASK-003's to measure against `render::limits::parallel_pixels`.
+The automatic search: its plan 0.01 to 3 ms; the reduction of its region 2 ms (spot r = 50 px, 0.3 MP read) to 0.06 to 0.2 s (a quarter-height spot or a broad stroke, 18 to 56 MP read on the CPU); the ranking 0.07 to 12 ms. A stroke across the frame plans to `no-source` with nothing read. The CPU solve is serial; parallelizing a half iteration across tiles is TASK-003's to measure against `render::limits::parallel_pixels`.
 
 ## Visual review and failures
 
