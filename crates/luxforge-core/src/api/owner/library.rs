@@ -100,6 +100,11 @@ pub(super) struct JobContext<'a> {
 }
 
 impl JobContext<'_> {
+    /// The job this work belongs to, for an owner's half that records against it.
+    pub(super) fn job_id(&self) -> &JobId {
+        self.job_id
+    }
+
     /// Let a test hold the job as it reaches `phase`; nothing otherwise.
     pub(super) fn pause(&self, phase: Phase) {
         if let Some(hold) = self.hold {

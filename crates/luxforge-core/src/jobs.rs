@@ -617,6 +617,9 @@ struct UsageStart {
     generation: crate::usage::Generation,
     started: std::time::Instant,
     image: Option<crate::usage::ImageId>,
+    /// The photographs a Develop has newly created so far, batch by batch as each commits
+    /// ([`Jobs::usage_added`]), so a cancelled or failed one still counts what it committed.
+    added: u64,
 }
 
 impl Entry {
@@ -756,9 +759,10 @@ fn capability_activity(record: &JobRecord) -> ActivitySpec {
 
 /// Record an instrumented job's terminal outcome in the generation it began in: a source
 /// preparation's, an export's (the files it wrote) or a catalog scan's `operation.end`, and the
-/// originals a Develop newly committed as `images.added` (photographs it linked to or relinked add
-/// nothing, and neither does a failed or cancelled one). Reads the finished record and its output
-/// in place; allocates nothing.
+/// originals a Develop newly committed as `images.added`, counted as its batches committed
+/// ([`Jobs::usage_added`]), whether it then completed, was cancelled or failed (photographs it
+/// linked to or relinked add nothing). Reads the finished record and its output in place;
+/// allocates nothing.
 fn usage_finished(collector: &crate::usage::Collector, start: UsageStart, entry: &Entry) {
     use crate::usage::{DurationMs, EventKind, OperationEnd, Outcome as Ended};
     let outcome = match entry.record.status {
@@ -812,20 +816,10 @@ fn usage_finished(collector: &crate::usage::Collector, start: UsageStart, entry:
         JobKind::IndexRefresh => {
             EventKind::OperationEnd(OperationEnd::catalog_scan(outcome, duration))
         }
-        JobKind::DevelopPicks => {
-            let created = value
-                .and_then(|value| value["developed"].as_array())
-                .map_or(0, |developed| {
-                    developed
-                        .iter()
-                        .filter(|pick| pick["outcome"] == "created")
-                        .count() as u64
-                });
-            match crate::usage::AddedCount::new(created) {
-                Some(count) => EventKind::ImagesAdded { count },
-                None => return,
-            }
-        }
+        JobKind::DevelopPicks => match crate::usage::AddedCount::new(start.added) {
+            Some(count) => EventKind::ImagesAdded { count },
+            None => return,
+        },
         _ => return,
     };
     collector.record_in(start.generation, kind);
@@ -897,6 +891,7 @@ impl Jobs {
             generation,
             started: std::time::Instant::now(),
             image: None,
+            added: 0,
         })
     }
 
@@ -909,6 +904,19 @@ impl Jobs {
             .and_then(|entry| entry.usage.as_mut())
         {
             start.image = Some(image);
+        }
+    }
+
+    /// `created` photographs a running Develop's batch has just committed as new, counted toward
+    /// the `images.added` it records when it ends, however it ends. Nothing when the job is not
+    /// instrumented, collection was off at its start, or it records no usage event (a retry).
+    pub(crate) fn usage_added(&mut self, job_id: &JobId, created: u64) {
+        if let Some(start) = self
+            .entries
+            .get_mut(job_id)
+            .and_then(|entry| entry.usage.as_mut())
+        {
+            start.added = start.added.saturating_add(created);
         }
     }
 

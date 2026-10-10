@@ -1,6 +1,7 @@
 //! A job's terminal usage event is recorded in the consent generation it began in: work begun
 //! before an opt-in, or across a revocation, records nothing; a Develop counts only the
-//! photographs it created; a cancelled or failed export counts nothing written.
+//! photographs its committed batches created, however it ends; a cancelled or failed export counts
+//! nothing written.
 use super::*;
 use crate::usage::{
     Collector, EventKind, ImageKey, Operation, Outcome as Ended, SessionClock, SessionStart,
@@ -90,31 +91,60 @@ fn usage_a_job_begun_before_an_opt_in_or_across_a_revocation_records_nothing() {
     jobs.shutdown();
 }
 
+fn added(count: u64) -> EventKind {
+    EventKind::ImagesAdded {
+        count: crate::usage::AddedCount::new(count).unwrap(),
+    }
+}
+
 #[test]
 fn usage_a_develop_counts_only_the_photographs_it_created_and_a_retry_counts_none() {
     let collector = Arc::new(Collector::new());
     start(&collector);
     let mut jobs = table(&collector);
+    // Two batches committed: one created photograph each (the report's linked and relinked picks
+    // were never counted).
     let developed = open(&mut jobs, JobKind::DevelopPicks);
+    jobs.usage_added(&developed, 1);
+    jobs.usage_added(&developed, 1);
     jobs.finish(&developed, Ok(develop_report()));
     let retried = open(&mut jobs, JobKind::DevelopPicks);
     jobs.forget_usage(&retried);
+    jobs.usage_added(&retried, 2);
     jobs.finish(&retried, Ok(develop_report()));
     let failed = open(&mut jobs, JobKind::DevelopPicks);
     jobs.finish(&failed, Err(Error::internal("the lane stopped")));
     let nothing_new = open(&mut jobs, JobKind::DevelopPicks);
+    jobs.usage_added(&nothing_new, 0);
     jobs.finish(
         &nothing_new,
         Ok(Output::Value(
             json!({"developed": [], "failed": [], "changes": []}),
         )),
     );
-    assert_eq!(
-        recorded(&collector),
-        [EventKind::ImagesAdded {
-            count: crate::usage::AddedCount::new(2).unwrap()
-        }]
-    );
+    assert_eq!(recorded(&collector), [added(2)]);
+    jobs.shutdown();
+}
+
+#[test]
+fn usage_a_cancelled_or_failed_develop_counts_the_photographs_its_committed_batches_created() {
+    let collector = Arc::new(Collector::new());
+    start(&collector);
+    let mut jobs = table(&collector);
+    let cancelled = open(&mut jobs, JobKind::DevelopPicks);
+    jobs.usage_added(&cancelled, 3);
+    jobs.finish(&cancelled, Err(Error::cancelled("stopped")));
+    let failed = open(&mut jobs, JobKind::DevelopPicks);
+    jobs.usage_added(&failed, 1);
+    jobs.finish(&failed, Err(Error::internal("the lane stopped")));
+    assert_eq!(recorded(&collector), [added(3), added(1)]);
+    // Begun while off: its batches count nothing.
+    collector.stop();
+    let off = open(&mut jobs, JobKind::DevelopPicks);
+    start(&collector);
+    jobs.usage_added(&off, 2);
+    jobs.finish(&off, Err(Error::cancelled("stopped")));
+    assert_eq!(recorded(&collector), []);
     jobs.shutdown();
 }
 

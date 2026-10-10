@@ -10,7 +10,7 @@ use crate::{
     Error, ErrorKind, JobId, MutationRequest,
     api::{Origin, methods::value},
     catalog_types::{
-        DevelopReport, FileId, Targets, ViewItem, Volume, VolumeId,
+        DevelopOutcome, DevelopReport, FileId, Targets, ViewItem, Volume, VolumeId,
         api::{AssetTargets, PickDevelop, PickPlan},
         jobs::DEVELOP_PICKS,
     },
@@ -296,14 +296,16 @@ impl DevelopJob {
             let files = std::mem::take(&mut batch);
             let paths: Vec<PathBuf> = files.iter().map(|file| file.pick.clone()).collect();
             let destination = self.destinations[self.of_event[file.event]].clone();
-            let (method, mutation, origin) = (
+            let (method, mutation, origin, job_id) = (
                 self.method.clone(),
                 self.mutation.clone(),
                 self.origin.clone(),
+                job.job_id().clone(),
             );
             let committed = job.commit(Box::new(move |owner: &mut Owner| {
                 commit(
                     owner,
+                    &job_id,
                     &origin,
                     Request::new(&method, &mutation),
                     &destination,
@@ -334,12 +336,16 @@ impl DevelopJob {
 /// Commit one batch on the owner, as one library change of the Develop's request: decide what each
 /// file becomes, then write them. A change the catalog refuses reports every file of the batch
 /// with its refusal and changes nothing. What a one-file Develop kept of its committed file is
-/// kept by the service for the preparation that follows ([`EditorService::keep_read`]). Answers
-/// the batch's report.
+/// kept by the service for the preparation that follows ([`EditorService::keep_read`]). The
+/// photographs a committed batch newly created count toward the job's `images.added` at once
+/// ([`Jobs::usage_added`]), so a Develop cancelled or failing later still counts them. Answers the
+/// batch's report.
 ///
 /// [`EditorService::keep_read`]: crate::EditorService::keep_read
+/// [`Jobs::usage_added`]: crate::jobs::Jobs::usage_added
 fn commit(
     owner: &mut Owner,
+    job_id: &JobId,
     origin: &Origin,
     request: Request<'_>,
     destination: &Destination,
@@ -361,6 +367,12 @@ fn commit(
         Ok(answer) => {
             report.developed = decided.iter().map(Decided::reported).collect();
             report.changes.extend(answer.change);
+            let created = report
+                .developed
+                .iter()
+                .filter(|pick| pick.outcome == DevelopOutcome::Created)
+                .count();
+            owner.jobs.usage_added(job_id, created as u64);
             if let Some(read) = decided.iter_mut().find_map(Decided::take_read) {
                 owner.service.keep_read(read);
             }

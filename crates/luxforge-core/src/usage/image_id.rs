@@ -39,12 +39,19 @@ impl ImageKey {
     /// The image ID of a catalog fingerprint as the catalog stores it: 64 hexadecimal characters.
     /// `None` for anything else.
     pub fn image_id_of_hex(&self, fingerprint: &str) -> Option<ImageId> {
-        let mut bytes = [0; 32];
-        decode_hex(fingerprint.as_bytes(), &mut bytes)?;
+        let mut bytes = fingerprint_of_hex(fingerprint)?;
         let id = self.image_id(&bytes);
         bytes.zeroize();
         Some(id)
     }
+}
+
+/// A catalog fingerprint's 32 bytes from its 64 hexadecimal characters (either case); `None` for
+/// anything else. The caller zeroes the bytes when done with them.
+pub(super) fn fingerprint_of_hex(fingerprint: &str) -> Option<[u8; 32]> {
+    let mut bytes = [0; 32];
+    decode_hex(fingerprint.as_bytes(), &mut bytes)?;
+    Some(bytes)
 }
 
 impl Drop for ImageKey {

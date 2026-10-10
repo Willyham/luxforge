@@ -22,13 +22,14 @@
 use super::{
     Gate, Generation,
     encode::{ReportId, SessionStart},
-    image_id::{ImageId, ImageKey},
+    image_id::{ImageId, ImageKey, fingerprint_of_hex},
     registry::{
         Feature, Idle, MAX_COUNT, MAX_DURATION_MS, MAX_EVENTS, MAX_MEMORY_MIB, MAX_PERCENT,
         MemoryKind, Operation, Outcome, Presented, Renderer, Tool, Trigger, Workspace,
     },
 };
 use std::{
+    fmt,
     sync::{
         Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, TryLockError,
         atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering},
@@ -36,6 +37,7 @@ use std::{
     thread::Thread,
     time::{Duration, Instant},
 };
+use zeroize::Zeroize;
 
 /// One recorded event: its session sequence number, milliseconds since the session started, and
 /// what happened. `Copy`, fixed-size and string-free.
@@ -397,6 +399,28 @@ pub struct Session {
     /// The installation's image key, held only while this session lives ([`Collector::image_id`]).
     /// Never formatted: its `Debug` is redacted.
     image_key: Option<ImageKey>,
+    /// The last image ID [`Self::image_key`] gave, with its fingerprint ([`Collector::image_id`]).
+    /// It lives and dies with the session, so a new session, and so a new key, never sees it.
+    image_memo: Mutex<Option<ImageMemo>>,
+}
+
+/// One remembered image ID and the fingerprint it was computed from: in memory only, never
+/// formatted (its `Debug` is redacted), uploaded or logged, and the fingerprint zeroed on drop.
+struct ImageMemo {
+    fingerprint: [u8; 32],
+    image: ImageId,
+}
+
+impl Drop for ImageMemo {
+    fn drop(&mut self) {
+        self.fingerprint.zeroize();
+    }
+}
+
+impl fmt::Debug for ImageMemo {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("ImageMemo(redacted)")
+    }
 }
 
 impl Session {
@@ -426,6 +450,7 @@ impl Session {
             sent: AtomicU64::new(0),
             waker: OnceLock::new(),
             image_key: None,
+            image_memo: Mutex::new(None),
         };
         let mut first = lock(&session.banks[0]);
         session.next_seq.store(1, Ordering::Relaxed);
@@ -441,6 +466,27 @@ impl Session {
 
     pub fn generation(&self) -> Generation {
         self.generation
+    }
+
+    /// The image ID of `fingerprint_hex` under this session's key: the remembered one when it is
+    /// the last fingerprint asked for, otherwise one HMAC, then remembered. Never waits: a memo
+    /// another thread holds is passed by and the ID computed.
+    fn image_id(&self, fingerprint_hex: &str) -> Option<ImageId> {
+        let key = self.image_key.as_ref()?;
+        let mut fingerprint = fingerprint_of_hex(fingerprint_hex)?;
+        let image = match self.image_memo.try_lock() {
+            Ok(mut memo) => match memo.as_ref() {
+                Some(last) if last.fingerprint == fingerprint => last.image,
+                _ => {
+                    let image = key.image_id(&fingerprint);
+                    *memo = Some(ImageMemo { fingerprint, image });
+                    image
+                }
+            },
+            Err(TryLockError::WouldBlock | TryLockError::Poisoned(_)) => key.image_id(&fingerprint),
+        };
+        fingerprint.zeroize();
+        Some(image)
     }
 
     /// The in-memory session ID the envelope carries.
@@ -702,16 +748,17 @@ impl Collector {
     }
 
     /// The keyed image ID of the photograph whose catalog fingerprint (64 hexadecimal characters)
-    /// is `fingerprint_hex`, under the current session's image key: one HMAC, no file read. `None`
-    /// while collection is off, while the session is being replaced, or for a malformed fingerprint.
-    /// Producers compute it once when a photograph is adopted and keep it beside the photograph.
+    /// is `fingerprint_hex`, under the current session's image key: no file read, and at most one
+    /// HMAC. The session remembers the last fingerprint and ID it gave, so the several asks one
+    /// open makes (its preparation's outcome, its adoption, the desktop's own producers) cost one
+    /// HMAC between them; the memo belongs to the session, so a new session's key never answers
+    /// from it. Never waits. `None` while collection is off, while the session is being replaced,
+    /// or for a malformed fingerprint. Producers compute it when a photograph is adopted and keep
+    /// it beside the photograph.
     pub fn image_id(&self, fingerprint_hex: &str) -> Option<ImageId> {
         self.gate.current()?;
         let slot = self.session.try_read().ok()?;
-        slot.as_deref()?
-            .image_key
-            .as_ref()?
-            .image_id_of_hex(fingerprint_hex)
+        slot.as_deref()?.image_id(fingerprint_hex)
     }
 
     /// The current session, for the worker.

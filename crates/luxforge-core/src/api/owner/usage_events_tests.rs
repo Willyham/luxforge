@@ -6,7 +6,7 @@ use crate::usage::{
     Collector, EventKind, Feature, ImageId, ImageKey, Operation, Outcome as Ended, SessionClock,
     SessionStart, Tool, Trigger,
 };
-use std::{fs, path::Path};
+use std::{fs, path::Path, sync::Mutex};
 
 const ACTOR: &str = "usage-test";
 
@@ -184,6 +184,12 @@ fn image_of(state: &Value) -> ImageId {
         .expect("a fingerprint")
 }
 
+fn added(count: u64) -> EventKind {
+    EventKind::ImagesAdded {
+        count: crate::usage::AddedCount::new(count).unwrap(),
+    }
+}
+
 fn interaction(feature: Feature, image: Option<ImageId>) -> EventKind {
     EventKind::Interaction { feature, image }
 }
@@ -349,8 +355,7 @@ fn usage_a_mixed_import_develop_reopen_export_session_records_its_events_in_orde
     assert_eq!(exported.len(), 2, "{exported:?}");
     assert_eq!(exported[0], interaction(Feature::Export, Some(image)));
     assert_eq!(
-        ended(&exported[1])
-            .map(|(operation, outcome, count, image)| (operation, outcome, count, image)),
+        ended(&exported[1]),
         Some((Operation::Export, Ended::Completed, Some(1), Some(image)))
     );
 
@@ -495,4 +500,83 @@ fn usage_events_carry_no_arguments_labels_or_identities() {
     ] {
         assert!(!debug.contains(secret), "{secret} appears in {debug}");
     }
+}
+
+/// A Develop cancelled once its first batch has committed still records `images.added` for the
+/// photograph that batch created, though the job's report is lost; a Develop that creates nothing
+/// (its one file a duplicate, linked) records no `images.added`.
+#[test]
+fn usage_a_develop_cancelled_after_a_committed_batch_records_the_photographs_it_added() {
+    use super::{
+        OwnerMessage,
+        catalog::CatalogMessage,
+        library::{Hold, LibraryMessage},
+    };
+    use crate::library::{
+        develop::develop_picks_tests::{Shot, photo},
+        locate::Phase,
+    };
+    let harness = Harness::new("develop-cancel");
+    harness.start();
+    let paths: Vec<PathBuf> = (0..3)
+        .map(|at| {
+            photo(
+                &harness.dir.join(format!("trip/k{at}.jpg")),
+                &Shot::at(&format!("2026:09:12 1{at}:00:00")),
+            )
+        })
+        .collect();
+    let post = |message| {
+        harness
+            .owner
+            .sender
+            .send(OwnerMessage::Catalog(CatalogMessage::Library(message)))
+            .unwrap();
+    };
+    // Held as its second file is ready to commit: the first has committed alone.
+    let gate = Arc::new(luxforge_testbase::Gate::new());
+    gate.shut();
+    let held = gate.clone();
+    let reached = Mutex::new(0);
+    let hold: Hold = Arc::new(move |at| {
+        if at == Phase::Verified {
+            let mut count = reached.lock().unwrap();
+            *count += 1;
+            if *count == 2 {
+                drop(count);
+                held.pass();
+            }
+        }
+    });
+    post(LibraryMessage::Hold(Some(hold)));
+    let started = harness.ok(
+        "pick.develop",
+        json!({
+            "targets": {"kind": "paths", "paths": paths},
+            "into": [],
+            "confirm_removable": true,
+            "mutation": harness.request("develop-cancel"),
+        }),
+    );
+    gate.wait_reached(1, "the second file");
+    harness.ok("job.cancel", json!({"job_id": started["job_id"]}));
+    gate.open();
+    let settled = harness.settle(&started["job_id"]);
+    assert_eq!(settled["status"], "cancelled", "{settled}");
+    post(LibraryMessage::Hold(None));
+    assert_eq!(
+        harness.events(),
+        [interaction(Feature::DevelopPicks, None), added(1)]
+    );
+
+    // A duplicate of the committed photograph is linked to it: nothing added.
+    let duplicate = harness.dir.join("duplicate.jpg");
+    fs::copy(&paths[0], &duplicate).unwrap();
+    let linked = harness.develop("develop-duplicate", &[&duplicate]);
+    assert_eq!(linked["status"], "ready", "{linked}");
+    assert_eq!(
+        linked["result"]["developed"][0]["outcome"], "linked",
+        "{linked}"
+    );
+    assert_eq!(harness.events(), [interaction(Feature::DevelopPicks, None)]);
 }
