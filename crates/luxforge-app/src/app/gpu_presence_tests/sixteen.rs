@@ -124,12 +124,13 @@ fn sixteen() -> Recipe {
 /// The surface's own compile cache holds the largest plan's links and a whole warm list at once:
 /// the core bounds the warm list to the cache less the largest plan, whose links are a content
 /// link and one for each spatial operation, a global layer of each spatial effect and every masked
-/// spatial layer, and the light link its lights are computed with.
+/// spatial layer, and the light link its lights are computed with. A program no plan names yet (the
+/// repair program, enabled when the render integration plans it) adds no link.
 #[test]
 fn gpu_preview_the_largest_plan_and_a_warm_list_fit_the_compile_cache() {
     let spatial_effects = GPU_PROGRAMS
         .iter()
-        .filter(|program| program.kind == GpuProgramKind::Spatial)
+        .filter(|program| program.kind == GpuProgramKind::Spatial && program.enabled)
         .count();
     assert_eq!(
         GPU_PLAN_LINKS,
