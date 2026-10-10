@@ -1,0 +1,264 @@
+{
+  "uid": "luxforge-paths",
+  "title": "Luxforge paths",
+  "description": "Ordered-path questions over each session's events.",
+  "tags": [
+    "luxforge",
+    "usage-statistics"
+  ],
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": false,
+  "graphTooltip": 0,
+  "refresh": "",
+  "timezone": "utc",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "title": "Usage",
+      "type": "link",
+      "url": "/d/luxforge-usage",
+      "icon": "dashboard"
+    },
+    {
+      "title": "Performance",
+      "type": "link",
+      "url": "/d/luxforge-performance",
+      "icon": "dashboard"
+    },
+    {
+      "title": "Paths",
+      "type": "link",
+      "url": "/d/luxforge-paths",
+      "icon": "dashboard"
+    },
+    {
+      "title": "Session timeline",
+      "type": "link",
+      "url": "/d/luxforge-session",
+      "icon": "dashboard"
+    },
+    {
+      "title": "Installation and image history",
+      "type": "link",
+      "url": "/d/luxforge-history",
+      "icon": "dashboard"
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "Read this first",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 6
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**How to read this dashboard.** Reporting is **opt-in**, so every number describes only the installations whose owners chose to share, not everyone who uses Luxforge, and those people may differ from the rest. Delivery is **best-effort**: batches and events can be lost (the loss panels count the gaps that are visible), and the **end of a session is never seen**: nothing after the last received batch exists here. A **session** is one app launch; an **installation** is one random ID kept by one install. Neither is a person or a physical device: one person can have several installations, an installation can be reset, and the ID is not an account. Image IDs are meaningful only inside one installation. Sparse cohorts can identify an installation and do not prove anonymity. Rows expire 90 days after receipt.\n\nPaths follow `seq` order inside one session. A session whose events were lost, or that ended before it got further, counts as not having taken the path; the share is therefore a lower bound for sessions that were only partly received. Predecessors listed after a gap are not necessarily the immediate previous action."
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Add images, then Develop, then a completed export",
+      "description": "Ordered, not necessarily adjacent: other events may occur in between.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 24,
+        "h": 5
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT uniqExact(session_id) AS sessions, countIf(m1) AS \"added images\", countIf(m2) AS \"... then entered Develop\",\n       countIf(m3) AS \"... then completed an export\",\n       round(100 * countIf(m3) / nullIf(countIf(m1), 0), 1) AS \"% of sessions that added images\",\n       round(100 * countIf(m3) / count(), 1) AS \"% of all sessions\"\nFROM (\n  SELECT session_id,\n         max(name = 'images.added') AS m1,\n         sequenceMatch('(?1).*(?2)')(seq, name = 'images.added', name = 'workspace.enter' AND ifNull(workspace = 'develop', 0)) AS m2,\n         sequenceMatch('(?1).*(?2).*(?3)')(seq, name = 'images.added', name = 'workspace.enter' AND ifNull(workspace = 'develop', 0),\n                                           name = 'operation.end' AND ifNull(operation = 'export' AND outcome = 'completed', 0)) AS m3\n  FROM luxforge.events_unique WHERE $__timeFilter(received_at) GROUP BY session_id)",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "What immediately precedes a failed operation",
+      "description": "The kept event just before each failure. `after a gap` counts failures where events were missing between the two.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 11,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT operation, preceded_by, count() AS failures, countIf(missing_before > 0) AS \"after a gap\", uniqExact(session_id) AS sessions\nFROM (\n  SELECT session_id, name, operation, outcome, missing_before, received_at,\n         lagInFrame(label, 1, '(start of known events)') OVER w AS preceded_by\n  FROM luxforge.event_timeline\n  WINDOW w AS (PARTITION BY session_id ORDER BY seq ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW))\nWHERE name = 'operation.end' AND outcome = 'failed' AND $__timeFilter(received_at)\nGROUP BY operation, preceded_by ORDER BY failures DESC, operation, preceded_by",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 4,
+      "type": "table",
+      "title": "The two events before a failed operation",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 11,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT operation, before_that, preceded_by, count() AS failures, uniqExact(session_id) AS sessions\nFROM (\n  SELECT session_id, name, operation, outcome, received_at,\n         lagInFrame(label, 1, '(start of known events)') OVER w AS preceded_by,\n         lagInFrame(label, 2, '(start of known events)') OVER w AS before_that\n  FROM luxforge.event_timeline\n  WINDOW w AS (PARTITION BY session_id ORDER BY seq ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW))\nWHERE name = 'operation.end' AND outcome = 'failed' AND $__timeFilter(received_at)\nGROUP BY operation, before_that, preceded_by ORDER BY failures DESC, operation",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "What follows entering Develop",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT followed_by, count() AS times, uniqExact(session_id) AS sessions\nFROM (\n  SELECT session_id, label, received_at,\n         leadInFrame(label, 1, '(nothing received after)') OVER w AS followed_by\n  FROM luxforge.event_timeline\n  WINDOW w AS (PARTITION BY session_id ORDER BY seq ROWS BETWEEN CURRENT ROW AND 1 FOLLOWING))\nWHERE label = 'workspace.enter: develop' AND $__timeFilter(received_at)\nGROUP BY followed_by ORDER BY times DESC",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 6,
+      "type": "table",
+      "title": "Sessions by furthest stage reached",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 21,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT multiIf(m3, 'completed an export after Develop', m2, 'entered Develop after adding images', m1, 'added images only', 'none of these') AS stage,\n       count() AS sessions\nFROM (\n  SELECT session_id,\n         max(name = 'images.added') AS m1,\n         sequenceMatch('(?1).*(?2)')(seq, name = 'images.added', name = 'workspace.enter' AND ifNull(workspace = 'develop', 0)) AS m2,\n         sequenceMatch('(?1).*(?2).*(?3)')(seq, name = 'images.added', name = 'workspace.enter' AND ifNull(workspace = 'develop', 0),\n                                           name = 'operation.end' AND ifNull(operation = 'export' AND outcome = 'completed', 0)) AS m3\n  FROM luxforge.events_unique WHERE $__timeFilter(received_at) GROUP BY session_id)\nGROUP BY stage ORDER BY sessions DESC",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    }
+  ]
+}

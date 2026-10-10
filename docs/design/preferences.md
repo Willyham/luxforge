@@ -9,7 +9,7 @@ The person's preferences live outside every catalog, in the host's `preferences.
 
 ## Rules
 
-**Planned extension:** [optional usage statistics](usage-statistics.md) will add a protected consent record outside catalogs, a once-only startup claim and Settings › Privacy. It is not implemented. Dedicated permission-aware commands, rather than `preferences.set`, will change it; generic resets must not grant consent or cause another prompt. The durable prompt claim is bookkeeping, a planned exception to the explicit-choice rule below.
+**Protected usage statistics record.** `preferences.json` also holds the [usage statistics](usage-statistics.md#consent-and-first-launch) consent record, `usage_statistics`. It is not a preference: only `usage.prompt.claim` and `usage.set` write it ([protected record](#protected-usage-statistics-record)). The durable prompt claim is bookkeeping, a deliberate exception to the explicit-choice rule below.
 
 - **A preference never changes how a saved recipe renders.** It changes what the workspace draws, where files go, or which actions are proposed to a new photo. A proposed action is an ordinary history entry, so the recipe always records it.
 - **Only explicit choices are stored.** A preference nobody set has no stored value and follows its default. `null` in `preferences.set` removes the stored value. A stored value this build cannot read is refused, as today, without rewriting the file.
@@ -34,6 +34,14 @@ The person's preferences live outside every catalog, in the host's `preferences.
 | `brush` | `{size, feather, flow}`, or `null` | `null`: the neutral brush | remembered | next launch |
 | `window` | `{width, height, x, y}` in the system's points, or `null` | `null`: 1440 × 900, placed by the system | remembered | next launch |
 | `export_folder` | absolute path of a folder, or `null` | `null`: the original's folder | remembered | next export |
+
+### Protected usage statistics record
+
+`usage_statistics` is `{prompt_shown, enabled, disclosure_version, installation_id?, image_key?}`. An absent record means the notice was never shown and sharing is off. An enabled record holds a random UUIDv4 `installation_id` and a 64-hex-character `image_key` (32 random bytes); a disabled one holds neither, and any other combination, a non-canonical ID or key, an unknown key or a disclosure version of 0 makes the file unreadable, so it is refused unchanged as any other bad value is and statistics stay off.
+
+- `preferences.set` has no `usage_statistics` parameter, so naming it, `null` or not, is refused, and no value or reset of another preference changes the record. `flags.set` keeps it too.
+- `preferences.read` and `preferences.set` answer it as `{prompt_shown, enabled, disclosure_version?, installation_id?}`, `{prompt_shown: false, enabled: false}` when absent, and never with its `image_key`.
+- `usage.prompt.claim` and `usage.set` each make one locked read-modify-write of the record alone, leaving every preference as it was. Their rules, and `usage.read`, are in the [usage statistics design](usage-statistics.md#settings-and-programmatic-parity).
 
 ### Checks
 

@@ -23,7 +23,8 @@ pub struct EventRow<'a> {
     pub fields: &'a EventFields,
 }
 
-/// The batch's release and device profile, flattened to columns in a fixed order.
+/// The batch's release, sequence number, dropped-event count and device profile, flattened to columns
+/// in a fixed order.
 pub struct ProfileRow<'a> {
     pub received_at: &'a str,
     pub batch: &'a Batch,
@@ -33,11 +34,13 @@ impl Serialize for ProfileRow<'_> {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         let batch = self.batch;
         let columns = profile_columns();
-        let mut map = serializer.serialize_map(Some(4 + columns.len()))?;
+        let mut map = serializer.serialize_map(Some(6 + columns.len()))?;
         map.serialize_entry("received_at", self.received_at)?;
         map.serialize_entry("installation_id", &batch.installation_id)?;
         map.serialize_entry("session_id", &batch.session_id)?;
         map.serialize_entry("release", &batch.release)?;
+        map.serialize_entry("batch_seq", &batch.batch_seq)?;
+        map.serialize_entry("dropped", &batch.dropped)?;
         for column in &columns {
             map.serialize_entry(
                 column,

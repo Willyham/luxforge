@@ -98,6 +98,7 @@ impl Fixture {
             renderer: Default::default(),
             tiles: None,
             usage: Default::default(),
+            usage_consent: Default::default(),
         }
     }
 
