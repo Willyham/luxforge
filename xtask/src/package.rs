@@ -321,9 +321,35 @@ fn archive(directory: &Path, destination: &Path) -> Result {
     }
     Ok(())
 }
+/// The source revision a release build embeds for usage statistics' build identity
+/// (`docs/design/usage-statistics.md#build-identity-and-activation`): the full revision of a clean
+/// tree, and none for a dirty one, whose build is then ineligible for production reporting.
+fn embedded_revision(revision: &str, dirty: bool) -> Option<&str> {
+    (!dirty).then_some(revision)
+}
+
+/// Set the core's compile-time source revision for `revision`, or remove any inherited value so a
+/// dirty tree's build embeds none.
+fn embed_revision(command: &mut std::process::Command, revision: Option<&str>) {
+    let variable = luxforge_core::usage::eligibility::SOURCE_REVISION_ENV;
+    match revision {
+        Some(revision) => command.env(variable, revision),
+        None => command.env_remove(variable),
+    };
+}
+
 pub fn package(root: &Path, out: &Path) -> Result {
     ensure(!out.exists(), "Package output must be new")?;
-    cargo(root, "build", true)?;
+    let revision = output(root, "git", &["rev-parse", "HEAD"])?
+        .trim()
+        .to_owned();
+    let dirty = !output(root, "git", &["status", "--porcelain"])?
+        .trim()
+        .is_empty();
+    let embedded = embedded_revision(&revision, dirty);
+    xtask_cli::cargo_with(root, "build", true, |command| {
+        embed_revision(command, embedded)
+    })?;
     fs::create_dir_all(out)?;
     let target = out.join("Luxforge");
     fs::create_dir(&target)?;
@@ -343,7 +369,7 @@ pub fn package(root: &Path, out: &Path) -> Result {
     }
     write_json(
         &target.join("build.json"),
-        &json!({"revision":output(root,"git",&["rev-parse","HEAD"])?.trim(),"working_tree_dirty":!output(root,"git",&["status","--porcelain"])?.trim().is_empty(),"target":host(root)?,"profile":"release","binary_sha256":hash(&binary)?,"lock_sha256":hash(&root.join("Cargo.lock"))?}),
+        &json!({"revision":revision,"working_tree_dirty":dirty,"release":luxforge_core::usage::BuildIdentity::new(env!("CARGO_PKG_VERSION"),embedded).release(),"target":host(root)?,"profile":"release","binary_sha256":hash(&binary)?,"lock_sha256":hash(&root.join("Cargo.lock"))?}),
     )?;
     fs::copy(root.join("LICENSE"), target.join("LICENSE"))?;
     inventory(root, &target.join("notices"))?;
@@ -369,6 +395,30 @@ pub fn package(root: &Path, out: &Path) -> Result {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn package_embeds_only_a_clean_revision() {
+        let revision = "9d4138ca1f2e5b7a0c3d4e5f60718293a4b5c6d7";
+        assert_eq!(embedded_revision(revision, false), Some(revision));
+        assert_eq!(embedded_revision(revision, true), None);
+        let variable = std::ffi::OsStr::new(luxforge_core::usage::eligibility::SOURCE_REVISION_ENV);
+        let set = |revision| {
+            let mut command = std::process::Command::new("cargo");
+            embed_revision(&mut command, revision);
+            command
+                .get_envs()
+                .find(|(key, _)| *key == variable)
+                .map(|(_, value)| value.map(|value| value.to_owned()))
+        };
+        assert_eq!(set(Some(revision)), Some(Some(revision.into())));
+        // A dirty tree's build removes any inherited value rather than leaving it.
+        assert_eq!(set(None), Some(None));
+        assert_eq!(
+            luxforge_core::usage::BuildIdentity::new("0.0.0", embedded_revision(revision, false))
+                .release()
+                .as_deref(),
+            Some("0.0.0+9d4138ca1f2e")
+        );
+    }
     #[test]
     fn copies_bundled_raw_native_notices() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
