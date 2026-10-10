@@ -267,6 +267,16 @@ pub(crate) struct CorrectionsModel {
     pub(crate) pins_hidden: bool,
 }
 
+/// The no-source notice's second line: how to finish, and the core's reason when it is not the
+/// no-source answer itself (a refused search says why).
+pub(crate) fn notice_detail(reason: &str) -> String {
+    if reason.starts_with("No automatic source fits") {
+        "\u{2325}-click one to finish".to_owned()
+    } else {
+        format!("\u{2325}-click one to finish \u{b7} {reason}")
+    }
+}
+
 /// A kind option's title: its first letter upper-cased.
 pub(crate) fn kind_title(option: &str) -> String {
     let mut characters = option.chars();

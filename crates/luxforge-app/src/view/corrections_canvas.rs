@@ -310,6 +310,35 @@ impl CorrectionsCanvas<'_> {
         }
     }
 
+    /// A two-line tooltip above `at`, kept inside the canvas.
+    fn tooltip(frame: &mut Frame, at: Point, lead: &str, detail: &str, size: Size) {
+        const PAD: f32 = 6.0;
+        const LINE: f32 = 15.0;
+        let width = 7.0 * detail.chars().count().max(lead.chars().count()) as f32 * 0.82 + 2.0 * PAD;
+        let height = 2.0 * LINE + PAD;
+        let x = (at.x + 14.0).min(size.width - width).max(0.0);
+        let y = (at.y - height - 12.0).max(0.0);
+        frame.fill(
+            &Path::rounded_rectangle(Point::new(x, y), Size::new(width, height), 5.0.into()),
+            Color::from_rgba(0.08, 0.08, 0.09, 0.92),
+        );
+        for (line, (text, colour)) in [
+            (lead, WHITE),
+            (detail, Color::from_rgba(1.0, 1.0, 1.0, 0.65)),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            frame.fill_text(canvas::Text {
+                content: text.to_owned(),
+                position: Point::new(x + PAD, y + PAD / 2.0 + LINE * line as f32),
+                color: colour,
+                size: iced::Pixels(if line == 0 { 12.0 } else { 11.0 }),
+                ..canvas::Text::default()
+            });
+        }
+    }
+
     /// A crosshair of `arm` at a canvas point, in `colour`.
     fn crosshair(frame: &mut Frame, centre: Point, arm: f32, colour: Color) {
         let path = Path::new(|builder| {
@@ -500,6 +529,21 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
             }
             for (handle, at) in self.handles() {
                 Self::handle(&mut frame, handle, at);
+            }
+            // The hovered pin's tooltip: what it is and what its handles do.
+            if !state.pressed
+                && let Some((listed, held)) = self
+                    .drawn()
+                    .find(|(listed, _)| self.data.hovered == Some(listed.operation.as_str()))
+                && let Some(at) = brush_overlay::pin(&self.placement, &held)
+            {
+                Self::tooltip(
+                    &mut frame,
+                    Point::new(at.0, at.1),
+                    &format!("{} \u{b7} drag to move", listed.name),
+                    "Drag the dashed source to resample \u{b7} / new source \u{b7} \u{232b} delete",
+                    bounds.size(),
+                );
             }
         }
         // The brush cursor, over the photograph and away from a pin or handle, while nothing is

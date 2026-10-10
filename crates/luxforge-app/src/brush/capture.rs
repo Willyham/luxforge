@@ -147,13 +147,11 @@ impl StrokeCapture {
     }
 
     /// Where the path began: a correction's pin and a straight stroke's start.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn first(&self) -> Option<[f64; 2]> {
         self.first
     }
 
     /// Where the path has got to: the next straight stroke's start.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn last(&self) -> Option<[f64; 2]> {
         self.last
     }

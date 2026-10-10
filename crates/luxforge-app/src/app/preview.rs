@@ -2259,6 +2259,10 @@ impl Editor {
         if let Some(line) = self.mask_gesture_status() {
             return line;
         }
+        // So does the Corrections mode: its gesture, its last sentence or its hint.
+        if let Some(line) = self.correction_status() {
+            return line;
+        }
         let sentence = match (&self.status.happened, &self.document.state) {
             (Some(happened), _) => happened.sentence(),
             (None, Some(state)) => {

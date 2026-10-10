@@ -23,9 +23,7 @@ pub(crate) struct ContentMap {
 /// Why a press, a capture or a handle cannot be placed, said rather than guessed.
 ///
 /// The frame correlation below is the declared brush's press rule; the mask brush keeps its own
-/// (its map stays valid across mask commits, which never change geometry), so outside the tests
-/// only the position outcomes are reached until the Corrections workspace lands.
-#[cfg_attr(not(test), allow(dead_code))]
+/// (its map stays valid across mask commits, which never change geometry).
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum MapRefusal {
     /// No map of the photograph has arrived yet.
@@ -39,7 +37,6 @@ pub(crate) enum MapRefusal {
     Unconverged,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl MapRefusal {
     /// The status line's words.
     pub(crate) fn sentence(&self) -> &'static str {
@@ -72,7 +69,6 @@ impl From<MapError> for MapRefusal {
 
 /// The frame a map must belong to: the entry on screen and, while a draft is open, the draft whose
 /// preview it is.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct Displayed<'a> {
     pub(crate) entry: &'a EntryId,
@@ -182,7 +178,6 @@ impl ContentMap {
     /// preview is displayed, the same draft at the displayed revision or a later one of the same
     /// base (later fields change what is drawn, never where a position maps). A map that names no
     /// frame at all — one built from a bare geometry — belongs to none.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn belongs_to(&self, displayed: &Displayed<'_>) -> bool {
         let Some(identity) = &self.identity else {
             return false;
@@ -202,7 +197,6 @@ impl ContentMap {
     /// The map a press on the displayed frame is placed through, or why it must wait: no map yet,
     /// or the map on hand belongs to another frame. Drawing may keep using a stale map; a press
     /// never does.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn for_press<'m>(
         map: Option<&'m Self>,
         displayed: &Displayed<'_>,

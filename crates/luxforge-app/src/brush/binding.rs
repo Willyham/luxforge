@@ -105,6 +105,7 @@ pub(crate) struct BrushSettings {
 impl BrushBinding {
     /// The host's mask brush: `mask.add-stroke`'s path and `size`, with its feather. Flow and the
     /// colour limit are the mask brush's own and stay on its editor.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn mask() -> Self {
         let command =
             commands::find(commands::ADD_STROKE).expect("the host declares mask.add-stroke");
@@ -214,6 +215,7 @@ impl BrushBinding {
 
     /// Move one bound number by `steps` of its own declared step: the brackets and a panel's nudges
     /// are the same call.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn nudge(&self, settings: &mut BrushSettings, name: &str, steps: f64) -> bool {
         let Some(step) = step(&self.action, name) else {
             return false;

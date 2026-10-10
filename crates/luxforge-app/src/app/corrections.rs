@@ -1381,9 +1381,10 @@ impl Editor {
             self.corrections.notice = Some(CorrectionNotice::NoSource {
                 reason: reason.clone(),
             });
-            self.status.text = format!(
-                "No automatic source fits \u{b7} \u{2325}-click one to finish \u{b7} Esc cancels \u{b7} {reason}"
-            );
+            self.say(format!(
+                "No automatic source fits \u{b7} {} \u{b7} Esc cancels",
+                crate::state::corrections::notice_detail(&reason)
+            ));
         }
     }
 
