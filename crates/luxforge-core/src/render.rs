@@ -34,6 +34,8 @@ pub(crate) mod parallel;
 mod pipeline;
 mod raster;
 pub(crate) mod repair_entry;
+#[cfg(any(test, feature = "qualification"))]
+pub(crate) mod repair_testing;
 pub(crate) mod spatial;
 #[cfg(test)]
 pub(crate) mod testing;

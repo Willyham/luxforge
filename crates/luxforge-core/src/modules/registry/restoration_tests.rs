@@ -239,7 +239,7 @@ fn restoration_and_spatial_reasons_are_reported_separately() {
     assert!(approx.restoration && approx.spatial);
 }
 #[test]
-fn restoration_boundary_is_the_leading_source_pixel_restoration_run() {
+fn restoration_boundary_is_the_leading_source_repair_restoration_run() {
     let (registry, _) = registry();
     let mut layers = vec![
         test_layer(REPAIR_STAGE_EFFECT),
@@ -260,24 +260,23 @@ fn restoration_boundary_is_the_leading_source_pixel_restoration_run() {
             .restoration_boundary(),
         Some(1)
     );
+    // A repair layer after colour is outside the leading run: refused, not rendered.
     layers.swap(0, 2);
-    assert_eq!(
-        registry
-            .compile(
-                10,
-                10,
-                &Recipe {
-                    layers,
-                    ..Recipe::default()
-                }
-            )
-            .unwrap()
-            .restoration_boundary(),
-        None
-    );
+    let error = registry
+        .compile(
+            10,
+            10,
+            &Recipe {
+                layers,
+                ..Recipe::default()
+            },
+        )
+        .err()
+        .expect("a repair layer after colour");
+    assert_eq!(error.kind, crate::ErrorKind::Incompatible);
 }
 #[test]
-fn pixel_placement_without_restoration_is_unchanged() {
+fn repair_placement_without_restoration_goes_before_colour() {
     let (registry, _) = registry();
     let layers = vec![
         Layer::new(crate::BASIC_EFFECT, json!({"exposure":1.0})),
@@ -285,7 +284,7 @@ fn pixel_placement_without_restoration_is_unchanged() {
     ];
     assert_eq!(
         registry.insertion_index_for(&layers, REPAIR_STAGE_EFFECT),
-        1
+        0
     );
 }
 #[test]
@@ -303,7 +302,7 @@ fn restoration_placement_keeps_noncanonical_colour_order() {
     );
 }
 #[test]
-fn restoration_placement_keeps_a_pixel_stage_layer_after_colour() {
+fn restoration_placement_keeps_a_repair_stage_layer_after_colour() {
     let (registry, _) = registry();
     let layers = vec![
         Layer::new(crate::BASIC_EFFECT, json!({})),

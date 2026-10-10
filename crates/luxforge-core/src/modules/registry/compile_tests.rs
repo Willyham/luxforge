@@ -460,7 +460,7 @@ fn a_mask_this_build_cannot_evaluate_is_refused_by_name() {
     assert_eq!(
         error.detail,
         format!(
-            "layer {} carries a mask on the pixel effect {}, and this build evaluates a \
+            "layer {} carries a mask on the repair effect {}, and this build evaluates a \
              mask only on a colour-stage or spatial-stage effect",
             refused.layers[0].id, refused.layers[0].effect_id
         )
