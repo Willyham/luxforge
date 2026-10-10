@@ -204,6 +204,11 @@ pub(crate) enum NoticeAction {
     /// Locate original…: point the open photograph at a file the person chooses (`source.locate`),
     /// then open it again from that file.
     LocateOriginal,
+    /// Export anyway: send the export held for its stale frozen patches again, acknowledging
+    /// exactly the entry and patches the notice names.
+    ExportAnyway,
+    /// Let the export held for its stale frozen patches go.
+    DismissExport,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -580,6 +585,11 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
             None => {}
         }
     }
+    // An export refused for its entry's stale frozen patches waits here for the person's answer:
+    // nothing is acknowledged without Export anyway, which acknowledges what this card names.
+    if let Some(held) = inputs.export_held {
+        notices.push(stale_export_notice(held));
+    }
     if inputs.draft.is_some() && !super::at_current(inputs.document.state.as_ref(), inputs.session)
     {
         notices.push(Notice {
@@ -598,6 +608,42 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
         ));
     }
     notices
+}
+
+/// The card an export held for its stale frozen patches shows: each patch by name with what
+/// changed since it was generated, and the two answers.
+pub(crate) fn stale_export_notice(held: &crate::app::export::HeldStale) -> Notice {
+    let mut lines: Vec<String> = held
+        .stale
+        .iter()
+        .map(|patch| {
+            let changed: Vec<&str> = patch
+                .reasons
+                .iter()
+                .map(|reason| super::corrections::stale_phrase(reason.as_str()))
+                .collect();
+            format!(
+                "{}: {} since it was generated.",
+                patch.name,
+                changed.join(", ")
+            )
+        })
+        .collect();
+    lines.push("Export anyway writes them as they were accepted.".into());
+    Notice {
+        tone: NoticeTone::Warning,
+        icon: NoticeIcon::Triangle,
+        title: if held.stale.len() == 1 {
+            "1 stale patch in this export".into()
+        } else {
+            format!("{} stale patches in this export", held.stale.len())
+        },
+        body: lines.join("\n"),
+        actions: vec![
+            ("Export anyway".into(), NoticeAction::ExportAnyway),
+            ("Cancel".into(), NoticeAction::DismissExport),
+        ],
+    }
 }
 
 /// The notice one failed preview produces, when its kind is one the workspace explains. What the

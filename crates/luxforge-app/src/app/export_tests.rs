@@ -44,6 +44,7 @@ fn chosen(editor: &mut Editor, name: &str) {
         pixels_per_inch: None,
         reference: false,
         plan: json!({"suggested": null}),
+        acknowledge_stale: None,
     };
     let _ = editor.update(Message::Export(ExportMessage::Chosen(Ok(Some(Box::new(
         choice,
@@ -567,6 +568,7 @@ fn the_reference_export_sends_reference_true_and_the_others_none() {
             pixels_per_inch: None,
             reference,
             plan,
+            acknowledge_stale: None,
         };
         let sent = export_params(&choice);
         assert_eq!(
@@ -639,6 +641,7 @@ fn an_export_through_the_owner_writes_a_new_file_and_never_replaces_it() {
             pixels_per_inch: Some(144),
             reference: false,
             plan,
+            acknowledge_stale: None,
         };
         let queued = send_now(&editor.owner, editor.client, &choice);
         let _ = editor.update(Message::Export(ExportMessage::Chosen(Ok(Some(Box::new(
@@ -802,6 +805,7 @@ fn a_slider_edit_is_compared_and_exported_while_before_is_selected() {
         pixels_per_inch: None,
         reference: false,
         plan,
+        acknowledge_stale: None,
     };
     let queued = send_now(&editor.owner, editor.client, &choice).unwrap();
     let job = queued["job_id"].as_str().unwrap();
@@ -831,4 +835,110 @@ fn a_slider_edit_is_compared_and_exported_while_before_is_selected() {
     );
     finish(editor, catalog);
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+/// An export refused for its entry's stale frozen patches is held, never acknowledged on its own:
+/// the canvas names each patch and why, the status bar says the export waits, and another export
+/// cannot start. Export anyway sends it again acknowledging exactly that entry and those patches;
+/// Cancel lets it go.
+#[test]
+fn a_stale_refusal_is_held_until_export_anyway_acknowledges_exactly_what_it_named() {
+    use crate::state::canvas::NoticeAction;
+    let (mut editor, catalog) = opened_with_modules(descriptors(), 1);
+    let entry = editor
+        .document
+        .state
+        .as_ref()
+        .unwrap()
+        .current_entry
+        .id
+        .clone();
+    let refusal = || CallError {
+        code: "conflict".into(),
+        message: "the entry holds stale frozen patches".into(),
+        data: Some(
+            json!({"code": "stale-unacknowledged", "entry_id": entry, "stale": [
+                {"operation": "correction-2", "name": "Patch 2", "reasons": ["earlier-correction"]},
+                {"operation": "correction-4", "name": "Patch 4", "reasons": ["development"]},
+            ]}),
+        ),
+        job_id: None,
+    };
+    for answer in ["anyway", "cancel"] {
+        start(&mut editor, false);
+        chosen(&mut editor, "stale.jpg");
+        assert_eq!(
+            editor
+                .export
+                .run
+                .as_ref()
+                .unwrap()
+                .choice
+                .as_ref()
+                .unwrap()
+                .acknowledge_stale,
+            None,
+            "the first request acknowledges nothing"
+        );
+        let _ = editor.update(Message::Export(ExportMessage::Queued(Err(refusal()))));
+        assert!(editor.export.run.is_none());
+        assert_eq!(
+            editor.status.text,
+            "Not exported yet: 2 frozen patches are stale in stale.jpg; Export anyway or Cancel"
+        );
+        let notice = editor
+            .workspace
+            .canvas
+            .notices
+            .iter()
+            .find(|notice| notice.title == "2 stale patches in this export")
+            .expect("the held export's notice")
+            .clone();
+        assert_eq!(
+            notice.body,
+            "Patch 2: a correction below it changed since it was generated.\n\
+             Patch 4: the RAW development changed since it was generated.\n\
+             Export anyway writes them as they were accepted."
+        );
+        assert_eq!(
+            notice.actions,
+            [
+                ("Export anyway".to_owned(), NoticeAction::ExportAnyway),
+                ("Cancel".to_owned(), NoticeAction::DismissExport),
+            ]
+        );
+        assert!(!editor.workspace.title.can_export);
+        assert_eq!(
+            editor.snapshot()["export"]["held_stale"]["stale"][1]["operation"],
+            "correction-4"
+        );
+        if answer == "cancel" {
+            let _ = editor.update(Message::Export(ExportMessage::Dismiss));
+            assert!(editor.export.held.is_none() && editor.export.run.is_none());
+            assert_eq!(editor.status.text, "Export cancelled");
+            assert!(editor.workspace.title.can_export);
+            continue;
+        }
+        let _ = editor.update(Message::Export(ExportMessage::Anyway));
+        assert!(editor.export.held.is_none());
+        let run = editor.export.run.as_ref().expect("the export runs again");
+        let choice = run.choice.as_ref().unwrap();
+        let acknowledgement =
+            json!({"entry_id": entry, "operations": ["correction-2", "correction-4"]});
+        assert_eq!(choice.acknowledge_stale, Some(acknowledgement.clone()));
+        assert_eq!(
+            super::export::export_params(choice)["acknowledge_stale"],
+            acknowledgement
+        );
+        assert_eq!(editor.status.text, "Exporting stale.jpg\u{2026}");
+        // The job's end lets the next export start; nothing stays held.
+        let _ = editor.update(Message::Export(ExportMessage::Queued(Err(CallError {
+            code: "validation".into(),
+            message: "stop here".into(),
+            data: None,
+            job_id: None,
+        }))));
+        assert!(editor.export.run.is_none() && editor.export.held.is_none());
+    }
+    finish(editor, catalog);
 }

@@ -1052,6 +1052,7 @@ impl Editor {
             busy: self.busy,
             can_open: !self.busy && self.evidence.is_none() && self.mask_tool_refusal().is_none(),
             can_export: self.can_export(),
+            export_held: self.export.held.as_ref(),
             developer: self.developer,
             compare_held: self.document.compare_return.is_some(),
             view_state: &self.view_state,

@@ -364,6 +364,8 @@ pub(crate) struct Inputs<'a> {
     pub(crate) can_open: bool,
     /// An export can start: the app's export refusal has nothing to say.
     pub(crate) can_export: bool,
+    /// The export held for its entry's stale frozen patches, until Export anyway or Cancel.
+    pub(crate) export_held: Option<&'a crate::app::export::HeldStale>,
     /// Developer mode is active (debug build or `--developer`), so diagnostic UI is listed.
     pub(crate) developer: bool,
     pub(crate) compare_held: bool,
@@ -828,6 +830,7 @@ mod tests {
                 busy: self.busy,
                 can_open: true,
                 can_export: true,
+                export_held: None,
                 developer: self.developer,
                 compare_held: false,
                 view_state: &self.view_state,
