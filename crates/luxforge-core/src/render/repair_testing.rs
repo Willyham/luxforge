@@ -57,6 +57,7 @@ pub fn table_of(payload: &Value) -> Result<RepairTable, Error> {
                 opacity: row["opacity"].as_u64().unwrap_or(100) as u8,
                 offset: serde_json::from_value(row["offset"].clone())
                     .map_err(|error| Error::validation(error.to_string()))?,
+                patch: None,
             })
         })
         .collect::<Result<Vec<_>, Error>>()?;

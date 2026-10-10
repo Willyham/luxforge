@@ -241,6 +241,7 @@ fn command(
             preset: false,
             analysis: None,
             shortcut: None,
+            accepts_candidate: false,
             parameters: addressed(mask, component, parameters),
         },
     }
@@ -534,6 +535,7 @@ static COMMANDS: LazyLock<Vec<MaskCommand>> = LazyLock::new(|| {
             preset: false,
             analysis: None,
             shortcut: None,
+            accepts_candidate: false,
             // Where the stroke lands is the two optional identities: neither draws a new mask,
             // a mask alone puts a further brush on it, and both append to that brush.
             parameters: vec![

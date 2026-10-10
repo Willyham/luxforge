@@ -1,8 +1,16 @@
 //! The repair layer's payload: ordered Clone/Heal operations with stable numbers
 //! (`docs/design/corrections.md`, "Operations").
-use crate::{Error, path::StrokeId};
+use super::input::RepairInput;
+use crate::{
+    ArtifactId, Error,
+    artifacts::{
+        MAX_LAYER_ARTIFACTS,
+        candidates::{MAX_CANDIDATE_LABEL, MAX_PROVENANCE_BYTES},
+    },
+    path::StrokeId,
+};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 /// The most operations one repair layer holds, and so one photograph: the effect's declared
 /// `operations.max`.
@@ -39,10 +47,20 @@ impl Default for RepairPayload {
     }
 }
 
+/// One operation of the repair layer, in application order: a Clone or Heal drawn with a stroke,
+/// or a frozen patch (TASK-008). Stored as compact JSON in each kind's field order; `kind` says
+/// which.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub(crate) enum Operation {
+    Brush(Brush),
+    Patch(Patch),
+}
+
 /// One Clone or Heal operation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Operation {
+pub(crate) struct Brush {
     pub id: u32,
     pub kind: OperationKind,
     pub stroke: StrokeId,
@@ -53,7 +71,94 @@ pub(crate) struct Operation {
     pub origin: Origin,
 }
 
+/// A frozen patch: immutable pixels a producer generated and a person accepted, composited 1:1 in
+/// content pixels over the operations below it (`docs/design/corrections.md`, "Frozen patches").
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Patch {
+    pub id: u32,
+    pub kind: PatchKind,
+    /// The display noun, 1 to 32 characters, from the producer: `Remove`, the test producer's
+    /// `Patch`.
+    pub label: String,
+    /// The `repair-patch` artifact: `width × height` RGBA half floats, RGB linear and A the
+    /// coverage, not premultiplied.
+    pub artifact: ArtifactId,
+    /// `[x, y, width, height]` in content pixels; `width × height` is the artifact's.
+    pub rect: [u32; 4],
+    pub opacity: u8,
+    /// What it was generated against.
+    pub input: RepairInput,
+    /// `{module, task, …}`: at most 2 KiB of string and number fields.
+    pub provenance: Map<String, Value>,
+}
+
+/// The one kind a [`Patch`] is stored as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum PatchKind {
+    Patch,
+}
+
+impl<'de> Deserialize<'de> for Operation {
+    /// By its `kind`: `heal` and `clone` are a [`Brush`], `patch` a [`Patch`], each refusing any
+    /// field it does not hold; anything else is named.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        let value = Value::deserialize(deserializer)?;
+        match value.get("kind").and_then(Value::as_str) {
+            Some("heal" | "clone") => serde_json::from_value(value)
+                .map(Self::Brush)
+                .map_err(D::Error::custom),
+            Some("patch") => serde_json::from_value(value)
+                .map(Self::Patch)
+                .map_err(D::Error::custom),
+            Some(other) => Err(D::Error::custom(format!(
+                "unknown variant `{other}`, expected one of `heal`, `clone`, `patch`"
+            ))),
+            None => Err(D::Error::custom("an operation names its kind")),
+        }
+    }
+}
+
 impl Operation {
+    pub(crate) fn id(&self) -> u32 {
+        match self {
+            Self::Brush(brush) => brush.id,
+            Self::Patch(patch) => patch.id,
+        }
+    }
+
+    /// What a person calls it: the kind's title, or a patch's stored noun, and its number,
+    /// `Heal 5`, `Remove 7`.
+    pub(crate) fn name(&self) -> String {
+        match self {
+            Self::Brush(brush) => brush.name(),
+            Self::Patch(patch) => format!("{} {}", patch.label, patch.id),
+        }
+    }
+
+    /// The identity the API spells it by, `correction-5`.
+    pub(crate) fn identity(&self) -> String {
+        identity(self.id())
+    }
+
+    pub(crate) fn brush(&self) -> Option<&Brush> {
+        match self {
+            Self::Brush(brush) => Some(brush),
+            Self::Patch(_) => None,
+        }
+    }
+
+    pub(crate) fn patch(&self) -> Option<&Patch> {
+        match self {
+            Self::Patch(patch) => Some(patch),
+            Self::Brush(_) => None,
+        }
+    }
+}
+
+impl Brush {
     /// What a person calls it: the kind's title and its number, `Heal 5`.
     pub(crate) fn name(&self) -> String {
         format!("{} {}", self.kind.title(), self.id)
@@ -152,9 +257,10 @@ impl RepairPayload {
 
     /// Every rule a stored payload keeps: at most [`MAX_CORRECTIONS`] operations with unique
     /// numbers in `1..=4294967295`, `next` greater than each and at most one past the last number,
-    /// feather and opacity within `0..=100`, each offset within the stored range and not zero, and
-    /// `strokes` exactly the operations' strokes in order, so the host's carrier and the
-    /// operations cannot disagree.
+    /// feather and opacity within `0..=100`, each offset within the stored range and not zero, each
+    /// patch's label, rectangle, input and provenance within their bounds and at most
+    /// [`MAX_LAYER_ARTIFACTS`] distinct patch artifacts, and `strokes` exactly the Clone/Heal
+    /// operations' strokes in order, so the host's carrier and the operations cannot disagree.
     pub(crate) fn check(&self) -> Result<(), Error> {
         let refuse = |detail: String| {
             Err(Error::validation(format!(
@@ -173,48 +279,73 @@ impl RepairPayload {
         let mut seen = std::collections::BTreeSet::new();
         for operation in &self.operations {
             let name = operation.identity();
-            if operation.id == 0 {
+            let id = operation.id();
+            if id == 0 {
                 return refuse("an operation number is 0".into());
             }
-            if !seen.insert(operation.id) {
+            if !seen.insert(id) {
                 return refuse(format!("{name} appears twice"));
             }
-            if u64::from(operation.id) >= self.next {
+            if u64::from(id) >= self.next {
                 return refuse(format!("{name} is not below next {}", self.next));
             }
-            if operation.feather > 100 || operation.opacity > 100 {
-                return refuse(format!("{name} has a feather or opacity outside 0..=100"));
-            }
-            if operation
-                .offset
-                .iter()
-                .any(|value| value.abs() > OFFSET_MAX)
-            {
-                return refuse(format!("{name} has an offset outside ±{OFFSET_MAX}"));
-            }
-            if operation.offset == [0, 0] {
-                return refuse(format!("{name} has a zero offset"));
+            match operation {
+                Operation::Brush(brush) => {
+                    if brush.feather > 100 || brush.opacity > 100 {
+                        return refuse(format!("{name} has a feather or opacity outside 0..=100"));
+                    }
+                    if brush.offset.iter().any(|value| value.abs() > OFFSET_MAX) {
+                        return refuse(format!("{name} has an offset outside ±{OFFSET_MAX}"));
+                    }
+                    if brush.offset == [0, 0] {
+                        return refuse(format!("{name} has a zero offset"));
+                    }
+                }
+                Operation::Patch(patch) => {
+                    if let Err(error) = patch.check() {
+                        return refuse(format!("{name}: {}", error.detail));
+                    }
+                }
             }
         }
-        if self.strokes.len() != self.operations.len()
+        if self.artifacts().len() > MAX_LAYER_ARTIFACTS {
+            return refuse(format!(
+                "more than {MAX_LAYER_ARTIFACTS} distinct patches"
+            ));
+        }
+        let strokes: Vec<&StrokeId> = self.brushes().map(|brush| &brush.stroke).collect();
+        if self.strokes.len() != strokes.len()
             || self
                 .strokes
                 .iter()
-                .zip(&self.operations)
-                .any(|(stroke, operation)| *stroke != operation.stroke)
+                .zip(strokes)
+                .any(|(stroke, held)| stroke != held)
         {
             return refuse("strokes must list each operation's stroke in operation order".into());
         }
         Ok(())
     }
 
+    /// The Clone and Heal operations, in order.
+    pub(crate) fn brushes(&self) -> impl Iterator<Item = &Brush> {
+        self.operations.iter().filter_map(Operation::brush)
+    }
+
+    /// The artifacts the layer must list: each patch's, in operation order, each once. The host
+    /// admits a repair layer only when its `artifacts` are exactly these.
+    pub(crate) fn artifacts(&self) -> Vec<ArtifactId> {
+        let mut artifacts: Vec<ArtifactId> = Vec::new();
+        for patch in self.operations.iter().filter_map(Operation::patch) {
+            if !artifacts.contains(&patch.artifact) {
+                artifacts.push(patch.artifact.clone());
+            }
+        }
+        artifacts
+    }
+
     /// This payload as stored: `strokes` rebuilt from the operations first.
     pub(crate) fn stored(mut self) -> Value {
-        self.strokes = self
-            .operations
-            .iter()
-            .map(|operation| operation.stroke.clone())
-            .collect();
+        self.strokes = self.brushes().map(|brush| brush.stroke.clone()).collect();
         serde_json::to_value(self).expect("a repair payload is serializable")
     }
 
@@ -223,10 +354,58 @@ impl RepairPayload {
         self.operations
             .iter()
             .enumerate()
-            .find(|(_, operation)| operation.id == id)
+            .find(|(_, operation)| operation.id() == id)
             .ok_or_else(|| {
                 Error::validation(format!("no correction {} in this photograph", identity(id)))
             })
+    }
+}
+
+impl Patch {
+    /// A patch's own bounds: a label of 1 to 32 printable characters, a non-empty rectangle, an
+    /// opacity within `0..=100`, an input in its stored form and a provenance of string and number
+    /// fields of at most 2 KiB.
+    pub(crate) fn check(&self) -> Result<(), Error> {
+        let characters = self.label.chars().count();
+        if characters == 0
+            || characters > MAX_CANDIDATE_LABEL
+            || self.label.chars().any(char::is_control)
+            || self.label.trim() != self.label
+        {
+            return Err(Error::validation(format!(
+                "a patch label is 1 to {MAX_CANDIDATE_LABEL} printable characters"
+            )));
+        }
+        let [x, y, width, height] = self.rect;
+        if width == 0
+            || height == 0
+            || u64::from(x) + u64::from(width) > u64::from(u32::MAX)
+            || u64::from(y) + u64::from(height) > u64::from(u32::MAX)
+        {
+            return Err(Error::validation("a patch rectangle must be non-empty"));
+        }
+        if self.opacity > 100 {
+            return Err(Error::validation("a patch's opacity is within 0..=100"));
+        }
+        self.input.check()?;
+        if !self
+            .provenance
+            .values()
+            .all(|value| value.is_string() || value.is_number())
+        {
+            return Err(Error::validation(
+                "a patch's provenance holds string and number fields",
+            ));
+        }
+        let length = serde_json::to_vec(&self.provenance)
+            .map_err(|error| Error::internal(error.to_string()))?
+            .len();
+        if length > MAX_PROVENANCE_BYTES {
+            return Err(Error::validation(format!(
+                "a patch's provenance is at most {MAX_PROVENANCE_BYTES} bytes"
+            )));
+        }
+        Ok(())
     }
 }
 
@@ -303,8 +482,8 @@ mod tests {
                 Box::new(|p| p["strokes"] = json!([stroke(1)])),
             ),
             (
-                "unknown variant",
-                Box::new(|p| p["operations"][0]["kind"] = json!("patch")),
+                "unknown variant `remove`",
+                Box::new(|p| p["operations"][0]["kind"] = json!("remove")),
             ),
             ("unknown field", Box::new(|p| p["extra"] = json!(1))),
             (

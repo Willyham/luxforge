@@ -127,7 +127,7 @@ fn an_add_appends_one_operation_and_answers_its_correction() {
     assert_eq!(session.label(), "Add Heal 1");
     let payload = session.payload().unwrap();
     assert_eq!(payload.next, 2);
-    let operation = &payload.operations[0];
+    let operation = payload.operations[0].brush().unwrap();
     assert_eq!(
         (operation.id, operation.feather, operation.opacity),
         (1, 50, 100)
@@ -192,7 +192,7 @@ fn updates_change_one_operation_with_a_label_per_field_and_detect_no_ops() {
     assert_eq!(moved.answer["correction"]["source-x"], json!(on_grid(0.3)));
     assert_eq!(moved.answer["correction"]["source-y"], json!(on_grid(0.4)));
     assert_eq!(
-        session.payload().unwrap().operations[0].offset,
+        session.payload().unwrap().operations[0].brush().unwrap().offset,
         [
             quantize(0.3) - quantize(0.55),
             quantize(0.4) - quantize(0.45)
@@ -223,7 +223,7 @@ fn updates_change_one_operation_with_a_label_per_field_and_detect_no_ops() {
         op(json!({"mode": "heal", "opacity": 70})),
     );
     assert_eq!(session.label(), "Edit Clone 1");
-    let operation = session.payload().unwrap().operations[0].clone();
+    let operation = session.payload().unwrap().operations[0].brush().unwrap().clone();
     assert_eq!(
         (operation.feather, operation.opacity, operation.origin),
         (40, 70, super::payload::Origin::Auto)
@@ -263,7 +263,7 @@ fn delete_reorder_and_reset_keep_numbers_growing() {
             .unwrap()
             .operations
             .iter()
-            .map(|operation| operation.id)
+            .map(|operation| operation.id())
             .collect()
     };
     assert_eq!(order(&session), vec![3, 1, 2]);
@@ -470,9 +470,9 @@ fn history_versions_and_reopen_keep_every_operation_and_its_stroke() {
         .service
         .undo(&session.asset, mutation(revision, "undo"))
         .unwrap();
-    assert_eq!(session.payload().unwrap().operations[0].opacity, 50);
+    assert_eq!(session.payload().unwrap().operations[0].brush().unwrap().opacity, 50);
     assert_eq!(
-        session.payload().unwrap().operations[0].offset,
+        session.payload().unwrap().operations[0].brush().unwrap().offset,
         [quantize(0.3) - quantize(0.5), quantize(0.4) - quantize(0.5)]
     );
     let revision = session.revision();
@@ -538,7 +538,7 @@ fn a_missing_or_corrupt_stroke_is_refused_naming_its_operation_and_history_stays
     for corrupt in [false, true] {
         let mut session = Session::new(&format!("corrections-broken-{corrupt}.sqlite"));
         session.ok("add-correction", spot(0.5, 0.5, 0.3, 0.4));
-        let stroke = session.payload().unwrap().operations[0].stroke.clone();
+        let stroke = session.payload().unwrap().operations[0].brush().unwrap().stroke.clone();
         let Session {
             service,
             asset,
@@ -861,7 +861,8 @@ fn an_add_without_a_source_stores_rank_one_of_the_query_once() {
     assert_eq!(correction["source-origin"], "auto");
     assert_eq!(correction["source-x"], candidates[0]["source-x"]);
     assert_eq!(correction["source-y"], candidates[0]["source-y"]);
-    let operation = &session.payload().unwrap().operations[0];
+    let payload = session.payload().unwrap();
+    let operation = payload.operations[0].brush().unwrap();
     assert_eq!(operation.origin, super::payload::Origin::Auto);
     // The answer is exactly on the grid, so it is the stored offset from the anchor.
     let x = correction["source-x"].as_f64().unwrap();

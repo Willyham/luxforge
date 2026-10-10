@@ -3002,7 +3002,7 @@ fn session_framing(
 
 /// Refuse an edit to `asset_id` while this session previews one of its historical entries. A
 /// selection of another asset never pauses this one.
-fn require_current(session: &ClientSession, asset_id: &AssetId) -> Result<(), Error> {
+pub(super) fn require_current(session: &ClientSession, asset_id: &AssetId) -> Result<(), Error> {
     if session.preview.can_edit(asset_id) {
         Ok(())
     } else {
@@ -4318,6 +4318,7 @@ mod tests {
                     preset: true,
                     analysis: None,
                     shortcut: None,
+                    accepts_candidate: false,
                     parameters: vec![
                         ParameterDescriptor::number("angle", -45.0, 45.0)
                             .required(true)
@@ -4413,6 +4414,7 @@ mod tests {
                     preset: true,
                     analysis: None,
                     shortcut: None,
+                    accepts_candidate: false,
                     parameters: Vec::new(),
                 }],
                 queries: Vec::new(),

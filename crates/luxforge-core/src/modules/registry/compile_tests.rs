@@ -919,6 +919,7 @@ impl CapabilityModule for BoundModule {
         _: &Value,
         _: crate::CompileStage,
         artifacts: &[Arc<crate::artifacts::PreparedArtifact>],
+        _: &crate::path::StrokeTable,
     ) -> Result<Processing, Error> {
         Ok(Processing::Color(crate::ColorOperation::new(
             artifacts

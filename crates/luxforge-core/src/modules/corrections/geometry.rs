@@ -2,7 +2,7 @@
 //! normalized coordinates (`x` a fraction of the content stage's width, `y` of its height, the frame
 //! `[0, 1]` on both), and the absolute source position the API speaks in.
 use super::{
-    payload::{OFFSET_MAX, Operation},
+    payload::{Brush, OFFSET_MAX},
     stroke::CorrectionStroke,
 };
 use crate::{
@@ -84,7 +84,7 @@ pub(crate) fn checked_offset(offset: [i32; 2]) -> Result<[i32; 2], Error> {
 }
 
 /// The absolute source anchor of `operation` drawn with `stroke`, in grid steps.
-pub(crate) fn source_steps(stroke: &CorrectionStroke, operation: &Operation) -> [i32; 2] {
+pub(crate) fn source_steps(stroke: &CorrectionStroke, operation: &Brush) -> [i32; 2] {
     let anchor = stroke.anchor();
     [
         anchor[0] + operation.offset[0],
@@ -93,7 +93,7 @@ pub(crate) fn source_steps(stroke: &CorrectionStroke, operation: &Operation) -> 
 }
 
 /// The absolute source anchor of `operation`, in normalized coordinates, exactly on the grid.
-pub(crate) fn source(stroke: &CorrectionStroke, operation: &Operation) -> [f64; 2] {
+pub(crate) fn source(stroke: &CorrectionStroke, operation: &Brush) -> [f64; 2] {
     source_steps(stroke, operation).map(steps_to_units)
 }
 

@@ -641,7 +641,7 @@ impl EditorService {
 
     /// The whole answer this asset already gave `request_id`, marked deduplicated, or `None` for a
     /// new request. The same identity with a different input is a `conflict`.
-    fn request_result(
+    pub(super) fn request_result(
         &self,
         asset_id: &AssetId,
         request_id: &str,

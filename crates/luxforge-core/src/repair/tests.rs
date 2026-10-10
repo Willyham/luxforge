@@ -83,6 +83,7 @@ impl Op {
             kind: match self.kind {
                 RepairKind::Clone => reference::Kind::Clone,
                 RepairKind::Heal => reference::Kind::Heal,
+                RepairKind::Patch => unreachable!("a stroke operation"),
             },
             paths: vec![self.points.clone()],
             radius: self.radius,

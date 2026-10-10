@@ -33,17 +33,65 @@ fn layer(context: &StageContext<'_>) -> Result<(usize, bool, RepairPayload), Err
     })
 }
 
+/// One stale frozen patch as `recipe.describe` and export disclose it: its identity, its name and
+/// why it is stale.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StaleCorrection {
+    pub operation: String,
+    pub name: String,
+    pub reasons: Vec<super::StaleReason>,
+}
+
+/// The input identity a new top correction of the context's stack would be generated against: what
+/// a task's candidates are generated against and what accepting one checks.
+pub(crate) fn new_top_input(context: &StageContext<'_>) -> Result<super::RepairInput, Error> {
+    let (index, _, payload) = layer(context)?;
+    actions::top_input(context, index, &payload)
+}
+
+/// Every stale frozen patch of the context's stack, in operation order; empty for a stack without
+/// one. Reads the payload and the asset's row; no pixel or stroke.
+pub(crate) fn stale_corrections(context: &StageContext<'_>) -> Result<Vec<StaleCorrection>, Error> {
+    let (index, _, payload) = layer(context)?;
+    if !payload
+        .operations
+        .iter()
+        .any(|operation| operation.patch().is_some())
+    {
+        return Ok(Vec::new());
+    }
+    Ok(actions::stale(context, index, &payload)?
+        .into_iter()
+        .map(|(position, reasons)| {
+            let operation = &payload.operations[position];
+            StaleCorrection {
+                operation: operation.identity(),
+                name: operation.name(),
+                reasons,
+            }
+        })
+        .collect())
+}
+
 /// `query.corrections`: the layer as stored, its operations in application order with their
 /// hydrated paths. Reads the payload and its strokes and no pixel; a missing or corrupt stroke is
 /// refused naming its operation.
 pub(super) fn corrections(context: &StageContext<'_>) -> Result<Value, Error> {
-    let (_, _, payload) = layer(context)?;
+    let (index, _, payload) = layer(context)?;
     let strokes = context.strokes()?;
+    let stale = actions::stale(context, index, &payload)?;
     let operations = payload
         .operations
         .iter()
         .enumerate()
-        .map(|(index, operation)| actions::listed(index, operation, strokes))
+        .map(|(position, operation)| {
+            let reasons = stale
+                .iter()
+                .find(|(at, _)| *at == position)
+                .map_or(&[][..], |(_, reasons)| reasons.as_slice());
+            actions::listed(position, operation, strokes, reasons)
+        })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(json!({
         "limit": MAX_CORRECTIONS,
@@ -74,6 +122,12 @@ pub(super) fn sources(
     let (stroke, stage) = match (parameters.contains_key(OPERATION), path, radius) {
         (true, None, None) => {
             let (position, operation) = payload.find(addressed(parameters)?)?;
+            let Some(operation) = operation.brush() else {
+                return Err(Error::validation(format!(
+                    "{} is a frozen patch, which has no source to rank",
+                    operation.name()
+                )));
+            };
             let stroke = stroke_of(context.strokes()?, operation)?.clone();
             let stage = if position == 0 {
                 RegionStage::Before(index)

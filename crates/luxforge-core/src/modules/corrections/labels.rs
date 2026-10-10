@@ -3,7 +3,7 @@
 //! kind before the change and the one field it changed.
 use super::{
     actions::addressed,
-    module::{ADD, DELETE, REORDER, RESET, UPDATE, repair_layer},
+    module::{ACCEPT, ADD, DELETE, REORDER, RESET, UPDATE, repair_layer},
     payload::OperationKind,
 };
 use crate::{ActionInput, Layer};
@@ -23,6 +23,11 @@ pub(super) fn label(input: &ActionInput, before: &[Layer], after: &[Layer]) -> O
             Some(format!("Add {} {}", kind.title(), payload.next - 1))
         }
         RESET => Some("Reset corrections".into()),
+        ACCEPT => {
+            let (_, _, payload) = repair_layer(after).ok()??;
+            let (_, operation) = payload.find(u32::try_from(payload.next - 1).ok()?).ok()?;
+            Some(format!("Add {}", operation.name()))
+        }
         UPDATE | DELETE | REORDER => {
             let (_, _, payload) = repair_layer(before).ok()??;
             let (_, operation) = payload.find(addressed(parameters).ok()?).ok()?;

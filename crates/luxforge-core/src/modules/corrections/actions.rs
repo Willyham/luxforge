@@ -2,8 +2,12 @@
 //! add and update answers (`docs/design/corrections.md`, "Actions").
 use super::{
     CORRECTIONS_EFFECT, geometry,
-    module::{ADD, DELETE, OPERATION, REORDER, RESET, SOURCES, UPDATE, repair_layer},
-    payload::{self, MAX_CORRECTIONS, MAX_ID, Operation, OperationKind, Origin, RepairPayload},
+    input::{self, RepairInput},
+    module::{ACCEPT, ADD, DELETE, OPERATION, REORDER, RESET, SOURCES, UPDATE, repair_layer},
+    payload::{
+        self, Brush, MAX_CORRECTIONS, MAX_ID, Operation, OperationKind, Origin, Patch, PatchKind,
+        RepairPayload,
+    },
     stroke::CorrectionStroke,
 };
 use crate::{
@@ -33,6 +37,15 @@ pub(super) fn parse(
             }
         }
         DELETE | REORDER | RESET => {}
+        ACCEPT => {
+            if parameters
+                .get("candidate")
+                .and_then(Value::as_u64)
+                .is_none_or(|candidate| candidate > 3)
+            {
+                return Err(Error::validation("candidate is a number from 0 to 3"));
+            }
+        }
         _ => return Err(Error::validation(format!("unknown action {action_id}"))),
     }
     Ok(ActionInput {
@@ -89,7 +102,7 @@ pub(super) fn addressed(parameters: &Map<String, Value>) -> Result<u32, Error> {
 /// wrong-type stroke is refused naming the operation, never read as an empty repair.
 pub(super) fn stroke_of<'t>(
     strokes: &'t StrokeTable,
-    operation: &Operation,
+    operation: &Brush,
 ) -> Result<&'t CorrectionStroke, Error> {
     strokes
         .resolve::<CorrectionStroke>(&operation.stroke)
@@ -175,15 +188,125 @@ pub(super) fn plan(input: &ActionInput, context: &StageContext<'_>) -> Result<Ac
                 ..current.clone()
             }
         }
+        ACCEPT => accept(parameters, context, index, &current)?,
         other => return Err(Error::validation(format!("unknown action {other}"))),
     };
+    // The layer lists exactly its patches' artifacts, which the host admits it by.
+    let artifacts = next.artifacts();
     let payload = next.stored();
     Ok(match layer {
-        Some(layer) => {
-            ActionPlan::Update(LayerUpdate::new(layer.id.clone(), payload).with_strokes(fresh))
-        }
-        None => ActionPlan::Commit(NewLayer::new(CORRECTIONS_EFFECT, payload).with_strokes(fresh)),
+        Some(layer) => ActionPlan::Update(
+            LayerUpdate::new(layer.id.clone(), payload)
+                .with_strokes(fresh)
+                .with_artifacts(artifacts),
+        ),
+        None => ActionPlan::Commit(
+            NewLayer::new(CORRECTIONS_EFFECT, payload)
+                .with_strokes(fresh)
+                .with_artifacts(artifacts),
+        ),
     })
+}
+
+/// The input identity a new top operation of `current`, the layer at `index`, would be generated
+/// against now ([`input::repair_input`]).
+pub(super) fn top_input(
+    context: &StageContext<'_>,
+    index: usize,
+    current: &RepairPayload,
+) -> Result<RepairInput, Error> {
+    current_input(context, index, current, current.operations.len())
+}
+
+/// The input identity of the operation at `position` of `current`, the layer at `index`, as the
+/// stack stands.
+pub(super) fn current_input(
+    context: &StageContext<'_>,
+    index: usize,
+    current: &RepairPayload,
+    position: usize,
+) -> Result<RepairInput, Error> {
+    let source = context.questions.source_identity()?;
+    let content = context.stage_before(index)?;
+    input::repair_input(
+        &source,
+        content,
+        context.layers,
+        context.masks,
+        index,
+        &current.operations,
+        position,
+    )
+}
+
+/// Plan an accept: the candidate the catalog owner pinned and published, appended on top as a
+/// `patch` operation, when it was generated against exactly what a new top operation reads now.
+/// Only the owner's accept flow plans it, with the published candidate in hand
+/// ([`crate::StageQuestions::accepting`]); a draft or any other caller is refused.
+fn accept(
+    parameters: &Map<String, Value>,
+    context: &StageContext<'_>,
+    index: usize,
+    current: &RepairPayload,
+) -> Result<RepairPayload, Error> {
+    let Some(accepted) = context.questions.accepting() else {
+        return Err(Error::validation(
+            "accept-correction-patch accepts a published candidate and cannot be drafted",
+        ));
+    };
+    if current.operations.len() >= MAX_CORRECTIONS {
+        return Err(limit_refusal());
+    }
+    if current.next > MAX_ID {
+        return Err(Error::resource_limit(
+            "this photograph has used every correction number",
+        ));
+    }
+    let now = top_input(context, index, current)?;
+    let reasons = accepted.input.reasons(&now);
+    if !reasons.is_empty() {
+        let names: Vec<&str> = reasons.iter().map(|reason| reason.as_str()).collect();
+        return Err(Error::conflict(format!(
+            "the candidate was generated against another input: {}",
+            reasons
+                .iter()
+                .map(|reason| reason.sentence())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+        .with_data(json!({"reasons": names})));
+    }
+    let [x, y, width, height] = accepted.rect;
+    let content = context.stage_before(index)?;
+    if u64::from(x) + u64::from(width) > u64::from(content.width)
+        || u64::from(y) + u64::from(height) > u64::from(content.height)
+    {
+        return Err(Error::validation(format!(
+            "the patch [{x}, {y}, {width}, {height}] leaves the {}x{} photograph",
+            content.width, content.height
+        )));
+    }
+    let id = u32::try_from(current.next).expect("next was checked against the last number");
+    let mut next = current.clone();
+    next.next += 1;
+    next.operations.push(Operation::Patch(Patch {
+        id,
+        kind: PatchKind::Patch,
+        label: accepted.label.clone(),
+        artifact: accepted.artifact.clone(),
+        rect: accepted.rect,
+        opacity: integer(parameters, "opacity").unwrap_or(100),
+        input: accepted.input.clone(),
+        provenance: accepted.provenance.clone(),
+    }));
+    if next.artifacts().len() > crate::artifacts::MAX_LAYER_ARTIFACTS {
+        return Err(Error::resource_limit(format!(
+            "{} patches is this photograph's limit",
+            crate::artifacts::MAX_LAYER_ARTIFACTS
+        ))
+        .with_data(json!({"limit": crate::artifacts::MAX_LAYER_ARTIFACTS})));
+    }
+    Ok(next)
 }
 
 /// The content stage the repair layer at `index` receives, which its geometry addresses.
@@ -232,7 +355,7 @@ fn add(
     let id = u32::try_from(current.next).expect("next was checked against the last number");
     let mut next = current.clone();
     next.next += 1;
-    next.operations.push(Operation {
+    next.operations.push(Operation::Brush(Brush {
         id,
         kind: kind(parameters)?.unwrap_or(OperationKind::Heal),
         stroke: fresh.insert(stroke),
@@ -240,7 +363,7 @@ fn add(
         opacity: integer(parameters, "opacity").unwrap_or(100),
         offset,
         origin,
-    });
+    }));
     Ok(Some(next))
 }
 
@@ -299,6 +422,10 @@ fn update(
     fresh: &mut StrokeTable,
 ) -> Result<Option<RepairPayload>, Error> {
     let (position, operation) = current.find(addressed(parameters)?)?;
+    let operation = match operation {
+        Operation::Brush(brush) => brush,
+        Operation::Patch(patch) => return update_patch(parameters, current, position, patch),
+    };
     let strokes = context.strokes()?;
     let stored = stroke_of(strokes, operation)?;
     let radius = number(parameters, "radius");
@@ -329,7 +456,7 @@ fn update(
             )
         }
     };
-    let changed = Operation {
+    let changed = Brush {
         id: operation.id,
         kind: kind(parameters)?.unwrap_or(operation.kind),
         stroke: stroke.id(),
@@ -346,13 +473,43 @@ fn update(
         fresh.insert(stroke);
     }
     let mut next = current.clone();
-    next.operations[position] = changed;
+    next.operations[position] = Operation::Brush(changed);
     Ok(Some(next))
 }
 
-/// The `correction` an add or an update answers, read from the stack the request left current: the
-/// operation it added (the newest number) or addressed, its name, its index and its absolute
-/// source. Nothing for the other actions, and nothing when the operation is not there.
+/// Plan an update of a frozen patch: only its opacity changes; a geometry, mode or source field is
+/// refused, and the same opacity is `None`.
+fn update_patch(
+    parameters: &Map<String, Value>,
+    current: &RepairPayload,
+    position: usize,
+    patch: &Patch,
+) -> Result<Option<RepairPayload>, Error> {
+    if let Some(field) = parameters
+        .keys()
+        .find(|field| !matches!(field.as_str(), OPERATION | "opacity"))
+    {
+        return Err(Error::validation(format!(
+            "{} is a frozen patch; only its opacity changes, not {field}",
+            Operation::Patch(patch.clone()).name()
+        )));
+    }
+    let opacity = integer(parameters, "opacity").unwrap_or(patch.opacity);
+    if opacity == patch.opacity {
+        return Ok(None);
+    }
+    let mut next = current.clone();
+    next.operations[position] = Operation::Patch(Patch {
+        opacity,
+        ..patch.clone()
+    });
+    Ok(Some(next))
+}
+
+/// The `correction` an add, an update or an accept answers, read from the stack the request left
+/// current: the operation it added (the newest number) or addressed, its name, its index and, for a
+/// Clone or Heal, its absolute source. Nothing for the other actions, and nothing when the
+/// operation is not there.
 pub(super) fn answer(
     input: &ActionInput,
     layers: &[Layer],
@@ -363,48 +520,93 @@ pub(super) fn answer(
         return Ok(answer);
     };
     let id = match input.action_id.as_str() {
-        ADD => u32::try_from(payload.next - 1).ok(),
+        ADD | ACCEPT => u32::try_from(payload.next - 1).ok(),
         UPDATE => addressed(&input.parameters).ok(),
         _ => None,
     };
     let Some((index, operation)) = id.and_then(|id| payload.find(id).ok()) else {
         return Ok(answer);
     };
-    let stroke = stroke_of(strokes, operation)?;
-    let [x, y] = geometry::source(stroke, operation);
-    answer.insert(
-        "correction".into(),
-        json!({
-            "operation": operation.identity(),
-            "name": operation.name(),
-            "index": index,
-            "source-x": x,
-            "source-y": y,
-            "source-origin": operation.origin.as_str(),
-        }),
-    );
+    let mut correction = json!({
+        "operation": operation.identity(),
+        "name": operation.name(),
+        "index": index,
+    });
+    if let Operation::Brush(brush) = operation {
+        let stroke = stroke_of(strokes, brush)?;
+        let [x, y] = geometry::source(stroke, brush);
+        correction["source-x"] = json!(x);
+        correction["source-y"] = json!(y);
+        correction["source-origin"] = json!(brush.origin.as_str());
+    }
+    answer.insert("correction".into(), correction);
     Ok(answer)
 }
 
-/// One stored operation as `query.corrections` lists it.
+/// One stored operation as `query.corrections` lists it: a Clone or Heal with its hydrated path and
+/// absolute source; a patch with its noun, artifact, rectangle in content pixels and provenance.
+/// `stale` is the patch's reasons when it is stale, and absent otherwise.
 pub(super) fn listed(
     index: usize,
     operation: &Operation,
     strokes: &StrokeTable,
+    stale: &[input::StaleReason],
 ) -> Result<Value, Error> {
-    let stroke = stroke_of(strokes, operation)?;
-    let [x, y] = geometry::source(stroke, operation);
+    let brush = match operation {
+        Operation::Brush(brush) => brush,
+        Operation::Patch(patch) => {
+            let mut row = json!({
+                "operation": operation.identity(),
+                "name": operation.name(),
+                "kind": "patch",
+                "index": index,
+                "label": patch.label,
+                "artifact": patch.artifact,
+                "rect": patch.rect,
+                "opacity": patch.opacity,
+                "provenance": patch.provenance,
+            });
+            if !stale.is_empty() {
+                row["stale"] = json!({"reasons": stale});
+            }
+            return Ok(row);
+        }
+    };
+    let stroke = stroke_of(strokes, brush)?;
+    let [x, y] = geometry::source(stroke, brush);
     Ok(json!({
         "operation": operation.identity(),
         "name": operation.name(),
-        "kind": operation.kind.as_str(),
+        "kind": brush.kind.as_str(),
         "index": index,
         "points": stroke.points().map(|[x, y]| json!([x, y])).collect::<Vec<_>>(),
         "radius": steps_to_units(stroke.radius_steps()),
-        "feather": operation.feather,
-        "opacity": operation.opacity,
+        "feather": brush.feather,
+        "opacity": brush.opacity,
         "source-x": x,
         "source-y": y,
-        "source-origin": operation.origin.as_str(),
+        "source-origin": brush.origin.as_str(),
     }))
+}
+
+/// Each stale patch of `payload`, the layer at `index` of the context's stack, with its reasons, in
+/// operation order: what `query.corrections`, `recipe.describe` and export disclose. Computes one
+/// input per patch, `O(operations)` serialization each; reads no pixel.
+pub(crate) fn stale(
+    context: &StageContext<'_>,
+    index: usize,
+    payload: &RepairPayload,
+) -> Result<Vec<(usize, Vec<input::StaleReason>)>, Error> {
+    let mut found = Vec::new();
+    for (position, operation) in payload.operations.iter().enumerate() {
+        let Operation::Patch(patch) = operation else {
+            continue;
+        };
+        let now = current_input(context, index, payload, position)?;
+        let reasons = patch.input.reasons(&now);
+        if !reasons.is_empty() {
+            found.push((position, reasons));
+        }
+    }
+    Ok(found)
 }

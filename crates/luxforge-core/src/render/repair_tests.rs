@@ -77,7 +77,7 @@ impl Op {
     pub(crate) fn json(&self) -> Value {
         json!({
             "id": self.id,
-            "kind": match self.kind { RepairKind::Clone => "clone", RepairKind::Heal => "heal" },
+            "kind": match self.kind { RepairKind::Clone => "clone", RepairKind::Heal => "heal", RepairKind::Patch => unreachable!("a stroke operation") },
             "points": self.points,
             "radius": self.radius,
             "feather": self.feather,
@@ -91,6 +91,7 @@ impl Op {
             kind: match self.kind {
                 RepairKind::Clone => reference::Kind::Clone,
                 RepairKind::Heal => reference::Kind::Heal,
+                RepairKind::Patch => unreachable!("a stroke operation"),
             },
             paths: vec![
                 self.points

@@ -115,9 +115,22 @@ impl EditorService {
                 (state.asset, state.current_entry)
             }
         };
-        Ok(self
+        let mut description = self
             .registry
-            .describe_recipe(asset.width, asset.height, &entry))
+            .describe_recipe(asset.width, asset.height, &entry);
+        // The repair layer's row says which frozen patches are stale; a stack that cannot say
+        // (an unavailable provider before it) describes the rest as ever.
+        let recipe = &entry.snapshot.recipe;
+        if let Ok(stale) = self.stale_corrections(&asset, recipe)
+            && !stale.is_empty()
+            && let Some(row) = description
+                .layers
+                .iter_mut()
+                .find(|row| row.effect == crate::modules::CORRECTIONS_EFFECT)
+        {
+            row.stale = stale;
+        }
+        Ok(description)
     }
 }
 
@@ -179,6 +192,7 @@ impl ModuleRegistry {
                 neutral: report.neutral,
                 input_stage,
                 input_orientation,
+                stale: Vec::new(),
             });
         }
         let output_stage = size(recipe.layers.len());

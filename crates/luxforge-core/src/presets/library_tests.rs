@@ -1146,6 +1146,7 @@ fn capture_refuses_a_field_with_no_value_and_no_default() {
             preset: true,
             analysis: None,
             shortcut: None,
+            accepts_candidate: false,
             parameters: vec![
                 parameter("weight", None),
                 parameter("size", Some(json!(1.0))),

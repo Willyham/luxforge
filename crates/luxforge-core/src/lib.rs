@@ -101,6 +101,7 @@ pub use model::{
 /// Basic's Auto tone solver and forward model, which the fitting rig and the measurements call.
 pub use modules::auto_tone;
 pub use modules::{
+    AcceptedCandidate, RepairInput, StaleCorrection, StaleReason,
     ActionControl, ActionDescriptor, ActionInput, ActionPlan, ActionRef, ActionStyle,
     AnalysisAction, Availability, BASIC_EFFECT, BoxRect, BrushEdit, BrushSource, CONTROLS_EFFECT,
     CROP_EFFECT, CURVE_EFFECT, CanvasInteraction, CapabilityModule, ChoiceControl, ChoiceStyle,

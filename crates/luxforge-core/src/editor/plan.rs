@@ -160,6 +160,23 @@ impl EditorService {
         Ok(result)
     }
 
+    /// Check `parameters` of `action_id` as a commit would, and answer a retry of `mutation`'s
+    /// request the catalog already answered: the first answer, marked deduplicated, or `None` for a
+    /// new request. What the owner asks before it pins and publishes a candidate for an accepting
+    /// action, so a retry never publishes again. Reads the request log; plans nothing.
+    pub(crate) fn action_retry(
+        &self,
+        asset_id: &AssetId,
+        mutation: &Mutation,
+        action_id: &str,
+        parameters: Value,
+    ) -> Result<Option<ActionResult>, Error> {
+        let registry = self.registry.clone();
+        let prepared = Prepared::new(&registry, action_id, parameters)?;
+        let request = request_input(&prepared.input, mutation, prepared.mask.as_ref())?;
+        self.request_result(asset_id, &mutation.request_id, &request)
+    }
+
     fn commit_action(
         &mut self,
         asset_id: &AssetId,
@@ -1216,6 +1233,14 @@ impl StageQuestions for HostStage<'_> {
 
     fn optics(&self) -> Result<crate::SourceOptics, Error> {
         Ok(self.source()?.optics())
+    }
+
+    fn source_identity(&self) -> Result<String, Error> {
+        Ok(crate::modules::corrections_source_identity(self.asset))
+    }
+
+    fn accepting(&self) -> Option<std::sync::Arc<crate::AcceptedCandidate>> {
+        self.service.accepting.borrow().clone()
     }
 
     fn strokes(&self) -> Option<&crate::path::StrokeTable> {
@@ -3860,7 +3885,9 @@ mod tests {
         drop(service);
         std::fs::remove_file(catalog).unwrap();
         for descriptor in registry.descriptors() {
-            for declared in &descriptor.actions {
+            // A candidate-accepting action commits only through the owner's accept flow, whose
+            // tests check its label (`api/owner/accept_tests.rs`).
+            for declared in descriptor.actions.iter().filter(|declared| !declared.accepts_candidate) {
                 assert!(
                     table
                         .iter()

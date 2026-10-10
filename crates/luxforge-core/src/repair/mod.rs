@@ -28,6 +28,7 @@
 pub(crate) mod footprint;
 pub(crate) mod gpu;
 pub(crate) mod heal;
+pub(crate) mod patch;
 #[cfg(feature = "qualification")]
 pub mod qualification;
 #[allow(
@@ -82,6 +83,8 @@ pub(crate) fn gpu_functions() -> (Vec<&'static str>, Vec<&'static str>) {
 pub(crate) enum RepairKind {
     Clone,
     Heal,
+    /// A frozen patch: immutable pixels composited at their rectangle ([`patch`]).
+    Patch,
 }
 
 /// The most level-0 cells one Heal operation's solve may hold: its footprint and boundary ring,
@@ -98,6 +101,8 @@ pub(crate) struct RepairOp {
     pub(crate) footprint: Footprint,
     /// Source minus destination in whole stage pixels.
     pub(crate) delta: [i64; 2],
+    /// A frozen patch's pixels at the stage, for [`RepairKind::Patch`]; its footprint is empty.
+    pub(crate) patch: Option<std::sync::Arc<patch::BoundPatch>>,
 }
 
 impl RepairOp {
@@ -123,6 +128,18 @@ impl RepairOp {
             kind,
             footprint: Footprint::new(points, radius, feather, opacity, stage),
             delta,
+            patch: None,
+        }
+    }
+
+    /// A frozen patch bound to its stage: it reads and writes its own region and reads no source.
+    pub(crate) fn patch(bound: patch::BoundPatch) -> Self {
+        let stage = bound.stage();
+        Self {
+            kind: RepairKind::Patch,
+            footprint: Footprint::new(&[], 0.0, 0.0, 0.0, stage),
+            delta: [0, 0],
+            patch: Some(std::sync::Arc::new(bound)),
         }
     }
 
@@ -150,9 +167,12 @@ impl RepairOp {
         }
     }
 
-    /// The pixels this operation may write: its support.
+    /// The pixels this operation may write: its support, or a patch's region.
     pub(crate) fn writes(&self) -> Region {
-        self.footprint.support()
+        match &self.patch {
+            Some(patch) => patch.region(),
+            None => self.footprint.support(),
+        }
     }
 
     /// The pixels this operation reads, as two rectangles of the stage (either may be empty): its
@@ -175,6 +195,10 @@ pub(crate) fn delta(offset: [i32; 2], stage: Stage) -> [i64; 2] {
 /// [`RepairOp::reads`] from an operation's kind, the pixels it may write, its offset in pixels and
 /// its stage: what the host's region planning reads without building a footprint.
 pub(crate) fn reads(kind: RepairKind, writes: Region, delta: [i64; 2], stage: Stage) -> [Region; 2] {
+    // A patch blends over what it covers and reads nothing else.
+    if kind == RepairKind::Patch {
+        return [writes, Region::EMPTY];
+    }
     let grow = u32::from(kind == RepairKind::Heal);
     let destination = writes.grown(grow, stage);
     let s = writes;
@@ -317,6 +341,14 @@ pub(crate) fn apply(
         cancel.check()?;
         match op.kind {
             RepairKind::Clone => clone(frame, op, cancel)?,
+            RepairKind::Patch => match &op.patch {
+                Some(bound) => patch::composite(frame, bound, cancel)?,
+                None => {
+                    return Err(Error::internal(format!(
+                        "repair operation {index} is a patch without its pixels"
+                    )));
+                }
+            },
             RepairKind::Heal => heal::heal(frame, op, cancel).map_err(|error| {
                 if error.kind == crate::ErrorKind::ResourceLimit {
                     Error::resource_limit(format!("repair operation {index}: {}", error.detail))

@@ -78,8 +78,11 @@ pub use capabilities_proof::{
 };
 pub use capability::CapabilityModule;
 pub use controls::{CONTROLS_EFFECT, controls_module};
-pub use corrections::CORRECTIONS_EFFECT;
-pub(crate) use corrections::{CorrectionsModule, RepairCarrier};
+pub use corrections::{CORRECTIONS_EFFECT, RepairInput, StaleCorrection, StaleReason};
+pub(crate) use corrections::{new_top_input as corrections_top_input, stale_corrections};
+pub(crate) use corrections::{
+    CorrectionsModule, RepairCarrier, source_identity as corrections_source_identity,
+};
 pub(crate) use crop::CropModule;
 pub use crop::ORIENTATION_EFFECT;
 pub use crop::geometry::{
@@ -331,6 +334,20 @@ pub trait StageQuestions {
         false
     }
 
+    /// The `source` component of a frozen patch's input identity: the original's fingerprint,
+    /// kind, interpretation and decoded dimensions, never its location
+    /// ([`crate::RepairInput`]). Read from the asset's catalog row; no file is opened.
+    fn source_identity(&self) -> Result<String, Error> {
+        Err(Error::internal("this stage knows no source identity"))
+    }
+
+    /// The candidate the catalog owner is accepting for this plan: what a candidate-accepting
+    /// action ([`ActionDescriptor::accepts_candidate`]) commits, already published as an artifact
+    /// and recorded. `None` for every other plan, a draft's included.
+    fn accepting(&self) -> Option<std::sync::Arc<AcceptedCandidate>> {
+        None
+    }
+
     /// Capture identity and correction status from the cached verified source. No source is
     /// opened here; an unprepared source explicitly refuses the question.
     fn optics(&self) -> Result<crate::SourceOptics, Error> {
@@ -360,6 +377,18 @@ pub trait StageQuestions {
             "RAW neutral picker requires a RAW original",
         ))
     }
+}
+
+/// A task's candidate as the catalog owner hands it to the action accepting it: the artifact its
+/// bytes were published as (recorded in the catalog), the rectangle of content pixels it covers,
+/// its producer's label and provenance, and the input identity it was generated against.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AcceptedCandidate {
+    pub artifact: crate::ArtifactId,
+    pub rect: [u32; 4],
+    pub label: String,
+    pub provenance: Map<String, Value>,
+    pub input: crate::RepairInput,
 }
 
 /// What a module may ask about the current stack while planning an action or answering a query:
