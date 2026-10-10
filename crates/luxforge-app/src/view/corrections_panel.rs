@@ -231,7 +231,8 @@ fn notice_view(notice: &CorrectionNotice) -> Element<'_, Message> {
         CorrectionNotice::NoSource { reason } => inline_notice(
             Tone::Warning,
             format!(
-                "No automatic source fits \u{b7} \u{2325}-click one to finish \u{b7} Cancel esc \u{b7} {reason}"
+                "No automatic source fits \u{b7} {} \u{b7} Cancel esc",
+                crate::state::corrections::notice_detail(reason)
             ),
         ),
         CorrectionNotice::Limit { text, code } => {

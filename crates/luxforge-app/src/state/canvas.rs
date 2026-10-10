@@ -568,7 +568,7 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
                     tone: NoticeTone::Warning,
                     icon: NoticeIcon::Spark,
                     title: "No automatic source fits".into(),
-                    body: format!("\u{2325}-click one to finish \u{b7} {reason}"),
+                    body: super::corrections::notice_detail(reason),
                     actions: vec![("Cancel".into(), NoticeAction::DiscardGesture)],
                 });
             }

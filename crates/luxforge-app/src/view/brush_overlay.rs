@@ -128,6 +128,7 @@ pub(crate) fn outline(placement: &Placement, held: &HeldOperation) -> Outline {
 }
 
 /// Its source outline, dashed: the same envelope moved to where its first point samples from.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn source_outline(placement: &Placement, held: &HeldOperation) -> Outline {
     let (Some(source), Some(anchor)) = (held.source, held.points.first()) else {
         return Outline::default();
@@ -194,6 +195,7 @@ pub(crate) fn handles(placement: &Placement, held: &HeldOperation) -> Vec<(Handl
 }
 
 /// The source crosshair at a content position: two short canvas-space strokes through it.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn crosshair(placement: &Placement, at: [f64; 2], arm: f32) -> Vec<(Point, Point)> {
     let Some(centre) = placed(placement, at) else {
         return Vec::new();

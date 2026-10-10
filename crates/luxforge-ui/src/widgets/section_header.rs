@@ -240,7 +240,34 @@ pub fn band_header_with_reset<'a, M: Clone + 'a>(
     reset_tooltip: &str,
     on_reset: Option<M>,
 ) -> Element<'a, M> {
-    let band = band_header(title, active, hint, expanded, on_toggle);
+    let chevron = if expanded {
+        Icon::ChevronDown
+    } else {
+        Icon::ChevronRight
+    };
+    let mut leading = row![
+        icon(chevron, theme::DISCLOSURE_SIZE, Token::TextSecondary),
+        text(title.to_owned())
+            .size(theme::SIZE_TITLE)
+            .font(theme::FONT_SEMIBOLD)
+            .wrapping(Wrapping::None)
+            .style(theme::ink(Token::Text)),
+    ]
+    .spacing(theme::MODULE_HEADER_SPACING)
+    .align_y(Alignment::Center);
+    if active {
+        leading = leading.push(accent_dot());
+    }
+    let trailing: Element<'a, M> = match hint {
+        Some(hint) => container(
+            truncated_text(hint, theme::SIZE_CAPTION, theme::FONT, Token::TextTertiary)
+                .line_height(LineHeight::Absolute(theme::CAPTION_LINE_HEIGHT.into())),
+        )
+        .width(Length::Fill)
+        .align_x(Horizontal::Right)
+        .into(),
+        None => Space::new().width(Length::Fill).into(),
+    };
     let reset = header_icon_button(
         &IconButtonModel {
             icon: Icon::Reset,
@@ -250,20 +277,22 @@ pub fn band_header_with_reset<'a, M: Clone + 'a>(
         },
         on_reset,
     );
-    let overlay = container(reset)
+    let header = row![container(leading).width(Length::Shrink), trailing, reset]
+        .spacing(theme::MODULE_HEADER_SPACING)
+        .align_y(Alignment::Center)
+        .height(Length::Fill);
+    let band = button(header)
         .padding(Padding {
-            top: theme::BORDER_WIDTH,
+            top: 0.0,
             right: theme::MODULE_HEADER_PADDING_RIGHT,
             bottom: 0.0,
-            left: 0.0,
+            left: theme::MODULE_HEADER_PADDING_LEFT,
         })
         .width(Length::Fill)
-        .height(Length::Fixed(theme::BORDER_WIDTH + theme::MODULE_HEADER_HEIGHT))
-        .align_x(Horizontal::Right)
-        .align_y(iced::alignment::Vertical::Center);
-    iced::widget::Stack::new()
-        .push(band)
-        .push(overlay)
+        .height(Length::Fixed(theme::MODULE_HEADER_HEIGHT))
+        .style(theme::button_band)
+        .on_press(on_toggle);
+    column![hairline(theme::band_border_surface), band]
         .width(Length::Fill)
         .into()
 }
