@@ -1182,3 +1182,80 @@ fn remove_and_empty_keep_correction_strokes_every_surviving_entry_names() {
     let after: Vec<_> = paths.iter().map(|path| untouched(path)).collect();
     assert_eq!(after, originals, "no original was touched");
 }
+
+/// Frozen patches through Remove, Put back and Empty Removed: a removed photograph keeps its
+/// patches and their artifacts, Put back brings them back as they were, and emptying Removed
+/// collects only the patch artifact no remaining photograph names; the patch another photograph
+/// shares — the same bytes, published once — stays, and that photograph still renders with it.
+#[test]
+fn remove_put_back_and_empty_keep_shared_patch_artifacts_and_collect_the_rest() {
+    let harness = Harness::new("patches");
+    let paths = harness.photos(2);
+    let assets = harness.develop("develop", &paths);
+    let (k0, k1) = (&assets[0], &assets[1]);
+    // The producer's patch depends on its seed and place, not on the photograph: seed 5 makes the
+    // same bytes on both, which they share; seed 9 makes k0's own.
+    let patch = |asset: &Value, seed: u64| {
+        let started = harness.prepared(
+            "task.generate-proof-patches",
+            json!({"asset_id": asset, "count": 1, "width": 8, "height": 6, "x": 2, "y": 2,
+                   "seed": seed, "mutation": envelope(&format!("generate-{asset}-{seed}"))}),
+        );
+        assert_eq!(harness.settle(&started["job_id"])["status"], "ready");
+        let revision = harness.ok("asset.state", json!({"asset_id": asset}))["revision"].clone();
+        let accepted = harness.prepared(
+            "edit.accept-correction-patch",
+            json!({"asset_id": asset, "job_id": started["job_id"], "candidate": 0,
+                   "mutation": mutation_json(revision.as_u64().unwrap(), &format!("accept-{asset}-{seed}"))}),
+        );
+        assert_eq!(accepted["outcome"], "applied", "{accepted}");
+    };
+    patch(k0, 5);
+    patch(k0, 9);
+    patch(k1, 5);
+    let artifacts = |harness: &Harness, asset: &Value| -> Vec<String> {
+        harness.prepared("query.corrections", json!({"asset_id": asset}))["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["artifact"].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let (shared, own) = match artifacts(&harness, k0).as_slice() {
+        [shared, own] => (shared.clone(), own.clone()),
+        other => panic!("{other:?}"),
+    };
+    assert_ne!(shared, own);
+    assert_eq!(
+        artifacts(&harness, k1),
+        [shared.clone()],
+        "the same bytes are one artifact"
+    );
+    let root = harness.dir.join("catalog.artifacts");
+    let file = |id: &str| object_path(&root, &ArtifactId::parse(id).unwrap());
+    // Restarted, nothing published before is live, so only references keep an artifact.
+    let harness = harness.restart();
+
+    // Removed, k0 keeps its patches and their files; put back, it lists and renders them.
+    harness.ok("asset.remove", targets(&[k0], "remove-1"));
+    assert!(file(&shared).exists() && file(&own).exists());
+    harness.ok("asset.restore", targets(&[k0], "restore-1"));
+    assert_eq!(artifacts(&harness, k0), [shared.clone(), own.clone()]);
+    harness.prepared("render.sample", json!({"asset_id": k0, "x": 4, "y": 4}));
+
+    // Removed again and emptied: k0's own patch artifact goes, the shared one stays with k1.
+    harness.ok("asset.remove", targets(&[k0], "remove-2"));
+    let emptied = harness.empty("empty-1");
+    assert_eq!(emptied["deleted"], 1, "{emptied}");
+    assert_eq!(
+        harness.strings("SELECT id FROM artifacts"),
+        [shared.clone()],
+        "only the shared patch is left"
+    );
+    luxforge_testbase::wait_for("k0's own patch file to be collected", || {
+        (!file(&own).exists()).then_some(())
+    });
+    assert!(file(&shared).exists());
+    assert_eq!(artifacts(&harness, k1), [shared]);
+    harness.prepared("render.sample", json!({"asset_id": k1, "x": 4, "y": 4}));
+}
