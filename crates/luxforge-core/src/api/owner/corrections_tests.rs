@@ -150,8 +150,9 @@ fn an_automatic_source_is_searched_off_the_owner_and_committed_against_its_revis
             .map(|row| row["label"].clone())
             .collect();
     assert_eq!(
-        labels[..3],
+        labels[..4],
         [
+            json!("Add Heal 3"),
             json!("Add Heal 2"),
             json!("Reset corrections"),
             json!("Add Heal 1")
