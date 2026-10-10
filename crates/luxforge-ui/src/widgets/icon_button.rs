@@ -89,11 +89,14 @@ pub enum Icon {
     // The Settings sheet: its title bar button and the Experiments tab.
     Settings,
     Beaker,
+    // The Corrections workspace: its mode and its two kinds.
+    Heal,
+    Clone,
 }
 
 impl Icon {
     /// Every icon with its name, in the order the gallery's icon board lists them.
-    pub const NAMED: [(&'static str, Icon); 74] = [
+    pub const NAMED: [(&'static str, Icon); 76] = [
         ("rotate-left", Self::RotateLeft),
         ("rotate-right", Self::RotateRight),
         ("flip", Self::Flip),
@@ -172,6 +175,9 @@ impl Icon {
         ("close", Self::Close),
         ("settings", Self::Settings),
         ("beaker", Self::Beaker),
+        // The Corrections workspace: Heal is its mode's icon and both name a correction's kind.
+        ("heal", Self::Heal),
+        ("clone", Self::Clone),
     ];
 
     pub fn from_name(name: &str) -> Option<Self> {
@@ -640,6 +646,55 @@ pub(crate) fn draw_icon(frame: &mut canvas::Frame, icon: Icon, size: f32, color:
             frame.fill(&canvas::Path::circle(p(8.0, 8.0), 2.2 * s), color);
         }
         // A four-point spark: each side a curve drawn in towards the centre between two tips.
+        // A bandage across the square: a capsule on the diagonal with its pad across the middle.
+        Icon::Heal => {
+            let (c, k) = (8.0_f32, std::f32::consts::FRAC_1_SQRT_2);
+            let (half, r) = (3.7_f32, 2.8_f32);
+            let at = |along: f32, across: f32| p(c + along * k + across * k, c - along * k + across * k);
+            let mut path = canvas::path::Builder::new();
+            path.move_to(at(-half, -r));
+            path.line_to(at(half, -r));
+            path.arc(canvas::path::Arc {
+                center: at(half, 0.0),
+                radius: r * s,
+                start_angle: iced::Radians(-3.0 * std::f32::consts::FRAC_PI_4),
+                end_angle: iced::Radians(std::f32::consts::FRAC_PI_4),
+            });
+            path.line_to(at(-half, r));
+            path.arc(canvas::path::Arc {
+                center: at(-half, 0.0),
+                radius: r * s,
+                start_angle: iced::Radians(std::f32::consts::FRAC_PI_4),
+                end_angle: iced::Radians(5.0 * std::f32::consts::FRAC_PI_4),
+            });
+            path.close();
+            frame.stroke(&path.build(), stroke);
+            let mut pad = canvas::path::Builder::new();
+            pad.move_to(at(-2.0, -r));
+            pad.line_to(at(2.0, -r));
+            pad.line_to(at(2.0, r));
+            pad.line_to(at(-2.0, r));
+            pad.close();
+            frame.stroke(&pad.build(), stroke);
+        }
+        // A rubber stamp: its handle and block, and the line it prints.
+        Icon::Clone => {
+            poly(
+                frame,
+                &[
+                    (6.2, 2.5),
+                    (9.8, 2.5),
+                    (9.8, 5.7),
+                    (12.2, 7.3),
+                    (12.2, 9.5),
+                    (3.8, 9.5),
+                    (3.8, 7.3),
+                    (6.2, 5.7),
+                    (6.2, 2.5),
+                ],
+            );
+            line(frame, (3.0, 12.8), (13.0, 12.8));
+        }
         Icon::Spark => {
             let tips = [(8.0, 1.8), (14.2, 8.0), (8.0, 14.2), (1.8, 8.0)];
             let bends = [(9.0, 7.0), (9.0, 9.0), (7.0, 9.0), (7.0, 7.0)];

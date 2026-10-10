@@ -296,6 +296,14 @@ impl BrushBinding {
         Ok(fields)
     }
 
+    /// One number of the declared edit, as that action declares it: clamped to its range and, for an
+    /// `integer`, sent as one. `None` when the brush declares no edit or the edit no such number.
+    pub(crate) fn edit_value(&self, name: &str, value: f64) -> Option<Value> {
+        let action = &self.edit.as_ref()?.action;
+        let value = clamp(action, name, value)?;
+        Some(number_value(action, name, value))
+    }
+
     /// The draft one pin, source or size-handle drag sends through the declared edit: the method,
     /// the identity parameter naming the operation, and the fields the drag changed. `None` when
     /// the brush declares no edit or the drag changed nothing — a release that moved nothing writes

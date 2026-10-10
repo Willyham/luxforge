@@ -132,33 +132,17 @@ impl Editor {
                 );
             }
             ViewMessage::SetMode(mode) => {
-                // A draft is never discarded implicitly: leaving the crop mode or Mask mode with a
-                // draft open asks for Apply or Cancel, and a slider gesture is finished deliberately
-                // rather than replaced by a mode that would need the client's one draft.
-                if mode != self.session.workspace.mode
-                    && let Some(reason) = self.gesture_refusal(Starting::Mode)
-                {
-                    self.status.text = reason;
-                    return Task::none();
+                // Leaving the Corrections mode with a correction held cancels it first, as the
+                // design says; nothing else a mode change displaces is discarded implicitly.
+                let mut cancelled = Task::none();
+                if mode != self.session.workspace.mode && self.correction_gesture().is_some() {
+                    cancelled = self.discard();
                 }
-                // A module pick entered while the sections are bound to a mask stays bound to it,
-                // exactly as the resolved picker the person pressed was: Basic's, on that mask.
-                self.mask_panel.pick_on_mask = tools::module_of(&self.modules, &mode).is_some()
-                    && tools::canvas_pick(&self.modules, &mode).is_some()
-                    && self.section_target().is_some();
-                let opens_draft = tools::crop_frame(&self.modules)
-                    .is_some_and(|frame| frame.module.id == mode)
-                    && self.crop_gesture().is_none();
-                self.sync.mode = None;
-                if opens_draft {
-                    // The crop mode is the draft's: a start asks the session to enter it, through
-                    // `sync_mode`, only once the draft has started, so a refused start sends
-                    // nothing and leaves the session's mode where it was.
-                    return self.crop_update(CropMessage::Start);
+                if self.correction_gesture().is_some() {
+                    return cancelled;
                 }
-                // This arm asks the session to follow the mode explicitly, having cleared the
-                // generic catch-up in `sync_mode`, so the same field is never asked for twice.
-                return workspace_task(self.owner.clone(), self.client, json!({ "mode": mode }));
+                let set = self.set_mode(mode);
+                return Task::batch([cancelled, set]);
             }
             ViewMessage::OpenMenu(target) => self.view_state.menu = Some(target),
             ViewMessage::OpenControlMenu {
@@ -251,6 +235,37 @@ impl Editor {
             ViewMessage::ScaleFactor(scale) => self.view_state.set_system_scale_factor(scale),
         }
         Task::none()
+    }
+
+    /// Enter `mode`, under the one refusal a mode change answers.
+    fn set_mode(&mut self, mode: String) -> Task<Message> {
+        // A draft is never discarded implicitly: leaving the crop mode or Mask mode with a
+        // draft open asks for Apply or Cancel, and a slider gesture is finished deliberately
+        // rather than replaced by a mode that would need the client's one draft.
+        if mode != self.session.workspace.mode
+            && let Some(reason) = self.gesture_refusal(Starting::Mode)
+        {
+            self.status.text = reason;
+            return Task::none();
+        }
+        // A module pick entered while the sections are bound to a mask stays bound to it,
+        // exactly as the resolved picker the person pressed was: Basic's, on that mask.
+        self.mask_panel.pick_on_mask = tools::module_of(&self.modules, &mode).is_some()
+            && tools::canvas_pick(&self.modules, &mode).is_some()
+            && self.section_target().is_some();
+        let opens_draft = tools::crop_frame(&self.modules)
+            .is_some_and(|frame| frame.module.id == mode)
+            && self.crop_gesture().is_none();
+        self.sync.mode = None;
+        if opens_draft {
+            // The crop mode is the draft's: a start asks the session to enter it, through
+            // `sync_mode`, only once the draft has started, so a refused start sends
+            // nothing and leaves the session's mode where it was.
+            return self.crop_update(CropMessage::Start);
+        }
+        // This arm asks the session to follow the mode explicitly, having cleared the
+        // generic catch-up in `sync_mode`, so the same field is never asked for twice.
+        return workspace_task(self.owner.clone(), self.client, json!({ "mode": mode }));
     }
 
     /// Ask the session for a percentage zoom, as the 100% segment and a zoom stop do.

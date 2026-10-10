@@ -313,14 +313,36 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
             enabled: editable,
         },
     ];
+    // A declared brush workspace follows Mask, as the Corrections design places it, then the crop
+    // frames in registry order.
+    let shown = |module: &&ModuleDescriptor| {
+        module.is_available()
+            && applies(module, inputs.document.state.as_ref())
+            && (!module.developer || inputs.developer)
+    };
     modes.extend(
         inputs
             .modules
             .iter()
-            .filter(|module| {
-                module.is_available() && applies(module, inputs.document.state.as_ref())
-            })
-            .filter(|module| !module.developer || inputs.developer)
+            .filter(shown)
+            .filter(|module| super::corrections::is_brush_mode(inputs.modules, &module.id))
+            .filter_map(|module| {
+                let canvas = module.canvas.as_ref()?;
+                Some(ModeEntry {
+                    id: module.id.clone(),
+                    label: canvas.title().to_owned(),
+                    icon: canvas.icon().map(str::to_owned),
+                    shortcut: canvas.shortcut().map(str::to_owned),
+                    selected: inputs.session.workspace.mode == module.id,
+                    enabled: editable,
+                })
+            }),
+    );
+    modes.extend(
+        inputs
+            .modules
+            .iter()
+            .filter(shown)
             .filter_map(|module| match module.canvas.as_ref() {
                 Some(canvas @ CanvasInteraction::CropFrame { .. }) => Some(ModeEntry {
                     id: module.id.clone(),
@@ -330,9 +352,7 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
                     selected: inputs.session.workspace.mode == module.id,
                     enabled: editable,
                 }),
-                // A declared brush is captured by the shared brush ([`crate::brush`]), but its mode,
-                // band and gestures are the Corrections workspace's, which this build does not
-                // draw yet; listing it would offer a mode with no tool in it.
+                // A declared brush is listed above, after Mask.
                 Some(CanvasInteraction::PointPick { .. })
                 | Some(CanvasInteraction::SampleApply { .. })
                 | Some(CanvasInteraction::BrushMask { .. })

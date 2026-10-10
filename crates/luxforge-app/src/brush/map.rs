@@ -125,6 +125,12 @@ impl ContentMap {
         )
     }
 
+    /// The content stage's size in pixels: what a radius in content heights and a normalized offset
+    /// are measured against for display.
+    pub(crate) fn content(&self) -> (u32, u32) {
+        (self.geometry.content.width, self.geometry.content.height)
+    }
+
     pub(crate) fn aspect(&self) -> f64 {
         self.geometry.content.width as f64 / self.geometry.content.height as f64
     }

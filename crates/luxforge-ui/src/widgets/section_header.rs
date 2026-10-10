@@ -228,6 +228,46 @@ pub fn band_header<'a, M: Clone + 'a>(
         .into()
 }
 
+/// A panel's band with its own reset, as the Corrections band draws it: [`band_header`]'s title,
+/// accent dot and right-aligned hint, then a reset button that publishes `on_reset` while
+/// `can_reset`, dimmed otherwise.
+pub fn band_header_with_reset<'a, M: Clone + 'a>(
+    title: &str,
+    active: bool,
+    hint: Option<String>,
+    expanded: bool,
+    on_toggle: M,
+    reset_tooltip: &str,
+    on_reset: Option<M>,
+) -> Element<'a, M> {
+    let band = band_header(title, active, hint, expanded, on_toggle);
+    let reset = header_icon_button(
+        &IconButtonModel {
+            icon: Icon::Reset,
+            tooltip: reset_tooltip.to_owned(),
+            enabled: on_reset.is_some(),
+            selected: false,
+        },
+        on_reset,
+    );
+    let overlay = container(reset)
+        .padding(Padding {
+            top: theme::BORDER_WIDTH,
+            right: theme::MODULE_HEADER_PADDING_RIGHT,
+            bottom: 0.0,
+            left: 0.0,
+        })
+        .width(Length::Fill)
+        .height(Length::Fixed(theme::BORDER_WIDTH + theme::MODULE_HEADER_HEIGHT))
+        .align_x(Horizontal::Right)
+        .align_y(iced::alignment::Vertical::Center);
+    iced::widget::Stack::new()
+        .push(band)
+        .push(overlay)
+        .width(Length::Fill)
+        .into()
+}
+
 /// Renders a whole module section: its band and, when `body` is given, the body under it with the
 /// section padding and the row spacing. The caller passes `None` for a collapsed or unavailable
 /// section.

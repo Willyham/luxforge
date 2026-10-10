@@ -645,6 +645,7 @@ impl Presentation {
             mask_draft: None,
             mask_map: None,
             mask_handles: true,
+            corrections: None,
             draft: None,
             gpu: None,
             gpu_hold: false,
