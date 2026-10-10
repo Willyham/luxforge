@@ -281,6 +281,7 @@ mod tests {
         let packaged = BuildIdentity::new("0.0.0", Some(REVISION));
         assert_eq!(packaged.revision(), Some(REVISION));
         assert_eq!(packaged.release().as_deref(), Some("0.0.0+9d4138ca1f2e"));
+        assert!(super::super::Release::parse(&packaged.release().unwrap()).is_some());
         assert_eq!(
             Eligibility::decide(true, &packaged, LaunchMode::Interactive, false),
             Eligibility::Production {
