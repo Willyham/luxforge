@@ -304,7 +304,11 @@ fn plan_ranges(request: &SweepRequest, ranges: Vec<Range<usize>>) -> GpuStaging 
         let anchor = anchor_of(&plan.spatial[range.clone()]);
         let window_of = |rect: Region| {
             WindowPlan::gpu_window_between(compiled, source, from, end, rect)
-                .map(|window| anchored(window, anchor))
+                .map(|window| match from {
+                    // The first sweep reads the source and runs a repair link, if any.
+                    0 => super::plan::anchored_over(compiled, window, anchor),
+                    _ => anchored(window, anchor),
+                })
                 .map_err(|reason| {
                     Chained::Unplannable(format!(
                         "sweep {index}'s tile at ({}, {}): {}",
@@ -522,7 +526,7 @@ pub(crate) fn plan_light_sweeps(request: &SweepRequest) -> Result<Vec<GpuLightSw
         let anchor = anchor_of(&plan.spatial[..at]);
         let window_of = |rect: Region| {
             WindowPlan::gpu_window_between(compiled, source, 0, end, rect)
-                .map(|window| anchored(window, anchor))
+                .map(|window| super::plan::anchored_over(compiled, window, anchor))
                 .map_err(|reason| {
                     Chained::Unplannable(format!(
                         "light {k}'s sweep tile at ({}, {}): {}",

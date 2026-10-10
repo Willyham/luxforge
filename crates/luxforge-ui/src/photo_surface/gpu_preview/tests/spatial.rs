@@ -128,6 +128,7 @@ pub(super) fn test_spatial() -> GpuSpatial {
         clamps: true,
         mask: None,
         halos: Vec::new(),
+        contained: false,
     }
 }
 
@@ -1029,6 +1030,7 @@ fn blurred(radius_x: u32, radius_y: u32, amount: f32) -> GpuSpatial {
         }),
         // The apply reads its input within the larger radius: one mean runs along each axis.
         halos: vec![radius_x.max(radius_y)],
+        contained: false,
     }
 }
 

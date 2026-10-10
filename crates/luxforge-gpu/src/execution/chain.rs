@@ -316,6 +316,7 @@ mod tests {
             clamps: false,
             mask: None,
             halos: Vec::new(),
+            contained: false,
         }))
     }
 

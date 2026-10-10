@@ -678,7 +678,9 @@ const SOURCE_RULES: &[SourceRule] = &[
     // One field-patch semantics: the field-patch module builds every patch action from its spec,
     // the RAW module's `set-raw` keeps its own white-balance merge, and the RAW look's `set-look`
     // resolves a look into stored knots, chroma and knee no action sets, which a field patch's
-    // payload cannot hold. A module that wants a patch declares a `field_patch::Spec` instead of
+    // payload cannot hold; Corrections' `update-correction` patches one operation of its ordered
+    // list, addressed by its correction identity, which a layer's field patch cannot address. A
+    // module that wants a patch declares a `field_patch::Spec` instead of
     // hand-writing merge and canonical form. The tokens are a patch action's declaration in Rust
     // and in a JSON descriptor.
     SourceRule {
@@ -690,12 +692,14 @@ const SOURCE_RULES: &[SourceRule] = &[
             "crates/luxforge-core/src/modules/field_patch.rs",
             "crates/luxforge-core/src/modules/raw.rs",
             "crates/luxforge-core/src/modules/look/mod.rs",
+            "crates/luxforge-core/src/modules/corrections/module.rs",
         ],
         mode: Match::Whole,
         tests: false,
         once: false,
-        reason: "only the field-patch module, the RAW module and the RAW look declare a patch \
-                 action; declare a field-patch Spec instead of a second patch implementation",
+        reason: "only the field-patch module, the RAW module, the RAW look and Corrections' \
+                 operation update declare a patch action; declare a field-patch Spec instead of a \
+                 second patch implementation",
     },
     // One job table: every job kind (source, analysis, capability and export) is one record in
     // one table with one retention, and the catalog owner creates that table once.
