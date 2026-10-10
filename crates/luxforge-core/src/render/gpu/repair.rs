@@ -27,6 +27,11 @@ use crate::{
 };
 use std::sync::Arc;
 
+/// The most passes one repair step runs. Each group of conflicting operations runs its own set of
+/// dispatches, a Heal's about `30 L` for `L` levels; past this many the reference draws the layer,
+/// named, rather than a frame waiting behind thousands of dispatches.
+pub const REPAIR_PASSES_MAX: usize = 2048;
+
 /// The most bytes a repair step's Heal level planes may take on either GPU device. A layer whose
 /// largest Heal needs more is drawn by the reference, which refuses past its own solve bound; the
 /// GPU never solves a smaller problem in its place.
@@ -76,6 +81,17 @@ pub(crate) fn admit(
         .map(|plane| plane.extent((0, 0), (0, 0)))
         .map(|(width, height)| u64::from(width) * u64::from(height) * 16)
         .sum();
+    if step.passes.len() > REPAIR_PASSES_MAX {
+        return Err(GpuFallback::Repair {
+            layer,
+            why: format!(
+                "its corrections need {} GPU passes in {} groups of overlapping corrections, past \
+                 the {REPAIR_PASSES_MAX} a repair step runs",
+                step.passes.len(),
+                groups(entry).len()
+            ),
+        });
+    }
     if levels > REPAIR_LEVEL_BYTES {
         let largest = entry
             .operations()
@@ -126,22 +142,43 @@ fn meets(a: Region, b: Region) -> bool {
         && b.y0 < a.y1()
 }
 
-/// The ordered groups: runs of consecutive operations none of whose reads meets an earlier
-/// destination of the run.
-pub(crate) fn groups(entry: &RepairEntry) -> Vec<std::ops::Range<usize>> {
+/// The ordered groups, each the operations, in table order, of one set of dispatches. Two
+/// operations conflict when one writes what the other reads (its destination with Heal's ring, or
+/// its source); an operation goes in the group after the latest one holding an earlier operation
+/// it conflicts with, or the first. Operations that do not conflict commute, so every group reads
+/// what the table order would give it, and the groups are as few as the longest chain of
+/// conflicts: independent corrections anywhere in the table share one group.
+/// `O(operations²)`.
+pub(crate) fn groups(entry: &RepairEntry) -> Vec<Vec<usize>> {
     let regions = entry.regions();
-    let mut groups: Vec<std::ops::Range<usize>> = Vec::new();
+    let conflict = |a: &crate::render::repair_entry::OperationRegions,
+                    b: &crate::render::repair_entry::OperationRegions| {
+        b.reads.iter().any(|read| meets(a.writes, *read))
+            || a.reads.iter().any(|read| meets(b.writes, *read))
+    };
+    let mut level: Vec<usize> = Vec::with_capacity(regions.len());
+    let mut groups: Vec<Vec<usize>> = Vec::new();
     for (index, op) in regions.iter().enumerate() {
-        let joins = groups.last().is_some_and(|group| {
-            group.clone().all(|earlier| {
-                let writes = regions[earlier].writes;
-                !meets(writes, op.reads[0]) && !meets(writes, op.reads[1])
-            })
-        });
-        match groups.last_mut() {
-            Some(group) if joins => group.end = index + 1,
-            _ => groups.push(index..index + 1),
+        if op.writes.is_empty() {
+            level.push(usize::MAX);
+            continue;
         }
+        let at = regions[..index]
+            .iter()
+            .zip(&level)
+            .filter(|(earlier, level)| **level != usize::MAX && conflict(earlier, op))
+            .map(|(_, level)| *level + 1)
+            .max()
+            .unwrap_or(0);
+        level.push(at);
+        if groups.len() <= at {
+            groups.push(Vec::new());
+        }
+        groups[at].push(index);
+    }
+    if groups.is_empty() {
+        // Every destination missed the stage: one group holds them all, and writes nothing.
+        groups.push((0..regions.len()).collect());
     }
     groups
 }
@@ -176,7 +213,9 @@ pub(crate) fn plan_repair(layer: usize, entry: &RepairEntry, linear: bool) -> Gp
     let mut state: Option<usize> = None;
     let mut apply = None;
     for (number, group) in groups.iter().enumerate() {
-        let described = crate::repair::gpu::describe(&bound[group.clone()], entry.stage, None);
+        let ops: Vec<crate::repair::RepairOp> =
+            group.iter().map(|&index| bound[index].clone()).collect();
+        let described = crate::repair::gpu::describe(&ops, entry.stage, None);
         let offset = block.len() as u32;
         block.extend_from_slice(&described.block);
         let words_at = words.len();
@@ -355,7 +394,9 @@ pub(crate) fn warm_plans(
                     .descriptor()
                     .effects
                     .iter()
-                    .find(|effect| effect.stage == EffectStage::Repair && !provider.descriptor().developer)
+                    .find(|effect| {
+                        effect.stage == EffectStage::Repair && !provider.descriptor().developer
+                    })
                     .map(|effect| effect.id.clone())
             });
             match effect {
@@ -368,7 +409,12 @@ pub(crate) fn warm_plans(
         .as_ref()
         .map(|table| table.operations().to_vec())
         .unwrap_or_default();
-    let next = rows.iter().map(|row| row.id).max().unwrap_or(0).saturating_add(1);
+    let next = rows
+        .iter()
+        .map(|row| row.id)
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1);
     let spot = |id: u32, kind: RepairKind| RepairOperation {
         id,
         kind,
@@ -455,7 +501,10 @@ fn with_table(
     let first = compiled.segments.first()?;
     let (segment, position) = match compiled.layers.get(layer) {
         Some(&start) => start,
-        None => (compiled.segments.len() - 1, compiled.segments.last()?.operations.len()),
+        None => (
+            compiled.segments.len() - 1,
+            compiled.segments.last()?.operations.len(),
+        ),
     };
     if segment != 0 || first.entry.is_some() {
         return None;

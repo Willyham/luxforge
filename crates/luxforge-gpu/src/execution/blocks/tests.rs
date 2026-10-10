@@ -103,6 +103,7 @@ fn spatial(block: &Arc<[u32]>, components: &[&Arc<[u32]>]) -> GpuStep {
         clamps: false,
         mask: (!components.is_empty()).then(|| mask(components)),
         halos: Vec::new(),
+        contained: false,
     }))
 }
 

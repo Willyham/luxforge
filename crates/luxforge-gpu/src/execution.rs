@@ -1286,7 +1286,12 @@ impl SpatialSlot {
         let dispatched = groups.encode(encoder, compiled, programs, &run, &places);
         self.texels += written(&run, &places);
         self.dispatched += dispatched;
-        (dispatched, dirty.map(|_| whole))
+        // A step whose plan names where its output changes ([`spatial::GpuSpatial::contained`])
+        // hands that change on; any other that ran whole changed anywhere.
+        match single.filter(|spatial| spatial.contained) {
+            Some(_) => (dispatched, dirty),
+            None => (dispatched, dirty.map(|_| whole)),
+        }
     }
 }
 

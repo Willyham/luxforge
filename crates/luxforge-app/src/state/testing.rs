@@ -278,6 +278,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
                 title: "Crop".into(),
                 notes: "test".into(),
                 patch: false,
+                accepts_candidate: false,
                 parameters: crop,
             },
             ActionDescriptor {
@@ -288,6 +289,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
                 title: "Fit crop".into(),
                 notes: "test".into(),
                 patch: false,
+                accepts_candidate: false,
                 parameters: fit,
             },
             ActionDescriptor {
@@ -298,6 +300,7 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
                 title: "Reset crop".into(),
                 notes: "test".into(),
                 patch: false,
+                accepts_candidate: false,
                 parameters: Vec::new(),
             },
         ],

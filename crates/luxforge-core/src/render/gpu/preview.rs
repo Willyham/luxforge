@@ -1339,7 +1339,7 @@ fn plan_tiles(
     let source = (full.width, full.height);
     let window_of = |rect: Region| {
         WindowPlan::of_gpu_rect(compiled, source, rect)
-            .map(|windows| super::plan::anchored(windows.reads(0), anchor))
+            .map(|windows| super::plan::anchored_over(compiled, windows.reads(0), anchor))
     };
     // What a tile's slot may take: the budget less the source the surface holds, the view plan's
     // slot and the accumulator with its rest output, at most half the budget.
@@ -1396,6 +1396,18 @@ fn plan_tiles(
                 height: side.min(output.height - y0),
             };
             match window_of(rect) {
+                // A repair whose source lies far from its destination reads a window the device
+                // cannot hold as one texture: the reference draws the picture, named.
+                Ok(window)
+                    if window.width > DEVICE_TEXTURE_SIDE
+                        || window.height > DEVICE_TEXTURE_SIDE =>
+                {
+                    return Ok(Err(GpuFallback::Unplannable(format!(
+                        "the picture at rest's tile at ({x0}, {y0}) reads a {}x{} window, past \
+                         the device's {DEVICE_TEXTURE_SIDE}-texel side",
+                        window.width, window.height
+                    ))));
+                }
                 Ok(window) => tiles.push(RestTile { rect, window }),
                 Err(reason) => {
                     return Ok(Err(GpuFallback::Unplannable(format!(
@@ -1613,8 +1625,8 @@ fn planned_preview(
     if let GpuAnswer::Plan(plan) = &answer {
         let anchor =
             super::plan::common_anchor(std::iter::once(&**plan).chain(cpu_shape.as_deref()));
-        window = window.map(|window| super::plan::anchored(window, anchor));
-        reduced = reduced.map(|reduced| super::fit::anchored_plan(reduced, anchor));
+        window = window.map(|window| super::plan::anchored_over(&fit.compiled, window, anchor));
+        reduced = reduced.map(|reduced| super::fit::anchored_plan(&fit.compiled, reduced, anchor));
     }
     // Every plan starts from the source.
     let boundary_request = match &answer {
@@ -1650,12 +1662,12 @@ fn planned_preview(
 
 /// The most links one plan's chain holds, and the light link it computes its light with: the colour
 /// operations before its first spatial operation, then one link for each spatial operation — a
-/// global Detail layer, a global Presence layer and each masked spatial layer
+/// repair layer, a global Detail layer, a global Presence layer and each masked spatial layer
 /// ([`MAX_MASKED_SPATIAL_LAYERS`]) — and the sequence of a light link over the source
 /// ([`warm_links`]).
-pub const GPU_PLAN_LINKS: usize = 4 + MAX_MASKED_SPATIAL_LAYERS;
+pub const GPU_PLAN_LINKS: usize = 5 + MAX_MASKED_SPATIAL_LAYERS;
 
-/// The most link sequences a warm list holds ([`plan_warm_list`]): the surface's 64-sequence pipeline
+/// The most link sequences a warm list holds ([`plan_warm_list`]): the surface's 65-sequence pipeline
 /// cache (`PIPELINE_CACHE`, `crates/luxforge-ui/src/photo_surface/gpu_preview/compile.rs`) less
 /// the largest plan's [`GPU_PLAN_LINKS`], so a whole warm list and every link of the plan a drag
 /// draws are held together, and warming never evicts what a tick asks for or what it has just

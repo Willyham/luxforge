@@ -236,6 +236,13 @@ impl RepairEntry {
         self.reads(window).0.bounds()
     }
 
+    /// `window` with what producing it reads: a window over which a GPU step's output is the
+    /// whole frame's at every pixel of `window`. `O(operations · rects)`.
+    pub(crate) fn closure_once(&self, window: Region) -> Region {
+        let window = intersection(window, Region::whole(self.stage));
+        union(self.window_reads(window), window)
+    }
+
     /// The read set of every destination: what a whole frame of the output reads beyond the
     /// identity, and every operation that writes a pixel.
     pub(crate) fn destination_reads(&self) -> (ReadSet, Vec<usize>) {

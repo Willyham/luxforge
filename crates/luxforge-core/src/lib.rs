@@ -146,6 +146,7 @@ pub use render::gpu::{
     GpuLightInput, GpuLightPasses, GpuLightRestoration, GpuLightSweep, GpuMask, GpuOperation,
     GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest, GpuPlane, GpuPlaneFormat, GpuPlaneSize,
     GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuRepair, GpuRepairOperation, GpuRest,
+    REPAIR_LEVEL_BYTES, REPAIR_PASSES_MAX,
     GpuSpatial, GpuSpatialUnit, GpuStaging, GpuSweep, GpuSweeps, GpuView, GpuWarmList,
     PreparedStream, REDUCED_AFTER_BYTES, REST_SHARE_MAX, REST_TILE_SIDES, REST_TILE_WORK,
     RestReduction, RestTile, RestTiles, STREAM_TILE_SIDES, SWEEP_SPLIT_REACH, SWEEP_STAGE_TEXTURES,
