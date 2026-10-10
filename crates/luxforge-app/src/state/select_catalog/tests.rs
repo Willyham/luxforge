@@ -1450,3 +1450,85 @@ fn catalog_browse_send_back_is_offered_and_refused_as_the_core_refuses() {
     state.query = Some(super::super::select::source_query(ViewSource::Removed));
     assert_eq!(info(&state, &selection).unwrap().send_back, None);
 }
+
+/// A batch export that left photographs out for stale frozen patches says on each row which
+/// patches and why, and its report offers Export anyway: `batch.export` of exactly those
+/// photographs into the same folder, each acknowledging the entry and patches the owner named.
+/// A report with no such row, or of another batch, offers nothing.
+#[test]
+fn catalog_batch_export_report_offers_export_anyway_for_exactly_its_stale_photographs() {
+    let mut state = catalog_state(ViewSource::AllPhotographs);
+    let selection = selected(0, 3, 1);
+    let entry = luxforge_core::EntryId::new();
+    let mut exported = report(&[0], &[(2, "removed", "it is in Removed")], &[]);
+    exported
+        .skipped
+        .push(luxforge_core::catalog_types::BatchSkip {
+            asset_id: asset(1),
+            code: "stale-unacknowledged".into(),
+            reason: "it holds stale frozen patches".into(),
+            entry_id: Some(entry.clone()),
+            stale: serde_json::from_value(json!([
+                {"operation": "correction-3", "name": "Patch 3", "reasons": ["earlier-correction"]},
+                {"operation": "correction-5", "name": "Patch 5", "reasons": ["development"]},
+            ]))
+            .unwrap(),
+        });
+    state.catalog.batch = Some(batch(
+        BatchKind::Export {
+            folder: "/x".into(),
+        },
+        3,
+        Some(BatchEnd::Done(exported)),
+    ));
+    state.catalog.report = true;
+    let sheet = derive(&state, &selection, "").sheet.unwrap();
+    assert_eq!(
+        sheet.anyway.as_deref(),
+        Some("Export anyway \u{b7} 1 photograph")
+    );
+    let left_out = &sheet.sections.last().unwrap().rows;
+    assert_eq!(
+        left_out[1],
+        (
+            "L1000001.DNG".to_owned(),
+            "stale \u{b7} Patch 3: a correction below it changed; Patch 5: the RAW development \
+             changed"
+                .to_owned()
+        )
+    );
+    let m = MutationRequest {
+        request_id: "r".into(),
+        actor: "luxforge-desktop".into(),
+    };
+    let (folder, params, names) = export_anyway_params(&state.catalog, &m).unwrap();
+    assert_eq!(folder, PathBuf::from("/x"));
+    assert_eq!(
+        params,
+        json!({
+            "targets": {"kind": "assets", "asset_ids": [asset(1)]},
+            "destination": "/x",
+            "acknowledge_stale": [{"asset_id": asset(1), "entry_id": entry,
+                                   "operations": ["correction-3", "correction-5"]}],
+            "mutation": {"request_id": "r", "actor": "luxforge-desktop"},
+        })
+    );
+    assert_eq!(
+        names.into_iter().collect::<Vec<_>>(),
+        [(asset(1), "L1000001.DNG".to_owned())]
+    );
+    // Nothing stale left out, or a batch that was not an export: no Export anyway.
+    state.catalog.batch = Some(batch(
+        BatchKind::Export {
+            folder: "/x".into(),
+        },
+        2,
+        Some(BatchEnd::Done(report(
+            &[0],
+            &[(1, "removed", "it is in Removed")],
+            &[],
+        ))),
+    ));
+    assert_eq!(derive(&state, &selection, "").sheet.unwrap().anyway, None);
+    assert!(export_anyway_params(&state.catalog, &m).is_none());
+}

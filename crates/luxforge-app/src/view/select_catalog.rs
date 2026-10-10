@@ -802,18 +802,27 @@ pub(crate) fn sheet(model: &CatalogSheet) -> Element<'_, Message> {
             .then(|| act(CatalogAction::Confirmed)),
     );
     let sheet: Element<'_, Message> = if model.confirm.is_none() {
-        column![
-            sheet,
-            text_button(
+        let mut report = column![sheet];
+        // Export anyway is the report's own answer to the photographs it left out for stale
+        // frozen patches; nothing else acknowledges them.
+        if let Some(anyway) = &model.anyway {
+            report = report.push(text_button(
+                anyway,
+                ButtonTone::Primary,
+                ButtonSize::Compact,
+                Some(act(CatalogAction::ExportAnyway)),
+            ));
+        }
+        report
+            .push(text_button(
                 "Copy report JSON",
                 ButtonTone::Quiet,
                 ButtonSize::Compact,
                 Some(Message::CopySettings(
-                    crate::app::message::copy_settings::CopySettingsMessage::CopyReport
-                ))
-            )
-        ]
-        .into()
+                    crate::app::message::copy_settings::CopySettingsMessage::CopyReport,
+                )),
+            ))
+            .into()
     } else {
         sheet
     };

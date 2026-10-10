@@ -501,6 +501,7 @@ impl Editor {
                 }
             }
             CatalogAction::Confirmed => return self.confirmed(),
+            CatalogAction::ExportAnyway => return self.export_anyway_batch(),
             CatalogAction::Report(open) => {
                 self.close_catalog_menus();
                 self.select.state.catalog.report = open;
@@ -566,6 +567,25 @@ impl Editor {
             },
             |folder| catalog(CatalogMessage::Act(CatalogAction::ExportInto(folder))),
         )
+    }
+
+    /// The batch export report's Export anyway: `batch.export` of exactly the photographs it left
+    /// out for stale frozen patches, into its folder, each acknowledging the entry and patches the
+    /// owner named ([`model::export_anyway_params`]), as a request of its own. A commit to one of
+    /// them since makes the owner skip it again with what is stale now, never export it silently.
+    fn export_anyway_batch(&mut self) -> Task<Message> {
+        let Some((folder, params, names)) =
+            model::export_anyway_params(&self.select.state.catalog, &request())
+        else {
+            return Task::none();
+        };
+        if let Some(reason) = self.batch_refusal() {
+            self.status.text = reason;
+            return Task::none();
+        }
+        let count = names.len() as u32;
+        let result = batch_call(&self.owner, self.client, "batch.export", params.clone());
+        self.adopt_batch_start(BatchKind::Export { folder }, params, count, names, result)
     }
 
     /// Start a batch of the selection: `batch.apply-settings` or `batch.export`, sent synchronously
