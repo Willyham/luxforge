@@ -85,19 +85,6 @@ impl Correcting {
         self.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
     }
 
-    fn set_mode(&mut self, mode: &str) {
-        let _ = self
-            .editor
-            .update(Message::View(ViewMessage::SetMode(mode.to_owned())));
-        let _ = call(
-            &self.owner(),
-            self.editor.client,
-            "workspace.set",
-            json!({ "mode": mode }),
-        );
-        self.adopt_session();
-    }
-
     /// Enter Corrections with its letter, through the one key table.
     fn enter(&mut self) {
         self.key(Key::Character("q".into()), Keys::empty());

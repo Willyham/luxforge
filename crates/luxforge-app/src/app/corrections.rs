@@ -548,7 +548,7 @@ impl Editor {
                 self.correction_reorder(&binding, operation, index)
             }
             CorrectionMessage::Step(step) => {
-                self.correction_step(step);
+                self.correction_walk(step);
                 Task::none()
             }
             CorrectionMessage::Shift(step) => {
@@ -682,7 +682,7 @@ impl Editor {
 
     /// `↑`/`↓`: the correction above or below the selected one in the list, or the top one when
     /// nothing is selected.
-    fn correction_step(&mut self, step: i8) {
+    fn correction_walk(&mut self, step: i8) {
         let Some(listing) = self.correction_listing() else {
             return;
         };

@@ -316,6 +316,8 @@ fn draft_bar_view(model: &DraftBar) -> Element<'_, Message> {
             apply_reason: model.apply_reason.clone(),
             finish: if model.done {
                 DraftFinish::Done
+            } else if model.cancel_only {
+                DraftFinish::Cancel
             } else {
                 DraftFinish::Apply
             },
