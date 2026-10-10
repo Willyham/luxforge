@@ -383,8 +383,9 @@ impl ToolModule for CorrectionsModule {
 
     fn collapses(&self, input: &ActionInput) -> bool {
         // Planned on the base, an add would mint another operation (and, without a source, read
-        // pixels again): it never collapses.
-        input.action_id != ADD
+        // pixels again), and an accept would add a second patch to a stack its candidate was not
+        // generated against: neither ever collapses.
+        input.action_id != ADD && input.action_id != ACCEPT
     }
 
     fn query(
