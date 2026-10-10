@@ -1386,3 +1386,40 @@ fn a_key_step_takes_a_chord_written_as_an_action_shortcut() {
         assert!(parse(&written.to_string()).is_err(), "{key}");
     }
 }
+
+/// A job named by the task that started it round-trips in an `api` or `agent` step's `job_id`; an
+/// identity is sent as written, and a reference to a method that is not a task, or of another
+/// shape, fails the script.
+#[test]
+fn a_job_is_named_by_the_task_that_started_it() {
+    let steps = round_trip(json!([
+        {"api": {"method": "task.generate-proof-patches", "params": {"seed": 3}}},
+        {"api": {"method": "edit.accept-correction-patch",
+                 "params": {"job_id": {"started_by": "task.generate-proof-patches"}, "candidate": 0}}},
+        {"agent": {"method": "job.read", "params": {"job_id": "job-1"}}},
+    ]));
+    let Step::Api { params, .. } = &steps[1] else {
+        panic!("an api step");
+    };
+    assert_eq!(
+        JobReference::of(params).unwrap(),
+        Some(JobReference {
+            started_by: "task.generate-proof-patches".into()
+        })
+    );
+    let Step::Agent { params, .. } = &steps[2] else {
+        panic!("an agent step");
+    };
+    assert_eq!(JobReference::of(params).unwrap(), None);
+    for (job, expected) in [
+        (json!({"started_by": "edit.set-basic"}), "names a task method"),
+        (json!({"started_by": "task."}), "names a task method"),
+        (json!({"started_by": "task.x", "index": 1}), "job_id takes"),
+        (json!(7), "job_id takes"),
+    ] {
+        refused(
+            json!([{"api": {"method": "job.read", "params": {"job_id": job}}}]),
+            expected,
+        );
+    }
+}
