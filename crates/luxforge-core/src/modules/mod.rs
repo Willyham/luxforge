@@ -2,12 +2,13 @@
 //! and the compilation of its persisted payloads into host processing primitives. Modules never
 //! write the catalog, never keep an undo stack and never render.
 pub(crate) mod basic;
-mod candidate_proof;
 #[cfg(test)]
 pub(crate) mod brush_consumer;
+mod candidate_proof;
 mod capabilities_proof;
 mod capability;
 mod controls;
+mod corrections;
 mod crop;
 mod curve;
 mod descriptor;
@@ -77,6 +78,8 @@ pub use capabilities_proof::{
 };
 pub use capability::CapabilityModule;
 pub use controls::{CONTROLS_EFFECT, controls_module};
+pub use corrections::CORRECTIONS_EFFECT;
+pub(crate) use corrections::{CorrectionsModule, RepairCarrier};
 pub(crate) use crop::CropModule;
 pub use crop::ORIENTATION_EFFECT;
 pub use crop::geometry::{
@@ -147,19 +150,22 @@ pub(crate) use registry::linked_modules;
 pub(crate) use registry::stack_compiles;
 #[cfg(test)]
 pub(crate) use registry::tests::{
-    HELD_ACTION, HELD_EFFECT, HeldModule, PATCH_ACTION, PATCH_MODULE, REPAIR_STAGE_EFFECT,
-    PatchModule, STAGE_ACTION, STAGE_EFFECT, StageModule, TestModule,
+    HELD_ACTION, HELD_EFFECT, HeldModule, PATCH_ACTION, PATCH_MODULE, PatchModule,
+    REPAIR_STAGE_EFFECT, STAGE_ACTION, STAGE_EFFECT, StageModule, TestModule,
 };
 pub use registry::{ActionRef, QueryRef};
 pub use registry::{ModuleRegistry, Provider, RegistryOptions, insertion_index_among};
 pub(crate) use registry::{Superseded, settings_action_in, superseded_in, superseded_refusal_in};
+pub use repair::{MAX_REPAIR_OPERATIONS, RepairTable};
+#[allow(
+    unused_imports,
+    reason = "the Corrections module (TASK-005) compiles into these"
+)]
+pub(crate) use repair::{REPAIR_OFFSET_MAX, REPAIR_RADIUS_MAX, RepairKind, RepairOperation};
 pub(crate) use spatial::{
     ESTIMATE_REDUCTION, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes,
     PlanesMut, Reduction, SPATIAL_BUDGET_BYTES, SpatialUnit,
 };
-pub use repair::{MAX_REPAIR_OPERATIONS, RepairTable};
-#[allow(unused_imports, reason = "the Corrections module (TASK-005) compiles into these")]
-pub(crate) use repair::{REPAIR_OFFSET_MAX, REPAIR_RADIUS_MAX, RepairKind, RepairOperation};
 pub use spatial::{MAX_MASKED_SPATIAL_LAYERS, Region, SpatialOperation};
 pub use vignette::VIGNETTE_EFFECT;
 pub(crate) use vignette::VignetteModule;
@@ -185,6 +191,11 @@ pub struct NewLayer {
     /// The derived artifacts the payload is evaluated with, only for an effect that declares
     /// `artifacts`; empty otherwise.
     pub artifacts: Vec<ArtifactId>,
+    /// The strokes the plan captured fresh for this payload's reserved
+    /// [`crate::path::STROKES_FIELD`], which the host adds to the recipe's stroke table so the
+    /// commit stores them once ([`crate::path`]). Empty for a plan that captured none; a stroke
+    /// the payload references and the table already holds need not be repeated here.
+    pub strokes: crate::path::StrokeTable,
 }
 
 impl NewLayer {
@@ -193,11 +204,17 @@ impl NewLayer {
             effect_id: effect_id.into(),
             payload,
             artifacts: Vec::new(),
+            strokes: crate::path::StrokeTable::default(),
         }
     }
 
     pub fn with_artifacts(self, artifacts: Vec<ArtifactId>) -> Self {
         Self { artifacts, ..self }
+    }
+
+    /// The same layer with the strokes its plan captured fresh ([`Self::strokes`]).
+    pub fn with_strokes(self, strokes: crate::path::StrokeTable) -> Self {
+        Self { strokes, ..self }
     }
 }
 
@@ -211,6 +228,8 @@ pub struct LayerUpdate {
     /// The layer's derived artifacts after the change, only for an effect that declares
     /// `artifacts`; empty otherwise, which also clears any the layer listed.
     pub artifacts: Vec<ArtifactId>,
+    /// The strokes the plan captured fresh for the new payload ([`NewLayer::strokes`]).
+    pub strokes: crate::path::StrokeTable,
 }
 
 impl LayerUpdate {
@@ -219,11 +238,17 @@ impl LayerUpdate {
             id,
             payload,
             artifacts: Vec::new(),
+            strokes: crate::path::StrokeTable::default(),
         }
     }
 
     pub fn with_artifacts(self, artifacts: Vec<ArtifactId>) -> Self {
         Self { artifacts, ..self }
+    }
+
+    /// The same update with the strokes its plan captured fresh ([`NewLayer::strokes`]).
+    pub fn with_strokes(self, strokes: crate::path::StrokeTable) -> Self {
+        Self { strokes, ..self }
     }
 }
 
@@ -280,6 +305,30 @@ pub trait StageQuestions {
     /// ([`crate::tiles::read_grid`]), read off the catalog owner by the tile service.
     fn grid_before(&self, _index: usize) -> Result<crate::tiles::GridRead, Error> {
         Err(Error::internal("this stage cannot read a sample grid"))
+    }
+
+    /// One bounded rectangle of a stage the stack produces, reduced by block means, in linear light
+    /// ([`crate::tiles::region::RegionRequest`]): the input of a layer, or a layer's output with a
+    /// payload the module supplies in place of its own. Read off the catalog owner by the tile
+    /// service, within its one-frame bound; on the owner the read defers the call that asked.
+    fn region_before(
+        &self,
+        _request: &crate::tiles::region::RegionRequest,
+    ) -> Result<crate::tiles::region::RegionRead, Error> {
+        Err(Error::internal("this stage cannot read a region"))
+    }
+
+    /// The strokes the stack's payloads reference, resolved from the stroke store
+    /// ([`crate::path::StrokeTable`]), or `None` where the questions hold no recipe.
+    fn strokes(&self) -> Option<&crate::path::StrokeTable> {
+        None
+    }
+
+    /// Whether this plan is a draft's preview rather than a commit or a query: a plan whose result
+    /// needs a search a commit runs once — an automatic repair source — plans no change for a
+    /// preview, so a preview never parks a read ([`crate::editor`]'s drafts).
+    fn previewing(&self) -> bool {
+        false
     }
 
     /// Capture identity and correction status from the cached verified source. No source is
@@ -394,6 +443,19 @@ impl<'a> StageContext<'a> {
     /// ([`StageQuestions::sensor_neutral`]).
     pub fn sensor_neutral(&self, x: u32, y: u32) -> Result<[f32; 3], Error> {
         self.questions.sensor_neutral(x, y)
+    }
+
+    /// The resolved strokes of the stack ([`StageQuestions::strokes`]): refused where the
+    /// questions hold no recipe, never answered with an empty table.
+    pub fn strokes(&self) -> Result<&'a crate::path::StrokeTable, Error> {
+        self.questions
+            .strokes()
+            .ok_or_else(|| Error::internal("this stage holds no stroke table"))
+    }
+
+    /// Whether this plan is a draft's preview ([`StageQuestions::previewing`]).
+    pub fn previewing(&self) -> bool {
+        self.questions.previewing()
     }
 }
 
@@ -549,10 +611,43 @@ pub trait ToolModule: Send + Sync {
         action.title.clone()
     }
     /// A history label that needs the resolved result of planning, such as a frozen profile
-    /// and its EXIF focal length. Reads bounded payloads only; never queries or renders.
-    fn planned_label(&self, input: &ActionInput, layers: &[Layer], fallback: &str) -> String {
-        let _ = (input, layers);
+    /// and its EXIF focal length, or the stack it was planned on, such as the operation a deletion
+    /// removed: `before` is the stack the action was planned against and `layers` the one it
+    /// produced. Reads bounded payloads only; never queries or renders.
+    fn planned_label(
+        &self,
+        input: &ActionInput,
+        before: &[Layer],
+        layers: &[Layer],
+        fallback: &str,
+    ) -> String {
+        let _ = (input, before, layers);
         fallback.to_owned()
+    }
+
+    /// What an action's result reports beside its mutation result, read from the stack the request
+    /// left current — the stack it committed, the one a returning edit moved back to, or the
+    /// current one for a no-op — and its resolved strokes: the objects a request minted or
+    /// addressed, as `add-correction` answers its `correction`. Each field is one top-level key of
+    /// the answer. It is stored with the request, so a deduplicated retry answers the same fields
+    /// without planning again. Reading payloads only; the default reports nothing.
+    fn answer(
+        &self,
+        input: &ActionInput,
+        layers: &[Layer],
+        strokes: &crate::path::StrokeTable,
+    ) -> Result<Map<String, Value>, Error> {
+        let _ = (input, layers, strokes);
+        Ok(Map::new())
+    }
+
+    /// Whether a request of this action may collapse into the entry before it by the
+    /// auto-collapse rule ([`crate::EditorService`]'s collapse), which plans it again on that
+    /// entry's base. `false` for an action whose second plan would mint a different object or
+    /// read pixels again, as an operation's add does; the default, `true`, leaves it to the rule.
+    fn collapses(&self, input: &ActionInput) -> bool {
+        let _ = input;
+        true
     }
 
     /// What a preset captures of a stored layer: the fields, named as the module's patch action's
@@ -611,6 +706,22 @@ pub trait ToolModule: Send + Sync {
     ) -> Result<bool, Error> {
         let _ = (effect_id, format, payload);
         Ok(false)
+    }
+    /// [`ToolModule::compile`] for a payload whose reserved [`crate::path::STROKES_FIELD`] names
+    /// strokes in the store: the host hands it the recipe's resolved stroke table, every reference
+    /// of the layer already checked against it as its declared type, so a module that draws its
+    /// strokes — Corrections' repair layer — compiles their positions without reading the store.
+    /// The default ignores the table and compiles the payload alone.
+    fn compile_with_strokes(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &Value,
+        at: crate::CompileStage,
+        strokes: &crate::path::StrokeTable,
+    ) -> Result<Processing, Error> {
+        let _ = strokes;
+        self.compile(effect_id, format, payload, at)
     }
     /// Turn a persisted payload into a host processing primitive at its input stage.
     fn compile(

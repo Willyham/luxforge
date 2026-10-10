@@ -79,7 +79,12 @@ impl RepairOperation {
                 path::POINTS_PER_STROKE
             )));
         }
-        if !self.points.iter().flatten().all(|&value| path::in_grid(value)) {
+        if !self
+            .points
+            .iter()
+            .flatten()
+            .all(|&value| path::in_grid(value))
+        {
             return Err(Error::validation(format!(
                 "{name} holds a stroke position outside the coordinate grid"
             )));
@@ -135,7 +140,10 @@ impl RepairTable {
     }
 
     /// The neutral table: no rows, which the host drops, for the module's emptied layer.
-    #[allow(dead_code, reason = "the Corrections module (TASK-005) compiles an emptied layer to it")]
+    #[allow(
+        dead_code,
+        reason = "the Corrections module (TASK-005) compiles an emptied layer to it"
+    )]
     pub(crate) fn neutral() -> Self {
         Self::default()
     }

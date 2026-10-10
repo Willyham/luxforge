@@ -170,39 +170,56 @@ impl EditorService {
         let registry = self.registry.clone();
         let prepared = Prepared::new(&registry, action_id, parameters)?;
         let request = request_input(&prepared.input, &mutation, prepared.mask.as_ref())?;
-        self.mutate(asset_id, &mutation, &request, |service, state| {
-            let current = &state.current_entry.snapshot.recipe;
-            let PlannedRequest { planned, skipped } =
-                service.plan_request(&state.asset, current, &prepared)?;
-            let Some(planned) = planned else {
-                return Ok(Change::NoOp { skipped });
-            };
-            let collapsing =
-                service.collapse(state, &prepared, &mutation.actor, &planned.recipe)?;
-            if let Some(Collapsing {
-                collapse,
-                returned: true,
-            }) = collapsing
-            {
-                // Back where the chain began: the base is current again and nothing is written.
-                return Ok(Change::Navigate {
-                    target: collapse.base,
-                    redo: Vec::new(),
-                    collapsed: Some(collapse.entry),
-                });
-            }
-            Ok(Change::Append {
-                recipe: planned.recipe,
-                action: CommittedAction {
-                    input: prepared.input,
-                    label: planned.label,
-                    touched: planned.touched,
-                    skipped,
-                },
-                restore_target: None,
-                collapse: collapsing.map(|collapsing| collapsing.collapse),
-            })
-        })
+        // A module reports what its request minted or addressed, read from the stack the request
+        // leaves current ([`crate::ToolModule::answer`]); a host command reports what it touched.
+        let answered = prepared.input.clone();
+        let module = match prepared.action {
+            ActionRef::Module(module, _) => Some(module),
+            ActionRef::Host(_) => None,
+        };
+        let answer = move |_: &Self, recipe: &Recipe| match module {
+            Some(module) => module.answer(&answered, &recipe.layers, &recipe.strokes),
+            None => Ok(Map::new()),
+        };
+        self.mutate_answering(
+            asset_id,
+            &mutation,
+            &request,
+            |service, state| {
+                let current = &state.current_entry.snapshot.recipe;
+                let PlannedRequest { planned, skipped } =
+                    service.plan_request(&state.asset, current, &prepared)?;
+                let Some(planned) = planned else {
+                    return Ok(Change::NoOp { skipped });
+                };
+                let collapsing =
+                    service.collapse(state, &prepared, &mutation.actor, &planned.recipe)?;
+                if let Some(Collapsing {
+                    collapse,
+                    returned: true,
+                }) = collapsing
+                {
+                    // Back where the chain began: the base is current again and nothing is written.
+                    return Ok(Change::Navigate {
+                        target: collapse.base,
+                        redo: Vec::new(),
+                        collapsed: Some(collapse.entry),
+                    });
+                }
+                Ok(Change::Append {
+                    recipe: planned.recipe,
+                    action: CommittedAction {
+                        input: prepared.input,
+                        label: planned.label,
+                        touched: planned.touched,
+                        skipped,
+                    },
+                    restore_target: None,
+                    collapse: collapsing.map(|collapsing| collapsing.collapse),
+                })
+            },
+            answer,
+        )
     }
 
     /// What one prepared action does to `recipe`, the stack of `asset` it is planned against, or
@@ -224,8 +241,12 @@ impl EditorService {
                 let resolved = self.plan_action(asset, recipe, module, &prepared.input, mask)?;
                 Ok(PlannedRequest {
                     planned: resolved.recipe.map(|next| {
-                        let label =
-                            module.planned_label(&prepared.input, &next.layers, &prepared.label);
+                        let label = module.planned_label(
+                            &prepared.input,
+                            &recipe.layers,
+                            &next.layers,
+                            &prepared.label,
+                        );
                         Planned {
                             recipe: next,
                             label: masked_label(recipe, mask, label),
@@ -723,9 +744,13 @@ impl EditorService {
         let stack = Evaluated::exactly(&head.asset, &entry.id, current);
         let registry = self.registry.clone();
         let prepared = Prepared::new(&registry, &draft.action, Value::Object(draft.request()))?;
+        // A preview, not a commit: a plan whose commit runs a search once — an automatic repair
+        // source — plans no change here, so a preview never parks a read.
+        let was = self.previewing.replace(true);
         let planned = self
             .plan_request(&head.asset, current, &prepared)
             .map(|request| request.planned);
+        self.previewing.set(was);
         let recipe = match self.needing(stack, planned)? {
             Some(planned) => planned.recipe,
             None => current.clone(),
@@ -1193,6 +1218,63 @@ impl StageQuestions for HostStage<'_> {
         Ok(self.source()?.optics())
     }
 
+    fn strokes(&self) -> Option<&crate::path::StrokeTable> {
+        Some(&self.recipe.strokes)
+    }
+
+    fn previewing(&self) -> bool {
+        self.service.previewing.get()
+    }
+
+    /// A region is read only off the catalog owner. While the owner serves a call the read defers
+    /// it, which the query dispatcher answers by asking the whole query of the tile service, where
+    /// the read is made ([`crate::tiles::region`]); a direct caller reads it here, on its own
+    /// thread, from the reference.
+    fn region_before(
+        &self,
+        request: &crate::tiles::region::RegionRequest,
+    ) -> Result<crate::tiles::region::RegionRead, Error> {
+        let sensor = super::evaluate::sensor_of(self.source()?);
+        let source = super::evaluate::source_of(
+            self.source()?.clone(),
+            self.recipe,
+            RawSettingsMode::Strict,
+        )?;
+        if self.service.pixel_reads.borrow().enabled {
+            self.service.deferred_read(
+                self.asset,
+                self.recipe,
+                source,
+                sensor,
+                false,
+                super::pixels::PixelRead::Region {
+                    index: request.layer(),
+                },
+            )?;
+            return Err(Error::internal(super::pixels::DEFERRED));
+        }
+        refuse_on_owner()?;
+        let entry = self.service.entry(
+            &self.asset.id,
+            &self.service.current_entry_id(&self.asset.id)?,
+        )?;
+        let evaluation = crate::Evaluation::new(
+            self.service.registry.clone(),
+            self.service.render_context().clone(),
+            source,
+            entry,
+            self.recipe.clone(),
+            None,
+        )
+        .with_sensor(sensor);
+        crate::tiles::region::read(
+            &evaluation,
+            request,
+            &crate::tiles::ReferenceReads,
+            &crate::Cancel::never(),
+        )
+    }
+
     /// Compile the prefix before `index`. Compiling folds declared output stages and allocates only
     /// the operation lists, so this copies no part of the stack and rasterizes nothing.
     fn stage_before(&self, index: usize) -> Result<Stage, Error> {
@@ -1328,7 +1410,9 @@ pub(super) fn refuse_on_owner() -> Result<(), Error> {
 }
 
 /// One layer change of a plan, applied by the host: the half of a layer's identity a module never
-/// chooses.
+/// chooses. The strokes the plan captured fresh join the recipe's stroke table
+/// ([`crate::path::StrokeTable::adopt`]), so admission resolves the payload's references and the
+/// commit stores them once.
 ///
 /// A commit gets a new identity, the format its effect declares and the request's mask target, and
 /// is placed by its effect's declared stage and order: within that region, a masked layer follows
@@ -1365,7 +1449,9 @@ pub(super) fn edited(
                 mask: mask.cloned(),
                 artifacts: new.artifacts,
             };
-            recipe.with_layer_inserted(index, layer)
+            let mut next = recipe.with_layer_inserted(index, layer)?;
+            next.strokes.adopt(&new.strokes);
+            Ok(next)
         }
         LayerEdit::Update(update) => {
             let existing = recipe
@@ -1381,7 +1467,9 @@ pub(super) fn edited(
                 artifacts: update.artifacts,
                 ..existing.clone()
             };
-            recipe.with_layer_replaced(layer)
+            let mut next = recipe.with_layer_replaced(layer)?;
+            next.strokes.adopt(&update.strokes);
+            Ok(next)
         }
     }
 }
@@ -3726,13 +3814,39 @@ mod tests {
                 json!({"key":"two"}),
                 "Select controls choice",
             ),
+            (
+                "add-correction",
+                json!({"points":[[0.5,0.5]],"radius":0.02,"source-x":0.3,"source-y":0.4}),
+                "Add Heal 1",
+            ),
+            (
+                "add-correction",
+                json!({"points":[[0.2,0.6]],"radius":0.01,"mode":"clone","source-x":0.2,"source-y":0.3}),
+                "Add Clone 2",
+            ),
+            (
+                "update-correction",
+                json!({"operation":"correction-1","opacity":80}),
+                "Heal 1 · Opacity 80",
+            ),
+            (
+                "reorder-correction",
+                json!({"operation":"correction-2","index":0}),
+                "Reorder Clone 2",
+            ),
+            (
+                "delete-correction",
+                json!({"operation":"correction-1"}),
+                "Delete Heal 1",
+            ),
+            ("reset-corrections", json!({}), "Reset corrections"),
         ];
-        for (action, parameters, label) in &semantic_table {
+        for (index, (action, parameters, label)) in semantic_table.iter().enumerate() {
             let revision = service.state(&asset).unwrap().revision;
             service
                 .apply_action(
                     &asset,
-                    mutation(revision, action),
+                    mutation(revision, &format!("{action}-{index}")),
                     action,
                     parameters.clone(),
                 )

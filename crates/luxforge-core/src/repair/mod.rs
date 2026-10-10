@@ -174,7 +174,12 @@ pub(crate) fn delta(offset: [i32; 2], stage: Stage) -> [i64; 2] {
 
 /// [`RepairOp::reads`] from an operation's kind, the pixels it may write, its offset in pixels and
 /// its stage: what the host's region planning reads without building a footprint.
-pub(crate) fn reads(kind: RepairKind, writes: Region, delta: [i64; 2], stage: Stage) -> [Region; 2] {
+pub(crate) fn reads(
+    kind: RepairKind,
+    writes: Region,
+    delta: [i64; 2],
+    stage: Stage,
+) -> [Region; 2] {
     let grow = u32::from(kind == RepairKind::Heal);
     let destination = writes.grown(grow, stage);
     let s = writes;

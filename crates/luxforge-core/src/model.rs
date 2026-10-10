@@ -624,16 +624,21 @@ impl Recipe {
     /// consumer declared for it and the object that carries it named for a refusal.
     ///
     /// Each part of the recipe that carries strokes declares its own references
-    /// ([`crate::path::StrokeCarrier`]), and this is the list of those parts. The masks are the one
-    /// today: their brush components are the one consumer of the stroke store, so no layer payload
-    /// is read (decided by the owner on 2026-09-24; a second consumer declares where its strokes
-    /// live by being listed here). Cost is `O(components)` and no store is touched: this answers
+    /// ([`crate::path::StrokeCarrier`]), and this is the list of those parts: the masks, whose
+    /// brush components carry mask brush strokes, then the Corrections repair layer, whose
+    /// operations carry correction strokes ([`crate::modules::RepairCarrier`]). No other layer
+    /// payload is read. Cost is `O(components + operations)` and no store is touched: this answers
     /// what a recipe references, not what it resolves to.
     pub(crate) fn stroke_references(&self) -> Result<Vec<crate::path::StrokeReference>, Error> {
         use crate::path::StrokeCarrier;
         let mut found = Vec::new();
         for mask in &self.masks {
             mask.stroke_references(&mut found)?;
+        }
+        for layer in &self.layers {
+            if layer.effect_id == crate::modules::CORRECTIONS_EFFECT {
+                crate::modules::RepairCarrier(layer).stroke_references(&mut found)?;
+            }
         }
         Ok(found)
     }

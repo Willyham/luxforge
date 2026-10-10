@@ -159,6 +159,24 @@ impl EditorService {
         request: &Value,
         plan: impl FnOnce(&Self, &EditorState) -> Result<Change, Error>,
     ) -> Result<ActionResult, Error> {
+        self.mutate_answering(asset_id, mutation, request, plan, |_, _| {
+            Ok(serde_json::Map::new())
+        })
+    }
+
+    /// [`Self::mutate`] whose answer also carries what `answer` reads from the stack the request
+    /// leaves current — the stack it appends, the entry a returning edit moves back to, or the
+    /// current stack for a no-op — with its resolved strokes ([`ActionResult::answer`]). The
+    /// fields are stored with the request in the same transaction, so a retry answers them as the
+    /// first attempt did, without planning again. Reads the resulting stack once; `O(layers)`.
+    pub(super) fn mutate_answering(
+        &mut self,
+        asset_id: &AssetId,
+        mutation: &Mutation,
+        request: &Value,
+        plan: impl FnOnce(&Self, &EditorState) -> Result<Change, Error>,
+        answer: impl FnOnce(&Self, &Recipe) -> Result<serde_json::Map<String, Value>, Error>,
+    ) -> Result<ActionResult, Error> {
         if let Some(result) = self.request_result(asset_id, &mutation.request_id, request)? {
             return Ok(result);
         }
@@ -240,6 +258,14 @@ impl EditorService {
             Change::NoOp { skipped } => result.skipped = std::mem::take(skipped),
             Change::Navigate { .. } => {}
         }
+        result.answer = match &change {
+            Change::Append { recipe, .. } => answer(self, recipe)?,
+            Change::Navigate { target, .. } => {
+                let entry = self.shared_entry(asset_id, target)?;
+                answer(self, &entry.snapshot.recipe)?
+            }
+            Change::NoOp { .. } => answer(self, &current.snapshot.recipe)?,
+        };
         let artifact_root = &self.artifact_root;
         let moved = write(&mut self.connection, |tx| {
             // The redo list the head moves to, or `None` when it stays where it is.

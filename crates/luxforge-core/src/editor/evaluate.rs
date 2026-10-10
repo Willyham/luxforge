@@ -180,6 +180,11 @@ impl Evaluation {
         self
     }
 
+    /// The RAW sensor this evaluation holds, shared, for another evaluation of the same source.
+    pub(crate) fn sensor_arc(&self) -> Option<Arc<dyn crate::tiles::SensorClip>> {
+        self.sensor.clone()
+    }
+
     /// The RAW sensor this evaluation holds, when it was given one.
     pub(crate) fn sensor(&self) -> Option<&dyn crate::tiles::SensorClip> {
         self.sensor.as_deref()
