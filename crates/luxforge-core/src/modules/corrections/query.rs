@@ -111,12 +111,17 @@ pub(super) fn sources(
         ));
     }
     let planned = search::plan(&stroke, content);
-    let read = context.questions.region_before(&RegionRequest {
-        stage,
-        rect: planned.rect,
-        reduction: planned.reduction,
-    })?;
-    let ranked = search::rank(&read, &stroke, content)?;
+    // A destination no candidate survives for is no-source before any pixel is read.
+    let ranked = if planned.region.width == 0 || planned.region.height == 0 {
+        Vec::new()
+    } else {
+        let read = context.questions.region_before(&RegionRequest {
+            stage,
+            rect: planned.region,
+            reduction: planned.r,
+        })?;
+        search::rank(&planned, &read)?
+    };
     let anchor = stroke.anchor();
     let candidates: Vec<Value> = ranked
         .iter()
