@@ -307,7 +307,7 @@
     {
       "id": "TASK-005",
       "description": "Instrument shipped operations at their authoritative boundaries, with a checked-in coverage inventory.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-002"
       ],
