@@ -269,6 +269,194 @@ pub(crate) fn functions() -> (Vec<&'static str>, Vec<&'static str>) {
     )
 }
 
+/// The plans a Corrections gesture on a stack draws, for the desktop to warm before it begins
+/// (`docs/design/corrections.md`, "Warm-up"): the stack's repair links as they stand, a new top
+/// Heal and a new top Clone drafted over them, and an existing operation's update drag — or, on a
+/// stack that holds no repair layer yet, the first Heal and Clone at the place a repair layer would
+/// take. `compiled` is the stack compiled for `request`, a plan from the source; the synthetic
+/// operations are a small spot in the middle of the frame with a source beside it. A pass pipeline
+/// is its kernel, inputs and format, so these warm every one a repair tick compiles; a stack whose
+/// registry declares no repair effect has none. `O(layers + operations)`, no pixel read.
+pub(crate) fn warm_plans(
+    registry: &crate::ModuleRegistry,
+    recipe: &crate::Recipe,
+    compiled: &crate::render::Compiled,
+    request: super::GpuPlanRequest,
+) -> Result<Vec<super::GpuPlan>, crate::Error> {
+    use crate::{
+        EffectStage,
+        modules::{RepairOperation, RepairTable},
+        render::Entry,
+    };
+    let current = compiled
+        .segments
+        .iter()
+        .find_map(|segment| segment.entry.as_ref().and_then(Entry::repair_entry))
+        .map(|entry| entry.table.clone());
+    // On a stack without one, the place a repair layer would take, when the registry declares one.
+    let place = match &current {
+        Some(_) => None,
+        None => {
+            let effect = registry.providers().find_map(|provider| {
+                provider
+                    .descriptor()
+                    .effects
+                    .iter()
+                    .find(|effect| effect.stage == EffectStage::Repair && !provider.descriptor().developer)
+                    .map(|effect| effect.id.clone())
+            });
+            match effect {
+                Some(effect) => Some(registry.insertion_index_for(&recipe.layers, &effect)),
+                None => return Ok(Vec::new()),
+            }
+        }
+    };
+    let rows: Vec<RepairOperation> = current
+        .as_ref()
+        .map(|table| table.operations().to_vec())
+        .unwrap_or_default();
+    let next = rows.iter().map(|row| row.id).max().unwrap_or(0).saturating_add(1);
+    let spot = |id: u32, kind: RepairKind| RepairOperation {
+        id,
+        kind,
+        points: Arc::from([[8192, 8192]]),
+        radius: 164,
+        feather: 50,
+        opacity: 100,
+        offset: [1638, 0],
+    };
+    let mut tables: Vec<Vec<RepairOperation>> = Vec::new();
+    if !rows.is_empty() {
+        tables.push(rows.clone());
+        let mut moved = rows.clone();
+        if let Some(last) = moved.last_mut() {
+            last.offset[1] = if last.offset[1] > 0 {
+                last.offset[1] - 1
+            } else {
+                last.offset[1] + 1
+            };
+        }
+        tables.push(moved);
+    }
+    if rows.len() < crate::modules::MAX_REPAIR_OPERATIONS {
+        for kind in [RepairKind::Heal, RepairKind::Clone] {
+            let mut drafted = rows.clone();
+            drafted.push(spot(next, kind));
+            tables.push(drafted);
+        }
+    }
+    let mut plans = Vec::new();
+    for rows in tables {
+        let table = RepairTable::new(rows)?;
+        let Some(modified) = with_table(compiled, table, request.stage, place) else {
+            continue;
+        };
+        let answer = modified.gpu_plan(
+            0,
+            request.stage,
+            None,
+            Planning {
+                qualifying: request.qualifying,
+                linear: request.linear,
+                source: true,
+            },
+        )?;
+        if let super::GpuAnswer::Plan(plan) =
+            super::plan::with_lights(registry, recipe, request, &modified, answer)?
+        {
+            plans.push(*plan);
+        }
+    }
+    Ok(plans)
+}
+
+/// `compiled` with its repair boundary's table replaced by `table`, or — `place`, the layer a
+/// repair layer would take — with a repair boundary of `table` opened there over `stage`, the
+/// leading segment's operations from that layer on carried into the new segment. `None` when the
+/// place lies outside the leading segment, where no repair layer goes.
+fn with_table(
+    compiled: &crate::render::Compiled,
+    table: crate::modules::RepairTable,
+    stage: Stage,
+    place: Option<usize>,
+) -> Option<crate::render::Compiled> {
+    use crate::{
+        modules::{ExactGeometry, Processing},
+        render::{Entry, Segment},
+    };
+    let mut compiled = compiled.clone();
+    if let Some(segment) = compiled
+        .segments
+        .iter_mut()
+        .find(|segment| matches!(segment.entry, Some(Entry::Repair(_))))
+    {
+        let Some(Entry::Repair(entry)) = &segment.entry else {
+            unreachable!("a repair entry")
+        };
+        let bound = entry.stage;
+        segment.entry = Some(Entry::repair(table, bound));
+        return Some(compiled);
+    }
+    let layer = place?;
+    let first = compiled.segments.first()?;
+    let (segment, position) = match compiled.layers.get(layer) {
+        Some(&start) => start,
+        None => (compiled.segments.len() - 1, compiled.segments.last()?.operations.len()),
+    };
+    if segment != 0 || first.entry.is_some() {
+        return None;
+    }
+    let moved: Vec<Processing> = first.operations[position..].to_vec();
+    let kept: Vec<Processing> = first.operations[..position].to_vec();
+    if kept
+        .iter()
+        .any(|operation| !matches!(operation, Processing::Color(_)))
+    {
+        return None;
+    }
+    let mut geometry = ExactGeometry::identity(stage.width, stage.height);
+    for operation in &moved {
+        if let Processing::ExactGeometry(step) = operation {
+            geometry = geometry.then(*step);
+        }
+    }
+    let old = compiled.segments[0].clone();
+    let opened = Segment {
+        entry: Some(Entry::repair(table, stage)),
+        has_color: moved
+            .iter()
+            .any(|operation| matches!(operation, Processing::Color(_))),
+        operations: moved,
+        geometry,
+        width: old.width,
+        height: old.height,
+        output_origin: old.output_origin,
+    };
+    let leading = Segment {
+        has_color: !kept.is_empty(),
+        operations: kept,
+        geometry: ExactGeometry::identity(stage.width, stage.height),
+        width: stage.width,
+        height: stage.height,
+        output_origin: (0, 0),
+        entry: None,
+    };
+    compiled.segments[0] = leading;
+    compiled.segments.insert(1, opened);
+    let mut layers: Vec<(usize, usize)> = compiled
+        .layers
+        .iter()
+        .map(|&(segment, at)| match segment {
+            0 if at >= position => (1, at - position),
+            0 => (0, at),
+            later => (later + 1, at),
+        })
+        .collect();
+    layers.insert(layer.min(layers.len()), (0, position));
+    compiled.layers = layers.into_boxed_slice();
+    Some(compiled)
+}
+
 /// The level sizes of a solve rectangle of `width × height` cells: halved rounding up until one
 /// cell remains.
 fn level_sizes(width: u32, height: u32) -> Vec<(u32, u32)> {

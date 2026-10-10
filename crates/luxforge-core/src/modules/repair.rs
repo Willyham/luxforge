@@ -134,7 +134,8 @@ impl RepairTable {
         Ok(table)
     }
 
-    /// The neutral table: no rows.
+    /// The neutral table: no rows, which the host drops, for the module's emptied layer.
+    #[allow(dead_code, reason = "the Corrections module (TASK-005) compiles an emptied layer to it")]
     pub(crate) fn neutral() -> Self {
         Self::default()
     }

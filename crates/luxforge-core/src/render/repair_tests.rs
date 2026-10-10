@@ -671,3 +671,96 @@ fn a_gpu_plan_draws_a_repair_and_names_a_solve_it_cannot_hold() {
     assert_eq!(fallback.code(), "repair");
     assert!(fallback.to_string().contains("Heal 4"), "{fallback}");
 }
+
+/// The committed stack `layers` over `source`, as the desktop's evaluation of an entry holds it.
+fn evaluation_of(source: &SourceImage, layers: Vec<Layer>) -> crate::Evaluation {
+    use crate::{AssetId, EntryId, HistoryEntry, Snapshot};
+    let asset = AssetId::new();
+    let entry = HistoryEntry {
+        id: EntryId::new(),
+        asset_id: asset.clone(),
+        sequence: 1,
+        action_id: "test".into(),
+        label: "Test".into(),
+        parameters: json!({}),
+        actor: "test".into(),
+        timestamp_ms: 0,
+        request_id: None,
+        base_revision: 0,
+        result_revision: 1,
+        snapshot: Snapshot {
+            id: SnapshotId::new(),
+            asset_id: asset,
+            recipe: recipe(layers.clone()),
+        },
+        undo_parent: None,
+        restore_target: None,
+    };
+    crate::Evaluation::new(
+        std::sync::Arc::new(repair_registry()),
+        RenderContext::new(),
+        crate::PreviewSource::Jpeg(source.clone()),
+        entry,
+        recipe(layers),
+        None,
+    )
+}
+
+#[test]
+fn the_warm_list_covers_repair_gestures_at_open_and_first_use() {
+    let source = textured(120, 90, 8);
+    let stage = stage_of(&source);
+    let bounds = crate::ProxyBounds {
+        width: 120,
+        height: 90,
+    };
+    let repairs = |plan: &crate::GpuPlan| -> Option<usize> {
+        plan.spatial
+            .first()
+            .and_then(|step| step.repair.as_ref())
+            .map(|repair| repair.operations.len())
+    };
+    // A stack holding two corrections: its own links, an update drag, and a new top Heal and
+    // Clone, each a repair step of the table and one more operation.
+    let ops = vec![
+        Op::new(1, RepairKind::Heal, stage, &[[30.0, 30.0]], 5.0, [20.0, 0.0]),
+        Op::new(2, RepairKind::Clone, stage, &[[80.0, 60.0]], 4.0, [-20.0, 5.0]),
+    ];
+    let held = evaluation_of(
+        &source,
+        vec![
+            repair_layer(&ops),
+            Layer::new(crate::BASIC_EFFECT, json!({"exposure": 0.2})),
+        ],
+    );
+    let warm = super::gpu::plan_warm_list(&held, crate::GpuView::Fit(bounds)).unwrap();
+    let counts: Vec<usize> = warm.plans.iter().filter_map(repairs).collect();
+    assert!(counts.contains(&2), "the stack's own repair links: {counts:?}");
+    assert!(counts.contains(&3), "a drafted top operation: {counts:?}");
+    let kernels = |count: usize| -> Vec<&'static str> {
+        warm.plans
+            .iter()
+            .filter(|plan| repairs(plan) == Some(count))
+            .flat_map(|plan| plan.spatial[0].passes.iter().map(|pass| pass.kernel))
+            .collect()
+    };
+    assert!(kernels(3).contains(&"lf_repair_clone"));
+    assert!(kernels(3).contains(&"lf_repair_heal_sweep"));
+    // A stack with none: the first Heal and Clone where the repair layer would go.
+    let bare = evaluation_of(
+        &source,
+        vec![Layer::new(crate::BASIC_EFFECT, json!({"exposure": 0.2}))],
+    );
+    let warm = super::gpu::plan_warm_list(&bare, crate::GpuView::Fit(bounds)).unwrap();
+    let first: Vec<&crate::GpuPlan> = warm
+        .plans
+        .iter()
+        .filter(|plan| repairs(plan) == Some(1))
+        .collect();
+    assert!(!first.is_empty(), "the first correction's plans are warmed");
+    for plan in first {
+        // Basic runs after the repair, on its output.
+        assert_eq!(plan.content.len(), 0);
+        assert_eq!(plan.operations().count(), 1);
+    }
+}

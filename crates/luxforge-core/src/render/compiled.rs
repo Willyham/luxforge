@@ -327,6 +327,7 @@ impl Entry {
 
     /// The spatial operation this boundary runs, whose whole frame a read through it is
     /// answered from; `None` for a resample, which a point query pulls through.
+    #[cfg(test)]
     pub(crate) fn spatial_operation(&self) -> Option<&SpatialOperation> {
         match self {
             Self::Resample(_) | Self::Repair(_) => None,

@@ -288,6 +288,14 @@ pub(super) fn repair_frame<D: PixelDomain>(
         )));
     }
     cancel.check()?;
+    let parallelism = if super::parallel::pooled(
+        super::parallel::RenderPass::Repair,
+        u64::from(stage.width) * u64::from(stage.height),
+    ) {
+        Parallelism::Pool
+    } else {
+        Parallelism::Serial
+    };
     let mut frame = D::spatial_frame(stage, wide)?;
     let (set, relevant) = entry.destination_reads();
     let name = || {
@@ -305,7 +313,7 @@ pub(super) fn repair_frame<D: PixelDomain>(
     for &rect in set.rects() {
         cancel.check()?;
         let mut values = planes(rect.pixels() as usize * 3, name)?;
-        fill(rect, &mut values, Parallelism::Pool)?;
+        fill(rect, &mut values, parallelism)?;
         store.push((rect, values));
     }
     if !relevant.is_empty() {
@@ -353,7 +361,7 @@ pub(super) fn repair_frame<D: PixelDomain>(
         };
         let len = band.pixels() as usize;
         values.resize(len * 3, 0.0);
-        fill(band, &mut values, Parallelism::Pool)?;
+        fill(band, &mut values, parallelism)?;
         for (rect, held) in &store {
             let shared = intersection(*rect, band);
             if shared.is_empty() {
@@ -371,7 +379,7 @@ pub(super) fn repair_frame<D: PixelDomain>(
                 }
             }
         }
-        let output = D::tile_output(band, &values, band, Parallelism::Pool, wide);
+        let output = D::tile_output(band, &values, band, parallelism, wide);
         D::write_tile(&mut frame, stage, band, output);
         y0 += height;
     }
