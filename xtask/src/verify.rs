@@ -362,6 +362,20 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
                 )
             });
         }
+        // The Corrections journeys once per manifest source: history, reopen, Select, Locate, the
+        // overlay through the lens profile and the GPU, reference and batch exports on a RAW.
+        for (id, path) in sources {
+            let path = path.to_string_lossy().into_owned();
+            specs.push(Spec {
+                result: Some("result.json"),
+                binary: true,
+                ..spec(
+                    &format!("raw-corrections-{id}"),
+                    "full",
+                    &["smoke", "--scenario", "raw-corrections", "--source", &path],
+                )
+            });
+        }
         specs.push(Spec {
             result: Some("result.json"),
             manifest: true,
@@ -455,6 +469,21 @@ fn plan(tier: Tier, manifest: Option<&[(String, PathBuf)]>, fixtures: bool) -> V
                 result: Some("latency.json"),
                 binary: true,
                 ..spec(name, "timing", &[])
+            });
+        }
+        // The same gestures on each supplied RAW, when the run has a manifest (`full`).
+        for (id, path) in manifest.unwrap_or(&[]) {
+            specs.push(Spec {
+                args: vec![
+                    "editor-latency".into(),
+                    "--source".into(),
+                    path.to_string_lossy().into_owned(),
+                    "--mode".into(),
+                    "corrections".into(),
+                ],
+                result: Some("latency.json"),
+                binary: true,
+                ..spec(&format!("editor-latency-corrections-{id}"), "timing", &[])
             });
         }
         specs.push(Spec {
@@ -1703,12 +1732,14 @@ mod tests {
         // around `raw-authentic`, and one RAW `performance` run over the first source, all before
         // the timing tier, with `hardening` last in `full`'s own part of the plan.
         assert_eq!(
-            &names[names.len() - 17..],
+            &names[names.len() - 21..],
             [
                 "raw-editor-z6",
                 "raw-editor-x100vi",
                 "raw-detail-z6",
                 "raw-detail-x100vi",
+                "raw-corrections-z6",
+                "raw-corrections-x100vi",
                 "raw-authentic",
                 "raw-panel-z6",
                 "raw-panel-x100vi",
@@ -1721,6 +1752,8 @@ mod tests {
                 "editor-latency-burst",
                 "editor-latency-corrections",
                 "editor-latency-corrections-60mp",
+                "editor-latency-corrections-z6",
+                "editor-latency-corrections-x100vi",
                 "measure",
             ]
         );
