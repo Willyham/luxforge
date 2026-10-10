@@ -867,8 +867,9 @@ impl Machine {
                 .step(&shared.collector, self.clock.monotonic(), self.clock.wall())
         });
         self.schedule(shared, now);
-        let now = self.clock.monotonic();
-        self.publish(shared, now);
+        self.publish(shared, self.clock.monotonic());
+        // The shortest wait counts from this step's start, so a deadline that passed while the
+        // step ran is not pushed past it.
         Step::Wait(self.deadline(now))
     }
 
@@ -1249,15 +1250,15 @@ impl Machine {
     }
 }
 
-/// Start the collector's session for `active`.
+/// Start the collector's session for `active`, holding its image key while the session lives.
 fn start_collector(
     collector: &Collector,
-    _active: &Active,
+    active: &Active,
     trigger: Trigger,
     started: SessionStart,
     clock: SessionClock,
 ) -> Arc<Session> {
-    collector.start(trigger, started, clock)
+    collector.start(trigger, started, clock, active.image_key.clone())
 }
 
 #[cfg(test)]

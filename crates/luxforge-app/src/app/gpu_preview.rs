@@ -2642,6 +2642,14 @@ impl Editor {
         }
         self.gpu.rest_drawn = Some(version);
         let figures = drawn.gpu_rest.filter(|figures| figures.version == version);
+        // The open photograph's committed picture at rest, drawn by the GPU: a settled preview,
+        // timed as the status bar's "GPU render" figure for its tiles.
+        if let Some(figures) = figures {
+            self.usage_preview_settled(
+                luxforge_core::usage::Renderer::Gpu,
+                figures.prepare_us as f64 / 1000.0,
+            );
+        }
         self.event("gpu_rest_drawn", || {
             json!({"version": version,
                 "tiles": figures.map(|figures| figures.tiles),

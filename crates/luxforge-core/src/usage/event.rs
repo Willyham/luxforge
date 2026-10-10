@@ -22,7 +22,7 @@
 use super::{
     Gate, Generation,
     encode::{ReportId, SessionStart},
-    image_id::ImageId,
+    image_id::{ImageId, ImageKey},
     registry::{
         Feature, Idle, MAX_COUNT, MAX_DURATION_MS, MAX_EVENTS, MAX_MEMORY_MIB, MAX_PERCENT,
         MemoryKind, Operation, Outcome, Presented, Renderer, Tool, Trigger, Workspace,
@@ -394,6 +394,9 @@ pub struct Session {
     sent: AtomicU64,
     /// The statistics worker, unparked when a window becomes nonempty or full.
     waker: OnceLock<Thread>,
+    /// The installation's image key, held only while this session lives ([`Collector::image_id`]).
+    /// Never formatted: its `Debug` is redacted.
+    image_key: Option<ImageKey>,
 }
 
 impl Session {
@@ -422,6 +425,7 @@ impl Session {
             dropped: AtomicU64::new(0),
             sent: AtomicU64::new(0),
             waker: OnceLock::new(),
+            image_key: None,
         };
         let mut first = lock(&session.banks[0]);
         session.next_seq.store(1, Ordering::Relaxed);
@@ -670,15 +674,19 @@ impl Collector {
     }
 
     /// Start a session: turns collection on (in a new generation if it was off) and allocates the
-    /// session's banks, replacing any earlier session (after a system sleep, say).
+    /// session's banks, replacing any earlier session (after a system sleep, say). The session holds
+    /// `image_key` until it ends, for [`Self::image_id`].
     pub fn start(
         &self,
         trigger: Trigger,
         started: SessionStart,
         clock: SessionClock,
+        image_key: ImageKey,
     ) -> Arc<Session> {
         let generation = self.gate.enable();
-        let session = Arc::new(Session::new(generation, trigger, started, clock));
+        let mut session = Session::new(generation, trigger, started, clock);
+        session.image_key = Some(image_key);
+        let session = Arc::new(session);
         *self.session.write().unwrap_or_else(PoisonError::into_inner) = Some(session.clone());
         session
     }
@@ -691,6 +699,19 @@ impl Collector {
             .write()
             .unwrap_or_else(PoisonError::into_inner)
             .take();
+    }
+
+    /// The keyed image ID of the photograph whose catalog fingerprint (64 hexadecimal characters)
+    /// is `fingerprint_hex`, under the current session's image key: one HMAC, no file read. `None`
+    /// while collection is off, while the session is being replaced, or for a malformed fingerprint.
+    /// Producers compute it once when a photograph is adopted and keep it beside the photograph.
+    pub fn image_id(&self, fingerprint_hex: &str) -> Option<ImageId> {
+        self.gate.current()?;
+        let slot = self.session.try_read().ok()?;
+        slot.as_deref()?
+            .image_key
+            .as_ref()?
+            .image_id_of_hex(fingerprint_hex)
     }
 
     /// The current session, for the worker.

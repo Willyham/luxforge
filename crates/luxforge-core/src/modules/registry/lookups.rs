@@ -271,6 +271,13 @@ impl ModuleRegistry {
         Some((provider, &provider.descriptor().effects[*position]))
     }
 
+    /// The identity of the module that declares an effect, whatever its availability, or `None`
+    /// when no provider declares it.
+    pub(crate) fn effect_module(&self, effect_id: &str) -> Option<&str> {
+        self.effect(effect_id)
+            .map(|(provider, _)| provider.descriptor().id.as_str())
+    }
+
     /// The stage an effect's payload addresses, or `None` when no provider declares it.
     pub(crate) fn effect_stage(&self, effect_id: &str) -> Option<EffectStage> {
         self.effect(effect_id).map(|(_, effect)| effect.stage)
