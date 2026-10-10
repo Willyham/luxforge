@@ -238,7 +238,7 @@ pub(super) fn committed(source: PreviewSource, recipe: Recipe) -> Evaluation {
         restore_target: None,
     };
     Evaluation::new(
-        Arc::new(ModuleRegistry::builtin()),
+        Arc::new(super::gpu_tiles_tests::registry()),
         RenderContext::new(),
         source,
         entry,
@@ -1309,6 +1309,17 @@ fn staged_families() -> Vec<(&'static str, Recipe)> {
     };
     let mask = radial_mask(1);
     vec![
+        (
+            "Clone and Heal, Presence, then Detail",
+            Recipe {
+                layers: vec![
+                    super::gpu_tiles_tests::corrections(),
+                    presence(),
+                    detail(),
+                ],
+                ..Recipe::default()
+            },
+        ),
         (
             "Detail after Presence",
             Recipe {
