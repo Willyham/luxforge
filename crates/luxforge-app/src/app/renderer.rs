@@ -125,6 +125,22 @@ impl RendererReport {
         &self.adapter
     }
 
+    /// The adapters the desktop already holds, for the statistics device profile: the one the tile
+    /// worker opened its device on, once it has, and the window's by backend and name (Iced's own
+    /// name for it, which stays known after the worker has been told). Nothing is enumerated or
+    /// opened.
+    pub(crate) fn held_adapters(&self) -> (Option<Adapter>, Option<(String, String)>) {
+        let (tile, told) = self
+            .tiles
+            .as_ref()
+            .map_or((None, None), |tiles| tiles.adapters());
+        let window = match &self.adapter {
+            WindowAdapter::Named { backend, name } => Some((backend.clone(), name.clone())),
+            _ => told,
+        };
+        (tile, window)
+    }
+
     /// Whether a report is on its way to the owner.
     pub(crate) fn in_flight(&self) -> bool {
         self.in_flight

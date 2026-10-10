@@ -104,6 +104,9 @@ impl CompareKey {
 /// the canvas modes the registry offers.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct KeyContext {
+    /// The usage statistics notice is on screen, so an Escape nothing else takes answers it No
+    /// thanks.
+    pub(crate) usage_notice: bool,
     pub(crate) gallery_open: bool,
     pub(crate) comparing: bool,
     /// A crop draft or a mask shape gesture is open, so Enter applies it and Escape cancels it
@@ -209,7 +212,32 @@ pub(crate) fn chord_of(key: &Key, modifiers: &iced::keyboard::Modifiers) -> Opti
 
 /// One event as one message, or nothing. `status` is Iced's: a key a text field already consumed
 /// arrives as `Captured` and never reaches a letter shortcut or a draft key.
+///
+/// The usage statistics notice holds no key of its own: Escape answers it No thanks only when
+/// nothing else in the window — a sheet, a menu, a draft, a mode, a field — takes Escape, so it
+/// never cancels work or traps the keyboard.
 pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Option<Message> {
+    let message = route(event, status, context);
+    if message.is_none()
+        && context.usage_notice
+        && status == Status::Ignored
+        && matches!(
+            event,
+            Event::Keyboard(Keys::KeyPressed {
+                key: Key::Named(Named::Escape),
+                ..
+            })
+        )
+    {
+        return Some(Message::Usage(
+            crate::app::message::usage::UsageMessage::Decline,
+        ));
+    }
+    message
+}
+
+/// Every key but the usage statistics notice's Escape.
+fn route(event: &Event, status: Status, context: &KeyContext) -> Option<Message> {
     if matches!(event, Event::Window(iced::window::Event::CloseRequested)) {
         return Some(Message::Close);
     }
@@ -1202,6 +1230,7 @@ mod tests {
 
     fn context() -> KeyContext {
         KeyContext {
+            usage_notice: false,
             comparing: false,
             gallery_open: false,
             drafting: false,
@@ -1226,6 +1255,66 @@ mod tests {
             copy_settings_modal: None,
             actions: vec![(Chord::command('U'), "auto-tone".into())],
         }
+    }
+
+    #[test]
+    fn usage_escape_answers_the_notice_only_when_nothing_else_takes_it() {
+        use crate::app::message::usage::UsageMessage;
+        let escape = pressed(Key::Named(Named::Escape), Modifiers::empty());
+        let notice = KeyContext {
+            usage_notice: true,
+            ..context()
+        };
+        assert!(matches!(
+            keymap(&escape, Status::Ignored, &notice),
+            Some(Message::Usage(UsageMessage::Decline))
+        ));
+        assert!(matches!(
+            keymap(
+                &escape,
+                Status::Ignored,
+                &KeyContext {
+                    select: true,
+                    ..notice.clone()
+                }
+            ),
+            Some(Message::Usage(UsageMessage::Decline))
+        ));
+        // A draft, the sheet or a field takes Escape first.
+        assert!(matches!(
+            keymap(
+                &escape,
+                Status::Ignored,
+                &KeyContext {
+                    crop: true,
+                    drafting: true,
+                    ..notice.clone()
+                }
+            ),
+            Some(Message::Draft(DraftMessage::Cancel))
+        ));
+        assert!(matches!(
+            keymap(
+                &escape,
+                Status::Ignored,
+                &KeyContext {
+                    settings_open: true,
+                    ..notice.clone()
+                }
+            ),
+            Some(Message::Settings(SettingsMessage::Close))
+        ));
+        assert!(keymap(&escape, Status::Captured, &notice).is_none());
+        assert!(keymap(&escape, Status::Ignored, &context()).is_none());
+        // Every other key goes where it always went.
+        assert!(
+            keymap(
+                &pressed(letter("q"), Modifiers::empty()),
+                Status::Ignored,
+                &notice
+            )
+            .is_none()
+        );
     }
 
     #[test]
