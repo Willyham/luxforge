@@ -1760,6 +1760,14 @@ impl Editor {
     /// Resolution reads the `mask.list` answer the editor is already holding, which the commit of
     /// every mutation refreshes, so a name resolves against the same listing the panel shows.
     fn resolve_identities(&mut self, params: &mut Map<String, Value>) -> Result<(), String> {
+        // A job named by its task is the qualification corpus's; this driver does not wait for a
+        // task's job, so it refuses the step rather than send the reference as an identity.
+        if let Some(reference) = luxforge_evidence::JobReference::of(params)? {
+            return Err(format!(
+                "the desktop's evidence driver does not name a job by its task ({}); write its identity",
+                reference.started_by
+            ));
+        }
         let mut resolved = Map::new();
         let mut mask: Option<String> = None;
         if let Some(value) = params.get("mask").cloned() {
