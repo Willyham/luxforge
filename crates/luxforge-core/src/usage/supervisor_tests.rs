@@ -1350,6 +1350,14 @@ fn usage_visibility_changes_and_a_minute_without_interaction_are_recorded_in_ord
 }
 
 #[test]
+fn usage_read_answers_the_release_the_batches_carry() {
+    // An unrevisioned test build has no release of its own; the supervisor's is what it reports.
+    let harness = Harness::new("release");
+    harness.clock.advance(11 * MINUTE);
+    assert_eq!(harness.read()["release"], json!(release().as_str()));
+}
+
+#[test]
 fn usage_a_host_without_a_window_records_no_visibility_or_idleness() {
     let mut harness = Harness::new("windowless");
     harness.shared.interacted();
