@@ -42,25 +42,25 @@ pub const SCENARIO: &str = "corrections";
 pub const FIXTURE: &str = "fixtures/s0/orientation-1.jpg";
 pub const NOTE: &str = "Eight launches. The first walks every Corrections gesture and key on one photograph and exports it; the second reopens its catalog, shows the rendered preview in Select, removes and puts back the photograph and returns to Develop; the third and fourth fill a fresh photograph to the declared limit from an agent and press once more; the fifth reopens the first's catalog and checks the overlay through a crop, a straighten and a Perspective warp against the core's own render.transform and the capture with the pins hidden. The sixth develops a copy of the fixture the run makes in locate/original and adds a Clone; the run then moves that copy to locate/moved and records it missing with source.check; the seventh locates it there from Select's Missing originals; the eighth opens it at the new place.";
 
-const MODULE: &str = "luxforge.corrections";
+pub(crate) const MODULE: &str = "luxforge.corrections";
 pub const CORRECTIONS_EFFECT: &str = "luxforge.corrections.repair";
 
 /// The Size rail positions the script sets: a radius of 0.04 content heights (26 px across on the
 /// 320 px fixture), and the top of the range, which leaves no candidate inside the frame.
-const SIZE: f64 = 0.7051;
+pub(crate) const SIZE: f64 = 0.7051;
 const HUGE: f64 = 1.0;
 
 /// Where things are, in normalized content coordinates.
 const SPOT: [f64; 2] = [0.30, 0.30];
 const STROKE: [[f64; 2]; 3] = [[0.62, 0.30], [0.72, 0.30], [0.82, 0.30]];
 const STRAIGHT_END: [f64; 2] = [0.82, 0.40];
-const GOLD_SOURCE: [f64; 2] = [0.75, 0.80];
+pub(crate) const GOLD_SOURCE: [f64; 2] = [0.75, 0.80];
 /// The live-painted Clone: from the gold quadrant into the blue one.
-const CLONE_FROM: [f64; 2] = [0.25, 0.80];
-const CLONE_TO: [[f64; 2]; 2] = [[0.30, 0.80], [0.35, 0.80]];
+pub(crate) const CLONE_FROM: [f64; 2] = [0.25, 0.80];
+pub(crate) const CLONE_TO: [[f64; 2]; 2] = [[0.30, 0.80], [0.35, 0.80]];
 /// A patch inside the Clone's destination, well within its full coverage and clear of the arrow
 /// drawn along `y = 0.8` while it is selected.
-const CLONED: [f64; 2] = [0.29, 0.812];
+pub(crate) const CLONED: [f64; 2] = [0.29, 0.812];
 const PULL_AT: [f64; 2] = [0.40, 0.25];
 const PULL_TO: [[f64; 2]; 2] = [[0.55, 0.50], [0.70, 0.75]];
 /// The stacked Clone: its source is the earlier Clone's repaired patch, its destination is green.
@@ -70,18 +70,18 @@ const STACK_AT: [f64; 2] = [0.70, 0.42];
 /// reaches the pin from the lower left.
 const STACKED: [f64; 2] = [0.70 + 3.5 / 480.0, 0.42 - 3.5 / 320.0];
 
-const PATCH_HALF: i64 = 3;
+pub(crate) const PATCH_HALF: i64 = 3;
 /// How close a repaired patch's mean must be to its source colour, per channel, in 8-bit codes:
 /// the flat quadrants are JPEG-compressed, so a margin, not a tuned threshold.
-const NEAR: f64 = 30.0;
+pub(crate) const NEAR: f64 = 30.0;
 const GOLD: [f64; 3] = [234.0, 195.0, 30.0];
 const BLUE: [f64; 3] = [40.0, 70.0, 220.0];
 
-fn key(key: &str) -> script::Step {
+pub(crate) fn key(key: &str) -> script::Step {
     script::Step::Key { key: key.into() }
 }
 
-fn press(at: [f64; 2]) -> PressStep {
+pub(crate) fn press(at: [f64; 2]) -> PressStep {
     PressStep {
         at,
         to: Vec::new(),
@@ -91,15 +91,15 @@ fn press(at: [f64; 2]) -> PressStep {
     }
 }
 
-fn correction(step: CorrectionStep) -> script::Step {
+pub(crate) fn correction(step: CorrectionStep) -> script::Step {
     step.into()
 }
 
-fn add(at: [f64; 2]) -> script::Step {
+pub(crate) fn add(at: [f64; 2]) -> script::Step {
     correction(CorrectionStep::Press(press(at)))
 }
 
-fn with(at: [f64; 2], modifier: PressModifier) -> script::Step {
+pub(crate) fn with(at: [f64; 2], modifier: PressModifier) -> script::Step {
     correction(CorrectionStep::Press(PressStep {
         modifiers: vec![modifier],
         ..press(at)
@@ -114,7 +114,7 @@ fn drag(handle: CorrectionHandle, to: &[[f64; 2]]) -> script::Step {
     }))
 }
 
-fn field(name: &str, fraction: f64) -> script::Step {
+pub(crate) fn field(name: &str, fraction: f64) -> script::Step {
     correction(CorrectionStep::Field {
         name: name.into(),
         fraction,
@@ -368,6 +368,12 @@ const GEOMETRIES: [&str; 4] = ["plain", "crop", "straighten", "perspective"];
 
 fn geometry_edit(name: &str) -> Option<script::Step> {
     match name {
+        // The source's detected lens profile, which expanding the Lens section turns on: a
+        // nonlinear distortion the overlay is drawn through.
+        "lens" => Some(script::Step::Section(script::SectionStep {
+            module: "luxforge.lens".into(),
+            expanded: true,
+        })),
         "crop" => Some(script::Step::call(
             "edit.crop-fit",
             json!({"aspect": "16:9", "angle": 0.0}),
@@ -389,13 +395,31 @@ fn geometry_edit(name: &str) -> Option<script::Step> {
 /// pins hidden with `H` and shown again, then the top correction selected and put down. The hidden
 /// frame is the render with no overlay: the shown and selected frames are held against it.
 pub fn launch5(_: &[PathBuf]) -> Plan {
+    geometry_launch("Add Clone 7", &GEOMETRIES, 0, Vec::new())
+}
+
+/// A reopened catalog whose current entry is `label`, the mode entered, then each of
+/// `geometries` in turn with the overlay checks' frames.
+/// `row` is the stack row (top first) of the spot each geometry selects, whose outline is read.
+pub(crate) fn geometry_launch(
+    label: &str,
+    geometries: &[&str],
+    row: usize,
+    tail: Vec<Step>,
+) -> Plan {
     let mut steps = vec![
-        Step::opened("reopened").label("Add Clone 7"),
+        Step::opened("reopened").label(label),
         Step::new("mode", key("q")).commits(0).mode(MODULE),
     ];
-    for name in GEOMETRIES {
+    for &name in geometries {
         if let Some(edit) = geometry_edit(name) {
-            steps.push(Step::new(name, edit).commits(1));
+            // The lens section commits only when the source has a profile to turn on.
+            let step = Step::new(name, edit);
+            steps.push(if name == "lens" {
+                step
+            } else {
+                step.commits(1)
+            });
         }
         steps.push(
             Step::new(format!("{name}-map"), script::Step::api("render.transform")).commits(0),
@@ -405,23 +429,22 @@ pub fn launch5(_: &[PathBuf]) -> Plan {
         steps.push(
             Step::new(
                 format!("{name}-selected"),
-                correction(CorrectionStep::Row(Some(0))),
+                correction(CorrectionStep::Row(Some(row))),
             )
             .commits(0),
         );
         steps.push(Step::new(format!("{name}-deselected"), key("Escape")).commits(0));
     }
+    steps.extend(tail);
     Plan::new(steps)
 }
 
-/// The file the Locate journey moves, as the fixture is named.
-const LOCATED: &str = "orientation-1.jpg";
 /// The folder it was moved from, as Select's Missing originals names the group.
 const MOVED_FROM: &str = "original";
 
 /// Launch 6: a photograph developed from the run's own copy of the fixture, with one Clone from the
 /// gold quadrant into the blue one.
-fn locate_clone() -> Plan {
+pub(crate) fn locate_clone() -> Plan {
     let mut painted = press(CLONE_FROM);
     painted.to = CLONE_TO.to_vec();
     Plan::new(vec![
@@ -447,7 +470,7 @@ fn locate_clone() -> Plan {
 /// Launch 7: nothing open. Select's Missing originals lists the photograph whose original moved,
 /// Find in a folder… searches an empty folder (so the photograph is not found, which is what offers
 /// Locate…), and Locate… relinks the photograph to the moved file by `source.locate`.
-fn locate_select(folder: &str, moved: &str) -> Plan {
+fn locate_select(folder: &str, moved: &str, file: &str) -> Plan {
     let missing = |name: &str, step: MissingStep| Step::new(name, script::Step::Missing(step));
     Plan::new(vec![
         Step::opened("opened"),
@@ -468,11 +491,11 @@ fn locate_select(folder: &str, moved: &str) -> Plan {
         missing(
             "located",
             MissingStep::Locate {
-                file: LOCATED.into(),
+                file: file.into(),
                 path: moved.into(),
             },
         )
-        .status_starts(format!("Located {LOCATED}")),
+        .status_starts(format!("Located {file}")),
     ])
 }
 
@@ -486,12 +509,18 @@ fn locate_open() -> Plan {
 
 /// Launches 6 to 8, made after the row's listed launches: the Locate journey, with the original
 /// moved by the run between launch 6 and launch 7.
-fn locate(
+pub(crate) fn locate(
     run: &mut Run,
     scenario: &Scenario,
     fixture: &Path,
     checked: &mut Vec<Checked>,
+    clone: Plan,
 ) -> Result {
+    let file = fixture
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("The located original has no file name")?
+        .to_owned();
     let dir = run.out().join("locate");
     let paths_file = dir.join("paths.json");
     if !run.replaying() {
@@ -501,12 +530,12 @@ fn locate(
         fs::create_dir_all(&original)?;
         fs::create_dir_all(&moved)?;
         fs::create_dir_all(&empty)?;
-        fs::copy(fixture, original.join(LOCATED))?;
+        fs::copy(fixture, original.join(&file))?;
         write_json(
             &paths_file,
             &json!({
-                "original": original.canonicalize()?.join(LOCATED),
-                "moved": moved.canonicalize()?.join(LOCATED),
+                "original": original.canonicalize()?.join(&file),
+                "moved": moved.canonicalize()?.join(&file),
                 "empty": empty.canonicalize()?,
             }),
         )?;
@@ -529,12 +558,12 @@ fn locate(
     let steps: [(LaunchSpec, Plan, Vec<PathBuf>); 3] = [
         (
             launch("launch6", "script6.json", None),
-            locate_clone(),
+            clone,
             vec![original.clone()],
         ),
         (
             launch("launch7", "script7.json", Some("launch6")),
-            locate_select(&empty.to_string_lossy(), &moved.to_string_lossy()),
+            locate_select(&empty.to_string_lossy(), &moved.to_string_lossy(), &file),
             Vec::new(),
         ),
         (
@@ -588,11 +617,11 @@ pub fn run(run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> Resu
                 .map(|spec| (spec.plan)(sources))
                 .collect())
         },
-        |run, checked| locate(run, scenario, &fixture, checked),
+        |run, checked| locate(run, scenario, &fixture, checked, locate_clone()),
     )
 }
 
-fn rgb(frame: &Frame, at: [f64; 2]) -> Result<[f64; 3]> {
+pub(crate) fn rgb(frame: &Frame, at: [f64; 2]) -> Result<[f64; 3]> {
     frame.rgb_at(at, PATCH_HALF)
 }
 
@@ -620,7 +649,7 @@ fn near(
 }
 
 /// The workspace's recorded band in a frame.
-fn band(frame: &Frame) -> &Value {
+pub(crate) fn band(frame: &Frame) -> &Value {
     &frame.state()["corrections"]["band"]
 }
 
@@ -662,8 +691,13 @@ fn core_map(answer: &Value) -> Result<luxforge_core::GeometryMap> {
 
 /// Overlays through the geometry: after each geometry edit, every pin the desktop retains is held to
 /// the core's own map, and the capture shows it there.
-fn overlay_through_geometry(checks: &mut Checks, launch: &Checked) -> Result {
-    for geometry in GEOMETRIES {
+pub(crate) fn overlay_through_geometry(
+    checks: &mut Checks,
+    launch: &Checked,
+    geometries: &[&str],
+    least: usize,
+) -> Result {
+    for &geometry in geometries {
         let map = launch.at(&format!("{geometry}-map"))?;
         let core = core_map(&map["step"]["result"])?;
         let (content, output) = (
@@ -696,7 +730,7 @@ fn overlay_through_geometry(checks: &mut Checks, launch: &Checked) -> Result {
             ),
         )?;
         let pins = state["pins"].as_array().ok_or("No pins recorded")?;
-        ensure(pins.len() >= 4, format!("{geometry}: pins {pins:?}"))?;
+        ensure(pins.len() >= least, format!("{geometry}: pins {pins:?}"))?;
         let scale = shown["scale"].as_f64().unwrap_or(1.0);
         let mut placed = 0;
         for pin in pins {
@@ -1036,7 +1070,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             && band(refused)["notice"]["kind"] == json!("limit"),
         format!("The press at the limit: {}", band(refused)),
     )?;
-    overlay_through_geometry(&mut checks, launch5)?;
+    overlay_through_geometry(&mut checks, launch5, &GEOMETRIES, 4)?;
     located(&mut checks, run, launch6, launch7, launch8)?;
     checks.write(
         run.out(),

@@ -631,6 +631,34 @@
         {"api": {"method": "edit.add-correction", "params": {"points": [[0.33, 0.4]], "radius": 0.02, "mode": "heal", "feather": 20, "opacity": 100, "source-x": 0.33, "source-y": 0.2}}},
         {"api": {"method": "edit.set-detail", "params": {"luminance": 40, "colour": 40, "sharpening": 50, "radius": 1.0}}}
       ]
+    },
+    {
+      "id": "repair-heal-perspective",
+      "family": "repair-heal",
+      "class": "spatial",
+      "description": "A Heal, a Clone stroke and a Heal by the frame's corner, then a straightened crop and a Perspective warp: the repair in content coordinates under nonlinear geometry.",
+      "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture"],
+      "steps": [
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.4, 0.45]], "radius": 0.03, "mode": "heal", "feather": 50, "opacity": 100, "source-x": 0.55, "source-y": 0.5}}},
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.2, 0.3], [0.35, 0.35]], "radius": 0.012, "mode": "clone", "feather": 30, "opacity": 100, "source-x": 0.25, "source-y": 0.7}}},
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.03, 0.9]], "radius": 0.02, "mode": "heal", "feather": 50, "opacity": 100, "source-x": 0.2, "source-y": 0.9}}},
+        {"api": {"method": "edit.crop-fit", "params": {"aspect": "3:2", "angle": 4.0}}},
+        {"api": {"method": "edit.set-perspective", "params": {"horizontal": 20, "vertical": -10}}}
+      ]
+    },
+    {
+      "id": "repair-heal-lens-perspective",
+      "family": "repair-heal",
+      "class": "spatial",
+      "description": "The same corrections under the source's lens profile and a Perspective warp: the repair before a lens distortion and a homography.",
+      "sources": ["lens-zone-plate", "raw-z6", "raw-x100vi", "raw-air2s"],
+      "steps": [
+        {"section": {"module": "luxforge.lens", "expanded": true}},
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.4, 0.45]], "radius": 0.03, "mode": "heal", "feather": 50, "opacity": 100, "source-x": 0.55, "source-y": 0.5}}},
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.2, 0.3], [0.35, 0.35]], "radius": 0.012, "mode": "clone", "feather": 30, "opacity": 100, "source-x": 0.25, "source-y": 0.7}}},
+        {"api": {"method": "edit.add-correction", "params": {"points": [[0.03, 0.9]], "radius": 0.02, "mode": "heal", "feather": 50, "opacity": 100, "source-x": 0.2, "source-y": 0.9}}},
+        {"api": {"method": "edit.set-perspective", "params": {"horizontal": 20, "vertical": -10}}}
+      ]
     }
   ]
 }

@@ -11,6 +11,7 @@ mod catalog_probes;
 mod conformance;
 mod controls_smoke;
 mod copy_settings_smoke;
+mod corrections_raw_smoke;
 mod corrections_smoke;
 mod crop_smoke;
 mod curve_acceptance;
