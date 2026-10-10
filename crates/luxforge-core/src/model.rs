@@ -279,14 +279,6 @@ impl Layer {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct PixelReplace {
-    pub x: u32,
-    pub y: u32,
-    pub rgb: [u8; 3],
-}
-
 /// The action vocabulary of the crop module: what a person or a client asks for. The stack
 /// stores the resulting [`Orientation`], not the gestures that reached it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -946,7 +938,7 @@ mod tests {
     fn masked_layer(mask: &Mask) -> Layer {
         Layer {
             mask: Some(mask.id.clone()),
-            ..Layer::pixel(0, 0, [1, 2, 3])
+            ..Layer::new("test.layer", json!({"x": 0, "y": 0, "rgb": [1, 2, 3]}))
         }
     }
 
@@ -990,7 +982,11 @@ mod tests {
         // A layer always writes its mask reference, so a stored stack states for every layer
         // whether it was committed through a selection. The recipe is the unit whose shape is
         // marked, and the required table above is what refuses the older one.
-        let layer = serde_json::to_value(Layer::pixel(0, 0, [1, 2, 3])).unwrap();
+        let layer = serde_json::to_value(Layer::new(
+            "test.layer",
+            json!({"x": 0, "y": 0, "rgb": [1, 2, 3]}),
+        ))
+        .unwrap();
         assert_eq!(layer["mask"], Value::Null);
     }
 
@@ -1166,7 +1162,7 @@ mod tests {
         let recipe = Recipe {
             layers: vec![Layer {
                 payload: json!({ crate::path::STROKES_FIELD: [ignored], "x": 0 }),
-                ..Layer::pixel(0, 0, [1, 2, 3])
+                ..Layer::new("test.layer", json!({"x": 0, "y": 0, "rgb": [1, 2, 3]}))
             }],
             masks: vec![mask],
             ..Recipe::default()
@@ -1189,7 +1185,7 @@ mod tests {
         let unread = Recipe {
             layers: vec![Layer {
                 payload: json!({ crate::path::STROKES_FIELD: 7 }),
-                ..Layer::pixel(0, 0, [1, 2, 3])
+                ..Layer::new("test.layer", json!({"x": 0, "y": 0, "rgb": [1, 2, 3]}))
             }],
             ..Recipe::default()
         };
@@ -1285,8 +1281,18 @@ mod tests {
     #[test]
     fn snapshots_are_complete_immutable_and_round_trip() {
         let original = Snapshot::original(AssetId::new());
-        let a = original.append(Layer::pixel(1, 2, [3, 4, 5])).unwrap();
-        let b = a.append(Layer::pixel(1, 2, [6, 7, 8])).unwrap();
+        let a = original
+            .append(Layer::new(
+                "test.layer",
+                json!({"x": 1, "y": 2, "rgb": [3, 4, 5]}),
+            ))
+            .unwrap();
+        let b = a
+            .append(Layer::new(
+                "test.layer",
+                json!({"x": 1, "y": 2, "rgb": [6, 7, 8]}),
+            ))
+            .unwrap();
         assert!(original.recipe.layers.is_empty());
         assert_eq!(a.recipe.layers.len(), 1);
         assert_eq!(b.recipe.layers.len(), 2);
@@ -1298,7 +1304,7 @@ mod tests {
     fn invalid_identity_structure_and_duplicates_are_rejected() {
         assert!(serde_json::from_str::<AssetId>("\"bad\"").is_err());
         let mut recipe = Recipe::default();
-        let layer = Layer::pixel(0, 0, [1, 2, 3]);
+        let layer = Layer::new("test.layer", json!({"x": 0, "y": 0, "rgb": [1, 2, 3]}));
         recipe.layers.extend([layer.clone(), layer]);
         assert!(recipe.validate().is_err());
         let unsupported = Recipe {
@@ -1325,7 +1331,7 @@ mod tests {
             Layer {
                 effect_format: 99,
                 payload: json!({"x": 1}),
-                ..Layer::pixel(0, 0, [1, 2, 3])
+                ..Layer::new("test.layer", json!({"x": 0, "y": 0, "rgb": [1, 2, 3]}))
             }
             .validate()
             .is_ok()
@@ -1336,7 +1342,10 @@ mod tests {
     fn a_layer_is_inserted_at_its_position_and_an_index_past_the_end_is_rejected() {
         let recipe = Recipe {
             format: RECIPE_FORMAT,
-            layers: vec![Layer::pixel(0, 0, [1, 2, 3]), Layer::pixel(1, 1, [4, 5, 6])],
+            layers: vec![
+                Layer::new("test.layer", json!({"x": 0, "y": 0, "rgb": [1, 2, 3]})),
+                Layer::new("test.layer", json!({"x": 1, "y": 1, "rgb": [4, 5, 6]})),
+            ],
             masks: Vec::new(),
             ..Recipe::default()
         };
@@ -1370,7 +1379,7 @@ mod tests {
     #[test]
     fn a_layer_lists_each_artifact_once_and_at_most_sixteen() {
         let artifact = |index: usize| ArtifactId::for_hash(&format!("{index:064x}")).unwrap();
-        let plain = Layer::pixel(0, 0, [1, 2, 3]);
+        let plain = Layer::new("test.layer", json!({"x": 0, "y": 0, "rgb": [1, 2, 3]}));
         assert_eq!(
             serde_json::to_value(&plain).unwrap().get("artifacts"),
             None,

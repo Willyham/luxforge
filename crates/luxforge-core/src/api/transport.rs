@@ -469,7 +469,7 @@ mod tests {
         let input = [
             request("schema", "schema.list", json!({})),
             request("info", "catalog.info", json!({})),
-            request("pixel", "edit.set-pixel", json!({"asset_id":asset,"mutation":{"expected_revision":0,"request_id":"p1","actor":"api-test"},"x":0,"y":0,"rgb":[1,2,3]})),
+            request("pixel", "edit.set-basic", json!({"asset_id":asset,"mutation":{"expected_revision":0,"request_id":"p1","actor":"api-test"},"exposure": 0.5})),
             request("sample", "render.sample", json!({"asset_id":asset,"x":0,"y":0})),
             request("version", "version.create", json!({"asset_id":asset,"name":"Edited","mutation":{"request_id":"v1","actor":"api-test"}})),
             request("undo", "history.undo", json!({"asset_id":asset,"mutation":{"expected_revision":1,"request_id":"u1","actor":"api-test"}})),
@@ -494,7 +494,11 @@ mod tests {
         assert!(responses.iter().all(|response| response.error.is_none()));
         let result = |index: usize| responses[index].result.as_ref().unwrap();
         assert_eq!(result(1)["counts"]["photographs"], json!(1));
-        assert_eq!(result(3)["rgba"], json!([1, 2, 3, 255]));
+        assert_ne!(
+            result(3)["rgba"],
+            json!([220, 34, 45, 255]),
+            "the edit changed the pixel the fixture holds"
+        );
         assert_eq!(result(4)["outcome"], json!("applied"));
         assert_eq!(result(6)["versions"][0]["name"], json!("Edited"));
         assert_eq!(result(6)["versions"][0]["entry_sequence"], json!(1));

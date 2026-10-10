@@ -11,6 +11,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::sync::Arc;
 
 /// The least radius a correction takes, in content heights: about 2 px on a 4,000 px-high photo.
 pub(crate) const RADIUS_MIN: f64 = 0.0005;
@@ -41,8 +42,29 @@ fn radius_steps() -> std::ops::RangeInclusive<i32> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CorrectionStroke {
-    points: Vec<[i32; 2]>,
+    /// Shared, so a compiled repair table holds the stroke's positions without copying them.
+    #[serde(with = "shared_points")]
+    points: Arc<[[i32; 2]]>,
     radius: i32,
+}
+
+/// A stroke's positions serialize as the plain array they are.
+mod shared_points {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use std::sync::Arc;
+
+    pub(super) fn serialize<S: Serializer>(
+        points: &Arc<[[i32; 2]]>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        points.as_ref().serialize(serializer)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Arc<[[i32; 2]]>, D::Error> {
+        Vec::<[i32; 2]>::deserialize(deserializer).map(Arc::from)
+    }
 }
 
 impl CorrectionStroke {
@@ -52,7 +74,7 @@ impl CorrectionStroke {
     pub(crate) fn capture(points: &[[f64; 2]], radius: f64) -> Result<Self, Error> {
         let radius = checked_radius(radius)?;
         Ok(Self {
-            points: capture_grid(points, radius)?,
+            points: capture_grid(points, radius)?.into(),
             radius,
         })
     }
@@ -63,6 +85,11 @@ impl CorrectionStroke {
             points: self.points.clone(),
             radius: checked_radius(radius)?,
         })
+    }
+
+    /// The stored positions in grid steps, shared.
+    pub(crate) fn grid(&self) -> Arc<[[i32; 2]]> {
+        Arc::clone(&self.points)
     }
 
     /// The anchor: the first stored position (a spot's centre, a stroke's pin), in grid steps.

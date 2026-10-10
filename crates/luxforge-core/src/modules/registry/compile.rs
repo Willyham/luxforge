@@ -40,6 +40,7 @@ impl ModuleRegistry {
         recipe.validate()?;
         recipe.validate_mask_table()?;
         self.validate_masked_stages(recipe)?;
+        self.validate_repair_run(&recipe.layers)?;
         for layer in &recipe.layers {
             let module = self
                 .provider(&layer.effect_id)
@@ -75,11 +76,41 @@ impl ModuleRegistry {
         Ok(())
     }
 
+    /// A repair layer reads the developed source and nothing else, so it belongs to the leading run
+    /// of a stack: after an optional source layer, before every other layer
+    /// (`docs/design/corrections.md`, "Module, effect and stage"). Insertion never produces any
+    /// other order; a stack that holds one is refused by name, as it stands, and nothing is
+    /// rewritten or reordered. The refusal is what keeps a repair's input — the source, its
+    /// development and nothing else — well defined for the input grid and a patch's input key.
+    /// `O(layers)` descriptor lookups, no pixel.
+    fn validate_repair_run(&self, layers: &[Layer]) -> Result<(), Error> {
+        let mut leading = true;
+        for (index, layer) in layers.iter().enumerate() {
+            match self.effect_stage(&layer.effect_id) {
+                Some(EffectStage::Source) if index == 0 => {}
+                Some(EffectStage::Repair) if leading => {}
+                Some(EffectStage::Repair) => {
+                    let title = self
+                        .effect(&layer.effect_id)
+                        .map_or(layer.effect_id.as_str(), |(module, _)| {
+                            module.descriptor().title.as_str()
+                        });
+                    return Err(Error::incompatible(format!(
+                        "the {title} layer must follow only the source development (layer {})",
+                        layer.id
+                    )));
+                }
+                _ => leading = false,
+            }
+        }
+        Ok(())
+    }
+
     /// Refuse a layer whose mask this build cannot evaluate.
     ///
-    /// A mask reaches a colour operation and a spatial operation, and nothing else: a point
-    /// replacement writes one stored pixel and has no blend to perform, so there is nothing for a
-    /// coverage to modulate. (A geometry or finish layer cannot carry a mask at all, for the earlier
+    /// A mask reaches a colour operation and a spatial operation, and nothing else: a warp or
+    /// resample moves pixels and has no blend to perform, so there is nothing for a coverage to
+    /// modulate. (A geometry or finish layer cannot carry a mask at all, for the earlier
     /// reason that it has no content stage to read one in; that is
     /// [`Self::validate_masked_stages`].) A mask this build cannot evaluate must never be silently
     /// omitted from a frame or an export, so such a stack is refused by name wherever it would be
@@ -232,6 +263,7 @@ impl ModuleRegistry {
         // rendering its stack draws exactly what the stack says.
         recipe.validate()?;
         self.validate_masked_stages(recipe)?;
+        self.validate_repair_run(&recipe.layers)?;
         self.compile_layers_sampled(
             source_width,
             source_height,
@@ -391,17 +423,6 @@ impl ModuleRegistry {
                     segment.height = output.height;
                     segment.operations.push(Processing::ExactGeometry(step));
                 }
-                Processing::PointReplace { x, y, rgb } => {
-                    // A point replacement has no blend to perform, so a mask on one would be a mask
-                    // this build cannot evaluate. No delivered pixel-stage effect declares itself
-                    // maskable; refusing by name is what keeps a later one from silently rendering
-                    // its replacement everywhere instead of through the selection.
-                    self.refuse_unevaluated_mask(layer)?;
-                    segment.has_pixels = true;
-                    segment
-                        .operations
-                        .push(Processing::PointReplace { x, y, rgb });
-                }
                 Processing::Color(operation) => {
                     if operation.len() > MAX_COLOR_UNITS {
                         return Err(Error::validation(format!(
@@ -476,13 +497,32 @@ impl ModuleRegistry {
                         stage.height,
                     ));
                 }
+                Processing::Repair(table) => {
+                    // An emptied layer changes nothing, and nothing is no processing: the stack
+                    // keeps its single pass and the shared source buffer.
+                    if table.is_empty() {
+                        continue;
+                    }
+                    if self.effect_stage(&layer.effect_id) != Some(EffectStage::Repair) {
+                        return Err(Error::internal(format!(
+                            "effect {} compiled a repair table outside the repair stage",
+                            layer.effect_id
+                        )));
+                    }
+                    self.refuse_unevaluated_mask(layer)?;
+                    table.validate()?;
+                    segments.push(Segment::new(
+                        Some(Entry::repair(table, stage)),
+                        stage.width,
+                        stage.height,
+                    ));
+                }
                 Processing::Warp(step) => {
                     self.refuse_unevaluated_mask(layer)?;
                     if step.is_identity() {
                         continue;
                     }
                     if let Some(entry) = segment.entry.as_mut()
-                        && !segment.has_pixels
                         && !segment.has_color
                         && segment.geometry.is_identity(stage.width, stage.height)
                         && entry.fuse(step, output)?
@@ -505,7 +545,6 @@ impl ModuleRegistry {
                 }
                 Processing::Resample(resample) => {
                     if let Mapping::Affine(matrix) = &resample.map
-                        && !segment.has_pixels
                         && !segment.has_color
                         && segment.geometry.is_identity(stage.width, stage.height)
                         && let Some(entry) = segment.entry.as_mut()
@@ -606,7 +645,13 @@ impl ModuleRegistry {
             }
         }
         if layer.artifacts.is_empty() {
-            return module.compile(&layer.effect_id, layer.effect_format, &layer.payload, at);
+            return module.compile_with_strokes(
+                &layer.effect_id,
+                layer.effect_format,
+                &layer.payload,
+                at,
+                strokes,
+            );
         }
         // The recipe carries the verified bytes it was bound with, so resolving them is a lookup;
         // an artifact the recipe was not bound with is refused, never skipped.

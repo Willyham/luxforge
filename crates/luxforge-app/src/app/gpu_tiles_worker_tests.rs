@@ -670,7 +670,7 @@ fn a_seed_is_the_code_of_the_sample_input() {
 }
 
 /// What the GPU cannot draw is answered by the reference, naming why, with the reference's own
-/// pixels: a stack holding a pixel-stage layer, which no GPU program replaces, each read of its
+/// pixels: a stack holding a colour layer with no GPU program, each read of its
 /// call after the first included, and its stream refused at once, while the same stack without it,
 /// Dehaze's light and all, the GPU draws; a launch that refused the GPU, which opens nothing; an
 /// adapter the host does not offer by that name, which the status then names; and a desktop that
@@ -689,17 +689,23 @@ fn a_plan_the_gpu_cannot_run_is_answered_by_the_reference_naming_why() {
         .find(|(family, _)| *family == "Presence")
         .expect("the Presence family");
     let reference = ReferenceTiles::new();
-    // A pixel replaced before Presence, which no GPU program replaces. The read of the stage
-    // before that layer, which the GPU could draw, is the reference's too: what remains of a call
-    // after a read the GPU cannot draw is the reference's.
-    let mut pixel = recipe.clone();
-    pixel.layers.insert(0, Layer::pixel(12, 9, [200, 40, 90]));
+    // A colour layer with no GPU program before Presence. The read of the stage before that
+    // layer, which the GPU could draw, is the reference's too: what remains of a call after a read
+    // the GPU cannot draw is the reference's.
+    let mut unprogrammed = recipe.clone();
+    unprogrammed.layers.insert(
+        0,
+        Layer::new(
+            super::gpu_notice_tests::UNPROGRAMMED_EFFECT,
+            serde_json::json!({}),
+        ),
+    );
     let unlit = Evaluation::new(
-        Arc::new(ModuleRegistry::developer()),
+        super::gpu_notice_tests::UnprogrammedModule::registry(),
         RenderContext::new(),
         source.clone(),
         entry(&AssetId::new(), 1, None),
-        pixel,
+        unprogrammed,
         None,
     );
     let reads = [
@@ -715,7 +721,10 @@ fn a_plan_the_gpu_cannot_run_is_answered_by_the_reference_naming_why() {
         ),
     ];
     let service = GpuTiles::new(Some((backend.clone(), name.clone())), false);
-    let why = TileFallback::Plan(GpuFallback::PixelStage { layer: 0 });
+    let why = TileFallback::Plan(GpuFallback::NoProgram {
+        layer: 0,
+        unit: "unprogrammed".into(),
+    });
     assert_eq!(
         service.stream(&unlit, &Cancel::new()).err(),
         Some(why.clone()),

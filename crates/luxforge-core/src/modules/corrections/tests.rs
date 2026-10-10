@@ -605,16 +605,55 @@ fn a_missing_or_corrupt_stroke_is_refused_naming_its_operation_and_history_stays
 }
 
 #[test]
-fn a_photograph_with_corrections_is_never_rendered_without_them() {
+fn a_corrected_photograph_renders_its_table_and_an_emptied_layer_renders_nothing() {
     let mut session = Session::new("corrections-render.sqlite");
     let before = session.service.render_current(&session.asset).unwrap();
     session.ok("add-correction", spot(0.5, 0.5, 0.3, 0.4));
-    let refused = session.service.render_current(&session.asset).unwrap_err();
-    assert_eq!(refused.kind, ErrorKind::Incompatible);
-    assert!(
-        refused.detail.contains("cannot render Corrections yet"),
-        "{}",
-        refused.detail
+    session.ok(
+        "add-correction",
+        json!({"points": [[0.2, 0.6], [0.3, 0.62]], "radius": 0.01, "mode": "clone",
+               "source-x": 0.6, "source-y": 0.3}),
+    );
+    // The layer compiles to the host's repair table, one row per operation in order, each with
+    // its stroke's stored positions.
+    let state = session.service.state(&session.asset).unwrap();
+    let recipe = &state.current_entry.snapshot.recipe;
+    let layer = recipe
+        .layers
+        .iter()
+        .find(|layer| layer.effect_id == CORRECTIONS_EFFECT)
+        .unwrap();
+    let compiled = crate::ToolModule::compile_with_strokes(
+        &super::CorrectionsModule::new(),
+        &layer.effect_id,
+        layer.effect_format,
+        &layer.payload,
+        crate::CompileStage::exact(crate::Stage {
+            width: before.width,
+            height: before.height,
+        }),
+        &recipe.strokes,
+    )
+    .unwrap();
+    let crate::Processing::Repair(table) = compiled else {
+        panic!("a repair layer compiles to a repair table");
+    };
+    let rows: Vec<(u32, crate::modules::RepairKind, usize)> = table
+        .operations()
+        .iter()
+        .map(|row| (row.id, row.kind, row.points.len()))
+        .collect();
+    assert_eq!(
+        rows,
+        vec![
+            (1, crate::modules::RepairKind::Heal, 1),
+            (2, crate::modules::RepairKind::Clone, 2)
+        ]
+    );
+    let rendered = session.service.render_current(&session.asset).unwrap();
+    assert_eq!(
+        (rendered.width, rendered.height),
+        (before.width, before.height)
     );
     // An empty repair layer changes nothing and renders the photograph as it was.
     session.ok("reset-corrections", json!({}));

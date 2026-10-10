@@ -104,7 +104,16 @@ fn auto_tone_grid_cache_ignores_basic_and_later_colour_but_tracks_input_and_geom
     let cropped = super::grid::read(&next(changed), 0, &ReferenceReads, &cancel).unwrap();
     assert!(!Arc::ptr_eq(&first.sample, &cropped.sample));
     assert_eq!(cropped.sample.rgb.len(), 32 * 24);
-    let input_recipe = recipe_of(vec![Layer::pixel(10, 10, [255, 255, 255]), basic()], vec![]);
+    let input_recipe = recipe_of(
+        vec![
+            Layer::new(
+                crate::CURVE_EFFECT,
+                json!({"luminance": [[0.0, 0.1], [1.0, 1.0]]}),
+            ),
+            basic(),
+        ],
+        vec![],
+    );
     let input =
         super::grid::read(&next(input_recipe.clone()), 1, &ReferenceReads, &cancel).unwrap();
     assert!(!Arc::ptr_eq(&first.sample, &input.sample));

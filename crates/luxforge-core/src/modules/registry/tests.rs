@@ -4,7 +4,7 @@ use super::*;
 use crate::modules::raw::RAW_EFFECT;
 use crate::{
     ActionDescriptor, BASIC_EFFECT, CROP_EFFECT, Component, ComponentMode, EFFECT_FORMAT,
-    EffectDescriptor, Layer, LayerId, Mask, PIXEL_EFFECT, Recipe, SourceImage,
+    EffectDescriptor, Layer, LayerId, Mask, Recipe, SourceImage,
     modules::{
         ActionInput, ActionPlan, Availability, CapabilityModule, EffectStage, ModuleDescriptor,
         Processing, StageContext,
@@ -22,7 +22,7 @@ impl TestModule {
             id: id.into(),
             title: "Test".into(),
             hint: None,
-            effects: vec![EffectDescriptor::new(effect, EffectStage::Pixel)],
+            effects: vec![EffectDescriptor::new(effect, EffectStage::Repair)],
             actions: vec![ActionDescriptor::new(action, "Test action", "test")],
             queries: Vec::new(),
             controls: Vec::new(),
@@ -96,8 +96,8 @@ pub(crate) const PATCH_ACTION: &str = "set-patch";
 
 /// A module whose one action is a field patch, the shape Basic's sliders will take: the host
 /// hands it only the fields the caller named, it merges them over the layer it already has, and
-/// it reports an unchanged result as a no-op. Its layer replaces one pixel, so a preview, a
-/// sample and a rendered frame all show which fields are in effect.
+/// it reports an unchanged result as a no-op. Its layer compiles to an exposure of its channels,
+/// so a preview, a sample and a rendered frame all show which fields are in effect.
 pub(crate) struct PatchModule(ModuleDescriptor);
 
 impl PatchModule {
@@ -108,13 +108,13 @@ impl PatchModule {
                 .unit("code")
                 .step(1.0)
                 .precision(0)
-                .notes(format!("the {name} channel of the replaced pixel"))
+                .notes(format!("the {name} channel of the patch"))
         };
         Arc::new(Self(ModuleDescriptor {
             id: PATCH_MODULE.into(),
             title: "Patch".into(),
-            hint: Some("A patched pixel".into()),
-            effects: vec![EffectDescriptor::new(PATCH_EFFECT, EffectStage::Pixel)],
+            hint: Some("A patch".into()),
+            effects: vec![EffectDescriptor::new(PATCH_EFFECT, EffectStage::Color)],
             actions: vec![ActionDescriptor {
                 patch: true,
                 parameters: vec![channel("red"), channel("green")],
@@ -226,19 +226,22 @@ impl ToolModule for PatchModule {
             ..crate::LayerReport::new(format!("Patch {red}, {green}"))
         })
     }
+    /// An exposure of the two channels' sum, so a drafted, a stored and an absent patch render
+    /// three visibly different frames; no channels at all is the neutral colour operation.
     fn compile(
         &self,
         _: &str,
         _: u32,
         payload: &Value,
-        _: crate::CompileStage,
+        at: crate::CompileStage,
     ) -> Result<Processing, Error> {
         let [red, green] = Self::channels(payload);
-        Ok(Processing::PointReplace {
-            x: 0,
-            y: 0,
-            rgb: [red as u8, green as u8, 0],
-        })
+        BasicModule::new().compile(
+            BASIC_EFFECT,
+            EFFECT_FORMAT,
+            &json!({"exposure": (red + green) / 50.0}),
+            at,
+        )
     }
 }
 
@@ -250,7 +253,7 @@ pub(crate) const STAGE_ACTION: &str = "set-stage";
 /// colour operation. Placement, the order within a stage and the one refused order are
 /// properties of the host, so they are proved with this rather than with a real tool: a spatial
 /// or finish effect has no processing primitive of its own yet.
-pub(crate) struct StageModule(ModuleDescriptor);
+pub(crate) struct StageModule(ModuleDescriptor, fn() -> Processing);
 
 impl StageModule {
     pub(crate) fn shared(
@@ -260,29 +263,47 @@ impl StageModule {
         stage: EffectStage,
         order: u16,
     ) -> Arc<dyn ToolModule> {
-        Arc::new(Self(ModuleDescriptor {
-            id: id.into(),
-            title: "Stage".into(),
-            hint: None,
-            effects: vec![EffectDescriptor {
-                order,
-                ..EffectDescriptor::new(effect, stage)
-            }],
-            actions: vec![ActionDescriptor::new(
-                action,
-                "Set stage",
-                "commits one layer of this module's effect",
-            )],
-            queries: Vec::new(),
-            controls: Vec::new(),
-            reset: None,
-            canvas: None,
-            developer: false,
-            collapsed: false,
-            layout: crate::ModuleLayout::Stacked,
-            availability: Availability::Available,
-            ..ModuleDescriptor::default()
-        }))
+        Self::compiling(id, effect, action, stage, order, || {
+            Processing::Color(crate::ColorOperation::neutral())
+        })
+    }
+
+    /// [`Self::shared`] whose effect compiles to `processing` instead of the identity colour
+    /// operation.
+    pub(crate) fn compiling(
+        id: &str,
+        effect: &str,
+        action: &str,
+        stage: EffectStage,
+        order: u16,
+        processing: fn() -> Processing,
+    ) -> Arc<dyn ToolModule> {
+        Arc::new(Self(
+            ModuleDescriptor {
+                id: id.into(),
+                title: "Stage".into(),
+                hint: None,
+                effects: vec![EffectDescriptor {
+                    order,
+                    ..EffectDescriptor::new(effect, stage)
+                }],
+                actions: vec![ActionDescriptor::new(
+                    action,
+                    "Set stage",
+                    "commits one layer of this module's effect",
+                )],
+                queries: Vec::new(),
+                controls: Vec::new(),
+                reset: None,
+                canvas: None,
+                developer: false,
+                collapsed: false,
+                layout: crate::ModuleLayout::Stacked,
+                availability: Availability::Available,
+                ..ModuleDescriptor::default()
+            },
+            processing,
+        ))
     }
 }
 
@@ -317,7 +338,7 @@ impl ToolModule for StageModule {
         _: &Value,
         _: crate::CompileStage,
     ) -> Result<Processing, Error> {
-        Ok(Processing::Color(crate::ColorOperation::neutral()))
+        Ok((self.1)())
     }
 }
 
@@ -460,13 +481,13 @@ fn registration_rejects_duplicate_and_invalid_identities_across_modules() {
         }
     }
     assert_eq!(registry.descriptors().len(), builtin.len());
-    assert!(registry.action("edit.set-pixel").is_none());
+    assert!(registry.action("edit.set-controls").is_none());
 
     for (case, module) in [
         (
             "duplicate module",
             TestModule::shared(
-                "luxforge.pixel",
+                "luxforge.controls",
                 "test.other",
                 "test-other",
                 Availability::Available,
@@ -476,7 +497,7 @@ fn registration_rejects_duplicate_and_invalid_identities_across_modules() {
             "duplicate effect",
             TestModule::shared(
                 "test.module",
-                PIXEL_EFFECT,
+                crate::CONTROLS_EFFECT,
                 "test-other",
                 Availability::Available,
             ),
@@ -486,7 +507,7 @@ fn registration_rejects_duplicate_and_invalid_identities_across_modules() {
             TestModule::shared(
                 "test.module",
                 "test.effect",
-                "set-pixel",
+                "set-controls",
                 Availability::Available,
             ),
         ),
@@ -832,7 +853,7 @@ fn a_chord_has_one_spelling() {
     }
 }
 
-/// The one assembly both binaries use: the test modules — the pixel and controls proofs, whose
+/// The one assembly both binaries use: the test modules — the controls proof, whose
 /// descriptors declare `developer` — join only a developer run, in their linked places, and the
 /// capability proof only a developer run that names a proof endpoint. `--disable-module` registers
 /// a served module unavailable and refuses one the run does not serve, and a proof endpoint outside
@@ -871,8 +892,8 @@ fn the_one_assembly_serves_test_modules_only_in_developer_mode() {
             .iter()
             .all(|module| !module.developer)
     );
-    assert!(ordinary.action("set-pixel").is_none());
-    assert!(ordinary.effect(PIXEL_EFFECT).is_none());
+    assert!(ordinary.action("set-controls").is_none());
+    assert!(ordinary.effect(crate::CONTROLS_EFFECT).is_none());
 
     let developer = assemble(&[], true, None).unwrap();
     assert_eq!(ids(&developer), ids(&ModuleRegistry::developer()));
@@ -882,7 +903,6 @@ fn the_one_assembly_serves_test_modules_only_in_developer_mode() {
             "luxforge.crop",
             "luxforge.presets",
             "luxforge.corrections",
-            "luxforge.pixel",
             "luxforge.raw",
             "luxforge.look",
             "luxforge.basic",
@@ -894,13 +914,14 @@ fn the_one_assembly_serves_test_modules_only_in_developer_mode() {
             "luxforge.perspective",
             "luxforge.vignette",
             "luxforge.controls",
+            "luxforge.candidates",
         ]
     );
     let tests: Vec<String> = ids(&developer)
         .into_iter()
         .filter(|id| !ids(&ordinary).contains(id))
         .collect();
-    assert_eq!(tests, ["luxforge.pixel", "luxforge.controls"]);
+    assert_eq!(tests, ["luxforge.controls", "luxforge.candidates"]);
     for id in &tests {
         assert!(developer.module(id).unwrap().descriptor().developer, "{id}");
     }
@@ -1025,7 +1046,7 @@ fn a_built_in_registered_unavailable_keeps_its_declarations_and_reports_why() {
 
 /// Every module that checks a stored layer's effect against its own refuses a foreign one as the
 /// one unavailable-effect refusal, whose data names the effect: the field-patch modules, the look,
-/// pixel, Corrections,
+/// Corrections,
 /// transform, crop and the capability proof. The RAW module refuses a foreign layer as an invalid
 /// RAW source layer and the presets module as one it has no effect for; neither is this refusal.
 #[test]
@@ -1042,9 +1063,9 @@ fn every_payload_check_names_a_foreign_effect_in_its_data() {
         .collect();
     assert_eq!(
         modules.len(),
-        13,
-        "basic, look, curve, detail, presence, mixer, lens, perspective, vignette, pixel, crop, \
-         controls, corrections"
+        12,
+        "basic, look, curve, detail, presence, mixer, lens, perspective, vignette, crop, controls, \
+         corrections"
     );
     modules.push(&proof);
     for module in modules {
@@ -1100,12 +1121,21 @@ pub(crate) const SPATIAL_EFFECT: &str = "test.spatial.effect";
 
 pub(crate) const FINISH_EFFECT: &str = "test.finish.effect";
 
-/// The developer registry, whose pixel proof is the pixel stage, plus one colour effect of order
-/// 10, one spatial effect and one finish effect, which is every stage and two orders within the
-/// colour stage.
+pub(crate) const REPAIR_STAGE_EFFECT: &str = "test.repair.effect";
+
+/// The developer registry plus one pixel-stage effect, one colour effect of order 10, one spatial
+/// effect and one finish effect, which is every stage that has no delivered effect and two orders
+/// within the colour stage.
 pub(crate) fn staged_registry() -> ModuleRegistry {
     let mut registry = ModuleRegistry::developer();
     for (id, effect, action, stage, order) in [
+        (
+            "test.pixel",
+            REPAIR_STAGE_EFFECT,
+            "set-test-pixel",
+            EffectStage::Repair,
+            0,
+        ),
         (
             "test.mixer",
             MIXER_EFFECT,
