@@ -1726,6 +1726,8 @@ mod tests {
         let patch = modules
             .iter()
             .filter(|module| module.applies_to(luxforge_core::SourceTag::Jpeg))
+            // A section's slider: Corrections' operation edit is a patch with no control.
+            .filter(|module| !module.controls.is_empty())
             .flat_map(|module| module.actions.iter())
             .find(|action| action.patch)
             .expect("a built-in declares a field patch")
@@ -2528,11 +2530,16 @@ mod tests {
             "the descriptor's own icon"
         );
         assert!(crop.enabled);
-        assert_eq!(strip[2].id, crop.id, "the modules' modes follow Mask");
+        // The declared brush workspace follows Mask, then the crop frames.
+        let corrections = &strip[2];
+        assert_eq!(corrections.id, "luxforge.corrections", "Corrections follows Mask");
+        assert_eq!(corrections.shortcut.as_deref(), Some("Q"));
+        assert_eq!(corrections.icon.as_deref(), Some("heal"));
+        assert_eq!(strip[3].id, crop.id, "the crop frame follows Corrections");
         assert_eq!(
             strip.len(),
-            3,
-            "the pointer, the mask mode and the crop frame alone: {:?}",
+            4,
+            "the pointer, the mask mode, Corrections and the crop frame alone: {:?}",
             strip.iter().map(|mode| &mode.id).collect::<Vec<_>>()
         );
         // Every module that declares a pick — a point pick or a sample apply — stays out, for
@@ -3705,6 +3712,10 @@ mod tests {
         let mut built_on_demand = 0;
         for (left, right) in from_collapsed.iter().zip(&from_open) {
             assert_eq!(left.section.module_id, right.section.module_id);
+            // The Corrections section has no controls: its band is its mode's.
+            if crate::state::corrections::is_brush_mode(&open.modules, &right.section.module_id) {
+                continue;
+            }
             assert!(right.section.shows_controls());
             assert_eq!(
                 left.controls, right.controls,
