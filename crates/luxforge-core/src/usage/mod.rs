@@ -2,6 +2,7 @@
 //! delivery (`docs/design/usage-statistics.md`). A host service, not an editing module: nothing here
 //! reads an original, a pixel or a recipe value, and nothing runs until a person opts in.
 pub mod consent;
+pub mod device;
 pub mod device_profile;
 pub mod eligibility;
 pub mod encode;
@@ -9,6 +10,7 @@ pub mod event;
 pub mod gate;
 pub mod image_id;
 pub mod registry;
+pub mod sampler;
 
 pub use device_profile::{
     AppleTier, Arch, CpuProfile, CpuVendor, DeviceProfile, GpuBackend, GpuProfile, GpuType,
