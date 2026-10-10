@@ -2,7 +2,8 @@
 //! collapse history on by default, then at Experiments, each flag kind changed through
 //! its own control, a number the field refuses, a Reset, developer mode turned off for the next
 //! launch while `--developer` holds this one, the sheet closed with Escape and opened again over
-//! what the host stored. Then the General rows' preferences, each through its row's own control:
+//! what the host stored. Then, with the Performance section collapsed so its live readings stay
+//! out of the comparison, the General rows' preferences, each through its row's own control:
 //! the canvas background set to grey and back to dark, checked in the canvas beside the
 //! photograph with the panels unchanged; the interface size set to 125%, checked in the title
 //! bar's drawn height against 100%, with the sheet drawn at that size, and back to 100%; the mask
@@ -133,6 +134,9 @@ fn planned(evidence: &Path) -> Plan {
         // The display preferences with the sheet closed, so the canvas and the title bar are
         // drawn undimmed.
         Step::new("closed-again", script::Step::key(script::KEY_ESCAPE)).commits(0),
+        // The Performance section collapsed, so no reading it refreshes on its own schedule lands
+        // between the frames the canvas background is compared across.
+        Step::new("performance-collapsed", script::Step::performance(false)).commits(0),
         preference("grey", "canvas_background", json!("grey")),
         preference("dark", "canvas_background", json!("dark")),
         preference("size-125", "interface_size", json!(125)),
@@ -334,8 +338,15 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
                 && frame.state()["stack"] == opened.state()["stack"],
             format!("Step {step:?} changed the session workspace or the stack"),
         )?;
+        // Collapsing the Performance section stores it as the next launch's, and that step does
+        // not wait for the write: its own frame may hold that one write, which the next frame,
+        // a preference step that waits, must show finished.
+        let allowed = u64::from(step == "performance-collapsed");
         ensure(
-            settings(frame)["writes_outstanding"] == 0 && settings(frame)["error"].is_null(),
+            settings(frame)["writes_outstanding"]
+                .as_u64()
+                .is_some_and(|outstanding| outstanding <= allowed)
+                && settings(frame)["error"].is_null(),
             format!(
                 "Step {step:?} left a write outstanding or failed: {}",
                 settings(frame)
@@ -630,12 +641,18 @@ fn band_changed(a: &Frame, b: &Frame, across: [f64; 2], down: [f64; 2]) -> Resul
 
 /// The General rows' steps: what each frame draws and records of the preference it set.
 fn general_preferences(run: &Run, launch: &Checked, checks: &mut Checks) -> Result {
-    let closed = launch.at("closed-again")?;
+    let closed = launch.at("performance-collapsed")?;
     ensure(
         settings(closed)["open"].is_null(),
         "Escape left the sheet open",
     )?;
-    for step in ["closed-again", "grey", "dark", "size-125"] {
+    for step in [
+        "closed-again",
+        "performance-collapsed",
+        "grey",
+        "dark",
+        "size-125",
+    ] {
         ensure(
             settings(launch.at(step)?)["open"].is_null(),
             format!("The sheet is open at step {step:?}, dimming the canvas"),
