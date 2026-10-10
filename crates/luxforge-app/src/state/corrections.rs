@@ -394,6 +394,9 @@ pub(crate) fn source_phrase(choice: &SourceChoice, content: Option<(u32, u32)>) 
 
 /// `spot · auto`, `stroke · set source`.
 fn description(listed: &Listed) -> String {
+    if listed.kind == "patch" {
+        return patch_description(listed.stale.as_ref());
+    }
     let shape = if listed.spot() { "spot" } else { "stroke" };
     let origin = match listed.origin.as_deref() {
         Some("set") => "set source",
@@ -402,6 +405,34 @@ fn description(listed: &Listed) -> String {
         None => "patch",
     };
     format!("{shape} \u{b7} {origin}")
+}
+
+/// A frozen patch's row: `frozen patch`, or why it is stale (`docs/design/corrections.md`, "Input
+/// identity"): what changed since it was generated, the reasons `query.corrections` names, in
+/// order. A stale patch still renders.
+fn patch_description(stale: Option<&Value>) -> String {
+    let reasons: Vec<&str> = stale
+        .and_then(|stale| stale.get("reasons"))
+        .and_then(Value::as_array)
+        .map(|reasons| reasons.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    if reasons.is_empty() {
+        return "frozen patch".into();
+    }
+    let changed: Vec<&str> = reasons
+        .iter()
+        .map(|reason| match *reason {
+            "source" => "the original changed",
+            "dimensions" => "the photograph's dimensions changed",
+            "development" => "the RAW development changed",
+            "earlier-correction" => "a correction below it changed",
+            other => other,
+        })
+        .collect();
+    format!(
+        "stale \u{b7} {} since it was generated",
+        changed.join(", ")
+    )
 }
 
 /// The pin, the band and the status bar's name for the add a press would make now.
@@ -653,5 +684,25 @@ mod tests {
     fn kinds_are_titled_from_their_options() {
         assert_eq!(kind_title("heal"), "Heal");
         assert_eq!(kind_title("clone"), "Clone");
+    }
+}
+
+#[cfg(test)]
+mod patch_row_tests {
+    use super::patch_description;
+    use serde_json::json;
+
+    #[test]
+    fn a_patch_row_says_why_it_is_stale() {
+        assert_eq!(patch_description(None), "frozen patch");
+        assert_eq!(
+            patch_description(Some(&json!({"reasons": ["development"]}))),
+            "stale \u{b7} the RAW development changed since it was generated"
+        );
+        assert_eq!(
+            patch_description(Some(&json!({"reasons": ["source", "earlier-correction"]}))),
+            "stale \u{b7} the original changed, a correction below it changed since it was \
+             generated"
+        );
     }
 }
