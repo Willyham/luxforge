@@ -1010,3 +1010,35 @@ fn a_drafted_repair_draws_on_the_gpu_at_fit() {
         assert!(op.writes.x1() <= reduced.width && op.writes.y1() <= reduced.height);
     }
 }
+
+/// Under a lens warp, as under a rotated crop, the warp resamples the repaired content: the warped
+/// stack is the warp of the repaired bytes, the repair anchored in content coordinates.
+#[test]
+fn a_lens_warp_reads_the_repaired_content() {
+    let source = textured(96, 64, 17);
+    let stage = stage_of(&source);
+    let ops = varied_ops(stage);
+    let registry = repair_registry();
+    let lens = || super::testing::frozen_lens(stage.width, stage.height, 24.0);
+    let repaired = render(
+        &registry,
+        &source,
+        SnapshotId::new(),
+        &recipe(vec![repair_layer(&ops)]),
+    )
+    .unwrap();
+    let through = render(
+        &registry,
+        &source,
+        SnapshotId::new(),
+        &recipe(vec![repair_layer(&ops), lens()]),
+    )
+    .unwrap();
+    let bytes = SourceImage {
+        rgba: repaired.rgba.clone(),
+        fingerprint: "sha256:repaired-lens".into(),
+        ..source.clone()
+    };
+    let expected = render(&registry, &bytes, SnapshotId::new(), &recipe(vec![lens()])).unwrap();
+    assert_eq!(through.rgba, expected.rgba);
+}

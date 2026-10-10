@@ -719,27 +719,26 @@ pub fn anchored(window: Region, anchor: GpuAnchor) -> Region {
     }
 }
 
-/// [`anchored`] for a window of the content stage `compiled` reads from the source, closed under
-/// its repair boundary when it opens with one ([`crate::render::repair_entry::RepairEntry::closure`]):
-/// grown, and anchored again, until every repair operation whose destination meets the window reads
-/// only pixels inside it, so a later link's reads past what it was asked for — a running sum's lead
-/// — find the whole frame's values.
+/// [`anchored`] for a window of the content stage `compiled` reads from the source, grown once by
+/// its repair boundary's reads when it opens with one: anchoring moves the window's origin up and
+/// left by the later links' leads, and a running sum there reads the repair's output over that
+/// lead, outside what the walk asked the repair for. The anchored window's reads
+/// ([`crate::render::repair_entry::RepairEntry::window_reads`]) join it, so the repair's output is
+/// the whole frame's over the anchored window, every texel a later link reads; the result is
+/// anchored again. One step, never a fixed point: a pixel of the grown margin that no later link
+/// reads may hold a value an operation computed from clamped reads.
 pub(crate) fn anchored_over(compiled: &Compiled, window: Region, anchor: GpuAnchor) -> Region {
     let repair = compiled
         .segments
         .get(1)
         .and_then(|segment| segment.entry.as_ref())
         .and_then(Entry::repair_entry);
-    let mut window = anchored(window, anchor);
-    let Some(repair) = repair else {
-        return window;
-    };
-    loop {
-        let next = anchored(repair.closure(window), anchor);
-        if next == window {
-            return window;
+    let window = anchored(window, anchor);
+    match repair {
+        Some(repair) if anchor != GpuAnchor::NONE => {
+            anchored(repair.closure_once(window), anchor)
         }
-        window = next;
+        _ => window,
     }
 }
 

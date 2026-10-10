@@ -229,19 +229,11 @@ impl RepairEntry {
         self.reads(window).0.bounds()
     }
 
-    /// `window` grown until every operation whose destination meets it reads only pixels inside
-    /// it: a window a GPU step can hold whole, every pixel of it the whole frame's, so a reader
-    /// past the pixels it was asked for (a running sum's lead) reads exact values too.
-    /// `O(operations · rects)` a round, at most as many rounds as the window grows.
-    pub(crate) fn closure(&self, window: Region) -> Region {
-        let mut window = intersection(window, Region::whole(self.stage));
-        loop {
-            let grown = union(self.window_reads(window), window);
-            if grown == window {
-                return window;
-            }
-            window = grown;
-        }
+    /// `window` with what producing it reads: a window over which a GPU step's output is the
+    /// whole frame's at every pixel of `window`. `O(operations · rects)`.
+    pub(crate) fn closure_once(&self, window: Region) -> Region {
+        let window = intersection(window, Region::whole(self.stage));
+        union(self.window_reads(window), window)
     }
 
     /// The read set of every destination: what a whole frame of the output reads beyond the
