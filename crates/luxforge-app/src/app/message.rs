@@ -33,6 +33,7 @@ pub(crate) mod select_missing;
 pub(crate) mod settings;
 pub(crate) mod sync;
 pub(crate) mod theme;
+pub(crate) mod usage;
 pub(crate) mod view;
 pub(crate) mod visibility;
 
@@ -67,6 +68,8 @@ pub(crate) enum Message {
     Performance(performance::PerformanceMessage),
     /// One Settings sheet gesture or answer.
     Settings(settings::SettingsMessage),
+    /// Usage statistics: the startup notice and the Privacy tab.
+    Usage(usage::UsageMessage),
     /// An owner answer to the desktop's preference writer or to a read of the preferences.
     Preferences(preferences::PreferenceMessage),
     /// One Appearance-tab gesture or theme library answer.

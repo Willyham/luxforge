@@ -105,6 +105,10 @@ pub(crate) enum Outcome<'a> {
     /// Long-running work's model was derived again: what the status bar, the sheet and the
     /// Performance rows show may have changed.
     LongWorkShown,
+    /// The usage statistics notice settled: shown, or the claim answered not to show it.
+    UsageNotice,
+    /// A `usage.read` answered, or the last outstanding `usage.set` did, or either was refused.
+    UsageAnswered,
 }
 
 /// What reached the photo surface.
@@ -166,6 +170,8 @@ impl Outcome<'_> {
             Self::ExportEnded { .. } => "export_ended",
             Self::SelectSettled => "select_settled",
             Self::LongWorkShown => "long_work_shown",
+            Self::UsageNotice => "usage_notice",
+            Self::UsageAnswered => "usage_answered",
         }
     }
 }
