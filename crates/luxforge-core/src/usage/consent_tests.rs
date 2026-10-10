@@ -332,6 +332,11 @@ fn usage_the_id_and_image_key_exist_only_while_a_saved_opt_in_does() {
     );
     let active = usage.active().unwrap();
     assert_eq!(active.installation_id.to_string(), id);
+    assert_eq!(
+        active.installation_id.report_id(),
+        crate::usage::ReportId::parse(&id).unwrap()
+    );
+    assert_eq!(usage.release(), None, "a test build carries no revision");
     assert_eq!(Some(active.generation), usage.gate().current());
     assert_eq!(outcome.state.installation_id.unwrap().to_string(), id);
     assert_eq!(
@@ -354,7 +359,7 @@ fn usage_the_id_and_image_key_exist_only_while_a_saved_opt_in_does() {
     let relaunched = launched(eligible(), &dir);
     let resumed = relaunched.active().unwrap();
     assert_eq!(resumed.installation_id.to_string(), id);
-    assert_eq!(resumed.image_key.bytes(), active.image_key.bytes());
+    assert_eq!(resumed.image_key.as_bytes(), active.image_key.as_bytes());
     usage.start(dir.store().read().as_ref());
     assert_eq!(usage.active().unwrap().generation, active.generation);
 
@@ -543,7 +548,7 @@ fn usage_a_record_round_trips_in_its_one_shape() {
     let preferences = dir.store().read().unwrap();
     let stored = preferences.usage_statistics.as_ref().unwrap();
     assert_eq!(
-        stored.image_key.as_ref().unwrap().bytes()[..2],
+        stored.image_key.as_ref().unwrap().as_bytes()[..2],
         [0x00, 0x11]
     );
     assert_eq!(serde_json::to_value(stored).unwrap(), record);

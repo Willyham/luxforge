@@ -16,6 +16,9 @@
 use super::{
     DISCLOSURE_VERSION, Gate, Generation,
     eligibility::{Eligibility, LaunchMode, Reason},
+    encode::{Release, ReportId},
+    event::Diagnostics,
+    image_id::ImageKey,
 };
 use crate::{
     ClientAuthority, Error,
@@ -62,6 +65,13 @@ impl InstallationId {
     }
 }
 
+impl InstallationId {
+    /// The ID as the wire encoder carries it.
+    pub fn report_id(&self) -> ReportId {
+        ReportId::from_uuid(self.0).expect("an installation ID is a UUIDv4")
+    }
+}
+
 impl fmt::Display for InstallationId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.hyphenated().fmt(f)
@@ -89,47 +99,43 @@ impl<'de> Deserialize<'de> for InstallationId {
     }
 }
 
-/// The 32 random bytes that key a photograph's image ID for this consent lifetime. Stored only in
-/// the protected record, as 64 lowercase hexadecimal characters; never uploaded, logged or
-/// answered by a read. Its `Debug` is redacted and its bytes are zeroed when dropped.
-#[derive(Clone, PartialEq, Eq)]
-pub struct ImageKey(Zeroizing<[u8; 32]>);
-
-impl ImageKey {
-    fn random() -> Result<Self, Error> {
-        let mut bytes = Zeroizing::new([0; 32]);
-        getrandom::fill(bytes.as_mut_slice())
-            .map_err(|error| Error::internal(format!("no system randomness: {error}")))?;
-        Ok(Self(bytes))
-    }
-
-    /// The key's bytes, for the image ID's keyed hash in this process only.
-    pub fn bytes(&self) -> &[u8; 32] {
-        &self.0
-    }
+/// 32 bytes of the operating system's cryptographic randomness: a fresh image key.
+fn random_image_key() -> Result<ImageKey, Error> {
+    let mut bytes = Zeroizing::new([0; 32]);
+    getrandom::fill(bytes.as_mut_slice())
+        .map_err(|error| Error::internal(format!("no system randomness: {error}")))?;
+    Ok(ImageKey::from_bytes(*bytes))
 }
 
-impl fmt::Debug for ImageKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("ImageKey(..)")
-    }
-}
+/// The image key as the record stores it: 64 lowercase hexadecimal characters, never any other
+/// spelling.
+mod image_key_hex {
+    use super::ImageKey;
+    use serde::{Deserialize, Deserializer, Serializer, de};
+    use zeroize::Zeroizing;
 
-impl Serialize for ImageKey {
-    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+    pub(super) fn serialize<S: Serializer>(
+        key: &Option<ImageKey>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
         const HEX: &[u8; 16] = b"0123456789abcdef";
+        let Some(key) = key else {
+            return serializer.serialize_none();
+        };
         let mut text = Zeroizing::new(String::with_capacity(64));
-        for byte in self.0.iter() {
+        for byte in key.as_bytes() {
             text.push(HEX[usize::from(byte >> 4)] as char);
             text.push(HEX[usize::from(byte & 0xf)] as char);
         }
         serializer.serialize_str(&text)
     }
-}
 
-impl<'de> Deserialize<'de> for ImageKey {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        let text = Zeroizing::new(String::deserialize(deserializer)?);
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<ImageKey>, D::Error> {
+        let Some(text) = Option::<String>::deserialize(deserializer)?.map(Zeroizing::new) else {
+            return Ok(None);
+        };
         let refused = || de::Error::custom("image_key must be 64 lowercase hexadecimal characters");
         let digit = |byte: u8| match byte {
             b'0'..=b'9' => Some(byte - b'0'),
@@ -146,7 +152,7 @@ impl<'de> Deserialize<'de> for ImageKey {
             };
             bytes[index] = high << 4 | low;
         }
-        Ok(Self(bytes))
+        Ok(Some(ImageKey::from_bytes(*bytes)))
     }
 }
 
@@ -162,7 +168,11 @@ pub(crate) struct UsageRecord {
     pub(crate) disclosure_version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) installation_id: Option<InstallationId>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "image_key_hex"
+    )]
     pub(crate) image_key: Option<ImageKey>,
 }
 
@@ -244,15 +254,6 @@ impl Limits {
     };
 }
 
-/// Bounded local counts the statistics worker reports through [`Usage::set_diagnostics`]: never
-/// events, file contents or network error text. All zero until a worker runs.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
-pub struct Diagnostics {
-    pub recorded: u64,
-    pub dropped: u64,
-    pub sent: u64,
-}
-
 /// What `usage.read` answers. Never the image key, buffered events or file contents.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct UsageState {
@@ -277,7 +278,15 @@ pub struct UsageState {
     /// Why this process is not collecting; `null` while it is.
     pub reason: Option<Reason>,
     pub limits: Limits,
+    /// The statistics worker's bounded local counts, all zero until a worker runs.
+    #[serde(serialize_with = "diagnostics")]
     pub diagnostics: Diagnostics,
+}
+
+/// [`Diagnostics`] as `usage.read` answers them: `{recorded, dropped, sent}`.
+fn diagnostics<S: Serializer>(counts: &Diagnostics, serializer: S) -> Result<S::Ok, S::Error> {
+    json!({"recorded": counts.recorded, "dropped": counts.dropped, "sent": counts.sent})
+        .serialize(serializer)
 }
 
 /// The stored consent as the statistics worker confirms it: whether the record is consent to the
@@ -317,7 +326,9 @@ impl ConsentReader {
 }
 
 /// The identity collection runs under while the gate is on: its generation, the installation ID
-/// and the image key, from the record that enabled it.
+/// ([`InstallationId::report_id`] for the encoder) and the image key, from the record that enabled
+/// it. The key is never serialized and its `Debug` is redacted; the session's collector takes it
+/// as it is.
 #[derive(Clone)]
 pub struct Active {
     pub generation: Generation,
@@ -352,7 +363,7 @@ struct Runtime {
 }
 
 /// The process-wide consent runtime: eligibility, the collection gate and the identity collection
-/// runs under. Every catalog owner of the process shares one ([`crate::HostConfig::usage`]).
+/// runs under. Every catalog owner of the process shares one ([`crate::HostConfig::usage_consent`]).
 pub struct Usage {
     eligibility: Eligibility,
     gate: Gate,
@@ -403,6 +414,14 @@ impl Usage {
 
     pub fn eligibility(&self) -> &Eligibility {
         &self.eligibility
+    }
+
+    /// The release a batch reports, as the wire encoder carries it: the packaged build's
+    /// `<version>+<12 hex>`, or `None` for a build without an embedded clean revision.
+    pub fn release(&self) -> Option<Release> {
+        self.eligibility
+            .release()
+            .and_then(|release| Release::parse(&release))
     }
 
     /// The gate every producer checks first: one atomic load.
@@ -643,7 +662,7 @@ impl Usage {
         }
         let _writer = self.lock_writer();
         let revocations = self.revocations.load(Ordering::Acquire);
-        let fresh = (InstallationId::random(), ImageKey::random()?);
+        let fresh = (InstallationId::random(), random_image_key()?);
         let (changed, installation_id, image_key) = store.update_usage(|record| {
             if let Some((id, key)) = record.as_ref().and_then(UsageRecord::current) {
                 return Ok((false, id, key));
