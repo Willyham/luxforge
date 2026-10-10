@@ -375,22 +375,26 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     pub(crate) fn with_input_width(mut self, wide: bool) -> Self {
         debug_assert!(self.frame.is_none());
         let last = self.widths.len() - 1;
-        let Some(target) = self
-            .compiled
-            .segments
-            .iter()
-            .rposition(|segment| matches!(&segment.entry, Some(super::Entry::Spatial(_))))
-        else {
+        let Some(target) = self.compiled.segments.iter().rposition(|segment| {
+            segment
+                .entry
+                .as_ref()
+                .is_some_and(super::Entry::materializes)
+        }) else {
             return self;
         };
         for index in (0..=last).rev() {
             let segment = &self.compiled.segments[index];
-            let spatial = matches!(&segment.entry, Some(super::Entry::Spatial(_)));
+            let spatial = segment
+                .entry
+                .as_ref()
+                .is_some_and(super::Entry::materializes);
             let next_spatial = self
                 .compiled
                 .segments
                 .get(index + 1)
-                .is_some_and(|s| matches!(&s.entry, Some(super::Entry::Spatial(_))));
+                .and_then(|s| s.entry.as_ref())
+                .is_some_and(super::Entry::materializes);
             let output = (index == last && target == last && wide)
                 || (next_spatial && (segment.has_color || self.widths[index + 1].input));
             let input = spatial
@@ -526,6 +530,25 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
             entry,
             self.spatial_stage(index),
             self.tiling,
+            cancel,
+            self.context,
+            self.widths[index].input,
+            |region, planes, parallelism| self.fill_rows(index - 1, region, planes, parallelism),
+        )
+    }
+
+    /// The output of the repair `entry` of segment `index` over its whole stage, its stage read by
+    /// rows ([`Self::fill_rows`]): the frame [`SpatialMode::Frames`] materializes.
+    pub(super) fn repair_frame(
+        &self,
+        index: usize,
+        entry: &super::repair_entry::RepairEntry,
+        cancel: &Cancel,
+    ) -> Result<D::SpatialFrame, Error> {
+        super::repair_entry::repair_frame(
+            &self.domain,
+            entry,
+            self.spatial_stage(index),
             cancel,
             self.context,
             self.widths[index].input,

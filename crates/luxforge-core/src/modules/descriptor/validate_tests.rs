@@ -195,7 +195,7 @@ fn a_crop_frame_binds_an_owned_geometry_effect() {
             };
             *effect = "test.foreign.effect".into();
         } else {
-            module.effects[0].stage = EffectStage::Pixel;
+            module.effects[0].stage = EffectStage::Repair;
         }
         let error = module
             .validate()
@@ -276,7 +276,7 @@ fn descriptors_reject_malformed_identities_duplicates_and_invalid_controls() {
         (
             "effect identity",
             ModuleDescriptor {
-                effects: vec![EffectDescriptor::new("Test-Effect", EffectStage::Pixel)],
+                effects: vec![EffectDescriptor::new("Test-Effect", EffectStage::Repair)],
                 ..descriptor()
             },
         ),

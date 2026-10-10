@@ -212,7 +212,7 @@ pub(super) fn descriptor() -> ModuleDescriptor {
         hint: Some("A test module".into()),
         effects: vec![EffectDescriptor::new(
             "test.module.effect",
-            EffectStage::Pixel,
+            EffectStage::Repair,
         )],
         actions: vec![action()],
         queries: Vec::new(),

@@ -232,7 +232,7 @@ impl Render<'_> {
         let window = match (first, &cut.segments[first].entry) {
             (0, _) | (_, None) => source_window,
             (_, Some(Entry::Resample(entry))) => entry.window(),
-            (_, Some(Entry::Spatial(_))) => {
+            (_, Some(Entry::Spatial(_) | Entry::Repair(_))) => {
                 let previous = &cut.segments[first - 1];
                 Region {
                     x0: previous.output_origin.0,

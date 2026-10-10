@@ -80,10 +80,7 @@ impl RepairOp {
         offset: [i32; 2],
         stage: Stage,
     ) -> Self {
-        let delta = [
-            (path::steps_to_units(offset[0]) * f64::from(stage.width)).round() as i64,
-            (path::steps_to_units(offset[1]) * f64::from(stage.height)).round() as i64,
-        ];
+        let delta = delta(offset, stage);
         Self {
             kind,
             footprint: Footprint::new(points, radius, feather, opacity, stage),
@@ -124,99 +121,142 @@ impl RepairOp {
     /// destination and its source, each grown by one pixel for Heal's boundary ring, clipped to
     /// the stage. A source farther than any halo is declared here, not by growing one rectangle.
     pub(crate) fn reads(&self) -> [Region; 2] {
-        let stage = self.stage();
-        let grow = u32::from(self.kind == RepairKind::Heal);
-        let destination = self.writes().grown(grow, stage);
-        let s = self.writes();
-        if s.is_empty() {
-            return [Region::EMPTY, Region::EMPTY];
-        }
-        let shift = |start: u32, delta: i64| i64::from(start) + delta;
-        let (x0, y0) = (shift(s.x0, self.delta[0]), shift(s.y0, self.delta[1]));
-        let (x1, y1) = (x0 + i64::from(s.width), y0 + i64::from(s.height));
-        let g = i64::from(grow);
-        let (x0, y0) = ((x0 - g).max(0), (y0 - g).max(0));
-        let x1 = (x1 + g).min(i64::from(stage.width));
-        let y1 = (y1 + g).min(i64::from(stage.height));
-        let source = if x0 >= x1 || y0 >= y1 {
-            Region::EMPTY
-        } else {
-            Region {
-                x0: x0 as u32,
-                y0: y0 as u32,
-                width: (x1 - x0) as u32,
-                height: (y1 - y0) as u32,
-            }
-        };
-        [destination, source]
+        reads(self.kind, self.writes(), self.delta, self.stage())
     }
 }
 
-/// A rectangle of planar `f32` linear RGB the repair units read and write in place: one complete R
-/// plane over `region`, then G, then B, row by row.
+/// A stored offset in grid steps as whole pixels of `stage`: `round(k / 16384 * W)` across and
+/// `round(k / 16384 * H)` down, half away from zero ([`RepairOp::new`]).
+pub(crate) fn delta(offset: [i32; 2], stage: Stage) -> [i64; 2] {
+    [
+        (path::steps_to_units(offset[0]) * f64::from(stage.width)).round() as i64,
+        (path::steps_to_units(offset[1]) * f64::from(stage.height)).round() as i64,
+    ]
+}
+
+/// [`RepairOp::reads`] from an operation's kind, the pixels it may write, its offset in pixels and
+/// its stage: what the host's region planning reads without building a footprint.
+pub(crate) fn reads(
+    kind: RepairKind,
+    writes: Region,
+    delta: [i64; 2],
+    stage: Stage,
+) -> [Region; 2] {
+    let grow = u32::from(kind == RepairKind::Heal);
+    let destination = writes.grown(grow, stage);
+    let s = writes;
+    if s.is_empty() {
+        return [Region::EMPTY, Region::EMPTY];
+    }
+    let shift = |start: u32, delta: i64| i64::from(start) + delta;
+    let (x0, y0) = (shift(s.x0, delta[0]), shift(s.y0, delta[1]));
+    let (x1, y1) = (x0 + i64::from(s.width), y0 + i64::from(s.height));
+    let g = i64::from(grow);
+    let (x0, y0) = ((x0 - g).max(0), (y0 - g).max(0));
+    let x1 = (x1 + g).min(i64::from(stage.width));
+    let y1 = (y1 + g).min(i64::from(stage.height));
+    let source = if x0 >= x1 || y0 >= y1 {
+        Region::EMPTY
+    } else {
+        Region {
+            x0: x0 as u32,
+            y0: y0 as u32,
+            width: (x1 - x0) as u32,
+            height: (y1 - y0) as u32,
+        }
+    };
+    [destination, source]
+}
+
+/// Planar `f32` linear RGB the repair units read and write in place: one rectangle of the stage,
+/// or several disjoint ones ([`Self::with_parts`]). Each part holds one complete R plane over its
+/// rectangle, then G, then B, row by row. An operation's destination and its source each lie in
+/// one part, so a pixel the operation reads is always held.
 #[derive(Debug)]
 pub(crate) struct RepairFrame<'a> {
     stage: Stage,
-    region: Region,
-    values: &'a mut [f32],
+    parts: Vec<(Region, &'a mut [f32])>,
 }
 
 impl<'a> RepairFrame<'a> {
     pub(crate) fn new(stage: Stage, region: Region, values: &'a mut [f32]) -> Result<Self, Error> {
-        let fits = region.x1() <= stage.width && region.y1() <= stage.height;
-        if !fits || values.len() as u64 != region.pixels().saturating_mul(3) {
-            return Err(Error::internal(format!(
-                "a repair frame of {} values cannot hold {:?} of {}x{}",
-                values.len(),
-                region,
-                stage.width,
-                stage.height
-            )));
+        Self::with_parts(stage, vec![(region, values)])
+    }
+
+    /// A frame of disjoint rectangles of `stage`, each with its three planes.
+    pub(crate) fn with_parts(
+        stage: Stage,
+        parts: Vec<(Region, &'a mut [f32])>,
+    ) -> Result<Self, Error> {
+        for (region, values) in &parts {
+            let fits = region.x1() <= stage.width && region.y1() <= stage.height;
+            if !fits || values.len() as u64 != region.pixels().saturating_mul(3) {
+                return Err(Error::internal(format!(
+                    "a repair frame of {} values cannot hold {:?} of {}x{}",
+                    values.len(),
+                    region,
+                    stage.width,
+                    stage.height
+                )));
+            }
         }
-        Ok(Self {
-            stage,
-            region,
-            values,
-        })
+        Ok(Self { stage, parts })
     }
 
+    /// The rectangle of its first part: the whole frame of a frame of one rectangle.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn region(&self) -> Region {
-        self.region
+        self.parts
+            .first()
+            .map_or(Region::EMPTY, |(region, _)| *region)
     }
 
+    /// The part holding `(x, y)` and the pixel's index in it.
     #[inline]
-    fn index(&self, x: u32, y: u32) -> usize {
-        ((y - self.region.y0) as usize) * self.region.width as usize + (x - self.region.x0) as usize
+    fn locate(&self, x: u32, y: u32) -> (usize, usize) {
+        let part = match self.parts.len() {
+            1 => 0,
+            _ => self
+                .parts
+                .iter()
+                .position(|(region, _)| region.contains(x, y))
+                .expect("a repair operation reads only pixels its frame holds"),
+        };
+        let region = self.parts[part].0;
+        (
+            part,
+            ((y - region.y0) as usize) * region.width as usize + (x - region.x0) as usize,
+        )
     }
 
     /// Stage pixel `(x, y)`, which the frame holds.
     #[inline]
     pub(crate) fn get(&self, x: u32, y: u32) -> [f32; 3] {
-        let len = self.region.pixels() as usize;
-        let at = self.index(x, y);
-        [
-            self.values[at],
-            self.values[len + at],
-            self.values[2 * len + at],
-        ]
+        let (part, at) = self.locate(x, y);
+        let (region, values) = &self.parts[part];
+        let len = region.pixels() as usize;
+        [values[at], values[len + at], values[2 * len + at]]
     }
 
     #[inline]
     pub(crate) fn set(&mut self, x: u32, y: u32, rgb: [f32; 3]) {
-        let len = self.region.pixels() as usize;
-        let at = self.index(x, y);
-        self.values[at] = rgb[0];
-        self.values[len + at] = rgb[1];
-        self.values[2 * len + at] = rgb[2];
+        let (part, at) = self.locate(x, y);
+        let (region, values) = &mut self.parts[part];
+        let len = region.pixels() as usize;
+        values[at] = rgb[0];
+        values[len + at] = rgb[1];
+        values[2 * len + at] = rgb[2];
     }
 
-    /// Whether every pixel `region` holds is in the frame.
+    /// Whether every pixel `region` holds is in one part of the frame.
     fn holds(&self, region: Region) -> bool {
         region.is_empty()
-            || (region.x0 >= self.region.x0
-                && region.y0 >= self.region.y0
-                && region.x1() <= self.region.x1()
-                && region.y1() <= self.region.y1())
+            || self.parts.iter().any(|(held, _)| {
+                region.x0 >= held.x0
+                    && region.y0 >= held.y0
+                    && region.x1() <= held.x1()
+                    && region.y1() <= held.y1()
+            })
     }
 }
 

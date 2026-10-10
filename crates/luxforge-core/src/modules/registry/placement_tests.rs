@@ -217,9 +217,9 @@ fn sorting_masked_layers_moves_only_them() {
 }
 
 #[test]
-fn a_pixel_layer_joins_the_stack_before_the_first_geometry_layer() {
+fn a_repair_layer_joins_the_stack_before_the_first_geometry_layer() {
     let registry = staged_registry();
-    let pixel = || test_layer(PIXEL_STAGE_EFFECT);
+    let pixel = || test_layer(REPAIR_STAGE_EFFECT);
     let turn = || {
         Layer::orientation(Orientation {
             mirror: false,
@@ -263,7 +263,7 @@ fn a_pixel_layer_joins_the_stack_before_the_first_geometry_layer() {
         ),
     ] {
         assert_eq!(
-            registry.insertion_index(&layers, EffectStage::Pixel, 0),
+            registry.insertion_index(&layers, EffectStage::Repair, 0),
             expected,
             "{case}"
         );
@@ -292,7 +292,7 @@ fn a_pixel_layer_joins_the_stack_before_the_first_geometry_layer() {
         // A client reading the same rule from its module list places every effect alike.
         let listed: Vec<ModuleDescriptor> = registry.descriptors().into_iter().cloned().collect();
         for effect in [
-            PIXEL_STAGE_EFFECT,
+            REPAIR_STAGE_EFFECT,
             ORIENTATION_EFFECT,
             CROP_EFFECT,
             crate::VIGNETTE_EFFECT,
@@ -306,14 +306,14 @@ fn a_pixel_layer_joins_the_stack_before_the_first_geometry_layer() {
         }
         // The host reads the same rule from an effect's own descriptor.
         assert_eq!(
-            registry.insertion_index_for(&layers, PIXEL_STAGE_EFFECT),
+            registry.insertion_index_for(&layers, REPAIR_STAGE_EFFECT),
             expected,
             "{case}: the pixel effect's own placement"
         );
     }
     assert_eq!(
-        registry.effect_stage(PIXEL_STAGE_EFFECT),
-        Some(EffectStage::Pixel)
+        registry.effect_stage(REPAIR_STAGE_EFFECT),
+        Some(EffectStage::Repair)
     );
     assert_eq!(
         registry.effect_stage(CROP_EFFECT),
@@ -322,15 +322,16 @@ fn a_pixel_layer_joins_the_stack_before_the_first_geometry_layer() {
     assert_eq!(registry.effect_stage("test.absent"), None);
 }
 
-/// Every stage's region, over stacks that mix them all: a pixel or colour layer joins the
-/// content region before the first spatial, geometry or finish layer, a spatial layer follows
+/// Every stage's region, over stacks that mix them all: a repair layer joins the content region
+/// before the first restoration or colour layer, a colour layer before the first spatial, geometry
+/// or finish layer, a spatial layer follows
 /// the pointwise work and precedes the tail, a geometry layer precedes the first finish layer
 /// and a finish layer goes last, with a leading source layer always keeping index zero.
 #[test]
 fn every_stage_joins_the_region_the_placement_table_names() {
     let registry = staged_registry();
     let source = || test_layer(RAW_EFFECT);
-    let pixel = || test_layer(PIXEL_STAGE_EFFECT);
+    let pixel = || test_layer(REPAIR_STAGE_EFFECT);
     let basic = || test_layer(BASIC_EFFECT);
     let mixer = || test_layer(MIXER_EFFECT);
     let spatial = || test_layer(SPATIAL_EFFECT);
@@ -355,7 +356,7 @@ fn every_stage_joins_the_region_the_placement_table_names() {
                 turn(),
                 finish(),
             ],
-            [4, 3, 4, 5, 6, 7],
+            [2, 3, 4, 5, 6, 7],
         ),
         ("a source layer alone", vec![source()], [1, 1, 1, 1, 1, 1]),
         (
@@ -371,24 +372,24 @@ fn every_stage_joins_the_region_the_placement_table_names() {
         (
             "a spatial layer before the tail",
             vec![basic(), spatial(), turn()],
-            [1, 1, 1, 2, 3, 3],
+            [0, 1, 1, 2, 3, 3],
         ),
         // The colour region is read in order: an order-0 layer goes before an order-10 one
         // whichever was committed first, and neither existing layer moves.
         (
             "one colour layer of order 10",
             vec![mixer()],
-            [1, 0, 1, 1, 1, 1],
+            [0, 0, 1, 1, 1, 1],
         ),
         (
             "one colour layer of order 0",
             vec![basic()],
-            [1, 1, 1, 1, 1, 1],
+            [0, 1, 1, 1, 1, 1],
         ),
         (
             "both colour orders before the tail",
             vec![basic(), mixer(), turn()],
-            [2, 1, 2, 2, 3, 3],
+            [0, 1, 2, 2, 3, 3],
         ),
         (
             // A stored stack the host did not build keeps every layer where it is; the region
@@ -399,7 +400,7 @@ fn every_stage_joins_the_region_the_placement_table_names() {
         ),
     ] {
         let placement = [
-            registry.insertion_index(&layers, EffectStage::Pixel, 0),
+            registry.insertion_index(&layers, EffectStage::Repair, 0),
             registry.insertion_index(&layers, EffectStage::Color, 0),
             registry.insertion_index(&layers, EffectStage::Color, 10),
             registry.insertion_index(&layers, EffectStage::Spatial, 0),
@@ -415,7 +416,7 @@ fn every_stage_joins_the_region_the_placement_table_names() {
         // The same answers through the effects' own descriptors.
         assert_eq!(
             [
-                registry.insertion_index_for(&layers, PIXEL_STAGE_EFFECT),
+                registry.insertion_index_for(&layers, REPAIR_STAGE_EFFECT),
                 registry.insertion_index_for(&layers, BASIC_EFFECT),
                 registry.insertion_index_for(&layers, MIXER_EFFECT),
                 registry.insertion_index_for(&layers, SPATIAL_EFFECT),

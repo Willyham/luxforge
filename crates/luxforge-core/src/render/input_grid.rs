@@ -115,7 +115,8 @@ impl MaskInputGrid for GridInput {
     }
 }
 
-/// The leading restoration run is the only spatial prefix a value-based overlay may materialize.
+/// The leading repair and restoration run is the only spatial prefix a value-based overlay may
+/// materialize.
 /// A later spatial or geometry boundary retains the existing explicit refusal.
 pub(crate) fn grid_input(
     registry: &ModuleRegistry,
@@ -135,19 +136,22 @@ pub(crate) fn grid_input(
     let mode = super::MaskInputMode::for_layer(registry, recipe, layer);
     cancel.check()?;
     let prefix = crate::editor::prefix(&recipe.layers, layer)?;
+    // The materialized leading run is `source?`, `repair?`, `restoration*`: a repair layer makes
+    // the prefix spatial even without a restoration layer, and the split falls after the last
+    // repair or restoration layer (`docs/design/corrections.md`, "Reference mask-input grid").
     let mut split = 0;
-    let mut restoration = false;
+    let mut spatial = false;
     for (index, held) in prefix.iter().enumerate() {
         match registry.effect_stage(&held.effect_id) {
-            Some(EffectStage::Source | EffectStage::Pixel) if !restoration => {}
-            Some(EffectStage::Restoration) => {
-                restoration = true;
+            Some(EffectStage::Source) if !spatial => {}
+            Some(EffectStage::Repair | EffectStage::Restoration) => {
+                spatial = true;
                 split = index + 1;
             }
             _ => break,
         }
     }
-    if !restoration {
+    if !spatial {
         return Ok(None);
     }
     let count = u64::from(cells.0) * u64::from(cells.1);
@@ -314,9 +318,9 @@ fn build<D: PixelDomain, P: Copy>(
     let segments = compiled.segments.len();
     let last = segments - 1;
     let segment = &compiled.segments[last];
-    if !matches!(&segment.entry, Some(Entry::Spatial(_))) {
+    if !segment.entry.as_ref().is_some_and(Entry::materializes) {
         return Err(Error::internal(
-            "an input grid prefix must end at a restoration boundary",
+            "an input grid prefix must end at a repair or restoration boundary",
         ));
     }
     if segment.has_color {

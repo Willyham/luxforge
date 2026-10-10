@@ -2,9 +2,9 @@
 //! and the compilation of its persisted payloads into host processing primitives. Modules never
 //! write the catalog, never keep an undo stack and never render.
 pub(crate) mod basic;
-mod candidate_proof;
 #[cfg(test)]
 pub(crate) mod brush_consumer;
+mod candidate_proof;
 mod capabilities_proof;
 mod capability;
 mod controls;
@@ -23,6 +23,7 @@ mod presets;
 mod processing;
 mod raw;
 mod registry;
+mod repair;
 mod spatial;
 mod vignette;
 
@@ -148,12 +149,18 @@ pub(crate) use registry::linked_modules;
 pub(crate) use registry::stack_compiles;
 #[cfg(test)]
 pub(crate) use registry::tests::{
-    HELD_ACTION, HELD_EFFECT, HeldModule, PATCH_ACTION, PATCH_MODULE, PIXEL_STAGE_EFFECT,
-    PatchModule, STAGE_ACTION, STAGE_EFFECT, StageModule, TestModule,
+    HELD_ACTION, HELD_EFFECT, HeldModule, PATCH_ACTION, PATCH_MODULE, PatchModule,
+    REPAIR_STAGE_EFFECT, STAGE_ACTION, STAGE_EFFECT, StageModule, TestModule,
 };
 pub use registry::{ActionRef, QueryRef};
 pub use registry::{ModuleRegistry, Provider, RegistryOptions, insertion_index_among};
 pub(crate) use registry::{Superseded, settings_action_in, superseded_in, superseded_refusal_in};
+pub use repair::{MAX_REPAIR_OPERATIONS, RepairTable};
+#[allow(
+    unused_imports,
+    reason = "the Corrections module (TASK-005) compiles into these"
+)]
+pub(crate) use repair::{REPAIR_OFFSET_MAX, REPAIR_RADIUS_MAX, RepairKind, RepairOperation};
 pub(crate) use spatial::{
     ESTIMATE_REDUCTION, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes,
     PlanesMut, Reduction, SPATIAL_BUDGET_BYTES, SpatialUnit,
@@ -698,6 +705,22 @@ pub trait ToolModule: Send + Sync {
     ) -> Result<bool, Error> {
         let _ = (effect_id, format, payload);
         Ok(false)
+    }
+    /// [`ToolModule::compile`] for a payload whose reserved [`crate::path::STROKES_FIELD`] names
+    /// strokes in the store: the host hands it the recipe's resolved stroke table, every reference
+    /// of the layer already checked against it as its declared type, so a module that draws its
+    /// strokes — Corrections' repair layer — compiles their positions without reading the store.
+    /// The default ignores the table and compiles the payload alone.
+    fn compile_with_strokes(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &Value,
+        at: crate::CompileStage,
+        strokes: &crate::path::StrokeTable,
+    ) -> Result<Processing, Error> {
+        let _ = strokes;
+        self.compile(effect_id, format, payload, at)
     }
     /// Turn a persisted payload into a host processing primitive at its input stage.
     fn compile(

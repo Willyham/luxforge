@@ -111,13 +111,37 @@ fn an_automatic_source_is_searched_off_the_owner_and_committed_against_its_revis
         "{committed}"
     );
     assert_eq!(committed["correction"]["source-origin"], "auto");
+    // A search over an earlier correction reads the repair layer's output: the operation it
+    // samples is drawn first.
+    let before = revision(&owner, client, &asset);
+    let stacked = ok(
+        &owner,
+        client,
+        "edit.add-correction",
+        json!({"asset_id": asset, "mutation": mutation_json(before, "stacked"),
+               "points": [[0.21, 0.31]], "radius": 0.01}),
+    );
+    assert_eq!(
+        stacked["correction"]["operation"], "correction-3",
+        "{stacked}"
+    );
+    let by_operation = ok(
+        &owner,
+        client,
+        "query.correction-sources",
+        json!({"asset_id": asset, "operation": "correction-3", "count": 1}),
+    );
+    assert_eq!(
+        by_operation["candidates"][0]["source-x"],
+        stacked["correction"]["source-x"]
+    );
     let listed = ok(
         &owner,
         client,
         "query.corrections",
         json!({"asset_id": asset}),
     );
-    assert_eq!(listed["operations"].as_array().unwrap().len(), 1);
+    assert_eq!(listed["operations"].as_array().unwrap().len(), 2);
     let labels: Vec<Value> =
         ok(&owner, client, "history.list", json!({"asset_id": asset}))["entries"]
             .as_array()
