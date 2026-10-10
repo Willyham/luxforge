@@ -3,7 +3,11 @@
 //! the selected row expanded in place, and the footer. Everything is rendered straight from
 //! [`CorrectionsModel`]; every control publishes one [`CorrectionMessage`] and decides nothing.
 use crate::{
-    app::message::{Message, corrections::CorrectionMessage, view::ViewMessage},
+    app::message::{
+        Message,
+        corrections::{CorrectionMessage, TypingEdit},
+        view::ViewMessage,
+    },
     state::corrections::{
         BandSlider, CorrectionNotice, CorrectionRow, CorrectionsModel, ExpandedRow,
     },
@@ -16,7 +20,8 @@ use luxforge_ui::{
     ButtonSize, ButtonTone, CorrectionRowMessages, CorrectionRowModel, DropEdge, Element,
     GroupRuleModel, Icon, LabelledButtonModel, MenuEntry, MenuItem, SegmentedModel, SliderModel,
     Token, Tone, ValueEdit, band_header_with_reset, caption, correction_row, drop_feedback,
-    group_rule, inline_notice, labelled_button, menu_list, popover, segmented, slider, theme,
+    group_rule, inline_notice, labelled_button, menu_list, popover, segmented, segmented_fill,
+    slider, theme,
 };
 
 fn message(message: CorrectionMessage) -> Message {
@@ -38,7 +43,7 @@ pub(crate) fn corrections_band(model: &CorrectionsModel) -> Element<'_, Message>
         model.count > 0,
         Some(model.hint.clone()),
         true,
-        Message::View(ViewMessage::SetMode(luxforge_core::POINTER_MODE.into())),
+        Message::View(ViewMessage::SetMode(model.leave_mode.clone())),
         "Reset corrections",
         model.can_reset.then(|| message(CorrectionMessage::Reset)),
     );
@@ -133,7 +138,7 @@ fn new_group(model: &CorrectionsModel) -> Element<'_, Message> {
         None,
     ));
     let options: Vec<String> = model.kinds.iter().map(|kind| kind.option.clone()).collect();
-    group = group.push(segmented(
+    group = group.push(segmented_fill(
         &SegmentedModel {
             options: model.kinds.iter().map(|kind| kind.title.clone()).collect(),
             selected: model.new_kind,
@@ -201,9 +206,10 @@ fn band_slider<'a>(
     on_release: Message,
 ) -> Element<'a, Message> {
     let name = field.name.clone();
+    let typing = |edit: TypingEdit| message(CorrectionMessage::Typing(edit));
     slider(
         &SliderModel {
-            id: None,
+            id: Some(field.target.field_id()),
             label: field.label.clone(),
             min: 0.0,
             max: 1.0,
@@ -218,15 +224,21 @@ fn band_slider<'a>(
             over_range: None,
             unit: None,
             display: field.text.clone(),
-            edit: ValueEdit::Display,
+            edit: match &field.typing {
+                Some(text) => ValueEdit::Editing {
+                    text: text.clone(),
+                    invalid: field.invalid.clone(),
+                },
+                None => ValueEdit::Display,
+            },
             dragging: false,
             enabled,
         },
         move |fraction| on_change(name.clone(), fraction),
         on_release.clone(),
-        message(CorrectionMessage::Nothing),
-        |_| message(CorrectionMessage::Nothing),
-        message(CorrectionMessage::Nothing),
+        typing(TypingEdit::Begin(field.target.clone())),
+        |text| message(CorrectionMessage::Typing(TypingEdit::Text(text))),
+        typing(TypingEdit::Submit),
         message(CorrectionMessage::Nothing),
     )
 }

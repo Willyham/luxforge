@@ -1361,6 +1361,7 @@ impl Editor {
                 self.section_target(),
             ),
             mask_typing: self.mask_panel.typing.is_some(),
+            correction_typing: self.corrections.typing.is_some(),
             mask_menu_open: self.mask_menu_open(),
             kind_menu: self.kind_menu_open().map(|menu| {
                 let letters = self
