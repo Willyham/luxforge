@@ -94,6 +94,8 @@ mod gpu_window_tests;
 // The shared lowering from core semantic plans to executable display and tile-worker plans.
 pub(crate) mod copy_settings;
 pub(crate) mod corrections;
+#[cfg(test)]
+mod corrections_tests;
 mod decoded_handles;
 pub(crate) mod gpu_plan;
 pub(crate) mod gpu_settle;

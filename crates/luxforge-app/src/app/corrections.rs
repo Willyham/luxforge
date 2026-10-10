@@ -272,6 +272,8 @@ pub(crate) struct Corrections {
     /// The last direct request the workspace sent, as `(method, params)`: what an API client sends
     /// for the same edit.
     pub(crate) last_request: Option<(String, Value)>,
+    /// The mode was active after the last message, so entering it is noticed once.
+    active: bool,
 }
 
 impl Corrections {
@@ -1578,7 +1580,13 @@ impl Editor {
 /// After every message: in the mode, keep the pins' map and the list read for the entry on screen;
 /// out of it, put down whatever the mode held.
 pub(super) fn after_message(editor: &mut Editor, before: &Before) -> Task<Message> {
-    if !editor.corrections_active() {
+    let active = editor.corrections_active();
+    let entered = active && !editor.correction_reads.active;
+    editor.correction_reads.active = active;
+    if entered && let Some(line) = editor.correction_status() {
+        editor.status.text = line;
+    }
+    if !active {
         editor.correction_reads.held = None;
         editor.corrections.hovered = None;
         editor.corrections.drag = None;
