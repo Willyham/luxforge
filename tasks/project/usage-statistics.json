@@ -230,7 +230,7 @@
     {
       "id": "TASK-004",
       "description": "Connect consented event windows to one bounded background sender using the existing transport.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002"
@@ -553,7 +553,7 @@
     {
       "id": "TASK-008",
       "description": "Deliver the integrated working client with local receiver evidence and current user/developer documentation.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-004",
         "TASK-005",
