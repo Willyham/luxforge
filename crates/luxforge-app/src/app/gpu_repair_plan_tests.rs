@@ -317,3 +317,143 @@ fn gpu_repair_plan_meets_the_spatial_limits() {
     eprintln!("{test}: worst of {}: {}", all.len(), figures(&worst(&all)));
     assert!(missed.is_empty(), "cases missing the spatial limits: {missed:?}");
 }
+
+/// A Corrections gesture's ticks evaluated incrementally, as one slot draws them
+/// (`GpuPlan::changes_since`): a Heal stroke painted a segment a tick over a Clone and a Heal
+/// already held, then the Clone's source dragged, then its opacity, with Detail after the repair.
+/// Each tick's change is the repaired destinations it touches, never anywhere, and every tick's
+/// frame is the frame a whole evaluation of the same plan draws, bit for bit, with the poison on
+/// too: Detail runs only over the change the repair hands on.
+#[test]
+fn gpu_repair_ticks_draw_what_whole_evaluations_draw() {
+    let test = "gpu_repair_ticks_draw_what_whole_evaluations_draw";
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
+        return;
+    };
+    let registry = registry();
+    let size = (640u32, 480u32);
+    let pixels = photograph(size.0, size.1, 5);
+    let held_boundary = boundary(size.0, size.1, 1, &pixels).expect("a boundary");
+    let (w, h) = (f64::from(size.0), f64::from(size.1));
+    let stroke: Vec<[f64; 2]> = (0..8)
+        .map(|k| [0.2 * w + 12.0 * f64::from(k), 0.7 * h + 3.0 * f64::from(k % 3)])
+        .collect();
+    let stack = |painted: usize, source: f64, opacity: u8| {
+        let mut ops = vec![
+            op(1, false, size, &[[0.6 * w, 0.3 * h]], 10.0, [source, 30.0], 40, opacity),
+            op(2, true, size, &[[0.75 * w, 0.6 * h]], 12.0, [-50.0, 0.0], 50, 100),
+        ];
+        if painted > 0 {
+            ops.push(op(3, true, size, &stroke[..painted], 6.0, [0.0, -60.0], 50, 100));
+        }
+        Recipe {
+            layers: vec![
+                repair(ops),
+                Layer::new(DETAIL_EFFECT, json!({"sharpening": 50.0, "luminance": 30.0})),
+            ],
+            ..Recipe::default()
+        }
+    };
+    let mut order: Vec<(usize, f64, u8)> = (1..=stroke.len()).map(|k| (k, -40.0, 100)).collect();
+    order.extend([(8, -36.0, 100), (8, -30.0, 100), (8, -30.0, 70)]);
+    let plans: Vec<luxforge_core::GpuPlan> = order
+        .iter()
+        .map(|&(painted, source, opacity)| {
+            plan_of(&registry, &stack(painted, source, opacity), size, false)
+        })
+        .collect();
+    let mut shares = Vec::new();
+    let ticks: Vec<_> = plans
+        .iter()
+        .enumerate()
+        .map(|(number, plan)| {
+            let inside = (number > 0).then(|| match plan.changes_since(&plans[number - 1]) {
+                luxforge_core::GpuChange::Inside(rect) => {
+                    shares.push(rect.pixels() as f64 / f64::from(size.0 * size.1));
+                    [rect.x0, rect.y0, rect.x1(), rect.y1()]
+                }
+                luxforge_core::GpuChange::Nothing => [0; 4],
+                luxforge_core::GpuChange::Anywhere => panic!("tick {number}: a change anywhere"),
+            });
+            let converted = surface_plan(plan, held_boundary.clone()).expect("a runnable plan");
+            (converted, inside)
+        })
+        .collect();
+    let whole: Vec<_> = ticks
+        .iter()
+        .map(|(plan, _)| qualifier.evaluate(plan).expect("a readback"))
+        .collect();
+    super::gpu_qualification::held_to_whole(&qualifier, &ticks, &whole, &|number| {
+        format!("tick {number} {:?} over {:?}", order[number], ticks[number].1)
+    });
+    let largest = shares.iter().copied().fold(0.0, f64::max);
+    eprintln!(
+        "{test}: {} ticks, each changing at most {:.1}% of the stage",
+        shares.len(),
+        100.0 * largest
+    );
+    assert!(largest < 0.25, "a tick changes about its corrections' own area");
+}
+
+/// A hundred corrections as an agent filling a photograph places them, over a `size` stage: spots
+/// and short strokes over the frame, a third of them Clones, each source a few radii away.
+pub(crate) fn hundred(size: (u32, u32), seed: u64) -> Vec<Value> {
+    let mut stream = Stream(seed);
+    let (w, h) = (f64::from(size.0), f64::from(size.1));
+    (1..=100u32)
+        .map(|id| {
+            let mut unit = || stream.unit();
+            let (x, y) = (0.05 + 0.9 * unit(), 0.05 + 0.9 * unit());
+            let radius = h * (0.006 + 0.01 * unit());
+            let angle = std::f64::consts::TAU * unit();
+            let reach = radius * (3.0 + 2.0 * unit());
+            let points = if id % 4 == 0 {
+                vec![[x * w, y * h], [x * w + 3.0 * radius, y * h + radius]]
+            } else {
+                vec![[x * w, y * h]]
+            };
+            op(
+                id,
+                id % 3 != 0,
+                size,
+                &points,
+                radius,
+                [reach * angle.cos(), reach * angle.sin()],
+                50,
+                100,
+            )
+        })
+        .collect()
+}
+
+/// The limit: a hundred corrections drawn by the GPU in one bounded step, on both paths, within
+/// the spatial class of the reference's frame.
+#[test]
+fn gpu_repair_a_hundred_corrections_meet_the_spatial_limits() {
+    let test = "gpu_repair_a_hundred_corrections_meet_the_spatial_limits";
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
+        return;
+    };
+    let registry = registry();
+    let size = (1536u32, 1024u32);
+    let pixels = photograph(size.0, size.1, 9);
+    let stack = Recipe {
+        layers: vec![repair(hundred(size, 3))],
+        ..Recipe::default()
+    };
+    let plan = plan_of(&registry, &stack, size, false);
+    let passes = plan.spatial[0].passes.len();
+    let mut missed = Vec::new();
+    for (path, measured) in [
+        ("byte", byte_case(&qualifier, &registry, &stack, size, &pixels)),
+        ("linear", linear_case(&qualifier, &registry, &stack, size, &pixels)),
+    ] {
+        let passed = preview_error::verdict(&measured, Class::Spatial).passed();
+        eprintln!("{test}: {path}: {passes} passes: {}", figures(&measured));
+        if !passed {
+            missed.push(path);
+        }
+    }
+    assert!(passes <= luxforge_core::REPAIR_PASSES_MAX, "{passes} passes");
+    assert!(missed.is_empty(), "{missed:?}");
+}

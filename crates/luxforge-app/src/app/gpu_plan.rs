@@ -646,6 +646,7 @@ pub(crate) fn spatial_step(
         clamps: spatial.clamps,
         mask,
         halos: spatial.halos.clone(),
+        contained: spatial.repair.is_some(),
     })))
 }
 

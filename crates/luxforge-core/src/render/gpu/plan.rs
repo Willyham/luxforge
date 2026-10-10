@@ -719,6 +719,29 @@ pub fn anchored(window: Region, anchor: GpuAnchor) -> Region {
     }
 }
 
+/// [`anchored`] for a window of the content stage `compiled` reads from the source, grown once by
+/// its repair boundary's reads when it opens with one: anchoring moves the window's origin up and
+/// left by the later links' leads, and a running sum there reads the repair's output over that
+/// lead, outside what the walk asked the repair for. The anchored window's reads
+/// ([`crate::render::repair_entry::RepairEntry::window_reads`]) join it, so the repair's output is
+/// the whole frame's over the anchored window, every texel a later link reads; the result is
+/// anchored again. One step, never a fixed point: a pixel of the grown margin that no later link
+/// reads may hold a value an operation computed from clamped reads.
+pub(crate) fn anchored_over(compiled: &Compiled, window: Region, anchor: GpuAnchor) -> Region {
+    let repair = compiled
+        .segments
+        .get(1)
+        .and_then(|segment| segment.entry.as_ref())
+        .and_then(Entry::repair_entry);
+    let window = anchored(window, anchor);
+    match repair {
+        Some(repair) if anchor != GpuAnchor::NONE => {
+            anchored(repair.closure_once(window), anchor)
+        }
+        _ => window,
+    }
+}
+
 /// The GPU plan of `recipe` for `request`, or the reason the gesture takes the CPU path.
 ///
 /// Compiles the stack once, exactly as the CPU frame it previews is compiled, and walks the

@@ -483,6 +483,82 @@ mod tests {
         }
     }
 
+    /// A repair layer makes the leading run spatial on its own: the grid of a layer after it is the
+    /// repaired frame, read at each cell, with the pointwise suffix per cell, on both domains.
+    #[test]
+    fn a_repair_prefix_input_grid_equals_the_exact_prefix() {
+        use crate::render::repair_tests::{Op, recipe as stack, repair_layer, repair_registry};
+        let registry = repair_registry();
+        let jpeg = source();
+        let stage = crate::Stage {
+            width: jpeg.width,
+            height: jpeg.height,
+        };
+        let (w, h) = (f64::from(stage.width), f64::from(stage.height));
+        let ops = vec![
+            Op::new(1, crate::modules::RepairKind::Heal, stage, &[[0.3 * w, 0.4 * h]], 6.0, [14.0, 3.0]),
+            Op::new(2, crate::modules::RepairKind::Clone, stage, &[[0.7 * w, 0.6 * h]], 5.0, [-20.0, -9.0]),
+        ];
+        let recipe = stack(vec![
+            repair_layer(&ops),
+            Layer::new(crate::BASIC_EFFECT, json!({"exposure": 0.7})),
+        ]);
+        let context = RenderContext::new();
+        let mut planes = Vec::new();
+        for channel in 0..3 {
+            planes.extend(
+                (0..jpeg.width * jpeg.height)
+                    .map(|i| f32::from(jpeg.rgba[i as usize * 4 + channel]) / 255.0 - 0.05),
+            );
+        }
+        let raw = LinearImage::with_fingerprint(jpeg.width, jpeg.height, planes, "repair-grid-raw")
+            .unwrap();
+        for source in [
+            RenderSource::Byte(&jpeg),
+            RenderSource::Linear {
+                image: &raw,
+                settings: LinearSettings::default(),
+            },
+        ] {
+            let reference = exact(&registry, source, &recipe, &context);
+            let cells = (24, 16);
+            let transform = identity(jpeg.width, jpeg.height);
+            let region = Region {
+                x0: 0,
+                y0: 0,
+                width: jpeg.width,
+                height: jpeg.height,
+            };
+            let mut cache = InputGridCache::default();
+            let grid = grid_input(
+                &registry,
+                source,
+                &recipe,
+                GridRequest {
+                    layer: 2,
+                    transform: &transform,
+                    region,
+                    cells,
+                },
+                &Cancel::never(),
+                &context,
+                &mut cache,
+            )
+            .unwrap()
+            .expect("a repair prefix is materialized");
+            for cell in 0..cells.0 as usize * cells.1 as usize {
+                let (x, y) = coordinate(&transform, region, cells, cell)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(
+                    grid.linear_cell(cell, x, y).unwrap(),
+                    reference.linear(x, y).unwrap(),
+                    "cell {cell}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn detail_input_grid_tracks_warped_content_cells_and_lens_only_cache_changes() {
         let registry = ModuleRegistry::builtin();

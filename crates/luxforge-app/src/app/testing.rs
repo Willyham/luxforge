@@ -390,6 +390,7 @@ pub(crate) fn raw_refresh(asset: &AssetId, current: &HistoryEntry) -> Refresh {
                 neutral: report.neutral,
                 input_stage: None,
                 input_orientation: None,
+                stale: Vec::new(),
             }
         })
         .collect();

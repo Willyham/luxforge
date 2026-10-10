@@ -716,6 +716,7 @@ fn lf_test_show(rgb: vec3<f32>, at: vec2<i32>, words: u32, block: u32, planes: u
         clamps: false,
         mask: None,
         halos: Vec::new(),
+        contained: false,
     };
     let plan = GpuPlan {
         boundary: GpuBoundary::from_linear(

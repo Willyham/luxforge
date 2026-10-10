@@ -680,6 +680,7 @@ fn fields_are_seeded_from_the_displayed_entrys_values() {
                 neutral: false,
                 input_stage: None,
                 input_orientation: None,
+                stale: Vec::new(),
             })
             .collect();
         let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
@@ -1056,6 +1057,7 @@ fn historical_values_fill_the_disabled_fields_and_return_to_current_restores_the
             neutral: false,
             input_stage: None,
             input_orientation: None,
+            stale: Vec::new(),
         }];
         Box::new(refresh)
     };

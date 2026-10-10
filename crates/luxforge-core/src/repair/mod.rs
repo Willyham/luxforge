@@ -49,15 +49,16 @@ use crate::{
 use footprint::Footprint;
 
 /// The repair program (`repair.wgsl`): one group of operations' Clone and Heal under the spatial
-/// convention, with each operation's tiles in a per-level atlas ([`gpu`]). Not enabled: no plan
-/// names it until the render integration does, and its kernels are held to these units by the
-/// desktop's `gpu_repair` readback tests.
+/// convention, with each operation's tiles in a per-level atlas ([`gpu`]), the groups of a layer
+/// chained by the render integration (`render::gpu::repair`). Its kernels are held to these units
+/// by the desktop's `gpu_repair` readback tests, and its plans to the reference by
+/// `gpu_repair_plan` and the corpus's Clone and Heal families.
 pub(crate) static REPAIR_PROGRAM: GpuProgram = GpuProgram {
     entry: "lf_repair",
     source: include_str!("repair.wgsl"),
     kind: GpuProgramKind::Spatial,
     words: 0,
-    enabled: false,
+    enabled: true,
 };
 
 /// The kernels and the apply of [`REPAIR_PROGRAM`].
