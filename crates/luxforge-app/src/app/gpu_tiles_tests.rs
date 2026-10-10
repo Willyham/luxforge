@@ -123,6 +123,30 @@ pub(super) fn recipe(layers: Vec<Layer>, masked: Vec<(usize, luxforge_core::Comp
     recipe
 }
 
+/// The built-in modules and the test repair-stage module, whose payload is the repair table: the
+/// registry every family is planned and read through.
+pub(super) fn registry() -> ModuleRegistry {
+    let mut registry = ModuleRegistry::builtin();
+    registry
+        .register(luxforge_core::qualification::repair::RepairTestModule::shared())
+        .expect("the test repair module");
+    registry
+}
+
+/// Clone and Heal operations over the [`WIDTH`] × [`HEIGHT`] stage: independent spots, a Heal
+/// from far across the frame, a Clone over a Heal's output and a source past the edge.
+pub(super) fn corrections() -> Layer {
+    use super::gpu_repair_tests::{op, repair};
+    let size = (WIDTH, HEIGHT);
+    repair(vec![
+        op(1, true, size, &[[90.0, 60.0]], 9.0, [40.0, 12.0], 50, 100),
+        op(2, false, size, &[[250.0, 170.0]], 7.0, [-60.0, -30.0], 30, 100),
+        op(3, true, size, &[[60.0, 190.0], [120.0, 200.0]], 6.0, [230.0, -150.0], 40, 90),
+        op(4, false, size, &[[95.0, 62.0]], 6.0, [0.0, 50.0], 0, 80),
+        op(5, true, size, &[[355.0, 120.0]], 8.0, [20.0, 0.0], 50, 100),
+    ])
+}
+
 /// The families a tile is drawn through: every kind of step a plan holds, a link before the last
 /// among them.
 pub(super) fn families() -> Vec<(&'static str, Recipe)> {
@@ -158,6 +182,20 @@ pub(super) fn families() -> Vec<(&'static str, Recipe)> {
     let presence = |values| Layer::new(PRESENCE_EFFECT, values);
     vec![
         ("a colour stack", recipe(colour, Vec::new())),
+        (
+            "Clone and Heal",
+            recipe(vec![corrections(), basic.clone()], Vec::new()),
+        ),
+        (
+            "Clone and Heal before Detail",
+            recipe(
+                vec![
+                    corrections(),
+                    Layer::new(DETAIL_EFFECT, json!({"sharpening": 50.0})),
+                ],
+                Vec::new(),
+            ),
+        ),
         (
             "a masked stack",
             recipe(
@@ -261,7 +299,7 @@ struct Case {
 /// each tile's rectangle, anchored to the plan, every global estimate read from the store the
 /// exact render filled. `O(cases × tiles)` CPU work: each tile's window is the CPU's own.
 fn cases() -> Vec<Case> {
-    let registry = ModuleRegistry::builtin();
+    let registry = registry();
     let stage = Stage {
         width: WIDTH,
         height: HEIGHT,
@@ -546,7 +584,7 @@ fn a_60_megapixel_raw_through_detail_and_presence_fits_the_budget_in_2048_pixel_
     };
     let runner = crate::adapters::tile_runner(&backend, &name)
         .unwrap_or_else(|refusal| panic!("{test}: the runner: {refusal:?}"));
-    let registry = ModuleRegistry::builtin();
+    let registry = registry();
     let stage = Stage {
         width: 9504,
         height: 6336,
