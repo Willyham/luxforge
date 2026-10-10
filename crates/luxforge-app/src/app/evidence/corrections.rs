@@ -1,20 +1,50 @@
 //! Evidence steps on the Corrections workspace: each gesture sent through the message the canvas or
 //! the band sends, and captured once its draft has ended or been refused, its request has answered,
 //! and the pins' map and the list describe the entry on screen ([`Settle::Corrections`]).
-use super::Settle;
+use super::{Evidence, Settle};
 use crate::{
     app::{
         Editor,
         message::{
             Message,
             corrections::{CanvasHit, CorrectionMessage},
+            evidence::EvidenceMessage,
         },
     },
     brush::{Handle, Modifiers},
 };
-use iced::Task;
+use iced::{Subscription, Task};
 use luxforge_evidence::{CorrectionHandle, CorrectionStep, PressModifier};
 use serde_json::json;
+use std::{collections::VecDeque, time::Duration};
+
+/// A press or handle drag sent by a timer rather than in one update, as a paced mask stroke is:
+/// the first tick presses, each later tick moves and the last releases (a press that asked to stay
+/// down excepted), so one paced step is still one gesture and one history entry, and each position
+/// is its own input with its own `draft.set`. Each tick logs `correction_position`, the input's
+/// time, which a latency measurement pairs with the drafted frame that carries it.
+pub(crate) struct PacedCorrection {
+    /// Positions still to send, in order: the press's own first. The front is the next tick's.
+    remaining: VecDeque<[f64; 2]>,
+    /// How many positions have been sent. Zero means the next one is the press.
+    sent: usize,
+    interval_ms: u64,
+    modifiers: Modifiers,
+    hit: CanvasHit,
+    /// What the gesture holds, as the log names it: `add`, or the handle's name.
+    gesture: &'static str,
+    /// Whether the last tick releases.
+    release: bool,
+}
+
+/// A paced correction step's own timer, which exists only while it has positions left to send.
+pub(super) fn subscription(evidence: &Evidence) -> Option<Subscription<Message>> {
+    let paced = evidence.paced_correction.as_ref()?;
+    Some(
+        iced::time::every(Duration::from_millis(paced.interval_ms))
+            .map(|_| Message::Evidence(EvidenceMessage::PacedCorrectionTick)),
+    )
+}
 
 fn correction(message: CorrectionMessage) -> Message {
     Message::Corrections(message)
@@ -54,6 +84,17 @@ impl Editor {
                     command: press.modifiers.contains(&PressModifier::Command),
                     shift: press.modifiers.contains(&PressModifier::Shift),
                 };
+                if let Some(interval_ms) = press.interval_ms {
+                    return self.pace_correction(PacedCorrection {
+                        remaining: std::iter::once(press.at).chain(press.to).collect(),
+                        sent: 0,
+                        interval_ms,
+                        modifiers,
+                        hit: CanvasHit::Add,
+                        gesture: "add",
+                        release: press.release,
+                    });
+                }
                 tasks.push(self.update(correction(CorrectionMessage::Press {
                     view: view(press.at),
                     content: press.at,
@@ -127,6 +168,21 @@ impl Editor {
                 let Some(from) = from else {
                     return self.fail_step("the selected correction has no such handle");
                 };
+                if let Some(interval_ms) = drag.interval_ms {
+                    return self.pace_correction(PacedCorrection {
+                        remaining: std::iter::once(from).chain(drag.to).collect(),
+                        sent: 0,
+                        interval_ms,
+                        modifiers: Modifiers::default(),
+                        hit: CanvasHit::Handle(handle),
+                        gesture: match drag.handle {
+                            CorrectionHandle::Pin => "pin",
+                            CorrectionHandle::Source => "source",
+                            CorrectionHandle::Size => "size",
+                        },
+                        release: true,
+                    });
+                }
                 tasks.push(self.update(correction(CorrectionMessage::Press {
                     view: view(from),
                     content: from,
@@ -212,6 +268,67 @@ impl Editor {
         self.note_step(json!({"corrections": self.corrections_summary()}));
         self.await_step(Settle::Corrections);
         self.settle_corrections();
+        Task::batch(tasks)
+    }
+
+    /// Hand a paced step's positions to its timer and send nothing here, exactly as a paced mask
+    /// stroke does: the last tick notes the step and waits for the workspace to settle.
+    fn pace_correction(&mut self, paced: PacedCorrection) -> Task<Message> {
+        if let Some(evidence) = &mut self.evidence {
+            evidence.paced_correction = Some(paced);
+        }
+        Task::none()
+    }
+
+    /// One tick of a paced correction step: the next pointer position, through the same
+    /// [`CorrectionMessage`]s the canvas sends. A tick with nothing left to send does nothing; the
+    /// timer that drives it exists only while positions remain.
+    pub(crate) fn correction_paced_tick(&mut self) -> Task<Message> {
+        let Some(evidence) = self.evidence.as_mut() else {
+            return Task::none();
+        };
+        let Some(paced) = evidence.paced_correction.as_mut() else {
+            return Task::none();
+        };
+        let Some(at) = paced.remaining.pop_front() else {
+            return Task::none();
+        };
+        let index = paced.sent;
+        paced.sent += 1;
+        let done = paced.remaining.is_empty();
+        let release = done && paced.release;
+        let (modifiers, hit, gesture) = (paced.modifiers, paced.hit.clone(), paced.gesture);
+        if done {
+            evidence.paced_correction = None;
+        }
+        self.event("correction_position", || {
+            json!({"index": index, "x": at[0], "y": at[1], "gesture": gesture, "release": release})
+        });
+        let pointer = if index == 0 {
+            CorrectionMessage::Press {
+                view: view(at),
+                content: at,
+                modifiers,
+                hit,
+            }
+        } else {
+            CorrectionMessage::Drag {
+                view: view(at),
+                content: at,
+            }
+        };
+        let mut tasks = vec![self.update(correction(pointer))];
+        if release {
+            tasks.push(self.update(correction(CorrectionMessage::Release {
+                view: view(at),
+                content: at,
+            })));
+        }
+        if done {
+            self.note_step(json!({"corrections": self.corrections_summary()}));
+            self.await_step(Settle::Corrections);
+            self.settle_corrections();
+        }
         Task::batch(tasks)
     }
 

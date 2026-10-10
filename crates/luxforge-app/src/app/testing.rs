@@ -457,6 +457,7 @@ pub(crate) fn scripted_evidence(steps: &str) -> Evidence {
         had_errors: false,
         paced_slider: None,
         paced_stroke: None,
+        paced_correction: None,
         second_click: None,
         tools_scroll: None,
         capability_wait: None,

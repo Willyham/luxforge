@@ -111,6 +111,9 @@ pub(crate) struct Evidence {
     /// A paced stroke step's positions still to send, one per tick of its own gated timer. `None`
     /// when no paced stroke is running, which is also when its timer does not exist.
     pub(crate) paced_stroke: Option<PacedStroke>,
+    /// A paced Corrections press or handle drag's positions still to send, one per tick of its own
+    /// gated timer.
+    pub(crate) paced_correction: Option<corrections::PacedCorrection>,
     /// The gallery page shown instead of the workspace for a scripted capture.
     /// Requested tools-panel scroll fraction, retained beside the capture for correlation.
     pub(crate) tools_scroll: Option<f64>,
@@ -222,6 +225,7 @@ impl Evidence {
             had_errors: false,
             paced_slider: None,
             paced_stroke: None,
+            paced_correction: None,
             second_click: None,
             tools_scroll: None,
             capability_wait: None,
@@ -955,6 +959,7 @@ impl Editor {
             EvidenceMessage::IdleDeadline => return self.idle_deadline(),
             EvidenceMessage::PacedSliderTick => return self.slider_paced_tick(),
             EvidenceMessage::PacedStrokeTick => return self.stroke_paced_tick(),
+            EvidenceMessage::PacedCorrectionTick => return self.correction_paced_tick(),
             EvidenceMessage::DoubleClickSecond => return self.double_click_second(),
             EvidenceMessage::Capture => {
                 if self.evidence.as_ref().is_some_and(Evidence::suspended) {
@@ -5683,6 +5688,8 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
                     .map(|_| Message::Evidence(EvidenceMessage::DoubleClickSecond)),
             );
         }
+        // A paced Corrections press or handle drag's own timer, gated the same way.
+        subscriptions.extend(corrections::subscription(evidence));
         // A loupe `arrows` step's presses after its first, gated the same way.
         subscriptions.extend(loupe::subscription(evidence));
         // A `grid_scroll` step's frame clock, gated the same way.
@@ -6265,6 +6272,7 @@ mod tests {
             had_errors: false,
             paced_slider: None,
             paced_stroke: None,
+            paced_correction: None,
             second_click: None,
             tools_scroll: None,
             capability_wait: None,
