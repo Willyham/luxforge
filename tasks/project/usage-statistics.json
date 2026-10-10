@@ -99,7 +99,7 @@
     {
       "id": "TASK-002",
       "description": "Implement the typed event/device registry, bounded event banks and strict pseudonymous wire encoder with privacy fixtures.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Produce the producer/snapshot interface consumed by TASK-004, TASK-005 and TASK-006, plus checked-in current schema and synthetic valid/invalid examples. This is executable implementation of the design contract, not another contract-review task.",
@@ -167,7 +167,7 @@
     {
       "id": "TASK-003",
       "description": "Build the standalone stateless ingestion validator for the chosen HTTPS batch contract.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Proposed output: services/usage-ingest/, a standalone Rust package with its own empty [workspace] table and Cargo.lock outside the root workspace, so desktop builds, core tests and cargo xtask check gain no server dependency. Extend the repository's pinning, notice and advisory checks to its lockfile. The HTTP framework is delegated; project code remains GPL-3.0-or-later.",
@@ -307,7 +307,7 @@
     {
       "id": "TASK-005",
       "description": "Instrument shipped operations at their authoritative boundaries, with a checked-in coverage inventory.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-002"
       ],
@@ -389,7 +389,7 @@
     {
       "id": "TASK-006",
       "description": "Add consented low-frequency process performance sampling and the approved CPU/GPU/OS/memory device context.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-002"
       ],
@@ -650,7 +650,7 @@
     {
       "id": "TASK-009",
       "description": "Prepare the pinned Vector, ClickHouse and private Grafana reference stack with bounded device/profile retention and no IP tracking.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-003"
       ],

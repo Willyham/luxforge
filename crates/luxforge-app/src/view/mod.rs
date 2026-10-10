@@ -207,7 +207,7 @@ pub(crate) fn workspace<'a>(
     // The usage statistics notice sits under the palette and the sheets, which a claimed notice
     // waits for anyway.
     if let Some(notice) = &model.usage_notice {
-        layers = layers.push(usage::notice(notice));
+        layers = layers.push(usage::notice(notice, model.develop.strip.is_some()));
     }
     if let Some(overlay) = palette::palette(&model.palette) {
         layers = layers.push(overlay);
