@@ -843,6 +843,16 @@ pub struct ActionDescriptor {
     /// command of its own ([`super::chord::HOST_CHORDS`]). A query declares none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shortcut: Option<super::chord::Chord>,
+    /// The action accepts one candidate a task job published ([job
+    /// candidates](../../../../../docs/design/module-capabilities.md#job-candidates)): the catalog
+    /// owner pins the candidate its `job_id` and `candidate` parameters name, publishes it as an
+    /// artifact on a worker and only then plans the action, which reads the published candidate
+    /// through [`crate::StageQuestions::accepting`]. Registration admits it only on a module with
+    /// an effect that declares `artifacts`, requires both parameters (`job_id` an identity of a
+    /// job, `candidate` an integer within `0..=3`) and `preset: false`; such an action is never
+    /// drafted.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub accepts_candidate: bool,
     pub parameters: Vec<ParameterDescriptor>,
 }
 
@@ -872,6 +882,7 @@ impl ActionDescriptor {
             preset: true,
             analysis: None,
             shortcut: None,
+            accepts_candidate: false,
             parameters: Vec::new(),
         }
     }

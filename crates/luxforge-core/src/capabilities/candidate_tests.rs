@@ -219,12 +219,20 @@ fn a_task_publishes_candidates_that_any_client_lists_reads_and_releases() {
         json!({"result": {"candidates": [0, 1]}, "artifacts": []})
     );
     let bytes = 400 * 300 * 8 + 64 * 48 * 3;
+    // What the candidates were generated against: the input a new top correction of the photograph
+    // has, a JPEG's content stage with no development before it and no correction yet.
+    let input = &done["candidates"][0]["input"];
+    assert_eq!(input["dimensions"], json!([480, 320]), "{input}");
+    for component in ["source", "upstream", "earlier"] {
+        assert_eq!(input[component].as_str().map(str::len), Some(64), "{component}");
+    }
     let row = |candidate: u64| {
         json!({
             "candidate": candidate, "state": "live", "width": 400, "height": 300, "bytes": bytes,
             "rect": [5, 6, 400, 300], "preview": {"width": 64, "height": 48},
             "asset_id": fixture.asset, "revision": fixture.revision, "label": PROOF_PATCH_LABEL,
             "provenance": {"module": CANDIDATE_PROOF_MODULE, "task": CANDIDATE_PROOF_TASK, "seed": 9 + 11 * candidate},
+            "input": input,
         })
     };
     assert_eq!(done["candidates"], json!([row(0), row(1)]));

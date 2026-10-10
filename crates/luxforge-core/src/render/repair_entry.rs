@@ -193,6 +193,13 @@ impl RepairEntry {
                 .operations()
                 .iter()
                 .map(|operation| {
+                    if let Some(patch) = &operation.patch {
+                        return RepairOp::patch(crate::repair::patch::BoundPatch::new(
+                            patch.source.clone(),
+                            operation.opacity,
+                            self.stage,
+                        ));
+                    }
                     RepairOp::new(
                         operation.kind,
                         &operation.normalized_points(),
@@ -248,6 +255,14 @@ impl RepairEntry {
 
 /// One operation's regions at `stage` ([`OperationRegions`]).
 pub(crate) fn regions_of(operation: &RepairOperation, stage: Stage) -> OperationRegions {
+    if let Some(patch) = &operation.patch {
+        let writes = patch.source.writes(stage);
+        return OperationRegions {
+            writes,
+            reads: repair::reads(operation.kind, writes, [0, 0], stage),
+            delta: [0, 0],
+        };
+    }
     let segments = footprint::segments(&operation.normalized_points(), stage);
     let writes = footprint::support(&segments, operation.radius_units(), stage);
     let delta = repair::delta(operation.offset, stage);

@@ -519,6 +519,14 @@ impl ModuleDescriptor {
     /// declares the operation list that identity addresses ([`EffectDescriptor::operations`]): the
     /// module resolves it against that list, so without one there is nothing it could name.
     fn check_operation_identities(&self) -> Result<(), Error> {
+        if let Some(action) = self.actions.iter().find(|action| action.accepts_candidate)
+            && !self.effects.iter().any(|effect| effect.artifacts)
+        {
+            return Err(Error::validation(format!(
+                "action {} accepts a candidate, but no effect of module {} declares artifacts",
+                action.id, self.id
+            )));
+        }
         for (kind, declared) in self
             .actions
             .iter()
@@ -1420,7 +1428,11 @@ fn check_declared<'a>(
             declared.id
         )));
     }
-    declared_parameters(declarer, kind, &declared.id, &declared.parameters)?;
+    let accepting = declared.accepts_candidate && kind == "action";
+    declared_parameters(declarer, kind, &declared.id, &declared.parameters, accepting)?;
+    if declared.accepts_candidate {
+        check_accepting(declarer, kind, declared)?;
+    }
     // A correction is one photograph's: its identity, and the geometry and sources an action on it
     // carries, mean nothing on another photograph, so no preset may capture or apply an action
     // that names one (`docs/design/corrections.md`, decided 2026-10-07).
@@ -1506,7 +1518,44 @@ pub(crate) fn check_parameter_declarations(
     id: &str,
     declared: &[ParameterDescriptor],
 ) -> Result<(), Error> {
-    declared_parameters(Declarer::Module, kind, id, declared)
+    declared_parameters(Declarer::Module, kind, id, declared, false)
+}
+
+/// The names a candidate-accepting action addresses its candidate by.
+pub(crate) const ACCEPT_JOB: &str = "job_id";
+pub(crate) const ACCEPT_CANDIDATE: &str = "candidate";
+
+/// A candidate-accepting action ([`ActionDescriptor::accepts_candidate`]): a module's action, not a
+/// preset's, requiring `job_id` (a job) and `candidate` (`0..=3`). That the module declares an
+/// artifact effect is checked with the whole descriptor.
+fn check_accepting(declarer: Declarer, kind: &str, declared: &ActionDescriptor) -> Result<(), Error> {
+    let refuse = |why: &str| {
+        Err(Error::validation(format!(
+            "{kind} {} accepts a candidate, so it {why}",
+            declared.id
+        )))
+    };
+    if declarer != Declarer::Module || kind != "action" {
+        return refuse("must be a module's action");
+    }
+    if declared.preset || declared.patch {
+        return refuse("must declare preset: false and not be a field patch");
+    }
+    let job = declared.parameter(ACCEPT_JOB).is_some_and(|parameter| {
+        parameter.required
+            && parameter.kind
+                == ParameterKind::Identity {
+                    of: IdentityKind::Job,
+                }
+    });
+    let candidate = declared.parameter(ACCEPT_CANDIDATE).is_some_and(|parameter| {
+        parameter.required
+            && matches!(parameter.kind, ParameterKind::Integer { min: 0, max: 3 })
+    });
+    if !job || !candidate {
+        return refuse("must require job_id, a job, and candidate, an integer within 0..=3");
+    }
+    Ok(())
 }
 
 fn declared_parameters(
@@ -1514,12 +1563,15 @@ fn declared_parameters(
     kind: &str,
     id: &str,
     declared: &[ParameterDescriptor],
+    accepting: bool,
 ) -> Result<(), Error> {
     let host = declarer == Declarer::Host;
     let mut parameters = HashSet::with_capacity(declared.len());
     for parameter in declared {
-        let valid =
-            valid_name(&parameter.name) || (host && valid_segments(&parameter.name, '_', false));
+        // A candidate-accepting action names its job as every host job method does.
+        let valid = valid_name(&parameter.name)
+            || (host && valid_segments(&parameter.name, '_', false))
+            || (accepting && parameter.name == ACCEPT_JOB);
         if !valid {
             return Err(Error::validation(format!(
                 "invalid parameter name {} of {kind} {id}",
@@ -1544,8 +1596,14 @@ fn declared_parameters(
         // exception is the identity of a correction in the module's own ordered list, which its
         // actions and queries name — never a task's or a setting's; that the module declares the
         // list is checked where the whole descriptor is known (`check_operation_identities`).
-        let admitted =
-            parameter.kind.module_identity().is_some() && matches!(kind, "action" | "query");
+        let admitted = (parameter.kind.module_identity().is_some()
+            && matches!(kind, "action" | "query"))
+            || (accepting
+                && parameter.name == ACCEPT_JOB
+                && parameter.kind
+                    == ParameterKind::Identity {
+                        of: IdentityKind::Job,
+                    });
         if !host && parameter.kind.host_only() && !admitted {
             return Err(Error::validation(format!(
                 "parameter {} of {kind} {id} declares kind {}, which only a host command declares",

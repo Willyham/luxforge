@@ -164,17 +164,23 @@ pub struct CandidateRead {
     pub revision: u64,
     pub label: String,
     pub provenance: Map<String, Value>,
+    /// The input identity a new top correction of the asset had when the task was queued, which
+    /// accepting the candidate as a frozen patch checks ([`crate::RepairInput`]); absent when the
+    /// stack could not say, and such a candidate cannot be accepted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<crate::RepairInput>,
 }
 
 /// What a task's candidates were generated against, which the owner records when it queues the
-/// task: the asset, its revision and its content dimensions, which bound every candidate's
-/// rectangle.
+/// task: the asset, its revision, its content dimensions, which bound every candidate's rectangle,
+/// and the input identity a new top correction would have ([`crate::RepairInput`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CandidateBasis {
     pub asset_id: AssetId,
     pub revision: u64,
     pub width: u32,
     pub height: u32,
+    pub input: Option<crate::RepairInput>,
 }
 
 /// The dimensions a candidate is reserved at: its patch's and its preview's.
@@ -382,6 +388,7 @@ impl Held {
             revision: self.basis.revision,
             label: published.label.clone(),
             provenance: published.provenance.clone(),
+            input: self.basis.input.clone(),
         })
     }
 }
@@ -817,7 +824,6 @@ impl Candidates {
     /// a `conflict` and a cancel waits until the accept settles. The pin is the accept's: it
     /// publishes the stored bytes ([`CandidatePin::publish`]) and is settled by
     /// [`CandidatePin::accepted`] once the commit holds, or by dropping it when the accept fails.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn pin(
         self: &Arc<Self>,
         job_id: &JobId,
@@ -1229,7 +1235,6 @@ fn encode(patch: &CandidatePatch<'_>) -> Result<Vec<u8>, Error> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PinKind {
     Read,
-    #[cfg_attr(not(test), allow(dead_code))]
     Accept,
 }
 
@@ -1243,11 +1248,9 @@ pub(crate) struct CandidatePin {
     kind: PinKind,
     directory: PathBuf,
     read: CandidateRead,
-    #[cfg_attr(not(test), allow(dead_code))]
     module_id: String,
     #[cfg_attr(not(test), allow(dead_code))]
     task_id: String,
-    #[cfg_attr(not(test), allow(dead_code))]
     sha256: String,
     patch_bytes: u64,
     preview_bytes: u64,
@@ -1349,7 +1352,6 @@ impl CandidatePin {
     /// references it, then settles the pin ([`Self::accepted`]); a commit that is refused leaves
     /// only an unreferenced artifact, which `artifact.collect` removes once this process no
     /// longer holds it live.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn publish(
         &self,
         writer: &ArtifactWriter,
@@ -1405,7 +1407,6 @@ impl CandidatePin {
 
     /// The commit that references the published patch holds: the candidate is `accepted`, its
     /// files go once no read holds them, and its bytes leave the budget.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn accepted(mut self) {
         self.settled = true;
         self.store.unpin(

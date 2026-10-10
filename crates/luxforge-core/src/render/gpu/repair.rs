@@ -49,6 +49,19 @@ pub(crate) fn admit(
             ),
         });
     }
+    if let Some(patch) = entry
+        .operations()
+        .iter()
+        .find(|operation| operation.kind == RepairKind::Patch)
+    {
+        return Err(GpuFallback::Repair {
+            layer,
+            why: format!(
+                "{} is a frozen patch, which the repair program does not draw",
+                patch.name()
+            ),
+        });
+    }
     if !crate::repair::REPAIR_PROGRAM.enabled && !planning.qualifying {
         return Err(GpuFallback::DisabledProgram {
             layer,
@@ -364,6 +377,7 @@ pub(crate) fn warm_plans(
         feather: 50,
         opacity: 100,
         offset: [1638, 0],
+        patch: None,
     };
     let mut tables: Vec<Vec<RepairOperation>> = Vec::new();
     if !rows.is_empty() {

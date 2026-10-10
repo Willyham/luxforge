@@ -162,18 +162,26 @@ impl EditorService {
         &self.candidates
     }
 
-    /// What a task's candidates of `asset_id` are generated against: the asset, its revision now
-    /// and its content dimensions. Copies the cached head; reads no entry.
+    /// What a task's candidates of `asset_id` are generated against: the asset, its revision now,
+    /// its content dimensions and the input identity a new top correction has now
+    /// ([`Self::correction_input`]). A stack that cannot say its input still queues the task, whose
+    /// candidates then cannot be accepted. Reads the current entry and compiles the prefix before
+    /// the repair layer; no pixel.
     pub(crate) fn candidate_basis(
         &self,
         asset_id: &crate::AssetId,
     ) -> Result<crate::artifacts::candidates::CandidateBasis, Error> {
         let head = self.head(asset_id)?;
+        let input = self.correction_input(asset_id).ok();
+        let [width, height] = input
+            .as_ref()
+            .map_or([head.asset.width, head.asset.height], |input| input.dimensions);
         Ok(crate::artifacts::candidates::CandidateBasis {
             asset_id: head.asset.id,
             revision: head.revision,
-            width: head.asset.width,
-            height: head.asset.height,
+            width,
+            height,
+            input,
         })
     }
 

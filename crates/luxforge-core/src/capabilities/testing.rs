@@ -113,6 +113,7 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
                 preset: true,
                 analysis: None,
                 shortcut: None,
+                accepts_candidate: false,
                 parameters: vec![
                     ParameterDescriptor::artifact("tint")
                         .required(true)
@@ -127,6 +128,7 @@ pub(crate) fn capability_descriptor() -> ModuleDescriptor {
                 preset: true,
                 analysis: None,
                 shortcut: None,
+                accepts_candidate: false,
                 parameters: Vec::new(),
             },
         ],

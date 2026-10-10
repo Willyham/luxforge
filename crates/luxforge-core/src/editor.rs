@@ -33,6 +33,7 @@ mod artifact_tests;
 mod catalog;
 mod catalog_rows;
 mod collapse;
+mod corrections;
 mod describe;
 mod entries;
 mod evaluate;
@@ -556,6 +557,11 @@ pub struct LayerDescription {
     /// orientation layer whose payload cannot be read.
     #[serde(default)]
     pub input_orientation: Option<Orientation>,
+    /// The repair layer's stale frozen patches, each with its identity, name and reasons
+    /// (`source`, `dimensions`, `development`, `earlier-correction`): what was generated against
+    /// an input that has since changed. They keep rendering. Omitted when none is stale.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub stale: Vec<crate::StaleCorrection>,
 }
 
 /// One entry's ordered layers with their provider and summary. Reading only: no source, no render.
@@ -652,6 +658,9 @@ pub struct EditorService {
     /// Whether the plan being made is a draft's preview ([`crate::StageQuestions::previewing`]):
     /// set only while [`EditorService::draft_recipe`] plans one.
     previewing: std::cell::Cell<bool>,
+    /// The candidate the catalog owner is committing through a candidate-accepting action, set
+    /// only for the length of that commit ([`EditorService::accept_candidate`]).
+    pub(crate) accepting: std::cell::RefCell<Option<std::sync::Arc<crate::AcceptedCandidate>>>,
     registry: Arc<ModuleRegistry>,
     /// The budgets every evaluation this service plans shares: its own
     /// samples and exports, and the preview and analysis jobs it hands to workers.
@@ -751,6 +760,7 @@ impl EditorService {
             read_original: RefCell::new(None),
             pixel_reads: RefCell::new(pixels::PixelReads::default()),
             previewing: std::cell::Cell::new(false),
+            accepting: std::cell::RefCell::new(None),
             registry,
             render: RenderContext::new(),
             catalog_id,

@@ -20,6 +20,7 @@ pub(crate) const UPDATE: &str = "update-correction";
 pub(crate) const DELETE: &str = "delete-correction";
 pub(crate) const REORDER: &str = "reorder-correction";
 pub(crate) const RESET: &str = "reset-corrections";
+pub(crate) const ACCEPT: &str = "accept-correction-patch";
 pub(crate) const LIST: &str = "corrections";
 pub(crate) const SOURCES: &str = "correction-sources";
 
@@ -170,6 +171,32 @@ impl CorrectionsModule {
                 "Reset corrections",
                 "Removes every correction; numbers already used are not reused.",
             )),
+            not_preset(ActionDescriptor {
+                accepts_candidate: true,
+                parameters: vec![
+                    ParameterDescriptor::identity("job_id", IdentityKind::Job)
+                        .required(true)
+                        .notes("the task job that published the candidate"),
+                    ParameterDescriptor::integer("candidate", 0, 3)
+                        .required(true)
+                        .notes("the candidate's number in its job, as job.read lists it"),
+                    opacity()
+                        .default(100)
+                        .notes("how strongly the patch blends"),
+                ],
+                ..ActionDescriptor::new(
+                    ACCEPT,
+                    "Accept patch",
+                    "Adds a task's candidate patch on top of the photograph's corrections as a \
+                     frozen patch and answers it as correction {operation, name, index}. The \
+                     candidate must be live, belong to this photograph and have been generated \
+                     against what a new top correction reads now (otherwise conflict, with \
+                     data.reasons); its bytes are published as a repair-patch artifact off the \
+                     catalog owner before the one entry is committed. A frozen patch keeps \
+                     rendering when what it was generated against changes, and is then reported \
+                     stale.",
+                )
+            }),
         ];
         let queries = vec![
             ActionDescriptor::new(
@@ -177,7 +204,10 @@ impl CorrectionsModule {
                 "Corrections",
                 "The photograph's corrections as stored, in application order: {limit, next, \
                  operations: [{operation, name, kind, index, points, radius, feather, opacity, \
-                 source-x, source-y, source-origin}]}. Reads no pixel.",
+                 source-x, source-y, source-origin}]}; a frozen patch is {operation, name, kind: \
+                 patch, index, label, artifact, rect, opacity, provenance, stale?}, stale: \
+                 {reasons} (source, dimensions, development, earlier-correction) when what it was \
+                 generated against changed. Reads no pixel.",
             ),
             ActionDescriptor {
                 parameters: vec![
@@ -208,6 +238,7 @@ impl CorrectionsModule {
                 hint: Some("Clone and Heal".into()),
                 effects: vec![EffectDescriptor {
                     single: true,
+                    artifacts: true,
                     operations: Some(EffectOperations {
                         identity: IdentityKind::Correction,
                         max: MAX_CORRECTIONS as u32,
@@ -378,10 +409,10 @@ impl ToolModule for CorrectionsModule {
         effect_id: &str,
         format: u32,
         payload: &Value,
-        _at: crate::CompileStage,
+        at: crate::CompileStage,
         strokes: &crate::path::StrokeTable,
     ) -> Result<Processing, Error> {
-        table::compile(&stored(effect_id, format, payload)?, strokes)
+        table::compile(&stored(effect_id, format, payload)?, strokes, &[], at)
     }
 
     /// A repair layer's rows are its strokes' positions, so it compiles through
@@ -392,11 +423,33 @@ impl ToolModule for CorrectionsModule {
         effect_id: &str,
         format: u32,
         payload: &Value,
-        _at: crate::CompileStage,
+        at: crate::CompileStage,
     ) -> Result<Processing, Error> {
         table::compile(
             &stored(effect_id, format, payload)?,
             &crate::path::StrokeTable::default(),
+            &[],
+            at,
         )
+    }
+
+    fn capabilities(&self) -> Option<&dyn crate::CapabilityModule> {
+        Some(self)
+    }
+}
+
+/// A repair layer that holds frozen patches lists their artifacts, so the host compiles it with
+/// their verified bytes; it never calls a producer.
+impl crate::CapabilityModule for CorrectionsModule {
+    fn compile_bound(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &Value,
+        at: crate::CompileStage,
+        artifacts: &[std::sync::Arc<crate::artifacts::PreparedArtifact>],
+        strokes: &crate::path::StrokeTable,
+    ) -> Result<Processing, Error> {
+        table::compile(&stored(effect_id, format, payload)?, strokes, artifacts, at)
     }
 }

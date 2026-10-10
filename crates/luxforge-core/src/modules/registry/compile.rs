@@ -685,6 +685,7 @@ impl ModuleRegistry {
             &layer.payload,
             at,
             &bound,
+            strokes,
         )
     }
 

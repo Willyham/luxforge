@@ -46,6 +46,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+mod accept;
+#[cfg(test)]
+mod accept_tests;
 #[cfg(test)]
 mod artifact_tests;
 mod catalog;
@@ -519,6 +522,8 @@ enum SourceTaskKind {
     Prepare(SourceWork),
     /// Remove the object files the owner's collection left unrecorded, and stale staged files.
     Collect(Collection),
+    /// Publish a pinned candidate as an artifact for the accept a call waits on ([`accept`]).
+    Accept(Box<accept::AcceptWork>),
 }
 
 impl SourceTaskKind {
@@ -533,6 +538,7 @@ impl SourceTaskKind {
                 (JobKind::Artifacts, Some(asset_id.clone()))
             }
             Self::Collect(_) => (JobKind::Collect, None),
+            Self::Accept(work) => (JobKind::Artifacts, Some(work.asset_id().clone())),
         }
     }
 }
@@ -540,6 +546,7 @@ impl SourceTaskKind {
 enum SourceResult {
     Prepared(Box<Prepared>),
     Collected(Collected),
+    Accepted(Box<accept::Published>),
 }
 
 struct SourceTask {
@@ -862,6 +869,13 @@ fn source_activity(task: &SourceTask) -> ActivitySpec {
             asset_id: None,
             job_id: Some(task.id.to_string()),
         },
+        SourceTaskKind::Accept(work) => ActivitySpec {
+            kind: "artifacts.publish",
+            label: "Publishing patch",
+            detail: accept::activity_detail(work),
+            asset_id: Some(work.asset_id().clone()),
+            job_id: Some(task.id.to_string()),
+        },
     }
 }
 
@@ -885,6 +899,9 @@ fn run_source_task(
         SourceTaskKind::Collect(collection) => {
             artifacts::collect_files(&collection, cancel).map(SourceResult::Collected)
         }
+        SourceTaskKind::Accept(work) => work
+            .run(cancel)
+            .map(|published| SourceResult::Accepted(Box::new(published))),
     }
 }
 
@@ -1542,6 +1559,9 @@ fn owner_loop(
         job_waits: Vec::with_capacity(MAX_JOB_WAITERS),
         job_monitor_stats: JobMonitorStats::default(),
         deferred: None,
+        accept_parking: None,
+        parked_accepts: HashMap::new(),
+        call_parks: true,
         catalog,
         #[cfg(test)]
         fault: None,
@@ -1877,6 +1897,13 @@ pub(super) struct Owner {
     /// call [`Owner::call`] parks with its reply until they answer ([`files::defer`]). Empty
     /// between calls.
     deferred: Option<files::Deferred>,
+    /// Set by an accept that queued its candidate's publication: the call [`Owner::call`] parks
+    /// until that job completes ([`accept`]). Empty between calls.
+    accept_parking: Option<accept::PendingAccept>,
+    /// The accepts waiting on their publication, by job.
+    parked_accepts: HashMap<JobId, accept::ParkedAccept>,
+    /// Whether the call being answered may wait ([`OwnerCall::parks`]).
+    call_parks: bool,
     /// The catalog's owner-side state, one field per lane and one for browse views, each in its own
     /// file.
     catalog: catalog::CatalogLanes,
@@ -1935,6 +1962,7 @@ impl Owner {
         if replay == Replay::First && call.request.method == "draft.reapply" {
             before.pixel_memo.clear();
         }
+        self.call_parks = call.parks;
         let (result, deferred) =
             self.pixel_pass(Some(client), before.pixel_memo.clone(), |owner| {
                 owner.answer(client, &mut call.request)
@@ -1997,6 +2025,13 @@ impl Owner {
                 deadline: wait.deadline,
                 response: call.response,
             });
+            return;
+        }
+        // So is an accept waiting for its candidate's publication.
+        if let Some(pending) = self.accept_parking.take()
+            && result.is_ok()
+        {
+            self.park_accept(call, pending);
             return;
         }
         // So is a call waiting for the index lane to read the disk for it.
@@ -2073,6 +2108,22 @@ impl Owner {
         // A selection the index's revision alone left stale is the selection still.
         if request.params["targets"]["kind"] == "selection" {
             views::freshen_selection(self, client)?;
+        }
+        // An action that accepts a candidate pins and publishes it before it commits ([`accept`]).
+        if let methods::Method::Action(action_id) = &method
+            && self
+                .service
+                .registry()
+                .resolve_action(action_id)
+                .is_some_and(|action| action.descriptor().accepts_candidate)
+        {
+            let call = Call {
+                client,
+                request,
+                origin,
+            };
+            let parks = self.call_parks;
+            return accept::begin(self, &call, action_id, parks).map(Planned::Value);
         }
         let result = match method.route() {
             Route::Owner(handler) => {
@@ -2522,6 +2573,7 @@ impl Owner {
         self.latest_preparation.remove(&client);
         self.tiles.disconnect(client);
         self.drop_parked_reads(client);
+        self.drop_parked_accepts(client);
         self.watchers.remove(&client);
         // A gone client's waits are dropped unanswered: each receiver reports the owner gone.
         self.source_waiters.retain(|waiter| waiter.client != client);
@@ -2534,6 +2586,14 @@ impl Owner {
 
     /// A source job finished on the worker: adopt what it prepared for the clients still waiting.
     fn source_complete(&mut self, id: &JobId, result: Result<SourceResult, Error>) {
+        // An accept's publication answers the call parked on it, whoever still wants the job.
+        if self.parked_accepts.contains_key(id) || matches!(result, Ok(SourceResult::Accepted(_))) {
+            let outcome = self.accept_published(id, result);
+            self.jobs.finish(id, outcome.map(Output::Value));
+            self.sources.complete(id);
+            self.release_waiters(|waiter| waiter.job.as_ref().is_none_or(|job| job == id));
+            return;
+        }
         let interested = self.jobs.wanted(id);
         #[cfg(test)]
         let result = result.inspect(|_| {
@@ -2554,6 +2614,7 @@ impl Owner {
                 SourceResult::Collected(collected) => serde_json::to_value(collected)
                     .map(Completed::Value)
                     .map_err(|error| Error::internal(error.to_string())),
+                SourceResult::Accepted(_) => Err(Error::internal("an accept no call waits on")),
             })
         } else {
             Err(Error::conflict("source job cancelled"))

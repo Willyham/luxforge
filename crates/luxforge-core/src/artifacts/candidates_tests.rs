@@ -75,6 +75,7 @@ fn basis() -> CandidateBasis {
         revision: 7,
         width: 100,
         height: 50,
+        input: None,
     }
 }
 
@@ -615,6 +616,7 @@ impl Consumer {
                 preset: false,
                 analysis: None,
                 shortcut: None,
+                accepts_candidate: false,
                 parameters: vec![
                     ParameterDescriptor::artifact("artifact")
                         .required(true)
@@ -676,6 +678,7 @@ impl CapabilityModule for Consumer {
         _: &Value,
         _: crate::CompileStage,
         artifacts: &[Arc<PreparedArtifact>],
+        _: &crate::path::StrokeTable,
     ) -> Result<Processing, Error> {
         let [patch] = artifacts else {
             return Err(Error::validation("one patch"));

@@ -48,14 +48,51 @@ pub(crate) struct RepairOperation {
     pub(crate) opacity: u8,
     /// Source anchor minus destination anchor, in grid steps; not both zero.
     pub(crate) offset: [i32; 2],
+    /// A frozen patch's pixels, placement and name, for [`RepairKind::Patch`] only: a patch row
+    /// holds no points, radius, feather or offset.
+    pub(crate) patch: Option<RepairPatch>,
+}
+
+/// What a frozen patch row carries: its verified bytes and rectangle in the content stage, and the
+/// noun its name is spelled with (`Remove 7`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RepairPatch {
+    pub(crate) source: crate::repair::patch::PatchSource,
+    pub(crate) label: Arc<str>,
+}
+
+impl RepairOperation {
+    /// A frozen patch row: `source` composited at `opacity`, named `label` and `id`.
+    pub(crate) fn patch(
+        id: u32,
+        label: &str,
+        opacity: u8,
+        source: crate::repair::patch::PatchSource,
+    ) -> Self {
+        Self {
+            id,
+            kind: RepairKind::Patch,
+            points: Arc::from([]),
+            radius: 0,
+            feather: 0,
+            opacity,
+            offset: [0, 0],
+            patch: Some(RepairPatch {
+                source,
+                label: label.into(),
+            }),
+        }
+    }
 }
 
 impl RepairOperation {
     /// The display name refusals use: `Heal 5`, `Clone 5`.
     pub(crate) fn name(&self) -> String {
-        let title = match self.kind {
-            RepairKind::Clone => "Clone",
-            RepairKind::Heal => "Heal",
+        let title = match (self.kind, &self.patch) {
+            (RepairKind::Clone, _) => "Clone",
+            (RepairKind::Heal, _) => "Heal",
+            (RepairKind::Patch, Some(patch)) => &patch.label,
+            (RepairKind::Patch, None) => "Patch",
         };
         format!("{title} {}", self.id)
     }
@@ -72,6 +109,19 @@ impl RepairOperation {
 
     fn check(&self) -> Result<(), Error> {
         let name = self.name();
+        if self.kind == RepairKind::Patch || self.patch.is_some() {
+            let Some(patch) = self.patch.as_ref().filter(|_| self.kind == RepairKind::Patch) else {
+                return Err(Error::internal(format!(
+                    "{name} mixes a patch with a stroke operation"
+                )));
+            };
+            if self.opacity > 100 {
+                return Err(Error::validation(format!(
+                    "{name}'s opacity must lie within 0..=100"
+                )));
+            }
+            return patch.source.check(&name);
+        }
         if self.points.is_empty() || self.points.len() > path::POINTS_PER_STROKE {
             return Err(Error::resource_limit(format!(
                 "{name} holds {} stroke positions; a repair operation holds 1..={}",
@@ -196,6 +246,7 @@ mod tests {
             feather: 50,
             opacity: 100,
             offset: [1024, 0],
+            patch: None,
         }
     }
 
