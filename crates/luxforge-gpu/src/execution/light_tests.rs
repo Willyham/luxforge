@@ -81,6 +81,7 @@ fn reading(k: u32) -> GpuSpatial {
         clamps: false,
         mask: None,
         halos: vec![0],
+        contained: false,
     }
 }
 
@@ -103,6 +104,7 @@ fn writing(k: u32) -> GpuSpatial {
         clamps: true,
         mask: None,
         halos: Vec::new(),
+        contained: false,
     }
 }
 
