@@ -891,3 +891,83 @@ fn the_warm_list_covers_repair_gestures_at_open_and_first_use() {
         assert_eq!(plan.operations().count(), 1);
     }
 }
+
+/// A hundred corrections, as an agent filling a photograph places them: spots and short strokes
+/// over the frame, each with a source a few radii away. The GPU groups them by their conflicts,
+/// not by their order, so the step's passes stay bounded.
+pub(crate) fn hundred(stage: Stage, seed: u64) -> Vec<Op> {
+    let mut random = SplitMix64(seed);
+    let (w, h) = (f64::from(stage.width), f64::from(stage.height));
+    (1..=100)
+        .map(|id| {
+            let mut unit = || (random.next_u64() % 10_000) as f64 / 10_000.0;
+            let (x, y) = (0.05 + 0.9 * unit(), 0.05 + 0.9 * unit());
+            let radius = h * (0.006 + 0.01 * unit());
+            let angle = std::f64::consts::TAU * unit();
+            let reach = radius * (3.0 + 2.0 * unit());
+            let kind = if id % 3 == 0 {
+                RepairKind::Clone
+            } else {
+                RepairKind::Heal
+            };
+            let points: Vec<[f64; 2]> = if id % 4 == 0 {
+                vec![[x * w, y * h], [x * w + 3.0 * radius, y * h + radius]]
+            } else {
+                vec![[x * w, y * h]]
+            };
+            Op::new(
+                id,
+                kind,
+                stage,
+                &points,
+                radius,
+                [reach * angle.cos(), reach * angle.sin()],
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn a_hundred_corrections_plan_in_few_groups_and_bounded_passes() {
+    let registry = repair_registry();
+    for (stage, seed) in [
+        (
+            Stage {
+                width: 6000,
+                height: 4000,
+            },
+            1,
+        ),
+        (
+            Stage {
+                width: 1716,
+                height: 1144,
+            },
+            2,
+        ),
+    ] {
+        let ops = hundred(stage, seed);
+        let table = table_of(&repair_layer(&ops).payload).unwrap();
+        let entry = RepairEntry::new(table, stage);
+        let groups = super::gpu::repair::groups(&entry);
+        let answer = crate::gpu_plan(
+            &registry,
+            &recipe(vec![repair_layer(&ops)]),
+            crate::GpuPlanRequest::exact(0, stage).from_source(),
+        )
+        .unwrap();
+        let plan = answer.plan().expect("a hundred corrections draw on the GPU");
+        let passes = plan.spatial[0].passes.len();
+        eprintln!(
+            "{}x{}: {} groups, {passes} passes",
+            stage.width,
+            stage.height,
+            groups.len()
+        );
+        assert!(passes <= super::gpu::repair::REPAIR_PASSES_MAX, "{passes} passes");
+        // Every operation is in exactly one group, and two in one group never conflict.
+        let mut seen: Vec<usize> = groups.iter().flatten().copied().collect();
+        seen.sort_unstable();
+        assert_eq!(seen, (0..100).collect::<Vec<_>>());
+    }
+}
