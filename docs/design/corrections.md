@@ -276,7 +276,7 @@ A producer is any module task with `artifacts: true`; the test producer is a dev
 
 #### Stale export acknowledgement
 
-Extensions of the shipped methods; none exists today.
+Extensions of the shipped methods, implemented as described here ([export](export.md#api)).
 
 - **`export.plan`** answers `stale: [{operation, name, reasons}]` for the planned entry, always present and empty when nothing is stale.
 - **`export.jpeg`** accepts `acknowledge_stale: {entry_id, operations: [correction-…]}`. When the frozen entry has stale operations, the request must carry an acknowledgement naming that exact entry and exactly its stale operations; otherwise it is refused before any job with `conflict`, `data: {code: "stale-unacknowledged", entry_id, stale: [...]}`. An acknowledgement on an export with nothing stale is accepted and ignored. The accepted answer and the ready result echo `acknowledged_stale`. An omitted `entry_id` resolves to the current entry at acceptance, so a commit between plan and export makes the old acknowledgement name another entry and refuses it.
