@@ -75,6 +75,8 @@ pub(super) mod themes;
 pub(super) mod usage;
 pub(crate) mod usage_events;
 #[cfg(test)]
+mod usage_events_tests;
+#[cfg(test)]
 mod usage_tests;
 pub(super) mod views;
 

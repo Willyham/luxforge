@@ -1728,6 +1728,10 @@ fn lane_worker(receiver: Receiver<Dispatch>, deliver: Deliver) {
 }
 
 #[cfg(test)]
+#[path = "jobs_usage_tests.rs"]
+mod usage_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
