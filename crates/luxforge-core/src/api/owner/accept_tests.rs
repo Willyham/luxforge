@@ -358,7 +358,10 @@ fn a_candidate_generated_over_an_accepted_patch_is_accepted_on_top_of_it() {
     assert_eq!(accepted["outcome"], "applied");
     let rows = harness.corrections();
     assert_eq!(rows.len(), 3);
-    assert!(rows.iter().all(|row| row.get("stale").is_none()), "{rows:?}");
+    assert!(
+        rows.iter().all(|row| row.get("stale").is_none()),
+        "{rows:?}"
+    );
     let history = harness.ok(
         "history.list",
         json!({"asset_id": harness.asset, "limit": 5}),

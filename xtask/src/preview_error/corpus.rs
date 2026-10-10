@@ -394,7 +394,9 @@ impl Corpus {
             }
             ensure(
                 !recipe.developer || developer_calls > 0,
-                format!("Recipe {id} says it needs a developer run but calls nothing only one serves"),
+                format!(
+                    "Recipe {id} says it needs a developer run but calls nothing only one serves"
+                ),
             )?;
         }
         for family in REQUIRED_FAMILIES {
@@ -940,8 +942,11 @@ mod tests {
         for recipe in &patches {
             assert!(recipe.developer, "{}", recipe.id);
             assert!(
-                recipe.steps.iter().any(|step| step["api"]["params"]["job_id"]
-                    == json!({"started_by": "task.generate-proof-patches"})),
+                recipe
+                    .steps
+                    .iter()
+                    .any(|step| step["api"]["params"]["job_id"]
+                        == json!({"started_by": "task.generate-proof-patches"})),
                 "{}",
                 recipe.id
             );
