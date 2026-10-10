@@ -204,7 +204,7 @@ impl<'a> RepairFrame<'a> {
     }
 
     /// The rectangle of its first part: the whole frame of a frame of one rectangle.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[allow(dead_code, reason = "the numerics study's tests read a frame's region")]
     pub(crate) fn region(&self) -> Region {
         self.parts
             .first()
