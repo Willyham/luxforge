@@ -72,6 +72,9 @@ mod requests;
 #[cfg(test)]
 mod theme_tests;
 pub(super) mod themes;
+pub(super) mod usage;
+#[cfg(test)]
+mod usage_tests;
 pub(super) mod views;
 
 /// The catalog owner's thread's name, which reads no pixel (performance rule 5): a read reaching
@@ -1485,7 +1488,11 @@ fn owner_loop(
     // the person chose, or by default when the preferences cannot be read: the desktop reports
     // that failure when it reads them itself.
     let mut service = service;
-    let preferences = host.preferences.read().unwrap_or_default();
+    let preferences = host.preferences.read();
+    // The process's one launch read of the stored usage statistics consent; a later owner of the
+    // same process, for another catalog, changes nothing.
+    host.usage_consent().start(preferences.as_ref());
+    let preferences = preferences.unwrap_or_default();
     service.set_auto_collapse(preferences.auto_collapse_history());
     service.set_auto_lens_profile(preferences.auto_lens_profile());
     service.set_raw_look(preferences.raw_look());
@@ -2055,8 +2062,9 @@ impl Owner {
             Retries::Catalog | Retries::None => None,
         };
         if let Some(key) = &key
-            && let Some(first) = self.requests.answered(key)?
+            && let Some(mut first) = self.requests.answered(key)?
         {
+            usage::deduplicated(self, &request.method, &mut first);
             return Ok(Planned::Value(first));
         }
         let origin = Origin::new(&request.method, &request.id);

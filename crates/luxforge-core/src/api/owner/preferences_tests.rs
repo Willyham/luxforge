@@ -83,7 +83,21 @@ impl Drop for Harness {
     }
 }
 
+/// Every preference `preferences.read` answers: the settable ones and the protected usage
+/// statistics record, absent here.
 fn defaults() -> Value {
+    answered(settable())
+}
+
+/// `preferences` as `preferences.read` and `preferences.set` answer them, with no usage statistics
+/// record stored, which no `preferences.set` can change.
+fn answered(mut preferences: Value) -> Value {
+    preferences["usage_statistics"] = json!({"prompt_shown": false, "enabled": false});
+    preferences
+}
+
+/// Every preference `preferences.set` sets, at its default.
+fn settable() -> Value {
     json!({
         "performance_expanded": true,
         "auto_collapse_history": true,
@@ -122,10 +136,13 @@ fn preferences_read_answers_every_default_and_set_round_trips_every_field() {
         .iter()
         .map(|parameter| parameter["name"].as_str().unwrap().to_owned())
         .collect();
-    let answered: Vec<_> = defaults().as_object().unwrap().keys().cloned().collect();
+    let names: Vec<_> = settable().as_object().unwrap().keys().cloned().collect();
     let mut sorted = declared.clone();
     sorted.sort();
-    assert_eq!(sorted, answered, "every preference can be set");
+    assert_eq!(
+        sorted, names,
+        "every preference but the protected record can be set"
+    );
 
     let catalog = harness.dir.join("Photos").join("catalog.sqlite");
     let exports = harness.dir.join("Exports");
@@ -152,10 +169,13 @@ fn preferences_read_answers_every_default_and_set_round_trips_every_field() {
     });
     assert_eq!(
         harness.ok("set", "preferences.set", chosen.clone()),
-        chosen,
+        answered(chosen.clone()),
         "a path need not exist"
     );
-    assert_eq!(harness.ok("read", "preferences.read", json!({})), chosen);
+    assert_eq!(
+        harness.ok("read", "preferences.read", json!({})),
+        answered(chosen.clone())
+    );
     assert!(!catalog.exists() && !exports.exists(), "nothing is created");
 
     // An absent field is left as it was; null resets each one to its default.
@@ -163,9 +183,9 @@ fn preferences_read_answers_every_default_and_set_round_trips_every_field() {
     kept["interface_size"] = json!(150);
     assert_eq!(
         harness.ok("one", "preferences.set", json!({"interface_size": 150})),
-        kept
+        answered(kept)
     );
-    let nulls: serde_json::Map<String, Value> = defaults()
+    let nulls: serde_json::Map<String, Value> = settable()
         .as_object()
         .unwrap()
         .keys()
