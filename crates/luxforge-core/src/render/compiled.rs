@@ -3,10 +3,11 @@
 
 use super::{
     Byte, Evaluation, PixelDomain, RenderContext, SpatialEntry,
-    repair_entry::RepairEntry,
     linear::{LinearRows, LinearScratch, TAP_BLOCK_PIXELS},
     map::WarpStep,
-    nearest_index, resample_frame,
+    nearest_index,
+    repair_entry::RepairEntry,
+    resample_frame,
     spatial::Tiling,
     window::RegionFallback,
 };
@@ -518,12 +519,9 @@ impl Compiled {
     /// before segment `index`, so that the stage `index` reads comes through that operation's
     /// whole frame rather than from the source alone.
     pub(crate) fn spatial_before(&self, index: usize) -> bool {
-        self.segments[..index].iter().any(|segment| {
-            segment
-                .entry
-                .as_ref()
-                .is_some_and(Entry::materializes)
-        })
+        self.segments[..index]
+            .iter()
+            .any(|segment| segment.entry.as_ref().is_some_and(Entry::materializes))
     }
 }
 

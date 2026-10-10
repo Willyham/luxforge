@@ -672,6 +672,31 @@ impl StrokeFault {
 #[derive(Clone, Debug, Default)]
 pub struct StrokeTable(Option<Arc<Resolved>>);
 
+/// Two tables are equal when they hold the same addresses and the same faults: a stroke is its
+/// content address, so the same address is the same stroke whoever read or captured it. Whether a
+/// stroke is known stored, and the origin a refusal names, are not part of what a table holds.
+impl PartialEq for StrokeTable {
+    fn eq(&self, other: &Self) -> bool {
+        let addresses = |table: &Self| {
+            table.0.as_ref().map_or_else(
+                || (Vec::new(), Vec::new()),
+                |held| {
+                    (
+                        held.strokes.keys().cloned().collect::<Vec<_>>(),
+                        held.faults
+                            .iter()
+                            .map(|(id, fault)| (id.clone(), *fault))
+                            .collect::<Vec<_>>(),
+                    )
+                },
+            )
+        };
+        addresses(self) == addresses(other)
+    }
+}
+
+impl Eq for StrokeTable {}
+
 #[derive(Clone, Debug)]
 struct Resolved {
     origin: String,
@@ -725,6 +750,27 @@ impl StrokeTable {
         let id = stroke.id();
         self.held().strokes.insert(id.clone(), Arc::new(stroke));
         id
+    }
+
+    /// Take every stroke `fresh` holds into this table, as [`Self::insert`] records one: not yet
+    /// known stored, unless this table already holds the same address, which it keeps as it is. A
+    /// fault this table recorded for an address `fresh` resolves is cleared, since the same content
+    /// under the same address is the stroke the reference names. Shares each stroke, copying no
+    /// positions; `O(fresh strokes · log strokes)`.
+    pub(crate) fn adopt(&mut self, fresh: &Self) {
+        let Some(source) = fresh.0.as_ref() else {
+            return;
+        };
+        if source.strokes.is_empty() {
+            return;
+        }
+        let held = self.held();
+        for (id, stroke) in &source.strokes {
+            held.faults.remove(id);
+            held.strokes
+                .entry(id.clone())
+                .or_insert_with(|| Arc::clone(stroke));
+        }
     }
 
     /// Resolve one reference from the bytes the catalog's store holds at its address, or from their

@@ -4882,7 +4882,7 @@ mod tests {
                 // declares for a sampling component kind — then the registry's canvas declarations,
                 // so the RAW and Basic neutral pickers join the list without a change here.
                 "mode must be one of pointer, mask, mask.add-colour-range-sample, luxforge.crop, \
-                 luxforge.raw, luxforge.basic",
+                 luxforge.corrections, luxforge.raw, luxforge.basic",
             ),
             (
                 "a module that declares no canvas",

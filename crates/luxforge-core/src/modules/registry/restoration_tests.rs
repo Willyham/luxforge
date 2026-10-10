@@ -282,7 +282,10 @@ fn repair_placement_without_restoration_goes_before_colour() {
         Layer::new(crate::BASIC_EFFECT, json!({"exposure":1.0})),
         Layer::new(crate::PRESENCE_EFFECT, json!({"texture":20.0})),
     ];
-    assert_eq!(registry.insertion_index_for(&layers, REPAIR_STAGE_EFFECT), 0);
+    assert_eq!(
+        registry.insertion_index_for(&layers, REPAIR_STAGE_EFFECT),
+        0
+    );
 }
 #[test]
 fn restoration_placement_keeps_noncanonical_colour_order() {

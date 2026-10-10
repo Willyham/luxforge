@@ -37,7 +37,12 @@ pub(crate) const MAX_READ_RECTS: usize = 16;
 const BAND_BYTES: u64 = 16 * 1024 * 1024;
 
 fn meets(a: Region, b: Region) -> bool {
-    !a.is_empty() && !b.is_empty() && a.x0 < b.x1() && b.x0 < a.x1() && a.y0 < b.y1() && b.y0 < a.y1()
+    !a.is_empty()
+        && !b.is_empty()
+        && a.x0 < b.x1()
+        && b.x0 < a.x1()
+        && a.y0 < b.y1()
+        && b.y0 < a.y1()
 }
 
 fn union(a: Region, b: Region) -> Region {

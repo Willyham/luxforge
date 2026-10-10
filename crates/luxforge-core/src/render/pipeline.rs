@@ -375,17 +375,12 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     pub(crate) fn with_input_width(mut self, wide: bool) -> Self {
         debug_assert!(self.frame.is_none());
         let last = self.widths.len() - 1;
-        let Some(target) = self
-            .compiled
-            .segments
-            .iter()
-            .rposition(|segment| {
-                segment
-                    .entry
-                    .as_ref()
-                    .is_some_and(super::Entry::materializes)
-            })
-        else {
+        let Some(target) = self.compiled.segments.iter().rposition(|segment| {
+            segment
+                .entry
+                .as_ref()
+                .is_some_and(super::Entry::materializes)
+        }) else {
             return self;
         };
         for index in (0..=last).rev() {

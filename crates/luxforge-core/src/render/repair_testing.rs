@@ -89,4 +89,3 @@ impl ToolModule for RepairTestModule {
         table_of(payload).map(Processing::Repair)
     }
 }
-
