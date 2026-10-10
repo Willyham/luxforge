@@ -645,6 +645,7 @@ impl Presentation {
             mask_draft: None,
             mask_map: None,
             mask_handles: true,
+            corrections: None,
             draft: None,
             gpu: None,
             gpu_hold: false,
@@ -2256,6 +2257,10 @@ impl Editor {
         // A frame of an open mask gesture says what the gesture is and how it becomes history,
         // rather than repeating the entry it was drawn on.
         if let Some(line) = self.mask_gesture_status() {
+            return line;
+        }
+        // So does the Corrections mode: its gesture, its last sentence or its hint.
+        if let Some(line) = self.correction_status() {
             return line;
         }
         let sentence = match (&self.status.happened, &self.document.state) {

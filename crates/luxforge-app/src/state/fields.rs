@@ -1136,6 +1136,8 @@ mod tests {
         let patch = modules
             .iter()
             .filter(|module| module.applies_to(luxforge_core::SourceTag::Jpeg))
+            // A section's slider: Corrections' operation edit is a patch with no control.
+            .filter(|module| !module.controls.is_empty())
             .flat_map(|module| module.actions.iter())
             .find(|action| action.patch)
             .expect("a built-in declares a field patch");
@@ -1202,6 +1204,8 @@ mod tests {
         let patch = modules
             .iter()
             .filter(|module| module.applies_to(luxforge_core::SourceTag::Jpeg))
+            // A section's slider: Corrections' operation edit is a patch with no control.
+            .filter(|module| !module.controls.is_empty())
             .flat_map(|module| module.actions.iter())
             .find(|action| action.patch)
             .expect("a built-in declares a field patch");

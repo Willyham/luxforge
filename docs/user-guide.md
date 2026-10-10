@@ -602,6 +602,31 @@ over what is today a test of one pixel at a time, and it will get its own design
 approximated under a familiar name. No selection here is made by a model either: there is no Select
 Subject, Sky, People, Objects or Background, and none of them is drawn as a control that does nothing.
 
+### Corrections
+
+Corrections removes dust, spots and small distractions with **Heal** and **Clone**, offline. Choose Corrections in the mode strip (after Mask, the bandage icon), press `Q`, pick Mode · Corrections from the command palette, or expand the collapsed Corrections section. The tools panel then shows the **Corrections band** under the histogram; outside the mode the section stays collapsed with a hint such as `5 corrections`, and pins are drawn only in the mode, while the corrections themselves render everywhere.
+
+**A press on the photograph adds a correction.** The brush is always in hand: its cursor is the brush's outer circle, a dashed inner circle where the feather starts and a `+`. A click adds a **spot**; a drag paints a **stroke**; `⇧`-click paints a straight stroke from where the last stroke you placed ended. Releasing commits exactly one history entry (`Add Heal 7`), and Escape while the button is down discards the stroke. A press lands on an existing correction only on its **pin** — a spot's centre, a stroke's first point — or on the selected correction's handles; anywhere else, including inside an earlier repair, adds a new one, which then samples the photograph as the corrections below it left it. The new correction is selected, and the status bar says where its source came from: `Added Heal 7 · source picked 96 px left · / tries the next`.
+
+**Sources are automatic unless you set one.** With **Auto**, the source is picked from the surroundings when you release. `⌥`-click sets a source instead: the next press measures its offset, and following presses keep it, so a pattern clones across several strokes; an accent crosshair rides at the offset while you paint, and the stroke shows as a live repair. **Auto** in the band, or Escape with nothing selected, clears it. `⌘`-drag places a spot at the press and pulls its source out to where you let go. If no automatic source fits, the painted stroke stays drafted under **No automatic source fits**: `⌥`-click a source to finish it, or Cancel.
+
+The band's **New correction** group describes the next press — Heal or Clone, Size (the brush diameter in photograph pixels), Feather and Opacity, and Source — and commits nothing. The **Stack** lists one row per correction, top of the stack first, named by kind and a number the photograph never reuses (`Heal 5`), with a short description and its opacity; hovering a row offers Delete, and a right-click opens its menu (Heal, Clone, New automatic source, Move up, Move down, Delete). The selected row expands with its own Kind, Size, Feather and Opacity, its source (`Auto · 175 px below`), **New source** and **Delete**. Drag a row by its grip to reorder the stack. The footer counts corrections against the photograph's limit, `5 of 100`; a press at the limit is refused before anything is drafted.
+
+On the canvas the selected correction shows its outline, its dashed source and an arrow from the source; drag its pin to move it (the source stays put), its source pin or dashed outline to resample, and a spot's square size handle to resize it. Each drag, slider release, kind change, reorder and delete is one undoable entry with its own label (`Move Heal 5`, `Move Heal 5 source`, `Resize Heal 2`, `Heal 5 · Opacity 80`, `Change Heal 5 to Clone`, `Reorder Heal 2`, `Delete Heal 5`), and the band's reset is `Reset corrections`.
+
+| Key | Does |
+| --- | --- |
+| `Q` | Enter or leave Corrections |
+| `⌫` | Delete the selected correction |
+| `/` | Give the selected correction the next-ranked automatic source; repeat to step further |
+| `↑` / `↓` | Select the correction above or below |
+| `⌥↑` / `⌥↓` | Move the selected correction up or down the stack |
+| `[` / `]` | Brush size down or up by 10%; with `⇧`, feather by 10 |
+| `H` | Hide or show pins and outlines |
+| Escape | Cancel the held stroke, then deselect, then clear a set source, then leave the mode |
+
+Every gesture is also an API request — `edit.add-correction`, `edit.update-correction`, `edit.delete-correction`, `edit.reorder-correction`, `edit.reset-corrections`, `query.corrections` and `query.correction-sources` ([modules and API](design/modules-and-api.md#corrections)). AI Remove is not part of this build and is not drawn.
+
 ### Vignette
 
 Vignette is the last section of the tools panel, collapsed until you open it, and it is applied after the crop: its centre is the centre of the cropped picture, and a later crop moves it, exactly as a post-crop vignette should. **Amount** runs −100 to +100; negative darkens toward black at the edges, and −100 reaches black at the corners, while positive lightens toward white without ever exceeding it. **Midpoint** (0 to 100) sets how far from the centre the falloff begins, **Feather** (0 to 100) how wide the transition is, from a hard edge at 0 to a gradient that spans the whole picture at 100, and **Roundness** (−100 to +100) the shape, from a rounded rectangle through the ellipse that matches the picture's proportions to a circle. The corners are always the far edge of the mask, whatever the shape.
