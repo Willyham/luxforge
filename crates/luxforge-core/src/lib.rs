@@ -84,6 +84,7 @@ pub use capabilities::redact::redact_params;
 pub use cpu_proxy::{ProxyApproximation, ProxyOutcome};
 pub use draft::{Draft, DraftTarget, declared_target};
 pub use editor::{
+    BatchStaleAcknowledgement, StaleAcknowledgement,
     ActionResult, AssetRecord, DraftStamp, EditorService, EditorState, Evaluation, FirstOpen,
     HistoryPage, LayerDescription, Lineage, LineageStep, MASK_FIELD, MutationOutcome,
     MutationResult, PixelInput, PixelSample, RawInterpretation, RecipeDescription, SkippedSetting,

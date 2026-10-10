@@ -306,6 +306,18 @@ pub(in crate::api) fn batch_export(
     let assets = targets::assets(&owner.service, &params.targets, || {
         selected(owner, call.client)
     })?;
+    let acknowledgements = Arc::new(params.acknowledge_stale.unwrap_or_default());
+    for (index, acknowledgement) in acknowledgements.iter().enumerate() {
+        if acknowledgements[..index]
+            .iter()
+            .any(|earlier| earlier.asset_id == acknowledgement.asset_id)
+        {
+            return Err(Error::validation(format!(
+                "acknowledge_stale names {} twice; send at most one a photograph",
+                acknowledgement.asset_id
+            )));
+        }
+    }
     let options = export::Options {
         keep_metadata: params.keep_metadata.unwrap_or(false),
         pixels_per_inch: None,
@@ -344,8 +356,11 @@ pub(in crate::api) fn batch_export(
             for (asset, _) in assets {
                 job.pause(Phase::NextPhotograph);
                 let target = asset.clone();
+                let acknowledgements = acknowledgements.clone();
                 let planned =
-                    match ask_owner(job, client, move |owner: &mut Owner| plan(owner, &target)) {
+                    match ask_owner(job, client, move |owner: &mut Owner| {
+                        plan(owner, &target, &acknowledgements)
+                    }) {
                         Ok(planned) => planned,
                         Err(stopped) => return Box::new(move |_: &mut Owner| Err(stopped)),
                     };
@@ -416,11 +431,29 @@ enum Planned {
 /// Plan one photograph's export on the owner, as `export.jpeg` plans its current entry: left out
 /// while it is in Removed; refused as the single export would be, a missing or offline original
 /// with the refusal availability names and an unprepared source with what it needs.
-fn plan(owner: &mut Owner, asset: &AssetId) -> Result<Planned, Error> {
+fn plan(
+    owner: &mut Owner,
+    asset: &AssetId,
+    acknowledgements: &[crate::BatchStaleAcknowledgement],
+) -> Result<Planned, Error> {
     if let Some(skip) = batch::removed(&owner.service.connection, asset)? {
         return Ok(Planned::Skipped(skip));
     }
-    let plan = owner.service.export_plan(asset, None)?;
+    // Its current entry now, held to its acknowledgement when it holds stale frozen patches: one
+    // without an exactly matching acknowledgement is skipped, never exported implicitly.
+    let (entry_id, stale) = owner.service.export_stale(asset, None)?;
+    let acknowledgement = acknowledgements
+        .iter()
+        .find(|acknowledgement| acknowledgement.asset_id == *asset)
+        .map(|acknowledgement| (&acknowledgement.entry_id, acknowledgement.operations.as_slice()));
+    if let Err(refused) = crate::editor::acknowledged(&entry_id, stale.clone(), acknowledgement) {
+        return Ok(Planned::Skipped(crate::catalog_types::BatchSkip {
+            entry_id: Some(entry_id),
+            stale,
+            ..batch::skip(asset, crate::editor::STALE_UNACKNOWLEDGED, refused.detail)
+        }));
+    }
+    let plan = owner.service.export_plan(asset, Some(&entry_id))?;
     let original = library_rows::asset_source(&owner.service.connection, asset)?
         .ok_or_else(|| Error::validation(format!("unknown asset {asset}")))?
         .locator;

@@ -1022,6 +1022,8 @@ fn report(done: &[u32], skipped: &[(u32, &str, &str)], settings: &[u32]) -> Batc
                     asset_id: asset(*n),
                     code: (*code).into(),
                     reason: (*reason).into(),
+                    entry_id: None,
+                    stale: Vec::new(),
                 },
             )
             .collect(),
