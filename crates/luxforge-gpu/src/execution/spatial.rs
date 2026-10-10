@@ -191,6 +191,11 @@ pub struct GpuSpatial {
     /// by every unit's reach ([`GpuSpatial::pass_rect`]), and an incremental tick's only over its
     /// change grown unit by unit. An operation that names no halo for a unit runs whole.
     pub halos: Vec<u32>,
+    /// Its output changes only inside the change the plan names for its input: a repair step,
+    /// whose plan computes where its operations' changes reach, a Heal's whole patch and every
+    /// later operation reading it included. It still runs whole, but the links after it run over
+    /// that change alone, not the whole boundary.
+    pub contained: bool,
 }
 
 /// A half-open rectangle `[x0, x1) × [y0, y1)` of a boundary's texels or of a plane's.
