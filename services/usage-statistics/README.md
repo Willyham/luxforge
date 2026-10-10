@@ -9,7 +9,8 @@ provisioned dashboards.
 
 It is a reference for running and testing the pipeline on one machine. **It is not a hosted service.**
 Nothing here provisions, deploys or publishes anything, no `api.luxforge.app` endpoint is claimed to
-exist, and nothing in this directory contacts an external account.
+exist, and nothing in this directory contacts an external account. [DEPLOYMENT.md](DEPLOYMENT.md) is the
+checklist for a real deployment and the activation that follows it; it has not been carried out.
 
 ```mermaid
 flowchart LR
@@ -31,7 +32,9 @@ flowchart LR
 | `clickhouse/` | `initdb/001-schema.sql` (tables and views), `config.d/privacy.xml`, `users.d/users.xml` |
 | `grafana/` | `Dockerfile` (plugin baked in), `provisioning/`, and the five dashboards in `dashboards/` |
 | `test.sh`, `tests/` | The stack test (below) and its synthetic scenario |
-| `probe.sh` | Sends one synthetic batch to an ingress URL and prints the status |
+| `probe.sh`, `probe.py` | The synthetic live-endpoint probe: sends only generated data to a base URL and checks the statuses, limits and replies ([checks](DEPLOYMENT.md#12-run-the-synthetic-live-probe)) |
+| `scan-logs.py` | Searches captured logs or table dumps for given values and for any IP address literal ([use](DEPLOYMENT.md#10-check-every-hop-for-addresses-and-request-data)) |
+| `DEPLOYMENT.md` | The activation checklist for `api.luxforge.app` |
 | `NOTICE.md` | Licences of every component, without any audit claim |
 
 ## Pinned components
@@ -57,7 +60,7 @@ cp .env.example .env
 # edit .env: replace every change-me-* value (for example with: openssl rand -hex 16)
 docker compose up -d --build        # first build compiles the ingress; a few minutes
 docker compose ps                   # the ingress is published on 127.0.0.1:8080 only
-./probe.sh http://127.0.0.1:8080/v1/usage/batches      # prints 202
+./probe.sh --check-id-limiter http://127.0.0.1:8080   # about 45 checks; TLS ones are skipped on loopback HTTP
 ```
 
 Look at the data with the ClickHouse client inside its container (nothing else can reach ClickHouse):
@@ -160,8 +163,11 @@ Docker and `python3`, and runs the real containers; there is no mock. It checks:
   history and per-image history are compared with values computed independently in Python from the
   same synthetic batches (`tests/scenario.py`).
 - **Retention**: rows older than 90 days are not kept; rows 89 days old are; a scratch copy of each
-  table's DDL with a 2-second TTL is merged to prove expiry runs on the same engine; the read views
+  table's DDL with a 10-second TTL is merged to prove expiry runs on the same engine; the read views
   filter at 90 days.
+- **Probe**: `probe.py` runs against the real ingress and passes, its 12 events land in 3 sessions of one
+  installation with the synthetic release, and the `ALTER` statements it prints remove them from all
+  three tables.
 - **Pressure**: with ClickHouse stopped a flood receives only `202` or `429`, nothing is written to
   disk, memory stays under its limit, Vector logs dropped events, and after the relays restart no
   row from the outage returns; after a short outage the replayed backlog never exceeds what was
@@ -177,6 +183,12 @@ Docker and `python3`, and runs the real containers; there is no mock. It checks:
   searched for the sentinels too; no ClickHouse system log table (so no query log) exists.
 
 A skipped or unavailable check is not a pass: if Docker is missing the script fails.
+
+Two more tests need no Docker and run in seconds: `python3 -I tests/probe_test.py` runs the probe against a
+fake ingress in this process (a good endpoint, and one each of a redirect, a leaked header, a long
+reply, a missing `405`, a missing `413` and a missing limiter, which it must fail; TLS against a
+throwaway certificate when `openssl` is present, reported as skipped when it is not; the refusal of the
+production domain) and `python3 -I tests/scan_logs_test.py` tests `scan-logs.py`.
 
 ## Privacy configuration, hop by hop
 
