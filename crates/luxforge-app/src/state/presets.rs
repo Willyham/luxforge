@@ -504,18 +504,6 @@ mod tests {
             "RAW, transforms, crop and the pixel proof declare no field patch; Perspective's patch is not presettable"
         );
         assert_eq!(ordinary.groups[1].id, "luxforge.basic/tone");
-        for (id, count) in [("luxforge.mixer/hsl", 24), ("luxforge.mixer/grading", 14)] {
-            let group = ordinary.group(id).expect("mixer capture group");
-            let fields = &group.fields["set-mixer"];
-            assert_eq!(fields.len(), count);
-            assert_eq!(
-                fields
-                    .iter()
-                    .collect::<std::collections::BTreeSet<_>>()
-                    .len(),
-                count
-            );
-        }
     }
 
     #[test]

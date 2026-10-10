@@ -4057,6 +4057,7 @@
                     }
                   }
                 ],
+                "id": "hue",
                 "kind": "group",
                 "label": "Hue",
                 "reset": {
@@ -4252,6 +4253,7 @@
                     }
                   }
                 ],
+                "id": "saturation",
                 "kind": "group",
                 "label": "Saturation",
                 "reset": {
@@ -4487,6 +4489,7 @@
                     }
                   }
                 ],
+                "id": "luminance",
                 "kind": "group",
                 "label": "Luminance",
                 "reset": {
@@ -4504,6 +4507,7 @@
                 }
               }
             ],
+            "id": "hsl",
             "kind": "group",
             "label": "HSL",
             "layout": "tabs",
@@ -4547,14 +4551,6 @@
                     "kind": "wheel",
                     "label": "Midtones",
                     "luminance": "grade-midtones-luminance",
-                    "reset": {
-                      "action": "set-mixer",
-                      "preset": {
-                        "grade-midtones-hue": 0.0,
-                        "grade-midtones-luminance": 0.0,
-                        "grade-midtones-saturation": 0.0
-                      }
-                    },
                     "saturation": "grade-midtones-saturation"
                   },
                   {
@@ -4563,14 +4559,6 @@
                     "kind": "wheel",
                     "label": "Shadows",
                     "luminance": "grade-shadows-luminance",
-                    "reset": {
-                      "action": "set-mixer",
-                      "preset": {
-                        "grade-shadows-hue": 0.0,
-                        "grade-shadows-luminance": 0.0,
-                        "grade-shadows-saturation": 0.0
-                      }
-                    },
                     "saturation": "grade-shadows-saturation"
                   },
                   {
@@ -4579,14 +4567,6 @@
                     "kind": "wheel",
                     "label": "Highlights",
                     "luminance": "grade-highlights-luminance",
-                    "reset": {
-                      "action": "set-mixer",
-                      "preset": {
-                        "grade-highlights-hue": 0.0,
-                        "grade-highlights-luminance": 0.0,
-                        "grade-highlights-saturation": 0.0
-                      }
-                    },
                     "saturation": "grade-highlights-saturation"
                   },
                   {
@@ -4602,10 +4582,9 @@
                     "parameter": "grade-balance"
                   }
                 ],
-                "kind": "group",
-                "label": "3-way",
-                "reset": null,
-                "view": true
+                "id": "three-way",
+                "kind": "view",
+                "label": "3-way"
               },
               {
                 "controls": [
@@ -4615,14 +4594,6 @@
                     "kind": "wheel",
                     "label": "Shadows",
                     "luminance": "grade-shadows-luminance",
-                    "reset": {
-                      "action": "set-mixer",
-                      "preset": {
-                        "grade-shadows-hue": 0.0,
-                        "grade-shadows-luminance": 0.0,
-                        "grade-shadows-saturation": 0.0
-                      }
-                    },
                     "saturation": "grade-shadows-saturation",
                     "style": "large"
                   },
@@ -4653,10 +4624,9 @@
                     "parameter": "grade-balance"
                   }
                 ],
-                "kind": "group",
-                "label": "Shadows",
-                "reset": null,
-                "view": true
+                "id": "shadows",
+                "kind": "view",
+                "label": "Shadows"
               },
               {
                 "controls": [
@@ -4666,14 +4636,6 @@
                     "kind": "wheel",
                     "label": "Midtones",
                     "luminance": "grade-midtones-luminance",
-                    "reset": {
-                      "action": "set-mixer",
-                      "preset": {
-                        "grade-midtones-hue": 0.0,
-                        "grade-midtones-luminance": 0.0,
-                        "grade-midtones-saturation": 0.0
-                      }
-                    },
                     "saturation": "grade-midtones-saturation",
                     "style": "large"
                   },
@@ -4704,10 +4666,9 @@
                     "parameter": "grade-balance"
                   }
                 ],
-                "kind": "group",
-                "label": "Midtones",
-                "reset": null,
-                "view": true
+                "id": "midtones",
+                "kind": "view",
+                "label": "Midtones"
               },
               {
                 "controls": [
@@ -4717,14 +4678,6 @@
                     "kind": "wheel",
                     "label": "Highlights",
                     "luminance": "grade-highlights-luminance",
-                    "reset": {
-                      "action": "set-mixer",
-                      "preset": {
-                        "grade-highlights-hue": 0.0,
-                        "grade-highlights-luminance": 0.0,
-                        "grade-highlights-saturation": 0.0
-                      }
-                    },
                     "saturation": "grade-highlights-saturation",
                     "style": "large"
                   },
@@ -4755,10 +4708,9 @@
                     "parameter": "grade-balance"
                   }
                 ],
-                "kind": "group",
-                "label": "Highlights",
-                "reset": null,
-                "view": true
+                "id": "highlights",
+                "kind": "view",
+                "label": "Highlights"
               },
               {
                 "controls": [
@@ -4768,14 +4720,6 @@
                     "kind": "wheel",
                     "label": "Global",
                     "luminance": "grade-global-luminance",
-                    "reset": {
-                      "action": "set-mixer",
-                      "preset": {
-                        "grade-global-hue": 0.0,
-                        "grade-global-luminance": 0.0,
-                        "grade-global-saturation": 0.0
-                      }
-                    },
                     "saturation": "grade-global-saturation",
                     "style": "large"
                   },
@@ -4794,12 +4738,12 @@
                     "style": "field"
                   }
                 ],
-                "kind": "group",
-                "label": "Global",
-                "reset": null,
-                "view": true
+                "id": "global",
+                "kind": "view",
+                "label": "Global"
               }
             ],
+            "id": "grading",
             "kind": "group",
             "label": "Grading",
             "layout": "tabs",

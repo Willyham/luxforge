@@ -18,7 +18,7 @@ use crate::{
             ControlModel, CropSectionModel, CurveControl, EnumControl, GroupControl, GroupState,
             NumberControlStyle, PickerControl, RailStyle, RangeControl, RevealKey, SectionLayout,
             SectionMark, SectionModel, SliderControl, ToggleControl, ToolsModel, ValueEdit,
-            WheelControl, drawn_by_range,
+            WheelControl, drawn_by_range, selected_group,
         },
     },
 };
@@ -342,8 +342,23 @@ fn section_view<'a>(
         if !section.shows_controls() {
             return finish_rows(rows, menu);
         }
-        rows.extend(match section.layout {
-            SectionLayout::Stacked => control_rows(
+        // A section whose module declares `layout: tabs` draws one tab per top-level group; with
+        // no group to tab it is drawn stacked.
+        let tabbed = match section.layout {
+            SectionLayout::Tabs { selected } => tab_rows(
+                &section.module_id,
+                section.enabled,
+                &section.controls,
+                None,
+                selected,
+                menu,
+                plot,
+                mark,
+            ),
+            SectionLayout::Stacked => None,
+        };
+        rows.extend(tabbed.unwrap_or_else(|| {
+            control_rows(
                 &section.module_id,
                 section.enabled,
                 &section.controls,
@@ -351,9 +366,8 @@ fn section_view<'a>(
                 plot,
                 false,
                 mark,
-            ),
-            SectionLayout::Tabs { .. } => tabbed_rows(section, menu, plot, mark),
-        });
+            )
+        }));
         if let Some(summary) = &section.geometry_summary {
             rows.push(PanelRow::Plain(caption(summary.clone())));
         }
@@ -384,62 +398,60 @@ fn section_view<'a>(
     }
 }
 
-/// The rows of a section whose module declares `layout: tabs`: one tab per top-level group, a dot
-/// on each Custom group, the visible group's reset at the row's right, then only that group's
-/// controls. Any top-level control that is not a group follows as usual.
-fn tabbed_rows<'a>(
-    section: &'a SectionModel,
+/// The rows of a section or group that declares `layout: tabs`, over its `controls`: a segmented
+/// row of its child groups, a dot on each Custom subgroup (a view shows fields its parent owns, so
+/// only a subgroup reads Custom), the visible child's reset at the row's right when it declares
+/// one (a view declares none), then only that child's rows, under the one enabled rule a group's
+/// own rows follow. A visible child that is tabbed in turn draws its own row the same way: the
+/// colour mixer's HSL tab holds Hue, Saturation and Luminance, and its Grading tab its views. Any
+/// control among `controls` that is not a group follows as usual. Selecting a tab is the
+/// session's view state ([`ControlMessage::SelectView`]), keyed by `group`, the tabbed group's id
+/// (none for a section), and each child's id. `None` when `controls` hold no group, to be drawn
+/// stacked instead.
+#[allow(clippy::too_many_arguments)]
+fn tab_rows<'a>(
+    module_id: &str,
+    enabled: bool,
+    controls: &'a [ControlModel],
+    group: Option<&str>,
+    selected: usize,
     menu: Option<&'a MenuTarget>,
     plot: &HistogramModel,
     mark: Option<&RevealKey>,
-) -> Vec<PanelRow<'a>> {
-    let module_id = section.module_id.as_str();
-    let enabled = section.enabled;
-    let groups: Vec<&GroupControl> = section
-        .controls
+) -> Option<Vec<PanelRow<'a>>> {
+    let (selected, visible) = selected_group(controls, selected)?;
+    let children: Vec<&GroupControl> = controls
         .iter()
         .filter_map(|control| match control {
-            ControlModel::Group(group) => Some(group),
+            ControlModel::Group(child) => Some(child),
             _ => None,
         })
         .collect();
-    let Some(visible) = section.visible_tab() else {
-        return control_rows(
-            module_id,
-            enabled,
-            &section.controls,
-            menu,
-            plot,
-            false,
-            mark,
-        );
-    };
+    let ids: Vec<String> = children
+        .iter()
+        .map(|child| child.id.clone().unwrap_or_default())
+        .collect();
+    let module = module_id.to_owned();
+    let row = group.map(str::to_owned);
     let tabs = tab_row(
         &TabRowModel {
-            tabs: groups
+            tabs: children
                 .iter()
-                .map(|group| Tab {
-                    label: group.label.clone(),
-                    custom: group.state == Some(GroupState::Custom),
+                .map(|child| Tab {
+                    label: child.label.clone(),
+                    custom: !child.view && child.state == Some(GroupState::Custom),
                 })
                 .collect(),
-            selected: groups
-                .iter()
-                .position(|group| std::ptr::eq(*group, visible))
-                .unwrap_or(0),
+            selected,
             reset: visible.reset.is_some(),
             enabled,
         },
-        {
-            let module_id = module_id.to_owned();
-            let labels: Vec<String> = groups.iter().map(|group| group.label.clone()).collect();
-            move |index| {
-                Message::Control(ControlMessage::SelectView {
-                    module_id: module_id.clone(),
-                    group: Vec::new(),
-                    view: labels.get(index).cloned().unwrap_or_default(),
-                })
-            }
+        move |index| {
+            Message::Control(ControlMessage::SelectView {
+                module_id: module.clone(),
+                group: row.clone(),
+                view: ids.get(index).cloned().unwrap_or_default(),
+            })
         },
         Message::Control(ControlMessage::ResetGroup {
             module_id: module_id.to_owned(),
@@ -453,33 +465,31 @@ fn tabbed_rows<'a>(
         None => tabs,
     };
     let mut rows = vec![PanelRow::Plain(tabs)];
-    // A tab whose own group lays its children out as tabs draws that nested row and its visible
-    // child, as a tabbed group inside a stacked section does: the colour mixer's HSL tab holds
-    // Hue, Saturation and Luminance, and its Grading tab its views.
-    match visible.visible_view() {
-        Some(nested) => rows.extend(nested_tab_rows(
-            module_id, enabled, visible, nested, menu, plot, mark,
-        )),
-        None => rows.extend(control_rows(
+    let shown = enabled && visible.enabled;
+    let nested = visible.selected.and_then(|selected| {
+        tab_rows(
             module_id,
-            enabled,
+            shown,
             &visible.controls,
+            visible.id.as_deref(),
+            selected,
             menu,
             plot,
-            false,
             mark,
-        )),
-    }
-    for control in &section.controls {
-        if !matches!(control, ControlModel::Group(_)) && !drawn_by_range(&section.controls, control)
-        {
+        )
+    });
+    rows.extend(nested.unwrap_or_else(|| {
+        control_rows(module_id, shown, &visible.controls, menu, plot, false, mark)
+    }));
+    for control in controls {
+        if !matches!(control, ControlModel::Group(_)) && !drawn_by_range(controls, control) {
             rows.push(PanelRow::Plain(revealable(
                 control_view(module_id, enabled, control, menu, plot),
                 is_marked(control, mark),
             )));
         }
     }
-    rows
+    Some(rows)
 }
 
 /// A button-like control: a picker, or an action drawn as a button.
@@ -1872,103 +1882,25 @@ fn group_rows<'a>(
     };
     let marked = matches!(mark, Some(RevealKey::Group(path)) if *path == group.path);
     let mut rows = vec![PanelRow::Plain(revealable(header, marked))];
-    if group.expanded
-        && let Some(visible) = group.visible_view()
-    {
-        rows.extend(nested_tab_rows(
-            module_id, enabled, group, visible, menu, plot, mark,
-        ));
-    } else if group.expanded {
-        rows.extend(control_rows(
+    if !group.expanded {
+        return rows;
+    }
+    // A group that declares `layout: tabs` draws its tab row flush under its header.
+    let tabbed = group.selected.and_then(|selected| {
+        tab_rows(
             module_id,
             enabled,
             &group.controls,
+            group.id.as_deref(),
+            selected,
             menu,
             plot,
-            true,
             mark,
-        ));
-    }
-    rows
-}
-
-/// The body of a group that declares `layout: tabs`: a segmented row of its child groups, a dot on
-/// each Custom one, the visible child's reset at the row's right when it declares one (a view
-/// declares none), then only that child's controls, flush under the group's header. Selecting a
-/// tab is the session's view state ([`ControlMessage::SelectView`]), keyed by the group's labels.
-fn nested_tab_rows<'a>(
-    module_id: &str,
-    enabled: bool,
-    group: &'a GroupControl,
-    visible: &'a GroupControl,
-    menu: Option<&'a MenuTarget>,
-    plot: &HistogramModel,
-    mark: Option<&RevealKey>,
-) -> Vec<PanelRow<'a>> {
-    let children: Vec<&GroupControl> = group
-        .controls
-        .iter()
-        .filter_map(|control| match control {
-            ControlModel::Group(child) => Some(child),
-            _ => None,
-        })
-        .collect();
-    let labels: Vec<String> = children.iter().map(|child| child.label.clone()).collect();
-    let module = module_id.to_owned();
-    let path = group.labels.clone();
-    let tabs = tab_row(
-        &TabRowModel {
-            tabs: children
-                .iter()
-                .map(|child| Tab {
-                    label: child.label.clone(),
-                    // A view shows fields its group owns, so only a subgroup reads Custom.
-                    custom: !child.view && child.state == Some(GroupState::Custom),
-                })
-                .collect(),
-            selected: children
-                .iter()
-                .position(|child| std::ptr::eq(*child, visible))
-                .unwrap_or(0),
-            reset: visible.reset.is_some(),
-            enabled,
-        },
-        move |index| {
-            Message::Control(ControlMessage::SelectView {
-                module_id: module.clone(),
-                group: path.clone(),
-                view: labels.get(index).cloned().unwrap_or_default(),
-            })
-        },
-        Message::Control(ControlMessage::ResetGroup {
-            module_id: module_id.to_owned(),
-            path: visible.path.clone(),
-        }),
-    );
-    let tabs = match &visible.reset {
-        Some(reset) => {
-            with_control_menu_preset(tabs, &reset.action, None, Some(&reset.preset), menu)
-        }
-        None => tabs,
-    };
-    let mut rows = vec![PanelRow::Plain(tabs)];
-    rows.extend(control_rows(
-        module_id,
-        enabled && visible.enabled,
-        &visible.controls,
-        menu,
-        plot,
-        false,
-        mark,
-    ));
-    for control in &group.controls {
-        if !matches!(control, ControlModel::Group(_)) && !drawn_by_range(&group.controls, control) {
-            rows.push(PanelRow::Plain(revealable(
-                control_view(module_id, enabled, control, menu, plot),
-                is_marked(control, mark),
-            )));
-        }
-    }
+        )
+    });
+    rows.extend(tabbed.unwrap_or_else(|| {
+        control_rows(module_id, enabled, &group.controls, menu, plot, true, mark)
+    }));
     rows
 }
 
@@ -1981,16 +1913,6 @@ fn wheel_view<'a>(
 ) -> Element<'a, Message> {
     let unit = wheel.hue.unit.as_deref().unwrap_or("");
     let enabled_disc = enabled && wheel.hue.invalid.is_none() && wheel.saturation.invalid.is_none();
-    // The disc is drawn from these alone, so they are its cache's version.
-    let version = {
-        use std::hash::{Hash, Hasher};
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        wheel.hue.value.to_bits().hash(&mut hasher);
-        wheel.saturation.value.to_bits().hash(&mut hasher);
-        wheel.dragging.hash(&mut hasher);
-        enabled_disc.hash(&mut hasher);
-        hasher.finish()
-    };
     let model = luxforge_ui::WheelModel {
         label: wheel.label.clone(),
         readout: format!(
@@ -1998,11 +1920,10 @@ fn wheel_view<'a>(
             wheel.hue.display, wheel.saturation.display
         ),
         hue: wheel.hue.value as f32,
-        saturation: wheel.radius() as f32,
+        radius: wheel.radius() as f32,
         large: wheel.large,
         dragging: wheel.dragging,
         enabled: enabled_disc,
-        version,
     };
     let (action, hue) = (wheel.action.clone(), wheel.hue.parameter.clone());
     let disc = luxforge_ui::wheel(&model, move |event| {

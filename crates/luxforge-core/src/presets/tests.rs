@@ -308,6 +308,7 @@ fn develop_report(format: &str) -> ImportReport {
             because("SyntheticFutureControl", "3", "not recognised"),
         ],
         refused: vec![],
+        derived: Vec::new(),
     }
 }
 
@@ -416,6 +417,7 @@ fn an_earlier_process_preset_refuses_every_mapped_value_and_so_maps_nothing() {
                 because("Vibrance", "+10", version),
                 because("WhiteBalance", "As Shot", version),
             ],
+            derived: Vec::new(),
         }
     );
     assert_eq!(
@@ -492,6 +494,7 @@ fn out_of_range_and_unparsable_values_are_refused_and_never_clamped() {
                 ),
                 because("Vibrance", "lots", "not a number"),
             ],
+            derived: Vec::new(),
         }
     );
     assert_eq!(
@@ -568,6 +571,7 @@ fn a_photo_sidecar_imports_like_a_preset_with_its_crop_reported() {
                 because("LensProfileSetup", "LensDefaults", lens),
             ],
             refused: vec![],
+            derived: Vec::new(),
         }
     );
     assert_eq!(
@@ -690,6 +694,7 @@ fn a_template_reads_zstr_curves_nested_tables_and_panel_switches() {
                 because("SplitToningHighlightHue", "40", disabled),
                 because("SplitToningHighlightSaturation", "18", disabled),
             ],
+            derived: Vec::new(),
         }
     );
     assert_eq!(
@@ -762,6 +767,22 @@ fn settings_template(settings: &str) -> String {
     format!(
         "s = {{ title = \"T\", type = \"Develop\", value = {{ settings = {{ {settings} }} }} }}"
     )
+}
+
+/// An XMP develop preset up to its open `rdf:Description`, which carries these attributes; the
+/// three namespaces are the only ones declared.
+fn xmp_open(attributes: &str) -> String {
+    format!(
+        "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF \
+         xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description \
+         rdf:about=\"\" xmlns:crs=\"http://ns.adobe.com/camera-raw-settings/1.0/\" \
+         crs:PresetType=\"Normal\" crs:Name=\"G\" {attributes}"
+    )
+}
+
+/// An XMP develop preset holding exactly these `crs:` attributes.
+fn xmp(attributes: &str) -> String {
+    format!("{}/></rdf:RDF></x:xmpmeta>", xmp_open(attributes))
 }
 
 #[test]
@@ -933,6 +954,7 @@ fn panel_switches_gate_their_panels_and_unknown_switches_are_reported() {
                 "10",
                 "panel switch EnableEffects is not a boolean"
             )],
+            derived: Vec::new(),
         }
     );
 }
@@ -1060,6 +1082,7 @@ fn a_tone_curve_transfers_as_points_on_the_unit_scale() {
                 ),
             ],
             refused: vec![],
+            derived: Vec::new(),
         }
     );
     assert_eq!(
@@ -1259,6 +1282,7 @@ fn a_decreasing_tone_curve_is_refused_as_not_monotone() {
                 "0, 0; 96, 140; 176, 110; 255, 255",
                 "point 2's output decreases; Luxforge's tone curve is monotone"
             )],
+            derived: Vec::new(),
         }
     );
     assert_eq!(
@@ -1340,6 +1364,7 @@ fn a_disabled_tone_curve_is_refused_as_disabled() {
                 "0, 0; 64, 48; 192, 210; 255, 255",
                 "disabled in the preset"
             )],
+            derived: Vec::new(),
         }
     );
     let identity = inspect_preset(
@@ -1614,6 +1639,7 @@ fn a_luxforge_document_maps_every_field_one_to_one_and_is_what_export_writes() {
             neutral: vec![],
             unsupported: vec![],
             refused: vec![],
+            derived: Vec::new(),
         }
     );
     assert!(!preset.report.partial());
@@ -2097,13 +2123,9 @@ fn measure_preset_parse_at_the_size_limit() {
         text.push_str(tail);
         (text, index)
     };
-    const RDF: &str = "xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"";
-    const CRS: &str = "xmlns:crs=\"http://ns.adobe.com/camera-raw-settings/1.0/\"";
+    const SETTINGS: &str = "crs:ProcessVersion=\"15.4\" crs:Exposure2012=\"+0.35\"";
     let description = |attributes: usize| {
-        let mut text = format!(
-            "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF {RDF}><rdf:Description {CRS} \
-             crs:ProcessVersion=\"15.4\" crs:Exposure2012=\"+0.35\""
-        );
+        let mut text = xmp_open(SETTINGS);
         for index in 0..attributes {
             text.push_str(&format!(" crs:S{index}=\"+{index}.5\""));
         }
@@ -2129,7 +2151,7 @@ fn measure_preset_parse_at_the_size_limit() {
         (
             "XMP, 1,999 attributes on one element and a curve",
             fill(
-                &format!("{}><crs:ToneCurvePV2012><rdf:Seq>", description(1996)),
+                &format!("{}><crs:ToneCurvePV2012><rdf:Seq>", description(1993)),
                 &format!("</rdf:Seq></crs:ToneCurvePV2012>{close}"),
                 &point,
             ),
@@ -2153,10 +2175,15 @@ fn measure_preset_parse_at_the_size_limit() {
         (
             "XMP, 128 namespaces in scope and a curve",
             fill(
+                // The spare declarations sit on the outermost element, ahead of the ones the
+                // elements resolve.
                 &format!(
-                    "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"{spare}><rdf:RDF {RDF}><rdf:Description \
-                     {CRS} crs:ProcessVersion=\"15.4\" crs:Exposure2012=\"+0.35\">\
-                     <crs:ToneCurvePV2012><rdf:Seq>"
+                    "{}><crs:ToneCurvePV2012><rdf:Seq>",
+                    xmp_open(SETTINGS).replacen(
+                        "adobe:ns:meta/\"",
+                        &format!("adobe:ns:meta/\"{spare}"),
+                        1
+                    )
                 ),
                 &format!("</rdf:Seq></crs:ToneCurvePV2012>{close}"),
                 &point,
@@ -2239,16 +2266,6 @@ const SPLIT_TONING_UNVERSIONED: &str =
 const SPLIT_TONING_TEMPLATE: &str =
     include_str!("../../../../fixtures/presets/split-toning.lrtemplate");
 
-/// An XMP develop preset holding exactly these `crs:` attributes.
-fn xmp(attributes: &str) -> String {
-    format!(
-        "<x:xmpmeta xmlns:x=\"adobe:ns:meta/\"><rdf:RDF \
-         xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\"><rdf:Description \
-         rdf:about=\"\" xmlns:crs=\"http://ns.adobe.com/camera-raw-settings/1.0/\" \
-         crs:PresetType=\"Normal\" crs:Name=\"G\" {attributes}/></rdf:RDF></x:xmpmeta>"
-    )
-}
-
 /// The mixer fields a settings set holds.
 fn mixer_fields(preset: &ImportedPreset) -> Map<String, Value> {
     preset
@@ -2269,8 +2286,20 @@ fn legacy_split_toning() -> Map<String, Value> {
     }))
 }
 
+/// The one derived entry a split-toning document reports, refused for this reason or written.
+fn split_toning_derived(refused: Option<&str>) -> Vec<DerivedSettings> {
+    vec![DerivedSettings {
+        reason: "split toning written before Color Grading: Blending 100 and every control \
+                 Color Grading added at 0"
+            .into(),
+        settings: object(json!({"set-mixer": legacy_split_toning()})),
+        refused: refused.map(str::to_owned),
+    }]
+}
+
 /// A Camera Raw 13.2 document is Color Grading: every grading setting transfers onto its own
 /// field as written, Blending and the 360° seam included, beside HSL, and nothing more is added.
+/// Each setting's value is distinct, so the fields prove the mapping.
 #[test]
 fn a_color_grading_document_transfers_every_grading_setting() {
     let preset = parse_preset(COLOR_GRADE, Some("color-grade.xmp"), &registry()).unwrap();
@@ -2288,41 +2317,14 @@ fn a_color_grading_document_transfers_every_grading_setting() {
             "grade-global-luminance": -3, "grade-blending": 65
         }))
     );
+    assert_eq!(preset.report.mapped.len(), 15);
     assert!(
         preset.report.refused.is_empty(),
         "{:?}",
         preset.report.refused
     );
     assert!(preset.report.unsupported.is_empty());
-    let fields: Vec<(&str, &str)> = preset
-        .report
-        .mapped
-        .iter()
-        .filter_map(|entry| Some((entry.setting.as_str(), entry.field.as_deref()?)))
-        .filter(|(_, field)| field.starts_with("grade-"))
-        .collect();
-    assert_eq!(
-        fields,
-        [
-            ("ColorGradeBlending", "grade-blending"),
-            ("ColorGradeGlobalHue", "grade-global-hue"),
-            ("ColorGradeGlobalLum", "grade-global-luminance"),
-            ("ColorGradeGlobalSat", "grade-global-saturation"),
-            ("ColorGradeHighlightLum", "grade-highlights-luminance"),
-            ("ColorGradeMidtoneHue", "grade-midtones-hue"),
-            ("ColorGradeMidtoneLum", "grade-midtones-luminance"),
-            ("ColorGradeMidtoneSat", "grade-midtones-saturation"),
-            ("ColorGradeShadowLum", "grade-shadows-luminance"),
-            ("SplitToningBalance", "grade-balance"),
-            ("SplitToningHighlightHue", "grade-highlights-hue"),
-            (
-                "SplitToningHighlightSaturation",
-                "grade-highlights-saturation"
-            ),
-            ("SplitToningShadowHue", "grade-shadows-hue"),
-            ("SplitToningShadowSaturation", "grade-shadows-saturation"),
-        ]
-    );
+    assert!(preset.report.derived.is_empty());
 }
 
 /// A sparse Color Grading document is a patch of exactly the fields it holds: luminance without a
@@ -2344,7 +2346,8 @@ fn a_partial_color_grading_document_is_a_patch_of_its_own_fields() {
 /// A document written before Color Grading (Camera Raw 12.4, or any `.lrtemplate`) is split
 /// toning: its Shadows, Highlights and Balance transfer, Blending becomes 100 and every control
 /// Color Grading added is written neutral, so applying it replaces any earlier grade; HSL is kept
-/// as its own fields, and the added values are reported under the first transferred setting.
+/// as its own fields. The added values are one derived entry, not a setting of the file, so each
+/// setting is mapped once and counted once.
 #[test]
 fn a_legacy_split_toning_document_becomes_full_blending_split_toning() {
     let preset = parse_preset(SPLIT_TONING, None, &registry()).unwrap();
@@ -2354,26 +2357,51 @@ fn a_legacy_split_toning_document_becomes_full_blending_split_toning() {
     }));
     expected.extend(legacy_split_toning());
     assert_eq!(mixer_fields(&preset), expected);
-    let added: Vec<&MappedSetting> = preset
-        .report
-        .mapped
-        .iter()
-        .filter(|entry| {
-            entry
-                .field
-                .as_ref()
-                .is_some_and(|field| legacy_split_toning().contains_key(field))
-        })
-        .collect();
-    assert_eq!(added.len(), legacy_split_toning().len());
-    assert!(
-        added
-            .iter()
-            .all(|entry| entry.setting == added[0].setting
-                && entry.setting.starts_with("SplitToning")),
-        "{added:?}"
+    let mixer =
+        |setting, value, field, applied| mapped(setting, value, "set-mixer", field, applied);
+    assert_eq!(
+        preset.report.mapped,
+        [
+            mixer(
+                "SaturationAdjustmentBlue",
+                "-10",
+                "blue-saturation",
+                json!(-10)
+            ),
+            mixer("SplitToningBalance", "+20", "grade-balance", json!(20)),
+            mixer(
+                "SplitToningHighlightHue",
+                "50",
+                "grade-highlights-hue",
+                json!(50)
+            ),
+            mixer(
+                "SplitToningHighlightSaturation",
+                "30",
+                "grade-highlights-saturation",
+                json!(30)
+            ),
+            mixer(
+                "SplitToningShadowHue",
+                "220",
+                "grade-shadows-hue",
+                json!(220)
+            ),
+            mixer(
+                "SplitToningShadowSaturation",
+                "25",
+                "grade-shadows-saturation",
+                json!(25)
+            ),
+        ]
     );
+    assert_eq!(preset.report.derived, split_toning_derived(None));
     assert!(preset.report.refused.is_empty());
+    assert!(!preset.report.partial());
+    assert_eq!(
+        preset.report.counts().to_string(),
+        "6 mapped, 0 neutral, 0 unsupported, 0 refused"
+    );
 
     let template = parse_preset(SPLIT_TONING_TEMPLATE, None, &registry()).unwrap();
     let mut expected = object(json!({
@@ -2382,7 +2410,77 @@ fn a_legacy_split_toning_document_becomes_full_blending_split_toning() {
     }));
     expected.extend(legacy_split_toning());
     assert_eq!(mixer_fields(&template), expected);
+    assert_eq!(template.report.mapped.len(), 6);
+    assert_eq!(template.report.derived, split_toning_derived(None));
     assert_eq!(template.name, "Cross Split");
+}
+
+/// Camera Raw writes point releases into `Version`: 12.4.1 is before Color Grading, so its split
+/// toning gains the fill, and 13.0.1 is Color Grading, a patch of exactly what it holds.
+#[test]
+fn a_point_release_camera_raw_version_decides_the_grading_model() {
+    let split = "crs:ProcessVersion=\"11.0\" crs:SplitToningShadowHue=\"200\" \
+                 crs:SplitToningShadowSaturation=\"20\"";
+    let early = parse_preset(
+        &xmp(&format!("crs:Version=\"12.4.1\" {split}")),
+        None,
+        &registry(),
+    )
+    .unwrap();
+    let mut expected = object(json!({"grade-shadows-hue": 200, "grade-shadows-saturation": 20}));
+    expected.extend(legacy_split_toning());
+    assert_eq!(mixer_fields(&early), expected);
+    assert_eq!(early.report.mapped.len(), 2);
+    assert_eq!(early.report.derived, split_toning_derived(None));
+    assert!(early.report.refused.is_empty());
+
+    let later = parse_preset(
+        &xmp(&format!("crs:Version=\"13.0.1\" {split}")),
+        None,
+        &registry(),
+    )
+    .unwrap();
+    assert_eq!(
+        later.settings,
+        object(json!({"set-mixer": {"grade-shadows-hue": 200, "grade-shadows-saturation": 20}}))
+    );
+    assert!(later.report.derived.is_empty());
+    assert!(later.report.refused.is_empty());
+}
+
+/// A split-toning document with a grading setting refused does not write the fill: Blending 100
+/// and the zeroed controls would replace the photo's grade without the tint meant to replace it.
+/// What does transfer still transfers, and the fill is reported with the reason it was left out.
+#[test]
+fn a_refused_split_toning_setting_leaves_the_fill_out() {
+    let preset = inspect_preset(
+        &xmp(
+            "crs:Version=\"12.4\" crs:ProcessVersion=\"11.0\" crs:SplitToningShadowHue=\"400\" \
+              crs:SplitToningShadowSaturation=\"20\" crs:SplitToningBalance=\"+20\"",
+        ),
+        None,
+        &registry(),
+    )
+    .unwrap();
+    assert_eq!(
+        preset.settings,
+        object(json!({"set-mixer": {"grade-shadows-saturation": 20, "grade-balance": 20}}))
+    );
+    assert_eq!(
+        preset.report.refused,
+        vec![because(
+            "SplitToningShadowHue",
+            "400",
+            "outside Luxforge's range 0..360"
+        )]
+    );
+    assert_eq!(
+        preset.report.derived,
+        split_toning_derived(Some(
+            "a split-toning setting is refused, so the document's split toning is not reproduced"
+        ))
+    );
+    assert!(preset.report.partial());
 }
 
 /// Where the document does not show which model it was written for, its grading settings are
@@ -2538,9 +2636,10 @@ fn auto_tone_import_maps_analysis_and_reports_the_overridden_eight_fields() {
         "ProcessVersion = \"15.4\", AutoTone = true, IncrementalTemperature = 7, {fields}"
     ));
     let xmp_fields = keys.map(|key| format!("crs:{key}=\"12\"")).join(" ");
-    let xmp = format!(
-        r#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:crs="http://ns.adobe.com/camera-raw-settings/1.0/" crs:ProcessVersion="15.4" crs:AutoTone="True" crs:IncrementalTemperature="7" {xmp_fields}/></rdf:RDF></x:xmpmeta>"#
-    );
+    let xmp = xmp(&format!(
+        "crs:ProcessVersion=\"15.4\" crs:AutoTone=\"True\" crs:IncrementalTemperature=\"7\" \
+         {xmp_fields}"
+    ));
     for content in [&template, &xmp] {
         let preset = parse_preset(content, None, &registry()).unwrap();
         assert_eq!(

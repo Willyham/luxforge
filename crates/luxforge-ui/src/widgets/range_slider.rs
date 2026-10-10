@@ -13,6 +13,7 @@
 //! slider places its handle on ([`geometry::handle_center`]), so a range and a slider over the same
 //! axis put the same value at the same point.
 
+use super::double_click::ClickRun;
 use crate::geometry;
 use crate::theme;
 use crate::widgets::slider::RailDecoration;
@@ -25,7 +26,6 @@ use iced::widget::{column, container, row, text};
 use iced::{Alignment, Color, Length, Point, Rectangle, Renderer, Size, mouse};
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
 
 /// One of the four things a pointer can hold on a range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -303,10 +303,6 @@ pub fn dragged_value(
 
 // ---- the rail canvas ---------------------------------------------------------------------------
 
-const DOUBLE_CLICK: Duration = Duration::from_millis(350);
-/// How far a press may be from the one before it and still be its double-click.
-const DOUBLE_CLICK_SLOP: f32 = 4.0;
-
 struct RangeCanvas<'a, M> {
     model: RangeSliderModel,
     on_change: Rc<dyn Fn(RangeGrip, f64) -> M + 'a>,
@@ -329,7 +325,7 @@ struct RangeState {
     held: Option<Held>,
     press_x: f32,
     offset: f32,
-    last_click: Option<(Instant, f32)>,
+    clicks: ClickRun,
 }
 
 /// What a range's drawing depends on: the model, its size and the theme's generation.
@@ -397,13 +393,10 @@ impl<M> canvas::Program<M, Theme> for RangeCanvas<'_, M> {
                 let point = cursor.position_in(bounds)?;
                 let layout = self.layout(width);
                 let tied = hit_grips(&layout, point.x);
-                let double = state.last_click.is_some_and(|(when, x)| {
-                    when.elapsed() <= DOUBLE_CLICK && (point.x - x).abs() <= DOUBLE_CLICK_SLOP
-                });
-                state.last_click = Some((Instant::now(), point.x));
-                if double && let Some(grip) = tied.first().copied() {
+                if state.clicks.double(point)
+                    && let Some(grip) = tied.first().copied()
+                {
                     state.held = None;
-                    state.last_click = None;
                     return Some(Action::publish((self.on_reset)(grip)).and_capture());
                 }
                 state.press_x = point.x;
