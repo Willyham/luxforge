@@ -146,9 +146,12 @@ fn new_group(model: &CorrectionsModel) -> Element<'_, Message> {
         },
     ));
     for field in &model.new_fields {
-        group = group.push(band_slider(field, true, |name, fraction| {
-            message(CorrectionMessage::Field { name, fraction })
-        }, message(CorrectionMessage::FieldReleased)));
+        group = group.push(band_slider(
+            field,
+            true,
+            |name, fraction| message(CorrectionMessage::Field { name, fraction }),
+            message(CorrectionMessage::FieldReleased),
+        ));
     }
     let source = segmented(
         &SegmentedModel {
@@ -178,7 +181,10 @@ fn new_group(model: &CorrectionsModel) -> Element<'_, Message> {
     let note_line: Element<'_, Message> = match &model.source_offset {
         Some(offset) => row![
             note(offset.clone(), Token::Accent),
-            note(format!(" \u{b7} {}", model.source_note), Token::TextTertiary),
+            note(
+                format!(" \u{b7} {}", model.source_note),
+                Token::TextTertiary
+            ),
         ]
         .into(),
         None => note(model.source_note.clone(), Token::TextTertiary),
@@ -263,7 +269,9 @@ fn row_view<'a>(model: &'a CorrectionsModel, row_model: &'a CorrectionRow) -> El
                 .then(|| message(CorrectionMessage::DragStart(operation.clone()))),
             on_delete: Some(message(CorrectionMessage::Delete(Some(operation.clone())))),
             on_menu: Some(message(CorrectionMessage::Menu(Some(operation.clone())))),
-            on_hover_enter: Some(message(CorrectionMessage::HoverRow(Some(operation.clone())))),
+            on_hover_enter: Some(message(CorrectionMessage::HoverRow(Some(
+                operation.clone(),
+            )))),
             on_hover_exit: Some(message(CorrectionMessage::HoverRow(None))),
         },
     );
@@ -273,7 +281,9 @@ fn row_view<'a>(model: &'a CorrectionsModel, row_model: &'a CorrectionRow) -> El
                 .then(|| DropEdge::of(from, row_model.position))
                 .flatten();
             mouse_area(drop_feedback(view, edge, from == row_model.position))
-                .on_enter(message(CorrectionMessage::DragOver(Some(row_model.position))))
+                .on_enter(message(CorrectionMessage::DragOver(Some(
+                    row_model.position,
+                ))))
                 .on_release(message(CorrectionMessage::DragEnd))
                 .interaction(iced::mouse::Interaction::Grabbing)
                 .into()
@@ -293,15 +303,16 @@ fn row_view<'a>(model: &'a CorrectionsModel, row_model: &'a CorrectionRow) -> El
 /// A row's menu: Heal, Clone, New automatic source, Move up, Move down and Delete.
 fn row_menu(model: &CorrectionsModel, row_model: &CorrectionRow) -> Vec<MenuEntry<Message>> {
     let operation = row_model.operation.clone();
-    let item = |icon: Option<Icon>, label: String, trailing: Option<String>, on: Option<Message>| {
-        MenuEntry::Item(MenuItem {
-            icon,
-            label,
-            trailing,
-            on_press: on,
-            reason: None,
-        })
-    };
+    let item =
+        |icon: Option<Icon>, label: String, trailing: Option<String>, on: Option<Message>| {
+            MenuEntry::Item(MenuItem {
+                icon,
+                label,
+                trailing,
+                on_press: on,
+                reason: None,
+            })
+        };
     let mut entries: Vec<MenuEntry<Message>> = model
         .kinds
         .iter()

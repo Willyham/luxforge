@@ -650,7 +650,8 @@ pub(crate) fn draw_icon(frame: &mut canvas::Frame, icon: Icon, size: f32, color:
         Icon::Heal => {
             let (c, k) = (8.0_f32, std::f32::consts::FRAC_1_SQRT_2);
             let (half, r) = (3.7_f32, 2.8_f32);
-            let at = |along: f32, across: f32| p(c + along * k + across * k, c - along * k + across * k);
+            let at =
+                |along: f32, across: f32| p(c + along * k + across * k, c - along * k + across * k);
             let mut path = canvas::path::Builder::new();
             path.move_to(at(-half, -r));
             path.line_to(at(half, -r));

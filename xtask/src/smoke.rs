@@ -5,10 +5,9 @@
 //! and `verify`'s rendered tier all read the table, so a new scenario is one row.
 use crate::{
     basic_smoke as basic, capabilities_smoke as capabilities, controls_smoke as controls,
-    corrections_smoke as corrections,
-    crop_smoke as crop, curve_smoke as curve, detail_smoke as detail,
-    develop_picks_smoke as develop_picks, export_smoke as export, filmstrip_smoke as filmstrip,
-    gallery_smoke as gallery, gpu_preview_smoke as gpu_preview,
+    corrections_smoke as corrections, crop_smoke as crop, curve_smoke as curve,
+    detail_smoke as detail, develop_picks_smoke as develop_picks, export_smoke as export,
+    filmstrip_smoke as filmstrip, gallery_smoke as gallery, gpu_preview_smoke as gpu_preview,
     gpu_preview_zoom_smoke as gpu_preview_zoom, grading_smoke as grading,
     histogram_smoke as histogram, information_smoke as information, lens_smoke as lens,
     look_smoke as look, loupe_smoke as loupe, mask_brush_smoke as mask_brush,

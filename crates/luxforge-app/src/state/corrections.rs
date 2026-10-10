@@ -17,7 +17,9 @@ use serde_json::Value;
 
 /// The module whose `brush-mask` canvas declares an editable operation list, with its binding: the
 /// one module the Corrections workspace drives. The first available one in registry order.
-pub(crate) fn brush_module(modules: &[ModuleDescriptor]) -> Option<(&ModuleDescriptor, BrushBinding)> {
+pub(crate) fn brush_module(
+    modules: &[ModuleDescriptor],
+) -> Option<(&ModuleDescriptor, BrushBinding)> {
     modules
         .iter()
         .filter(|module| module.is_available())
@@ -323,7 +325,11 @@ pub(crate) fn kind_options(binding: &BrushBinding) -> Vec<KindOption> {
 
 /// The radius parameter's declared range.
 pub(crate) fn radius_range(binding: &BrushBinding) -> (f64, f64) {
-    match binding.action.parameter(&binding.radius).map(|declared| &declared.kind) {
+    match binding
+        .action
+        .parameter(&binding.radius)
+        .map(|declared| &declared.kind)
+    {
         Some(ParameterKind::Number { min, max }) if *min > 0.0 && max > min => (*min, *max),
         _ => (0.0005, 0.25),
     }
@@ -353,7 +359,11 @@ pub(crate) fn size_text(radius: f64, content: Option<(u32, u32)>) -> String {
 
 /// An offset from an anchor to a source in content pixels, said the way the band says it: the
 /// distance and its dominant direction, `150 px above`.
-pub(crate) fn offset_phrase(anchor: [f64; 2], source: [f64; 2], content: Option<(u32, u32)>) -> String {
+pub(crate) fn offset_phrase(
+    anchor: [f64; 2],
+    source: [f64; 2],
+    content: Option<(u32, u32)>,
+) -> String {
     let (width, height) = content.map_or((1.0, 1.0), |(w, h)| (f64::from(w), f64::from(h)));
     let dx = (source[0] - anchor[0]) * width;
     let dy = (source[1] - anchor[1]) * height;
@@ -498,7 +508,9 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CorrectionsModel {
                 selected: is_selected,
                 hovered: panel.hovered.as_ref() == Some(&listed.operation),
                 menu_open: menu
-                    == Some(&crate::state::MenuTarget::Correction(listed.operation.clone())),
+                    == Some(&crate::state::MenuTarget::Correction(
+                        listed.operation.clone(),
+                    )),
                 expanded: is_selected.then(|| ExpandedRow {
                     kind: kinds.iter().position(|kind| kind.option == listed.kind),
                     fields: sliders(&binding, radius, feather, opacity, content),
@@ -530,7 +542,11 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CorrectionsModel {
         count,
         hint: format!(
             "{count} {} \u{b7} Esc leaves",
-            if count == 1 { "correction" } else { "corrections" }
+            if count == 1 {
+                "correction"
+            } else {
+                "corrections"
+            }
         ),
         enabled,
         disabled_reason,
@@ -611,8 +627,14 @@ mod tests {
             offset_phrase([0.5, 0.5], [0.476, 0.5], content),
             "96 px left"
         );
-        assert_eq!(offset_phrase([0.5, 0.5], [0.5, 0.55], content), "150 px below");
-        assert_eq!(offset_phrase([0.5, 0.5], [0.6, 0.5], content), "400 px right");
+        assert_eq!(
+            offset_phrase([0.5, 0.5], [0.5, 0.55], content),
+            "150 px below"
+        );
+        assert_eq!(
+            offset_phrase([0.5, 0.5], [0.6, 0.5], content),
+            "400 px right"
+        );
     }
 
     #[test]

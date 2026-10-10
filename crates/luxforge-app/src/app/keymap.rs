@@ -500,10 +500,18 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
                 return corrections(C::Delete(None));
             }
             Key::Named(Named::ArrowUp) => {
-                return corrections(if modifiers.alt() { C::Shift(-1) } else { C::Step(-1) });
+                return corrections(if modifiers.alt() {
+                    C::Shift(-1)
+                } else {
+                    C::Step(-1)
+                });
             }
             Key::Named(Named::ArrowDown) => {
-                return corrections(if modifiers.alt() { C::Shift(1) } else { C::Step(1) });
+                return corrections(if modifiers.alt() {
+                    C::Shift(1)
+                } else {
+                    C::Step(1)
+                });
             }
             _ => {}
         }
@@ -523,10 +531,9 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
         }
         // The mode's own letter leaves it.
         if !*repeat
-            && context
-                .modes
-                .iter()
-                .any(|(letter, module)| module == mode && character(key, letter.to_lowercase().to_string().as_str()))
+            && context.modes.iter().any(|(letter, module)| {
+                module == mode && character(key, letter.to_lowercase().to_string().as_str())
+            })
             && plain(modifiers)
         {
             return Some(Message::View(ViewMessage::SetMode(POINTER_MODE.into())));
@@ -1311,11 +1318,17 @@ mod tests {
         ));
         assert!(matches!(
             press(letter("]"), none, &mode),
-            Some(Message::Corrections(C::Nudge { feather: false, up: true }))
+            Some(Message::Corrections(C::Nudge {
+                feather: false,
+                up: true
+            }))
         ));
         assert!(matches!(
             press(letter("{"), Modifiers::SHIFT, &mode),
-            Some(Message::Corrections(C::Nudge { feather: true, up: false }))
+            Some(Message::Corrections(C::Nudge {
+                feather: true,
+                up: false
+            }))
         ));
         assert!(matches!(
             press(letter("h"), none, &mode),

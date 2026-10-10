@@ -302,7 +302,9 @@ pub(crate) fn answer_reads(editor: &mut Editor) {
                 json!({"asset_id": state.asset.id, "entry_id": entry}),
             )
             .and_then(|(value, _)| serde_json::from_value(value).map_err(|e| e.to_string()));
-            let _ = editor.update(Message::Corrections(CorrectionMessage::Transform(id, result)));
+            let _ = editor.update(Message::Corrections(CorrectionMessage::Transform(
+                id, result,
+            )));
             answered = true;
         }
         if let Some((asset, entry)) = editor.correction_reads.listing_asked.clone()
@@ -436,6 +438,15 @@ impl Editor {
         format!(
             "Corrections \u{b7} {kind} \u{b7} click for a spot or paint a stroke \u{b7} source picked automatically \u{b7} \u{2325}-click sets one"
         )
+    }
+
+    /// The open gesture's sentence on the status bar now, before its first frame arrives.
+    fn say_gesture(&mut self) {
+        if self.correction_gesture().is_some()
+            && let Some(line) = self.correction_status()
+        {
+            self.status.text = line;
+        }
     }
 
     /// Say `line` now and keep it for the frames that follow.
@@ -745,7 +756,10 @@ impl Editor {
         self.view_state.menu = None;
         if let Err(refusal) = self.correction_map_for_press() {
             self.status.text = refusal.sentence().to_owned();
-            self.event("correction_press_refused", || json!({"reason": refusal.token()}));
+            self.event(
+                "correction_press_refused",
+                || json!({"reason": refusal.token()}),
+            );
             return Task::none();
         }
         let content_size = self.correction_content();
@@ -865,6 +879,7 @@ impl Editor {
             self.corrections.source = choice;
             self.corrections.notice = None;
             self.correction_reads.line = None;
+            self.say_gesture();
         }
         task
     }
@@ -942,7 +957,9 @@ impl Editor {
                 || json!({"action": held.action(), "name": held.name, "fields": fields}),
             );
             let id = self.next_gesture();
-            return self.open_core(id, Kind::Correction(held), fields);
+            let task = self.open_core(id, Kind::Correction(held), fields);
+            self.say_gesture();
+            return task;
         }
         let Some(gesture) = self.correction_gesture_mut() else {
             return Task::none();
@@ -1002,7 +1019,11 @@ impl Editor {
         let mut last_end = None;
         match &mut gesture.op {
             CorrectionOp::Add {
-                press, path, source, set, ..
+                press,
+                path,
+                source,
+                set,
+                ..
             } => {
                 let Some(held) = press.take() else {
                     return Task::none();
@@ -1061,7 +1082,10 @@ impl Editor {
             self.corrections.row_drag = None;
             return Task::none();
         }
-        let Some(listed) = self.correction_listing().and_then(|l| l.find(&operation)).cloned()
+        let Some(listed) = self
+            .correction_listing()
+            .and_then(|l| l.find(&operation))
+            .cloned()
         else {
             return Task::none();
         };
@@ -1078,7 +1102,9 @@ impl Editor {
         };
         let fields = gesture.fields().ok().flatten();
         let id = self.next_gesture();
-        self.open_core(id, Kind::Correction(Box::new(gesture)), fields)
+        let task = self.open_core(id, Kind::Correction(Box::new(gesture)), fields);
+        self.say_gesture();
+        task
     }
 
     /// One direct edit of one correction: these fields of the declared edit, as one entry.
@@ -1199,9 +1225,7 @@ impl Editor {
         module
             .actions
             .iter()
-            .find(|action| {
-                action.id.starts_with(verb) && action.parameter(identity).is_some()
-            })
+            .find(|action| action.id.starts_with(verb) && action.parameter(identity).is_some())
             .map(|action| action.id.clone())
     }
 
@@ -1502,7 +1526,9 @@ impl Editor {
     }
 
     /// The canvas's data for one frame, while the mode is on screen and its map is in hand.
-    pub(crate) fn correction_canvas(&self) -> Option<crate::view::corrections_canvas::CanvasData<'_>> {
+    pub(crate) fn correction_canvas(
+        &self,
+    ) -> Option<crate::view::corrections_canvas::CanvasData<'_>> {
         if !self.corrections_active() || self.document.compare_return.is_some() {
             return None;
         }
@@ -1513,7 +1539,10 @@ impl Editor {
         let gesture = self.drawn_correction();
         let settings = self.new_settings(&binding);
         let at_limit = listing.is_some_and(|listing| operations.len() >= listing.body.limit)
-            || matches!(self.corrections.notice, Some(CorrectionNotice::Limit { .. }));
+            || matches!(
+                self.corrections.notice,
+                Some(CorrectionNotice::Limit { .. })
+            );
         Some(crate::view::corrections_canvas::CanvasData {
             map,
             operations,
@@ -1526,8 +1555,9 @@ impl Editor {
             gesture,
             painting: gesture.is_some_and(|gesture| gesture.adds()),
             automatic: gesture.is_some_and(|gesture| gesture.adds() && gesture.automatic()),
-            refused: at_limit || self.gesture_refusal(Starting::Correction).is_some()
-                && self.correction_gesture().is_none(),
+            refused: at_limit
+                || self.gesture_refusal(Starting::Correction).is_some()
+                    && self.correction_gesture().is_none(),
             waiting: self.correction_reads.map_stale,
         })
     }
@@ -1629,7 +1659,8 @@ pub(super) fn after_message(editor: &mut Editor, before: &Before) -> Task<Messag
         .listing
         .as_ref()
         .is_some_and(|listing| listing.entry == entry);
-    let asked = editor.correction_reads.listing_asked.as_ref() == Some(&(asset.clone(), entry.clone()));
+    let asked =
+        editor.correction_reads.listing_asked.as_ref() == Some(&(asset.clone(), entry.clone()));
     if !listed
         && !asked
         && let Some(list) = brush_module(&editor.modules)

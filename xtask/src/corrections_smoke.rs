@@ -22,8 +22,8 @@ use crate::{
     *,
 };
 use luxforge_evidence::{
-    self as script, CatalogStep, CorrectionHandle, CorrectionStep, CorrectionDrag, ExportFile, ExportStep,
-    PressModifier, PressStep, PreviewStep, SelectStep, SelectWorkspace,
+    self as script, CatalogStep, CorrectionDrag, CorrectionHandle, CorrectionStep, ExportFile,
+    ExportStep, PressModifier, PressStep, PreviewStep, SelectStep, SelectWorkspace,
 };
 
 pub const SCENARIO: &str = "corrections";
@@ -122,7 +122,9 @@ pub fn launch1(_: &[PathBuf]) -> Plan {
     held.to = vec![CLONE_TO[0]];
     held.release = false;
     Plan::new(vec![
-        Step::opened("opened").no_layer(CORRECTIONS_EFFECT).no_draft(),
+        Step::opened("opened")
+            .no_layer(CORRECTIONS_EFFECT)
+            .no_draft(),
         Step::new("mode", key("q")).commits(0).mode(MODULE),
         Step::new("size", field("radius", SIZE)).commits(0),
         // A click away from every pin: a spot with an automatic source, one entry, selected.
@@ -142,15 +144,22 @@ pub fn launch1(_: &[PathBuf]) -> Plan {
         Step::new("source-set", with(GOLD_SOURCE, PressModifier::Alt))
             .commits(0)
             .status_starts("Source set"),
-        Step::new("clone-kind", correction(CorrectionStep::Kind("clone".into()))).commits(0),
+        Step::new(
+            "clone-kind",
+            correction(CorrectionStep::Kind("clone".into())),
+        )
+        .commits(0),
         // The Clone painted with the button still down: the live repair through the draft.
         Step::new("clone-held", correction(CorrectionStep::Press(held)))
             .commits(0)
             .status_starts("Clone 4 draft"),
-        Step::new("clone-released", correction(CorrectionStep::Release(CLONE_TO[1])))
-            .commits(1)
-            .label("Add Clone 4")
-            .no_draft(),
+        Step::new(
+            "clone-released",
+            correction(CorrectionStep::Release(CLONE_TO[1])),
+        )
+        .commits(1)
+        .label("Add Clone 4")
+        .no_draft(),
         // Escape, one level at a time: deselect, then clear the set source.
         Step::new("escape-deselect", key("Escape")).commits(0),
         Step::new("escape-source", key("Escape"))
@@ -169,12 +178,18 @@ pub fn launch1(_: &[PathBuf]) -> Plan {
             .status_starts("Heal 2 selected"),
         Step::new("reselect", correction(CorrectionStep::Row(Some(4)))).commits(0),
         // The selected correction's handles, one entry each.
-        Step::new("pin-drag", drag(CorrectionHandle::Pin, &[[0.31, 0.31], [0.32, 0.32]]))
-            .commits(1)
-            .label("Move Heal 1"),
-        Step::new("source-drag", drag(CorrectionHandle::Source, &[[0.38, 0.20], [0.40, 0.18]]))
-            .commits(1)
-            .label("Move Heal 1 source"),
+        Step::new(
+            "pin-drag",
+            drag(CorrectionHandle::Pin, &[[0.31, 0.31], [0.32, 0.32]]),
+        )
+        .commits(1)
+        .label("Move Heal 1"),
+        Step::new(
+            "source-drag",
+            drag(CorrectionHandle::Source, &[[0.38, 0.20], [0.40, 0.18]]),
+        )
+        .commits(1)
+        .label("Move Heal 1 source"),
         Step::new(
             "resize",
             drag(CorrectionHandle::Size, &[[0.32 + 0.06 / 1.5, 0.32]]),
@@ -189,11 +204,16 @@ pub fn launch1(_: &[PathBuf]) -> Plan {
         Step::new("option-up", key("Option+ArrowUp"))
             .commits(1)
             .label("Reorder Heal 1"),
-        Step::new("row-drag", correction(CorrectionStep::Reorder { row: 0, to: 4 }))
-            .commits(1)
-            .label("Reorder Clone 5"),
+        Step::new(
+            "row-drag",
+            correction(CorrectionStep::Reorder { row: 0, to: 4 }),
+        )
+        .commits(1)
+        .label("Reorder Clone 5"),
         // `H` hides the pins and outlines, and shows them again.
-        Step::new("hidden", key("h")).commits(0).status_starts("Pins and outlines hidden"),
+        Step::new("hidden", key("h"))
+            .commits(0)
+            .status_starts("Pins and outlines hidden"),
         Step::new("shown", key("h")).commits(0),
         // `⌫` deletes the selected correction.
         Step::new("deleted", key("Backspace"))
@@ -213,7 +233,11 @@ pub fn launch1(_: &[PathBuf]) -> Plan {
         Step::new("clear-source", correction(CorrectionStep::SourceAuto)).commits(0),
         Step::new("size-again", field("radius", SIZE)).commits(0),
         // A Clone whose source is the earlier Clone's repaired patch.
-        Step::new("stack-kind", correction(CorrectionStep::Kind("clone".into()))).commits(0),
+        Step::new(
+            "stack-kind",
+            correction(CorrectionStep::Kind("clone".into())),
+        )
+        .commits(0),
         Step::new("stack-source", with(STACK_SOURCE, PressModifier::Alt)).commits(0),
         Step::new("stacked", add(STACK_AT))
             .commits(1)
@@ -234,7 +258,9 @@ pub fn launch1(_: &[PathBuf]) -> Plan {
         .commits(0),
         // Escape twice (the set source, then the mode) leaves Corrections.
         Step::new("escape-clear", key("Escape")).commits(0),
-        Step::new("escape-leave", key("Escape")).commits(0).mode("pointer"),
+        Step::new("escape-leave", key("Escape"))
+            .commits(0)
+            .mode("pointer"),
     ])
 }
 
@@ -331,8 +357,17 @@ fn rgb(frame: &Frame, at: [f64; 2]) -> Result<[f64; 3]> {
 }
 
 /// Each channel of `read` within [`NEAR`] of `expected`.
-fn near(checks: &mut Checks, frame: &Frame, what: &str, read: [f64; 3], expected: [f64; 3]) -> Result {
-    for (channel, (read, expected)) in ["red", "green", "blue"].iter().zip(read.iter().zip(expected)) {
+fn near(
+    checks: &mut Checks,
+    frame: &Frame,
+    what: &str,
+    read: [f64; 3],
+    expected: [f64; 3],
+) -> Result {
+    for (channel, (read, expected)) in ["red", "green", "blue"]
+        .iter()
+        .zip(read.iter().zip(expected))
+    {
         checks.compare(
             frame,
             &format!("{what}, {channel}"),
@@ -377,10 +412,28 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
     // The live repair through the draft, and the committed one: gold into blue.
     let opened = launch1.at("opened")?;
-    near(&mut checks, opened, "the Clone's destination before it", rgb(opened, CLONED)?, BLUE)?;
-    near(&mut checks, held, "the live Clone while held", rgb(held, CLONED)?, GOLD)?;
+    near(
+        &mut checks,
+        opened,
+        "the Clone's destination before it",
+        rgb(opened, CLONED)?,
+        BLUE,
+    )?;
+    near(
+        &mut checks,
+        held,
+        "the live Clone while held",
+        rgb(held, CLONED)?,
+        GOLD,
+    )?;
     let released = launch1.at("clone-released")?;
-    near(&mut checks, released, "the committed Clone", rgb(released, CLONED)?, GOLD)?;
+    near(
+        &mut checks,
+        released,
+        "the committed Clone",
+        rgb(released, CLONED)?,
+        GOLD,
+    )?;
     // `H` hides the pins: recorded as view state.
     ensure(
         launch1.at("hidden")?.state()["corrections"]["hidden"] == json!(true)
@@ -398,12 +451,30 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
     // Stacking: the second Clone sampled the first Clone's repair, gold, not the blue beneath it.
     let stacked = launch1.at("stacked")?;
-    near(&mut checks, stacked, "the stacked Clone", rgb(stacked, STACKED)?, GOLD)?;
+    near(
+        &mut checks,
+        stacked,
+        "the stacked Clone",
+        rgb(stacked, STACKED)?,
+        GOLD,
+    )?;
     // History before the first Clone shows the blue it replaced.
     let before = launch1.at("history-before-clone")?;
-    near(&mut checks, before, "the history entry before the Clone", rgb(before, CLONED)?, BLUE)?;
+    near(
+        &mut checks,
+        before,
+        "the history entry before the Clone",
+        rgb(before, CLONED)?,
+        BLUE,
+    )?;
     let current = launch1.at("history-current")?;
-    near(&mut checks, current, "back at the current state", rgb(current, CLONED)?, GOLD)?;
+    near(
+        &mut checks,
+        current,
+        "back at the current state",
+        rgb(current, CLONED)?,
+        GOLD,
+    )?;
     // The exported JPEG carries the repairs.
     let exported = run.out().join("launch1").join("corrections.jpg");
     let image = image::open(&exported)
@@ -414,7 +485,11 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         (CLONED[0] * f64::from(width)) as u32,
         (CLONED[1] * f64::from(height)) as u32,
     );
-    let pixel = [f64::from(pixel[0]), f64::from(pixel[1]), f64::from(pixel[2])];
+    let pixel = [
+        f64::from(pixel[0]),
+        f64::from(pixel[1]),
+        f64::from(pixel[2]),
+    ];
     for (channel, (read, expected)) in pixel.iter().zip(GOLD).enumerate() {
         ensure(
             (read - expected).abs() <= NEAR,
@@ -427,13 +502,16 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         band(back)["count"].as_u64().is_some_and(|count| count > 0),
         format!("The reopened photograph's corrections: {}", band(back)),
     )?;
-    near(&mut checks, back, "the Clone after reopen, Remove and Put back", rgb(back, CLONED)?, GOLD)?;
+    near(
+        &mut checks,
+        back,
+        "the Clone after reopen, Remove and Put back",
+        rgb(back, CLONED)?,
+        GOLD,
+    )?;
     // Launches 3 and 4: the limit.
     let filled = launch3.at(&format!("agent-{}", FILL_FIRST - 1))?;
-    ensure(
-        filled.revision()? > 0,
-        "Launch 3 committed its corrections",
-    )?;
+    ensure(filled.revision()? > 0, "Launch 3 committed its corrections")?;
     let refused = launch4.at("refused")?;
     ensure(
         band(refused)["footer"] == json!(format!("{LIMIT} of {LIMIT}"))
