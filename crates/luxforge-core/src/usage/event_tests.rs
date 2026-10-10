@@ -341,7 +341,11 @@ fn usage_the_image_id_is_keyed_by_the_session_and_absent_while_off() {
     assert_eq!(collector.image_id("not a fingerprint"), None);
     assert!(!format!("{first:?}").contains(&format!("{:?}", key(1).as_bytes())));
     collector.stop();
-    assert_eq!(collector.image_id(&fingerprint), None, "the key ends with the session");
+    assert_eq!(
+        collector.image_id(&fingerprint),
+        None,
+        "the key ends with the session"
+    );
     // Opting in again brings a new key, and so a different ID for the same photograph.
     collector.start(Trigger::OptIn, start(), SessionClock::manual().0, key(2));
     assert_ne!(collector.image_id(&fingerprint), Some(id));

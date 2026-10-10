@@ -1026,6 +1026,9 @@ pub struct OwnerHandle {
     next_client: Arc<AtomicU64>,
     activity: Arc<ActivityBoard>,
     render: crate::RenderContext,
+    /// The host's usage statistics collector ([`HostConfig::usage`]), which the desktop's
+    /// GUI-local producers record into beside the owner's own.
+    usage: Arc<crate::usage::Collector>,
 }
 
 impl OwnerHandle {
@@ -1148,6 +1151,7 @@ impl OwnerHandle {
         // The analysis worker posts its results back through this same channel, so the owner needs
         // one clone of its own sender. The loop ends on `Stop`, never on the senders dropping.
         let completions = sender.clone();
+        let usage = host.usage.clone();
         let host = CapabilityHost::new(host);
         // Every usage producer records into the host's one collector.
         service.usage = crate::usage::produce::Producer::new(host.usage().clone());
@@ -1181,6 +1185,7 @@ impl OwnerHandle {
                 next_client: Arc::new(AtomicU64::new(1)),
                 activity,
                 render,
+                usage,
             },
             join,
         ))
@@ -1191,6 +1196,12 @@ impl OwnerHandle {
     /// the owner's own work without passing through the owner.
     pub fn activity(&self) -> Arc<ActivityBoard> {
         self.activity.clone()
+    }
+
+    /// The process-wide usage statistics collector the owner's producers record into, which a
+    /// host's own GUI-local producers share ([`HostConfig::usage`]).
+    pub fn usage(&self) -> &Arc<crate::usage::Collector> {
+        &self.usage
     }
 
     /// The render context every evaluation this owner plans reads, so a render the desktop runs

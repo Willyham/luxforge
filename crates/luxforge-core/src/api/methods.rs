@@ -6215,13 +6215,5 @@ mod tests {
     }
 }
 #[cfg(test)]
-mod dump_tmp {
-    #[test]
-    fn dump_methods_tmp() {
-        let registry = crate::ModuleRegistry::builtin();
-        let v = super::schemas(&registry);
-        let mut names: Vec<_> = v["methods"].as_object().unwrap().iter().map(|(k, m)| format!("{k}\t{}", m["mutates"])).collect();
-        names.sort();
-        std::fs::write("/tmp/luxforge-methods.txt", names.join("\n")).unwrap();
-    }
-}
+#[path = "usage_coverage_tests.rs"]
+mod usage_coverage_tests;

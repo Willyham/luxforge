@@ -335,7 +335,10 @@ impl EditorService {
                 action,
                 restore_target: None,
                 ..
-            } => (std::borrow::Cow::Borrowed(recipe), Some(&action.input.action_id)),
+            } => (
+                std::borrow::Cow::Borrowed(recipe),
+                Some(&action.input.action_id),
+            ),
             Change::Navigate {
                 target,
                 collapsed: Some(_),

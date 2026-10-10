@@ -176,9 +176,11 @@ fn fixture_path(name: &str) -> PathBuf {
 /// The image ID the test's key gives the photograph whose state is `state`.
 fn image_of(state: &Value) -> ImageId {
     key()
-        .image_id_of_hex(state["asset"]["fingerprint"].as_str().unwrap_or_else(|| {
-            state["fingerprint"].as_str().expect("a fingerprint")
-        }))
+        .image_id_of_hex(
+            state["asset"]["fingerprint"]
+                .as_str()
+                .unwrap_or_else(|| state["fingerprint"].as_str().expect("a fingerprint")),
+        )
         .expect("a fingerprint")
 }
 
@@ -234,7 +236,10 @@ fn usage_a_mixed_import_develop_reopen_export_session_records_its_events_in_orde
         .iter()
         .map(|pick| pick["outcome"].as_str().unwrap())
         .collect();
-    let created = outcomes.iter().filter(|outcome| **outcome == "created").count();
+    let created = outcomes
+        .iter()
+        .filter(|outcome| **outcome == "created")
+        .count();
     assert_eq!(created, 2, "{developed}");
     assert_eq!(
         harness.events(),
@@ -276,7 +281,10 @@ fn usage_a_mixed_import_develop_reopen_export_session_records_its_events_in_orde
     assert_eq!(harness.events(), [commit(Tool::Basic, image)]);
 
     // Ten drag updates and one commit; a cancelled drag commits nothing.
-    let draft = harness.ok("draft.begin", json!({"asset_id": asset, "action": "set-basic"}));
+    let draft = harness.ok(
+        "draft.begin",
+        json!({"asset_id": asset, "action": "set-basic"}),
+    );
     for tick in 1..=10 {
         harness.ok(
             "draft.set",
@@ -288,7 +296,10 @@ fn usage_a_mixed_import_develop_reopen_export_session_records_its_events_in_orde
         "draft.commit",
         json!({"draft_id": draft["draft_id"], "mutation": mutation}),
     );
-    let cancelled = harness.ok("draft.begin", json!({"asset_id": asset, "action": "set-basic"}));
+    let cancelled = harness.ok(
+        "draft.begin",
+        json!({"asset_id": asset, "action": "set-basic"}),
+    );
     harness.ok(
         "draft.set",
         json!({"draft_id": cancelled["draft_id"], "fields": {"exposure": -1.0}}),
@@ -298,7 +309,10 @@ fn usage_a_mixed_import_develop_reopen_export_session_records_its_events_in_orde
 
     // An undo is history's interaction, not a tool commit.
     let mutation = harness.asset_mutation(&asset, "undo");
-    harness.ok("history.undo", json!({"asset_id": asset, "mutation": mutation}));
+    harness.ok(
+        "history.undo",
+        json!({"asset_id": asset, "mutation": mutation}),
+    );
     assert_eq!(
         harness.events(),
         [interaction(Feature::HistoryUndo, Some(image))]
@@ -335,7 +349,8 @@ fn usage_a_mixed_import_develop_reopen_export_session_records_its_events_in_orde
     assert_eq!(exported.len(), 2, "{exported:?}");
     assert_eq!(exported[0], interaction(Feature::Export, Some(image)));
     assert_eq!(
-        ended(&exported[1]).map(|(operation, outcome, count, image)| (operation, outcome, count, image)),
+        ended(&exported[1])
+            .map(|(operation, outcome, count, image)| (operation, outcome, count, image)),
         Some((Operation::Export, Ended::Completed, Some(1), Some(image)))
     );
 
@@ -457,7 +472,12 @@ fn usage_events_carry_no_arguments_labels_or_identities() {
     let developed = harness.develop("private-request", &[&photo]);
     let asset = developed["result"]["developed"][0]["asset_id"].clone();
     let state = harness.open(&asset);
-    assert!(harness.set_basic(&asset, "private-edit", 0.75).error.is_none());
+    assert!(
+        harness
+            .set_basic(&asset, "private-edit", 0.75)
+            .error
+            .is_none()
+    );
     let events = harness.events();
     assert!(!events.is_empty());
     let debug = format!("{events:?}");

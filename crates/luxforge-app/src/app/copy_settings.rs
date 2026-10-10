@@ -422,6 +422,14 @@ impl Editor {
                 self.view_state.copy_settings.pending = false;
                 match result {
                     Ok(clipboard) => {
+                        self.usage_interaction(
+                            if previous {
+                                luxforge_core::usage::Feature::SettingsPastePrevious
+                            } else {
+                                luxforge_core::usage::Feature::SettingsCopy
+                            },
+                            true,
+                        );
                         if previous {
                             let target = self.view_state.copy_settings.previous_target.take();
                             if self.document.state.as_ref().map(|state| &state.asset.id)

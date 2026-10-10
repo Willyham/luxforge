@@ -480,6 +480,7 @@ impl Editor {
                 return self.start_events();
             }
             SelectMessage::Source(source) => {
+                self.usage_interaction(luxforge_core::usage::Feature::BrowseView, false);
                 self.select.state.menu = None;
                 self.select.state.catalog.close();
                 // Another view chosen while a card or folder is being read: the reading goes on
@@ -657,6 +658,7 @@ impl Editor {
                 self.select.state.menu = None;
                 if let Some(query) = &self.select.state.query {
                     let query = model::changed(query, &change);
+                    self.usage_interaction(luxforge_core::usage::Feature::BrowseView, false);
                     return self.evaluate(query);
                 }
             }
@@ -744,6 +746,13 @@ impl Editor {
                 self.select.scroll = self.near_active(self.select.scroll);
             }
             SelectMessage::TogglePanel(panel) => {
+                self.usage_interaction(
+                    match panel {
+                        SelectPanel::Sources => luxforge_core::usage::Feature::PanelToggle,
+                        SelectPanel::Info => luxforge_core::usage::Feature::InformationPanel,
+                    },
+                    false,
+                );
                 let state = &mut self.select.state;
                 match panel {
                     SelectPanel::Sources => state.sources_panel = !state.sources_panel,
@@ -751,6 +760,7 @@ impl Editor {
                 }
             }
             SelectMessage::TogglePanels => {
+                self.usage_interaction(luxforge_core::usage::Feature::PanelToggle, false);
                 let state = &mut self.select.state;
                 let show = !(state.sources_panel || state.info_panel);
                 state.sources_panel = show;
@@ -838,6 +848,7 @@ impl Editor {
         self.palette.open = false;
         self.view_state.menu = None;
         self.select.state.shown = Shown::Select;
+        self.usage_workspace(luxforge_core::usage::Workspace::Select);
         self.controls.ui.analysis_reports.clear();
         self.status.text = "Showing Select".into();
         if std::mem::take(&mut self.select.check_on_show) {
@@ -854,6 +865,9 @@ impl Editor {
     pub(crate) fn show_develop_workspace(&mut self) -> Task<Message> {
         self.select.state.menu = None;
         self.select.state.catalog.close();
+        if self.select.state.shown == Shown::Select {
+            self.usage_workspace(luxforge_core::usage::Workspace::Develop);
+        }
         self.select.state.shown = Shown::Develop;
         self.select.previews.release();
         self.loupe_leave()

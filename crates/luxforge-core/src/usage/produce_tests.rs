@@ -38,7 +38,10 @@ fn usage_changed_tools_names_each_group_whose_layers_differ_and_ignores_identity
     assert_eq!(changed.iter().collect::<Vec<_>>(), [Tool::Basic]);
 
     // A layer added and one removed, in one transaction: two groups, in the registry's order.
-    let both = recipe(vec![basic, Layer::new(VIGNETTE_EFFECT, json!({"amount": -20}))]);
+    let both = recipe(vec![
+        basic,
+        Layer::new(VIGNETTE_EFFECT, json!({"amount": -20})),
+    ]);
     let changed = changed_tools(&registry, &before, &both);
     assert_eq!(
         changed.iter().collect::<Vec<_>>(),
@@ -73,7 +76,12 @@ fn usage_a_mask_command_maps_to_its_interaction_and_nothing_else_does() {
     ] {
         assert_eq!(mask_feature(action), Some(feature), "{action}");
     }
-    for other in ["set-basic", "apply-settings", "mask.list", "mask.sample-input"] {
+    for other in [
+        "set-basic",
+        "apply-settings",
+        "mask.list",
+        "mask.sample-input",
+    ] {
         assert_eq!(mask_feature(other), None, "{other}");
     }
 }
@@ -85,7 +93,11 @@ fn usage_an_adopted_photograph_keeps_its_image_id_for_its_generation_only() {
     let asset = AssetId::new();
     let fingerprint = "c".repeat(64);
     assert_eq!(producer.on(), None);
-    assert_eq!(producer.adopt_if_on(&asset, &fingerprint), None, "off: nothing");
+    assert_eq!(
+        producer.adopt_if_on(&asset, &fingerprint),
+        None,
+        "off: nothing"
+    );
 
     collector.start(
         Trigger::OptIn,
