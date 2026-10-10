@@ -3,21 +3,24 @@
 //! its own ([`ReadAtlas`]), so a source across the frame is read whatever window the boundary holds.
 //!
 //! - **Where from.** A rectangle the boundary holds whole is copied from it, texel for texel. Any
-//!   other is derived from the photograph's source the pipeline holds by the boundary's own
-//!   derivation ([`Derivation`]) placed at its texels of the plane, so each texel is the one the
-//!   boundary would hold at its stage pixel: a cut's, bit for bit, or a reduction's. A rectangle
-//!   neither holds is `source-missing`, and the step is not drawn.
+//!   other is derived by the boundary's own derivation ([`Derivation`]) placed at its texels of the
+//!   plane, so each texel is the one the boundary would hold at its stage pixel: a cut's, bit for
+//!   bit, or a reduction's. It is derived from the source the pipeline holds when that holds it —
+//!   the photo surface holds the whole source — or else from a window of the source holding that
+//!   rectangle alone, which the tile runner holds beside the window its tiles are cut from
+//!   ([`Fill::reads`]). A rectangle none holds is `source-missing`, and the step is not drawn.
 //! - **When.** The plane is one of the link's kept textures, which no pass writes: it is filled
 //!   when what it would hold changes — the boundary's content, its window, the source, the
 //!   derivation or the rectangles ([`key`]) — and the link's passes then all run again over it. A
 //!   tick of a gesture over the same boundary fills nothing.
 //! - **Bounds.** The plane is charged with the link's kept planes. The derivation's words, a
-//!   reduction's coverage tables among them, and each rectangle's origin are held in two buffers of
-//!   the link's, at most [`FILL_WORDS`] words (4 MiB), past which the step is `buffer-limit`; a cut
-//!   needs eleven words and two a rectangle.
+//!   reduction's coverage tables among them, and each rectangle's header — the held size and map
+//!   of the slot it is derived from, and its origin — are held in two buffers of the link's, at
+//!   most [`FILL_WORDS`] words (4 MiB), past which the step is `buffer-limit`; a cut needs eleven
+//!   words and eleven a rectangle.
 use super::{
     BoundaryTexture, GpuFallback, SourceLayouts, SourceSlot, le_bytes,
-    source::{Derivation, PLACED_ORIGIN},
+    source::{Derivation, PLACED_HEADER},
     spatial::ReadAtlas,
 };
 
@@ -28,7 +31,8 @@ pub const FILL_WORDS: u64 = 1 << 20;
 /// What a link's read sets are filled from: the texture the link reads, when its first step reads
 /// the boundary itself, over a window of `size` texels whose texel `(0, 0)` is stage pixel
 /// `origin`, with `input` the key of its content; and the source the pipeline holds, with the
-/// derivation the boundary is drawn by, when it is derived.
+/// derivation the boundary is drawn by, when it is derived; and windows of the source each holding
+/// rectangles of the read set the source does not, of the same source.
 #[derive(Clone, Copy)]
 pub struct Fill<'a> {
     pub boundary: Option<&'a wgpu::Texture>,
@@ -36,13 +40,14 @@ pub struct Fill<'a> {
     pub size: (u32, u32),
     pub input: u64,
     pub source: Option<(&'a SourceSlot, &'a SourceLayouts, &'a Derivation)>,
+    pub reads: &'a [SourceSlot],
 }
 
-/// A link's fill buffers: the derivation's words, whose origin each rectangle's pass overwrites,
-/// and every rectangle's origin, copied over them in turn.
+/// A link's fill buffers: the derivation's words, whose header each rectangle's pass overwrites,
+/// and every rectangle's header, copied over them in turn.
 pub struct FillBuffers {
     words: wgpu::Buffer,
-    origins: wgpu::Buffer,
+    headers: wgpu::Buffer,
 }
 
 /// The key of what `atlas` holds once filled from `fill`.
@@ -66,6 +71,9 @@ pub fn key(fill: &Fill<'_>, atlas: &ReadAtlas) -> u64 {
         )
             .hash(&mut hasher),
         None => 2u8.hash(&mut hasher),
+    }
+    for read in fill.reads {
+        (read.version(), read.window()).hash(&mut hasher);
     }
     hasher.finish()
 }
@@ -107,18 +115,29 @@ pub fn encode(
         if source.kind().boundary().texture() != target.format() {
             return Err(GpuFallback::PipelineFailed);
         }
-        let rects: Vec<[u32; 4]> = derived.iter().map(|&index| atlas.rects[index].0).collect();
-        let words = source
-            .placed_words(derivation, &rects)
+        // Each rectangle from the first slot holding it: the source, else a window of its own.
+        let mut chosen: Vec<&SourceSlot> = Vec::with_capacity(derived.len());
+        let mut headers: Vec<u32> = Vec::with_capacity(derived.len() * PLACED_HEADER);
+        for &index in &derived {
+            let (rect, at) = atlas.rects[index];
+            let slot = std::iter::once(source)
+                .chain(fill.reads)
+                .find(|slot| slot.places(derivation, rect))
+                .ok_or(GpuFallback::SourceMissing)?;
+            if slot.kind() != source.kind() {
+                return Err(GpuFallback::PipelineFailed);
+            }
+            headers.extend(
+                slot.placed_header((rect[0].wrapping_sub(at[0]), rect[1].wrapping_sub(at[1]))),
+            );
+            chosen.push(slot);
+        }
+        // The first slot's words, whose header each pass overwrites: a reduction's tables, which
+        // only the whole source holds, are every rectangle's.
+        let words = chosen[0]
+            .placed_words(derivation, &[atlas.rects[derived[0]].0])
             .ok_or(GpuFallback::SourceMissing)?;
-        let origins: Vec<u32> = derived
-            .iter()
-            .flat_map(|&index| {
-                let ([x, y, _, _], [ax, ay]) = atlas.rects[index];
-                [x.wrapping_sub(ax), y.wrapping_sub(ay)]
-            })
-            .collect();
-        let need = ((words.len() * 4) as u64, (origins.len() * 4) as u64);
+        let need = ((words.len() * 4) as u64, (headers.len() * 4) as u64);
         if (need.0 + need.1) / 4 > FILL_WORDS {
             return Err(GpuFallback::BufferLimit {
                 bytes: need.0 + need.1,
@@ -127,7 +146,7 @@ pub fn encode(
         }
         let fits = buffers
             .as_ref()
-            .is_some_and(|held| held.words.size() >= need.0 && held.origins.size() >= need.1);
+            .is_some_and(|held| held.words.size() >= need.0 && held.headers.size() >= need.1);
         if !fits {
             let buffer = |label, size: u64, usage| {
                 device.create_buffer(&wgpu::BufferDescriptor {
@@ -142,17 +161,17 @@ pub fn encode(
                 need.0,
                 wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             );
-            let origins = buffer(
-                "luxforge.gpu_fill.origins",
+            let headers = buffer(
+                "luxforge.gpu_fill.headers",
                 need.1,
                 wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::COPY_DST,
             );
-            *buffers = Some(FillBuffers { words, origins });
+            *buffers = Some(FillBuffers { words, headers });
         }
         let held = buffers.as_ref().expect("the fill buffers fitted");
         queue.write_buffer(&held.words, 0, &le_bytes(&words));
-        queue.write_buffer(&held.origins, 0, &le_bytes(&origins));
-        placed = Some((source, layouts, derivation, held));
+        queue.write_buffer(&held.headers, 0, &le_bytes(&headers));
+        placed = Some((chosen, layouts, derivation, held));
     }
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
     let mut next = 0u64;
@@ -188,14 +207,10 @@ pub fn encode(
             );
             continue;
         }
-        let (source, layouts, derivation, held) = placed.expect("a rectangle to derive");
-        encoder.copy_buffer_to_buffer(
-            &held.origins,
-            next * 8,
-            &held.words,
-            (PLACED_ORIGIN * 4) as u64,
-            8,
-        );
+        let (chosen, layouts, derivation, held) = placed.as_ref().expect("a rectangle to derive");
+        let source = chosen[next as usize];
+        let header = (PLACED_HEADER * 4) as u64;
+        encoder.copy_buffer_to_buffer(&held.headers, next * header, &held.words, 0, header);
         next += 1;
         source.encode_placed(
             device,

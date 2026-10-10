@@ -33,6 +33,12 @@
 //!   boundary, each link's intermediate and buffers, a tail's intermediate and the output, which a
 //!   next tile of that shape draws into again, each written whole before it is read; and at most
 //!   two readback copies. A tile of another window or shape lets the old one go first.
+//! - **A repair's read set.** A repair step holds every rectangle its operations read in an atlas
+//!   of its own ([`super::fill`]), wherever it lies, so a tile's window holds its own rectangle and
+//!   halos, never a source across the frame. Beside the window, the runner holds a window of the
+//!   source for each rectangle of the plan's read sets — the same for every tile of the plan, so
+//!   a stream uploads each once — from which the atlas's rectangles the boundary does not hold are
+//!   derived; they are charged with the window and go with it.
 //! - **Lights.** A plan whose spatial steps read a global estimate ([`GpuPlan::lights`], Dehaze's
 //!   atmospheric light) is drawn as the photo surface draws it, each light computed by its light
 //!   link from the whole stage at full resolution: the runner runs the link once for the source
@@ -276,6 +282,9 @@ pub struct TileRunner {
     /// The window of the source the last run read, with its bytes as charged, kept for a next run
     /// of the same window.
     window: Option<(SourceSlot, u64)>,
+    /// A window of the source for each rectangle of the plan's repair read sets, held with the
+    /// window and charged in its bytes ([module](self) docs).
+    reads: Vec<SourceSlot>,
     /// The textures and buffers of the last run's shape, kept for a next run of the same shape.
     slot: Option<Slot>,
     /// What each window and slot held was, told apart from the ones after it.
@@ -648,6 +657,7 @@ impl TileRunner {
         let layouts = SourceLayouts::new(&device).ok();
         Ok(Self {
             window: None,
+            reads: Vec::new(),
             slot: None,
             generations: (0, 0),
             in_flight: std::collections::VecDeque::new(),
@@ -706,6 +716,7 @@ impl TileRunner {
     }
 
     fn drop_window(&mut self) {
+        self.reads.clear();
         if self.window.take().is_some() {
             self.generations.0 += 1;
         }
@@ -838,11 +849,16 @@ impl TileRunner {
         let held = self
             .checked(plan, source, window, TileInput::Source)?
             .ok_or(TileFailure::PIPELINE_FAILED)?;
-        let run = held.bytes() + self.slot_bytes(plan, Some(end))?;
+        let reads: u64 = read_windows(plan, source)?
+            .iter()
+            .map(GpuSource::bytes)
+            .sum();
+        let held = held.bytes() + reads;
+        let run = held + self.slot_bytes(plan, Some(end))?;
         // A light is computed on its own before the run, beside the window kept between runs.
         let mut most = run;
         for light in &plan.lights {
-            most = most.max(held.bytes() + self.light_charge(source, light)?);
+            most = most.max(held + self.light_charge(source, light)?);
         }
         Ok(most)
     }
@@ -963,6 +979,11 @@ impl TileRunner {
         }
         // A window of the source for a tile cut from it; none for one copied out of a stage texture.
         let held = self.checked(plan, source, window, input)?;
+        // A window of the source for each rectangle of a repair's read set, beside it.
+        let reads = match held {
+            Some(_) => read_windows(plan, source)?,
+            None => Vec::new(),
+        };
         let lit = Instant::now();
         let lights = self.lit(&plan.lights, source)?;
         let mut times = TileTimes {
@@ -970,7 +991,8 @@ impl TileRunner {
             ..TileTimes::default()
         };
         let slot_bytes = self.slot_bytes(plan, end)?;
-        let window_bytes = held.as_ref().map_or(0, GpuSource::bytes);
+        let window_bytes = held.as_ref().map_or(0, GpuSource::bytes)
+            + reads.iter().map(GpuSource::bytes).sum::<u64>();
         let single = window_bytes
             + slot_bytes
             + self.stage_bytes
@@ -985,11 +1007,19 @@ impl TileRunner {
         // A window of another rectangle, or of another source, and a slot of another shape go
         // before the tile's own are created: the runner holds what it was charged, never more.
         // A tile copied out of a stage texture reads no window of the source.
-        if held.as_ref().is_none_or(|held| {
-            self.window
-                .as_ref()
-                .is_some_and(|(slot, _)| !slot.holds(held))
-        }) {
+        let reads_held = self.reads.len() == reads.len()
+            && self
+                .reads
+                .iter()
+                .zip(&reads)
+                .all(|(slot, read): (&SourceSlot, &GpuSource)| slot.holds(read));
+        if !reads_held
+            || held.as_ref().is_none_or(|held| {
+                self.window
+                    .as_ref()
+                    .is_some_and(|(slot, _)| !slot.holds(held))
+            })
+        {
             self.drop_window();
         }
         let key = SlotKey {
@@ -1022,7 +1052,7 @@ impl TileRunner {
         }
         let submitted = self.encode(
             plan,
-            (held.as_ref(), input, output),
+            (held.as_ref(), &reads, input, output),
             (window, key, slot_bytes),
             &pipelines,
             &lights,
@@ -1549,7 +1579,7 @@ impl TileRunner {
     fn encode(
         &mut self,
         plan: &GpuPlan,
-        (held, input, output): (Option<&GpuSource>, TileInput, TileOutput),
+        (held, reads, input, output): (Option<&GpuSource>, &[GpuSource], TileInput, TileOutput),
         (tile_window, key, slot_bytes): ([u32; 4], SlotKey, u64),
         pipelines: &[(Compiled, u64)],
         lights: &[[f32; 4]],
@@ -1560,14 +1590,21 @@ impl TileRunner {
         if let Some(held) = held
             && self.window.is_none()
         {
-            let mut slot = SourceSlot::new(&self.device, held, layouts, |_| Ok(()))
-                .map_err(TileFailure::Plan)?;
-            while !slot.ready() {
-                if slot.upload(&self.queue, held, u64::MAX) == 0 {
-                    return Err(TileFailure::Plan(GpuFallback::SourceMissing));
+            let upload = |source: &GpuSource| {
+                let mut slot = SourceSlot::new(&self.device, source, layouts, |_| Ok(()))
+                    .map_err(TileFailure::Plan)?;
+                while !slot.ready() {
+                    if slot.upload(&self.queue, source, u64::MAX) == 0 {
+                        return Err(TileFailure::Plan(GpuFallback::SourceMissing));
+                    }
                 }
-            }
-            self.window = Some((slot, held.bytes()));
+                Ok(slot)
+            };
+            let slot = upload(held)?;
+            let reads = reads.iter().map(upload).collect::<Result<Vec<_>, _>>()?;
+            let bytes = held.bytes() + reads.iter().map(SourceSlot::bytes).sum::<u64>();
+            self.window = Some((slot, bytes));
+            self.reads = reads;
             self.figures.uploads += 1;
         }
         times.upload_us = micros(started);
@@ -1706,6 +1743,7 @@ impl TileRunner {
                 .window
                 .as_ref()
                 .map(|(window, _)| (window, layouts, derivation)),
+            reads: &self.reads,
         };
         let link_parts = slot.links.iter().zip(&link_words);
         for ((steps, (compiled, id)), ((texture, words, blocks), packed)) in
@@ -1943,7 +1981,11 @@ impl TileRunner {
             ticket: self.tickets,
             index,
             readback,
-            window: (window_generation, held.map_or(0, GpuSource::bytes)),
+            window: (
+                window_generation,
+                held.and(self.window.as_ref())
+                    .map_or(0, |(_, bytes)| *bytes),
+            ),
             slot: (slot_generation, slot_bytes - readback_bytes),
             done: false,
             times: *times,
@@ -2115,6 +2157,25 @@ impl<K, V> Lru<K, V> {
     fn len(&self) -> usize {
         self.entries.len()
     }
+}
+
+/// A window of `source` for each rectangle of `plan`'s repair read sets ([`super::ReadAtlas`]),
+/// which the runner holds beside the window its tiles are cut from: `source-missing` for one that
+/// leaves what `source` holds.
+fn read_windows(plan: &GpuPlan, source: &GpuSource) -> Result<Vec<GpuSource>, TileFailure> {
+    plan.steps
+        .iter()
+        .filter_map(|step| match step {
+            GpuStep::Spatial(spatial) => spatial.reads.as_ref(),
+            _ => None,
+        })
+        .flat_map(|reads| reads.rects.iter().map(|(rect, _)| *rect))
+        .map(|rect| {
+            source
+                .window(rect)
+                .ok_or(TileFailure::Plan(GpuFallback::SourceMissing))
+        })
+        .collect()
 }
 
 #[cfg(test)]

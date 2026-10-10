@@ -983,6 +983,7 @@ impl Session {
                             size,
                             input: chain::boundary_key(self.boundary_version),
                             source: None,
+                            reads: &[],
                         }),
                     )
                     .map_err(|fallback| fallback.as_str().to_owned())?;

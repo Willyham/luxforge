@@ -2955,6 +2955,8 @@ impl Executor {
             size,
             input: boundary_input,
             source: derived,
+            // The surface holds the whole source, which holds every rectangle.
+            reads: &[],
         };
         let mut encoded = false;
         let mut dirty = incremental;
