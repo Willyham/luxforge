@@ -328,6 +328,7 @@ impl Hsl {
     /// range weights are non-zero, so the saturation and luminance sums read two entries of each
     /// coefficient array rather than summing over eight; the other six terms are `+0.0` in the
     /// frozen equations and adding `+0.0` is exact.
+    #[inline]
     fn amounts(&self, ramp: f32, hue_deg: f32) -> (f32, f32, f32) {
         let (lower, t) = segment(hue_deg);
         let upper = (lower + 1) % RANGE_COUNT;
@@ -359,7 +360,7 @@ impl Hsl {
     /// branch does so without the hue angle. A zero rotation skips `sin_cos` where the equations
     /// multiply by `cos 0 = 1` and `sin 0 = 0`, and a zero luminance amount skips the response
     /// where they raise to the power `1`.
-    #[inline]
+    #[inline(always)]
     pub(super) fn apply(&self, lab: Oklab) -> Oklab {
         if lab.a == 0.0 && lab.b == 0.0 {
             return lab;
@@ -463,6 +464,10 @@ impl Mixer {
 }
 
 /// One Oklab round trip per pixel around `stage`.
+///
+/// Each stage's `apply` is `#[inline(always)]` so that it, and the HSL stage's `amounts`, compile
+/// into these row loops. Left to the inliner, they were per-pixel calls, and HSL alone ran about 7%
+/// slower than the separate unit it replaced (`measure_the_mixer_colour_cost_at_24_mp`).
 #[inline]
 fn round_trip(rgb: &mut [[f32; 3]], stage: impl Fn(Oklab) -> Oklab) {
     for pixel in rgb {
