@@ -180,6 +180,9 @@ pub struct Launch {
     no_gpu_render: bool,
     developer: bool,
     endpoint: Option<String>,
+    /// A loopback receiver for usage statistics: explicit test eligibility, so the launch shows
+    /// the startup notice and the Privacy tab. It never names the production origin.
+    usage_receiver: Option<String>,
     sources: Vec<PathBuf>,
     script: Option<(Value, ScriptFile)>,
     window: Option<[String; 2]>,
@@ -202,6 +205,7 @@ impl Launch {
             no_gpu_render: false,
             developer: false,
             endpoint: None,
+            usage_receiver: None,
             sources: Vec::new(),
             script: None,
             window: None,
@@ -275,6 +279,12 @@ impl Launch {
     /// Register the capability proof module against this endpoint.
     pub fn proof_endpoint(mut self, url: &str) -> Self {
         self.endpoint = Some(url.into());
+        self
+    }
+
+    /// Give the launch explicit usage statistics test eligibility with this loopback receiver.
+    pub fn usage_receiver(mut self, url: &str) -> Self {
+        self.usage_receiver = Some(url.into());
         self
     }
 
@@ -423,9 +433,14 @@ impl Launch {
                         args.push("--developer".into());
                     }
                 }
+                // The two harness endpoints: the capability proof's and the usage statistics
+                // test receiver.
                 Flag::Endpoint => {
                     if let Some(url) = &self.endpoint {
                         args.extend(["--proof-endpoint".into(), url.into()]);
+                    }
+                    if let Some(url) = &self.usage_receiver {
+                        args.extend(["--usage-test-receiver".into(), url.into()]);
                     }
                 }
                 Flag::Open => {

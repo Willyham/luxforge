@@ -31,9 +31,10 @@
 //! window recorded before it. A device profile change discards the window recorded under the old
 //! profile without forcing an early request.
 use super::{
-    Active, Collector, ConsentReader, DeviceProfile, Diagnostics, Generation, Release, ReportId,
-    Session, SessionClock, SessionStart, Trigger, Usage,
+    Active, Collector, ConsentReader, DeviceProfile, Diagnostics, Gate, Generation, Release,
+    ReportId, Session, SessionClock, SessionStart, Trigger, Usage, device,
     encode::BodyBuffer,
+    sampler,
     sender::{self, Cooldown, Delivery, Suspension, Verdict},
 };
 use crate::{
@@ -261,18 +262,49 @@ impl Randomness for SystemRandomness {
     }
 }
 
-/// The process performance sampler the worker drives while the window is presented. The worker
+/// The process performance sampler the worker drives, in [`sampler::Sampler`]'s shape. The worker
 /// calls it only between its own waits, never on the UI or an owner thread.
 pub trait Sampling: Send {
-    /// When the sampler next wants the worker, on the supervisor's monotonic clock; `None` for no
-    /// timer.
-    fn deadline(&self) -> Option<Duration>;
-    /// The worker woke at or after [`Sampling::deadline`] while presented: sample and record into
-    /// `session`.
-    fn tick(&mut self, now: Duration, session: &Session);
-    /// Forget the baseline: a new session, a sleep, a consent change or a visibility change.
-    /// `presented` says whether sampling may run from now on.
-    fn reset(&mut self, now: Duration, presented: bool);
+    /// The window became visible or was hidden or minimized; a no-op when unchanged.
+    fn set_presented(&mut self, presented: bool);
+    /// The person went idle or became active again; a no-op when unchanged.
+    fn set_idle(&mut self, idle: bool);
+    /// The device profile changed: the window being measured belongs to the old one.
+    fn profile_changed(&mut self);
+    /// Do whatever is due at `monotonic` (on the supervisor's clock) and `wall`, recording into
+    /// `collector`'s current session, and say when to call again; `None` for no deadline.
+    fn step(
+        &mut self,
+        collector: &Collector,
+        monotonic: Duration,
+        wall: Duration,
+    ) -> Option<Duration>;
+}
+
+impl<S: sampler::Source + Send> Sampling for sampler::Sampler<S> {
+    fn set_presented(&mut self, presented: bool) {
+        sampler::Sampler::set_presented(self, presented);
+    }
+
+    fn set_idle(&mut self, idle: bool) {
+        sampler::Sampler::set_idle(self, idle);
+    }
+
+    fn profile_changed(&mut self) {
+        sampler::Sampler::profile_changed(self);
+    }
+
+    fn step(
+        &mut self,
+        collector: &Collector,
+        monotonic: Duration,
+        wall: Duration,
+    ) -> Option<Duration> {
+        match sampler::Sampler::step(self, collector, sampler::Stamp { monotonic, wall }) {
+            sampler::Next::At(due) => Some(due),
+            sampler::Next::Parked => None,
+        }
+    }
 }
 
 /// No process sampling.
@@ -280,18 +312,106 @@ pub trait Sampling: Send {
 pub struct NoSampling;
 
 impl Sampling for NoSampling {
-    fn deadline(&self) -> Option<Duration> {
+    fn set_presented(&mut self, _: bool) {}
+
+    fn set_idle(&mut self, _: bool) {}
+
+    fn profile_changed(&mut self) {}
+
+    fn step(&mut self, _: &Collector, _: Duration, _: Duration) -> Option<Duration> {
         None
     }
-
-    fn tick(&mut self, _: Duration, _: &Session) {}
-
-    fn reset(&mut self, _: Duration, _: bool) {}
 }
 
-/// Gathers the device profile on the worker, once per consent and again after
-/// [`Supervisor::device_changed`]; `None` when it cannot be gathered, which sends nothing.
-pub type DeviceSource = Box<dyn FnMut() -> Option<DeviceProfile> + Send>;
+/// Why a [`DeviceSource`] has no profile now.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceUnavailable {
+    /// Not known yet (the renderer's adapter facts are pending): asked again at the next attempt,
+    /// and a window due meanwhile is discarded unsent.
+    Pending,
+    /// Collection ended, or this is no longer the generation it was asked for.
+    NotConsented,
+    /// No reportable device for this launch ([`device::GatherError::Missing`] or
+    /// [`device::GatherError::Invalid`]): the collector stops for this consent generation and
+    /// nothing is gathered again until the next opt-in or launch.
+    Unreportable,
+}
+
+/// The device profile, gathered on the worker: when a session starts, after
+/// [`Supervisor::device_changed`] (`refresh`), and at an attempt while none is known. May block.
+pub trait DeviceSource: Send {
+    /// The profile for `gate`'s (the collector's) current generation.
+    fn profile(&mut self, gate: &Gate, refresh: bool) -> Result<DeviceProfile, DeviceUnavailable>;
+    /// Collection ended: forget the profile.
+    fn clear(&mut self);
+}
+
+/// The production [`DeviceSource`]: a [`device::DeviceContext`] over the adapters and renderer path
+/// the host reports through `observe`, which answers `None` while they are not known yet.
+pub struct GatheredDevice<F> {
+    context: device::DeviceContext,
+    observe: F,
+}
+
+impl<F> GatheredDevice<F>
+where
+    F: FnMut() -> Option<(Vec<device::GpuFacts>, device::RendererPath)> + Send,
+{
+    pub fn new(observe: F) -> Self {
+        Self {
+            context: device::DeviceContext::new(),
+            observe,
+        }
+    }
+}
+
+impl<F> DeviceSource for GatheredDevice<F>
+where
+    F: FnMut() -> Option<(Vec<device::GpuFacts>, device::RendererPath)> + Send,
+{
+    fn profile(&mut self, gate: &Gate, refresh: bool) -> Result<DeviceProfile, DeviceUnavailable> {
+        if refresh || self.context.profile(gate).is_none() {
+            match (self.observe)() {
+                Some((gpus, path)) => match self.context.update(gate, &gpus, path) {
+                    Ok(_) => {}
+                    Err(device::GatherError::NotConsented) => {
+                        return Err(DeviceUnavailable::NotConsented);
+                    }
+                    Err(device::GatherError::Missing(_) | device::GatherError::Invalid(_)) => {
+                        return Err(DeviceUnavailable::Unreportable);
+                    }
+                },
+                // Facts not known yet: keep what is held, if anything.
+                None if self.context.profile(gate).is_none() => {
+                    return Err(DeviceUnavailable::Pending);
+                }
+                None => {}
+            }
+        }
+        self.context
+            .profile(gate)
+            .copied()
+            .ok_or(DeviceUnavailable::NotConsented)
+    }
+
+    fn clear(&mut self) {
+        self.context.clear();
+    }
+}
+
+/// A [`DeviceSource`] answering from a function, for hosts and tests that already hold a profile.
+pub struct DeviceFn<F>(pub F);
+
+impl<F> DeviceSource for DeviceFn<F>
+where
+    F: FnMut() -> Result<DeviceProfile, DeviceUnavailable> + Send,
+{
+    fn profile(&mut self, _: &Gate, _: bool) -> Result<DeviceProfile, DeviceUnavailable> {
+        (self.0)()
+    }
+
+    fn clear(&mut self) {}
+}
 
 /// What a supervisor is made of. [`Config::new`] fills in the platform clocks, system jitter, the
 /// build's release and no sampler.
@@ -303,7 +423,7 @@ pub struct Config {
     pub transport: Arc<dyn Transport>,
     /// The release batches report; without one nothing is collected or sent.
     pub release: Option<Release>,
-    pub device: DeviceSource,
+    pub device: Box<dyn DeviceSource>,
     pub sampler: Box<dyn Sampling>,
     pub clock: Arc<dyn Clock>,
     pub randomness: Box<dyn Randomness>,
@@ -315,7 +435,7 @@ impl Config {
         collector: Arc<Collector>,
         preferences_dir: Option<PathBuf>,
         transport: Arc<dyn Transport>,
-        device: DeviceSource,
+        device: Box<dyn DeviceSource>,
     ) -> Self {
         let release = usage.release();
         Self {
@@ -367,6 +487,12 @@ impl Supervisor {
         self.shared.signal(|state| state.device_changed = true);
     }
 
+    /// The person went idle (a minute without deliberate interaction) or became active again: the
+    /// sampler pauses while idle.
+    pub fn set_idle(&self, idle: bool) {
+        self.shared.signal(|state| state.idle = idle);
+    }
+
     /// The system woke from sleep: the worker checks for the gap at once rather than at its next
     /// wake.
     pub fn resumed(&self) {
@@ -405,6 +531,7 @@ struct Shared {
 struct State {
     quit: bool,
     presented: bool,
+    idle: bool,
     device_changed: bool,
     /// The running worker's thread, to unpark.
     worker: Option<Thread>,
@@ -418,6 +545,7 @@ struct State {
 struct Signals {
     quit: bool,
     presented: bool,
+    idle: bool,
     device_changed: bool,
     worker: Option<Thread>,
 }
@@ -532,6 +660,7 @@ impl Shared {
         Signals {
             quit: state.quit,
             presented: state.presented,
+            idle: state.idle,
             device_changed: std::mem::take(&mut state.device_changed),
             worker: state.worker.clone(),
         }
@@ -577,7 +706,7 @@ fn run(shared: Arc<Shared>) {
             Step::Wait(deadline) => shared.clock.wait(deadline),
             Step::Off => {
                 let mut state = shared.lock();
-                if state.quit || !shared.wanted() {
+                if state.quit || !shared.wanted() || machine.dormant(&shared) {
                     state.worker = None;
                     state.machine = Some(machine);
                     return;
@@ -592,7 +721,8 @@ fn run(shared: Arc<Shared>) {
 enum Step {
     /// Wait until this monotonic deadline, or indefinitely, unless woken.
     Wait(Option<Duration>),
-    /// Collection is not effective (or the application quits): the worker may end.
+    /// Collection is not effective, has no reportable device in this generation, or the
+    /// application quits: the worker may end.
     Off,
 }
 
@@ -625,9 +755,14 @@ struct Machine {
     release: Release,
     clock: Arc<dyn Clock>,
     randomness: Box<dyn Randomness>,
-    device: DeviceSource,
+    device: Box<dyn DeviceSource>,
     sampler: Box<dyn Sampling>,
+    /// The profile the active window is recorded under.
     profile: Option<DeviceProfile>,
+    /// The consent generation that has no reportable device: nothing is collected in it.
+    no_device: Option<Generation>,
+    /// The sampler's next deadline.
+    sample_due: Option<Duration>,
     buffers: Option<Buffers>,
     live: Option<Live>,
     presented: bool,
@@ -656,7 +791,7 @@ impl Machine {
         release: Release,
         clock: Arc<dyn Clock>,
         randomness: Box<dyn Randomness>,
-        device: DeviceSource,
+        device: Box<dyn DeviceSource>,
         sampler: Box<dyn Sampling>,
     ) -> Self {
         Self {
@@ -668,6 +803,8 @@ impl Machine {
             device,
             sampler,
             profile: None,
+            no_device: None,
+            sample_due: None,
             buffers: None,
             live: None,
             presented: false,
@@ -709,31 +846,26 @@ impl Machine {
         {
             self.stop(shared);
         }
-        let visibility_changed = signals.presented != self.presented;
+        if self.no_device == Some(active.generation) {
+            return Step::Off;
+        }
         self.presented = signals.presented;
+        self.sampler.set_presented(signals.presented);
+        self.sampler.set_idle(signals.idle);
         if self.live.is_none() {
             if !self.begin(shared, &active, active.trigger, now, wall, &signals.worker) {
-                return Step::Wait(None);
+                return self.after_begin_failed(shared, &active);
             }
         } else if slept {
             self.restart(shared, &active, now, wall, &signals.worker);
         }
-        if signals.device_changed {
-            let fresh = (self.device)();
-            if fresh != self.profile {
-                self.discard_window();
-                self.profile = fresh;
-            }
+        if signals.device_changed && !self.gather(shared, true) {
+            return Step::Off;
         }
-        if visibility_changed {
-            self.sampler.reset(now, self.presented);
-        }
-        if let Some(live) = &self.live
-            && self.presented
-            && self.sampler.deadline().is_some_and(|due| due <= now)
-        {
-            self.sampler.tick(now, &live.session);
-        }
+        self.sample_due = self.live.as_ref().and_then(|_| {
+            self.sampler
+                .step(&shared.collector, self.clock.monotonic(), self.clock.wall())
+        });
         self.schedule(shared, now);
         let now = self.clock.monotonic();
         self.publish(shared, now);
@@ -753,8 +885,51 @@ impl Machine {
         slept
     }
 
-    /// Start a session for `active`. `false` when the wall clock is outside the wire's years or
-    /// consent ended meanwhile.
+    /// What a step answers when no session could start: `Off` when there is no reportable device
+    /// in this generation, otherwise a wait for the next wake.
+    fn after_begin_failed(&mut self, shared: &Shared, active: &Active) -> Step {
+        if self.no_device == Some(active.generation) {
+            let now = self.clock.monotonic();
+            self.publish(shared, now);
+            Step::Off
+        } else {
+            Step::Wait(None)
+        }
+    }
+
+    /// Whether the worker may end because consent's current generation has no reportable device.
+    fn dormant(&self, shared: &Shared) -> bool {
+        self.no_device.is_some()
+            && shared.usage.active().map(|active| active.generation) == self.no_device
+    }
+
+    /// Ask the device source for the profile; `refresh` after a device change. A changed profile
+    /// discards the window recorded under the old one and resets the sampler's window. `false`
+    /// when there is no reportable device: collection stops for this consent generation.
+    fn gather(&mut self, shared: &Shared, refresh: bool) -> bool {
+        match self.device.profile(shared.collector.gate(), refresh) {
+            Ok(fresh) => {
+                if self.profile.is_some_and(|held| held != fresh) {
+                    self.discard_window();
+                    self.sampler.profile_changed();
+                }
+                self.profile = Some(fresh);
+                true
+            }
+            Err(DeviceUnavailable::Pending | DeviceUnavailable::NotConsented) => true,
+            Err(DeviceUnavailable::Unreportable) => {
+                let generation = self.live.as_ref().map(|live| live.consent);
+                self.stop(shared);
+                self.no_device = generation;
+                let now = self.clock.monotonic();
+                self.publish(shared, now);
+                false
+            }
+        }
+    }
+
+    /// Start a session for `active`. `false` when the wall clock is outside the wire's years,
+    /// consent ended meanwhile, or there is no reportable device.
     fn begin(
         &mut self,
         shared: &Shared,
@@ -792,10 +967,15 @@ impl Machine {
             jitter: None,
             full_at: None,
         });
-        if self.profile.is_none() {
-            self.profile = (self.device)();
+        if self
+            .no_device
+            .is_some_and(|generation| generation != active.generation)
+        {
+            self.no_device = None;
         }
-        self.sampler.reset(now, self.presented);
+        if self.profile.is_none() {
+            return self.gather(shared, false);
+        }
         true
     }
 
@@ -826,8 +1006,9 @@ impl Machine {
         shared.usage.set_session(None);
         self.buffers = None;
         self.profile = None;
+        self.device.clear();
         self.observed = None;
-        self.sampler.reset(self.clock.monotonic(), false);
+        self.sample_due = None;
         let now = self.clock.monotonic();
         self.publish(shared, now);
     }
@@ -914,7 +1095,7 @@ impl Machine {
         let window = self.live.as_ref().and_then(|live| live.first);
         let send = self.earliest().filter(|_| self.suspended.is_none());
         let expiry = window.map(|first| first + sender::WINDOW_AGE);
-        let sample = self.live.as_ref().and(self.sampler.deadline());
+        let sample = self.live.as_ref().and(self.sample_due);
         [send, expiry, sample]
             .into_iter()
             .flatten()
@@ -936,8 +1117,8 @@ impl Machine {
             self.stop(shared);
             return;
         }
-        if self.profile.is_none() {
-            self.profile = (self.device)();
+        if self.profile.is_none() && !self.gather(shared, false) {
+            return;
         }
         let Some(profile) = self.profile else {
             self.discard_window();
@@ -1057,6 +1238,7 @@ impl Machine {
             counts.sent += session.sent;
         }
         counts.delivery = match (self.suspended, self.not_before) {
+            _ if self.no_device.is_some() => Delivery::Suspended(Suspension::Device),
             (Some(reason), _) => Delivery::Suspended(reason),
             (None, Some(not_before)) if now < not_before => {
                 Delivery::Cooldown(self.cooldown.unwrap_or(Cooldown::Failure))

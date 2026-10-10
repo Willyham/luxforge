@@ -327,7 +327,7 @@ struct Parts {
     clock: Arc<ManualClock>,
     transport: Arc<FakeTransport>,
     jitter: Jitter,
-    device: Arc<Mutex<Option<DeviceProfile>>>,
+    device: Arc<Mutex<Result<DeviceProfile, DeviceUnavailable>>>,
 }
 
 impl Parts {
@@ -350,7 +350,7 @@ impl Parts {
             clock,
             transport,
             jitter: Jitter::default(),
-            device: Arc::new(Mutex::new(Some(profile(12)))),
+            device: Arc::new(Mutex::new(Ok(profile(12)))),
         }
     }
 
@@ -362,7 +362,7 @@ impl Parts {
             preferences_dir: Some(self.dir.0.clone()),
             transport: self.transport.clone(),
             release: Some(release()),
-            device: Box::new(move || *device.lock().unwrap()),
+            device: Box::new(DeviceFn(move || *device.lock().unwrap())),
             sampler,
             clock: self.clock.clone(),
             randomness: Box::new(self.jitter.clone()),
@@ -1140,7 +1140,7 @@ fn usage_a_device_change_drops_the_old_window_without_an_early_request() {
     let mut harness = Harness::new("device");
     harness.record(3);
     harness.clock.advance(MINUTE);
-    *harness.device.lock().unwrap() = Some(profile(8));
+    *harness.device.lock().unwrap() = Ok(profile(8));
     harness.shared.signal(|state| state.device_changed = true);
     harness.step();
     assert_eq!(harness.transport.count(), 0, "no early request");
@@ -1159,36 +1159,69 @@ fn usage_a_device_change_drops_the_old_window_without_an_early_request() {
     assert_eq!(harness.session().unwrap().window().len, 1);
 }
 
-/// A sampler that records a sample a minute while presented and logs its resets.
+/// A sampler in [`sampler::Sampler`]'s shape: a baseline, then a sample a minute while presented
+/// and active, with what it was told logged.
+#[derive(Default)]
 struct FakeSampler {
+    presented: bool,
+    idle: bool,
     next: Option<Duration>,
-    resets: Arc<Mutex<Vec<bool>>>,
+    log: Arc<Mutex<Vec<&'static str>>>,
 }
 
 impl Sampling for FakeSampler {
-    fn deadline(&self) -> Option<Duration> {
+    fn set_presented(&mut self, presented: bool) {
+        if self.presented != presented {
+            self.presented = presented;
+            self.next = None;
+            self.log
+                .lock()
+                .unwrap()
+                .push(if presented { "shown" } else { "hidden" });
+        }
+    }
+
+    fn set_idle(&mut self, idle: bool) {
+        if self.idle != idle {
+            self.idle = idle;
+            self.next = None;
+            self.log
+                .lock()
+                .unwrap()
+                .push(if idle { "idle" } else { "active" });
+        }
+    }
+
+    fn profile_changed(&mut self) {
+        self.next = None;
+        self.log.lock().unwrap().push("profile");
+    }
+
+    fn step(&mut self, collector: &Collector, now: Duration, _: Duration) -> Option<Duration> {
+        if !self.presented || self.idle {
+            self.next = None;
+            return None;
+        }
+        match self.next {
+            Some(due) if now >= due => {
+                collector.record(sample());
+                self.next = Some(now + MINUTE);
+            }
+            Some(_) => {}
+            None => self.next = Some(now + MINUTE),
+        }
         self.next
-    }
-
-    fn tick(&mut self, now: Duration, session: &Session) {
-        session.record(sample());
-        self.next = Some(now + MINUTE);
-    }
-
-    fn reset(&mut self, now: Duration, presented: bool) {
-        self.resets.lock().unwrap().push(presented);
-        self.next = presented.then_some(now + MINUTE);
     }
 }
 
 #[test]
-fn usage_the_sampler_runs_only_while_presented_and_resets_on_visibility_and_sessions() {
-    let resets = Arc::new(Mutex::new(Vec::new()));
+fn usage_the_sampler_runs_only_while_presented_and_active_and_hears_every_change() {
+    let log = Arc::new(Mutex::new(Vec::new()));
     let mut harness = Harness::with(
         Parts::new("sampler", eligible()),
         Box::new(FakeSampler {
-            next: None,
-            resets: resets.clone(),
+            log: log.clone(),
+            ..FakeSampler::default()
         }),
     );
     harness.enable("on");
@@ -1212,7 +1245,131 @@ fn usage_the_sampler_runs_only_while_presented_and_resets_on_visibility_and_sess
         6,
         "a fresh baseline a minute after restore"
     );
-    assert_eq!(*resets.lock().unwrap(), [true, true, false, true]);
+    // Idle pauses it; a device change resets its window.
+    harness.shared.signal(|state| state.idle = true);
+    harness.run_until(harness.now() + 5 * MINUTE);
+    assert_eq!(samples(&harness), 6);
+    harness.shared.signal(|state| state.idle = false);
+    *harness.device.lock().unwrap() = Ok(profile(8));
+    harness.shared.signal(|state| state.device_changed = true);
+    harness.step();
+    assert_eq!(
+        *log.lock().unwrap(),
+        ["shown", "hidden", "shown", "idle", "active", "profile"]
+    );
+}
+
+#[test]
+fn usage_the_process_sampler_plugs_in_and_parks_while_off_or_hidden() {
+    let collector = Collector::new();
+    let mut sampler: Box<dyn Sampling> = Box::new(sampler::Sampler::new());
+    assert_eq!(
+        sampler.step(&collector, MINUTE, WALL),
+        None,
+        "collection off"
+    );
+    let (clock, _) = SessionClock::manual();
+    collector.start(
+        Trigger::OptIn,
+        SessionStart::from_unix_seconds(WALL.as_secs()).unwrap(),
+        clock,
+    );
+    assert_eq!(
+        sampler.step(&collector, MINUTE, WALL),
+        None,
+        "not presented"
+    );
+    sampler.set_presented(true);
+    sampler.set_idle(true);
+    assert_eq!(sampler.step(&collector, MINUTE, WALL), None, "idle");
+}
+
+#[test]
+fn usage_no_reportable_device_stops_collecting_until_the_next_opt_in() {
+    let mut harness = Harness::off("no-device");
+    *harness.device.lock().unwrap() = Err(DeviceUnavailable::Unreportable);
+    harness.enable("on");
+    harness.present(true);
+    assert_eq!(harness.step(), Step::Off);
+    assert!(harness.session().is_none(), "nothing is buffered");
+    assert!(
+        harness.machine.dormant(&harness.shared),
+        "the worker may end"
+    );
+    assert_eq!(
+        harness.read()["diagnostics"]["delivery"],
+        json!({"state": "suspended", "reason": "device"})
+    );
+    assert_eq!(
+        harness.read()["effective"],
+        json!(true),
+        "consent is unchanged"
+    );
+    // Not asked again in this generation, even if the device could now be gathered.
+    *harness.device.lock().unwrap() = Ok(profile(12));
+    harness.run_until(HOUR);
+    assert!(harness.session().is_none());
+    assert_eq!(harness.transport.count(), 0);
+    // The next opt-in gathers again and collects.
+    harness.revoke("off");
+    harness.step();
+    harness.enable("on-again");
+    harness.run_until(harness.now() + 12 * MINUTE);
+    assert_eq!(harness.transport.count(), 1);
+    assert_eq!(
+        harness.read()["diagnostics"]["delivery"],
+        json!({"state": "ready", "reason": null})
+    );
+
+    // A device change that cannot be gathered stops collecting too.
+    let mut harness = Harness::new("no-device-change");
+    harness.record(2);
+    *harness.device.lock().unwrap() = Err(DeviceUnavailable::Unreportable);
+    harness.shared.signal(|state| state.device_changed = true);
+    assert_eq!(harness.step(), Step::Off);
+    assert!(harness.session().is_none());
+    assert_eq!(harness.storage(), 0);
+}
+
+#[test]
+fn usage_a_pending_device_sends_nothing_until_it_is_known() {
+    let mut harness = Harness::off("pending-device");
+    *harness.device.lock().unwrap() = Err(DeviceUnavailable::Pending);
+    harness.enable("on");
+    harness.present(true);
+    harness.step();
+    assert!(harness.session().is_some(), "collection runs");
+    harness.record(2);
+    harness.run_until(11 * MINUTE);
+    assert_eq!(
+        harness.transport.count(),
+        0,
+        "a window due without a profile"
+    );
+    assert_eq!(harness.session().unwrap().window().len, 0, "is discarded");
+    *harness.device.lock().unwrap() = Ok(profile(12));
+    harness.record(1);
+    harness.run_until(harness.now() + 12 * MINUTE);
+    let sent = harness.transport.sent();
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].batch.batch_seq, 1);
+    assert_eq!(sent[0].events, 1);
+}
+
+#[test]
+fn usage_the_gathered_device_waits_for_facts_and_needs_consent() {
+    let gate = crate::usage::Gate::new();
+    let mut pending = GatheredDevice::new(|| None);
+    assert_eq!(
+        pending.profile(&gate, false),
+        Err(DeviceUnavailable::Pending)
+    );
+    let mut off = GatheredDevice::new(|| Some((Vec::new(), device::RendererPath::Gpu)));
+    assert_eq!(
+        off.profile(&gate, false),
+        Err(DeviceUnavailable::NotConsented),
+        "nothing is probed while collection is off"
+    );
 }
 
 #[test]

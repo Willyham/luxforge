@@ -75,6 +75,8 @@ pub enum Suspension {
     Unavailable,
     /// The build carries no release to report, so no batch can be encoded.
     Build,
+    /// No device profile can be formed in this consent generation, so nothing is collected in it.
+    Device,
 }
 
 /// The delivery state `usage.read` reports beside the counts.
@@ -105,6 +107,7 @@ impl Delivery {
             Self::Suspended(Suspension::Refused) => Some("refused"),
             Self::Suspended(Suspension::Unavailable) => Some("unavailable"),
             Self::Suspended(Suspension::Build) => Some("build"),
+            Self::Suspended(Suspension::Device) => Some("device"),
         }
     }
 }

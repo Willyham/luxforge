@@ -66,10 +66,10 @@ time are in a row: no header, address, body or request identifier.
 Event row, columns in this order, absent fields `null`: `received_at`, `installation_id`,
 `session_id`, `session_start`, `batch_seq`, `seq`, `t`, `name`, `release`, then `trigger`, `state`,
 `workspace`, `image`, `feature`, `tool`, `count`, `operation`, `outcome`, `duration_ms`, `renderer`,
-`cpu_percent`, `memory_mib`, `memory_kind`, `gpu_percent`, `gpu_memory_mib`. (`dropped` is
-validated but not forwarded.)
+`cpu_percent`, `memory_mib`, `memory_kind`, `gpu_percent`, `gpu_memory_mib`.
 
-Profile row: `received_at`, `installation_id`, `session_id`, `release`, then `os_family`,
+Profile row: `received_at`, `installation_id`, `session_id`, `release`, `batch_seq`, `dropped` (the
+batch's count of its window's events that were not sent), then `os_family`,
 `os_version`, `os_build`, `os_distro`, `os_distro_version`, `os_kernel` (versions are integer
 arrays), `arch`, `cpu_vendor`, `cpu_physical_cores`, `cpu_logical_cores`, `cpu_generation`,
 `cpu_tier`, `cpu_family`, `cpu_model`, `cpu_stepping`, `memory_gib_band` (a string: `"8"` to

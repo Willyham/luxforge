@@ -389,7 +389,7 @@
     {
       "id": "TASK-006",
       "description": "Add consented low-frequency process performance sampling and the approved CPU/GPU/OS/memory device context.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-002"
       ],
@@ -468,7 +468,7 @@
     {
       "id": "TASK-007",
       "description": "Add the non-blocking startup notice and Settings Privacy controls through the shared consent commands.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
@@ -650,7 +650,7 @@
     {
       "id": "TASK-009",
       "description": "Prepare the pinned Vector, ClickHouse and private Grafana reference stack with bounded device/profile retention and no IP tracking.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],

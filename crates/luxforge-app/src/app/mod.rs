@@ -156,6 +156,7 @@ mod remembered_tests;
 pub(crate) mod renderer;
 #[cfg(test)]
 mod renderer_tests;
+// Consumed by the usage statistics supervisor, which a later task adds.
 pub(crate) mod select;
 pub(crate) mod select_catalog;
 #[cfg(test)]
@@ -188,6 +189,13 @@ pub(crate) mod themes;
 #[cfg(test)]
 mod themes_tests;
 pub(crate) mod thumbnails;
+pub(crate) mod usage;
+#[allow(dead_code)]
+pub(crate) mod usage_device;
+#[cfg(test)]
+mod usage_device_tests;
+#[cfg(test)]
+mod usage_tests;
 mod view_state;
 #[cfg(test)]
 mod view_state_tests;
@@ -469,6 +477,8 @@ pub(crate) struct Editor {
     /// The interface's theme, which Iced reads again after every update and hands to every style
     /// function and canvas draw. An Iced value, so it lives here rather than in the view model.
     pub(crate) theme: luxforge_ui::Theme,
+    /// Usage statistics: the startup notice and the Privacy tab ([`usage`]).
+    pub(crate) usage: state::usage::Usage,
 }
 
 /// What the hooks compare the state a message left behind with: the state before it was
@@ -515,7 +525,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 26] = [
+const AFTER_MESSAGE: [AfterMessage; 27] = [
     view_state::after_message,
     performance::after_message,
     visibility::after_message,
@@ -542,6 +552,7 @@ const AFTER_MESSAGE: [AfterMessage; 26] = [
     long_work::after_message,
     drawn_frames::after_message,
     themes::after_message,
+    usage::after_message,
 ];
 
 /// The seams whose work reads the screen just derived: what a capability section or a curve shows
@@ -677,6 +688,10 @@ impl Editor {
             renderer: renderer::RendererReport::new(config.launch_renderer()),
             workspace: Default::default(),
             theme: luxforge_ui::Theme::luxforge_dark(),
+            usage: state::usage::Usage {
+                eligible: config.usage_eligible,
+                ..Default::default()
+            },
         };
         // The workers wake the event loop through one channel instead of a poll. The closure is
         // installed once and stays valid for the life of the process; the subscription that carries
@@ -997,6 +1012,7 @@ impl Editor {
     /// them builds them from it on demand ([`state::tools::controls_of`]).
     pub(crate) fn inputs(&self) -> state::Inputs<'_> {
         state::Inputs {
+            usage: &self.usage,
             document: &self.document,
             modules: &self.modules,
             modules_ready: self.modules_ready,
@@ -1111,6 +1127,7 @@ impl Editor {
             Message::Performance(message) => self.performance_update(message),
             Message::Visibility(message) => self.visibility_update(message),
             Message::Settings(message) => self.settings_update(message),
+            Message::Usage(message) => self.usage_update(message),
             Message::Preferences(message) => self.preferences_update(message),
             Message::Theme(message) => self.theme_update(message),
             Message::Export(message) => self.export_update(message),
@@ -1321,6 +1338,7 @@ impl Editor {
     /// What the keyboard table depends on right now.
     fn key_context(&self) -> keymap::KeyContext {
         keymap::KeyContext {
+            usage_notice: self.workspace.usage_notice.is_some(),
             gallery_open: self.gallery_page().is_some(),
             comparing: self.document.compare_return.is_some() || self.compare_key.is_down(),
             drafting: self.crop().is_some() || self.held_mask().is_some(),

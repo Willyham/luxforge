@@ -10,6 +10,7 @@ mod loupe;
 mod select;
 mod select_catalog;
 mod select_missing;
+mod usage;
 use crate::state::MenuTarget;
 use crate::state::palette::PaletteAction;
 use crate::{
@@ -547,6 +548,11 @@ pub(crate) enum Settle {
     Develop,
     /// The large previews Develop decodes ahead of a move are decoded.
     DevelopAhead,
+    /// The usage statistics startup claim has settled: its notice is on screen, or the claim
+    /// answered not to show it.
+    UsageNotice,
+    /// The usage statistics consent's read, or its last outstanding write, answered.
+    Usage,
 }
 
 impl Settle {
@@ -584,6 +590,8 @@ impl Settle {
             Self::LongWork => "long_work",
             Self::Develop => "develop",
             Self::DevelopAhead => "develop_ahead",
+            Self::UsageNotice => "usage_notice",
+            Self::Usage => "usage",
         }
     }
 
@@ -1331,6 +1339,7 @@ impl Editor {
             Step::ThemeImportOmarchy { path } => self.theme_import_omarchy_step(path),
             Step::Flag { id, value } => self.flag_step(id, value),
             Step::Preference(fields) => self.preference_step(fields),
+            Step::Usage(step) => self.usage_step(step),
             Step::Wait { ms } => self.wait_step(ms),
             Step::GpuWarmed { quiet_ms, ms } => self.warm_wait_step(quiet_ms, ms),
             Step::Key { key } => self.key_step(key),
@@ -4536,6 +4545,17 @@ impl Editor {
             self.capture_next_frame();
             return Task::none();
         }
+        if tab == SettingsTab::Privacy {
+            if !self.usage.eligible {
+                return self.fail_step(
+                    "this launch has no Privacy tab: it was started without usage statistics \
+                     test eligibility",
+                );
+            }
+            // The tab shows the consent, which opening it reads again.
+            self.await_step(Settle::Usage);
+            return self.update(Message::Settings(SettingsMessage::Open(tab)));
+        }
         self.arm_settings_settle();
         self.update(Message::Settings(SettingsMessage::Open(tab)))
     }
@@ -5168,6 +5188,8 @@ impl Editor {
                 }
             }
             Outcome::FlagsRead | Outcome::FlagsWritten => self.settle_step(Settle::Flags, by),
+            Outcome::UsageNotice => self.settle_step(Settle::UsageNotice, by),
+            Outcome::UsageAnswered => self.settle_step(Settle::Usage, by),
             // A theme chosen is drawn by a read and stored by a write, which answer in either
             // order: the step settles on whichever lands last.
             Outcome::PreferencesWritten | Outcome::ThemeDrawn => {

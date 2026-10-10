@@ -4,10 +4,10 @@
 //! worker thread on a manual clock; nothing leaves the machine and the production destination is
 //! never contacted (its activation switch stays off; these hosts use explicit test eligibility).
 use luxforge_core::usage::{
-    Arch, Collector, CpuProfile, CpuVendor, DeviceProfile, DurationMs, EventKind, GpuBackend,
-    GpuProfile, GpuType, GpuVendor, Idle, ImageKey, ManualClock, MemoryBand, NoSampling,
-    OperationEnd, OsFamily, OsProfile, Outcome, Release, Renderer, Supervisor, SupervisorConfig,
-    SystemRandomness, TestReceiver, Usage, Version, decode_batch,
+    Arch, Collector, CpuProfile, CpuVendor, DeviceFn, DeviceProfile, DurationMs, EventKind,
+    GpuBackend, GpuProfile, GpuType, GpuVendor, Idle, ImageKey, ManualClock, MemoryBand,
+    NoSampling, OperationEnd, OsFamily, OsProfile, Outcome, Release, Renderer, Supervisor,
+    SupervisorConfig, SystemRandomness, TestReceiver, Usage, Version, decode_batch,
     device_profile::AppleTier,
     eligibility::Eligibility,
     sender::{self, Cooldown, Delivery, Suspension},
@@ -105,7 +105,7 @@ impl Host {
             preferences_dir: Some(dir.clone()),
             transport,
             release: Release::parse("0.0.0+9d4138ca1f2e"),
-            device: Box::new(|| Some(profile())),
+            device: Box::new(DeviceFn(|| Ok(profile()))),
             sampler: Box::new(NoSampling),
             clock: clock.clone(),
             randomness: Box::new(SystemRandomness::new()),
