@@ -741,6 +741,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             && enabled["result"]["effective"] == true
             && enabled["result"]["session_id"] == first["session_id"]
             && enabled["result"]["installation_id"] == first["installation_id"]
+            && enabled["result"]["release"] == TEST_RELEASE
             && enabled["result"]["destination"].as_str() == receiver_url.as_deref(),
         format!(
             "usage.read through the live session does not name the batch's session and installation: {}",
