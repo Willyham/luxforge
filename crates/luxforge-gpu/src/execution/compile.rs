@@ -56,13 +56,13 @@ use std::{
 /// Every tick asks for every link's sequence, so the cache holds every link of the plan a drag
 /// draws together, or a compile that ends would evict one of the plan's own and the drag would
 /// never draw on the GPU. The largest plan is a link for the colour steps before its first spatial
-/// step and one for each of up to 18 spatial steps, Detail and Presence globally and 16 masked
-/// layers, and the light link its lights are computed with (the core's `GPU_PLAN_LINKS`); the warm
+/// step and one for each of up to 19 spatial steps, a repair layer, Detail and Presence globally
+/// and 16 masked layers, and the light link its lights are computed with (the core's `GPU_PLAN_LINKS`); the warm
 /// list holds at most the rest (`GPU_WARM_LINKS`), so both fit at once. A compiled sequence holds its render pipeline and its passes' compute
 /// pipelines, which sequences that run the same pass share through the pass cache
 /// ([`super::spatial::PASS_CACHE`]), so a sequence of a new shape adds little more than its render
 /// pipeline.
-pub const PIPELINE_CACHE: usize = 64;
+pub const PIPELINE_CACHE: usize = 65;
 
 /// The program sequences a gesture is likely to need, which the desktop names when the stack
 /// changes so they compile before a drag begins ([`super::super::PhotoSurface::gpu_warm`]). Each

@@ -68,8 +68,9 @@ fn gpu_presence_the_program_passes_the_surfaces_own_convention() {
             .iter()
             .map(|program| program.entry)
             .collect::<Vec<_>>(),
-        ["lf_detail", "lf_presence"],
-        "Detail's (`gpu_detail`) and Presence's are the spatial programs"
+        ["lf_detail", "lf_presence", "lf_repair"],
+        "Detail's (`gpu_detail`), Presence's and the repair's (`gpu_repair`) are the spatial \
+         programs"
     );
     let registry = ModuleRegistry::builtin();
     for payload in [

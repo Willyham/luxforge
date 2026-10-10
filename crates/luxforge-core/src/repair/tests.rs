@@ -640,9 +640,9 @@ fn search_is_the_reference_and_finds_the_known_answers() {
 #[ignore = "a measurement, run on request in release"]
 fn photo_sized_cost() {
     use std::time::{Duration, Instant};
-    let median = |mut runs: Vec<Duration>| {
-        runs.sort();
-        runs[runs.len() / 2]
+    let typical = |runs: Vec<Duration>| {
+        let runs = luxforge_testbase::Distribution::of(runs.iter().map(Duration::as_secs_f64));
+        Duration::from_secs_f64(runs.expect("runs").p50)
     };
     for (name, stage) in [
         (
@@ -721,7 +721,7 @@ fn photo_sized_cost() {
                 }
                 println!(
                     "{name} {kind:?} {label}: {:?} (frame {:.1} MP of declared reads)",
-                    median(runs),
+                    typical(runs),
                     region.pixels() as f64 / 1e6
                 );
             }
@@ -755,13 +755,122 @@ fn photo_sized_cost() {
                 let _ = search::rank(&plan, &reduced);
                 search_runs.push(started.elapsed());
             }
-            println!("{name} search {label}: plan {:?}", median(plan_runs));
+            println!("{name} search {label}: plan {:?}", typical(plan_runs));
             println!(
                 "{name} search {label}: reduce {:?} over {:.1} MP at r={r}, rank {:?}",
-                median(reduce_runs),
+                typical(reduce_runs),
                 window.pixels() as f64 / 1e6,
-                median(search_runs)
+                typical(search_runs)
             );
         }
+    }
+}
+
+// ---- The GPU description ------------------------------------------------------------------------
+
+/// A group's description holds together: every pass reads at most four planes and never its own
+/// output, each atlas tile's reverse entry is the tile its operation's map places there, each
+/// level's planes hold its tiles, a Clone-only group runs the gather and the composite alone, and a
+/// Heal's passes are the schedule's: gather, coarse and start passes, three V(2, 2) cycles and the
+/// composite.
+#[test]
+fn the_gpu_description_holds_together() {
+    use super::gpu::{self, ATLAS_TILES_ACROSS, OP_WORDS};
+    let s = Stage {
+        width: 640,
+        height: 480,
+    };
+    let spot = |kind, x, y, r| Op::new(kind, s, &[[x, y]], r).source(s, 0.0, 120.0);
+    let groups = [
+        vec![spot(Clone, 100.0, 100.0, 20.0)],
+        vec![spot(Heal, 300.0, 200.0, 24.0)],
+        vec![
+            spot(Heal, 100.0, 100.0, 9.0),
+            spot(Clone, 500.0, 100.0, 30.0),
+            Op::new(Heal, s, &[[50.0, 300.0], [600.0, 340.0]], 6.0).source(s, 0.0, -90.0),
+        ],
+    ];
+    for (n, group) in groups.iter().enumerate() {
+        let ops: Vec<RepairOp> = group.iter().map(|op| op.core(s)).collect();
+        let d = gpu::describe(&ops, s, None);
+        for pass in &d.passes {
+            assert!(pass.inputs.len() <= 4 && !pass.inputs.contains(&pass.output));
+            assert!(pass.output < d.planes.len());
+            assert!(pass.words + 3 <= d.words.len());
+        }
+        let levels = d.tiles.len();
+        // The reverse tables against the maps.
+        let records = d.block[1] as usize;
+        for k in 0..levels {
+            let reverse = d.block[10 + k] as usize;
+            let (width, _) = d.planes[d.passes[0].output];
+            assert_eq!(width, ATLAS_TILES_ACROSS * 8);
+            let capacity =
+                (d.tiles[k].max(1).div_ceil(ATLAS_TILES_ACROSS) * ATLAS_TILES_ACROSS) as usize;
+            let mut placed = 0;
+            for tile in 0..capacity {
+                let packed = d.block[reverse + tile];
+                if packed == u32::MAX {
+                    continue;
+                }
+                placed += 1;
+                let (op, gy, gx) = (packed >> 24, (packed >> 12) & 0xfff, packed & 0xfff);
+                let record = records + op as usize * OP_WORDS;
+                let grid = record + 11 + 4 * k;
+                let map = d.block[grid + 3] as usize;
+                let across = d.block[grid + 2];
+                assert_eq!(d.block[map + (gy * across + gx) as usize], tile as u32);
+            }
+            assert_eq!(placed, d.tiles[k], "group {n} level {k}");
+        }
+        let heals = group.iter().any(|op| op.kind == Heal);
+        if !heals {
+            let kernels: Vec<&str> = d.passes.iter().map(|p| p.kernel).collect();
+            assert_eq!(kernels, ["lf_repair_gather", "lf_repair_composite"]);
+            continue;
+        }
+        // Per V-cycle: at each solved level but the lowest, 4 + 1 + 1 + 4 passes; at the lowest
+        // 4 + 4.
+        let solved = levels.saturating_sub(1).max(1);
+        let cycle = 10 * (solved - 1) + 8;
+        assert_eq!(
+            d.passes.len(),
+            1 + 2 * (levels - 1) + 3 * cycle + 1,
+            "group {n}: {levels} levels"
+        );
+    }
+}
+
+/// The program's transfer constants are the core's `f32` encode's, and its decode's threshold and
+/// exponent the core's.
+#[test]
+fn the_program_restates_the_cores_transfer_function() {
+    use crate::render::gpu::testing::wgsl_constant;
+    let program = &super::REPAIR_PROGRAM;
+    for (name, value) in crate::colour::srgb::ENCODE_F32 {
+        assert_eq!(
+            wgsl_constant(program, &format!("lf_repair_{name}")),
+            [value],
+            "{name}"
+        );
+    }
+    assert_eq!(
+        wgsl_constant(program, "lf_repair_decode_end"),
+        [0.040_45_f32]
+    );
+    assert_eq!(
+        wgsl_constant(program, "lf_repair_decode_exponent"),
+        [2.4_f32]
+    );
+    // The decode the program spells is the core's, at the core's precision.
+    for code in 0..=255u8 {
+        let encoded = f32::from(code) / 255.0;
+        let core = crate::colour::srgb::decode_f32(encoded);
+        let spelled = if encoded <= 0.040_45 {
+            encoded / wgsl_constant(program, "lf_repair_slope")[0]
+        } else {
+            ((encoded + 0.055) / 1.055).powf(2.4)
+        };
+        assert_eq!(core.to_bits(), spelled.to_bits(), "{code}");
     }
 }

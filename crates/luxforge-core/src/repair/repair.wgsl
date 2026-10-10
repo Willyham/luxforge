@@ -1,347 +1,432 @@
-// Clone and Heal on the GPU, beside the CPU reference units in `repair/` (`mod.rs`, `footprint.rs`,
-// `heal.rs`), under the spatial convention (`render/gpu/spatial.rs`). The host's plan
-// (`render/gpu/repair.rs`) describes one spatial step for a whole repair layer: the operations in
-// ordered groups, each group a pass (Clone) or a chain of passes (Heal) from one state plane of
-// the window into the next, and one apply that reads the last state plane. The arithmetic is the
-// reference's, in `f32`:
+// Clone and Heal on the GPU (docs/design/corrections-numerics.md, "GPU form"): one group of
+// operations whose reads meet no earlier destination of the group, each solved in its own tiles of
+// an atlas per level, in f32, the CPU reference's equations in its order.
 //
-// - coverage: the capsule profile of the distance to the operation's nearest segment, through the
-//   same cell index the CPU footprint builds, times `opacity / 100` (`lf_repair_coverage`);
-// - Clone: `(1 - a) * I(p) + a * I(p + delta)` where the source lies in the stage
-//   (`lf_repair_clone`), for a group of operations no one of which reads what another writes;
-// - Heal: the membrane in the sRGB-encoded domain over the operation's solve rectangle, its
-//   levels anchored at the rectangle's origin and halved rounding up, started from the fixed
-//   cells' means and solved by three V(2, 2) cycles of red-black Gauss-Seidel, every level's
-//   classes, sums and order the CPU's; then the composite `D(E(S) + f)` blended by the coverage
-//   (`lf_repair_heal_*`).
+// Atlas. Every level has atlas planes of 8 x 8 texel tiles, `atx` tiles across. An operation's
+// level-k grid (its solve rectangle halved k times, `ceil`) is cut into 8 x 8 tiles; the ones that
+// may hold a cell that is not outside are placed in the atlas, and a tile map per operation and
+// level says where. A reverse table per level says which operation and grid tile each atlas tile
+// holds. So any number of operations of any shape share one dispatch per level and pass.
 //
-// The storage block (`block`) holds, from its start: the operation count, the stage's width and
-// height, each operation's record offset; each record (`lf_repair_record`); the cell index's
-// offsets and entries; and the segments in pixel units. A pass's words: its input (0 a state
-// plane bound as plane 0, 1 the step's input through `lf_source`), then its own parameters.
-// A level plane holds the membrane in `rgb` and the cell's class in `a`: 0 outside, 1 unknown,
-// 2 fixed.
+// Planes hold rgba32float: rgb a value, a the class. Level 0: a = coverage (> 0) for an unknown,
+// -1 for a fixed boundary cell, 0 outside. Coarser levels: 1 unknown, -1 fixed, 0 outside.
+//
+// Block, from `block`:
+//   0 operations, 1 their records, 2 segments, 3 atlas tiles across, 4 the apply's cell index,
+//   5 its cell side in stage pixels, 6 its columns, 7 its rows, 8 the stage's width,
+//   9 its height (f32), 10 .. 10 + 16 each level's reverse table.
+// An operation's record, 75 words: 0 kind (0 Clone, 1 Heal), 1 and 2 the source delta (i32),
+// 3 the radius, 4 the feather's band, 5 opacity / 100 (f32, content heights), 6 its first
+// segment, 7 its segments, 8 and 9 its solve rectangle's origin in stage pixels, 10 its levels,
+// then per level k at 11 + 4k: the grid's width, height, tiles across and tile map's offset.
+// A segment is five words, ax, ay, ex, ey, len2, as the mask brush's.
+//
+// A pass's words: 0 its level, 1 a red-black parity, 2 flags (1: read its values as zero, 2: it
+// has a right-hand side).
 
-const lf_repair_outside: f32 = 0.0;
-const lf_repair_unknown: f32 = 1.0;
-const lf_repair_fixed: f32 = 2.0;
+const lf_repair_tile: i32 = 8;
+const lf_repair_none: u32 = 0xffffffffu;
+const lf_repair_op_words: u32 = 75u;
+const lf_repair_levels_at: u32 = 11u;
+const lf_repair_reverse_at: u32 = 10u;
 
-// ---- The block ---------------------------------------------------------------------------------
-
-fn lf_repair_stage(block: u32) -> vec2<i32> {
-    return vec2<i32>(i32(lf_block_word(block + 1u)), i32(lf_block_word(block + 2u)));
+fn lf_repair_op(block: u32, op: u32) -> u32 {
+    return block + lf_block_word(block + 1u) + op * lf_repair_op_words;
 }
 
-// The absolute index of operation `op`'s record.
-fn lf_repair_record(block: u32, op: u32) -> u32 {
-    return block + lf_block_word(block + 3u + op);
+fn lf_repair_level(record: u32, level: u32) -> u32 {
+    return record + lf_repair_levels_at + 4u * level;
 }
 
-fn lf_repair_delta(record: u32) -> vec2<i32> {
-    return vec2<i32>(bitcast<i32>(lf_block_word(record + 4u)), bitcast<i32>(lf_block_word(record + 5u)));
+// The operation and grid cell atlas texel `at` of `level` holds: (op, i, j, held).
+fn lf_repair_owner(block: u32, level: u32, at: vec2<i32>) -> vec4<i32> {
+    let atx = i32(lf_block_word(block + 3u));
+    let tile = at / lf_repair_tile;
+    let index = u32(tile.y * atx + tile.x);
+    let packed = lf_block_word(block + lf_block_word(block + lf_repair_reverse_at + level) + index);
+    if packed == lf_repair_none {
+        return vec4<i32>(0, 0, 0, 0);
+    }
+    let op = packed >> 24u;
+    let gx = i32(packed & 0xfffu);
+    let gy = i32((packed >> 12u) & 0xfffu);
+    let i = gx * lf_repair_tile + at.x % lf_repair_tile;
+    let j = gy * lf_repair_tile + at.y % lf_repair_tile;
+    let grid = lf_repair_level(lf_repair_op(block, op), level);
+    if i >= i32(lf_block_word(grid)) || j >= i32(lf_block_word(grid + 1u)) {
+        return vec4<i32>(0, 0, 0, 0);
+    }
+    return vec4<i32>(i32(op), i, j, 1);
 }
 
-fn lf_repair_rect(record: u32) -> vec2<i32> {
-    return vec2<i32>(i32(lf_block_word(record + 16u)), i32(lf_block_word(record + 17u)));
+// The atlas texel of cell (i, j) of `op`'s `level`, or (-1, -1) where its grid holds none.
+fn lf_repair_texel(block: u32, op: u32, level: u32, i: i32, j: i32) -> vec2<i32> {
+    let grid = lf_repair_level(lf_repair_op(block, op), level);
+    if i < 0 || j < 0 || i >= i32(lf_block_word(grid)) || j >= i32(lf_block_word(grid + 1u)) {
+        return vec2<i32>(-1, -1);
+    }
+    let across = i32(lf_block_word(grid + 2u));
+    let tile = lf_block_word(block + lf_block_word(grid + 3u)
+        + u32((j / lf_repair_tile) * across + i / lf_repair_tile));
+    if tile == lf_repair_none {
+        return vec2<i32>(-1, -1);
+    }
+    let atx = lf_block_word(block + 3u);
+    return vec2<i32>(i32(tile % atx) * lf_repair_tile + i % lf_repair_tile,
+        i32(tile / atx) * lf_repair_tile + j % lf_repair_tile);
 }
 
-// Whether stage pixel `p`'s source lies inside the stage.
-fn lf_repair_valid(block: u32, record: u32, p: vec2<i32>) -> bool {
-    let s = p + lf_repair_delta(record);
-    let stage = lf_repair_stage(block);
-    return all(s >= vec2<i32>(0)) && all(s < stage);
+// Plane `slot` at an atlas texel, outside where there is none.
+fn lf_repair_read(slot: u32, texel: vec2<i32>) -> vec4<f32> {
+    if texel.x < 0 {
+        return vec4<f32>(0.0);
+    }
+    return lf_plane(slot, texel);
 }
 
-// The frozen easing on `s` already clamped to `[0, 1]`.
+// The frozen easing.
 fn lf_repair_smooth(s: f32) -> f32 {
     return s * s * (3.0 - 2.0 * s);
 }
 
-// The coverage at stage pixel `p`: zero outside the support and in an empty cell, otherwise the
-// profile of the nearest listed segment's distance, in pixels, times the amount.
-fn lf_repair_coverage(block: u32, record: u32, p: vec2<i32>) -> f32 {
-    let low = vec2<i32>(i32(lf_block_word(record + 6u)), i32(lf_block_word(record + 7u)));
-    let high = vec2<i32>(i32(lf_block_word(record + 8u)), i32(lf_block_word(record + 9u)));
-    if any(p < low) || any(p >= high) {
+// Coverage at stage pixel `p`: the capsule profile at the nearest segment's distance, times the
+// opacity, at the pixel's centre in mask space; zero where the source leaves the stage.
+fn lf_repair_alpha(block: u32, record: u32, p: vec2<i32>) -> f32 {
+    let width = i32(lf_block_word(block + 8u));
+    let h = lf_block_f32(block + 9u);
+    let delta = vec2<i32>(bitcast<i32>(lf_block_word(record + 1u)),
+        bitcast<i32>(lf_block_word(record + 2u)));
+    let s = p + delta;
+    if p.x < 0 || p.y < 0 || p.x >= width || f32(p.y) >= h || s.x < 0 || s.y < 0
+        || s.x >= width || f32(s.y) >= h {
         return 0.0;
     }
-    let side = i32(lf_block_word(record + 10u));
-    let columns = u32(lf_block_word(record + 11u));
-    let cell = u32((p.y - low.y) / side) * columns + u32((p.x - low.x) / side);
-    let offsets = block + lf_block_word(record + 13u);
-    let entries = block + lf_block_word(record + 14u);
-    let segments = block + lf_block_word(record + 15u);
-    let first = lf_block_word(offsets + cell);
-    let last = lf_block_word(offsets + cell + 1u);
-    if first == last {
-        return 0.0;
-    }
-    let u = f32(p.x) + 0.5;
-    let v = f32(p.y) + 0.5;
-    var nearest = 3.4e38;
-    for (var at = first; at < last; at++) {
-        let s = segments + 5u * lf_block_word(entries + at);
-        let ax = lf_block_f32(s);
-        let ay = lf_block_f32(s + 1u);
-        let ex = lf_block_f32(s + 2u);
-        let ey = lf_block_f32(s + 3u);
-        let len2 = lf_block_f32(s + 4u);
+    let u = (f32(p.x) + 0.5) / h;
+    let v = (f32(p.y) + 0.5) / h;
+    let first = lf_block_word(block + 2u) + 5u * lf_block_word(record + 6u);
+    let count = lf_block_word(record + 7u);
+    var nearest = 3.0e38;
+    for (var k = 0u; k < count; k = k + 1u) {
+        let at = block + first + 5u * k;
+        let ax = lf_block_f32(at);
+        let ay = lf_block_f32(at + 1u);
+        let ex = lf_block_f32(at + 2u);
+        let ey = lf_block_f32(at + 3u);
         let wx = u - ax;
         let wy = v - ay;
-        let t = clamp((wx * ex + wy * ey) / len2, 0.0, 1.0);
+        let t = clamp((wx * ex + wy * ey) / lf_block_f32(at + 4u), 0.0, 1.0);
         let dx = u - (ax + t * ex);
         let dy = v - (ay + t * ey);
         nearest = min(nearest, dx * dx + dy * dy);
     }
+    let radius = lf_block_f32(record + 3u);
+    let band = lf_block_f32(record + 4u);
     let d = sqrt(nearest);
-    let radius = lf_block_f32(record + 1u);
-    let band = lf_block_f32(record + 2u);
     var profile = 0.0;
     if band == 0.0 {
         profile = select(0.0, 1.0, d <= radius);
     } else {
         profile = lf_repair_smooth(clamp((radius - d) / band, 0.0, 1.0));
     }
-    return profile * lf_block_f32(record + 3u);
+    return profile * lf_block_f32(record + 5u);
 }
 
-// The repaired coverage: the coverage where the source is valid, else zero.
-fn lf_repair_alpha(block: u32, record: u32, p: vec2<i32>) -> f32 {
-    if !lf_repair_valid(block, record, p) {
-        return 0.0;
+// The sRGB transfer function extended over the real line, its constants the core's `f32` encode's
+// (held to it by the core's tests) and the decode's threshold and exponent.
+const lf_repair_linear_end: f32 = 0.0031308;
+const lf_repair_slope: f32 = 12.92;
+const lf_repair_scale: f32 = 1.055;
+const lf_repair_offset: f32 = 0.055;
+const lf_repair_exponent: f32 = 1.0 / 2.4;
+const lf_repair_decode_end: f32 = 0.04045;
+const lf_repair_decode_exponent: f32 = 2.4;
+
+fn lf_repair_encode(x: vec3<f32>) -> vec3<f32> {
+    let power = lf_repair_scale * pow(max(x, vec3<f32>(0.0)), vec3<f32>(lf_repair_exponent))
+        - lf_repair_offset;
+    return select(power, lf_repair_slope * x, x <= vec3<f32>(lf_repair_linear_end));
+}
+
+fn lf_repair_decode(y: vec3<f32>) -> vec3<f32> {
+    let power = pow((max(y, vec3<f32>(0.0)) + lf_repair_offset) / lf_repair_scale,
+        vec3<f32>(lf_repair_decode_exponent));
+    return select(power, y / lf_repair_slope, y <= vec3<f32>(lf_repair_decode_end));
+}
+
+// The group's input at stage pixel `p`: the step's input, or — flag 4 of the pass's flags, the
+// state plane bound at slot `flags >> 8` — the state a chained group before it left.
+fn lf_repair_input(p: vec2<i32>, words: u32) -> vec3<f32> {
+    let flags = lf_word(words + 2u);
+    if (flags & 4u) != 0u {
+        return lf_plane((flags >> 8u) & 0xffu, p - lf_origin()).rgb;
     }
-    return lf_repair_coverage(block, record, p);
+    return lf_source(p - lf_origin());
 }
 
-// ---- The state planes --------------------------------------------------------------------------
-
-// The pass's input state at window texel `at`: plane 0, or the step's input.
-fn lf_repair_input(at: vec2<i32>, words: u32) -> vec3<f32> {
-    if lf_word(words) == 1u {
-        return lf_source(at);
-    }
-    return lf_plane(0u, at).rgb;
-}
-
-// One group of Clone operations over the state: words `[input, first, count]`.
-fn lf_repair_clone(at: vec2<i32>, words: u32, block: u32) {
-    let p = lf_origin() + at;
-    var value = lf_repair_input(at, words);
-    let first = lf_word(words + 1u);
-    let count = lf_word(words + 2u);
-    for (var k = 0u; k < count; k++) {
-        let record = lf_repair_record(block, first + k);
-        let a = lf_repair_alpha(block, record, p);
-        if a > 0.0 {
-            let s = lf_repair_input(at + lf_repair_delta(record), words);
-            value = (1.0 - a) * value + a * s;
-        }
-    }
-    lf_store(at, vec4<f32>(value, 1.0));
-}
-
-// The step's apply: the last state plane at the pixel.
-fn lf_repair_apply(rgb: vec3<f32>, at: vec2<i32>, words: u32, block: u32, planes: u32) -> vec3<f32> {
-    return lf_plane(planes, at).rgb;
-}
-
-// ---- Heal ----------------------------------------------------------------------------------------
-
-// The sRGB transfer, extended over the real line, as the CPU's `srgb::encode` and `decode`.
-fn lf_repair_encode(linear: vec3<f32>) -> vec3<f32> {
-    let low = 12.92 * linear;
-    let high = 1.055 * pow(max(linear, vec3<f32>(0.0031308)), vec3<f32>(1.0 / 2.4)) - 0.055;
-    return select(high, low, linear <= vec3<f32>(0.0031308));
-}
-
-fn lf_repair_decode(encoded: vec3<f32>) -> vec3<f32> {
-    let low = encoded / 12.92;
-    let high = pow((max(encoded, vec3<f32>(0.04045)) + 0.055) / 1.055, vec3<f32>(2.4));
-    return select(high, low, encoded <= vec3<f32>(0.04045));
-}
-
-// A Heal pass's words: `[input, op, w, h, a, b, c, d]`, the level's own size `(w, h)` and two more
-// sizes or flags the pass names.
-fn lf_repair_size(words: u32, at: u32) -> vec2<i32> {
-    return vec2<i32>(i32(lf_word(words + at)), i32(lf_word(words + at + 1u)));
-}
-
-// The level's cell `at`, or an outside cell past its size.
-fn lf_repair_cell(slot: u32, at: vec2<i32>, size: vec2<i32>) -> vec4<f32> {
-    if any(at < vec2<i32>(0)) || any(at >= size) {
-        return vec4<f32>(0.0);
-    }
-    return lf_plane(slot, at);
-}
-
-// Level 0: each cell's class, and a fixed cell's boundary difference `E(I(q)) - E(S(q))`.
-// Words `[input, op, w, h]`; the state is plane 0 or the step's input.
-fn lf_repair_heal_setup(at: vec2<i32>, words: u32, block: u32) {
-    let size = lf_repair_size(words, 2u);
-    if any(at >= size) {
+// Level 0: each cell's class, and a fixed cell's encoded boundary difference.
+fn lf_repair_gather(at: vec2<i32>, words: u32, base: u32) {
+    let block = base + lf_word(words + 3u);
+    let owner = lf_repair_owner(block, 0u, at);
+    if owner.w == 0 {
         lf_store(at, vec4<f32>(0.0));
         return;
     }
-    let record = lf_repair_record(block, lf_word(words + 1u));
-    let p = lf_repair_rect(record) + at;
-    if lf_repair_alpha(block, record, p) > 0.0 {
-        lf_store(at, vec4<f32>(0.0, 0.0, 0.0, lf_repair_unknown));
+    let record = lf_repair_op(block, u32(owner.x));
+    let p = vec2<i32>(i32(lf_block_word(record + 8u)) + owner.y,
+        i32(lf_block_word(record + 9u)) + owner.z);
+    let a = lf_repair_alpha(block, record, p);
+    if a > 0.0 {
+        lf_store(at, vec4<f32>(0.0, 0.0, 0.0, a));
         return;
     }
-    let stage = lf_repair_stage(block);
-    if lf_repair_valid(block, record, p) {
-        let adjacent = (p.x > 0 && lf_repair_alpha(block, record, p - vec2<i32>(1, 0)) > 0.0)
-            || (p.x + 1 < stage.x && lf_repair_alpha(block, record, p + vec2<i32>(1, 0)) > 0.0)
-            || (p.y > 0 && lf_repair_alpha(block, record, p - vec2<i32>(0, 1)) > 0.0)
-            || (p.y + 1 < stage.y && lf_repair_alpha(block, record, p + vec2<i32>(0, 1)) > 0.0);
-        if adjacent {
-            let texel = p - lf_origin();
-            let i = lf_repair_encode(lf_repair_input(texel, words));
-            let s = lf_repair_encode(lf_repair_input(texel + lf_repair_delta(record), words));
-            lf_store(at, vec4<f32>(i - s, lf_repair_fixed));
-            return;
-        }
+    let delta = vec2<i32>(bitcast<i32>(lf_block_word(record + 1u)),
+        bitcast<i32>(lf_block_word(record + 2u)));
+    let width = i32(lf_block_word(block + 8u));
+    let height = i32(lf_block_f32(block + 9u));
+    let s = p + delta;
+    let valid = s.x >= 0 && s.y >= 0 && s.x < width && s.y < height;
+    let heal = lf_block_word(record) == 1u;
+    if heal && valid && (lf_repair_alpha(block, record, p + vec2<i32>(-1, 0)) > 0.0
+        || lf_repair_alpha(block, record, p + vec2<i32>(1, 0)) > 0.0
+        || lf_repair_alpha(block, record, p + vec2<i32>(0, -1)) > 0.0
+        || lf_repair_alpha(block, record, p + vec2<i32>(0, 1)) > 0.0) {
+        let d = lf_repair_encode(lf_repair_input(p, words)) - lf_repair_encode(lf_repair_input(s, words));
+        lf_store(at, vec4<f32>(d, -1.0));
+        return;
     }
     lf_store(at, vec4<f32>(0.0));
 }
 
-// A coarser level from the finer, plane 0: fixed if a child is, with the mean of its fixed
-// children (the start's climb), else unknown if a child is, else outside. Words
-// `[input, op, w, h, fine w, fine h]`.
-fn lf_repair_heal_coarse(at: vec2<i32>, words: u32, block: u32) {
-    let size = lf_repair_size(words, 2u);
-    if any(at >= size) {
+// Level k from level k - 1 (slot 0): fixed with the mean of its fixed children if any child is
+// fixed, else unknown at zero if any child is, else outside.
+fn lf_repair_coarse(at: vec2<i32>, words: u32, base: u32) {
+    let block = base + lf_word(words + 3u);
+    let level = lf_word(words);
+    let owner = lf_repair_owner(block, level, at);
+    if owner.w == 0 {
         lf_store(at, vec4<f32>(0.0));
         return;
     }
-    let fine = lf_repair_size(words, 4u);
     var sum = vec3<f32>(0.0);
-    var fixed = 0u;
+    var fixed = 0.0;
     var unknown = false;
-    for (var k = 0; k < 4; k++) {
-        let child = lf_repair_cell(0u, 2 * at + vec2<i32>(k % 2, k / 2), fine);
-        if child.a == lf_repair_fixed {
-            sum += child.rgb;
-            fixed += 1u;
-        } else if child.a == lf_repair_unknown {
+    for (var c = 0; c < 4; c = c + 1) {
+        let child = lf_repair_texel(block, u32(owner.x), level - 1u, 2 * owner.y + c % 2,
+            2 * owner.z + c / 2);
+        let v = lf_repair_read(0u, child);
+        if v.w < 0.0 {
+            sum = sum + v.xyz;
+            fixed = fixed + 1.0;
+        } else if v.w > 0.0 {
             unknown = true;
         }
     }
-    if fixed > 0u {
-        lf_store(at, vec4<f32>(sum / f32(fixed), lf_repair_fixed));
+    if fixed > 0.0 {
+        lf_store(at, vec4<f32>(sum / fixed, -1.0));
     } else if unknown {
-        lf_store(at, vec4<f32>(0.0, 0.0, 0.0, lf_repair_unknown));
+        lf_store(at, vec4<f32>(0.0, 0.0, 0.0, 1.0));
     } else {
         lf_store(at, vec4<f32>(0.0));
     }
 }
 
-// The start's descent: an unknown cell of plane 0 takes its parent's value in plane 1.
-// Words `[input, op, w, h, coarse w, coarse h]`.
-fn lf_repair_heal_descend(at: vec2<i32>, words: u32, block: u32) {
-    let size = lf_repair_size(words, 2u);
-    var cell = lf_repair_cell(0u, at, size);
-    if cell.a == lf_repair_unknown {
-        cell = vec4<f32>(lf_repair_cell(1u, at / 2, lf_repair_size(words, 4u)).rgb, cell.a);
+// The start of level k (slot 0 its classes and means): an unknown takes its parent's value in
+// level k + 1's start (slot 1).
+fn lf_repair_start(at: vec2<i32>, words: u32, base: u32) {
+    let block = base + lf_word(words + 3u);
+    let level = lf_word(words);
+    let v = lf_plane(0u, at);
+    let owner = lf_repair_owner(block, level, at);
+    if owner.w == 0 || v.w <= 0.0 {
+        lf_store(at, v);
+        return;
     }
-    lf_store(at, cell);
+    let parent = lf_repair_texel(block, u32(owner.x), level + 1u, owner.y / 2, owner.z / 2);
+    lf_store(at, vec4<f32>(lf_repair_read(1u, parent).xyz, v.w));
 }
 
-// The sum of `at`'s non-outside neighbours' values, `-x, +x, -y, +y`, added to `start`, and
-// their count.
-fn lf_repair_neighbours(at: vec2<i32>, size: vec2<i32>, start: vec3<f32>) -> vec4<f32> {
-    var sum = start;
+// A cell's value and class: slot 0 (value and class), or zero with slot 1's class.
+fn lf_repair_value(texel: vec2<i32>, zero: bool) -> vec4<f32> {
+    if texel.x < 0 {
+        return vec4<f32>(0.0);
+    }
+    if zero {
+        return vec4<f32>(0.0, 0.0, 0.0, lf_plane(1u, texel).w);
+    }
+    return lf_plane(0u, texel);
+}
+
+// One red-black half iteration on a(f) = rhs at level k: slot 0 the values, slot 1 the
+// right-hand side and classes (coarse levels).
+fn lf_repair_relax(at: vec2<i32>, words: u32, base: u32) {
+    let block = base + lf_word(words + 3u);
+    let level = lf_word(words);
+    let parity = i32(lf_word(words + 1u));
+    let flags = lf_word(words + 2u);
+    let zero = (flags & 1u) != 0u;
+    let owner = lf_repair_owner(block, level, at);
+    let here = lf_repair_value(select(vec2<i32>(-1, -1), at, owner.w != 0), zero);
+    if owner.w == 0 || here.w <= 0.0 || (owner.y + owner.z) % 2 != parity {
+        lf_store(at, here);
+        return;
+    }
+    var sum = vec3<f32>(0.0);
+    if (flags & 2u) != 0u {
+        sum = lf_plane(1u, at).xyz;
+    }
     var count = 0.0;
-    var around = array<vec2<i32>, 4>(vec2<i32>(-1, 0), vec2<i32>(1, 0), vec2<i32>(0, -1), vec2<i32>(0, 1));
-    for (var k = 0; k < 4; k++) {
-        let n = lf_repair_cell(0u, at + around[k], size);
-        if n.a != lf_repair_outside {
-            sum += n.rgb;
-            count += 1.0;
+    let op = u32(owner.x);
+    var steps = array<vec2<i32>, 4>(vec2<i32>(-1, 0), vec2<i32>(1, 0), vec2<i32>(0, -1),
+        vec2<i32>(0, 1));
+    for (var n = 0; n < 4; n = n + 1) {
+        let v = lf_repair_value(lf_repair_texel(block, op, level, owner.y + steps[n].x,
+            owner.z + steps[n].y), zero);
+        if v.w != 0.0 {
+            sum = sum + v.xyz;
+            count = count + 1.0;
         }
     }
-    return vec4<f32>(sum, count);
-}
-
-// The right-hand side at `at` of a level whose right-hand side plane is `slot`, or zero.
-fn lf_repair_rhs(at: vec2<i32>, size: vec2<i32>, words: u32, slot: u32) -> vec3<f32> {
-    if lf_word(words + 4u) == 0u {
-        return vec3<f32>(0.0);
+    if count > 0.0 {
+        lf_store(at, vec4<f32>(sum / count, here.w));
+    } else {
+        lf_store(at, here);
     }
-    return lf_repair_cell(slot, at, size).rgb;
 }
 
-// Half a red-black iteration: the unknown cells of parity `p` from their neighbours and the
-// right-hand side (plane 1, when the level has one). Words `[input, op, w, h, has rhs, p]`.
-fn lf_repair_heal_sweep(at: vec2<i32>, words: u32, block: u32) {
-    let size = lf_repair_size(words, 2u);
-    var cell = lf_repair_cell(0u, at, size);
-    let parity = lf_word(words + 5u);
-    if cell.a == lf_repair_unknown && u32(at.x + at.y) % 2u == parity {
-        let around = lf_repair_neighbours(at, size, lf_repair_rhs(at, size, words, 1u));
-        if around.w > 0.0 {
-            cell = vec4<f32>(around.xyz / around.w, cell.a);
+// Level k + 1's right-hand side: each unknown coarse cell (slot 2 the coarse classes) the sum of
+// its unknown children's residuals rhs - (count f - sum of neighbours) at level k (slot 0 the
+// values, slot 1 the right-hand side when the words' flags say it has one).
+fn lf_repair_restrict(at: vec2<i32>, words: u32, base: u32) {
+    let block = base + lf_word(words + 3u);
+    let level = lf_word(words);
+    let has_rhs = (lf_word(words + 2u) & 2u) != 0u;
+    let owner = lf_repair_owner(block, level + 1u, at);
+    let kind = lf_plane(2u, at).w;
+    if owner.w == 0 || kind <= 0.0 {
+        lf_store(at, vec4<f32>(0.0, 0.0, 0.0, kind));
+        return;
+    }
+    let op = u32(owner.x);
+    var steps = array<vec2<i32>, 4>(vec2<i32>(-1, 0), vec2<i32>(1, 0), vec2<i32>(0, -1),
+        vec2<i32>(0, 1));
+    var sum = vec3<f32>(0.0);
+    for (var c = 0; c < 4; c = c + 1) {
+        let i = 2 * owner.y + c % 2;
+        let j = 2 * owner.z + c / 2;
+        let texel = lf_repair_texel(block, op, level, i, j);
+        let f = lf_repair_read(0u, texel);
+        if f.w <= 0.0 {
+            continue;
         }
+        var neighbours = vec3<f32>(0.0);
+        var count = 0.0;
+        for (var n = 0; n < 4; n = n + 1) {
+            let v = lf_repair_read(0u, lf_repair_texel(block, op, level, i + steps[n].x,
+                j + steps[n].y));
+            if v.w != 0.0 {
+                neighbours = neighbours + v.xyz;
+                count = count + 1.0;
+            }
+        }
+        var rhs = vec3<f32>(0.0);
+        if has_rhs {
+            rhs = lf_plane(1u, texel).xyz;
+        }
+        sum = sum + (rhs - (count * f.xyz - neighbours));
     }
-    lf_store(at, cell);
+    lf_store(at, vec4<f32>(sum, kind));
 }
 
-// The coarse right-hand side: at each coarse unknown cell (plane 1), the sum over its unknown
-// children of the fine residual `rhs - (count f - neighbours)` (plane 0 the fine values, plane 2
-// its right-hand side, when it has one). Words `[input, op, w, h, has rhs, -, coarse w, coarse h]`.
-fn lf_repair_heal_restrict(at: vec2<i32>, words: u32, block: u32) {
-    let coarse = lf_repair_size(words, 6u);
-    if lf_repair_cell(1u, at, coarse).a != lf_repair_unknown {
+// Level k's values (slot 0) corrected by level k + 1's (slot 1) where both are unknown.
+fn lf_repair_correct(at: vec2<i32>, words: u32, base: u32) {
+    let block = base + lf_word(words + 3u);
+    let level = lf_word(words);
+    let v = lf_plane(0u, at);
+    let owner = lf_repair_owner(block, level, at);
+    if owner.w == 0 || v.w <= 0.0 {
+        lf_store(at, v);
+        return;
+    }
+    let parent = lf_repair_read(1u,
+        lf_repair_texel(block, u32(owner.x), level + 1u, owner.y / 2, owner.z / 2));
+    if parent.w > 0.0 {
+        lf_store(at, vec4<f32>(v.xyz + parent.xyz, v.w));
+    } else {
+        lf_store(at, v);
+    }
+}
+
+// Level 0's repaired value and coverage (slot 0 the solved correction): Clone's source, or Heal's
+// decode(encode(source) + f).
+fn lf_repair_composite(at: vec2<i32>, words: u32, base: u32) {
+    let block = base + lf_word(words + 3u);
+    let owner = lf_repair_owner(block, 0u, at);
+    let v = lf_plane(0u, at);
+    if owner.w == 0 || v.w <= 0.0 {
         lf_store(at, vec4<f32>(0.0));
         return;
     }
-    let size = lf_repair_size(words, 2u);
-    var sum = vec3<f32>(0.0);
-    for (var k = 0; k < 4; k++) {
-        let child = 2 * at + vec2<i32>(k % 2, k / 2);
-        let cell = lf_repair_cell(0u, child, size);
-        if cell.a == lf_repair_unknown {
-            let around = lf_repair_neighbours(child, size, vec3<f32>(0.0));
-            let rhs = lf_repair_rhs(child, size, words, 2u);
-            sum += rhs - (around.w * cell.rgb - around.xyz);
+    let record = lf_repair_op(block, u32(owner.x));
+    let p = vec2<i32>(i32(lf_block_word(record + 8u)) + owner.y,
+        i32(lf_block_word(record + 9u)) + owner.z);
+    let delta = vec2<i32>(bitcast<i32>(lf_block_word(record + 1u)),
+        bitcast<i32>(lf_block_word(record + 2u)));
+    var healed = lf_repair_input(p + delta, words);
+    if lf_block_word(record) == 1u {
+        healed = lf_repair_decode(lf_repair_encode(healed) + v.xyz);
+    }
+    lf_store(at, vec4<f32>(healed, v.w));
+}
+
+// The group's repaired value over `rgb` at stage pixel `p` where an operation covers it, blended
+// by its coverage, read from the composite plane at `slot`; `rgb` elsewhere. The cell index lists,
+// per cell of the stage, the operations whose solve rectangle meets it.
+fn lf_repair_over(rgb: vec3<f32>, p: vec2<i32>, block: u32, slot: u32) -> vec3<f32> {
+    let side = i32(lf_block_word(block + 5u));
+    let columns = i32(lf_block_word(block + 6u));
+    let rows = i32(lf_block_word(block + 7u));
+    let cell = p / side;
+    if p.x < 0 || p.y < 0 || cell.x >= columns || cell.y >= rows {
+        return rgb;
+    }
+    let index = block + lf_block_word(block + 4u);
+    let k = u32(cell.y * columns + cell.x);
+    let first = lf_block_word(index + k);
+    let last = lf_block_word(index + k + 1u);
+    for (var e = first; e < last; e = e + 1u) {
+        let op = lf_block_word(index + e);
+        let record = lf_repair_op(block, op);
+        let i = p.x - i32(lf_block_word(record + 8u));
+        let j = p.y - i32(lf_block_word(record + 9u));
+        let texel = lf_repair_texel(block, op, 0u, i, j);
+        if texel.x < 0 {
+            continue;
+        }
+        let v = lf_plane(slot, texel);
+        if v.w > 0.0 {
+            return (1.0 - v.w) * rgb + v.w * v.xyz;
         }
     }
-    lf_store(at, vec4<f32>(sum, 0.0));
+    return rgb;
 }
 
-// A coarse level's values cleared, its classes kept. Words `[input, op, w, h]`.
-fn lf_repair_heal_clear(at: vec2<i32>, words: u32, block: u32) {
-    let cell = lf_repair_cell(0u, at, lf_repair_size(words, 2u));
-    lf_store(at, vec4<f32>(0.0, 0.0, 0.0, cell.a));
+// The frame's step of one group alone: its repaired value over the step's input.
+fn lf_repair_apply(rgb: vec3<f32>, at: vec2<i32>, words: u32, base: u32, planes: u32) -> vec3<f32> {
+    return lf_repair_over(rgb, at + lf_origin(), base + lf_word(words + 3u), planes);
 }
 
-// The coarse correction: an unknown fine cell whose parent (plane 1) is unknown adds its value.
-// Words `[input, op, w, h, coarse w, coarse h]`.
-fn lf_repair_heal_prolong(at: vec2<i32>, words: u32, block: u32) {
-    let size = lf_repair_size(words, 2u);
-    var cell = lf_repair_cell(0u, at, size);
-    if cell.a == lf_repair_unknown {
-        let parent = lf_repair_cell(1u, at / 2, lf_repair_size(words, 4u));
-        if parent.a == lf_repair_unknown {
-            cell = vec4<f32>(cell.rgb + parent.rgb, cell.a);
-        }
-    }
-    lf_store(at, cell);
+// The frame's step of a chain of groups: the last group's repaired value over the state the
+// groups before it left (plane `planes`; the composite at `planes + 1`).
+fn lf_repair_apply_over(rgb: vec3<f32>, at: vec2<i32>, words: u32, base: u32, planes: u32) -> vec3<f32> {
+    let state = lf_plane(planes, at).rgb;
+    return lf_repair_over(state, at + lf_origin(), base + lf_word(words + 3u), planes + 1u);
 }
 
-// The composite over the state: `(1 - a) I + a D(E(S) + f)` at each unknown cell of the solve
-// rectangle (the finest level, plane `slot`), the state elsewhere. Words `[input, op, w, h, slot]`;
-// the state is plane 0 or the step's input.
-fn lf_repair_heal_composite(at: vec2<i32>, words: u32, block: u32) {
-    let record = lf_repair_record(block, lf_word(words + 1u));
-    let p = lf_origin() + at;
-    var value = lf_repair_input(at, words);
-    let cell = lf_repair_cell(lf_word(words + 4u), p - lf_repair_rect(record), lf_repair_size(words, 2u));
-    if cell.a == lf_repair_unknown {
-        let s = lf_repair_input(at + lf_repair_delta(record), words);
-        let healed = lf_repair_decode(lf_repair_encode(s) + cell.rgb);
-        let a = lf_repair_alpha(block, record, p);
-        value = (1.0 - a) * value + a * healed;
-    }
+// A chained group's output over the window: its repaired value over its input (the pass's flags
+// say where, as `lf_repair_input` reads them), the composite at slot `lf_word(words + 4u)`.
+fn lf_repair_blend(at: vec2<i32>, words: u32, base: u32) {
+    let block = base + lf_word(words + 3u);
+    let p = at + lf_origin();
+    let value = lf_repair_over(lf_repair_input(p, words), p, block, lf_word(words + 4u));
     lf_store(at, vec4<f32>(value, 1.0));
 }
