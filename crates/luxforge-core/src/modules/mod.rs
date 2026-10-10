@@ -82,6 +82,8 @@ pub use corrections::{CORRECTIONS_EFFECT, RepairInput, StaleCorrection, StaleRea
 pub(crate) use corrections::{new_top_input as corrections_top_input, stale_corrections};
 #[cfg(test)]
 pub(crate) use corrections::patch_testing as corrections_patch_testing;
+#[cfg(feature = "qualification")]
+pub use corrections::qualification as corrections_qualification;
 pub(crate) use corrections::{
     CorrectionsModule, RepairCarrier, source_identity as corrections_source_identity,
 };

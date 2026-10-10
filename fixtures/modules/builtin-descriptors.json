@@ -2441,6 +2441,51 @@
             "patch": false,
             "preset": false,
             "title": "Reset corrections"
+          },
+          {
+            "accepts_candidate": true,
+            "id": "accept-correction-patch",
+            "notes": "Adds a task's candidate patch on top of the photograph's corrections as a frozen patch and answers it as correction {operation, name, index}. The candidate must be live, belong to this photograph and have been generated against what a new top correction reads now (otherwise conflict, with data.reasons); its bytes are published as a repair-patch artifact off the catalog owner before the one entry is committed. A frozen patch keeps rendering when what it was generated against changes, and is then reported stale.",
+            "parameters": [
+              {
+                "default": null,
+                "kind": "identity",
+                "name": "job_id",
+                "notes": "the task job that published the candidate",
+                "of": "job",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "integer",
+                "max": 3,
+                "min": 0,
+                "name": "candidate",
+                "notes": "the candidate's number in its job, as job.read lists it",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": 100,
+                "kind": "integer",
+                "max": 100,
+                "min": 0,
+                "name": "opacity",
+                "notes": "how strongly the patch blends",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              }
+            ],
+            "patch": false,
+            "preset": false,
+            "title": "Accept patch"
           }
         ],
         "availability": {
@@ -2473,6 +2518,7 @@
         "developer": false,
         "effects": [
           {
+            "artifacts": true,
             "format": 1,
             "id": "luxforge.corrections.repair",
             "operations": {
@@ -2490,7 +2536,7 @@
         "queries": [
           {
             "id": "corrections",
-            "notes": "The photograph's corrections as stored, in application order: {limit, next, operations: [{operation, name, kind, index, points, radius, feather, opacity, source-x, source-y, source-origin}]}. Reads no pixel.",
+            "notes": "The photograph's corrections as stored, in application order: {limit, next, operations: [{operation, name, kind, index, points, radius, feather, opacity, source-x, source-y, source-origin}]}; a frozen patch is {operation, name, kind: patch, index, label, artifact, rect, opacity, provenance, stale?}, stale: {reasons} (source, dimensions, development, earlier-correction) when what it was generated against changed. Reads no pixel.",
             "parameters": [],
             "patch": false,
             "title": "Corrections"
@@ -5617,6 +5663,59 @@
   },
   "schema.list": {
     "methods": {
+      "edit.accept-correction-patch": {
+        "mutates": true,
+        "mutation": "revision",
+        "notes": "Adds a task's candidate patch on top of the photograph's corrections as a frozen patch and answers it as correction {operation, name, index}. The candidate must be live, belong to this photograph and have been generated against what a new top correction reads now (otherwise conflict, with data.reasons); its bytes are published as a repair-patch artifact off the catalog owner before the one entry is committed. A frozen patch keeps rendering when what it was generated against changes, and is then reported stale.",
+        "optional": {
+          "opacity": "how strongly the patch blends"
+        },
+        "parameters": [
+          {
+            "default": null,
+            "kind": "identity",
+            "name": "job_id",
+            "notes": "the task job that published the candidate",
+            "of": "job",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "integer",
+            "max": 3,
+            "min": 0,
+            "name": "candidate",
+            "notes": "the candidate's number in its job, as job.read lists it",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": 100,
+            "kind": "integer",
+            "max": 100,
+            "min": 0,
+            "name": "opacity",
+            "notes": "how strongly the patch blends",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          }
+        ],
+        "patch": false,
+        "required": [
+          "asset_id",
+          "mutation",
+          "job_id",
+          "candidate"
+        ],
+        "revision_of": "asset"
+      },
       "edit.add-correction": {
         "mutates": true,
         "mutation": "revision",
@@ -9763,7 +9862,7 @@
       },
       "query.corrections": {
         "mutates": false,
-        "notes": "The photograph's corrections as stored, in application order: {limit, next, operations: [{operation, name, kind, index, points, radius, feather, opacity, source-x, source-y, source-origin}]}. Reads no pixel.",
+        "notes": "The photograph's corrections as stored, in application order: {limit, next, operations: [{operation, name, kind, index, points, radius, feather, opacity, source-x, source-y, source-origin}]}; a frozen patch is {operation, name, kind: patch, index, label, artifact, rect, opacity, provenance, stale?}, stale: {reasons} (source, dimensions, development, earlier-correction) when what it was generated against changed. Reads no pixel.",
         "optional": {
           "entry_id": "entry to ask about; default the session's selection"
         },

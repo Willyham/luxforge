@@ -148,25 +148,22 @@ pub(crate) struct BoundPatch {
     amount: f64,
     region: Region,
     /// At a reduced stage, per pixel of `region` row by row: the box's coverage-weighted colour
-    /// `P̄` and its coverage `Ā`. Empty at full resolution, which reads the bytes directly.
-    means: Vec<[f64; 4]>,
+    /// `P̄` and its coverage `Ā`, shared through [`drawn`]'s cache. `None` at full resolution,
+    /// which reads the bytes directly.
+    reduced: Option<Arc<Drawn>>,
 }
 
 impl BoundPatch {
     /// `source` at `stage` with `opacity` in `0..=100`.
     pub(crate) fn new(source: PatchSource, opacity: u8, stage: Stage) -> Self {
         let region = source.writes(stage);
-        let means = if stage == source.full || region.is_empty() {
-            Vec::new()
-        } else {
-            reduced_means(&source, stage, region)
-        };
+        let reduced = (stage != source.full && !region.is_empty()).then(|| drawn(&source, stage));
         Self {
             source,
             stage,
             amount: f64::from(opacity.min(100)) / 100.0,
             region,
-            means,
+            reduced,
         }
     }
 
@@ -178,6 +175,95 @@ impl BoundPatch {
     pub(crate) fn stage(&self) -> Stage {
         self.stage
     }
+}
+
+/// What a patch is drawn from at one stage, shared by the CPU reference and the GPU: at full
+/// resolution its bytes as words, two a pixel (`rgba16f-le` read as `u32`); at a reduced stage the
+/// box means of `region`, as `f64` for the reference and four `f32` words a pixel for the GPU.
+#[derive(Debug)]
+pub(crate) struct Drawn {
+    pub(crate) region: Region,
+    pub(crate) means: Vec<[f64; 4]>,
+    pub(crate) words: Arc<[u32]>,
+    /// The words are reduced means rather than the patch's own half floats.
+    pub(crate) reduced: bool,
+}
+
+impl Drawn {
+    fn bytes(&self) -> u64 {
+        self.means.len() as u64 * 32 + self.words.len() as u64 * 4
+    }
+}
+
+/// The most bytes the drawn-patch cache keeps: 128 MiB. Entries a plan or frame still holds stay
+/// alive with it; the cache drops the least recently used beyond the bound.
+const DRAWN_BYTES: u64 = 128 * 1024 * 1024;
+
+type DrawnKey = (crate::ArtifactId, [u32; 4], Stage, Stage);
+
+#[derive(Default)]
+struct DrawnCache {
+    entries: Vec<(DrawnKey, Arc<Drawn>)>,
+    bytes: u64,
+}
+
+static DRAWN: std::sync::Mutex<DrawnCache> = std::sync::Mutex::new(DrawnCache {
+    entries: Vec::new(),
+    bytes: 0,
+});
+
+/// What `source` is drawn from at `stage` ([`Drawn`]), built once and kept in a bounded cache so a
+/// gesture's ticks and the reference's frames share it: `O(patch pixels)` the first time, a lookup
+/// after.
+pub(crate) fn drawn(source: &PatchSource, stage: Stage) -> Arc<Drawn> {
+    let key = (source.artifact.id.clone(), source.rect, source.full, stage);
+    {
+        let mut cache = DRAWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(at) = cache.entries.iter().position(|(held, _)| *held == key) {
+            let entry = cache.entries.remove(at);
+            let found = entry.1.clone();
+            cache.entries.push(entry);
+            return found;
+        }
+    }
+    let built = Arc::new(if stage == source.full {
+        Drawn {
+            region: source.writes(stage),
+            means: Vec::new(),
+            words: source
+                .artifact
+                .bytes
+                .chunks_exact(4)
+                .map(|word| u32::from_le_bytes([word[0], word[1], word[2], word[3]]))
+                .collect(),
+            reduced: false,
+        }
+    } else {
+        let region = source.writes(stage);
+        let means = if region.is_empty() {
+            Vec::new()
+        } else {
+            reduced_means(source, stage, region)
+        };
+        let words = means
+            .iter()
+            .flat_map(|mean| mean.map(|value| (value as f32).to_bits()))
+            .collect();
+        Drawn {
+            region,
+            means,
+            words,
+            reduced: true,
+        }
+    });
+    let mut cache = DRAWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    cache.bytes += built.bytes();
+    cache.entries.push((key, built.clone()));
+    while cache.bytes > DRAWN_BYTES && cache.entries.len() > 1 {
+        let (_, evicted) = cache.entries.remove(0);
+        cache.bytes -= evicted.bytes();
+    }
+    built
 }
 
 /// One axis of a box filter: for each output index `o` of `0..count` starting at `start`, the
@@ -253,24 +339,14 @@ pub(crate) fn composite(
     if region.is_empty() || patch.amount == 0.0 {
         return Ok(());
     }
-    let full = patch.means.is_empty();
+    let means = patch.reduced.as_ref().map(|drawn| &drawn.means);
     for y in region.y0..region.y1() {
         cancel.check()?;
         for x in region.x0..region.x1() {
             let input = frame.get(x, y);
-            let out = if full {
-                let texel = patch.source.texel(x - patch.source.rect[0], y - patch.source.rect[1]);
-                let Some((rgb, alpha)) = covering(texel) else {
-                    continue;
-                };
-                let c = alpha * patch.amount;
-                [0, 1, 2].map(|channel| {
-                    let i = f64::from(input[channel]);
-                    (i + c * (rgb[channel] - i)) as f32
-                })
-            } else {
+            let out = if let Some(means) = means {
                 let at = ((y - region.y0) * region.width + (x - region.x0)) as usize;
-                let [r, g, b, coverage] = patch.means[at];
+                let [r, g, b, coverage] = means[at];
                 if coverage <= 0.0 {
                     continue;
                 }
@@ -279,6 +355,16 @@ pub(crate) fn composite(
                 [0, 1, 2].map(|channel| {
                     let i = f64::from(input[channel]);
                     (i + o * (mean[channel] - coverage * i)) as f32
+                })
+            } else {
+                let texel = patch.source.texel(x - patch.source.rect[0], y - patch.source.rect[1]);
+                let Some((rgb, alpha)) = covering(texel) else {
+                    continue;
+                };
+                let c = alpha * patch.amount;
+                [0, 1, 2].map(|channel| {
+                    let i = f64::from(input[channel]);
+                    (i + c * (rgb[channel] - i)) as f32
                 })
             };
             frame.set(x, y, out);
@@ -312,7 +398,8 @@ mod tests {
             height: Some(rect[3]),
             colour: Some("linear-srgb".into()),
         };
-        let id = ArtifactId::for_hash(&format!("{:064x}", bytes.len())).unwrap();
+        use sha2::Digest;
+        let id = ArtifactId::for_hash(&format!("{:x}", sha2::Sha256::digest(&bytes))).unwrap();
         PatchSource {
             artifact: Arc::new(PreparedArtifact::new(id, &meta, bytes.into())),
             rect,
@@ -413,6 +500,7 @@ mod tests {
         composite(&mut frame, &bound, &Cancel::never()).unwrap();
         assert!((values[0] - 1.0).abs() < 1e-9, "fully covered");
         assert_eq!(values[1], 0.0, "outside its region");
+        assert!((values[3] - 0.5).abs() < 1e-9, "half covered blends half way");
     }
 
     #[test]

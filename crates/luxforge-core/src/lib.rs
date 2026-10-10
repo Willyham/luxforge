@@ -148,7 +148,7 @@ pub use render::gpu::{
     GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest, GpuPlane, GpuPlaneFormat, GpuPlaneSize,
     GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuRepair, GpuRepairOperation, GpuRest,
     REPAIR_LEVEL_BYTES, REPAIR_PASSES_MAX,
-    GpuSpatial, GpuSpatialUnit, GpuStaging, GpuSweep, GpuSweeps, GpuView, GpuWarmList,
+    GpuResident, GpuSpatial, GpuSpatialUnit, GpuStaging, GpuSweep, GpuSweeps, GpuView, GpuWarmList,
     PreparedStream, REDUCED_AFTER_BYTES, REST_SHARE_MAX, REST_TILE_SIDES, REST_TILE_WORK,
     RestReduction, RestTile, RestTiles, STREAM_TILE_SIDES, SWEEP_SPLIT_REACH, SWEEP_STAGE_TEXTURES,
     SourceBoundary, StreamPlan, TilePlan, anchored, gpu_fit_plan, gpu_lights, gpu_plan, plan_read,
@@ -175,6 +175,7 @@ pub mod qualification {
     pub use crate::modules::detail_qualification as detail;
     pub use crate::modules::presence_qualification as presence;
     pub use crate::repair::qualification as repair;
+    pub use crate::modules::corrections_qualification as corrections;
 
     /// The picture at rest of `evaluation` on the GPU at `view`, as a displayed stack's job plans
     /// it ([`crate::GpuRest`]): the plan of the whole stack from the source, and the boundary it

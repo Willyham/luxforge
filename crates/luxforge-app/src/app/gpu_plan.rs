@@ -647,6 +647,9 @@ pub(crate) fn spatial_step(
         mask,
         halos: spatial.halos.clone(),
         contained: spatial.repair.is_some(),
+        // A repair step's frozen patches, the same allocations every tick.
+        resident: spatial.resident.blocks.clone(),
+        resident_key: spatial.resident.key,
     })))
 }
 

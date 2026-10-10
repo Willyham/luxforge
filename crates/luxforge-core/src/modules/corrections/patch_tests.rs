@@ -518,3 +518,144 @@ fn a_catalog_moved_with_its_artifacts_keeps_its_patches_and_a_copied_database_do
     drop(service);
     let _ = fs::remove_dir_all(directory);
 }
+
+/// A frozen patch on the GPU plan: its words resident in the repair step, the patch's own half
+/// floats at the stage it was placed in and box means at a reduced one, the same allocation on a
+/// second plan of the same stack, so a tick writes them once; and its own pass when a later
+/// operation reads its output.
+#[test]
+fn a_gpu_plan_holds_a_patch_resident_at_full_and_reduced_stages() {
+    use super::qualification::{QualBrush, QualPatch, QualStep, repair_stack};
+    let registry = crate::ModuleRegistry::builtin();
+    let full = Stage {
+        width: 400,
+        height: 300,
+    };
+    let patch = || QualPatch {
+        rect: [100, 80, 40, 30],
+        opacity: 70,
+        pixel: Box::new(|x, y| ([0.2, 0.4, 0.6], ((x + y) % 5) as f32 / 4.0)),
+    };
+    let stack = repair_stack(
+        vec![
+            QualStep::Patch(patch()),
+            QualStep::Brush(QualBrush {
+                heal: false,
+                points: vec![[0.75, 0.75]],
+                radius: 0.02,
+                source: [0.3, 0.3],
+                feather: 50,
+                opacity: 100,
+            }),
+        ],
+        Vec::new(),
+    );
+    let plan = |request: crate::GpuPlanRequest| match crate::gpu_plan(&registry, &stack, request)
+        .unwrap()
+    {
+        crate::GpuAnswer::Plan(plan) => *plan,
+        crate::GpuAnswer::Fallback(reason) => panic!("{reason}"),
+    };
+    let exact = plan(crate::GpuPlanRequest::exact(0, full).from_source());
+    let step = &exact.spatial[0];
+    assert_eq!(step.resident.blocks.len(), 1);
+    assert_eq!(step.resident.len(), 40 * 30 * 2, "two words a pixel at full resolution");
+    assert!(
+        step.passes.iter().any(|pass| pass.kernel == "lf_repair_patch_blend"),
+        "the Clone reads the patch's output, so the patch is a pass of its own"
+    );
+    let again = plan(crate::GpuPlanRequest::exact(0, full).from_source());
+    assert!(std::sync::Arc::ptr_eq(
+        &step.resident.blocks[0],
+        &again.spatial[0].resident.blocks[0]
+    ));
+    assert_eq!(step.resident, again.spatial[0].resident);
+    let proxy = Stage {
+        width: 200,
+        height: 150,
+    };
+    let reduced = plan(crate::GpuPlanRequest::fit(0, proxy, full).from_source());
+    let step = &reduced.spatial[0];
+    assert_eq!(
+        step.resident.len(),
+        20 * 15 * 4,
+        "four f32 words a pixel of the patch's region at half scale"
+    );
+}
+
+/// The warm list of a stack holding a frozen patch — at open and after an accept — warms the
+/// patch's own pipelines with the stack's repair links.
+#[test]
+fn the_warm_list_of_a_patched_stack_warms_its_patch() {
+    use super::qualification::{QualPatch, QualStep, repair_stack};
+    use crate::{AssetId, EntryId, HistoryEntry, Snapshot, SnapshotId};
+    let (width, height) = (160u32, 120u32);
+    let rgba: Vec<u8> = (0..width * height)
+        .flat_map(|index| [(index % 251) as u8, (index % 239) as u8, (index % 113) as u8, 255])
+        .collect();
+    let source = crate::SourceImage {
+        width,
+        height,
+        rgba: rgba.into(),
+        fingerprint: "sha256:patch-warm".into(),
+        orientation: 1,
+        capture: Default::default(),
+    };
+    let recipe = repair_stack(
+        vec![QualStep::Patch(QualPatch {
+            rect: [20, 20, 30, 20],
+            opacity: 100,
+            pixel: Box::new(|_, _| ([0.5, 0.5, 0.5], 1.0)),
+        })],
+        vec![Layer::new(crate::BASIC_EFFECT, json!({"exposure": 0.2}))],
+    );
+    let asset = AssetId::new();
+    let entry = HistoryEntry {
+        id: EntryId::new(),
+        asset_id: asset.clone(),
+        sequence: 1,
+        action_id: "test".into(),
+        label: "Test".into(),
+        parameters: json!({}),
+        actor: "test".into(),
+        timestamp_ms: 0,
+        request_id: None,
+        base_revision: 0,
+        result_revision: 1,
+        snapshot: Snapshot {
+            id: SnapshotId::new(),
+            asset_id: asset,
+            recipe: recipe.clone(),
+        },
+        undo_parent: None,
+        restore_target: None,
+    };
+    let held = crate::Evaluation::new(
+        std::sync::Arc::new(crate::ModuleRegistry::builtin()),
+        crate::RenderContext::new(),
+        crate::PreviewSource::Jpeg(source),
+        entry,
+        recipe,
+        None,
+    );
+    let warm = crate::render::gpu::plan_warm_list(
+        &held,
+        crate::GpuView::Fit(crate::ProxyBounds { width, height }),
+    )
+    .unwrap();
+    let functions: Vec<&str> = warm
+        .plans
+        .iter()
+        .flat_map(|plan| &plan.spatial)
+        .flat_map(|step| {
+            step.applies
+                .iter()
+                .map(|apply| apply.function)
+                .chain(step.passes.iter().map(|pass| pass.kernel))
+        })
+        .collect();
+    assert!(
+        functions.iter().any(|name| name.starts_with("lf_repair_patch")),
+        "{functions:?}"
+    );
+}

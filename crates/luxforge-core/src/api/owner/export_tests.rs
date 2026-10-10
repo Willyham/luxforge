@@ -536,6 +536,7 @@ fn an_export_writes_the_entrys_exact_render_as_a_new_jpeg() {
             "width": 480,
             "height": 320,
             "suggested": suggested,
+            "stale": [],
         })
     );
     // A taken name is counted past, and the plan never wrote anything.
@@ -573,7 +574,7 @@ fn an_export_writes_the_entrys_exact_render_as_a_new_jpeg() {
         read["result"],
         json!({
             "path": destination, "bytes": bytes, "width": 480, "height": 320, "metadata": [],
-            "renderer": reference_renderer(),
+            "renderer": reference_renderer(), "acknowledged_stale": [],
         })
     );
     assert!(read.get("error").is_none());
@@ -1676,6 +1677,7 @@ fn a_stream_feeds_the_encoder_in_order_and_names_the_gpu() {
         json!({
             "path": out.join("gpu.jpg"), "bytes": bytes, "width": 480, "height": 320,
             "metadata": [], "renderer": {"record": "gpu", "reason": null},
+            "acknowledged_stale": [],
         })
     );
     let kept = harness.export(json!({

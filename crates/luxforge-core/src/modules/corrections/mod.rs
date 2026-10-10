@@ -8,6 +8,8 @@ mod input;
 mod labels;
 mod module;
 mod payload;
+#[cfg(any(test, feature = "qualification"))]
+pub mod qualification;
 mod query;
 mod search;
 mod stroke;

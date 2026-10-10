@@ -147,6 +147,54 @@ pub(super) fn corrections() -> Layer {
     ])
 }
 
+/// Frozen patches over the [`WIDTH`] × [`HEIGHT`] stage (`docs/design/corrections.md`, "Frozen
+/// patches"): a Clone, two overlapping patches — coverage stepping through 0 to 1, values past
+/// both ends of the linear range, the second at opacity 60 — and a Heal sampling the patches'
+/// output, then `after`: the patch composite alone, chained and read by a later operation.
+pub(super) fn patches(after: Vec<Layer>) -> Recipe {
+    use luxforge_core::qualification::corrections::{QualBrush, QualPatch, QualStep, repair_stack};
+    let (w, h) = (f64::from(WIDTH), f64::from(HEIGHT));
+    let ramp = |seed: u32| -> Box<dyn Fn(u32, u32) -> ([f32; 3], f32)> {
+        Box::new(move |x, y| {
+            let value = |channel: u32| {
+                ((x * 7 + y * 3 + channel * 61 + seed) % 256) as f32 / 255.0 * 1.5 - 0.25
+            };
+            ([value(0), value(1), value(2)], ((x + y + seed) % 5) as f32 / 4.0)
+        })
+    };
+    repair_stack(
+        vec![
+            QualStep::Brush(QualBrush {
+                heal: false,
+                points: vec![[90.0 / w, 60.0 / h]],
+                radius: 9.0 / h,
+                source: [130.0 / w, 72.0 / h],
+                feather: 50,
+                opacity: 100,
+            }),
+            QualStep::Patch(QualPatch {
+                rect: [80, 50, 60, 40],
+                opacity: 100,
+                pixel: ramp(3),
+            }),
+            QualStep::Patch(QualPatch {
+                rect: [120, 70, 50, 37],
+                opacity: 60,
+                pixel: ramp(11),
+            }),
+            QualStep::Brush(QualBrush {
+                heal: true,
+                points: vec![[260.0 / w, 150.0 / h]],
+                radius: 10.0 / h,
+                source: [125.0 / w, 80.0 / h],
+                feather: 40,
+                opacity: 100,
+            }),
+        ],
+        after,
+    )
+}
+
 /// The families a tile is drawn through: every kind of step a plan holds, a link before the last
 /// among them.
 pub(super) fn families() -> Vec<(&'static str, Recipe)> {
@@ -194,6 +242,14 @@ pub(super) fn families() -> Vec<(&'static str, Recipe)> {
                 )],
                 Vec::new(),
             ),
+        ),
+        (
+            "frozen patches among Clone and Heal",
+            patches(vec![basic.clone()]),
+        ),
+        (
+            "frozen patches before Detail",
+            patches(vec![Layer::new(DETAIL_EFFECT, json!({"sharpening": 50.0}))]),
         ),
         (
             "Clone and Heal before Detail",
