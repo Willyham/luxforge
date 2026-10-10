@@ -167,7 +167,7 @@
     {
       "id": "TASK-003",
       "description": "Build the standalone stateless ingestion validator for the chosen HTTPS batch contract.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Proposed output: services/usage-ingest/, a standalone Rust package with its own empty [workspace] table and Cargo.lock outside the root workspace, so desktop builds, core tests and cargo xtask check gain no server dependency. Extend the repository's pinning, notice and advisory checks to its lockfile. The HTTP framework is delegated; project code remains GPL-3.0-or-later.",
@@ -650,7 +650,7 @@
     {
       "id": "TASK-009",
       "description": "Prepare the pinned Vector, ClickHouse and private Grafana reference stack with bounded device/profile retention and no IP tracking.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-003"
       ],
