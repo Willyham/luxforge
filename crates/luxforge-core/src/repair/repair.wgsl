@@ -430,3 +430,92 @@ fn lf_repair_blend(at: vec2<i32>, words: u32, base: u32) {
     let value = lf_repair_over(lf_repair_input(p, words), p, block, lf_word(words + 4u));
     lf_store(at, vec4<f32>(value, 1.0));
 }
+
+// A frozen patch (corrections.md, "Frozen patches"): immutable pixels composited over the stage
+// at their rectangle. Its words are resident below the step's block base: record word 10 counts
+// every resident word, so they start at `base - lf_block_word(record + 10u)`. Record: 0..4 the
+// stage pixels it may write [x0, y0, x1, y1), 4 1 when its words are reduced box means (four f32
+// a pixel: the coverage-weighted colour and the coverage) and 0 when they are its own half floats
+// (RGBA, two words a pixel), 5 its words' offset among the resident words, 6 their row stride in
+// pixels, 7 and 8 the stage pixel of their first, 9 opacity / 100.
+
+// One IEEE half float, the low 16 bits of `h`, exactly as `f32`; infinity for a half's infinity
+// or NaN, which the finite check then refuses.
+fn lf_repair_half(h: u32) -> f32 {
+    let sign = (h >> 15u) & 1u;
+    let exponent = (h >> 10u) & 0x1fu;
+    let mantissa = h & 0x3ffu;
+    var value: f32;
+    if exponent == 0u {
+        value = f32(mantissa) * 5.9604645e-8;
+    } else if exponent == 31u {
+        value = bitcast<f32>(0x7f800000u);
+    } else {
+        value = bitcast<f32>(((exponent + 112u) << 23u) | (mantissa << 13u));
+    }
+    return select(value, -value, sign == 1u);
+}
+
+// Two halves of one word, the low first.
+fn lf_repair_halves(word: u32) -> vec2<f32> {
+    return vec2<f32>(lf_repair_half(word & 0xffffu), lf_repair_half(word >> 16u));
+}
+
+fn lf_repair_patch_finite(v: vec4<f32>) -> bool {
+    return all(v == v) && all(abs(v) <= vec4<f32>(65504.0));
+}
+
+// The patch's value over `rgb` at stage pixel `p`: `rgb + c (patch - rgb)`, c = coverage times
+// the opacity, at the stage it was placed in; `rgb + o (P - A rgb)` over a reduced stage's box;
+// `rgb` itself outside the patch or where it covers nothing.
+fn lf_repair_patch_over(rgb: vec3<f32>, p: vec2<i32>, base: u32, record: u32) -> vec3<f32> {
+    let lo = vec2<i32>(i32(lf_block_word(record)), i32(lf_block_word(record + 1u)));
+    let hi = vec2<i32>(i32(lf_block_word(record + 2u)), i32(lf_block_word(record + 3u)));
+    if any(p < lo) || any(p >= hi) {
+        return rgb;
+    }
+    let data = base - lf_block_word(record + 10u) + lf_block_word(record + 5u);
+    let stride = lf_block_word(record + 6u);
+    let origin = vec2<i32>(i32(lf_block_word(record + 7u)), i32(lf_block_word(record + 8u)));
+    let t = vec2<u32>(p - origin);
+    let amount = lf_block_f32(record + 9u);
+    let at = t.y * stride + t.x;
+    if lf_block_word(record + 4u) == 0u {
+        let rg = lf_repair_halves(lf_block_word(data + 2u * at));
+        let ba = lf_repair_halves(lf_block_word(data + 2u * at + 1u));
+        let texel = vec4<f32>(rg, ba);
+        if !lf_repair_patch_finite(texel) || !(texel.w > 0.0) {
+            return rgb;
+        }
+        let c = min(texel.w, 1.0) * amount;
+        return rgb + c * (texel.xyz - rgb);
+    }
+    let w = data + 4u * at;
+    let mean = vec4<f32>(lf_block_f32(w), lf_block_f32(w + 1u), lf_block_f32(w + 2u),
+        lf_block_f32(w + 3u));
+    if !(mean.w > 0.0) {
+        return rgb;
+    }
+    return rgb + amount * (mean.xyz - mean.w * rgb);
+}
+
+// The frame's step when a patch is its last operation and nothing before it was chained: the
+// patch over the step's input.
+fn lf_repair_patch_apply(rgb: vec3<f32>, at: vec2<i32>, words: u32, base: u32, planes: u32) -> vec3<f32> {
+    return lf_repair_patch_over(rgb, at + lf_origin(), base, base + lf_word(words + 3u));
+}
+
+// The frame's step when a patch is its last operation after chained ones: the patch over the
+// state they left (plane `planes`).
+fn lf_repair_patch_apply_over(rgb: vec3<f32>, at: vec2<i32>, words: u32, base: u32, planes: u32) -> vec3<f32> {
+    let state = lf_plane(planes, at).rgb;
+    return lf_repair_patch_over(state, at + lf_origin(), base, base + lf_word(words + 3u));
+}
+
+// A chained patch's output over the window: the patch over its input, the step's input or the
+// state plane the pass's flags name, as `lf_repair_input` reads them.
+fn lf_repair_patch_blend(at: vec2<i32>, words: u32, base: u32) {
+    let p = at + lf_origin();
+    let value = lf_repair_patch_over(lf_repair_input(p, words), p, base, base + lf_word(words + 3u));
+    lf_store(at, vec4<f32>(value, 1.0));
+}

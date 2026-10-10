@@ -157,6 +157,55 @@ pub struct GpuSpatial {
     /// A repair step's operations and reach ([`super::repair::GpuRepair`]); `None` for an
     /// operation of units.
     pub repair: Option<std::sync::Arc<super::repair::GpuRepair>>,
+    /// Shared storage blocks its program reads below its own block: a repair step's frozen
+    /// patches. Empty for every other step.
+    pub resident: GpuResident,
+}
+
+/// Storage blocks a step hands every tick unchanged — a repair step's frozen patches, each the
+/// words one patch is drawn from at the step's stage — packed before the step's own block, with
+/// the key of their content. Two are equal when their keys and lengths are, so comparing two
+/// plans never reads their words.
+#[derive(Clone, Default)]
+pub struct GpuResident {
+    pub blocks: Vec<std::sync::Arc<[u32]>>,
+    pub key: u64,
+}
+
+impl GpuResident {
+    /// The words of every block.
+    pub fn len(&self) -> usize {
+        self.blocks.iter().map(|block| block.len()).sum()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.blocks.is_empty()
+    }
+}
+
+impl PartialEq for GpuResident {
+    fn eq(&self, other: &Self) -> bool {
+        self.key == other.key
+            && self.blocks.len() == other.blocks.len()
+            && self
+                .blocks
+                .iter()
+                .zip(&other.blocks)
+                .all(|(a, b)| a.len() == b.len())
+    }
+}
+
+/// Up to 64 MiB of words are never printed; their lengths and key stand in for them.
+impl std::fmt::Debug for GpuResident {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GpuResident")
+            .field(
+                "blocks",
+                &self.blocks.iter().map(|block| block.len()).collect::<Vec<_>>(),
+            )
+            .field("key", &self.key)
+            .finish()
+    }
 }
 
 impl GpuSpatial {
@@ -205,6 +254,7 @@ pub(crate) fn compose(
         light: None,
         block: None,
         repair: None,
+        resident: GpuResident::default(),
     };
     // Scratch planes the units before this one wrote, free for this one.
     let mut free: Vec<usize> = Vec::new();
@@ -821,6 +871,7 @@ fn light_step(layer: usize, passes: GpuLightPasses, clamps: bool) -> Result<GpuS
         light: None,
         block: None,
         repair: None,
+        resident: GpuResident::default(),
     })
 }
 

@@ -82,6 +82,8 @@ fn reading(k: u32) -> GpuSpatial {
         mask: None,
         halos: vec![0],
         contained: false,
+        resident: Vec::new(),
+        resident_key: 0,
     }
 }
 
@@ -105,6 +107,8 @@ fn writing(k: u32) -> GpuSpatial {
         mask: None,
         halos: Vec::new(),
         contained: false,
+        resident: Vec::new(),
+        resident_key: 0,
     }
 }
 

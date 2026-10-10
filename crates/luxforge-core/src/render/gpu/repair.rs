@@ -54,19 +54,6 @@ pub(crate) fn admit(
             ),
         });
     }
-    if let Some(patch) = entry
-        .operations()
-        .iter()
-        .find(|operation| operation.kind == RepairKind::Patch)
-    {
-        return Err(GpuFallback::Repair {
-            layer,
-            why: format!(
-                "{} is a frozen patch, which the repair program does not draw",
-                patch.name()
-            ),
-        });
-    }
     if !crate::repair::REPAIR_PROGRAM.enabled && !planning.qualifying {
         return Err(GpuFallback::DisabledProgram {
             layer,
@@ -74,6 +61,17 @@ pub(crate) fn admit(
         });
     }
     let step = plan_repair(layer, entry, planning.linear);
+    if step.resident.len() > REPAIR_PATCH_WORDS {
+        return Err(GpuFallback::Repair {
+            layer,
+            why: format!(
+                "its frozen patches need {} MiB of GPU storage at this stage, past the {} MiB a \
+                 repair step may hold",
+                (step.resident.len() * 4) >> 20,
+                (REPAIR_PATCH_WORDS * 4) >> 20
+            ),
+        });
+    }
     let levels: u64 = step
         .planes
         .iter()
@@ -187,7 +185,19 @@ pub(crate) fn groups(entry: &RepairEntry) -> Vec<Vec<usize>> {
 /// clamped where the byte path quantizes ([module](self) docs).
 pub(crate) fn plan_repair(layer: usize, entry: &RepairEntry, linear: bool) -> GpuSpatial {
     let bound = entry.bound();
-    let groups = groups(entry);
+    // A frozen patch reads nothing another operation of its group writes, and writes nothing one
+    // reads, so it is drawn on its own right after the rest of its group.
+    let mut phases: Vec<Phase> = Vec::new();
+    for group in groups(entry) {
+        let (patches, others): (Vec<usize>, Vec<usize>) = group
+            .into_iter()
+            .partition(|&index| entry.operations()[index].kind == RepairKind::Patch);
+        if !others.is_empty() {
+            phases.push(Phase::Group(others));
+        }
+        phases.extend(patches.into_iter().map(Phase::Patch));
+    }
+    let resident = patch_resident(entry);
     let state_format = if linear {
         GpuPlaneFormat::Quad
     } else {
@@ -197,7 +207,7 @@ pub(crate) fn plan_repair(layer: usize, entry: &RepairEntry, linear: bool) -> Gp
     let mut planes: Vec<GpuPlane> = Vec::new();
     let mut passes: Vec<GpuPass> = Vec::new();
     let mut block: Vec<u32> = Vec::new();
-    let states: Vec<usize> = match groups.len() {
+    let states: Vec<usize> = match phases.len() {
         0 | 1 => Vec::new(),
         2 => vec![0],
         _ => vec![0, 1],
@@ -212,7 +222,51 @@ pub(crate) fn plan_repair(layer: usize, entry: &RepairEntry, linear: bool) -> Gp
     // The state the group being placed reads: the step's input, or a state plane.
     let mut state: Option<usize> = None;
     let mut apply = None;
-    for (number, group) in groups.iter().enumerate() {
+    for (number, phase) in phases.iter().enumerate() {
+        let last = number + 1 == phases.len();
+        let group = match phase {
+            Phase::Group(group) => group,
+            Phase::Patch(index) => {
+                let record = block.len() as u32;
+                block.extend_from_slice(&resident.records[*index]);
+                let words_at = words.len();
+                // `[-, -, flags, record]`: flags 4 reads the state plane at slot 0.
+                words.extend([0, 0, if state.is_some() { 4 } else { 0 }, record]);
+                if last {
+                    apply = Some(match state {
+                        None => GpuApply {
+                            function: "lf_repair_patch_apply",
+                            planes: Vec::new(),
+                            words: words_at,
+                            identity: false,
+                        },
+                        Some(plane) => GpuApply {
+                            function: "lf_repair_patch_apply_over",
+                            planes: vec![plane],
+                            words: words_at,
+                            identity: false,
+                        },
+                    });
+                } else {
+                    let output = match state {
+                        Some(plane) if plane == states[0] && states.len() > 1 => states[1],
+                        _ => states[0],
+                    };
+                    passes.push(GpuPass {
+                        kernel: "lf_repair_patch_blend",
+                        inputs: state.into_iter().collect(),
+                        output,
+                        words: words_at,
+                        source: 0,
+                        shape: GpuPassShape::Texels { span: [1, 1] },
+                        reads_source: state.is_none(),
+                        unit: 0,
+                    });
+                    state = Some(output);
+                }
+                continue;
+            }
+        };
         let ops: Vec<crate::repair::RepairOp> =
             group.iter().map(|&index| bound[index].clone()).collect();
         let described = crate::repair::gpu::describe(&ops, entry.stage, None);
@@ -222,7 +276,6 @@ pub(crate) fn plan_repair(layer: usize, entry: &RepairEntry, linear: bool) -> Gp
         // Each four-word record: level, parity, flags, the group's block offset.
         words.extend_from_slice(&described.words);
         let planes_at = planes.len();
-        let last = number + 1 == groups.len();
         for (index, &(width, height)) in described.planes.iter().enumerate() {
             planes.push(GpuPlane {
                 format: GpuPlaneFormat::Quad,
@@ -337,6 +390,11 @@ pub(crate) fn plan_repair(layer: usize, entry: &RepairEntry, linear: bool) -> Gp
                     operation.offset,
                 )
                     .hash(&mut hasher);
+                if let Some(patch) = &operation.patch {
+                    let full = patch.source.full;
+                    (&patch.source.artifact.id, patch.source.rect, full.width, full.height)
+                        .hash(&mut hasher);
+                }
                 hasher.finish()
             },
             heal: operation.kind == RepairKind::Heal,
@@ -358,6 +416,112 @@ pub(crate) fn plan_repair(layer: usize, entry: &RepairEntry, linear: bool) -> Gp
         light: None,
         block: Some(block.into()),
         repair: Some(Arc::new(GpuRepair { operations, reach })),
+        resident: resident.blocks,
+    }
+}
+
+/// One set of a repair step's dispatches: a group of Clone and Heal operations drawn through the
+/// atlas, or one frozen patch drawn straight from its words.
+enum Phase {
+    Group(Vec<usize>),
+    Patch(usize),
+}
+
+/// The most words a repair step's frozen patches may take on either GPU device: 64 MiB, the largest
+/// one patch's bytes. A layer whose patches need more at the stage it is drawn at is drawn by the
+/// reference, named.
+pub const REPAIR_PATCH_WORDS: usize = 16 * 1024 * 1024;
+
+/// A repair step's frozen patches on the GPU: the words each is drawn from at the step's stage
+/// ([`crate::repair::patch::drawn`]), each distinct allocation once, and per operation of the
+/// table its record, empty for a Clone or Heal.
+struct PatchResident {
+    blocks: super::GpuResident,
+    records: Vec<Vec<u32>>,
+}
+
+/// The words of every frozen patch of `entry` at its stage, shared with the reference's frames and
+/// earlier plans through the drawn-patch cache, and each patch's record:
+///
+/// `0..4` the stage pixels it may write `[x0, y0, x1, y1)`, `4` 1 when its words are reduced
+/// means (four `f32` a pixel: `P̄`, `Ā`) and 0 when they are its own half floats (two words a
+/// pixel), `5` its words' offset from the first resident word, `6` their row stride in pixels,
+/// `7, 8` the stage pixel of their first, `9` `opacity / 100` (`f32`), `10` every resident word,
+/// which the step's block base is past.
+fn patch_resident(entry: &RepairEntry) -> PatchResident {
+    use std::hash::{Hash, Hasher};
+    let stage = entry.stage;
+    let mut blocks: Vec<Arc<[u32]>> = Vec::new();
+    let mut hasher = std::hash::DefaultHasher::new();
+    let mut placed: Vec<(usize, Option<(u32, Arc<crate::repair::patch::Drawn>)>)> = Vec::new();
+    let mut offset = 0u32;
+    for (index, operation) in entry.operations().iter().enumerate() {
+        let Some(patch) = &operation.patch else {
+            placed.push((index, None));
+            continue;
+        };
+        let drawn = crate::repair::patch::drawn(&patch.source, stage);
+        let at = match blocks
+            .iter()
+            .position(|held| Arc::ptr_eq(held, &drawn.words))
+        {
+            Some(found) => blocks[..found].iter().map(|block| block.len() as u32).sum(),
+            None => {
+                let at = offset;
+                offset += drawn.words.len() as u32;
+                let full = patch.source.full;
+                (
+                    &patch.source.artifact.id,
+                    patch.source.rect,
+                    [full.width, full.height, stage.width, stage.height],
+                )
+                    .hash(&mut hasher);
+                blocks.push(drawn.words.clone());
+                at
+            }
+        };
+        placed.push((index, Some((at, drawn))));
+    }
+    let total = offset;
+    let records = placed
+        .into_iter()
+        .map(|(index, drawn)| {
+            let Some((at, drawn)) = drawn else {
+                return Vec::new();
+            };
+            let operation = &entry.operations()[index];
+            let source = &operation
+                .patch
+                .as_ref()
+                .expect("a patch operation")
+                .source;
+            let region = drawn.region;
+            let (stride, origin) = if drawn.reduced {
+                (region.width, [region.x0, region.y0])
+            } else {
+                (source.rect[2], [source.rect[0], source.rect[1]])
+            };
+            vec![
+                region.x0,
+                region.y0,
+                region.x1(),
+                region.y1(),
+                u32::from(drawn.reduced),
+                at,
+                stride,
+                origin[0],
+                origin[1],
+                (f32::from(operation.opacity.min(100)) / 100.0).to_bits(),
+                total,
+            ]
+        })
+        .collect();
+    PatchResident {
+        blocks: super::GpuResident {
+            blocks,
+            key: hasher.finish(),
+        },
+        records,
     }
 }
 

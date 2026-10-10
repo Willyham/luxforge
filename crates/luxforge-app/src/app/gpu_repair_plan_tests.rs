@@ -457,3 +457,110 @@ fn gpu_repair_a_hundred_corrections_meet_the_spatial_limits() {
     assert!(passes <= luxforge_core::REPAIR_PASSES_MAX, "{passes} passes");
     assert!(missed.is_empty(), "{missed:?}");
 }
+
+/// Frozen patches (`docs/design/corrections.md`, "Frozen patches") drawn by the repair step on this
+/// host's device against the reference's frame of the same stack: a patch alone (the step's apply),
+/// a patch read by a later Clone (a chained pass from the step's input), and the tile families'
+/// patches among Clone and Heal, alone and before Basic and Detail, on both paths. Coverage steps
+/// through 0 to 1 and values pass both ends of the linear range.
+#[test]
+fn gpu_frozen_patches_meet_the_spatial_limits() {
+    use luxforge_core::qualification::corrections::{QualBrush, QualPatch, QualStep, repair_stack};
+    let test = "gpu_frozen_patches_meet_the_spatial_limits";
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
+        return;
+    };
+    let registry = ModuleRegistry::builtin();
+    let size = (360u32, 240u32);
+    let pixels = photograph(size.0, size.1, 17);
+    let ramp = |seed: u32| -> Box<dyn Fn(u32, u32) -> ([f32; 3], f32)> {
+        Box::new(move |x, y| {
+            let value = |channel: u32| {
+                ((x * 5 + y * 11 + channel * 37 + seed) % 256) as f32 / 255.0 * 1.5 - 0.25
+            };
+            ([value(0), value(1), value(2)], ((x + 2 * y + seed) % 5) as f32 / 4.0)
+        })
+    };
+    let alone = || {
+        vec![QualStep::Patch(QualPatch {
+            rect: [100, 60, 90, 70],
+            opacity: 85,
+            pixel: ramp(1),
+        })]
+    };
+    let read = || {
+        vec![
+            QualStep::Patch(QualPatch {
+                rect: [40, 40, 64, 48],
+                opacity: 100,
+                pixel: ramp(2),
+            }),
+            QualStep::Brush(QualBrush {
+                heal: false,
+                points: vec![[250.0 / 360.0, 150.0 / 240.0]],
+                radius: 12.0 / 240.0,
+                source: [70.0 / 360.0, 62.0 / 240.0],
+                feather: 30,
+                opacity: 100,
+            }),
+        ]
+    };
+    let mut missed = Vec::new();
+    let mut all = Vec::new();
+    let shapes: [(&str, &dyn Fn() -> Vec<QualStep>); 2] =
+        [("a patch alone", &alone), ("a patch a Clone reads", &read)];
+    for (name, steps) in shapes {
+        for (tail, after) in [
+            ("", Vec::new()),
+            (
+                " before Basic",
+                vec![Layer::new(BASIC_EFFECT, json!({"exposure": 0.6, "contrast": 25}))],
+            ),
+            (
+                " before Detail",
+                vec![Layer::new(DETAIL_EFFECT, json!({"sharpening": 60.0}))],
+            ),
+        ] {
+            let stack = repair_stack(steps(), after);
+            let plan = plan_of(&registry, &stack, size, false);
+            assert!(
+                !plan.spatial[0].resident.is_empty(),
+                "{name}: the patch's words are resident in the step"
+            );
+            for (path, measured) in [
+                ("byte", byte_case(&qualifier, &registry, &stack, size, &pixels)),
+                ("linear", linear_case(&qualifier, &registry, &stack, size, &pixels)),
+            ] {
+                let label = format!("{name}{tail} on the {path} path");
+                let passed = preview_error::verdict(&measured, Class::Spatial).passed();
+                eprintln!("{label}: {}{}", figures(&measured), if passed { "" } else { " MISS" });
+                if !passed {
+                    missed.push(label);
+                }
+                all.push(measured);
+            }
+        }
+    }
+    for (name, stack) in [
+        ("patches among Clone and Heal", super::gpu_tiles_tests::patches(Vec::new())),
+        (
+            "patches among Clone and Heal before Detail",
+            super::gpu_tiles_tests::patches(vec![Layer::new(DETAIL_EFFECT, json!({"sharpening": 60.0}))]),
+        ),
+    ] {
+        for (path, measured) in [
+            ("byte", byte_case(&qualifier, &registry, &stack, size, &pixels)),
+            ("linear", linear_case(&qualifier, &registry, &stack, size, &pixels)),
+        ] {
+            let label = format!("{name} on the {path} path");
+            let passed = preview_error::verdict(&measured, Class::Spatial).passed();
+            eprintln!("{label}: {}{}", figures(&measured), if passed { "" } else { " MISS" });
+            if !passed {
+                missed.push(label);
+            }
+            all.push(measured);
+        }
+    }
+    eprintln!("{test}: worst of {}: {}", all.len(), figures(&worst(&all)));
+    assert!(missed.is_empty(), "cases missing the spatial limits: {missed:?}");
+}
