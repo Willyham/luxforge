@@ -945,6 +945,12 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> ToolsModel {
         if module.developer && !inputs.developer {
             continue;
         }
+        // The brush workspace's band stands in for its section while its mode is active.
+        if inputs.session.workspace.mode == module.id
+            && crate::state::corrections::is_brush_mode(inputs.modules, &module.id)
+        {
+            continue;
+        }
         let target = if module.developer {
             &mut developer
         } else {
@@ -1033,8 +1039,8 @@ fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionModel {
     SectionModel {
         module_id: module.id.clone(),
         title: module.title.clone(),
-        hint: module.hint.clone(),
-        expanded,
+        hint: brush_hint(module, inputs).or_else(|| module.hint.clone()),
+        expanded: expanded && !crate::state::corrections::is_brush_mode(inputs.modules, &module.id),
         active,
         unavailable,
         // The reset is declared, so it is always drawn: a section that cannot edit (a historical
@@ -1061,6 +1067,22 @@ fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionModel {
                 None => SectionMark::Section,
             }),
     }
+}
+
+/// A brush workspace's collapsed hint: what its layer's provider says of the displayed entry
+/// (`5 corrections`), while the layer holds anything.
+fn brush_hint(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> Option<String> {
+    if !matches!(module.canvas, Some(CanvasInteraction::BrushMask { .. })) {
+        return None;
+    }
+    inputs
+        .document
+        .recipe
+        .as_ref()?
+        .layers
+        .iter()
+        .find(|row| !row.neutral && module.effects.iter().any(|effect| effect.id == row.effect))
+        .map(|row| row.summary.clone())
 }
 
 /// The control models of one module's section: its declared controls, then the host's crop-frame
@@ -1145,7 +1167,10 @@ pub(crate) fn controls_of<'a>(
 pub(crate) fn draws_section(module: &ModuleDescriptor) -> bool {
     !module.controls.is_empty()
         || capabilities::declares(module)
-        || matches!(module.canvas, Some(CanvasInteraction::CropFrame { .. }))
+        || matches!(
+            module.canvas,
+            Some(CanvasInteraction::CropFrame { .. } | CanvasInteraction::BrushMask { .. })
+        )
 }
 
 /// The controls of the one group a stacked module's controls consist of, when that is their whole
@@ -3041,8 +3066,11 @@ pub(crate) fn palette_entries(
                 CanvasInteraction::PointPick { .. } | CanvasInteraction::SampleApply { .. } => {
                     picks.contains(&module.id.as_str())
                 }
-                // As the mode strip: not offered until the workspace that draws it lands.
-                CanvasInteraction::BrushMask { .. } => false,
+                // As the mode strip: a declared brush is offered when it binds an editable list,
+                // which is what the Corrections workspace draws.
+                CanvasInteraction::BrushMask { .. } => {
+                    crate::state::corrections::is_brush_mode(modules, &module.id)
+                }
             };
             if reachable {
                 entries.push((

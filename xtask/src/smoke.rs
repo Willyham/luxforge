@@ -5,9 +5,9 @@
 //! and `verify`'s rendered tier all read the table, so a new scenario is one row.
 use crate::{
     basic_smoke as basic, capabilities_smoke as capabilities, controls_smoke as controls,
-    crop_smoke as crop, curve_smoke as curve, detail_smoke as detail,
-    develop_picks_smoke as develop_picks, export_smoke as export, filmstrip_smoke as filmstrip,
-    gallery_smoke as gallery, gpu_preview_smoke as gpu_preview,
+    corrections_smoke as corrections, crop_smoke as crop, curve_smoke as curve,
+    detail_smoke as detail, develop_picks_smoke as develop_picks, export_smoke as export,
+    filmstrip_smoke as filmstrip, gallery_smoke as gallery, gpu_preview_smoke as gpu_preview,
     gpu_preview_zoom_smoke as gpu_preview_zoom, grading_smoke as grading,
     histogram_smoke as histogram, information_smoke as information, lens_smoke as lens,
     look_smoke as look, loupe_smoke as loupe, mask_brush_smoke as mask_brush,
@@ -846,6 +846,43 @@ pub static SCENARIOS: &[Scenario] = &[
         source: Source::Fixtures(&[mask_brush::FIXTURE]),
         window: Some(PANELLED),
         note: Some(mask_brush::NOTE),
+        own: None,
+    },
+    Scenario {
+        name: corrections::SCENARIO,
+        about: "Every Corrections gesture and key, the stacking principle read from pixels, export, Select, Remove and Put back, and the limit",
+        launches: &[
+            LaunchSpec {
+                name: "launch1",
+                script: "script1.json",
+                plan: corrections::launch1,
+                ..APP
+            },
+            LaunchSpec {
+                name: "launch2",
+                script: "script2.json",
+                plan: corrections::launch2,
+                catalog: Some("launch1"),
+                ..APP
+            },
+            LaunchSpec {
+                name: "launch3",
+                script: "script3.json",
+                plan: corrections::launch3,
+                ..APP
+            },
+            LaunchSpec {
+                name: "launch4",
+                script: "script4.json",
+                plan: corrections::launch4,
+                catalog: Some("launch3"),
+                ..APP
+            },
+        ],
+        verify: corrections::verify,
+        source: Source::Fixtures(&[corrections::FIXTURE]),
+        window: Some(PANELLED),
+        note: Some(corrections::NOTE),
         own: None,
     },
     Scenario {

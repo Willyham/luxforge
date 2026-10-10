@@ -20,6 +20,7 @@ use crate::{
     view::{
         Surfaces,
         canvas_view::CanvasView,
+        corrections_canvas::CorrectionsCanvas,
         crop_canvas::{CropCanvas, Mode},
         mask_canvas::{MaskCanvas, Placement},
     },
@@ -315,6 +316,8 @@ fn draft_bar_view(model: &DraftBar) -> Element<'_, Message> {
             apply_reason: model.apply_reason.clone(),
             finish: if model.done {
                 DraftFinish::Done
+            } else if model.cancel_only {
+                DraftFinish::Cancel
             } else {
                 DraftFinish::Apply
             },
@@ -589,6 +592,7 @@ fn plain<'a>(
     let mask_draft = surfaces.mask_draft;
     let mask_map = surfaces.mask_map;
     let mask_handles = surfaces.mask_handles;
+    let corrections = surfaces.corrections;
     let gpu = surfaces.gpu;
     let (gpu_hold, gpu_tag, gpu_warm) = (surfaces.gpu_hold, surfaces.gpu_tag, surfaces.gpu_warm);
     let (gpu_change, gpu_source) = (surfaces.gpu_change, surfaces.gpu_source);
@@ -661,7 +665,40 @@ fn plain<'a>(
                         .into(),
                     ])
                     .into(),
-                    None => photo,
+                    None => match corrections.and_then(|data| {
+                        let rect = fit_rect((width, height), available)?;
+                        let view = CanvasView::fit(data.map.output(), rect.size())?;
+                        Some((data, view, rect))
+                    }) {
+                        // The Corrections overlay sits where the mask handles would, mapped through
+                        // the same contained rectangle the photograph is drawn into.
+                        Some((data, view, rect)) => stack([
+                            photo,
+                            iced::widget::container(
+                                canvas(CorrectionsCanvas::new(
+                                    data,
+                                    Placement {
+                                        map: data.map.clone(),
+                                        view,
+                                        scale_factor: model.scale_factor,
+                                    },
+                                ))
+                                .width(Length::Fill)
+                                .height(Length::Fill),
+                            )
+                            .padding(iced::Padding {
+                                top: rect.y,
+                                left: rect.x,
+                                right: 0.0,
+                                bottom: 0.0,
+                            })
+                            .width(Length::Fill)
+                            .height(Length::Fill)
+                            .into(),
+                        ])
+                        .into(),
+                        None => photo,
+                    },
                 };
                 // Every move over the photograph is published, so the pointer's position is known
                 // to a pick and to the evidence cursor sync; a move that maps to the same pixel is
@@ -768,7 +805,24 @@ fn plain<'a>(
                         .into(),
                     ])
                     .into(),
-                    None => photo,
+                    None => match corrections.zip(CanvasView::percent(value, model.scale_factor)) {
+                        Some((data, view)) => stack([
+                            photo,
+                            canvas(CorrectionsCanvas::new(
+                                data,
+                                Placement {
+                                    map: data.map.clone(),
+                                    view,
+                                    scale_factor: model.scale_factor,
+                                },
+                            ))
+                            .width(box_width)
+                            .height(box_height)
+                            .into(),
+                        ])
+                        .into(),
+                        None => photo,
+                    },
                 };
                 // Inside the scrollable the reported point is already content-space: the
                 // scrollable translates the cursor by its offset before its content sees it, and
@@ -1426,6 +1480,7 @@ mod tests {
             mask_draft: None,
             mask_map: None,
             mask_handles: true,
+            corrections: None,
             draft: None,
             gpu: None,
             gpu_hold: false,

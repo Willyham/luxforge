@@ -105,6 +105,7 @@ pub(crate) struct BrushSettings {
 impl BrushBinding {
     /// The host's mask brush: `mask.add-stroke`'s path and `size`, with its feather. Flow and the
     /// colour limit are the mask brush's own and stay on its editor.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn mask() -> Self {
         let command =
             commands::find(commands::ADD_STROKE).expect("the host declares mask.add-stroke");
@@ -214,6 +215,7 @@ impl BrushBinding {
 
     /// Move one bound number by `steps` of its own declared step: the brackets and a panel's nudges
     /// are the same call.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn nudge(&self, settings: &mut BrushSettings, name: &str, steps: f64) -> bool {
         let Some(step) = step(&self.action, name) else {
             return false;
@@ -294,6 +296,14 @@ impl BrushBinding {
             _ => {}
         }
         Ok(fields)
+    }
+
+    /// One number of the declared edit, as that action declares it: clamped to its range and, for an
+    /// `integer`, sent as one. `None` when the brush declares no edit or the edit no such number.
+    pub(crate) fn edit_value(&self, name: &str, value: f64) -> Option<Value> {
+        let action = &self.edit.as_ref()?.action;
+        let value = clamp(action, name, value)?;
+        Some(number_value(action, name, value))
     }
 
     /// The draft one pin, source or size-handle drag sends through the declared edit: the method,
