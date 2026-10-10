@@ -105,13 +105,13 @@ pub(crate) enum ControlMessage {
         module_id: String,
         path: Vec<usize>,
     },
-    /// Show one view of a tab row: the module's own (`group` empty) or a nested group that
-    /// declares `layout: tabs`, by its label path. It is this client's session view state, sent
+    /// Show one view of a tab row, by id: the module's own (`group` `None`) or that of the group
+    /// of id `group`, which declares `layout: tabs`. It is this client's session view state, sent
     /// through `workspace.set` exactly as an API client selects one: no recipe field, history
     /// entry or frame.
     SelectView {
         module_id: String,
-        group: Vec<String>,
+        group: Option<String>,
         view: String,
     },
     /// A hue and saturation wheel of `action`, keyed by its hue parameter, reported `event`.

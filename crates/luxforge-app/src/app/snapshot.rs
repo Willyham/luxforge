@@ -46,13 +46,14 @@ impl Editor {
                             "reset":wheel.reset.as_ref().map(|reset| &reset.preset)}));
                     }
                     tools::ControlModel::Group(group) if group.selected.is_some() => {
-                        tab_rows.push(json!({"group":group.labels,"path":group.path,
+                        tab_rows.push(json!({"group":group.id,"path":group.path,
                             "selected":group.selected,
                             "visible":group.visible_view().map(|view| &view.label),
                             "views":group.controls.iter().filter_map(|child| match child {
-                                tools::ControlModel::Group(child) => Some((&child.label, child.view)),
+                                tools::ControlModel::Group(child) => Some(child),
                                 _ => None,
-                            }).map(|(label, view)| json!({"label":label,"view":view})).collect::<Vec<_>>()}));
+                            }).map(|child| json!({"id":child.id,"label":child.label,"view":child.view}))
+                            .collect::<Vec<_>>()}));
                     }
                     tools::ControlModel::Color(color) => {
                         pickers.push(json!({"action":color.action,"parameter":color.parameter,
