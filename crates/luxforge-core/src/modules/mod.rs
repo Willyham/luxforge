@@ -44,7 +44,7 @@ pub static GPU_PROGRAMS: &[&crate::GpuProgram] = &[
 /// The built-in effects whose payload changed meaning, each with the format marker it declares
 /// now; every other built-in effect is at the shared [`crate::EFFECT_FORMAT`].
 const BUILTIN_FORMATS: &[(&str, u32)] = &[
-    (raw::RAW_EFFECT, raw::RAW_EFFECT_FORMAT),
+    raw::RAW_BUILTIN_FORMAT,
     (MIXER_EFFECT, mixer::MIXER_EFFECT_FORMAT),
 ];
 
