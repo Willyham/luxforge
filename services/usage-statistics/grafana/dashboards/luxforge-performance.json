@@ -1,0 +1,404 @@
+{
+  "uid": "luxforge-performance",
+  "title": "Luxforge timing and resources by cohort",
+  "description": "Percentiles computed from individual event rows, grouped by app, OS, CPU, GPU and memory cohorts.",
+  "tags": [
+    "luxforge",
+    "usage-statistics"
+  ],
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": false,
+  "graphTooltip": 0,
+  "refresh": "",
+  "timezone": "utc",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "type": "custom",
+        "name": "cohort",
+        "label": "Group by",
+        "query": "os,cpu,gpu,memory_gib_band,app,renderer,arch",
+        "current": {
+          "text": "os",
+          "value": "os",
+          "selected": true
+        },
+        "options": [
+          {
+            "text": "os",
+            "value": "os",
+            "selected": true
+          },
+          {
+            "text": "cpu",
+            "value": "cpu",
+            "selected": false
+          },
+          {
+            "text": "gpu",
+            "value": "gpu",
+            "selected": false
+          },
+          {
+            "text": "memory_gib_band",
+            "value": "memory_gib_band",
+            "selected": false
+          },
+          {
+            "text": "app",
+            "value": "app",
+            "selected": false
+          },
+          {
+            "text": "renderer",
+            "value": "renderer",
+            "selected": false
+          },
+          {
+            "text": "arch",
+            "value": "arch",
+            "selected": false
+          }
+        ],
+        "multi": false,
+        "includeAll": false,
+        "hide": 0
+      },
+      {
+        "type": "custom",
+        "name": "operation",
+        "label": "Operation",
+        "query": "export,source-preparation,catalog-scan,auto-tone",
+        "current": {
+          "text": "export",
+          "value": "export",
+          "selected": true
+        },
+        "options": [
+          {
+            "text": "export",
+            "value": "export",
+            "selected": true
+          },
+          {
+            "text": "source-preparation",
+            "value": "source-preparation",
+            "selected": false
+          },
+          {
+            "text": "catalog-scan",
+            "value": "catalog-scan",
+            "selected": false
+          },
+          {
+            "text": "auto-tone",
+            "value": "auto-tone",
+            "selected": false
+          }
+        ],
+        "multi": false,
+        "includeAll": false,
+        "hide": 0
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "title": "Usage",
+      "type": "link",
+      "url": "/d/luxforge-usage",
+      "icon": "dashboard"
+    },
+    {
+      "title": "Performance",
+      "type": "link",
+      "url": "/d/luxforge-performance",
+      "icon": "dashboard"
+    },
+    {
+      "title": "Paths",
+      "type": "link",
+      "url": "/d/luxforge-paths",
+      "icon": "dashboard"
+    },
+    {
+      "title": "Session timeline",
+      "type": "link",
+      "url": "/d/luxforge-session",
+      "icon": "dashboard"
+    },
+    {
+      "title": "Installation and image history",
+      "type": "link",
+      "url": "/d/luxforge-history",
+      "icon": "dashboard"
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "Read this first",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 6
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**How to read this dashboard.** Reporting is **opt-in**, so every number describes only the installations whose owners chose to share, not everyone who uses Luxforge, and those people may differ from the rest. Delivery is **best-effort**: batches and events can be lost (the loss panels count the gaps that are visible), and the **end of a session is never seen**: nothing after the last received batch exists here. A **session** is one app launch; an **installation** is one random ID kept by one install. Neither is a person or a physical device: one person can have several installations, an installation can be reset, and the ID is not an account. Image IDs are meaningful only inside one installation. Sparse cohorts can identify an installation and do not prove anonymity. Rows expire 90 days after receipt.\n\nPercentiles are **exact and computed from the individual event rows** in each cohort (interpolated between closest ranks). They are never averages or combinations of per-batch percentiles. Read `samples`, `sessions` and `installations` first: a cohort with a handful of sessions says little about anyone else."
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Cohort sizes",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 24,
+        "h": 7
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT p.${cohort:raw} AS cohort, uniqExact(e.session_id) AS sessions, uniqExact(e.installation_id) AS installations, count() AS events\nFROM luxforge.events_unique AS e INNER JOIN luxforge.session_profiles AS p ON p.session_id = e.session_id WHERE $__timeFilter(e.received_at) GROUP BY cohort ORDER BY sessions DESC",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Preview settle time (ms) by cohort",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT p.${cohort:raw} AS cohort, count() AS samples, uniqExact(e.session_id) AS sessions, uniqExact(e.installation_id) AS installations,\n       round(quantileExactInclusive(0.5)(e.duration_ms)) AS p50, round(quantileExactInclusive(0.9)(e.duration_ms)) AS p90,\n       round(quantileExactInclusive(0.95)(e.duration_ms)) AS p95, round(quantileExactInclusive(0.99)(e.duration_ms)) AS p99, max(e.duration_ms) AS max\nFROM luxforge.events_unique AS e INNER JOIN luxforge.session_profiles AS p ON p.session_id = e.session_id WHERE e.name = 'preview.settled' AND $__timeFilter(e.received_at) GROUP BY cohort ORDER BY samples DESC",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 4,
+      "type": "table",
+      "title": "Completed operation duration (ms) by cohort, for the selected operation",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT p.${cohort:raw} AS cohort, count() AS samples, uniqExact(e.session_id) AS sessions, uniqExact(e.installation_id) AS installations,\n       round(quantileExactInclusive(0.5)(e.duration_ms)) AS p50, round(quantileExactInclusive(0.9)(e.duration_ms)) AS p90,\n       round(quantileExactInclusive(0.95)(e.duration_ms)) AS p95, max(e.duration_ms) AS max\nFROM luxforge.events_unique AS e INNER JOIN luxforge.session_profiles AS p ON p.session_id = e.session_id WHERE e.name = 'operation.end' AND e.operation = '${operation}' AND e.outcome = 'completed' AND $__timeFilter(e.received_at)\nGROUP BY cohort ORDER BY samples DESC",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "CPU, memory and GPU samples by cohort",
+      "description": "Memory kinds differ by operating system (`footprint`, `resident`, `private`) and are not comparable with each other.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 29,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT p.${cohort:raw} AS cohort, e.memory_kind AS memory_kind, count() AS samples, uniqExact(e.session_id) AS sessions,\n       round(quantileExactInclusive(0.5)(e.cpu_percent)) AS \"cpu% p50\", round(quantileExactInclusive(0.95)(e.cpu_percent)) AS \"cpu% p95\",\n       round(quantileExactInclusive(0.5)(e.memory_mib)) AS \"mem MiB p50\", round(quantileExactInclusive(0.95)(e.memory_mib)) AS \"mem MiB p95\", max(e.memory_mib) AS \"mem MiB max\",\n       round(quantileExactInclusive(0.5)(e.gpu_percent)) AS \"gpu% p50\", round(quantileExactInclusive(0.95)(e.gpu_percent)) AS \"gpu% p95\",\n       round(quantileExactInclusive(0.95)(e.gpu_memory_mib)) AS \"gpu mem MiB p95\"\nFROM luxforge.events_unique AS e INNER JOIN luxforge.session_profiles AS p ON p.session_id = e.session_id WHERE e.name = 'process.sample' AND $__timeFilter(e.received_at) GROUP BY cohort, memory_kind ORDER BY samples DESC",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Preview settle time per day (all cohorts)",
+      "description": "Each point is the percentile of that day's individual events.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 37,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT toStartOfDay(received_at) AS time,\n       quantileExactInclusive(0.5)(duration_ms) AS p50, quantileExactInclusive(0.95)(duration_ms) AS p95\nFROM luxforge.events_unique WHERE name = 'preview.settled' AND $__timeFilter(received_at) GROUP BY time ORDER BY time",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Preview settle p95 per day by cohort",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 37,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT toStartOfDay(e.received_at) AS time, p.${cohort:raw} AS cohort, quantileExactInclusive(0.95)(e.duration_ms) AS p95\nFROM luxforge.events_unique AS e INNER JOIN luxforge.session_profiles AS p ON p.session_id = e.session_id WHERE e.name = 'preview.settled' AND $__timeFilter(e.received_at) GROUP BY time, cohort ORDER BY time",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    }
+  ]
+}
