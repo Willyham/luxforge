@@ -2100,6 +2100,7 @@ dependencies = [
 name = "luxforge-core"
 version = "0.0.0"
 dependencies = [
+ "getrandom 0.4.3",
  "half",
  "idna_adapter",
  "image",

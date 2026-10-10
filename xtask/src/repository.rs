@@ -2274,6 +2274,8 @@ fn services(root: &Path) -> Result<usize> {
     let root_lock = fs::read_to_string(root.join("Cargo.lock"))?;
     let exact = Regex::new(r#"=\s*"=[0-9]+\.[0-9]+\.[0-9]+"#)?;
     let own_workspace = Regex::new(r"(?m)^\[workspace\]\s*$")?;
+    let gpl = Regex::new(r#"(?m)^license\s*=\s*"GPL-3\.0-or-later""#)?;
+    let package_name = Regex::new(r#"(?m)^name\s*=\s*"([^"]+)""#)?;
     let mut refusals = Vec::new();
     let mut count = 0;
     let mut names = fs::read_dir(&dir)?
@@ -2291,7 +2293,7 @@ fn services(root: &Path) -> Result<usize> {
         if !own_workspace.is_match(&manifest) {
             refuse("Cargo.toml needs its own empty [workspace] table".into());
         }
-        if !Regex::new(r#"(?m)^license\s*=\s*"GPL-3\.0-or-later""#)?.is_match(&manifest) {
+        if !gpl.is_match(&manifest) {
             refuse("project code is GPL-3.0-or-later".into());
         }
         if !root.join(&path).join("NOTICE.md").is_file() {
@@ -2306,7 +2308,7 @@ fn services(root: &Path) -> Result<usize> {
                 "the root [workspace] must list exclude = [\"{path}\"]"
             ));
         }
-        let package = Regex::new(r#"(?m)^name\s*=\s*"([^"]+)""#)?
+        let package = package_name
             .captures(&manifest)
             .map(|c| c[1].to_owned())
             .unwrap_or_default();
