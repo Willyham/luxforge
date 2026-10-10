@@ -32,9 +32,9 @@ use crate::{
     *,
 };
 use luxforge_evidence::{self as script, UsageAwait, UsageStep};
+use luxforge_testbase::{Request, TestServer, respond};
 use std::{
-    io::{Read, Write},
-    net::{TcpListener, TcpStream},
+    io::Write,
     process::ExitStatus,
     sync::{Arc, Mutex, PoisonError},
     time::{Duration, Instant},
@@ -66,8 +66,10 @@ const TEST_RELEASE: &str = "0.0.0+000000e71de5";
 const ADVANCE_S: u64 = 660;
 /// The live session's edit.
 const API_EDIT: &str = "edit.set-basic";
-/// How long the receiver holds a request it does not answer at once.
-const HOLD: Duration = Duration::from_secs(20);
+/// How long the receiver holds a request it does not answer at once, and how often it writes to
+/// it meanwhile, which is how it learns the client has closed the connection.
+const HOLD: Duration = Duration::from_secs(15);
+const TRICKLE: Duration = Duration::from_millis(250);
 /// The work launch's process deadline: an export, three deliveries and the receiver's waits.
 const WORK_DEADLINE: Duration = Duration::from_secs(120);
 
@@ -293,12 +295,15 @@ fn copy_dir(from: &Path, to: &Path) -> Result {
 
 // -- The receiver. --
 
-/// A loopback HTTP receiver: it records each request and answers `202` at once, except the
-/// second and later, which it holds open until the client closes the connection or [`HOLD`]
-/// passes.
+/// The loopback receiver, on the workspace's one test server: it records each request with the
+/// launch running when it arrived, answers the first `202` at once, and holds every later one open
+/// — its status line sent, then one header line every [`TRICKLE`] — until a write fails because the
+/// client closed the connection, as a cancelled request does, or [`HOLD`] passes.
 struct Receiver {
     url: String,
     state: Arc<Mutex<Received>>,
+    /// Kept for the run: dropping it stops the server.
+    _server: TestServer,
 }
 
 #[derive(Default)]
@@ -314,20 +319,17 @@ fn lock(state: &Mutex<Received>) -> std::sync::MutexGuard<'_, Received> {
 
 impl Receiver {
     fn start() -> Result<Self> {
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        let url = format!("http://{}{RECEIVER_PATH}", listener.local_addr()?);
         let state: Arc<Mutex<Received>> = Arc::default();
         let shared = state.clone();
         let started = Instant::now();
-        std::thread::Builder::new()
-            .name("usage-receiver".into())
-            .spawn(move || {
-                for stream in listener.incoming().flatten() {
-                    let state = shared.clone();
-                    std::thread::spawn(move || serve(stream, &state, started));
-                }
-            })?;
-        Ok(Self { url, state })
+        let server = TestServer::http(move |request: &Request, out: &mut dyn Write| {
+            serve(request, out, &shared, started);
+        })?;
+        Ok(Self {
+            url: server.url(RECEIVER_PATH),
+            state,
+            _server: server,
+        })
     }
 
     fn phase(&self, phase: &str) {
@@ -347,43 +349,7 @@ fn holding(state: &Mutex<Received>) -> bool {
         .any(|request| request["outcome"] == "holding")
 }
 
-fn serve(mut stream: TcpStream, state: &Mutex<Received>, started: Instant) {
-    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
-    let mut bytes = Vec::new();
-    let mut buffer = [0u8; 4096];
-    let head_end = loop {
-        if let Some(at) = bytes.windows(4).position(|window| window == b"\r\n\r\n") {
-            break at + 4;
-        }
-        match stream.read(&mut buffer) {
-            Ok(0) | Err(_) => return,
-            Ok(read) => bytes.extend_from_slice(&buffer[..read]),
-        }
-        if bytes.len() > 64 * 1024 {
-            return;
-        }
-    };
-    let head = String::from_utf8_lossy(&bytes[..head_end]).into_owned();
-    let mut lines = head.split("\r\n");
-    let mut request_line = lines.next().unwrap_or_default().split(' ');
-    let method = request_line.next().unwrap_or_default().to_owned();
-    let path = request_line.next().unwrap_or_default().to_owned();
-    let headers: Vec<(String, String)> = lines
-        .filter_map(|line| line.split_once(':'))
-        .map(|(name, value)| (name.trim().to_ascii_lowercase(), value.trim().to_owned()))
-        .collect();
-    let length = headers
-        .iter()
-        .find(|(name, _)| name == "content-length")
-        .and_then(|(_, value)| value.parse::<usize>().ok())
-        .unwrap_or(0);
-    let mut body = bytes[head_end..].to_vec();
-    while body.len() < length {
-        match stream.read(&mut buffer) {
-            Ok(0) | Err(_) => break,
-            Ok(read) => body.extend_from_slice(&buffer[..read]),
-        }
-    }
+fn serve(request: &Request, out: &mut dyn Write, state: &Mutex<Received>, started: Instant) {
     let index = {
         let mut received = lock(state);
         let index = received.requests.len();
@@ -392,38 +358,35 @@ fn serve(mut stream: TcpStream, state: &Mutex<Received>, started: Instant) {
             "index": index,
             "phase": phase,
             "received_ms": started.elapsed().as_millis() as u64,
-            "method": method,
-            "path": path,
-            "headers": headers,
-            "body": String::from_utf8_lossy(&body),
-            "body_bytes": body.len(),
+            "method": request.method,
+            "path": request.path,
+            "headers": request.headers,
+            "body": String::from_utf8_lossy(&request.body),
+            "body_bytes": request.body.len(),
             "outcome": if index == 0 { "answered" } else { "holding" },
         }));
         index
     };
-    const ACCEPTED: &[u8] =
-        b"HTTP/1.1 202 Accepted\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
     if index == 0 {
-        let _ = stream.write_all(ACCEPTED);
+        respond(out, "202 Accepted", "", b"");
         return;
     }
-    // Held: wait for the client to close the connection, as a cancelled request does.
     let held = Instant::now();
-    let _ = stream.set_read_timeout(Some(HOLD));
-    let outcome = match stream.read(&mut buffer) {
-        Ok(0) => "closed-by-client",
-        Ok(_) => "unexpected-bytes",
-        Err(error)
-            if matches!(
-                error.kind(),
-                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-            ) =>
-        {
-            let _ = stream.write_all(ACCEPTED);
-            "answered-after-hold"
+    let mut write = |bytes: &[u8]| out.write_all(bytes).and_then(|()| out.flush()).is_ok();
+    let mut outcome = "closed-by-client";
+    if write(b"HTTP/1.1 202 Accepted\r\n") {
+        outcome = "answered-after-hold";
+        while held.elapsed() < HOLD {
+            std::thread::sleep(TRICKLE);
+            if !write(b"X-Held: 1\r\n") {
+                outcome = "closed-by-client";
+                break;
+            }
         }
-        Err(_) => "closed-by-client",
-    };
+        if outcome != "closed-by-client" {
+            write(b"Content-Length: 0\r\nConnection: close\r\n\r\n");
+        }
+    }
     let mut received = lock(state);
     received.requests[index]["outcome"] = json!(outcome);
     received.requests[index]["held_ms"] = json!(held.elapsed().as_millis() as u64);
@@ -457,7 +420,7 @@ fn watcher(
                 if !edited && step_begun(&evidence, api_step) {
                     edited = true;
                     let asset = open_asset(&evidence)?;
-                    calls.push(ctl_call(
+                    calls.push(launching::ctl_call(
                         &ctl,
                         &catalog,
                         "edit",
@@ -465,7 +428,7 @@ fn watcher(
                         json!({"contrast": 12}),
                         Some(&asset),
                     )?);
-                    calls.push(ctl_call(
+                    calls.push(launching::ctl_call(
                         &ctl,
                         &catalog,
                         "read-enabled",
@@ -476,7 +439,7 @@ fn watcher(
                 }
                 if edited && !revoked && holding(&state) {
                     revoked = true;
-                    calls.push(ctl_call(
+                    calls.push(launching::ctl_call(
                         &ctl,
                         &catalog,
                         "opt-out",
@@ -484,7 +447,7 @@ fn watcher(
                         json!({"enabled": false}),
                         None,
                     )?);
-                    calls.push(ctl_call(
+                    calls.push(launching::ctl_call(
                         &ctl,
                         &catalog,
                         "read-revoked",
@@ -528,37 +491,6 @@ fn open_asset(evidence: &Path) -> Result<String> {
         .as_str()
         .map(str::to_owned)
         .ok_or_else(|| "The newest frame state names no open photograph".into())
-}
-
-/// One `luxforge-ctl call`, recorded with what it printed.
-fn ctl_call(
-    ctl: &Path,
-    catalog: &Path,
-    name: &str,
-    method: &str,
-    params: Value,
-    asset: Option<&str>,
-) -> Result<Value> {
-    let mut command = Command::new(ctl);
-    command
-        .arg("--catalog")
-        .arg(catalog)
-        .args(["call", method, "--params", &params.to_string()]);
-    if let Some(asset) = asset {
-        command.args(["--asset", asset]);
-    }
-    let started = Instant::now();
-    let output = command.output()?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(json!({
-        "name": name,
-        "method": method,
-        "params": params,
-        "exit_code": output.status.code(),
-        "elapsed_ms": started.elapsed().as_millis() as u64,
-        "result": serde_json::from_str::<Value>(stdout.trim()).unwrap_or_else(|_| json!(stdout)),
-        "stderr": String::from_utf8_lossy(&output.stderr),
-    }))
 }
 
 // -- The checks. --

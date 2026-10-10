@@ -1134,6 +1134,8 @@ const SOURCE_RULES: &[SourceRule] = &[
             "\"--no-gpu-render\"",
             "\"--software-adapter\"",
             "\"--gpu-adapters\"",
+            "\"--usage-test-receiver\"",
+            "\"--evidence-config\"",
             "spawn_editor",
             "editor_args",
         ],
