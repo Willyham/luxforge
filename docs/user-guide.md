@@ -627,6 +627,8 @@ On the canvas the selected correction shows its outline, its dashed source and a
 
 Every gesture is also an API request — `edit.add-correction`, `edit.update-correction`, `edit.delete-correction`, `edit.reorder-correction`, `edit.reset-corrections`, `query.corrections` and `query.correction-sources` ([modules and API](design/modules-and-api.md#corrections)). AI Remove is not part of this build and is not drawn.
 
+Heal blends its source into the destination's surroundings, so it works best on small blemishes inside an even or textured area. Across a hard edge, or over a line that carries on past the brush (a road, a wire, the bar a lamp hangs from), it pulls that tone in as a smear; cover the whole object, and paint a stroke rather than a spot for something long. The automatic source can pick a patch that holds a nearby line or object; press `/` for the next one, or `⌥`-click a source yourself.
+
 ### Vignette
 
 Vignette is the last section of the tools panel, collapsed until you open it, and it is applied after the crop: its centre is the centre of the cropped picture, and a later crop moves it, exactly as a post-crop vignette should. **Amount** runs −100 to +100; negative darkens toward black at the edges, and −100 reaches black at the corners, while positive lightens toward white without ever exceeding it. **Midpoint** (0 to 100) sets how far from the centre the falloff begins, **Feather** (0 to 100) how wide the transition is, from a hard edge at 0 to a gradient that spans the whole picture at 100, and **Roundness** (−100 to +100) the shape, from a rounded rectangle through the ellipse that matches the picture's proportions to a circle. The corners are always the far edge of the mask, whatever the shape.
