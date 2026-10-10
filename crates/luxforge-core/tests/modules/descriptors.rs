@@ -208,7 +208,11 @@ fn published() -> String {
 
 #[test]
 fn the_built_in_descriptors_match_the_committed_snapshot() {
-    matches_snapshot(&snapshot_path(), &published(), "generate_builtin_descriptor_snapshot");
+    matches_snapshot(
+        &snapshot_path(),
+        &published(),
+        "generate_builtin_descriptor_snapshot",
+    );
 }
 
 #[test]

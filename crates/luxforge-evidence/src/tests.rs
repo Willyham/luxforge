@@ -1412,7 +1412,10 @@ fn a_job_is_named_by_the_task_that_started_it() {
     };
     assert_eq!(JobReference::of(params).unwrap(), None);
     for (job, expected) in [
-        (json!({"started_by": "edit.set-basic"}), "names a task method"),
+        (
+            json!({"started_by": "edit.set-basic"}),
+            "names a task method",
+        ),
         (json!({"started_by": "task."}), "names a task method"),
         (json!({"started_by": "task.x", "index": 1}), "job_id takes"),
         (json!(7), "job_id takes"),
