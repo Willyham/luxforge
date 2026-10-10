@@ -1650,12 +1650,12 @@ fn planned_preview(
 
 /// The most links one plan's chain holds, and the light link it computes its light with: the colour
 /// operations before its first spatial operation, then one link for each spatial operation — a
-/// global Detail layer, a global Presence layer and each masked spatial layer
+/// repair layer, a global Detail layer, a global Presence layer and each masked spatial layer
 /// ([`MAX_MASKED_SPATIAL_LAYERS`]) — and the sequence of a light link over the source
 /// ([`warm_links`]).
-pub const GPU_PLAN_LINKS: usize = 4 + MAX_MASKED_SPATIAL_LAYERS;
+pub const GPU_PLAN_LINKS: usize = 5 + MAX_MASKED_SPATIAL_LAYERS;
 
-/// The most link sequences a warm list holds ([`plan_warm_list`]): the surface's 64-sequence pipeline
+/// The most link sequences a warm list holds ([`plan_warm_list`]): the surface's 65-sequence pipeline
 /// cache (`PIPELINE_CACHE`, `crates/luxforge-ui/src/photo_surface/gpu_preview/compile.rs`) less
 /// the largest plan's [`GPU_PLAN_LINKS`], so a whole warm list and every link of the plan a drag
 /// draws are held together, and warming never evicts what a tick asks for or what it has just
