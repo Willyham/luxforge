@@ -63,8 +63,8 @@ pub struct GpuProgram {
 /// component answer. A unit with no description takes the CPU path.
 ///
 /// The words are a pure function of the unit's coefficients, so two units whose
-/// [`crate::PointwiseColor::describe`] strings are equal produce equal words: the description is
-/// already the host's identity for a compiled unit, and the plan's uniforms follow it.
+/// [`crate::PointwiseColor::describe`] strings are equal produce equal words. The host's identity
+/// for a compiled unit is its [`crate::PointwiseColor::identity`], not its description.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GpuDescription {
     pub program: &'static GpuProgram,
