@@ -4,7 +4,7 @@ Status: implemented and verified on the M4 Mac. The contracts are in the [histor
 
 ## Problem
 
-Today a new layer is always appended to the end of the stack, and a layer's coordinates address its input stage. A pixel edit made after a crop is therefore stored in the crop's output coordinates. Moving the crop moves the edit, and shrinking the crop can be rejected because it would push the edit out of its stage. That is tolerable for the pixel proof tool and unacceptable for brushes, heal or stamp tools, whose strokes must stay anchored to the photograph while the crop is adjusted freely.
+Today a new layer is always appended to the end of the stack, and a layer's coordinates address its input stage. A pixel edit made after a crop is therefore stored in the crop's output coordinates. Moving the crop moves the edit, and shrinking the crop can be rejected because it would push the edit out of its stage. That is unacceptable for brushes, heal or stamp tools, whose strokes must stay anchored to the photograph while the crop is adjusted freely.
 
 ## Decision
 
@@ -31,11 +31,11 @@ The mapping lives in the core and is exposed as a query so API callers can do wh
 
 ### What stays observable
 
-A pixel edit before a transform moves with the image: unchanged. A pixel edit that addresses transformed dimensions is no longer produced by the host. The pixel module's parameter notes and the history, architecture and crop specs are updated to say content stage. During a crop draft the desktop renders the crop layer's input stage, which now includes every pixel edit, so edits are visible while cropping.
+A pixel edit before a transform moves with the image: unchanged. A pixel edit that addresses transformed dimensions is no longer produced by the host. The history, architecture and crop specs say content stage. During a crop draft the desktop renders the crop layer's input stage, which now includes every pixel edit, so edits are visible while cropping.
 
 ## Performance
 
-Crop-last does not cost more here. A crop at angle zero composes into the exact geometry pass, so it is not a second pass. A rotated crop is a resample that reads only the input pixels its output needs. A point replacement is a point write. The CPU reference materialises segment boundaries required by resampling and spatial operations; its byte driver retains at most two frames at once. GPU residency is separately bounded by the preview and tile-worker budgets; that reference bound is not a whole-editor memory claim. Brush work declares its affected regions and all source reads; incremental GPU links rerun where those changes reach, and pulling the crop's region of interest back through the tail lets a full-frame stage evaluate only the visible pixels. Crop-first would only save work while the crop is small, and would have to re-render everything the moment the crop changed. Changes under `crates/` answer the performance checklist and are measured on photo-sized inputs.
+Crop-last does not cost more here. A crop at angle zero composes into the exact geometry pass, so it is not a second pass. A rotated crop is a resample that reads only the input pixels its output needs. The CPU reference materialises segment boundaries required by resampling and spatial operations; its byte driver retains at most two frames at once. GPU residency is separately bounded by the preview and tile-worker budgets; that reference bound is not a whole-editor memory claim. Brush work declares its affected regions and all source reads; incremental GPU links rerun where those changes reach, and pulling the crop's region of interest back through the tail lets a full-frame stage evaluate only the visible pixels. Crop-first would only save work while the crop is small, and would have to re-render everything the moment the crop changed. Changes under `crates/` answer the performance checklist and are measured on photo-sized inputs.
 
 ## Consequences for other designs
 

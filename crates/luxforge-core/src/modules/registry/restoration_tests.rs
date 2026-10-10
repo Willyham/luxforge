@@ -1,4 +1,5 @@
 //! Shared restoration placement and compile-context contracts.
+use super::tests::{REPAIR_STAGE_EFFECT, StageModule, test_layer};
 use super::*;
 use crate::modules::{
     ActionInput, ActionPlan, LayerReport, ModuleDescriptor, PresenceModule, StageContext,
@@ -74,6 +75,15 @@ fn registry() -> (ModuleRegistry, Arc<Probe>) {
     let mut registry = ModuleRegistry::developer();
     let probe = Arc::new(Probe::new());
     registry.register(probe.clone()).unwrap();
+    registry
+        .register(StageModule::shared(
+            "test.pixel",
+            REPAIR_STAGE_EFFECT,
+            "set-test-pixel",
+            EffectStage::Repair,
+            0,
+        ))
+        .unwrap();
     (registry, probe)
 }
 fn restoration() -> Layer {
@@ -232,7 +242,7 @@ fn restoration_and_spatial_reasons_are_reported_separately() {
 fn restoration_boundary_is_the_leading_source_pixel_restoration_run() {
     let (registry, _) = registry();
     let mut layers = vec![
-        Layer::pixel(0, 0, [1, 2, 3]),
+        test_layer(REPAIR_STAGE_EFFECT),
         restoration(),
         Layer::new(crate::BASIC_EFFECT, json!({"exposure":1.0})),
     ];
@@ -274,7 +284,7 @@ fn pixel_placement_without_restoration_is_unchanged() {
         Layer::new(crate::PRESENCE_EFFECT, json!({"texture":20.0})),
     ];
     assert_eq!(
-        registry.insertion_index_for(&layers, crate::PIXEL_EFFECT),
+        registry.insertion_index_for(&layers, REPAIR_STAGE_EFFECT),
         1
     );
 }
@@ -293,11 +303,11 @@ fn restoration_placement_keeps_noncanonical_colour_order() {
     );
 }
 #[test]
-fn restoration_placement_keeps_a_pixel_proof_after_colour() {
+fn restoration_placement_keeps_a_pixel_stage_layer_after_colour() {
     let (registry, _) = registry();
     let layers = vec![
         Layer::new(crate::BASIC_EFFECT, json!({})),
-        Layer::pixel(0, 0, [1, 2, 3]),
+        test_layer(REPAIR_STAGE_EFFECT),
     ];
     assert_eq!(registry.insertion_index_for(&layers, EFFECT), 0);
 }
@@ -343,7 +353,7 @@ fn restoration_placement_all_creation_permutations_and_targets() {
                 if raw {
                     layers.push(Layer::new(crate::modules::raw::RAW_EFFECT, json!({})));
                 }
-                layers.push(Layer::pixel(0, 0, [1, 2, 3]));
+                layers.push(test_layer(REPAIR_STAGE_EFFECT));
                 for index in order {
                     let effect = effects[*index];
                     let mut layer = Layer::new(effect, json!({}));
@@ -363,7 +373,7 @@ fn restoration_placement_all_creation_permutations_and_targets() {
                 if raw {
                     expected.push(crate::modules::raw::RAW_EFFECT);
                 }
-                expected.push(crate::PIXEL_EFFECT);
+                expected.push(REPAIR_STAGE_EFFECT);
                 expected.extend(effects);
                 assert_eq!(actual, expected, "{order:?}, raw={raw}, target={target:?}");
             }

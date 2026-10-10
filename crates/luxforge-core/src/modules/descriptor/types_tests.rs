@@ -12,7 +12,7 @@ use serde_json::json;
 fn effect_stages_keep_their_serialized_names_and_validate() {
     for (stage, name, order) in [
         (EffectStage::Geometry, "geometry", 0),
-        (EffectStage::Pixel, "pixel", 0),
+        (EffectStage::Repair, "repair", 0),
         (EffectStage::Color, "color", 10),
         (EffectStage::Spatial, "spatial", 0),
         (EffectStage::Finish, "finish", 65535),

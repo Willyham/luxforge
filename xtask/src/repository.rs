@@ -1153,7 +1153,6 @@ const SOURCE_RULES: &[SourceRule] = &[
         name: "registry-assembly",
         tokens: &[
             "register_unavailable(",
-            "PixelModule::new(",
             "ControlsModule::new(",
             "CapabilitiesProofModule::new(",
         ],
@@ -3379,11 +3378,11 @@ fn frame() {}
             &[
                 (
                     "crates/luxforge-core/src/modules/registry/mod.rs",
-                    "Arc::new(PixelModule::new()),\nregistry.register_unavailable(module, r)\n",
+                    "Arc::new(ControlsModule::new()),\nregistry.register_unavailable(module, r)\n",
                 ),
                 (
                     "crates/luxforge-cli/src/json.rs",
-                    "let r = ModuleRegistry::assemble(&options)?;\nlet p = MyPixelModule::new();\n\
+                    "let r = ModuleRegistry::assemble(&options)?;\nlet p = MyControlsModule::new();\n\
                      #[cfg(test)]\nmod tests {\n    fn t() { ControlsModule::new(); }\n}\n",
                 ),
             ],
@@ -3404,7 +3403,7 @@ fn frame() {}
                 ),
                 (
                     "crates/luxforge-core/src/editor.rs",
-                    "let pixel = Arc::new(PixelModule::new());\n",
+                    "let controls = Arc::new(ControlsModule::new());\n",
                 ),
                 (
                     "xtask/src/controls_smoke.rs",

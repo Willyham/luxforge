@@ -2773,16 +2773,20 @@ pub(crate) fn module_of<'a>(
     modules.iter().find(|module| module.id == id)
 }
 
-/// The first available module that declares a plain canvas point pick: its action and coordinate
-/// parameters. Dispatch goes through [`canvas_pick`], which answers for the mode that is actually
-/// on screen; this is the tests' way of naming the one module that declares a point pick without
-/// hard-coding it.
+/// The first available module that declares a plain canvas point pick, one that only fills its
+/// coordinate parameters and commits nothing: its action and coordinate parameters. Dispatch goes
+/// through [`canvas_pick`], which answers for the mode that is actually on screen; this is the
+/// tests' way of naming the module that declares such a pick without hard-coding it.
 #[cfg(test)]
 pub(crate) fn point_pick(modules: &[ModuleDescriptor]) -> Option<(&str, &str, &str)> {
     modules.iter().find_map(|module| match &module.canvas {
-        Some(CanvasInteraction::PointPick { action, x, y, .. }) if module.is_available() => {
-            Some((action.as_str(), x.as_str(), y.as_str()))
-        }
+        Some(CanvasInteraction::PointPick {
+            action,
+            x,
+            y,
+            commit: false,
+            ..
+        }) if module.is_available() => Some((action.as_str(), x.as_str(), y.as_str())),
         Some(CanvasInteraction::PointPick { .. })
         | Some(CanvasInteraction::SampleApply { .. })
         | Some(CanvasInteraction::CropFrame { .. })
@@ -3160,8 +3164,8 @@ mod tests {
             .into_iter()
             .cloned()
             .collect();
-        // The RAW sensor picker and the pixel proof both declare a plain point pick, and each
-        // answers only for its own mode. RAW's declares that the pick commits; the proof's fills.
+        // The RAW sensor picker declares a plain point pick that commits, and answers only for
+        // its own mode.
         assert_eq!(
             canvas_pick(&modules, "luxforge.raw"),
             Some(CanvasPick::Point {
@@ -3169,15 +3173,6 @@ mod tests {
                 x: "x",
                 y: "y",
                 commit: true,
-            })
-        );
-        assert_eq!(
-            canvas_pick(&modules, "luxforge.pixel"),
-            Some(CanvasPick::Point {
-                action: "set-pixel",
-                x: "x",
-                y: "y",
-                commit: false,
             })
         );
         // Basic's neutral picker is a sample-apply pick: a query first, then one command.
@@ -3224,8 +3219,8 @@ mod tests {
             "a patch action declares more than one field; it drafts for the other reason"
         );
         // An action with a second parameter cannot send one field alone, so its slider does not
-        // draft: the crop rectangle, the pixel proof's coordinates and colour.
-        for (action, parameter) in [("crop", "angle"), ("set-pixel", "x"), ("set-pixel", "y")] {
+        // draft: the crop rectangle.
+        for (action, parameter) in [("crop", "angle"), ("crop", "x"), ("crop", "y")] {
             assert!(
                 !drafts(&modules, action, parameter),
                 "{action}.{parameter} is one field of several"

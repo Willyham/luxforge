@@ -5,8 +5,8 @@ use super::testing::{extents, render};
 use super::tests::*;
 use super::*;
 use crate::{
-    EFFECT_FORMAT, Error, ErrorKind, Layer, LayerId, ORIENTATION_EFFECT, Orientation, PIXEL_EFFECT,
-    Recipe, SnapshotId, Transform,
+    EFFECT_FORMAT, Error, ErrorKind, Layer, LayerId, ORIENTATION_EFFECT, Orientation, Recipe,
+    SnapshotId, Transform,
     modules::{CropPayload, ModuleRegistry},
 };
 use serde_json::json;
@@ -31,12 +31,12 @@ fn locate_recipe(
 
 /// Where one pixel of a stage lands after the exact layers that follow it, evaluated one layer
 /// at a time and independently of the renderer: the direction `locate` walks
-/// backwards. `None` when a crop discards it. Pixel layers move nothing, so they are skipped.
+/// backwards. `None` when a crop discards it. Colour and spatial layers move nothing, so they are
+/// skipped.
 fn forward(width: u32, height: u32, layers: &[Layer], x: u32, y: u32) -> Option<(u32, u32)> {
     let (mut width, mut height, mut x, mut y) = (width, height, x, y);
     for layer in layers {
         match layer.effect_id.as_str() {
-            PIXEL_EFFECT => {}
             ORIENTATION_EFFECT => {
                 for transform in steps(&layer.payload) {
                     (x, y) = match transform {
@@ -212,8 +212,7 @@ fn a_rotated_crop_locates_the_nearest_pixel_its_sampler_read() {
         let source = gradient(width, height);
         let crop = fitted_crop(width, height, angle, rect);
         let tail: Vec<Layer> = after.iter().copied().map(turn).collect();
-        // A pixel layer before the crop moves nothing; the walk back is geometry only.
-        let mut layers = vec![Layer::pixel(2, 3, [250, 1, 2]), crop_layer(crop)];
+        let mut layers = vec![crop_layer(crop)];
         layers.extend(tail.iter().cloned());
         let recipe = Recipe {
             format: crate::RECIPE_FORMAT,
@@ -273,8 +272,8 @@ fn turned_stage(width: u32, height: u32, transforms: &[Transform]) -> (u32, u32)
 }
 
 /// Every geometry tail the delivered modules produce: nothing, each of the eight orientations, a
-/// crop at zero degrees, a straightened crop, and crops with transforms on both sides. A pixel,
-/// a colour and a spatial layer ride along in one case each, because they move no coordinate and
+/// crop at zero degrees, a straightened crop, and crops with transforms on both sides. A colour
+/// and a spatial layer ride along in one case, because they move no coordinate and
 /// the composition must ignore them while still walking the segments they open.
 ///
 /// The flag is whether the tail resamples, which is the only thing that costs the mapping its
@@ -322,12 +321,11 @@ fn geometry_tails(width: u32, height: u32) -> Vec<(String, Vec<Layer>, bool)> {
             ));
         }
     }
-    // A pixel edit, a colour layer and a spatial layer before a straightened crop: three more
-    // operations and one more segment, and not one of them moves a coordinate.
+    // A colour layer and a spatial layer before a straightened crop: two more operations and one
+    // more segment, and neither moves a coordinate.
     tails.push((
-        "pixel, colour and spatial layers before a straightened crop".to_owned(),
+        "colour and spatial layers before a straightened crop".to_owned(),
         vec![
-            Layer::pixel(3, 4, [250, 1, 2]),
             Layer {
                 id: LayerId::new(),
                 effect_id: crate::BASIC_EFFECT.into(),

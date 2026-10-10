@@ -80,7 +80,10 @@ pub use api::{
     Renderer, RendererReason, RendererRecord, RevisionOf, RunningSession, ViewSelection,
     WorkspaceState, live_session_file, running_sessions, schemas, serve_json_lines_with,
 };
-pub use artifacts::{ArtifactId, ArtifactTable, PreparedArtifact};
+pub use artifacts::{
+    ArtifactId, ArtifactTable, CandidatePart, CandidateRead, CandidateState, PATCH_FORMAT,
+    PREVIEW_FORMAT, PreparedArtifact, PreviewSize, ReleaseReason,
+};
 pub use cancel::{Cancel, ProgressCounts};
 pub use capabilities::context::ModuleContext;
 pub use capabilities::host::HostConfig;
@@ -112,15 +115,15 @@ pub use modules::{
     CropPayload, CropStage, CurveBackground, CurveChannel, CurveControl, DETAIL_EFFECT, Edge,
     EffectDescriptor, EffectOperations, EffectStage, ExactGeometry, GPU_PROGRAMS, GroupControl,
     IdentityKind, LENS_EFFECT, LOOK_EFFECT, LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE,
-    MAX_MASKED_SPATIAL_LAYERS, MAX_OPERATIONS, MAX_SOURCE_NAME, MIN_ANGLE, MIXER_EFFECT,
-    MIXER_EFFECT_FORMAT, ModuleDescriptor, ModuleLayout, ModuleRegistry, NewLayer, NumberControl,
-    NumberStyle, OPERATIONS_FIELD, ORIENTATION_EFFECT, OperationIdentity, OutputRect,
-    PERSPECTIVE_EFFECT, PIXEL_EFFECT, PRESENCE_EFFECT, PROOF_GENERATE_PATH, PROOF_PALETTE,
+    MAX_MASKED_SPATIAL_LAYERS, MAX_OPERATIONS, MAX_REPAIR_OPERATIONS, MAX_SOURCE_NAME, MIN_ANGLE,
+    MIXER_EFFECT, MIXER_EFFECT_FORMAT, ModuleDescriptor, ModuleLayout, ModuleRegistry, NewLayer,
+    NumberControl, NumberStyle, OPERATIONS_FIELD, ORIENTATION_EFFECT, OperationIdentity,
+    OutputRect, PERSPECTIVE_EFFECT, PRESENCE_EFFECT, PROOF_GENERATE_PATH, PROOF_PALETTE,
     PROOF_PALETTE_PATH, ParameterDescriptor, ParameterKind, PickerControl, PointwiseColor,
     PresetsControl, Processing, Provider, QueryChoiceControl, QueryRef, RailDecoration,
-    RangeControl, RawModule, RawPayload, Region, RegistryOptions, Resample, ResetAction,
-    ResolvedControl, ResolvedReset, SamplingScale, SettingsOrigin, SpatialOperation, Stage,
-    StageContext, StageQuestions, TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT,
+    RangeControl, RawModule, RawPayload, Region, RegistryOptions, RepairTable, Resample,
+    ResetAction, ResolvedControl, ResolvedReset, SamplingScale, SettingsOrigin, SpatialOperation,
+    Stage, StageContext, StageQuestions, TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT,
     WheelControl, WheelStyle, WhiteBalanceMode, check_parameters, check_value, controls_module,
     current_effect_format, gains_from_temperature_tint, guide_angle, insertion_index_among,
     largest_with_ratio_inside, palette_bytes, resolve_control, resolve_group_reset,
@@ -849,7 +852,7 @@ pub mod qualification {
 
 // The crate root paths the core itself uses.
 pub(crate) use editor::{AnalysisPlan, AnalysisSelection};
-pub(crate) use model::{JobStatus, MAX_MASK_NAME, POINTS_PER_MASK, PixelReplace};
+pub(crate) use model::{JobStatus, MAX_MASK_NAME, POINTS_PER_MASK};
 pub(crate) use modules::{
     MAX_PRESET_NAME, MAX_SETTINGS_ACTIONS, MAX_SETTINGS_FIELDS, Superseded, lightroom_to_luxforge,
     valid_name,

@@ -1,13 +1,13 @@
 //! The one pipeline, generic over its pixel domain.
 //!
 //! A recipe compiles into segments separated by stage boundaries (a resample or a spatial
-//! operation), and every segment is its exact geometry, point replacements and colour runs. What a
+//! operation), and every segment is its exact geometry and colour runs. What a
 //! pixel *is* between those steps is the only thing that differs between a JPEG and a developed
 //! RAW, and [`PixelDomain`] is where that difference lives:
 //!
 //! - **Byte** ([`super::Byte`]): opaque 8-bit sRGB. Each colour run decodes through the sRGB
-//!   table, runs its units and quantizes at the run's end, so a point replacement, a resample and
-//!   the end of the recipe are quantization boundaries, as is a spatial operation's output.
+//!   table, runs its units and quantizes at the run's end, so a resample and the end of the
+//!   recipe are quantization boundaries, as is a spatial operation's output.
 //! - **Linear** ([`super::linear::Linear`]): signed unbounded `f64` linear sRGB, with the RAW
 //!   exposure and approximate white balance applied to each source pixel. A colour segment is `f32`
 //!   from its entry to its end, nothing is quantized before the terminal boundary, and there is no
@@ -17,7 +17,7 @@
 //! which asks each segment's boundary through [`super::Entry`]), the resample recursion, a spatial
 //! entry answered from the query's tiles or from a materialized frame, the global estimates a
 //! spatial entry reads and its output built tile by tile ([`SpatialEntry`], [`spatial_entry`],
-//! which both drivers materialize a spatial operation through), the replacements and colour runs
+//! which both drivers materialize a spatial operation through), the colour runs
 //! applied to rows of a segment's output ([`segment_pass`]) and the terminal conversion a sample
 //! and a grid share. The rectangle a resample reads is [`crate::modules::Resample::reads`], beside
 //! the resample's own mapping.
@@ -35,31 +35,25 @@
 
 use super::{
     ColorRun, Compiled, MaskedInput, RenderContext, ResampleEntry, ScratchBudget, Segment,
-    color_chunk_rows, color_runs, mapped_replacements,
+    color_chunk_rows, color_runs,
     spatial::{
         SpatialPlan, Tiling, build_reduction_cancellable, fill_planes, resolve_globals, run_tile,
         run_tiles,
     },
 };
 
-/// The input received by a colour operation inside its final float run. Replacement boundaries
-/// retain normal domain quantization; the final run retains its unclamped working values.
+/// The input received by a colour operation inside its final float run, which retains its
+/// unclamped working values.
 pub(super) fn colour_input<'r, D: PixelDomain>(
-    mut pixel: D::Pixel,
+    pixel: D::Pixel,
     runs: impl Iterator<Item = ColorRun<'r>>,
     x: u32,
     y: u32,
-    wide: bool,
 ) -> Result<[f64; 3], Error> {
     let mut linear = [D::spatial_input(pixel)];
     let mut snapshot = [MaskedInput::default(); 1];
     for run in runs {
-        if run.followed_by_replace() {
-            pixel = D::colour(pixel, std::iter::once(run), x, y, wide)?;
-            linear[0] = D::spatial_input(pixel);
-        } else {
-            super::apply_units(&run, y, x, &mut linear, &mut snapshot)?;
-        }
+        super::apply_units(&run, y, x, &mut linear, &mut snapshot)?;
     }
     Ok(linear[0].map(f64::from))
 }
@@ -92,9 +86,6 @@ pub(crate) trait PixelDomain: Sync {
     /// One pixel of the source, which is the first segment's input.
     fn source_pixel(&self, x: u32, y: u32) -> Result<Self::Pixel, Error>;
 
-    /// A point replacement's value written over `pixel`.
-    fn replace(pixel: Self::Pixel, rgb: [u8; 3]) -> Self::Pixel;
-
     /// Every colour run of `runs`, in order, over one pixel at `(x, y)` of its segment's output
     /// stage: the per-pixel form of [`SegmentRows::run`], with the same arithmetic.
     fn colour<'r>(
@@ -105,7 +96,7 @@ pub(crate) trait PixelDomain: Sync {
         wide: bool,
     ) -> Result<Self::Pixel, Error>;
 
-    /// The pixel a segment answers, once its replacement and colour are applied: the pixel itself
+    /// The pixel a segment answers, once its colour is applied: the pixel itself
     /// unless a domain checks it; the linear path refuses a non-finite value here.
     fn finish(pixel: Self::Pixel) -> Result<Self::Pixel, Error> {
         Ok(pixel)
@@ -380,35 +371,37 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     }
 
     /// Read an operation's prefix with the spatial boundary width selected by the whole recipe.
-    /// A truncated prefix can otherwise choose a different width from a later point replacement
-    /// or colour run. Set before any frame is materialized ([`Self::framed`]).
+    /// A truncated prefix can otherwise choose a different width from a later colour run. Set before any frame is materialized ([`Self::framed`]).
     pub(crate) fn with_input_width(mut self, wide: bool) -> Self {
         debug_assert!(self.frame.is_none());
         let last = self.widths.len() - 1;
-        let Some(target) = self
-            .compiled
-            .segments
-            .iter()
-            .rposition(|segment| matches!(&segment.entry, Some(super::Entry::Spatial(_))))
-        else {
+        let Some(target) = self.compiled.segments.iter().rposition(|segment| {
+            segment
+                .entry
+                .as_ref()
+                .is_some_and(super::Entry::materializes)
+        }) else {
             return self;
         };
         for index in (0..=last).rev() {
             let segment = &self.compiled.segments[index];
-            let spatial = matches!(&segment.entry, Some(super::Entry::Spatial(_)));
+            let spatial = segment
+                .entry
+                .as_ref()
+                .is_some_and(super::Entry::materializes);
             let next_spatial = self
                 .compiled
                 .segments
                 .get(index + 1)
-                .is_some_and(|s| matches!(&s.entry, Some(super::Entry::Spatial(_))));
-            let output = (index == last && target == last && wide && !segment.has_pixels)
+                .and_then(|s| s.entry.as_ref())
+                .is_some_and(super::Entry::materializes);
+            let output = (index == last && target == last && wide)
                 || (next_spatial && (segment.has_color || self.widths[index + 1].input));
             let input = spatial
                 && (if index == target {
                     wide
                 } else {
-                    (segment.has_color && !segment.has_pixels)
-                        || (!segment.writes_pixels() && next_spatial)
+                    segment.has_color || next_spatial
                 });
             self.widths[index] = super::byte::FrameWidths { input, output };
         }
@@ -445,22 +438,11 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     pub(super) fn colour_input(&self, x: u32, y: u32) -> Result<Option<[f64; 3]>, Error> {
         let index = self.compiled.segments.len() - 1;
         let segment = &self.compiled.segments[index];
-        let Some(resolved) = segment.resolve(x, y) else {
+        let Some((input_x, input_y)) = segment.resolve(x, y) else {
             return Ok(None);
         };
-        let mut pixel = self.entry_pixel(index, resolved.input_x, resolved.input_y)?;
-        if let Some((_, rgb)) = resolved.replacement {
-            pixel = D::replace(pixel, rgb);
-        }
-        let after = resolved.replacement.map_or(0, |(index, _)| index + 1);
-        colour_input::<D>(
-            pixel,
-            color_runs(segment).filter(|run| run.start >= after),
-            x,
-            y,
-            self.widths[index].output,
-        )
-        .map(Some)
+        let pixel = self.entry_pixel(index, input_x, input_y)?;
+        colour_input::<D>(pixel, color_runs(segment), x, y).map(Some)
     }
 
     /// One pixel of one segment's output stage. A resample is evaluated recursively as the bilinear
@@ -468,27 +450,16 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     /// and never allocates a frame; a stack holds at most one crop layer. A spatial entry is read
     /// from its materialized frame ([`Self::spatial_entry_pixel`]).
     ///
-    /// The colour phases are the rasterizing pass's, applied to this one pixel: the replacement that
-    /// wins here ends the runs before it, and every run after it is applied in turn, so the sampled
-    /// byte is the byte the frame holds.
+    /// The colour runs are the rasterizing pass's, applied to this one pixel in turn, so the
+    /// sampled byte is the byte the frame holds.
     pub(super) fn pixel_in(&self, index: usize, x: u32, y: u32) -> Result<Option<D::Pixel>, Error> {
         let segment = &self.compiled.segments[index];
-        let Some(resolved) = segment.resolve(x, y) else {
+        let Some((input_x, input_y)) = segment.resolve(x, y) else {
             return Ok(None);
         };
-        let mut pixel = self.entry_pixel(index, resolved.input_x, resolved.input_y)?;
-        if let Some((_, rgb)) = resolved.replacement {
-            pixel = D::replace(pixel, rgb);
-        }
+        let mut pixel = self.entry_pixel(index, input_x, input_y)?;
         if segment.has_color {
-            let after = resolved.replacement.map_or(0, |(index, _)| index + 1);
-            pixel = D::colour(
-                pixel,
-                color_runs(segment).filter(|run| run.start >= after),
-                x,
-                y,
-                self.widths[index].output,
-            )?;
+            pixel = D::colour(pixel, color_runs(segment), x, y, self.widths[index].output)?;
         }
         D::finish_width(pixel, self.widths[index].output).map(Some)
     }
@@ -566,6 +537,25 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         )
     }
 
+    /// The output of the repair `entry` of segment `index` over its whole stage, its stage read by
+    /// rows ([`Self::fill_rows`]): the frame [`SpatialMode::Frames`] materializes.
+    pub(super) fn repair_frame(
+        &self,
+        index: usize,
+        entry: &super::repair_entry::RepairEntry,
+        cancel: &Cancel,
+    ) -> Result<D::SpatialFrame, Error> {
+        super::repair_entry::repair_frame(
+            &self.domain,
+            entry,
+            self.spatial_stage(index),
+            cancel,
+            self.context,
+            self.widths[index].input,
+            |region, planes, parallelism| self.fill_rows(index - 1, region, planes, parallelism),
+        )
+    }
+
     /// The stage spatial segment `index` reads, which is the stage it writes.
     fn spatial_stage(&self, index: usize) -> Stage {
         self.compiled.segments[index - 1].stage()
@@ -574,7 +564,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     /// Segment `index`'s output over `region`, row-major, into `out`: exactly the values
     /// [`Self::pixel_in`] answers there, for a caller that reads a neighbourhood of them. A domain
     /// that reads the segment's rows itself does ([`PixelDomain::region_rows`]: the linear
-    /// source or spatial frame of a segment without replacements); otherwise the region is
+    /// source or spatial frame); otherwise the region is
     /// pulled ([`Self::region_pulled`]). `region` must lie inside the segment's output stage.
     pub(super) fn region_in(
         &self,
@@ -590,8 +580,8 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         }
     }
 
-    /// [`Self::region_in`] pulled through the evaluation: a segment with colour and no
-    /// replacement pulls each row's entry through its geometry and runs its colour over the row
+    /// [`Self::region_in`] pulled through the evaluation: a segment with colour
+    /// pulls each row's entry through its geometry and runs its colour over the row
     /// at once ([`PixelDomain::colour_row`]), which is the same arithmetic as one pixel at a time;
     /// any other segment is pulled pixel by pixel.
     pub(super) fn region_pulled(
@@ -603,7 +593,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
     ) -> Result<(), Error> {
         out.clear();
         let segment = &self.compiled.segments[index];
-        let batched = segment.has_color && !segment.has_pixels;
+        let batched = segment.has_color;
         let outside = || Error::render("a region read was outside its stage");
         for y in region.y0..region.y1() {
             let start = out.len();
@@ -631,8 +621,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
 
     /// Segment `index`'s output over `region`, as the three planes a spatial operation reads:
     /// read row by row by a domain that reads the segment's rows itself
-    /// ([`PixelDomain::fill_rows`]: the linear source or spatial frame of a segment without
-    /// replacements), and otherwise pulled ([`Self::fill_pulled`]).
+    /// ([`PixelDomain::fill_rows`]: the linear source or spatial frame), and otherwise pulled ([`Self::fill_pulled`]).
     ///
     /// This is how the stage a spatial entry reads is read everywhere: a tile's input, in a frame
     /// and in a point query, and the reduction its global estimates are prepared from.
@@ -661,7 +650,7 @@ impl<'a, D: PixelDomain> Evaluation<'a, D> {
         parallelism: Parallelism,
     ) -> Result<(), Error> {
         let segment = &self.compiled.segments[index];
-        if !segment.has_color || segment.has_pixels {
+        if !segment.has_color {
             return fill_planes(region, planes, parallelism, |x, y| {
                 let pixel = self
                     .pixel_in(index, x, y)?
@@ -921,15 +910,6 @@ pub(super) trait SegmentRows: Sync {
         chunk: &mut [Self::Sample],
     ) -> Result<(), Error>;
 
-    /// Write one point replacement at pixel `offset` of the chunk.
-    fn replace(
-        &self,
-        scratch: &mut Self::Scratch,
-        chunk: &mut [Self::Sample],
-        offset: usize,
-        rgb: [u8; 3],
-    ) -> Result<(), Error>;
-
     /// Apply one colour run to the chunk's rows `rows`, which start at row `y0 + rows.start` of the
     /// stage. `snapshot` is one row of a masked operation's own input and its coverage.
     fn run(
@@ -970,9 +950,7 @@ fn colour_load<'a>(runs: impl Iterator<Item = ColorRun<'a>>) -> (usize, bool) {
 }
 
 /// One segment's output, `frame`, written in bounded row chunks: each chunk is loaded, then the
-/// segment's replacements and colour runs are applied to it as ordered phases — the replacements
-/// before a colour run, then that run, then the replacements after it, so a later replacement wins
-/// at the same coordinate exactly as a later layer does — and stored. Colour runs reach only the
+/// segment's colour runs are applied to it in order, and it is stored. Colour runs reach only the
 /// rows in `band`; a resample that follows reads no other.
 ///
 /// The chunks run on the shared Rayon pool when the segment's geometry, a resample its rows
@@ -984,8 +962,8 @@ fn colour_load<'a>(runs: impl Iterator<Item = ColorRun<'a>>) -> (usize, bool) {
 ///
 /// Pointwise operations are independent per pixel and a unit is handed one row at a time with its
 /// row and first column, so applying the phases chunk by chunk is the same arithmetic in the same
-/// order as applying each phase to the whole frame, and as [`Evaluation::pixel_in`] applying the
-/// runs after the winning replacement to one pixel.
+/// order as applying each run to the whole frame, and as [`Evaluation::pixel_in`] applying the
+/// runs to one pixel.
 pub(super) fn segment_pass<R: SegmentRows>(
     rows: &R,
     segment: &Segment,
@@ -998,7 +976,6 @@ pub(super) fn segment_pass<R: SegmentRows>(
     if frame.is_empty() || width == 0 {
         return Ok(());
     }
-    let replacements = mapped_replacements(segment);
     let runs: Vec<ColorRun<'_>> = color_runs(segment).collect();
     // Whether this pass needs snapshot scratch at all, decided once for the pass: an unmasked
     // segment reserves and allocates exactly what it would without masks.
@@ -1063,27 +1040,11 @@ pub(super) fn segment_pass<R: SegmentRows>(
             &mut unused
         };
         rows.load(scratch, y0 as u32, chunk)?;
-        let mut next = 0;
-        let mut write = |scratch: &mut R::Scratch, chunk: &mut [R::Sample], before: usize| {
-            while let Some(&(index, x, y, rgb)) = replacements.get(next) {
-                if index >= before {
-                    break;
-                }
-                let y = y as usize;
-                if (y0..y0 + count).contains(&y) {
-                    rows.replace(scratch, chunk, (y - y0) * width + x as usize, rgb)?;
-                }
-                next += 1;
-            }
-            Ok::<(), Error>(())
-        };
-        for run in &runs {
-            write(scratch, chunk, run.start)?;
-            if colours {
+        if colours {
+            for run in &runs {
                 rows.run(scratch, chunk, run, y0 as u32, coloured.clone(), snapshot)?;
             }
         }
-        write(scratch, chunk, usize::MAX)?;
         rows.store(scratch, chunk)
     };
     if parallel {

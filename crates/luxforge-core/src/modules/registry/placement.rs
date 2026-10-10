@@ -178,10 +178,10 @@ impl ModuleRegistry {
     /// | Stage | Placement |
     /// | --- | --- |
     /// | `source` | index zero |
-    /// | `pixel` | before the first restoration, spatial, geometry or finish layer |
+    /// | `repair` | before the first restoration, colour, spatial, geometry or finish layer |
     /// | `restoration` | before the first colour, spatial, geometry or finish layer |
     /// | `color` | before the first spatial, geometry or finish layer |
-    /// | `spatial` | before the first geometry or finish layer, after every pixel, restoration and colour layer |
+    /// | `spatial` | before the first geometry or finish layer, after every repair, restoration and colour layer |
     /// | `geometry` | before the first finish layer |
     /// | `finish` | at the end |
     ///
@@ -223,9 +223,12 @@ fn placement_index(
         placement(&layer.effect_id).map(|(stage, _)| stage) == Some(EffectStage::Source)
     }));
     let opens_region = |candidate: EffectStage| match stage {
-        EffectStage::Pixel => matches!(
+        // Colour opens the repair region too, so a repair layer goes before Basic on a stack
+        // with colour but no Detail: repair reads the developed source and nothing else.
+        EffectStage::Repair => matches!(
             candidate,
             EffectStage::Restoration
+                | EffectStage::Color
                 | EffectStage::Spatial
                 | EffectStage::Geometry
                 | EffectStage::Finish
@@ -256,11 +259,11 @@ fn placement_index(
             break;
         }
         // A spatial layer reads what the pointwise colour run produced, so it never lands
-        // before a pixel or colour layer a stored stack kept later than usual.
+        // before a repair, restoration or colour layer a stored stack kept later than usual.
         if stage == EffectStage::Spatial
             && matches!(
                 layer_stage,
-                EffectStage::Pixel | EffectStage::Restoration | EffectStage::Color
+                EffectStage::Repair | EffectStage::Restoration | EffectStage::Color
             )
         {
             lower = index + 1;

@@ -1061,22 +1061,22 @@ fn an_unavailable_provider_refuses_the_export_and_writes_nothing() {
     let state = harness.import("unavailable.jpg");
     let asset = state["asset"]["id"].clone();
     harness.ok(
-        "edit.set-pixel",
+        "edit.set-basic",
         json!({
             "asset_id": asset,
             "mutation": {"expected_revision": 0, "request_id": "pixel", "actor": "test"},
-            "x": 0, "y": 0, "rgb": [1, 2, 3],
+            "exposure": 0.5,
         }),
     );
     let out = destinations(&harness);
     let mut registry = ModuleRegistry::new();
     registry
         .register(crate::modules::TestModule::shared(
-            "luxforge.pixel",
-            crate::PIXEL_EFFECT,
-            "set-pixel",
+            "luxforge.basic",
+            crate::BASIC_EFFECT,
+            "set-basic",
             crate::Availability::Unavailable {
-                reason: "test: the pixel provider is not installed".into(),
+                reason: "test: the Basic provider is not installed".into(),
             },
         ))
         .unwrap();

@@ -234,8 +234,7 @@ impl ShrinkModule {
         Ok((read("width")?, read("height")?))
     }
 
-    /// The registry the update tests use: the developer registry, whose pixel proof they edit with,
-    /// plus this module.
+    /// The registry the update tests use: the developer registry plus this module.
     pub(super) fn registry() -> Arc<ModuleRegistry> {
         let mut registry = ModuleRegistry::developer();
         registry.register(Arc::new(Self::new())).unwrap();
@@ -329,6 +328,110 @@ impl ToolModule for ShrinkModule {
             output_width: width,
             output_height: height,
         }))
+    }
+}
+
+pub(crate) const SAMPLE_ACTION: &str = "test-sample";
+pub(crate) const SAMPLE_EFFECT: &str = "test.sample.effect";
+
+/// A test-only module whose one action reads a pixel of the stage a new layer would receive while
+/// planning, and commits an identity finish layer that records what it read. It is the smallest
+/// plan that needs the original prepared, which is what the host's rules for a plan that samples
+/// (parking its read off the catalog owner's thread, refusing it until the original is prepared)
+/// are proved with.
+pub(crate) struct SampleModule(ModuleDescriptor);
+
+impl SampleModule {
+    fn new() -> Self {
+        let coordinate = |name: &str| {
+            ParameterDescriptor::integer(name, 0, 16383)
+                .default(0)
+                .unit("px")
+                .notes("test")
+        };
+        Self(ModuleDescriptor {
+            id: "test.sample".into(),
+            title: "Sample".into(),
+            hint: None,
+            effects: vec![EffectDescriptor::new(SAMPLE_EFFECT, EffectStage::Finish)],
+            actions: vec![ActionDescriptor {
+                parameters: vec![coordinate("x"), coordinate("y")],
+                ..ActionDescriptor::new(SAMPLE_ACTION, "Sample", "test")
+            }],
+            queries: Vec::new(),
+            controls: Vec::new(),
+            reset: None,
+            canvas: None,
+            developer: false,
+            collapsed: false,
+            layout: crate::ModuleLayout::Stacked,
+            availability: Availability::Available,
+            ..ModuleDescriptor::default()
+        })
+    }
+
+    /// The developer registry plus this module.
+    pub(crate) fn registry() -> Arc<ModuleRegistry> {
+        let mut registry = ModuleRegistry::developer();
+        registry.register(Arc::new(Self::new())).unwrap();
+        Arc::new(registry)
+    }
+}
+
+impl ToolModule for SampleModule {
+    fn descriptor(&self) -> &ModuleDescriptor {
+        &self.0
+    }
+
+    fn parse(
+        &self,
+        action_id: &str,
+        parameters: &Map<String, Value>,
+    ) -> Result<ActionInput, Error> {
+        Ok(ActionInput {
+            action_id: action_id.into(),
+            parameters: parameters.clone(),
+        })
+    }
+
+    fn plan(&self, input: &ActionInput, stage: &StageContext<'_>) -> Result<ActionPlan, Error> {
+        let coordinate = |name: &str| {
+            input
+                .parameters
+                .get(name)
+                .and_then(Value::as_u64)
+                .map_or(0, |value| value as u32)
+        };
+        let (x, y) = (coordinate("x"), coordinate("y"));
+        let index = stage.insertion_index_for(SAMPLE_EFFECT);
+        let rgba = stage
+            .sample_before(index, x, y)?
+            .ok_or_else(|| Error::validation(format!("pixel ({x}, {y}) is outside the stage")))?;
+        Ok(ActionPlan::Commit(NewLayer::new(
+            SAMPLE_EFFECT,
+            json!({"x": x, "y": y, "rgb": [rgba[0], rgba[1], rgba[2]]}),
+        )))
+    }
+
+    fn validate_payload(&self, effect_id: &str, _: u32, payload: &Value) -> Result<(), Error> {
+        if effect_id != SAMPLE_EFFECT || !payload.is_object() {
+            return Err(Error::unavailable_effect(effect_id, &[]));
+        }
+        Ok(())
+    }
+
+    fn describe(&self, _: &str, _: u32, _: &Value) -> Result<crate::LayerReport, Error> {
+        Ok(crate::LayerReport::new("Sample"))
+    }
+
+    fn compile(
+        &self,
+        _: &str,
+        _: u32,
+        _: &Value,
+        _: crate::CompileStage,
+    ) -> Result<Processing, Error> {
+        Ok(Processing::Color(crate::ColorOperation::neutral()))
     }
 }
 

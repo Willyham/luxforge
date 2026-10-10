@@ -501,7 +501,7 @@ mod tests {
                 "Colour mixer \u{00b7} Grading",
                 "Vignette \u{00b7} Vignette",
             ],
-            "RAW, transforms, crop and the pixel proof declare no field patch; Perspective's patch is not presettable"
+            "RAW, transforms and crop declare no field patch; Perspective's patch is not presettable"
         );
         assert_eq!(ordinary.groups[1].id, "luxforge.basic/tone");
         for (id, count) in [("luxforge.mixer/hsl", 24), ("luxforge.mixer/grading", 14)] {
