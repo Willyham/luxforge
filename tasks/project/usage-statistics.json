@@ -650,7 +650,7 @@
     {
       "id": "TASK-009",
       "description": "Prepare the pinned Vector, ClickHouse and private Grafana reference stack with bounded device/profile retention and no IP tracking.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
