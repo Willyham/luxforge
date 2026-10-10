@@ -496,8 +496,22 @@ mod tests {
         };
         let (w, h) = (f64::from(stage.width), f64::from(stage.height));
         let ops = vec![
-            Op::new(1, crate::modules::RepairKind::Heal, stage, &[[0.3 * w, 0.4 * h]], 6.0, [14.0, 3.0]),
-            Op::new(2, crate::modules::RepairKind::Clone, stage, &[[0.7 * w, 0.6 * h]], 5.0, [-20.0, -9.0]),
+            Op::new(
+                1,
+                crate::modules::RepairKind::Heal,
+                stage,
+                &[[0.3 * w, 0.4 * h]],
+                6.0,
+                [14.0, 3.0],
+            ),
+            Op::new(
+                2,
+                crate::modules::RepairKind::Clone,
+                stage,
+                &[[0.7 * w, 0.6 * h]],
+                5.0,
+                [-20.0, -9.0],
+            ),
         ];
         let recipe = stack(vec![
             repair_layer(&ops),

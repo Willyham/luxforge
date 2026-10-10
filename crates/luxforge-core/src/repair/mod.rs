@@ -218,7 +218,10 @@ pub(crate) struct RepairFrame<'a> {
 }
 
 impl<'a> RepairFrame<'a> {
-    #[cfg_attr(not(test), allow(dead_code, reason = "a frame of one rectangle, for the tests"))]
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "a frame of one rectangle, for the tests")
+    )]
     pub(crate) fn new(stage: Stage, region: Region, values: &'a mut [f32]) -> Result<Self, Error> {
         Self::with_parts(stage, vec![(region, values)])
     }
