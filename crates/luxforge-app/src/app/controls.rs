@@ -246,6 +246,13 @@ impl Editor {
                 return self.reset_field(action, parameter);
             }
             ControlMessage::ToggleSection(module_id) => {
+                // The Corrections section has no controls of its own: expanding it enters its mode,
+                // whose band is the section.
+                if crate::state::corrections::is_brush_mode(&self.modules, &module_id) {
+                    return self.dispatch(Message::View(
+                        crate::app::message::view::ViewMessage::SetMode(module_id),
+                    ));
+                }
                 let expanded = self
                     .workspace
                     .tools

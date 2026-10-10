@@ -5,6 +5,7 @@ pub(crate) mod canvas;
 pub(crate) mod capabilities;
 pub(crate) mod control_tree;
 pub(crate) mod copy_settings;
+pub(crate) mod corrections;
 pub(crate) mod develop;
 pub(crate) mod document;
 pub(crate) mod fields;
@@ -97,6 +98,9 @@ pub(crate) enum MenuTarget {
     /// A theme's row in the Settings sheet's Appearance tab, by its id: Export…, Copy import
     /// report and, for a stored theme, Delete.
     Theme(String),
+    /// A correction's row in the Corrections band, by its operation: Heal, Clone, New automatic
+    /// source, Move up, Move down and Delete.
+    Correction(String),
 }
 
 /// Why a start that needs the editable state is refused with no photograph open.
@@ -341,6 +345,12 @@ pub(crate) struct Inputs<'a> {
     pub(crate) mask_panel: &'a masks::MaskPanel,
     /// The open mask shape gesture.
     pub(crate) mask_draft: Option<&'a MaskDraft>,
+    /// The Corrections workspace's view state and list.
+    pub(crate) corrections: &'a corrections::CorrectionsPanel,
+    /// What the open Corrections gesture is, for the band's drafting row and the draft bar.
+    pub(crate) correction_draft: Option<corrections::DraftingCorrection>,
+    /// The content stage's size the Corrections readouts measure pixels against.
+    pub(crate) correction_content: Option<(u32, u32)>,
     /// The mask the generated module sections are bound to, which is what a masked slider edits.
     /// `None` binds them to the global layer, as they have always been.
     pub(crate) target: Option<&'a MaskId>,
@@ -442,6 +452,8 @@ pub(crate) struct Workspace {
     pub(crate) canvas: canvas::CanvasModel,
     pub(crate) tools: tools::ToolsModel,
     pub(crate) masks: masks::MasksModel,
+    /// The Corrections band, drawn under the histogram while its mode is active.
+    pub(crate) corrections: corrections::CorrectionsModel,
     pub(crate) histogram: histogram::HistogramModel,
     pub(crate) status: status::StatusBarModel,
     pub(crate) palette: palette::PaletteModel,
@@ -468,6 +480,7 @@ impl Workspace {
         self.performance.refresh(inputs);
         self.canvas = canvas::derive(inputs);
         self.masks = masks::derive(inputs);
+        self.corrections = corrections::derive(inputs);
         self.tools = tools::derive(inputs);
         self.histogram = histogram::derive(inputs, &self.histogram);
         self.status = status::derive(inputs);
@@ -654,6 +667,7 @@ mod tests {
         mask_panel: masks::MaskPanel,
         crop_section: CropSection,
         mask_draft: Option<MaskDraft>,
+        corrections: corrections::CorrectionsPanel,
         session: ClientSession,
         status: String,
         busy: bool,
@@ -698,6 +712,7 @@ mod tests {
                 mask_panel: masks::MaskPanel::default(),
                 crop_section: CropSection::default(),
                 mask_draft: None,
+                corrections: corrections::CorrectionsPanel::default(),
                 session: ClientSession::default(),
                 status: "ready".into(),
                 busy: false,
@@ -798,6 +813,9 @@ mod tests {
                 draft: self.draft.as_ref(),
                 mask_panel: &self.mask_panel,
                 mask_draft: self.mask_draft.as_ref(),
+                corrections: &self.corrections,
+                correction_draft: None,
+                correction_content: None,
                 target: self
                     .mask_panel
                     .selected_mask
