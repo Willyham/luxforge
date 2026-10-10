@@ -334,6 +334,10 @@ impl Reduction {
 /// [`SourceSlot::encode_placed`]'s caller writes for each rectangle.
 pub const PLACED_ORIGIN: usize = 9;
 
+/// The words of a derivation's header, the origin last: what differs between two slots' passes,
+/// which [`SourceSlot::encode_placed`]'s caller writes for each rectangle.
+pub const PLACED_HEADER: usize = PLACED_ORIGIN + 2;
+
 /// How a boundary is derived on the GPU from the source the pipeline holds, rather than uploaded
 /// from the CPU.
 #[derive(Clone, Debug, PartialEq)]
@@ -402,6 +406,11 @@ impl SourceSlot {
 
     pub fn kind(&self) -> SourceKind {
         self.kind
+    }
+
+    /// The rectangle of the content stage it holds, `[x, y, width, height]`.
+    pub fn window(&self) -> [u32; 4] {
+        self.window
     }
 
     /// Every row is written.
@@ -621,8 +630,21 @@ impl SourceSlot {
     /// each rectangle's pass writes over words [`PLACED_ORIGIN`] first. `None` when a rectangle
     /// leaves what the slot holds, or a reduction's coverage does not cover it.
     pub fn placed_words(&self, derivation: &Derivation, rects: &[[u32; 4]]) -> Option<Vec<u32>> {
+        if !rects.iter().all(|&rect| self.places(derivation, rect)) {
+            return None;
+        }
+        match derivation {
+            Derivation::Cut { .. } => Some(self.header((0, 0))),
+            Derivation::Reduce(_) => self.words(derivation, (1, 1)),
+        }
+    }
+
+    /// Whether `derivation`'s pass derives rectangle `[x, y, width, height]` of its stage from
+    /// this slot ([`Self::placed_words`]): a cut inside what it holds, or a reduction of the whole
+    /// source whose coverage covers it. `O(1)`.
+    pub fn places(&self, derivation: &Derivation, [rx, ry, rw, rh]: [u32; 4]) -> bool {
         let [x, y, width, height] = self.window;
-        let held = rects.iter().all(|&[rx, ry, rw, rh]| match derivation {
+        match derivation {
             Derivation::Cut { .. } => {
                 rx >= x
                     && ry >= y
@@ -630,14 +652,13 @@ impl SourceSlot {
                     && ry.checked_add(rh).is_some_and(|end| end <= y + height)
             }
             Derivation::Reduce(reduction) => self.whole && reduction.covers((rx, ry), (rw, rh)),
-        });
-        if !held {
-            return None;
         }
-        match derivation {
-            Derivation::Cut { .. } => Some(self.header((0, 0))),
-            Derivation::Reduce(_) => self.words(derivation, (1, 1)),
-        }
+    }
+
+    /// The first [`PLACED_HEADER`] words of this slot's [`Self::placed_words`], its origin
+    /// `origin`: what a pass of this slot reads before any coverage table.
+    pub fn placed_header(&self, origin: (u32, u32)) -> Vec<u32> {
+        self.header(origin)
     }
 
     /// Encode `derivation`'s pass into the `size` texels of `target` from texel `at` on, keeping

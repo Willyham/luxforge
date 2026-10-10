@@ -167,11 +167,14 @@ const READ_INDEX_CELL: u32 = 64;
 /// Words of the read table before its rectangles' records, six words each.
 const READ_HEADER_WORDS: usize = 10;
 
+/// An atlas's size and each rectangle's placement in it.
+pub(crate) type Packed = ((u32, u32), Vec<[u32; 2]>);
+
 /// `rects` packed into one atlas: shelves of rectangles, tallest first, across a width near the
 /// square root of their area, every placement a function of the sizes alone, so a source dragged
 /// keeps every placement. The atlas's size, rounded up to [`ATLAS_ROUNDING`], and each rectangle's
 /// placement in `rects`' order, or what does not fit within [`REPAIR_ATLAS_SIDE`].
-pub(crate) fn pack(rects: &[Region]) -> Result<((u32, u32), Vec<[u32; 2]>), String> {
+pub(crate) fn pack(rects: &[Region]) -> Result<Packed, String> {
     let round = |side: u32| side.div_ceil(ATLAS_ROUNDING).max(1) * ATLAS_ROUNDING;
     let widest = rects.iter().map(|rect| rect.width).max().unwrap_or(1);
     let tallest = rects.iter().map(|rect| rect.height).max().unwrap_or(1);
