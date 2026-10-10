@@ -150,25 +150,15 @@ pub(crate) fn add_patch(
     )
 }
 
-/// The sRGB code a linear value is drawn as in an 8-bit frame, rounded.
+/// The sRGB code a linear value is drawn as in an 8-bit frame, before rounding: the shared test
+/// reference's encode.
 pub(crate) fn encode(linear: f64) -> f64 {
-    let value = linear.clamp(0.0, 1.0);
-    let encoded = if value <= 0.003_130_8 {
-        value * 12.92
-    } else {
-        1.055 * value.powf(1.0 / 2.4) - 0.055
-    };
-    encoded * 255.0
+    luxforge_reference::srgb::encode_clamped(linear) * 255.0
 }
 
-/// The linear value of an 8-bit sRGB code.
+/// The linear value of an 8-bit sRGB code, by the shared test reference.
 pub(crate) fn decode(code: u8) -> f64 {
-    let value = f64::from(code) / 255.0;
-    if value <= 0.040_45 {
-        value / 12.92
-    } else {
-        ((value + 0.055) / 1.055).powf(2.4)
-    }
+    luxforge_reference::srgb::decode(code)
 }
 
 /// What a patch pixel makes of an 8-bit input pixel at `opacity`, in codes before rounding: the

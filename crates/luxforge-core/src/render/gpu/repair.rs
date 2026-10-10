@@ -460,7 +460,8 @@ fn patch_resident(entry: &RepairEntry) -> PatchResident {
     let stage = entry.stage;
     let mut blocks: Vec<Arc<[u32]>> = Vec::new();
     let mut hasher = std::hash::DefaultHasher::new();
-    let mut placed: Vec<(usize, Option<(u32, Arc<crate::repair::patch::Drawn>)>)> = Vec::new();
+    type Placed = (usize, Option<(u32, Arc<crate::repair::patch::Drawn>)>);
+    let mut placed: Vec<Placed> = Vec::new();
     let mut offset = 0u32;
     for (index, operation) in entry.operations().iter().enumerate() {
         let Some(patch) = &operation.patch else {
