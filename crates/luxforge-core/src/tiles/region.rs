@@ -203,7 +203,7 @@ pub fn read(
                 width: rect.width,
                 height: rows,
             };
-            let answer = session.read(stage_read.clone(), band, ReadValues::Linear)?;
+            let answer = session.read(stage_read, band, ReadValues::Linear)?;
             match &answered {
                 None => answered = Some(answer.answered.clone()),
                 // A band drawn by another renderer than the first: the whole region is read
