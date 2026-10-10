@@ -84,6 +84,7 @@ fn reading(k: u32) -> GpuSpatial {
         contained: false,
         resident: Vec::new(),
         resident_key: 0,
+        reads: None,
     }
 }
 
@@ -109,6 +110,7 @@ fn writing(k: u32) -> GpuSpatial {
         contained: false,
         resident: Vec::new(),
         resident_key: 0,
+        reads: None,
     }
 }
 

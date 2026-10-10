@@ -205,6 +205,24 @@ pub struct GpuSpatial {
     pub resident: Vec<std::sync::Arc<[u32]>>,
     /// The content key of `resident`.
     pub resident_key: u64,
+    /// The read set a repair step holds itself: the plane its passes read the step's input from,
+    /// which no pass writes, and where each rectangle of the boundary's stage lies in it. The slot
+    /// fills it before the step's passes run ([`super::fill`]); `None` for every other step.
+    pub reads: Option<ReadAtlas>,
+}
+
+/// A step's input over a set of rectangles of the boundary's stage, packed into one plane
+/// ([`GpuSpatial::reads`]): cut from the photograph's source the pipeline holds, as the boundary is
+/// derived, or copied from the boundary where it holds a rectangle whole, so each texel is the
+/// boundary's own at its stage pixel.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ReadAtlas {
+    /// The step's plane that holds them: a fixed plane of the boundary's texel format, kept by the
+    /// link (an apply names it) and written by no pass.
+    pub plane: u32,
+    /// Each rectangle, `[x, y, width, height]` of the boundary's stage, and the plane texel its
+    /// first pixel is held at; no two overlap in the plane.
+    pub rects: Vec<([u32; 4], [u32; 2])>,
 }
 
 /// A half-open rectangle `[x0, x1) × [y0, y1)` of a boundary's texels or of a plane's.
@@ -794,6 +812,57 @@ pub fn validate_spatial(spatial: &GpuSpatial) -> Result<(), String> {
     }
     for component in spatial.mask.iter().flat_map(|mask| &mask.components) {
         validate_program(Role::Coverage, &component.program)?;
+    }
+    if let Some(reads) = &spatial.reads {
+        validate_reads(spatial, reads)?;
+    }
+    Ok(())
+}
+
+/// A step's read set holds its rectangles inside a fixed plane of its own that an apply keeps and
+/// no pass writes, none overlapping another, in a format a boundary is held in.
+fn validate_reads(spatial: &GpuSpatial, reads: &ReadAtlas) -> Result<(), String> {
+    let refused = |why: &str| Err(format!("a step's read set {why}"));
+    let Some(plane) = spatial.planes.get(reads.plane as usize) else {
+        return refused("names a plane the step does not hold");
+    };
+    let PlaneSize::Extent(PlaneExtent::Fixed { width, height }) = plane.size else {
+        return refused("is not held in a fixed plane");
+    };
+    if !matches!(plane.format, PlaneFormat::Colour | PlaneFormat::Quad) {
+        return refused("is held in a format no boundary takes");
+    }
+    if spatial.passes.iter().any(|pass| pass.output == reads.plane)
+        || !spatial
+            .applies
+            .iter()
+            .any(|apply| apply.planes.contains(&reads.plane))
+    {
+        return refused("is written by a pass or kept by no apply");
+    }
+    let placed: Vec<Rect> = reads
+        .rects
+        .iter()
+        .map(|&([_, _, w, h], [x, y])| Rect {
+            x0: x,
+            y0: y,
+            x1: x.saturating_add(w),
+            y1: y.saturating_add(h),
+        })
+        .collect();
+    if placed
+        .iter()
+        .any(|rect| rect.is_empty() || rect.x1 > width || rect.y1 > height)
+    {
+        return refused("places a rectangle outside its plane");
+    }
+    for (index, rect) in placed.iter().enumerate() {
+        if placed[..index]
+            .iter()
+            .any(|other| !rect.intersect(other).is_empty())
+        {
+            return refused("places two rectangles over one texel");
+        }
     }
     Ok(())
 }
@@ -1545,6 +1614,9 @@ pub struct PlanesKey {
     locations: Vec<(usize, Vec<PlaneTexture>)>,
     /// The kept textures, each the plane it holds, in plane order.
     kept: Vec<GpuPlane>,
+    /// Per kept texture, whether it holds a step's read set, which the link fills by copying and
+    /// drawing into it ([`GpuSpatial::reads`]).
+    filled: Vec<bool>,
     /// Shared physical placement and scratch counts.
     layout: LinkLayout,
     /// How many passes the parameter buffer holds a slice for.
@@ -1587,11 +1659,13 @@ impl PlanesKey {
         let mut planes = Vec::new();
         let mut locations = Vec::new();
         let mut kept = Vec::new();
+        let mut filled = Vec::new();
         let mut layout = LinkLayout::default();
         for (index, step) in steps.iter().enumerate() {
             let GpuStep::Spatial(spatial) = step else {
                 continue;
             };
+            let reads = spatial.reads.as_ref().map(|reads| reads.plane as usize);
             let read = |plane: usize| {
                 spatial
                     .applies
@@ -1609,6 +1683,7 @@ impl PlanesKey {
                             let class = Class::new(plane.format, extent);
                             if read(number) {
                                 kept.push(*plane);
+                                filled.push(reads == Some(number));
                                 PlaneRole::Kept(class)
                             } else {
                                 PlaneRole::Scratch(class)
@@ -1628,6 +1703,7 @@ impl PlanesKey {
             planes,
             locations,
             kept,
+            filled,
             layout,
             passes: pass_count(steps),
             size,
@@ -2245,7 +2321,14 @@ impl Planes {
         let textures = key
             .kept
             .iter()
-            .map(|plane| {
+            .zip(&key.filled)
+            .map(|(plane, filled)| {
+                // A read set is copied and drawn into, as a boundary is.
+                let fill = if *filled {
+                    wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::RENDER_ATTACHMENT
+                } else {
+                    wgpu::TextureUsages::empty()
+                };
                 let (width, height) = plane.extent(key.origin, key.size);
                 let texture = device.create_texture(&wgpu::TextureDescriptor {
                     label: Some("luxforge.gpu_preview.plane"),
@@ -2259,7 +2342,8 @@ impl Planes {
                     dimension: wgpu::TextureDimension::D2,
                     format: plane.format.texture(),
                     usage: wgpu::TextureUsages::TEXTURE_BINDING
-                        | wgpu::TextureUsages::STORAGE_BINDING,
+                        | wgpu::TextureUsages::STORAGE_BINDING
+                        | fill,
                     view_formats: &[],
                 });
                 let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -2323,6 +2407,14 @@ impl Planes {
                 .light_view(k)
                 .expect("the pool holds every light plane of the plan's links"),
             None => panic!("plane {plane} of step {step} is one of the link's"),
+        }
+    }
+
+    /// The link's own texture of plane `plane` of step `step`, when the link keeps it.
+    pub fn kept_texture(&self, step: usize, plane: u32) -> Option<&wgpu::Texture> {
+        match self.key.location(step, plane) {
+            Some(PlaneTexture::Kept(index)) => Some(&self.textures[index].0),
+            _ => None,
         }
     }
 

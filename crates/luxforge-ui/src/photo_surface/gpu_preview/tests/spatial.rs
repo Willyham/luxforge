@@ -131,6 +131,7 @@ pub(super) fn test_spatial() -> GpuSpatial {
         contained: false,
         resident: Vec::new(),
         resident_key: 0,
+        reads: None,
     }
 }
 
@@ -1035,6 +1036,7 @@ fn blurred(radius_x: u32, radius_y: u32, amount: f32) -> GpuSpatial {
         contained: false,
         resident: Vec::new(),
         resident_key: 0,
+        reads: None,
     }
 }
 

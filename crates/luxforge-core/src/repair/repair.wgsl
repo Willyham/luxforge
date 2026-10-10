@@ -22,7 +22,8 @@
 // A segment is five words, ax, ay, ex, ey, len2, as the mask brush's.
 //
 // A pass's words: 0 its level, 1 a red-black parity, 2 flags (1: read its values as zero, 2: it
-// has a right-hand side).
+// has a right-hand side, 4: it reads the group's input from the atlas plane at slot `flags >> 8`
+// through the read table, 16: that plane is the step's input), 3 the group's block offset.
 
 const lf_repair_tile: i32 = 8;
 const lf_repair_none: u32 = 0xffffffffu;
@@ -153,14 +154,99 @@ fn lf_repair_decode(y: vec3<f32>) -> vec3<f32> {
     return select(power, y / lf_repair_slope, y <= vec3<f32>(lf_repair_decode_end));
 }
 
-// The group's input at stage pixel `p`: the step's input, or — flag 4 of the pass's flags, the
-// state plane bound at slot `flags >> 8` — the state a chained group before it left.
-fn lf_repair_input(p: vec2<i32>, words: u32) -> vec3<f32> {
+// The read set (corrections.md, "Rendering"). A step holds every rectangle its operations read
+// in atlas planes of its own: its input, which the surface cuts from the photograph's source, and
+// the states chained groups leave, all at the same placements. The read table is the step's block
+// from `base`:
+//   0 rectangles, 1 one where the step's input is clamped to [0, 1] as the CPU quantizes it,
+//   2 .. 6 the stage's index: its cell side in pixels, columns, rows and offset from `base`,
+//   6 .. 10 the atlas's index, likewise,
+//   10 + 6k rectangle k: x0, y0, width and height in stage pixels, the atlas texel of its first.
+// An index lists, per cell, the rectangles that meet it there: cells + 1 offsets from the index's
+// own start, then the lists.
+const lf_repair_rects_at: u32 = 10u;
+
+// The rectangle holding `q` of the stage (`at` 2) or of the atlas (`at` 6), or -1.
+fn lf_repair_find(base: u32, q: vec2<i32>, at: u32) -> i32 {
+    let side = i32(lf_block_word(base + at));
+    let columns = i32(lf_block_word(base + at + 1u));
+    let rows = i32(lf_block_word(base + at + 2u));
+    if q.x < 0 || q.y < 0 || q.x / side >= columns || q.y / side >= rows {
+        return -1;
+    }
+    let index = base + lf_block_word(base + at + 3u);
+    let cell = u32((q.y / side) * columns + q.x / side);
+    let last = lf_block_word(index + cell + 1u);
+    let held = select(0u, 4u, at == 6u);
+    for (var e = lf_block_word(index + cell); e < last; e = e + 1u) {
+        let rect = lf_block_word(index + e);
+        let record = base + lf_repair_rects_at + 6u * rect;
+        let low = vec2<i32>(i32(lf_block_word(record + held)), i32(lf_block_word(record + held + 1u)));
+        let size = vec2<i32>(i32(lf_block_word(record + 2u)), i32(lf_block_word(record + 3u)));
+        if all(q >= low) && all(q < low + size) {
+            return i32(rect);
+        }
+    }
+    return -1;
+}
+
+// From a rectangle's stage origin to its atlas placement, the sign of `to_atlas`.
+fn lf_repair_shift(base: u32, rect: i32) -> vec2<i32> {
+    let record = base + lf_repair_rects_at + 6u * u32(rect);
+    return vec2<i32>(i32(lf_block_word(record + 4u)), i32(lf_block_word(record + 5u)))
+        - vec2<i32>(i32(lf_block_word(record)), i32(lf_block_word(record + 1u)));
+}
+
+// The atlas texel holding stage pixel `p`, or (-1, -1) where the read set holds none.
+fn lf_repair_atlas(base: u32, p: vec2<i32>) -> vec2<i32> {
+    let rect = lf_repair_find(base, p, 2u);
+    if rect < 0 {
+        return vec2<i32>(-1, -1);
+    }
+    return p + lf_repair_shift(base, rect);
+}
+
+// The stage pixel atlas texel `t` holds, or (-1, -1) for a texel between its rectangles.
+fn lf_repair_stage(base: u32, t: vec2<i32>) -> vec2<i32> {
+    let rect = lf_repair_find(base, t, 6u);
+    if rect < 0 {
+        return vec2<i32>(-1, -1);
+    }
+    return t - lf_repair_shift(base, rect);
+}
+
+// Atlas texel `t` of the plane a pass's `flags` name: flag 4, bound at slot `flags >> 8`; flag 16,
+// the step's input, clamped where the table says. Zero where `t` is no texel of the atlas.
+fn lf_repair_held(flags: u32, base: u32, t: vec2<i32>) -> vec3<f32> {
+    if t.x < 0 {
+        return vec3<f32>(0.0);
+    }
+    let value = lf_plane((flags >> 8u) & 0xffu, t).rgb;
+    if (flags & 16u) != 0u && lf_block_word(base + 1u) == 1u {
+        return clamp(value, vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+    return value;
+}
+
+// The group's input at stage pixel `p`: with flag 4 of the pass's flags, the atlas plane they name
+// through the read table at `base` — the step's input or the state a chained group before it left;
+// without, for one group drawn alone over a boundary that holds everything it reads, `lf_source`.
+fn lf_repair_input(p: vec2<i32>, words: u32, base: u32) -> vec3<f32> {
     let flags = lf_word(words + 2u);
     if (flags & 4u) != 0u {
-        return lf_plane((flags >> 8u) & 0xffu, p - lf_origin()).rgb;
+        return lf_repair_held(flags, base, lf_repair_atlas(base, p));
     }
     return lf_source(p - lf_origin());
+}
+
+// The state chained groups left at stage pixel `p`, the atlas plane at `slot`: `rgb`, the step's
+// input, where the read set holds no texel of `p`, which no operation writes.
+fn lf_repair_state(rgb: vec3<f32>, p: vec2<i32>, base: u32, slot: u32) -> vec3<f32> {
+    let t = lf_repair_atlas(base, p);
+    if t.x < 0 {
+        return rgb;
+    }
+    return lf_plane(slot, t).rgb;
 }
 
 // Level 0: each cell's class, and a fixed cell's encoded boundary difference.
@@ -190,7 +276,8 @@ fn lf_repair_gather(at: vec2<i32>, words: u32, base: u32) {
         || lf_repair_alpha(block, record, p + vec2<i32>(1, 0)) > 0.0
         || lf_repair_alpha(block, record, p + vec2<i32>(0, -1)) > 0.0
         || lf_repair_alpha(block, record, p + vec2<i32>(0, 1)) > 0.0) {
-        let d = lf_repair_encode(lf_repair_input(p, words)) - lf_repair_encode(lf_repair_input(s, words));
+        let d = lf_repair_encode(lf_repair_input(p, words, base))
+            - lf_repair_encode(lf_repair_input(s, words, base));
         lf_store(at, vec4<f32>(d, -1.0));
         return;
     }
@@ -371,7 +458,7 @@ fn lf_repair_composite(at: vec2<i32>, words: u32, base: u32) {
         i32(lf_block_word(record + 9u)) + owner.z);
     let delta = vec2<i32>(bitcast<i32>(lf_block_word(record + 1u)),
         bitcast<i32>(lf_block_word(record + 2u)));
-    var healed = lf_repair_input(p + delta, words);
+    var healed = lf_repair_input(p + delta, words, base);
     if lf_block_word(record) == 1u {
         healed = lf_repair_decode(lf_repair_encode(healed) + v.xyz);
     }
@@ -418,17 +505,23 @@ fn lf_repair_apply(rgb: vec3<f32>, at: vec2<i32>, words: u32, base: u32, planes:
 // The frame's step of a chain of groups: the last group's repaired value over the state the
 // groups before it left (plane `planes`; the composite at `planes + 1`).
 fn lf_repair_apply_over(rgb: vec3<f32>, at: vec2<i32>, words: u32, base: u32, planes: u32) -> vec3<f32> {
-    let state = lf_plane(planes, at).rgb;
-    return lf_repair_over(state, at + lf_origin(), base + lf_word(words + 3u), planes + 1u);
+    let p = at + lf_origin();
+    let state = lf_repair_state(rgb, p, base, planes);
+    return lf_repair_over(state, p, base + lf_word(words + 3u), planes + 1u);
 }
 
-// A chained group's output over the window: its repaired value over its input (the pass's flags
-// say where, as `lf_repair_input` reads them), the composite at slot `lf_word(words + 4u)`.
+// A chained group's output over the atlas: at each texel of the read set its repaired value over
+// the plane the pass's flags name (the input or a state), the composite at slot
+// `lf_word(words + 4u)`.
 fn lf_repair_blend(at: vec2<i32>, words: u32, base: u32) {
+    let p = lf_repair_stage(base, at);
+    if p.x < 0 {
+        lf_store(at, vec4<f32>(0.0));
+        return;
+    }
     let block = base + lf_word(words + 3u);
-    let p = at + lf_origin();
-    let value = lf_repair_over(lf_repair_input(p, words), p, block, lf_word(words + 4u));
-    lf_store(at, vec4<f32>(value, 1.0));
+    let held = lf_repair_held(lf_word(words + 2u), base, at);
+    lf_store(at, vec4<f32>(lf_repair_over(held, p, block, lf_word(words + 4u)), 1.0));
 }
 
 // A frozen patch (corrections.md, "Frozen patches"): immutable pixels composited over the stage
@@ -508,14 +601,19 @@ fn lf_repair_patch_apply(rgb: vec3<f32>, at: vec2<i32>, words: u32, base: u32, p
 // The frame's step when a patch is its last operation after chained ones: the patch over the
 // state they left (plane `planes`).
 fn lf_repair_patch_apply_over(rgb: vec3<f32>, at: vec2<i32>, words: u32, base: u32, planes: u32) -> vec3<f32> {
-    let state = lf_plane(planes, at).rgb;
-    return lf_repair_patch_over(state, at + lf_origin(), base, base + lf_word(words + 3u));
+    let p = at + lf_origin();
+    let state = lf_repair_state(rgb, p, base, planes);
+    return lf_repair_patch_over(state, p, base, base + lf_word(words + 3u));
 }
 
-// A chained patch's output over the window: the patch over its input, the step's input or the
-// state plane the pass's flags name, as `lf_repair_input` reads them.
+// A chained patch's output over the atlas: the patch over the plane the pass's flags name, the
+// step's input or a state, at each texel of the read set.
 fn lf_repair_patch_blend(at: vec2<i32>, words: u32, base: u32) {
-    let p = at + lf_origin();
-    let value = lf_repair_patch_over(lf_repair_input(p, words), p, base, base + lf_word(words + 3u));
-    lf_store(at, vec4<f32>(value, 1.0));
+    let p = lf_repair_stage(base, at);
+    if p.x < 0 {
+        lf_store(at, vec4<f32>(0.0));
+        return;
+    }
+    let held = lf_repair_held(lf_word(words + 2u), base, at);
+    lf_store(at, vec4<f32>(lf_repair_patch_over(held, p, base, base + lf_word(words + 3u)), 1.0));
 }
