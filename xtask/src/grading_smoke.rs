@@ -10,7 +10,10 @@
 //! correlate the history, the stored payload, the wheels' models, the session's view selection and
 //! the rendered backdrop's colour.
 use crate::{
-    scenario::{Checked, Checks, Frame, Plan, Run, Step, Tolerance, pixels, plan::only},
+    scenario::{
+        Checked, Checks, Frame, Plan, Run, Step, Tolerance, asked_no_frame, drawn_wheel, pixels,
+        plan::only, selected_view,
+    },
     *,
 };
 use luxforge_core::MIXER_EFFECT;
@@ -25,6 +28,8 @@ const SHADOWS_LUMINANCE: &str = "grade-shadows-luminance";
 const GLOBAL_HUE: &str = "grade-global-hue";
 const GLOBAL_SATURATION: &str = "grade-global-saturation";
 const GRADING: &str = "Grading";
+/// The id the Grading group's tab row, and the Grading tab of the module's own row, are selected by.
+const GRADING_ID: &str = "grading";
 /// The mixer scenario's generated hue wheel.
 pub const FIXTURE: &str = crate::mixer_smoke::FIXTURE;
 
@@ -32,7 +37,7 @@ pub const FIXTURE: &str = crate::mixer_smoke::FIXTURE;
 fn module_tab(index: usize) -> script::Step {
     script::Step::Tab(TabStep {
         module: MODULE.into(),
-        group: Vec::new(),
+        group: None,
         index,
     })
 }
@@ -41,7 +46,7 @@ fn module_tab(index: usize) -> script::Step {
 fn grading_view(index: usize) -> script::Step {
     script::Step::Tab(TabStep {
         module: MODULE.into(),
-        group: vec![GRADING.into()],
+        group: Some(GRADING_ID.into()),
         index,
     })
 }
@@ -202,14 +207,8 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
 
     // The wheels' models follow the committed and external values; the centre keeps the hue.
     let wheel = |step: &str, hue: &str| -> Result<Value> {
-        at(step)?.state()["control_ui"]["wheels"]
-            .as_array()
-            .and_then(|wheels| {
-                wheels
-                    .iter()
-                    .find(|wheel| wheel["hue_parameter"] == hue)
-                    .cloned()
-            })
+        drawn_wheel(at(step)?.state(), hue)
+            .cloned()
             .ok_or_else(|| format!("The {step} frame draws no {hue} wheel").into())
     };
     ensure(
@@ -227,23 +226,22 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     )?;
 
     // View selection is session state: recorded, drawn, and never a frame.
-    let views =
-        |step: &str| -> Result<Value> { Ok(at(step)?.state()["workspace"]["views"].clone()) };
-    let module_row = json!({"module": MODULE, "group": [], "view": GRADING});
+    let global = at("global-view")?.state();
     ensure(
-        views("global-view")?.as_array().is_some_and(|rows| {
-            rows.contains(&module_row)
-                && rows.contains(&json!({"module": MODULE, "group": [GRADING], "view": "Global"}))
-        }),
+        selected_view(global, MODULE, None, GRADING_ID)
+            && selected_view(global, MODULE, Some(GRADING_ID), "global"),
         format!(
             "The session did not record the Global view: {}",
-            views("global-view")?
+            global["workspace"]["views"]
         ),
     )?;
     ensure(
-        views("three-way-view")?.as_array().is_some_and(|rows| {
-            rows.contains(&json!({"module": MODULE, "group": [GRADING], "view": "3-way"}))
-        }),
+        selected_view(
+            at("three-way-view")?.state(),
+            MODULE,
+            Some(GRADING_ID),
+            "three-way",
+        ),
         "The session did not record the 3-way view",
     )?;
     // The views draw differently: Global's one large wheel replaces the 3-way view's three, and
@@ -256,8 +254,7 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
     }
     for (step, before) in [("grading", "expanded"), ("global-view", "retint")] {
         ensure(
-            at(step)?.state()["requested_generation"]
-                == at(before)?.state()["requested_generation"],
+            asked_no_frame(at(before)?.state(), at(step)?.state()),
             format!("Selecting the view in {step} asked for a frame"),
         )?;
     }

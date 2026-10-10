@@ -108,6 +108,7 @@ pub(super) fn read(
             neutral: Vec::new(),
             unsupported: Vec::new(),
             refused: Vec::new(),
+            derived: Vec::new(),
         },
     })
 }

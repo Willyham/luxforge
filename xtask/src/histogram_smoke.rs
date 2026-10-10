@@ -115,9 +115,9 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         view("original", script::Step::Preview(PreviewStep::Sequence(0))),
         // Back to current, because a gesture is refused while a historical entry is shown.
         view("current", script::Step::Preview(PreviewStep::Current)),
-        // The drafted render's counts are an independent reduction of the drafted stack, whichever
-        // renderer drew it. On the GPU the plot shows the counts of the frame in motion, marked
-        // updating, which the GPU steps below hold.
+        // Where the reference draws the drafted render, its counts are an independent reduction of
+        // the drafted stack; where the GPU draws it, as it draws the identity layer, the plot shows
+        // the counts of the frame in motion, marked updating, as the GPU steps below hold.
         // An Exposure drag left open, so the photograph on screen is the drafted render.
         Step::new("drag", SliderStep::new("set-basic", "exposure", [0.5, 1.0]))
             .commits(0)
@@ -540,6 +540,38 @@ fn map(rect: [u32; 4], (x, y): (u32, u32)) -> (u32, u32) {
     )
 }
 
+/// The clipping overlay `frame` was drawn with, by whichever renderer drew the photograph: the
+/// reference's overlay raster, one cell per source pixel and encoded with the photograph, or the
+/// GPU's clipping marks for exactly the flags asked. Answers what was drawn, for the record.
+fn overlay_drawn(frame: &Frame, shadows: bool, highlights: bool, what: &str) -> Result<Value> {
+    let overlay = &frame["state"]["histogram"]["overlay"];
+    if !overlay.is_null() {
+        ensure(
+            overlay["cells"] == json!([SOURCE.0, SOURCE.1]),
+            format!(
+                "{what}: the overlay grid is {}, expected one cell per source pixel",
+                overlay["cells"]
+            ),
+        )?;
+        ensure(
+            overlay["drawn"] == json!(true),
+            format!("{what}: the overlay was not drawn"),
+        )?;
+        return Ok(json!({"renderer": "reference", "overlay": overlay}));
+    }
+    let gpu = &frame["state"]["surface"]["gpu"];
+    let marks = &gpu["clipping_marks"];
+    ensure(
+        gpu["drawing_path"] == "gpu"
+            && marks["shadows"] == json!(shadows)
+            && marks["highlights"] == json!(highlights),
+        format!(
+            "{what}: neither an overlay raster nor the GPU's marks for shadows {shadows} and highlights {highlights}: {gpu}"
+        ),
+    )?;
+    Ok(json!({"renderer": "gpu", "clipping_marks": marks}))
+}
+
 /// How one captured pixel changed between two frames of the same photograph at the same zoom.
 ///
 /// The overlay is a translucent mask, so its composited colour depends on what is underneath, and
@@ -778,15 +810,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
 
     // The shadow overlay alone, which the plan holds to its flags. Blue over the black dashes,
     // and nothing red anywhere.
-    let overlay = &shadows["state"]["histogram"]["overlay"];
-    ensure(
-        overlay["cells"] == json!([SOURCE.0, SOURCE.1]),
-        format!(
-            "The Fit overlay grid is {}, expected one cell per source pixel",
-            overlay["cells"]
-        ),
-    )?;
-    ensure(overlay["drawn"] == json!(true), "The overlay was not drawn")?;
+    let overlay = overlay_drawn(shadows, true, false, "The Fit shadow overlay")?;
     let (shadows_rect, shadows_image) = photo_rect(shadows)?;
     same_rect(shadows_rect, bare_rect, "the shadow overlay")?;
     let shadow_on_dash = window(shadows_image, bare, shadows_rect, DASH, bare_radius);
@@ -859,7 +883,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
         both,
         "both overlays: blue at code 0, red at code 255",
         json!({
-            "overlay": both["state"]["histogram"]["overlay"],
+            "overlay": overlay_drawn(both, true, true, "Both overlays")?,
             "photo_rect": both_rect,
             "window_radius": bare_radius,
             "note": "the fixture's own quadrant colours reach neither endpoint, and no pixel is at both",
@@ -870,13 +894,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     // no overlay-off frame at 100% to difference against, so the two checks here are the ones
     // whose base colour is unambiguous on its own: the dash band is black and the centre line is
     // white, so a blue-dominant dash and a red-dominant line can only be the masks.
-    ensure(
-        percent["state"]["histogram"]["overlay"]["cells"] == json!([SOURCE.0, SOURCE.1]),
-        format!(
-            "The 100% overlay grid is {}",
-            percent["state"]["histogram"]["overlay"]["cells"]
-        ),
-    )?;
+    let percent_overlay = overlay_drawn(percent, true, true, "The 100% overlays")?;
     let (percent_rect, percent_image) = photo_rect(percent)?;
     let hundred_width = percent_rect[2] - percent_rect[0];
     ensure(
@@ -930,7 +948,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     checks.note(
         percent,
         "100% with both overlays on: one cell per physical pixel, still aligned",
-        json!({"photo_rect":percent_rect,"physical_width":hundred_width,"overlay":percent["state"]["histogram"]["overlay"]}),
+        json!({"photo_rect":percent_rect,"physical_width":hundred_width,"overlay":percent_overlay}),
     );
 
     // Back to Fit, still no re-analysis.
@@ -1009,26 +1027,55 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     // and the drafted payload it records.
     let drafted = drag.draft();
     drag.displays_draft()?;
-    let drafted_report = reduction(root, &drafted_recipe(drag)?)?;
-    let drafted_detail = expect_counts(drag, &drafted_report, "the open gesture")?;
-    ensure(
-        drag["state"]["histogram"]["identity"]["draft_revision"] == drafted["draft_revision"],
-        format!(
-            "The plot names draft revision {} while the frame displays {}",
-            drag["state"]["histogram"]["identity"]["draft_revision"], drafted["draft_revision"]
-        ),
-    )?;
-    // The drafted exposure is +1 EV, so it clips highlights the committed stack does not: the
-    // counts are demonstrably the drafted population rather than the previous frame's relabelled.
-    ensure(
-        counters(drag) != counters(current),
-        "The drafted exposure left the counts identical to the committed frame's",
-    )?;
-    checks.note(
-        drag,
-        "an Exposure drag left open: the photograph is the drafted render and the plot is that render, its identity carrying the draft revision and its counts equal to an independent reduction of the drafted stack",
-        json!({"draft": drafted, "histogram": drafted_detail}),
-    );
+    let histogram = &drag["state"]["histogram"];
+    if histogram["status"] == json!("ready") && histogram["stale"] == json!(false) {
+        // Drawn by the reference: each tick is a reference frame of the whole drafted stack,
+        // reduced into a report.
+        let drafted_report = reduction(root, &drafted_recipe(drag)?)?;
+        let drafted_detail = expect_counts(drag, &drafted_report, "the open gesture")?;
+        ensure(
+            histogram["identity"]["draft_revision"] == drafted["draft_revision"],
+            format!(
+                "The plot names draft revision {} while the frame displays {}",
+                histogram["identity"]["draft_revision"], drafted["draft_revision"]
+            ),
+        )?;
+        // The drafted exposure is +1 EV, so it clips highlights the committed stack does not:
+        // the counts are demonstrably the drafted population rather than the previous frame's
+        // relabelled.
+        ensure(
+            counters(drag) != counters(current),
+            "The drafted exposure left the counts identical to the committed frame's",
+        )?;
+        checks.note(
+            drag,
+            "an Exposure drag left open: the photograph is the drafted render and the plot is that render, its identity carrying the draft revision and its counts equal to an independent reduction of the drafted stack",
+            json!({"draft": drafted, "histogram": drafted_detail}),
+        );
+    } else {
+        // Drawn by the GPU, as the identity layer and the exposure are: the plot is marked
+        // updating, and where the counts of the frame in motion are in they name a drafted
+        // revision no later than the frame's. The GPU steps below hold the same.
+        ensure(
+            histogram["stale"] == json!(true) || histogram["source"] != json!("motion"),
+            format!("The counts of the frame in motion are not marked updating: {histogram}"),
+        )?;
+        if histogram["source"] == json!("motion") {
+            ensure(
+                histogram["identity"]["draft_revision"].as_u64()
+                    <= drafted["draft_revision"].as_u64(),
+                format!(
+                    "The counts in motion name draft revision {} past the frame's {}",
+                    histogram["identity"]["draft_revision"], drafted["draft_revision"]
+                ),
+            )?;
+        }
+        checks.note(
+            drag,
+            "an Exposure drag left open, drawn on the GPU: the plot shows the frame in motion's counts, marked updating",
+            json!({"draft": drafted, "histogram": histogram}),
+        );
+    }
 
     // The gesture released, which the plan holds as one commit and no draft. The plot follows the
     // composed stack: an independent render and reduction of exactly the layers the frame says it

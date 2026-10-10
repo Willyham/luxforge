@@ -9,6 +9,8 @@ The person's preferences live outside every catalog, in the host's `preferences.
 
 ## Rules
 
+**Planned extension:** [optional usage statistics](usage-statistics.md) will add a protected consent record outside catalogs, a once-only startup claim and Settings › Privacy. It is not implemented. Dedicated permission-aware commands, rather than `preferences.set`, will change it; generic resets must not grant consent or cause another prompt. The durable prompt claim is bookkeeping, a planned exception to the explicit-choice rule below.
+
 - **A preference never changes how a saved recipe renders.** It changes what the workspace draws, where files go, or which actions are proposed to a new photo. A proposed action is an ordinary history entry, so the recipe always records it.
 - **Only explicit choices are stored.** A preference nobody set has no stored value and follows its default. `null` in `preferences.set` removes the stored value. A stored value this build cannot read is refused, as today, without rewriting the file.
 - **Every preference is programmable.** `preferences.read` answers every preference with its default filled in, and `preferences.set` sets any of them, checked by name. The desktop reads and writes them through the same two methods.

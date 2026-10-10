@@ -1765,8 +1765,8 @@ mod tests {
     ) -> Option<Option<luxforge_core::ResetAction>> {
         controls.iter().find_map(|control| {
             match control {
-                luxforge_core::Control::Group(luxforge_core::GroupControl { controls, .. }) => {
-                    declared_reset(controls, action, parameter)
+                luxforge_core::Control::Group(_) | luxforge_core::Control::View(_) => {
+                    declared_reset(control.children(), action, parameter)
                 }
                 luxforge_core::Control::Number(luxforge_core::NumberControl {
                     action: declared,
