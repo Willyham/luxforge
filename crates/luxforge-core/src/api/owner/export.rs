@@ -160,6 +160,14 @@ pub(in crate::api) fn jpeg(
         control,
         work,
     )?;
+    // An export of a photograph a client has open carries its image ID in its outcome.
+    let usage = &owner.service.usage;
+    if let Some(image) = usage
+        .on()
+        .and_then(|generation| usage.open_image(generation, identity.asset_id.as_str()))
+    {
+        owner.jobs.set_usage_image(&record.job_id, image);
+    }
     Ok(json!({
         "job_id": record.job_id,
         "status": record.status,

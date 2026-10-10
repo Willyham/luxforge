@@ -73,6 +73,9 @@ mod requests;
 mod theme_tests;
 pub(super) mod themes;
 pub(super) mod usage;
+pub(crate) mod usage_events;
+#[cfg(test)]
+mod usage_events_tests;
 #[cfg(test)]
 mod usage_tests;
 pub(super) mod views;
@@ -1023,6 +1026,9 @@ pub struct OwnerHandle {
     next_client: Arc<AtomicU64>,
     activity: Arc<ActivityBoard>,
     render: crate::RenderContext,
+    /// The host's usage statistics collector ([`HostConfig::usage`]), which the desktop's
+    /// GUI-local producers record into beside the owner's own.
+    usage: Arc<crate::usage::Collector>,
 }
 
 impl OwnerHandle {
@@ -1145,7 +1151,11 @@ impl OwnerHandle {
         // The analysis worker posts its results back through this same channel, so the owner needs
         // one clone of its own sender. The loop ends on `Stop`, never on the senders dropping.
         let completions = sender.clone();
+        let usage = host.usage.clone();
         let host = CapabilityHost::new(host);
+        // Every usage producer records into the host's one collector.
+        service.usage = crate::usage::produce::Producer::new(host.usage().clone());
+        jobs.set_usage(host.usage().clone());
         let owner_activity = activity.clone();
         // The index, preview and library lanes post their workers' results through the same
         // channel.
@@ -1175,6 +1185,7 @@ impl OwnerHandle {
                 next_client: Arc::new(AtomicU64::new(1)),
                 activity,
                 render,
+                usage,
             },
             join,
         ))
@@ -1185,6 +1196,12 @@ impl OwnerHandle {
     /// the owner's own work without passing through the owner.
     pub fn activity(&self) -> Arc<ActivityBoard> {
         self.activity.clone()
+    }
+
+    /// The process-wide usage statistics collector the owner's producers record into, which a
+    /// host's own GUI-local producers share ([`HostConfig::usage`]).
+    pub fn usage(&self) -> &Arc<crate::usage::Collector> {
+        &self.usage
     }
 
     /// The render context every evaluation this owner plans reads, so a render the desktop runs
@@ -2068,6 +2085,9 @@ impl Owner {
             return Ok(Planned::Value(first));
         }
         let origin = Origin::new(&request.method, &request.id);
+        // Whether a standing answer records its usage interaction: one atomic load while off.
+        let usage = self.service.usage.on();
+        let announced_before = self.announced.len();
         #[cfg(test)]
         if let Some(fault) = &self.fault {
             fault(&request.method);
@@ -2129,6 +2149,14 @@ impl Owner {
             return result;
         }
         let result = result.map_err(|error| self.prepare(client, error));
+        // A call that waits for the index lane is answered, and recorded, when it is answered.
+        if let Some(generation) = usage
+            && result.is_ok()
+            && self.deferred.is_none()
+        {
+            let changed = self.announced.len() > announced_before;
+            self.usage_answered(generation, &request.method, &request.params, changed);
+        }
         match (result, key) {
             // A call waiting for the index lane records its first answer when it is answered;
             // one waiting for a survey is answered again, as if just asked, which records it.
@@ -2806,6 +2834,7 @@ pub(super) fn job_adopt(
         (_, _, Some(error)) => return Err(error.clone()),
         _ => return Err(Error::validation("this job is not a preparation")),
     };
+    owner.usage_adopted(&state);
     let session = owner.sessions.entry(call.client).or_default();
     session.preview.return_current();
     session.touch();

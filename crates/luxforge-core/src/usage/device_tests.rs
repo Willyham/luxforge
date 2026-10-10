@@ -548,7 +548,12 @@ fn usage_this_machines_real_probe_makes_a_valid_profile() {
 fn usage_the_collector_gate_governs_the_held_profile() {
     let collector = Collector::new();
     let started = SessionStart::parse("2026-10-10T10:00:00Z").unwrap();
-    collector.start(Trigger::OptIn, started, SessionClock::manual().0);
+    collector.start(
+        Trigger::OptIn,
+        started,
+        SessionClock::manual().0,
+        crate::usage::ImageKey::from_bytes([0; 32]),
+    );
     let mut context = DeviceContext::new();
     context
         .update_with(collector.gate(), &[], RendererPath::Gpu, mac)

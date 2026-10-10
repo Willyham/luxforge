@@ -6214,3 +6214,6 @@ mod tests {
         std::fs::remove_file(catalog).unwrap();
     }
 }
+#[cfg(test)]
+#[path = "usage_coverage_tests.rs"]
+mod usage_coverage_tests;

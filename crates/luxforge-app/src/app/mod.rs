@@ -196,6 +196,9 @@ pub(crate) mod usage_device;
 mod usage_device_tests;
 #[cfg(test)]
 mod usage_tests;
+mod usage_events;
+#[cfg(test)]
+mod usage_events_tests;
 mod view_state;
 #[cfg(test)]
 mod view_state_tests;
@@ -479,6 +482,8 @@ pub(crate) struct Editor {
     pub(crate) theme: luxforge_ui::Theme,
     /// Usage statistics: the startup notice and the Privacy tab ([`usage`]).
     pub(crate) usage: state::usage::Usage,
+    /// The open photograph's usage image ID, kept for the GUI-local events that act on it.
+    pub(crate) usage_image: usage_events::UsageImage,
 }
 
 /// What the hooks compare the state a message left behind with: the state before it was
@@ -692,6 +697,7 @@ impl Editor {
                 eligible: config.usage_eligible,
                 ..Default::default()
             },
+            usage_image: Default::default(),
         };
         // The workers wake the event loop through one channel instead of a poll. The closure is
         // installed once and stays valid for the life of the process; the subscription that carries
