@@ -5,101 +5,18 @@
 use super::{
     RenderContext, RenderOptions, SpatialMode,
     repair_entry::{RepairEntry, regions_of},
+    repair_testing::{RepairTestModule, TEST_REPAIR_EFFECT, table_of},
     testing::{frame_in, linear_evaluation, point_evaluated, render},
     tests::{crop_layer, fitted_crop, geometry_registry, image},
 };
 use crate::{
-    Cancel, EFFECT_FORMAT, Error, ErrorKind, Layer, LayerId, ModuleRegistry, Recipe, SnapshotId,
+    Cancel, EFFECT_FORMAT, ErrorKind, Layer, LayerId, ModuleRegistry, Recipe, SnapshotId,
     SourceImage,
-    modules::{
-        ActionInput, ActionPlan, Availability, EffectDescriptor, EffectStage, ModuleDescriptor,
-        Processing, Region, RepairKind, RepairOperation, RepairTable, Stage, StageContext,
-        ToolModule,
-    },
+    modules::{Region, RepairKind, Stage},
     path,
 };
 use luxforge_reference::{SplitMix64, repair as reference, srgb};
-use serde_json::{Map, Value, json};
-use std::sync::Arc;
-
-pub(crate) const TEST_REPAIR_EFFECT: &str = "test.repair.table";
-
-/// A repair-stage module whose payload is the table itself:
-/// `{"operations": [{"id", "kind", "points", "radius", "feather", "opacity", "offset"}]}` in grid
-/// steps. The Corrections module compiles its own payload into the same table.
-pub(crate) struct RepairTestModule {
-    descriptor: ModuleDescriptor,
-}
-
-impl RepairTestModule {
-    pub(crate) fn shared() -> Arc<dyn ToolModule> {
-        Arc::new(Self {
-            descriptor: ModuleDescriptor {
-                id: "test.repair.module".into(),
-                title: "Test repair".into(),
-                effects: vec![EffectDescriptor {
-                    single: true,
-                    ..EffectDescriptor::new(TEST_REPAIR_EFFECT, EffectStage::Repair)
-                }],
-                availability: Availability::Available,
-                ..ModuleDescriptor::default()
-            },
-        })
-    }
-}
-
-pub(crate) fn table_of(payload: &Value) -> Result<RepairTable, Error> {
-    let rows = payload["operations"]
-        .as_array()
-        .map_or(&[][..], Vec::as_slice)
-        .iter()
-        .map(|row| {
-            let points: Vec<[i32; 2]> = serde_json::from_value(row["points"].clone())
-                .map_err(|error| Error::validation(error.to_string()))?;
-            Ok(RepairOperation {
-                id: row["id"].as_u64().unwrap_or(1) as u32,
-                kind: match row["kind"].as_str() {
-                    Some("clone") => RepairKind::Clone,
-                    _ => RepairKind::Heal,
-                },
-                points: points.into(),
-                radius: row["radius"].as_i64().unwrap_or(0) as i32,
-                feather: row["feather"].as_u64().unwrap_or(50) as u8,
-                opacity: row["opacity"].as_u64().unwrap_or(100) as u8,
-                offset: serde_json::from_value(row["offset"].clone())
-                    .map_err(|error| Error::validation(error.to_string()))?,
-            })
-        })
-        .collect::<Result<Vec<_>, Error>>()?;
-    RepairTable::new(rows)
-}
-
-impl ToolModule for RepairTestModule {
-    fn descriptor(&self) -> &ModuleDescriptor {
-        &self.descriptor
-    }
-    fn parse(&self, _: &str, _: &Map<String, Value>) -> Result<ActionInput, Error> {
-        Err(Error::internal("no actions"))
-    }
-    fn plan(&self, _: &ActionInput, _: &StageContext<'_>) -> Result<ActionPlan, Error> {
-        Ok(ActionPlan::NoOp)
-    }
-    fn validate_payload(&self, _: &str, _: u32, payload: &Value) -> Result<(), Error> {
-        table_of(payload).map(drop)
-    }
-    fn describe(&self, _: &str, _: u32, payload: &Value) -> Result<crate::LayerReport, Error> {
-        Ok(crate::LayerReport::new(format!("test repair {payload}")))
-    }
-    fn compile(
-        &self,
-        _: &str,
-        _: u32,
-        payload: &Value,
-        _: crate::CompileStage,
-    ) -> Result<Processing, Error> {
-        table_of(payload).map(Processing::Repair)
-    }
-}
+use serde_json::{Value, json};
 
 pub(crate) fn repair_registry() -> ModuleRegistry {
     let mut registry = geometry_registry();

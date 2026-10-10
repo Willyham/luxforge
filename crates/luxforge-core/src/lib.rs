@@ -150,6 +150,7 @@ pub use render::gpu::{
     GpuChange, GpuClipping, GpuComponent, GpuDescription, GpuFallback, GpuGeometry, GpuLight,
     GpuLightInput, GpuLightPasses, GpuLightRestoration, GpuLightSweep, GpuMask, GpuOperation,
     GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest, GpuPlane, GpuPlaneFormat, GpuPlaneSize,
+    GpuRepair, GpuRepairOperation,
     GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuRest, GpuSpatial, GpuSpatialUnit,
     GpuStaging, GpuSweep, GpuSweeps, GpuView, GpuWarmList, PreparedStream, REDUCED_AFTER_BYTES,
     REST_SHARE_MAX, REST_TILE_SIDES, REST_TILE_WORK, RestReduction, RestTile, RestTiles,
@@ -177,6 +178,12 @@ pub use previews::{DecodedPreview, decode_preview};
 pub mod qualification {
     pub use crate::modules::detail_qualification as detail;
     pub use crate::modules::presence_qualification as presence;
+
+    /// A repair-stage module whose payload is the repair table, for the GPU repair program's
+    /// qualification before a module of the build compiles one.
+    pub mod repair {
+        pub use crate::render::repair_testing::{RepairTestModule, TEST_REPAIR_EFFECT, table_of};
+    }
 
     /// The picture at rest of `evaluation` on the GPU at `view`, as a displayed stack's job plans
     /// it ([`crate::GpuRest`]): the plan of the whole stack from the source, and the boundary it

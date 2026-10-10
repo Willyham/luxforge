@@ -331,6 +331,13 @@ impl Footprint {
         self.stage
     }
 
+    /// The index the coverage reads: its cell side in pixels, its columns, each cell's slice of
+    /// `entries` (`offsets[c]..offsets[c + 1]`) and the segment indices listed, for a GPU program
+    /// that reads the same index from its storage block.
+    pub(crate) fn index(&self) -> (u32, u32, &[u32], &[u32]) {
+        (self.cell, self.columns, &self.offsets, &self.entries)
+    }
+
     pub(crate) fn segments_ref(&self) -> &[Segment] {
         &self.segments
     }
