@@ -702,22 +702,22 @@ def retention_checks():
         ddl = ch_scalar(f"SHOW CREATE TABLE luxforge.{view}")
         check(f"view {view} hides rows past 90 days even before a merge removes them",
               re.search(r"received_at > \(now\(\) - toIntervalDay\(90\)\)", ddl) is not None, ddl[-200:])
-    # Accelerated merge-time expiry: the same DDL with the TTL shortened to 2 seconds, in a scratch database.
+    # Accelerated merge-time expiry: the same DDL with the TTL shortened to 10 seconds, in a scratch database.
+    # (2 seconds was shorter than a loaded machine's three `docker compose exec` calls.)
     ch_ok("DROP DATABASE IF EXISTS luxforge_ttltest")
     ch_ok("CREATE DATABASE luxforge_ttltest")
     for t in ("events", "profiles", "batches"):
         ddl = ch_scalar(f"SHOW CREATE TABLE luxforge.{t}").replace("\\n", "\n").replace("\\'", "'")
         scratch = ddl.replace(f"CREATE TABLE luxforge.{t}", f"CREATE TABLE luxforge_ttltest.{t}")
-        scratch = scratch.replace("TTL received_at + toIntervalDay(90)", "TTL received_at + toIntervalSecond(2)")
-        check(f"scratch copy of {t} has the shortened TTL", "toIntervalSecond(2)" in scratch and "luxforge_ttltest" in scratch, scratch[-200:])
+        scratch = scratch.replace("TTL received_at + toIntervalDay(90)", "TTL received_at + toIntervalSecond(10)")
+        check(f"scratch copy of {t} has the shortened TTL", "toIntervalSecond(10)" in scratch and "luxforge_ttltest" in scratch, scratch[-200:])
         ch_ok(scratch)
     ch_ok(f"INSERT INTO luxforge_ttltest.events SELECT * REPLACE (now() AS received_at) FROM luxforge.events WHERE session_id = '{SESS['S1']}'")
     ch_ok(f"INSERT INTO luxforge_ttltest.profiles SELECT * REPLACE (now() AS received_at) FROM luxforge.profiles WHERE session_id = '{SESS['S1']}'")
     ch_ok(f"INSERT INTO luxforge_ttltest.batches SELECT * REPLACE (now() AS received_at) FROM luxforge.batches WHERE session_id = '{SESS['S1']}'")
-    time.sleep(1)
     n = {t: int(ch_scalar(f"SELECT count() FROM luxforge_ttltest.{t}")) for t in ("events", "profiles", "batches")}
     check("scratch tables hold rows before their TTL passes", all(v > 0 for v in n.values()), str(n))
-    time.sleep(4)
+    time.sleep(12)
     for t in ("events", "profiles", "batches"):
         ch_ok(f"OPTIMIZE TABLE luxforge_ttltest.{t} FINAL")
     n = {t: int(ch_scalar(f"SELECT count() FROM luxforge_ttltest.{t}")) for t in ("events", "profiles", "batches")}
@@ -831,6 +831,32 @@ def bounded_checks():
     check("Vector back: the batches sent while it was down were dropped, not stored", flood_sessions(3) == 0, str(flood_sessions(3)))
 
 
+def probe_checks():
+    """The deployment checklist's synthetic live-endpoint probe, run against the real ingress."""
+    check("ingress is ready for the probe", wait_for(lambda: post_batch(None, raw=b"{}") == 400, 60))
+    r = subprocess.run([sys.executable, "-I", os.path.join(STACK, "probe.py"), f"http://127.0.0.1:{PORT}"],
+                       capture_output=True, text=True, timeout=300)
+    summary = re.search(r"(\d+) passed, (\d+) failed, (\d+) skipped", r.stdout)
+    check("the synthetic probe passes every check it can run against the stack (TLS is skipped on loopback HTTP)",
+          r.returncode == 0 and summary is not None and summary.group(2) == "0", r.stdout[-1500:] + r.stderr[-500:])
+    printed = re.search(r"\(installation ([0-9a-f-]{36})\)", r.stdout)
+    mine = f"installation_id = '{printed.group(1) if printed else 'missing'}'"
+    check("the probe's accepted batches are stored: 12 events in 3 sessions of its one installation, with the synthetic release",
+          wait_for(lambda: ch_scalar(f"SELECT count() FROM luxforge.events WHERE {mine}") == "12", 30)
+          and ch_scalar(f"SELECT uniqExact(session_id) FROM luxforge.events WHERE {mine}") == "3"
+          and ch_scalar(f"SELECT uniqExact(release) FROM luxforge.events WHERE {mine}") == "1"
+          and ch_scalar(f"SELECT any(release) FROM luxforge.events WHERE {mine}") == "0.0.0+000000000000",
+          ch_scalar(f"SELECT count() FROM luxforge.events WHERE {mine}"))
+    ids = printed.group(1) if printed else ""
+    listed = re.findall(r"ALTER TABLE luxforge\.(\w+) DELETE WHERE installation_id IN \(([^)]*)\)", r.stdout)
+    check("the probe prints the statements that remove its rows, naming the installation it used",
+          {t for t, _ in listed} == {"events", "profiles", "batches"} and all(ids in g for _, g in listed), f"{listed} vs {ids}")
+    for table, group in listed:
+        ch_ok(f"ALTER TABLE luxforge.{table} DELETE WHERE installation_id IN ({group}) SETTINGS mutations_sync = 2")
+    left = {t: int(ch_scalar(f"SELECT count() FROM luxforge.{t} WHERE {mine}")) for t in ("events", "profiles", "batches")}
+    check("running the printed statements removes the probe's rows from all three tables", left == {"events": 0, "profiles": 0, "batches": 0}, str(left))
+
+
 def privacy_log_checks():
     logs = {}
     for service in ("ingress", "vector", "clickhouse", "grafana"):
@@ -900,7 +926,7 @@ def main():
     only = set(filter(None, os.environ.get("STACK_TEST_ONLY", "").split(",")))
     sections = [send_scenario, stored_rows, allowlist_checks, dashboards_provisioned, usage_checks, cohort_checks,
                 path_checks, session_checks, history_checks, auth_checks, container_checks, retention_checks,
-                bounded_checks, privacy_log_checks]
+                bounded_checks, probe_checks, privacy_log_checks]
     for section in sections:
         if not only or section.__name__ in only:
             section()
