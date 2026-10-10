@@ -34,6 +34,9 @@ mod library;
 /// The host's compiled mask and the component kinds this build can evaluate.
 pub mod mask;
 mod mask_field;
+/// The merges' pure numerical library: suitability, exposure resolution and fusion of HDR
+/// brackets.
+pub mod merge;
 mod model;
 mod modules;
 /// Events, days, cameras and moments, computed from header metadata.
