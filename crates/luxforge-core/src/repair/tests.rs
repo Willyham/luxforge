@@ -640,9 +640,9 @@ fn search_is_the_reference_and_finds_the_known_answers() {
 #[ignore = "a measurement, run on request in release"]
 fn photo_sized_cost() {
     use std::time::{Duration, Instant};
-    let median = |mut runs: Vec<Duration>| {
-        runs.sort();
-        runs[runs.len() / 2]
+    let typical = |runs: Vec<Duration>| {
+        let runs = luxforge_testbase::Distribution::of(runs.iter().map(Duration::as_secs_f64));
+        Duration::from_secs_f64(runs.expect("runs").p50)
     };
     for (name, stage) in [
         (
@@ -721,7 +721,7 @@ fn photo_sized_cost() {
                 }
                 println!(
                     "{name} {kind:?} {label}: {:?} (frame {:.1} MP of declared reads)",
-                    median(runs),
+                    typical(runs),
                     region.pixels() as f64 / 1e6
                 );
             }
@@ -755,12 +755,12 @@ fn photo_sized_cost() {
                 let _ = search::rank(&plan, &reduced);
                 search_runs.push(started.elapsed());
             }
-            println!("{name} search {label}: plan {:?}", median(plan_runs));
+            println!("{name} search {label}: plan {:?}", typical(plan_runs));
             println!(
                 "{name} search {label}: reduce {:?} over {:.1} MP at r={r}, rank {:?}",
-                median(reduce_runs),
+                typical(reduce_runs),
                 window.pixels() as f64 / 1e6,
-                median(search_runs)
+                typical(search_runs)
             );
         }
     }
