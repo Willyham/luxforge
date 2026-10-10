@@ -111,8 +111,10 @@ const CELL_MIN: u32 = 16;
 /// height `h`, widened by one pixel on each side for rounding, clipped to `0..limit`. `None` when
 /// it misses the stage.
 fn pixel_range(low: f64, high: f64, h: f64, limit: u32) -> Option<(u32, u32)> {
-    let first = (low * h - 0.5).floor() - 1.0;
-    let last = (high * h - 0.5).ceil() + 1.0;
+    // Mask space to pixel indices inverts the centre spelling `u = (px + 0.5) / H`.
+    let index = |m: f64| m * h - 0.5;
+    let first = index(low).floor() - 1.0;
+    let last = index(high).ceil() + 1.0;
     if !first.is_finite() || !last.is_finite() || last < 0.0 || first >= f64::from(limit) {
         return None;
     }
@@ -274,8 +276,9 @@ impl Footprint {
             v1 = v1.max(d);
         }
         let h = f64::from(self.stage.height);
-        let low = |a: f64| ((a - self.radius) * h - 0.5).floor() - 1.0;
-        let high = |b: f64| ((b + self.radius) * h - 0.5).floor() + 3.0;
+        let index = |m: f64| m * h - 0.5;
+        let low = |a: f64| index(a - self.radius).floor() - 1.0;
+        let high = |b: f64| index(b + self.radius).floor() + 3.0;
         let x0 = low(u0).max(0.0);
         let y0 = low(v0).max(0.0);
         let x1 = high(u1).min(f64::from(self.stage.width));

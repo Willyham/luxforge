@@ -212,10 +212,6 @@ impl<'a> RepairFrame<'a> {
         })
     }
 
-    pub(crate) fn region(&self) -> Region {
-        self.region
-    }
-
     #[inline]
     fn index(&self, x: u32, y: u32) -> usize {
         ((y - self.region.y0) as usize) * self.region.width as usize + (x - self.region.x0) as usize
