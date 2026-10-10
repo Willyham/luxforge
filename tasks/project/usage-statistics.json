@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Implement protected persistent usage consent, the once-only startup claim and schema-described host commands.",
-      "status": "in_progress",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Produce the authoritative consent store and runtime generation/eligibility seam consumed by TASK-004 and TASK-007; no desktop notice or network delivery in this task.",
@@ -230,7 +230,7 @@
     {
       "id": "TASK-004",
       "description": "Connect consented event windows to one bounded background sender using the existing transport.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001",
         "TASK-002"
@@ -468,7 +468,7 @@
     {
       "id": "TASK-007",
       "description": "Add the non-blocking startup notice and Settings Privacy controls through the shared consent commands.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001"
       ],

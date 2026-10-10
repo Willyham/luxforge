@@ -412,7 +412,7 @@ fn launch_eligible(root: &std::path::Path) -> Editor {
     use luxforge_core::usage::{Eligibility, TestReceiver, Usage};
     let host = luxforge_core::HostConfig {
         preferences_dir: Some(root.join("config")),
-        usage: std::sync::Arc::new(Usage::new(Eligibility::test(
+        usage_consent: std::sync::Arc::new(Usage::new(Eligibility::test(
             TestReceiver::loopback(RECEIVER).unwrap(),
         ))),
         ..luxforge_core::HostConfig::unconfigured()

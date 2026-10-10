@@ -34,7 +34,7 @@ impl Harness {
             Arc::new(ModuleRegistry::builtin()),
             HostConfig {
                 preferences_dir: Some(dir.join("config")),
-                usage: usage.clone(),
+                usage_consent: usage.clone(),
                 ..HostConfig::unconfigured()
             },
         )
