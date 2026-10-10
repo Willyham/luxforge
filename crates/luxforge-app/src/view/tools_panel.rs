@@ -18,7 +18,7 @@ use crate::{
             ControlModel, CropSectionModel, CurveControl, EnumControl, GroupControl, GroupState,
             NumberControlStyle, PickerControl, RailStyle, RangeControl, RevealKey, SectionLayout,
             SectionMark, SectionModel, SliderControl, ToggleControl, ToolsModel, ValueEdit,
-            drawn_by_range,
+            WheelControl, drawn_by_range, selected_group,
         },
     },
 };
@@ -45,7 +45,7 @@ use luxforge_ui::{
     compact_number_field, curve_editor, equal_button_row, error_caption, focus_control,
     histogram_inspector, icon_button, icon_button_row, inline_menu, label_line, labelled_button,
     list_heading, menu_choice, module_section, number_field, range_slider, readout_card,
-    row_icon_button, section_label, segmented, slider, stepper, sub_group_header,
+    row_icon_button, section_label, segmented, slider, steady_bottom, stepper, sub_group_header,
     sub_group_header_with_actions, sub_group_header_with_controls, tab_row, text_button, theme,
     toggle,
 };
@@ -191,7 +191,7 @@ pub(crate) fn tools_panel<'a>(
         // They follow the list with no label of their own: each band's scope chip names the mask it
         // edits through, which is what says these are not the global sections.
         if masks.selected.is_none() {
-            return scrollable(panel)
+            return scrollable(steady_bottom(panel))
                 .id(scroll_id())
                 .direction(theme::panel_scrollbar())
                 .height(Length::Fill)
@@ -209,7 +209,9 @@ pub(crate) fn tools_panel<'a>(
             panel = panel.push(section_view(section, menu, plot));
         }
     }
-    scrollable(panel)
+    // A body that shrinks while the panel is scrolled near its end (a tab with fewer rows, a
+    // section closing) would otherwise clamp the scroll and slide everything above it down.
+    scrollable(steady_bottom(panel))
         .id(scroll_id())
         .direction(theme::panel_scrollbar())
         .height(Length::Fill)
@@ -340,8 +342,23 @@ fn section_view<'a>(
         if !section.shows_controls() {
             return finish_rows(rows, menu);
         }
-        rows.extend(match section.layout {
-            SectionLayout::Stacked => control_rows(
+        // A section whose module declares `layout: tabs` draws one tab per top-level group; with
+        // no group to tab it is drawn stacked.
+        let tabbed = match section.layout {
+            SectionLayout::Tabs { selected } => tab_rows(
+                &section.module_id,
+                section.enabled,
+                &section.controls,
+                None,
+                selected,
+                menu,
+                plot,
+                mark,
+            ),
+            SectionLayout::Stacked => None,
+        };
+        rows.extend(tabbed.unwrap_or_else(|| {
+            control_rows(
                 &section.module_id,
                 section.enabled,
                 &section.controls,
@@ -349,9 +366,8 @@ fn section_view<'a>(
                 plot,
                 false,
                 mark,
-            ),
-            SectionLayout::Tabs { .. } => tabbed_rows(section, menu, plot, mark),
-        });
+            )
+        }));
         if let Some(summary) = &section.geometry_summary {
             rows.push(PanelRow::Plain(caption(summary.clone())));
         }
@@ -382,60 +398,60 @@ fn section_view<'a>(
     }
 }
 
-/// The rows of a section whose module declares `layout: tabs`: one tab per top-level group, a dot
-/// on each Custom group, the visible group's reset at the row's right, then only that group's
-/// controls. Any top-level control that is not a group follows as usual.
-fn tabbed_rows<'a>(
-    section: &'a SectionModel,
+/// The rows of a section or group that declares `layout: tabs`, over its `controls`: a segmented
+/// row of its child groups, a dot on each Custom subgroup (a view shows fields its parent owns, so
+/// only a subgroup reads Custom), the visible child's reset at the row's right when it declares
+/// one (a view declares none), then only that child's rows, under the one enabled rule a group's
+/// own rows follow. A visible child that is tabbed in turn draws its own row the same way: the
+/// colour mixer's HSL tab holds Hue, Saturation and Luminance, and its Grading tab its views. Any
+/// control among `controls` that is not a group follows as usual. Selecting a tab is the
+/// session's view state ([`ControlMessage::SelectView`]), keyed by `group`, the tabbed group's id
+/// (none for a section), and each child's id. `None` when `controls` hold no group, to be drawn
+/// stacked instead.
+#[allow(clippy::too_many_arguments)]
+fn tab_rows<'a>(
+    module_id: &str,
+    enabled: bool,
+    controls: &'a [ControlModel],
+    group: Option<&str>,
+    selected: usize,
     menu: Option<&'a MenuTarget>,
     plot: &HistogramModel,
     mark: Option<&RevealKey>,
-) -> Vec<PanelRow<'a>> {
-    let module_id = section.module_id.as_str();
-    let enabled = section.enabled;
-    let groups: Vec<&GroupControl> = section
-        .controls
+) -> Option<Vec<PanelRow<'a>>> {
+    let (selected, visible) = selected_group(controls, selected)?;
+    let children: Vec<&GroupControl> = controls
         .iter()
         .filter_map(|control| match control {
-            ControlModel::Group(group) => Some(group),
+            ControlModel::Group(child) => Some(child),
             _ => None,
         })
         .collect();
-    let Some(visible) = section.visible_tab() else {
-        return control_rows(
-            module_id,
-            enabled,
-            &section.controls,
-            menu,
-            plot,
-            false,
-            mark,
-        );
-    };
+    let ids: Vec<String> = children
+        .iter()
+        .map(|child| child.id.clone().unwrap_or_default())
+        .collect();
+    let module = module_id.to_owned();
+    let row = group.map(str::to_owned);
     let tabs = tab_row(
         &TabRowModel {
-            tabs: groups
+            tabs: children
                 .iter()
-                .map(|group| Tab {
-                    label: group.label.clone(),
-                    custom: group.state == Some(GroupState::Custom),
+                .map(|child| Tab {
+                    label: child.label.clone(),
+                    custom: !child.view && child.state == Some(GroupState::Custom),
                 })
                 .collect(),
-            selected: groups
-                .iter()
-                .position(|group| std::ptr::eq(*group, visible))
-                .unwrap_or(0),
+            selected,
             reset: visible.reset.is_some(),
             enabled,
         },
-        {
-            let module_id = module_id.to_owned();
-            move |index| {
-                Message::Control(ControlMessage::SelectTab {
-                    module_id: module_id.clone(),
-                    index,
-                })
-            }
+        move |index| {
+            Message::Control(ControlMessage::SelectView {
+                module_id: module.clone(),
+                group: row.clone(),
+                view: ids.get(index).cloned().unwrap_or_default(),
+            })
         },
         Message::Control(ControlMessage::ResetGroup {
             module_id: module_id.to_owned(),
@@ -449,25 +465,31 @@ fn tabbed_rows<'a>(
         None => tabs,
     };
     let mut rows = vec![PanelRow::Plain(tabs)];
-    rows.extend(control_rows(
-        module_id,
-        enabled,
-        &visible.controls,
-        menu,
-        plot,
-        false,
-        mark,
-    ));
-    for control in &section.controls {
-        if !matches!(control, ControlModel::Group(_)) && !drawn_by_range(&section.controls, control)
-        {
+    let shown = enabled && visible.enabled;
+    let nested = visible.selected.and_then(|selected| {
+        tab_rows(
+            module_id,
+            shown,
+            &visible.controls,
+            visible.id.as_deref(),
+            selected,
+            menu,
+            plot,
+            mark,
+        )
+    });
+    rows.extend(nested.unwrap_or_else(|| {
+        control_rows(module_id, shown, &visible.controls, menu, plot, false, mark)
+    }));
+    for control in controls {
+        if !matches!(control, ControlModel::Group(_)) && !drawn_by_range(controls, control) {
             rows.push(PanelRow::Plain(revealable(
                 control_view(module_id, enabled, control, menu, plot),
                 is_marked(control, mark),
             )));
         }
     }
-    rows
+    Some(rows)
 }
 
 /// A button-like control: a picker, or an action drawn as a button.
@@ -510,6 +532,44 @@ fn control_rows<'a>(
             });
         }
     };
+    // A run of compact wheels shares rows, two to a row; an odd one out leads the run alone, so
+    // three read as one above two.
+    let mut wheels: Vec<&'a ControlModel> = Vec::new();
+    let flush_wheels = |rows: &mut Vec<PanelRow<'a>>, wheels: &mut Vec<&'a ControlModel>| {
+        let run = std::mem::take(wheels);
+        let (lead, pairs) = run.split_at(run.len() % 2);
+        for control in lead {
+            let inset = iced::Padding::default()
+                .left(theme::SPACING * 6.0)
+                .right(theme::SPACING * 6.0);
+            rows.push(PanelRow::Plain(revealable(
+                container(control_view(module_id, enabled, control, menu, plot))
+                    .width(Length::Fill)
+                    .padding(inset)
+                    .into(),
+                is_marked(control, mark),
+            )));
+        }
+        for pair in pairs.chunks(2) {
+            let cells: Vec<Element<'a, Message>> = pair
+                .iter()
+                .map(|control| {
+                    revealable(
+                        container(control_view(module_id, enabled, control, menu, plot))
+                            .width(Length::FillPortion(1))
+                            .into(),
+                        is_marked(control, mark),
+                    )
+                })
+                .collect();
+            rows.push(PanelRow::Plain(
+                row(cells)
+                    .spacing(theme::SPACING)
+                    .width(Length::Fill)
+                    .into(),
+            ));
+        }
+    };
     for control in controls {
         // A field a band draws under itself is drawn there and not again.
         if drawn_by_range(controls, control)
@@ -519,10 +579,16 @@ fn control_rows<'a>(
             continue;
         }
         if is_button(control) {
+            flush_wheels(&mut rows, &mut wheels);
             buttons.push(control);
             continue;
         }
         flush(&mut rows, &mut buttons);
+        if matches!(control, ControlModel::Wheel(wheel) if !wheel.large) {
+            wheels.push(control);
+            continue;
+        }
+        flush_wheels(&mut rows, &mut wheels);
         match control {
             ControlModel::Group(group) => {
                 rows.extend(group_rows(module_id, enabled, group, menu, plot, mark));
@@ -533,6 +599,7 @@ fn control_rows<'a>(
             ))),
         }
     }
+    flush_wheels(&mut rows, &mut wheels);
     flush(&mut rows, &mut buttons);
     rows
 }
@@ -670,6 +737,7 @@ pub(crate) fn control_view<'a>(
     match control {
         ControlModel::Slider(field) => number_view(enabled, field, menu),
         ControlModel::Range(range) => range_view(enabled, range, menu),
+        ControlModel::Wheel(wheel) => wheel_view(enabled, wheel, menu),
         ControlModel::Toggle(toggle) => toggle_view(enabled, toggle, menu),
         ControlModel::Enum(choice) => enum_view(enabled, choice, menu),
         ControlModel::QueryChoice(choice) => {
@@ -1814,18 +1882,92 @@ fn group_rows<'a>(
     };
     let marked = matches!(mark, Some(RevealKey::Group(path)) if *path == group.path);
     let mut rows = vec![PanelRow::Plain(revealable(header, marked))];
-    if group.expanded {
-        rows.extend(control_rows(
+    if !group.expanded {
+        return rows;
+    }
+    // A group that declares `layout: tabs` draws its tab row flush under its header.
+    let tabbed = group.selected.and_then(|selected| {
+        tab_rows(
             module_id,
             enabled,
             &group.controls,
+            group.id.as_deref(),
+            selected,
             menu,
             plot,
-            true,
             mark,
-        ));
-    }
+        )
+    });
+    rows.extend(tabbed.unwrap_or_else(|| {
+        control_rows(module_id, enabled, &group.controls, menu, plot, true, mark)
+    }));
     rows
+}
+
+/// A hue and saturation wheel: the disc, focusable for the arrow keys, then its luminance rail as
+/// its own number field. A right-click copies the patch its hue and saturation are.
+fn wheel_view<'a>(
+    enabled: bool,
+    wheel: &'a WheelControl,
+    menu: Option<&'a MenuTarget>,
+) -> Element<'a, Message> {
+    let unit = wheel.hue.unit.as_deref().unwrap_or("");
+    let enabled_disc = enabled && wheel.hue.invalid.is_none() && wheel.saturation.invalid.is_none();
+    let model = luxforge_ui::WheelModel {
+        label: wheel.label.clone(),
+        readout: format!(
+            "{}{unit} \u{00b7} {}",
+            wheel.hue.display, wheel.saturation.display
+        ),
+        hue: wheel.hue.value as f32,
+        radius: wheel.radius() as f32,
+        large: wheel.large,
+        dragging: wheel.dragging,
+        enabled: enabled_disc,
+    };
+    let (action, hue) = (wheel.action.clone(), wheel.hue.parameter.clone());
+    let disc = luxforge_ui::wheel(&model, move |event| {
+        Message::Control(ControlMessage::Wheel {
+            action: action.clone(),
+            hue: hue.clone(),
+            event,
+        })
+    });
+    let (action, hue) = (wheel.action.clone(), wheel.hue.parameter.clone());
+    let disc = focus_control(disc, enabled_disc, move |event| {
+        let nudge = |saturation: bool, direction: i8, shift: bool, option: bool| {
+            Some(Message::Control(ControlMessage::WheelNudge {
+                action: action.clone(),
+                hue: hue.clone(),
+                saturation,
+                direction,
+                shift,
+                option,
+            }))
+        };
+        match event {
+            ControlKeyEvent::Pressed { key, shift, option } => match key {
+                ControlKey::Left => nudge(false, -1, shift, option),
+                ControlKey::Right => nudge(false, 1, shift, option),
+                ControlKey::Up => nudge(true, 1, shift, option),
+                ControlKey::Down => nudge(true, -1, shift, option),
+                _ => None,
+            },
+            ControlKeyEvent::Released(
+                ControlKey::Left | ControlKey::Right | ControlKey::Up | ControlKey::Down,
+            ) => Some(Message::Control(ControlMessage::Released {
+                action: action.clone(),
+                parameter: hue.clone(),
+            })),
+            ControlKeyEvent::Released(_) => None,
+        }
+    });
+    let disc = with_control_menu_preset(disc, &wheel.action, None, Some(&wheel.request), menu);
+    let mut body = column![disc].spacing(theme::SLIDER_GAP);
+    if let Some(luminance) = &wheel.luminance {
+        body = body.push(number_view(enabled, luminance, menu));
+    }
+    body.into()
 }
 
 fn action_view<'a>(

@@ -291,6 +291,38 @@ pub struct WorkspaceState {
     /// The tint [`MaskOverlayMode::Tint`] is drawn in.
     #[serde(default)]
     pub mask_overlay_colour: MaskOverlayColour,
+    /// The view each tab row this client chose shows, in (module, group) order, at most one per
+    /// tab row. A tab row that has none shows its first view. Presentation state only: it holds
+    /// no recipe field, makes no history entry and asks for no frame.
+    #[serde(default)]
+    pub views: Vec<ViewSelection>,
+}
+
+/// The most view selections one session holds, and one `workspace.set` names.
+pub const MAX_VIEW_SELECTIONS: usize = 64;
+
+/// Which view one tab row shows, keyed by the declared identities of that row: the module, and the
+/// id of its group that declares `layout: tabs` (absent for a module whose own `layout` is
+/// `tabs`). `view` is the id of one of that row's tabs, a child group or a view
+/// ([`crate::ModuleDescriptor::views_at`]). Labels are for display and never select.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ViewSelection {
+    pub module: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    pub view: String,
+}
+
+impl WorkspaceState {
+    /// The view the tab row of `module`'s group `group` (`None` for its own top-level row) shows,
+    /// when this session chose one; a row without a choice shows its first view.
+    pub fn view(&self, module: &str, group: Option<&str>) -> Option<&str> {
+        self.views
+            .iter()
+            .find(|selection| selection.module == module && selection.group.as_deref() == group)
+            .map(|selection| selection.view.as_str())
+    }
 }
 
 /// The pointer mode: the canvas shows the photograph and nothing else.
@@ -317,6 +349,7 @@ impl Default for WorkspaceState {
             mask_overlay: MaskOverlayMode::Off,
             mask_handles: true,
             mask_overlay_colour: MaskOverlayColour::Green,
+            views: Vec::new(),
         }
     }
 }

@@ -492,6 +492,18 @@ Requested for planning by the owner on 2026-10-07 ([design](design/hdr-merge.md)
 
 The owner selected **RAW brackets only** and **automatic alignment and deghosting** for the first implementation. JPEG bracket inputs are outside this plan; the existing SDR JPEG export remains available for merged results. Numerical/backend/layout details are delegated within the contract, so the storage, radiance and alignment tasks can start independently once implementation is authorized. This planning request does not authorize implementation.
 
+## Corrections workspace
+
+Decided by the owner on 2026-10-09, accepting the [Corrections workspace](design/corrections-workspace.md) design and its boards as the target for the offline Clone/Heal desktop workflow:
+
+- **A press away from a pin adds a correction**, over earlier ones included; corrections stack and each samples the ones below it. People see `Heal 5`, never an operation ID.
+- **Sources are automatic** unless set: a deterministic search resolves one once, on a render worker, and stores it as an ordinary offset; `/` takes the next-ranked one.
+- **Modifiers**: `⌥`-click sets the source, `⌘`-drag places a spot and pulls out its source, `⇧` draws straight strokes. A set source persists until Auto or Escape.
+- **Pins and handles** select, move, resample and resize. Moving a correction keeps its source in place, and a stroke's pin is at its first point.
+- **100 corrections per photograph**, replacing the initial engineering ceiling of eight.
+
+An interim implementation built on a branch before this design is set aside, not merged; Corrections is implemented again from the [task plan](../tasks/editing/corrections.json).
+
 ## Open product questions
 
 [Product decisions](../tasks/project/product-decisions.json) carries the storage, external-module, workload, Presence, GPU reconciliation, themes and Lightroom-authorization tasks. The other recorded defaults remain proposals in their designs; they acquire no additional decision task.
@@ -536,6 +548,12 @@ The owner requested a plan for an Auto tone feature that sets the Basic values a
 - **Tuning by fitting** the targets to Lightroom's Auto on the owner's photos, after the working feature is delivered, followed by owner review.
 
 The deterministic algorithm, analysis before Basic with a forward model through Basic and the Look, the starting targets, caps, button placement and Cmd+U are recorded defaults in the design. The owner authorized implementation on 2026-10-08 after copy/paste settings. Lightroom fitting still requires the later export, per-run consent and owner review.
+
+## Optional usage statistics planning
+
+The owner requested planning only on 2026-10-08: ask for permission once on desktop opening, share whole-app event information including tools, images imported and periodic performance statistics only after agreement, send quietly in background batches to `api.luxforge.app`, tolerate loss, and offer Settings opt-in/out. The additional instruction requests device details, a unique persistent ID, OS/app versions and CPU/GPU information for performance debugging/support targeting, and explicitly excludes PII, IP addresses and photo/metadata information. Protocol choice is delegated; an open-source backend is preferred. The API does not exist yet. On 2026-10-09 the owner added that a usage timeline is fine as long as there is no PII: it is useful to string together the events from a single user or session. The same day the owner asked for a stable ID per image in Develop (suggesting a hash of filename and creation time), removed the hourly and daily caps, and asked that the disclosure just say events are tracked for debugging and analytics, while ensuring there is no PII.
+
+The [design](design/usage-statistics.md) and [task plan](../tasks/project/usage-statistics.json) recommend a non-modal once-per-configuration notice, protected host consent, typed events with session-relative times and sequence numbers, a random installation ID stable across opted-in launches and removed on saved opt-out, a random in-memory session ID per launch, a per-image ID that is an HMAC of the catalog fingerprint under a local key that never leaves the machine (a filename/creation-time hash collides, changes on rename, can contain a name and can be reversed by guessing), and bounded approved device context. Reports are pseudonymous timelines, with no PII, photo contents, filenames or metadata, no editing values and no IP-based logging/hashing/limiting. A short disclosure with the field list collapsed in Settings. Ten-minute or 512-event HTTPS JSON batches at least 60 seconds apart, with no hourly or daily cap, have no disk queue/replay/shutdown wait. A standalone Rust ingress and Vector/ClickHouse/Grafana are the local open-source reference, storing one row per event with timeline and path queries and 90-day retention. Because every build is version 0.0.0, a packaged build embeds its clean source revision in the reported release; unrevisioned builds never report. A checked-in activation switch keeps every build from asking or sending until the real endpoint passes its deployment checklist, a separately authorized change. Another process's opt-out is honoured by rereading stored consent before each upload, not by a file watch. These are planning choices within delegated scope, not approval to implement or deploy. Working local client delivery precedes final native/performance/backend qualification; no further product-question task is required.
 
 ## High-zoom minimap planning
 

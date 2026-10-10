@@ -194,6 +194,8 @@ mod view_state_tests;
 mod view_zoom;
 pub(crate) mod visibility;
 pub(crate) mod waker;
+#[cfg(test)]
+mod wheel_tests;
 mod window;
 
 pub(crate) use lifecycle::{Boot, run};

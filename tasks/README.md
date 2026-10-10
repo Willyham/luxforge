@@ -51,10 +51,10 @@ One plan per tool module.
 
 | Plan | Purpose |
 | --- | --- |
+| [Colour grading](editing/colour-grading.json) | Implemented mixer extension, native M4 full-tier component coverage and 30-sample wheel/scalar and paired HSL/grade measurements at 24/60 MP and Nikon Z6 RAW ([scope and misses](../docs/specs/performance.md#colour-grading-qualified-and-measured-on-the-m4)); a Lightroom round remains for the delivered `grade-align` tooling |
 | [AI editing](editing/ai-editing.json) | Proposed Remove, Select, generative fill and Replace, and optional sky replacement on local, user-downloaded models: the inference port and runtime, the model manager, the analysis cache and picker, the model-selection mask kind, the fill tiers, the remote-provider shape, portability, qualification and documentation |
 | [Corrections](editing/corrections.json) | Proposed offline Clone/Heal, the repair stage, the shared brush and the repair layer's frozen-patch operation; its AI Remove is planned under AI editing |
 | [Auto tone](editing/auto-tone.json) ([design](../docs/design/auto-tone.md)) | Implemented; qualification in progress: deterministic Auto for Lightroom's eight Basic fields from a bounded sample of the stage Basic receives, the action, query and Tone-header button first, Auto in presets and the Lightroom importer, then a fit to Lightroom's Auto on the owner's photos last |
-| [Colour grading](editing/colour-grading.json) | Decided, implementation-ready mixer extension: tonal/Global wheels, masks, presets and direct Lightroom mappings delivered first; independent reference analysis and Lightroom response refinement last, with no approval/research gates |
 
 ### Lightroom (`lightroom/`)
 
@@ -74,7 +74,7 @@ Import from and alignment with Lightroom Classic.
 
 ### Project (`project/`)
 
-Owner decisions, release preparation and repository upkeep.
+Owner decisions, release preparation, host services and repository upkeep.
 
 | Plan | Purpose |
 | --- | --- |
@@ -82,6 +82,7 @@ Owner decisions, release preparation and repository upkeep.
 | [Product decisions](project/product-decisions.json) | Open product questions |
 | [Tag-triggered builds](project/tag-release-builds.json) ([design](../docs/design/tag-release-builds.md)) | Implemented guarded one-command initiation from clean synchronized main, versioned macOS/Linux build candidates, short/full SemVer tag identity, optional signing/notarization, integrity checks and automatic pre-release CI; hosted credentials and actual hosted/native qualification remain external inputs |
 | [v0.1 release preparation](project/release-v0-1.json) ([design](../docs/design/release-v0.1.md)) | Version/identity, complete source/notices, distribution advisory review, macOS bundle/signing and Linux tarball/desktop integration, packet verification/pre-release publication, installation/help and final native/corpus/install qualification; macOS and Linux chosen together; paid Apple membership active, signing setup reported complete with profile `luxforge-notarization`, identity/profile validation and native Linux qualification outstanding, owner-pushed tags request automatic pre-release publication |
+| [Optional usage statistics](project/usage-statistics.json) ([design](../docs/design/usage-statistics.md)) | Planned once-only opt-in and Settings Privacy controls, protected consent, random persistent ID and approved device details, full-app timelines of typed events linked by installation, session and keyed per-image ID without PII/IP tracking/photo contents or metadata, no hourly/daily caps, bounded best-effort HTTPS batches, production activation off until the real endpoint is deployed, and an independent open-source backend reference; working client before final native/privacy/live qualification. Implementation is not authorized |
 
 The post-consolidation programme, the Tone curve, Detail, Lens and perspective and the live-session CLI are complete and their plans are deleted; their outcome lives in the specs, their designs and [feature status](../docs/features.md).
 

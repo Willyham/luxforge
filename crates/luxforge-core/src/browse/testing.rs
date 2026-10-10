@@ -192,6 +192,7 @@ fn file(folder: &str, name: &str, header: HeaderState, volume: &VolumeId) -> Fil
         kind,
         header,
         last_seen_ms: 1,
+        born_ns: None,
     }
 }
 

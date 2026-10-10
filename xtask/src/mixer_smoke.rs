@@ -9,7 +9,9 @@
 //! different colour family entirely, which is what [`patch_mean`] samples at
 //! [`OPPOSITE_ANGLE_DEG`] as an unaffected control for a red-hue edit.
 use crate::{
-    scenario::{Checked, Checks, Frame, Plan, Run, Step, Tolerance, pixels, plan::only},
+    scenario::{
+        Checked, Checks, Frame, Plan, Run, Step, Tolerance, pixels, plan::only, selected_view,
+    },
     *,
 };
 use luxforge_core::MIXER_EFFECT;
@@ -25,6 +27,8 @@ const SET_MIXER: &str = "set-mixer";
 const RED_HUE: &str = "red-hue";
 const AQUA_SATURATION: &str = "aqua-saturation";
 const SATURATION_GROUP: &str = "Saturation";
+/// The id of the module's HSL tab, whose own tab row shows Hue, Saturation and Luminance.
+const HSL_GROUP: &str = "hsl";
 pub const FIXTURE: &str = "fixtures/generated/hue-wheel.jpg";
 
 /// The wheel's own east point (angle 0), where the mixer's red range is centred.
@@ -133,11 +137,13 @@ pub fn plan(_: &[PathBuf]) -> Plan {
         .expanded(MIXER_MODULE)
         .collapsed(BASIC_MODULE)
         .percent(100.0),
-        // 9: the Saturation tab: the mixer's groups are tabs, and choosing one is view state.
+        // 9: the HSL tab's Saturation view: HSL's three properties are a nested tab row, and
+        // choosing one is view state.
         Step::new(
             "saturation-tab",
             TabStep {
                 module: MIXER_MODULE.into(),
+                group: Some(HSL_GROUP.into()),
                 index: 1,
             },
         )
@@ -147,6 +153,7 @@ pub fn plan(_: &[PathBuf]) -> Plan {
             "luminance-tab",
             TabStep {
                 module: MIXER_MODULE.into(),
+                group: Some(HSL_GROUP.into()),
                 index: 2,
             },
         )
@@ -232,14 +239,30 @@ pub fn verify(_: &mut Run, launches: &[Checked]) -> Result {
         Tolerance::Under(UNCHANGED),
     )?;
 
-    // The Saturation and Luminance tabs, each per-client view state alone.
-    for (step, index) in [("saturation-tab", 1), ("luminance-tab", 2)] {
-        let selected = &launch.at(step)?.state()["control_ui"]["selected_tab"][MIXER_MODULE];
+    // The Saturation and Luminance tabs of the HSL tab's own row, each session view state alone.
+    for (step, view) in [
+        ("saturation-tab", "saturation"),
+        ("luminance-tab", "luminance"),
+    ] {
+        let state = launch.at(step)?.state();
         ensure(
-            selected == &json!(index),
-            format!("The {step} step selected tab {selected}, not {index}"),
+            selected_view(state, MIXER_MODULE, Some(HSL_GROUP), view),
+            format!(
+                "The {step} step selected {}, not {view}",
+                state["workspace"]["views"]
+            ),
         )?;
     }
+
+    // The HSL tab's nested row shows one property at a time: the Saturation and Luminance views
+    // draw different rails. A row drawn as stacked groups would leave the panel unchanged.
+    ensure(
+        crate::controls_smoke::sidebar_difference(
+            launch.at("saturation-tab")?,
+            launch.at("luminance-tab")?,
+        )? >= 100,
+        "Selecting the Luminance view did not change the tools panel",
+    )?;
 
     checks.write(
         &launch.evidence,

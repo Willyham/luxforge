@@ -7,9 +7,8 @@
 //! each, see the crate documentation), other crates' tests and xtask, not the core's own unit
 //! tests.
 use luxforge_core::{
-    EFFECT_FORMAT, Error, Layer, LayerId, LinearImage, LinearSettings, ModuleRegistry, Mutation,
-    RECIPE_FORMAT, Raster, Recipe, RenderContext, RenderOptions, RenderSource, Sample, SnapshotId,
-    SourceImage,
+    Error, Layer, LayerId, LinearImage, LinearSettings, ModuleRegistry, Mutation, RECIPE_FORMAT,
+    Raster, Recipe, RenderContext, RenderOptions, RenderSource, Sample, SnapshotId, SourceImage,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -75,12 +74,12 @@ pub fn linear_source_of(width: u32, height: u32, pixels: &[[f64; 3]]) -> LinearI
         .expect("a linear source of matching planes")
 }
 
-/// A global layer of `effect` holding `payload`, in the current effect format.
+/// A global layer of `effect` holding `payload`, in that effect's current format.
 pub fn layer(effect: &str, payload: Value) -> Layer {
     Layer {
         id: LayerId::new(),
         effect_id: effect.into(),
-        effect_format: EFFECT_FORMAT,
+        effect_format: luxforge_core::current_effect_format(effect),
         payload,
         mask: None,
         artifacts: Vec::new(),

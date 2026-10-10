@@ -463,6 +463,7 @@ enum GeneratedKind {
     Slider,
     Picker,
     Curve,
+    Wheel,
 }
 
 /// What the running script step waits for before its frame is captured. A request step waits for
@@ -2667,6 +2668,60 @@ impl Editor {
             .collect()
     }
 
+    /// A scripted wheel gesture: a press at the first position and a drag through the rest, each
+    /// mapped to a hue and radius by the widget's own gesture geometry ([`luxforge_ui::Grab`]) from
+    /// the wheel's displayed values, with the scripted modifiers held, and sent as the widget
+    /// publishes them.
+    fn turn_wheel(
+        &mut self,
+        action: &str,
+        hue: &str,
+        positions: &[[f32; 2]],
+        shift: bool,
+        command: bool,
+        option: bool,
+    ) -> Vec<Task<Message>> {
+        let modifiers = luxforge_ui::WheelModifiers {
+            constrain_hue: shift,
+            constrain_saturation: command,
+            fine: option,
+        };
+        // The handle where the panel draws it: the wheel's own model, read as its view reads it.
+        let inputs = self.inputs();
+        let Some((hue_degrees, radius)) = self.workspace.tools.all().find_map(|section| {
+            let controls = crate::state::tools::controls_of(section, &inputs);
+            walk(&controls).find_map(|control| match control {
+                crate::state::tools::ControlModel::Wheel(wheel)
+                    if wheel.action == action && wheel.hue.parameter == hue =>
+                {
+                    Some((wheel.hue.value, wheel.radius()))
+                }
+                _ => None,
+            })
+        }) else {
+            return Vec::new();
+        };
+        let Some(first) = positions.first() else {
+            return Vec::new();
+        };
+        let mut grab =
+            luxforge_ui::Grab::new(hue_degrees as f32, radius as f32, *first, modifiers.fine);
+        positions
+            .iter()
+            .map(|position| {
+                let (hue_degrees, radius) = grab.moved(*position, modifiers);
+                self.update(Message::Control(ControlMessage::Wheel {
+                    action: action.to_owned(),
+                    hue: hue.to_owned(),
+                    event: luxforge_ui::WheelEvent::Moved {
+                        hue: hue_degrees,
+                        radius,
+                    },
+                }))
+            })
+            .collect()
+    }
+
     /// The first press of a scripted double-click and its release: the rail's jump to `value`
     /// opens the control's gesture exactly as a press does, and the release commits it. The second
     /// press is sent by its own one-shot timer `gap_ms` later, whatever the commit is doing then.
@@ -3043,6 +3098,18 @@ impl Editor {
                     GeneratedKind::Slider,
                 )
             }
+            ControlsStep::Wheel {
+                action,
+                hue,
+                positions,
+                shift,
+                command,
+                option,
+                finish,
+            } => {
+                let tasks = self.turn_wheel(&action, &hue, &positions, shift, command, option);
+                self.finish_generated_gesture(action, hue, finish, tasks, GeneratedKind::Wheel)
+            }
             ControlsStep::Discrete {
                 action,
                 parameter,
@@ -3299,6 +3366,11 @@ impl Editor {
                         parameter,
                         event: CurveEditorEvent::Release,
                     }),
+                    GeneratedKind::Wheel => Message::Control(ControlMessage::Wheel {
+                        action,
+                        hue: parameter,
+                        event: luxforge_ui::WheelEvent::Release,
+                    }),
                 };
                 tasks.push(self.update(release));
             }
@@ -3344,18 +3416,35 @@ impl Editor {
         task
     }
 
+    /// The tab a row shows, selected exactly as its tab row does: through `workspace.set`, whose
+    /// answer the frame waits for. Choosing the view already shown sends nothing, and the frame is
+    /// captured at once.
     fn tab_step(&mut self, step: TabStep) -> Task<Message> {
-        let tabbed = self.modules.iter().any(|module| {
-            module.id == step.module && module.layout == luxforge_core::ModuleLayout::Tabs
-        });
-        if !tabbed {
-            return self.fail_step("the module declares no tabbed layout");
-        }
-        let task = self.update(Message::Control(ControlMessage::SelectTab {
+        let Some(views) = crate::state::tools::module_of(&self.modules, &step.module)
+            .and_then(|module| module.views_at(step.group.as_deref()))
+            .map(|views| views.into_iter().map(str::to_owned).collect::<Vec<_>>())
+        else {
+            return self.fail_step("the module declares no such tab row");
+        };
+        let Some(view) = views.get(step.index).cloned() else {
+            return self.fail_step(format!("the tab row has no view {}", step.index));
+        };
+        let shown = self
+            .session
+            .workspace
+            .view(&step.module, step.group.as_deref())
+            .and_then(|chosen| views.iter().position(|offered| offered == chosen))
+            .unwrap_or(0);
+        let task = self.update(Message::Control(ControlMessage::SelectView {
             module_id: step.module,
-            index: step.index,
+            group: step.group,
+            view,
         }));
-        self.capture_next_frame();
+        if shown == step.index {
+            self.capture_next_frame();
+        } else {
+            self.await_step(Settle::Session);
+        }
         task
     }
 

@@ -164,20 +164,32 @@ pub fn hardening(root: &Path, out: &Path, bin: &Path) -> Result {
         let first: Value = serde_json::from_str(text.lines().next().ok_or("Missing startup")?)?;
         ensure(first["event"] == "startup", "Wrong retained event")?;
         run.provenance(std::slice::from_ref(&first))?;
-        // The editor owns a catalog under the data root's config directory and nothing else;
-        // no cache directory or other configuration appears.
+        // The editor owns its catalog and live-session registry under config; an abrupt kill
+        // leaves no live entry after the registry reader removes stale registrations.
         ensure(
             !isolated.join("cache").exists(),
             "Unexpected cache directory",
         )?;
         if isolated.join("config").exists() {
             for entry in fs::read_dir(isolated.join("config"))? {
-                let name = entry?.file_name().to_string_lossy().into_owned();
+                let entry = entry?;
+                let name = entry.file_name().to_string_lossy().into_owned();
                 ensure(
-                    name.starts_with("catalog."),
+                    name.starts_with("catalog.")
+                        || (name == luxforge_core::LIVE_SESSIONS_DIR
+                            && entry.file_type()?.is_dir()),
                     format!("Unexpected configuration file {name}"),
                 )?;
             }
+            ensure(
+                luxforge_core::running_sessions(
+                    &isolated
+                        .join("config")
+                        .join(luxforge_core::LIVE_SESSIONS_DIR),
+                )?
+                .is_empty(),
+                "Abrupt termination left a live session",
+            )?;
         }
         ensure(before == hash(&fixture)?, "Source modified")?;
         run.record(
@@ -186,7 +198,7 @@ pub fn hardening(root: &Path, out: &Path, bin: &Path) -> Result {
                 "Actual hung child killed and reaped",
                 "Evidence initialization fails without changing existing files",
                 "Normal decode survives unavailable diagnostics; child then terminated",
-                "Abrupt termination retains startup; only the catalog under config, no cache or source mutation",
+                "Abrupt termination retains startup; only the catalog and live-session registry under config, no live entry, cache or source mutation",
                 "A running automated launch is never the frontmost application (macOS)"
             ]),
         );
