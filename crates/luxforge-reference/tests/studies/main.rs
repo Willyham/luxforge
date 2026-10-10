@@ -21,6 +21,7 @@ mod mask;
 mod mixer;
 mod presence;
 mod range;
+mod repair;
 mod tone;
 mod vignette;
 mod white_balance;

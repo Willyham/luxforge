@@ -544,7 +544,8 @@ pub fn brush_segments(stroke: &BrushStroke, stage: &Stage) -> Vec<Segment> {
     segments
 }
 
-fn segment(a: (f64, f64), b: (f64, f64)) -> Segment {
+/// One segment from `a` to `b` in mask space, a degenerate one normalized to `e = 0`, `len2 = 1`.
+pub fn segment(a: (f64, f64), b: (f64, f64)) -> Segment {
     let ex = b.0 - a.0;
     let ey = b.1 - a.1;
     let len2 = ex * ex + ey * ey;
