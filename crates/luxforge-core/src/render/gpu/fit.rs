@@ -113,14 +113,9 @@ pub(crate) fn reduced_stage(
 
 /// `plan`'s window grown to start at a multiple of `anchor`, so each texel the boundary holds is
 /// the whole reduced stage's, bit for bit, whatever window holds it ([`super::GpuPlan::anchor`]).
-pub(crate) fn anchored_plan(
-    compiled: &crate::render::Compiled,
-    plan: ProxyPlan,
-    anchor: super::GpuAnchor,
-) -> ProxyPlan {
+pub(crate) fn anchored_plan(plan: ProxyPlan, anchor: super::GpuAnchor) -> ProxyPlan {
     let window = plan.window.map(|window| {
-        let region = super::plan::anchored_over(
-            compiled,
+        let region = super::anchored(
             Region {
                 x0: window.x,
                 y0: window.y,

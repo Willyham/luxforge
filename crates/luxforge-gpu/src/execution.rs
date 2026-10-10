@@ -1069,6 +1069,10 @@ pub struct SpatialSlot {
     /// a masked step's passes run only over its mask's bounds grown by its halo, so outside it they
     /// hold an earlier tick's values. `None` before anything is written.
     valid: Option<spatial::Rect>,
+    /// The key of what its steps' read sets hold ([`fill::key`]), `None` before they are filled.
+    filled: Option<u64>,
+    /// The buffers a read set derived from the source is drawn with.
+    fill_buffers: Option<fill::FillBuffers>,
 }
 
 impl SpatialSlot {
@@ -1082,6 +1086,8 @@ impl SpatialSlot {
             refilled: 0,
             texels: 0,
             valid: None,
+            filled: None,
+            fill_buffers: None,
         }
     }
 
@@ -1142,7 +1148,8 @@ impl SpatialSlot {
         input: u64,
         (texels, size): (TexelMap, (u32, u32)),
         dirty: Option<spatial::Rect>,
-    ) -> (u64, Option<spatial::Rect>) {
+        fill: Option<&fill::Fill<'_>>,
+    ) -> Result<(u64, Option<spatial::Rect>), GpuFallback> {
         #[cfg(any(test, feature = "qualification"))]
         pool.poison(device, encoder);
         if !self.bound(pipeline, pool) {
@@ -1156,6 +1163,7 @@ impl SpatialSlot {
         if self.planes.moved(steps) {
             self.forget(pool);
         }
+        self.fill(device, queue, encoder, pool, steps, fill)?;
         let whole = spatial::Rect::whole(size);
         let spatial_steps = steps
             .iter()
@@ -1204,7 +1212,7 @@ impl SpatialSlot {
                 self.refilled += 1;
                 vec![whole; run.len()]
             } else if !changed {
-                return (0, Some(dirty));
+                return Ok((0, Some(dirty)));
             } else {
                 // Every pass the applies need, since a scratch plane holds what an earlier
                 // incremental tick wrote only where it ran.
@@ -1254,7 +1262,7 @@ impl SpatialSlot {
                 rects
             };
             let Some((_, _, groups)) = &self.groups else {
-                return (0, Some(output));
+                return Ok((0, Some(output)));
             };
             let places = groups.places_each(&rects);
             self.planes.write_parameters(queue, steps, &places);
@@ -1273,7 +1281,7 @@ impl SpatialSlot {
                 })
                 .collect();
             self.schedule.keep_only(&applied, pool);
-            return (dispatched, Some(output));
+            return Ok((dispatched, Some(output)));
         }
         let over = if self.valid.is_some_and(|valid| valid.contains(&rect)) {
             if changed {
@@ -1290,7 +1298,7 @@ impl SpatialSlot {
             over
         };
         let Some((_, _, groups)) = &self.groups else {
-            return (0, None);
+            return Ok((0, None));
         };
         let places = groups.places(over);
         self.planes.write_parameters(queue, steps, &places);
@@ -1299,10 +1307,66 @@ impl SpatialSlot {
         self.dispatched += dispatched;
         // A step whose plan names where its output changes ([`spatial::GpuSpatial::contained`])
         // hands that change on; any other that ran whole changed anywhere.
-        match single.filter(|spatial| spatial.contained) {
+        Ok(match single.filter(|spatial| spatial.contained) {
             Some(_) => (dispatched, dirty),
             None => (dispatched, dirty.map(|_| whole)),
+        })
+    }
+
+    /// Fill the read set of every step of `steps` that holds one ([`spatial::GpuSpatial::reads`])
+    /// from `fill` when what it would hold changed since it was filled, after which every pass
+    /// runs again over it ([`fill`]). A read set is the input of the step that holds it, so only
+    /// the link's first step may hold one: a step after another reads what that one wrote, which
+    /// neither the boundary nor the source holds.
+    fn fill(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        pool: &mut spatial::Pool,
+        steps: &[GpuStep],
+        fill: Option<&fill::Fill<'_>>,
+    ) -> Result<(), GpuFallback> {
+        let reading: Vec<(usize, &spatial::ReadAtlas)> = steps
+            .iter()
+            .enumerate()
+            .filter_map(|(index, step)| match step {
+                GpuStep::Spatial(spatial) => spatial.reads.as_ref().map(|reads| (index, reads)),
+                _ => None,
+            })
+            .collect();
+        let [(index, atlas)] = reading[..] else {
+            return if reading.is_empty() {
+                Ok(())
+            } else {
+                Err(GpuFallback::PipelineFailed)
+            };
+        };
+        if index != 0 {
+            return Err(GpuFallback::PipelineFailed);
         }
+        let fill = fill.ok_or(GpuFallback::SourceMissing)?;
+        let key = fill::key(fill, atlas);
+        if self.filled == Some(key) {
+            return Ok(());
+        }
+        let target = self
+            .planes
+            .kept_texture(index, atlas.plane)
+            .ok_or(GpuFallback::PipelineFailed)?;
+        self.filled = None;
+        fill::encode(
+            device,
+            queue,
+            encoder,
+            fill,
+            atlas,
+            target,
+            &mut self.fill_buffers,
+        )?;
+        self.filled = Some(key);
+        self.forget(pool);
+        Ok(())
     }
 }
 
@@ -2869,6 +2933,29 @@ impl Executor {
         // what its intermediate holds, and on an incremental tick only where its input's changes
         // reach, which grows link by link with each spatial step's neighbourhood.
         let mut input = chain::boundary_key(plan.boundary.version);
+        // What a repair step's read set is filled from: the boundary, which only the first link
+        // reads, and the source the pipeline holds when the boundary is derived from it.
+        let boundary_texture = slot.boundary.clone();
+        let derived = plan
+            .boundary
+            .derived
+            .as_ref()
+            .and_then(|(version, derivation)| {
+                self.gpu
+                    .source
+                    .as_ref()
+                    .filter(|source| source.version() == *version && source.ready())
+                    .zip(self.gpu.layouts.as_ref())
+                    .map(|(source, layouts)| (source, layouts, derivation))
+            });
+        let boundary_input = input;
+        let filling = |first: bool| fill::Fill {
+            boundary: first.then_some(&boundary_texture),
+            origin,
+            size,
+            input: boundary_input,
+            source: derived,
+        };
         let mut encoded = false;
         let mut dirty = incremental;
         // The links that encode passes, for the evaluation's figures.
@@ -2926,7 +3013,8 @@ impl Executor {
                 input,
                 (plan.texels, shape.boundary),
                 dirty,
-            );
+                Some(&filling(index == 0)),
+            )?;
             // The next link's input changed where this one evaluated again; its own steps' changes
             // are the plan's, which every link's rectangle holds.
             dirty = incremental
@@ -2983,7 +3071,8 @@ impl Executor {
                     input,
                     (plan.texels, shape.boundary),
                     dirty,
-                );
+                    Some(&filling(chain.links.is_empty())),
+                )?;
                 reached = dirty.zip(over).map(|(dirty, over)| dirty.union(&over));
                 refilled += spatial.refilled - before;
                 spatial_texels += spatial.texels - texels_before;
@@ -3190,9 +3279,10 @@ impl Executor {
                     (width, height),
                     shape.format.texture(),
                     // Uploaded from the CPU, or written by the pass that derives it from the
-                    // source the pipeline holds.
+                    // source the pipeline holds; copied from into a repair step's read set.
                     wgpu::TextureUsages::TEXTURE_BINDING
                         | wgpu::TextureUsages::COPY_DST
+                        | wgpu::TextureUsages::COPY_SRC
                         | wgpu::TextureUsages::RENDER_ATTACHMENT,
                     &[],
                 ),
@@ -3742,6 +3832,7 @@ fn upload_rows(
 mod blocks;
 mod chain;
 mod compile;
+mod fill;
 mod source;
 pub use compile::GpuOptions;
 pub use source::{AxisCoverage, Derivation, GpuSource, Reduction, SourceFigures, SourceKind};
@@ -3760,7 +3851,7 @@ pub use position::PositionMap;
 pub mod spatial;
 pub use spatial::{
     GpuApply, GpuPass, GpuPlane, GpuSpatial, PASS_INPUTS, PassShape, PlaneFormat, PlaneSize,
-    SPATIAL_PRELUDE,
+    ReadAtlas, SPATIAL_PRELUDE,
 };
 
 pub mod light;

@@ -144,14 +144,14 @@ pub use render::gpu::{
     GpuChange, GpuClipping, GpuComponent, GpuDescription, GpuFallback, GpuGeometry, GpuLight,
     GpuLightInput, GpuLightPasses, GpuLightRestoration, GpuLightSweep, GpuMask, GpuOperation,
     GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest, GpuPlane, GpuPlaneFormat, GpuPlaneSize,
-    GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuRepair, GpuRepairOperation,
-    GpuResident, GpuRest, GpuSpatial, GpuSpatialUnit, GpuStaging, GpuSweep, GpuSweeps, GpuView,
-    GpuWarmList, PreparedStream, REDUCED_AFTER_BYTES, REPAIR_LEVEL_BYTES, REPAIR_PASSES_MAX,
-    REST_SHARE_MAX, REST_TILE_SIDES, REST_TILE_WORK, RestReduction, RestTile, RestTiles,
-    STREAM_TILE_SIDES, SWEEP_SPLIT_REACH, SWEEP_STAGE_TEXTURES, SourceBoundary, StreamPlan,
-    TilePlan, anchored, gpu_fit_plan, gpu_lights, gpu_plan, plan_read, plan_stream,
-    plan_stream_light_sweeps, plan_stream_sweeps, plan_stream_sweeps_at, rest_light_bytes,
-    rest_slot_bytes,
+    GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuReadAtlas, GpuRepair,
+    GpuRepairOperation, GpuResident, GpuRest, GpuSpatial, GpuSpatialUnit, GpuStaging, GpuSweep,
+    GpuSweeps, GpuView, GpuWarmList, PreparedStream, REDUCED_AFTER_BYTES, REPAIR_ATLAS_SIDE,
+    REPAIR_LEVEL_BYTES, REPAIR_PASSES_MAX, REST_SHARE_MAX, REST_TILE_SIDES, REST_TILE_WORK,
+    RestReduction, RestTile, RestTiles, STREAM_TILE_SIDES, SWEEP_SPLIT_REACH, SWEEP_STAGE_TEXTURES,
+    SourceBoundary, StreamPlan, TilePlan, anchored, gpu_fit_plan, gpu_lights, gpu_plan, plan_read,
+    plan_stream, plan_stream_light_sweeps, plan_stream_sweeps, plan_stream_sweeps_at,
+    rest_light_bytes, rest_slot_bytes,
 };
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{

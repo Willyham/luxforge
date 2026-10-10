@@ -593,8 +593,8 @@ struct Link {
 /// kept across the plans of one sequence it encodes, so a later one runs only the links and passes
 /// that changed.
 struct Session {
-    /// Held for the bindings that read it.
-    _boundary: wgpu::Texture,
+    /// Held for the bindings that read it, and copied from into a repair step's read set.
+    boundary: wgpu::Texture,
     boundary_version: u64,
     links: Vec<Link>,
     /// Fitted and bound as the slot's is, with a holder counter of its own.
@@ -656,7 +656,9 @@ impl Session {
             "luxforge.qualification.boundary",
             (width, height),
             boundary_format.texture(),
-            wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST
+                | wgpu::TextureUsages::COPY_SRC,
         );
         match float {
             Some(pixels) => {
@@ -849,7 +851,7 @@ impl Session {
         );
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());
         Ok(Self {
-            _boundary: boundary,
+            boundary,
             boundary_version: plan.boundary.version(),
             links,
             pool,
@@ -962,19 +964,28 @@ impl Session {
             let link_dirty = dirty.filter(|_| link.key.is_some());
             let mut reached = link_dirty;
             if let Some(spatial) = link.spatial.as_mut() {
-                let (passes, over) = spatial.tick(
-                    &qualifier.device,
-                    &qualifier.queue,
-                    encoder,
-                    (&link.compiled.spatial, link.id),
-                    &link.bindings,
-                    &mut self.pool,
-                    steps,
-                    (&words, &blocks),
-                    input,
-                    (plan.texels, size),
-                    link_dirty,
-                );
+                let (passes, over) = spatial
+                    .tick(
+                        &qualifier.device,
+                        &qualifier.queue,
+                        encoder,
+                        (&link.compiled.spatial, link.id),
+                        &link.bindings,
+                        &mut self.pool,
+                        steps,
+                        (&words, &blocks),
+                        input,
+                        (plan.texels, size),
+                        link_dirty,
+                        Some(&super::fill::Fill {
+                            boundary: (index == 0).then_some(&self.boundary),
+                            origin: self.origin,
+                            size,
+                            input: chain::boundary_key(self.boundary_version),
+                            source: None,
+                        }),
+                    )
+                    .map_err(|fallback| fallback.as_str().to_owned())?;
                 ran[index] = passes;
                 reached = link_dirty.zip(over).map(|(dirty, over)| dirty.union(&over));
             }

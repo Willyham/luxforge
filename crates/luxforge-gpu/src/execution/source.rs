@@ -311,6 +311,11 @@ impl Reduction {
     /// Whether the coverage covers a `size` boundary at its origin, every output's weights in
     /// range: what a pass may read.
     fn valid(&self, size: (u32, u32)) -> bool {
+        self.covers(self.origin, size)
+    }
+
+    /// Whether the coverage covers a `size` window at `origin`, every output's weights in range.
+    fn covers(&self, origin: (u32, u32), size: (u32, u32)) -> bool {
         let axis = |coverage: &AxisCoverage, end: u32| {
             coverage.offsets.len() == coverage.first.len() + 1
                 && coverage.first.len() >= end as usize
@@ -320,10 +325,14 @@ impl Reduction {
                     .last()
                     .is_some_and(|last| *last as usize == coverage.weights.len())
         };
-        axis(&self.across, self.origin.0.saturating_add(size.0))
-            && axis(&self.down, self.origin.1.saturating_add(size.1))
+        axis(&self.across, origin.0.saturating_add(size.0))
+            && axis(&self.down, origin.1.saturating_add(size.1))
     }
 }
+
+/// The first of the two words a derivation's pass reads its origin from, which
+/// [`SourceSlot::encode_placed`]'s caller writes for each rectangle.
+pub const PLACED_ORIGIN: usize = 9;
 
 /// How a boundary is derived on the GPU from the source the pipeline holds, rather than uploaded
 /// from the CPU.
@@ -605,6 +614,84 @@ impl SourceSlot {
                 Some(words)
             }
         }
+    }
+
+    /// The words `derivation`'s pass reads to derive each rectangle `[x, y, width, height]` of
+    /// `rects` of its stage ([`Self::encode_placed`]): [`Self::words`] but for the origin, which
+    /// each rectangle's pass writes over words [`PLACED_ORIGIN`] first. `None` when a rectangle
+    /// leaves what the slot holds, or a reduction's coverage does not cover it.
+    pub fn placed_words(&self, derivation: &Derivation, rects: &[[u32; 4]]) -> Option<Vec<u32>> {
+        let [x, y, width, height] = self.window;
+        let held = rects.iter().all(|&[rx, ry, rw, rh]| match derivation {
+            Derivation::Cut { .. } => {
+                rx >= x
+                    && ry >= y
+                    && rx.checked_add(rw).is_some_and(|end| end <= x + width)
+                    && ry.checked_add(rh).is_some_and(|end| end <= y + height)
+            }
+            Derivation::Reduce(reduction) => self.whole && reduction.covers((rx, ry), (rw, rh)),
+        });
+        if !held {
+            return None;
+        }
+        match derivation {
+            Derivation::Cut { .. } => Some(self.header((0, 0))),
+            Derivation::Reduce(_) => self.words(derivation, (1, 1)),
+        }
+    }
+
+    /// Encode `derivation`'s pass into the `size` texels of `target` from texel `at` on, keeping
+    /// the rest of it, reading `words` ([`Self::placed_words`]) whose origin the caller has set so
+    /// that texel `at + t` is the stage's pixel `t` of its rectangle: the origin words hold the
+    /// rectangle's origin less `at`, wrapping, as the pass adds them to the fragment's own texel.
+    #[allow(clippy::too_many_arguments)]
+    pub fn encode_placed(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        layouts: &Layouts,
+        derivation: &Derivation,
+        words: &wgpu::Buffer,
+        target: &wgpu::TextureView,
+        (at, size): ((u32, u32), (u32, u32)),
+    ) {
+        let pipeline = layouts.pipeline(self.kind, matches!(derivation, Derivation::Reduce(_)));
+        let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("luxforge.gpu_source.placed_words"),
+            layout: &layouts.words,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: words.as_entire_binding(),
+            }],
+        });
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("luxforge.gpu_source.derive_placed"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: target,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+        });
+        pass.set_viewport(
+            at.0 as f32,
+            at.1 as f32,
+            size.0 as f32,
+            size.1 as f32,
+            0.0,
+            1.0,
+        );
+        pass.set_scissor_rect(at.0, at.1, size.0, size.1);
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, &group, &[]);
+        pass.set_bind_group(1, &self.bindings, &[]);
+        pass.draw(0..3, 0..1);
     }
 
     /// Encode `derivation`'s pass into `target`, a boundary of `size` in this source's boundary

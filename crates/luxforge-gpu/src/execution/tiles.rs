@@ -484,7 +484,8 @@ impl Slot {
                 "luxforge.tiles.boundary",
                 size,
                 key.shape.format.texture(),
-                drawn | wgpu::TextureUsages::COPY_DST,
+                // Copied from into a repair step's read set.
+                drawn | wgpu::TextureUsages::COPY_DST | wgpu::TextureUsages::COPY_SRC,
             ),
             links: (0..key.links)
                 .map(|_| {
@@ -1694,6 +1695,18 @@ impl TileRunner {
         // tile's own over the slot's texture and buffers.
         let mut links: Vec<chain::LinkSlot> = Vec::with_capacity(chain.links.len());
         let mut input = chain::boundary_key(plan.boundary.version());
+        // What a repair step's read set is filled from: the boundary, which only the first link
+        // reads, and the source the runner holds.
+        let filling = |first: bool| super::fill::Fill {
+            boundary: first.then_some(&slot.boundary),
+            origin,
+            size,
+            input: chain::boundary_key(plan.boundary.version()),
+            source: self
+                .window
+                .as_ref()
+                .map(|(window, _)| (window, layouts, derivation)),
+        };
         let link_parts = slot.links.iter().zip(&link_words);
         for ((steps, (compiled, id)), ((texture, words, blocks), packed)) in
             chain.links.iter().copied().zip(pipelines).zip(link_parts)
@@ -1731,7 +1744,9 @@ impl TileRunner {
                 input,
                 (texels, size),
                 None,
-            );
+                Some(&filling(links.is_empty())),
+            )
+            .map_err(TileFailure::Plan)?;
             input = link.key().unwrap_or(input);
             links.push(link);
         }
@@ -1746,19 +1761,22 @@ impl TileRunner {
         let mut last = spatial::PlanesKey::of(chain.last, size, origin)
             .map(|key| SpatialSlot::new(spatial::Planes::create(device, key), &mut pool));
         if let Some(spatial) = last.as_mut() {
-            spatial.tick(
-                device,
-                queue,
-                &mut encoder,
-                (&compiled.spatial, *id),
-                &bindings,
-                &mut pool,
-                chain.last,
-                (&last_words, written.words()),
-                input,
-                (texels, size),
-                None,
-            );
+            spatial
+                .tick(
+                    device,
+                    queue,
+                    &mut encoder,
+                    (&compiled.spatial, *id),
+                    &bindings,
+                    &mut pool,
+                    chain.last,
+                    (&last_words, written.words()),
+                    input,
+                    (texels, size),
+                    None,
+                    Some(&filling(links.is_empty())),
+                )
+                .map_err(TileFailure::Plan)?;
         }
         let planes = last
             .as_ref()

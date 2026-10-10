@@ -616,8 +616,7 @@ fn a_window_reads_only_what_its_operations_need() {
     assert_eq!(relevant, vec![0]);
     assert!(set.meets(first.reads[1]));
     assert!(set.rects().len() <= super::repair_entry::MAX_READ_RECTS);
-    // The GPU window is one rectangle: the set's bounding box.
-    assert_eq!(entry.window_reads(first.writes), set.bounds());
+    assert_eq!(entry.read_bounds(first.writes), set.bounds());
 }
 
 #[test]
