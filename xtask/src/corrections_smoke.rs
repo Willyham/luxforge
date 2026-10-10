@@ -48,13 +48,17 @@ const GOLD_SOURCE: [f64; 2] = [0.75, 0.80];
 /// The live-painted Clone: from the gold quadrant into the blue one.
 const CLONE_FROM: [f64; 2] = [0.25, 0.80];
 const CLONE_TO: [[f64; 2]; 2] = [[0.30, 0.80], [0.35, 0.80]];
-/// A patch inside the Clone's destination, well within its full coverage.
-const CLONED: [f64; 2] = [0.27, 0.80];
+/// A patch inside the Clone's destination, well within its full coverage and clear of the arrow
+/// drawn along `y = 0.8` while it is selected.
+const CLONED: [f64; 2] = [0.29, 0.812];
 const PULL_AT: [f64; 2] = [0.40, 0.25];
 const PULL_TO: [[f64; 2]; 2] = [[0.55, 0.50], [0.70, 0.75]];
 /// The stacked Clone: its source is the earlier Clone's repaired patch, its destination is green.
 const STACK_SOURCE: [f64; 2] = [0.27, 0.80];
 const STACK_AT: [f64; 2] = [0.70, 0.42];
+/// A patch inside the stacked spot's full coverage, clear of its pin ring and of the arrow that
+/// reaches the pin from the lower left.
+const STACKED: [f64; 2] = [0.70 + 3.5 / 480.0, 0.42 - 3.5 / 320.0];
 
 const PATCH_HALF: i64 = 3;
 /// How close a repaired patch's mean must be to its source colour, per channel, in 8-bit codes:
@@ -240,6 +244,7 @@ pub fn launch2(_: &[PathBuf]) -> Plan {
     Plan::new(vec![
         Step::opened("reopened").label("Add Clone 7"),
         Step::new("select", SelectStep::Switch(SelectWorkspace::Select)).commits(0),
+        Step::new("all", SelectStep::Source("All photographs".into())).commits(0),
         Step::new(
             "selected",
             SelectStep::Click {
@@ -393,7 +398,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
     // Stacking: the second Clone sampled the first Clone's repair, gold, not the blue beneath it.
     let stacked = launch1.at("stacked")?;
-    near(&mut checks, stacked, "the stacked Clone", rgb(stacked, STACK_AT)?, GOLD)?;
+    near(&mut checks, stacked, "the stacked Clone", rgb(stacked, STACKED)?, GOLD)?;
     // History before the first Clone shows the blue it replaced.
     let before = launch1.at("history-before-clone")?;
     near(&mut checks, before, "the history entry before the Clone", rgb(before, CLONED)?, BLUE)?;

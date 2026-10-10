@@ -115,6 +115,10 @@ impl Listing {
     }
 }
 
+/// The radius a brush starts at when its declaration gives none: a dust spot's size, in content
+/// heights (about 100 px across on a 2,400 px-high photograph).
+pub(crate) const DEFAULT_RADIUS: f64 = 0.02;
+
 /// A row being dragged to a new place in the stack.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct RowDrag {
@@ -170,8 +174,20 @@ impl CorrectionsPanel {
     }
 
     /// The settings the next press adds with, from the binding's defaults until they are changed.
+    /// A radius the declaration gives no default is a dust spot's, [`DEFAULT_RADIUS`].
     pub(crate) fn settings_or(&self, binding: &BrushBinding) -> BrushSettings {
-        self.settings.clone().unwrap_or_else(|| binding.settings())
+        self.settings.clone().unwrap_or_else(|| {
+            let mut settings = binding.settings();
+            let declared = binding
+                .action
+                .parameter(&binding.radius)
+                .and_then(|parameter| parameter.default.as_ref())
+                .is_some();
+            if !declared {
+                binding.set(&mut settings, &binding.radius.clone(), DEFAULT_RADIUS);
+            }
+            settings
+        })
     }
 }
 
