@@ -1,0 +1,255 @@
+{
+  "uid": "luxforge-session",
+  "title": "Luxforge session timeline",
+  "description": "One session's events in order, with the loss it shows, its resource samples and batch delivery.",
+  "tags": [
+    "luxforge",
+    "usage-statistics"
+  ],
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": false,
+  "graphTooltip": 0,
+  "refresh": "",
+  "timezone": "utc",
+  "time": {
+    "from": "now-30d",
+    "to": "now"
+  },
+  "templating": {
+    "list": [
+      {
+        "type": "query",
+        "name": "session",
+        "label": "Session",
+        "datasource": {
+          "type": "grafana-clickhouse-datasource",
+          "uid": "luxforge-clickhouse"
+        },
+        "query": {
+          "editorType": "sql",
+          "rawSql": "SELECT concat(toString(session_start), ' UTC | ', toString(events), ' events | ', os, ' | ', cpu, ' | ', substring(toString(session_id), 1, 8)) AS __text,\n       toString(session_id) AS __value\nFROM luxforge.session_summary ORDER BY session_start DESC LIMIT 300",
+          "format": 1,
+          "queryType": "table",
+          "refId": "variable"
+        },
+        "definition": "SELECT concat(toString(session_start), ' UTC | ', toString(events), ' events | ', os, ' | ', cpu, ' | ', substring(toString(session_id), 1, 8)) AS __text,\n       toString(session_id) AS __value\nFROM luxforge.session_summary ORDER BY session_start DESC LIMIT 300",
+        "refresh": 2,
+        "sort": 0,
+        "multi": false,
+        "includeAll": false,
+        "hide": 0,
+        "current": {}
+      }
+    ]
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "title": "Usage",
+      "type": "link",
+      "url": "/d/luxforge-usage",
+      "icon": "dashboard"
+    },
+    {
+      "title": "Performance",
+      "type": "link",
+      "url": "/d/luxforge-performance",
+      "icon": "dashboard"
+    },
+    {
+      "title": "Paths",
+      "type": "link",
+      "url": "/d/luxforge-paths",
+      "icon": "dashboard"
+    },
+    {
+      "title": "Session timeline",
+      "type": "link",
+      "url": "/d/luxforge-session",
+      "icon": "dashboard"
+    },
+    {
+      "title": "Installation and image history",
+      "type": "link",
+      "url": "/d/luxforge-history",
+      "icon": "dashboard"
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "Read this first",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 6
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**How to read this dashboard.** Reporting is **opt-in**, so every number describes only the installations whose owners chose to share, not everyone who uses Luxforge, and those people may differ from the rest. Delivery is **best-effort**: batches and events can be lost (the loss panels count the gaps that are visible), and the **end of a session is never seen**: nothing after the last received batch exists here. A **session** is one app launch; an **installation** is one random ID kept by one install. Neither is a person or a physical device: one person can have several installations, an installation can be reset, and the ID is not an account. Image IDs are meaningful only inside one installation. Sparse cohorts can identify an installation and do not prove anonymity. Rows expire 90 days after receipt.\n\nEvents are ordered by `seq`. `missing before` counts events that should sit between an event and the previous received one. The session's end is whatever was last received."
+      }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Session summary",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 6,
+        "w": 24,
+        "h": 5
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT toString(session_id) AS session, toString(installation_id) AS installation, session_start, release, os, os_version_text AS \"os version\", arch,\n       cpu, gpu, memory_gib_band AS \"memory GiB band\", renderer, renderer_fallback AS \"renderer fallback\", events AS \"events received\",\n       missing_events AS \"events missing\", expected_batches AS \"batches expected\", batches AS \"batches received\", missing_batches AS \"batches missing\",\n       dropped AS \"dropped (reported)\", round(active_ms / 1000) AS \"active seconds\", round(last_t / 1000) AS \"last event seconds\", first_received, last_received\nFROM luxforge.session_summary WHERE session_id = toUUID('${session}')",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Timeline",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 11,
+        "w": 24,
+        "h": 14
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT wall_time AS \"wall time\", seq, round(t / 1000, 3) AS \"seconds since start\", label, missing_before AS \"missing before\",\n       image, duration_ms AS \"duration ms\", count, cpu_percent AS \"cpu %\", memory_mib AS \"memory MiB\", batch_seq AS \"batch\", received_at AS \"received at\"\nFROM luxforge.event_timeline WHERE session_id = toUUID('${session}') ORDER BY seq",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Process samples",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 25,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT wall_time AS time, cpu_percent AS \"CPU %\", memory_mib AS \"memory MiB\", gpu_percent AS \"GPU %\", gpu_memory_mib AS \"GPU memory MiB\"\nFROM luxforge.event_timeline WHERE session_id = toUUID('${session}') AND name = 'process.sample' ORDER BY time",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 5,
+      "type": "table",
+      "title": "Batches",
+      "description": "A large or negative `seconds after last event` suggests a delayed batch or a client clock that disagrees with the server.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 25,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT ev.batch_seq AS batch, ev.events AS events, ev.first_seq AS \"first seq\", ev.last_seq AS \"last seq\", ev.received_at AS \"received at\",\n       dateDiff('second', ev.last_wall, ev.received_at) AS \"seconds after last event\", ifNull(b.dropped, 0) AS \"dropped (reported)\"\nFROM (\n  SELECT batch_seq, count() AS events, min(seq) AS first_seq, max(seq) AS last_seq, max(received_at) AS received_at, max(wall_time) AS last_wall\n  FROM luxforge.event_timeline WHERE session_id = toUUID('${session}') GROUP BY batch_seq) AS ev\nLEFT JOIN (SELECT batch_seq, dropped FROM luxforge.batches_unique WHERE session_id = toUUID('${session}')) AS b ON b.batch_seq = ev.batch_seq\nORDER BY batch",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    }
+  ]
+}

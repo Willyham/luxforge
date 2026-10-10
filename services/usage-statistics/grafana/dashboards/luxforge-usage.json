@@ -1,0 +1,776 @@
+{
+  "uid": "luxforge-usage",
+  "title": "Luxforge usage",
+  "description": "Feature and tool use, images added and exported, active time and operation outcomes.",
+  "tags": [
+    "luxforge",
+    "usage-statistics"
+  ],
+  "schemaVersion": 41,
+  "version": 1,
+  "editable": false,
+  "graphTooltip": 0,
+  "refresh": "",
+  "timezone": "utc",
+  "time": {
+    "from": "now-7d",
+    "to": "now"
+  },
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "links": [
+    {
+      "title": "Usage",
+      "type": "link",
+      "url": "/d/luxforge-usage",
+      "icon": "dashboard"
+    },
+    {
+      "title": "Performance",
+      "type": "link",
+      "url": "/d/luxforge-performance",
+      "icon": "dashboard"
+    },
+    {
+      "title": "Paths",
+      "type": "link",
+      "url": "/d/luxforge-paths",
+      "icon": "dashboard"
+    },
+    {
+      "title": "Session timeline",
+      "type": "link",
+      "url": "/d/luxforge-session",
+      "icon": "dashboard"
+    },
+    {
+      "title": "Installation and image history",
+      "type": "link",
+      "url": "/d/luxforge-history",
+      "icon": "dashboard"
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "Read this first",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 5
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**How to read this dashboard.** Reporting is **opt-in**, so every number describes only the installations whose owners chose to share, not everyone who uses Luxforge, and those people may differ from the rest. Delivery is **best-effort**: batches and events can be lost (the loss panels count the gaps that are visible), and the **end of a session is never seen**: nothing after the last received batch exists here. A **session** is one app launch; an **installation** is one random ID kept by one install. Neither is a person or a physical device: one person can have several installations, an installation can be reset, and the ID is not an account. Image IDs are meaningful only inside one installation. Sparse cohorts can identify an installation and do not prove anonymity. Rows expire 90 days after receipt."
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Sessions reported",
+      "description": "App launches that delivered at least one event in the range. Not users.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 5,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT uniqExact(session_id) AS sessions FROM luxforge.events_unique WHERE $__timeFilter(received_at)",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "none",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Installations reporting",
+      "description": "Distinct installation IDs. Not people or devices.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 4,
+        "y": 5,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT uniqExact(installation_id) AS installations FROM luxforge.events_unique WHERE $__timeFilter(received_at)",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "none",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Events received",
+      "description": "After removing duplicate deliveries on (session_id, seq).",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 8,
+        "y": 5,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT count() AS events FROM luxforge.events_unique WHERE $__timeFilter(received_at)",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "none",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Events known missing",
+      "description": "Gaps in `seq` inside sessions seen in the range: events or whole batches that never arrived, or that the app dropped. Events lost after a session's last received batch are invisible.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 5,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT sum(missing_events) AS missing FROM luxforge.session_summary WHERE $__timeFilter(first_received)",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "none",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Events the app reports dropping",
+      "description": "Sum of each received batch's `dropped` count (deduplicated per batch).",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 16,
+        "y": 5,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT sum(dropped) AS dropped FROM luxforge.session_summary WHERE $__timeFilter(first_received)",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "none",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 7,
+      "type": "stat",
+      "title": "Batches known missing",
+      "description": "Gaps in `batch_seq` inside sessions seen in the range.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 20,
+        "y": 5,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT sum(greatest(missing_batches, 0)) AS missing FROM luxforge.session_summary WHERE $__timeFilter(first_received)",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "none",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 8,
+      "type": "stat",
+      "title": "Images added",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 9,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT sum(ifNull(count, 0)) AS images FROM luxforge.events_unique WHERE name = 'images.added' AND $__timeFilter(received_at)",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "none",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 9,
+      "type": "stat",
+      "title": "Images exported (completed exports)",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 9,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT sum(ifNull(count, 0)) AS images FROM luxforge.events_unique WHERE name = 'operation.end' AND operation = 'export' AND outcome = 'completed' AND $__timeFilter(received_at)",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "none",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Active time, hours (reported sessions)",
+      "description": "Visible and not idle, derived from `app.presented` and `app.idle` events. A session counts from launch to its last received event; time after that is unknown and not counted.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 9,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT sum(active_ms) / 3600000 AS hours FROM luxforge.session_summary WHERE $__timeFilter(first_received)",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "none",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Median active minutes per session",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 9,
+        "w": 6,
+        "h": 4
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT quantileExactInclusive(0.5)(active_ms) / 60000 AS minutes FROM luxforge.session_summary WHERE $__timeFilter(first_received)",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value",
+        "colorMode": "none",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Images added and exported per day",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT toStartOfDay(received_at) AS time,\n       sumIf(ifNull(count, 0), name = 'images.added') AS \"images added\",\n       sumIf(ifNull(count, 0), name = 'operation.end' AND operation = 'export' AND outcome = 'completed') AS \"images exported\"\nFROM luxforge.events_unique WHERE $__timeFilter(received_at) GROUP BY time ORDER BY time",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 13,
+      "type": "timeseries",
+      "title": "Active hours per day",
+      "description": "Each session is attributed to the day its first batch was received.",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 13,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 0,
+          "queryType": "timeseries",
+          "rawSql": "SELECT toStartOfDay(first_received) AS time, sum(active_ms) / 3600000 AS \"active hours\", count() AS sessions\nFROM luxforge.session_summary WHERE $__timeFilter(first_received) GROUP BY time ORDER BY time",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 14,
+      "type": "table",
+      "title": "Feature use (interaction events)",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 21,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT feature, count() AS events, uniqExact(session_id) AS sessions, uniqExact(installation_id) AS installations\nFROM luxforge.events_unique WHERE name = 'interaction' AND $__timeFilter(received_at) GROUP BY feature ORDER BY events DESC",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 15,
+      "type": "table",
+      "title": "Tool commits",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 21,
+        "w": 12,
+        "h": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT tool, count() AS commits, uniqExact(session_id) AS sessions, uniqExact(installation_id) AS installations,\n       uniqExact(image) AS images\nFROM luxforge.events_unique WHERE name = 'tool.commit' AND $__timeFilter(received_at) GROUP BY tool ORDER BY commits DESC",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 16,
+      "type": "table",
+      "title": "Operation outcomes and duration",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 31,
+        "w": 24,
+        "h": 9
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT operation, outcome, count() AS operations, uniqExact(session_id) AS sessions,\n       round(quantileExactInclusive(0.5)(duration_ms)) AS \"p50 ms\", round(quantileExactInclusive(0.95)(duration_ms)) AS \"p95 ms\",\n       max(duration_ms) AS \"max ms\"\nFROM luxforge.events_unique WHERE name = 'operation.end' AND $__timeFilter(received_at) GROUP BY operation, outcome ORDER BY operation, outcome",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 17,
+      "type": "table",
+      "title": "Sessions by release and operating system",
+      "description": "",
+      "datasource": {
+        "type": "grafana-clickhouse-datasource",
+        "uid": "luxforge-clickhouse"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 40,
+        "w": 24,
+        "h": 8
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-clickhouse-datasource",
+            "uid": "luxforge-clickhouse"
+          },
+          "editorType": "sql",
+          "format": 1,
+          "queryType": "table",
+          "rawSql": "SELECT s.app AS app, s.os AS os, count() AS sessions, uniqExact(s.installation_id) AS installations\nFROM luxforge.session_summary AS s WHERE $__timeFilter(s.first_received) GROUP BY app, os ORDER BY sessions DESC",
+          "refId": "A",
+          "pluginVersion": "4.22.1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    }
+  ]
+}
