@@ -382,7 +382,7 @@ fn wheel_row(editor: &Editor) -> (String, bool) {
             _ => None,
         })
         .expect("the wheel's tab row");
-    assert_eq!(row.labels, ["Control vocabulary", "Colour wheel"]);
+    assert_eq!(row.id.as_deref(), Some("colour-wheel"));
     let visible = row.visible_view().expect("a tabbed group shows a view");
     let large = visible
         .controls
@@ -404,24 +404,24 @@ fn selecting_a_view_is_session_state_with_no_history_or_frame() {
     let select = |view: &str| {
         Message::Control(ControlMessage::SelectView {
             module_id: MODULE.into(),
-            group: vec!["Control vocabulary".into(), "Colour wheel".into()],
+            group: Some("colour-wheel".into()),
             view: view.into(),
         })
     };
     assert_eq!(
-        proof.editor.update(select("Compact")).units(),
+        proof.editor.update(select("compact")).units(),
         0,
         "the view already shown sends nothing"
     );
     assert_eq!(
-        proof.editor.update(select("Huge")).units(),
+        proof.editor.update(select("huge")).units(),
         0,
         "an undeclared view sends nothing"
     );
-    assert_eq!(proof.editor.update(select("Large")).units(), 1);
+    assert_eq!(proof.editor.update(select("large")).units(), 1);
     // Answered as the task does: the owner's `workspace.set`, and the session it returns.
-    let views = json!([{"module": MODULE, "group": ["Control vocabulary", "Colour wheel"],
-                        "view": "Large"}]);
+    let views = json!([{"module": MODULE, "group": "colour-wheel",
+                        "view": "large"}]);
     let (answer, _) = call(
         &proof.editor.owner,
         proof.editor.client,

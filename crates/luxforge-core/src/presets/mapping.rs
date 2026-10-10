@@ -7,7 +7,7 @@
 //! why equal values do not mean equal pixels. A curve transfer carries Lightroom's composite point
 //! curve onto the Tone curve's points, rescaled from Lightroom's 0–255 to 0–1.
 //! A value that does not parse or lies outside the control's hard range is refused, never clamped.
-use super::report::{ImportReport, MappedSetting, ReportedSetting};
+use super::report::{DerivedSettings, ImportReport, MappedSetting, ReportedSetting};
 use super::value::{
     RawSetting, RawValue, boolean, identity_curve, json_number, number, report_text,
 };
@@ -271,21 +271,32 @@ const COLOR_GRADE: &[&str] = &[
 /// holds only split toning.
 const COLOR_GRADING_VERSION: (u32, u32) = (13, 0);
 
-/// What a legacy split-toning document means in today's grading: its Shadows and Highlights hue
-/// and saturation and its Balance, with Blending 100 (split toning's full overlap) and every
-/// control Color Grading added at its neutral value. Written beside the transferred split-toning
-/// values, never over them.
-const LEGACY_SPLIT_TONING: &[(&str, f64)] = &[
-    ("grade-blending", 100.0),
-    ("grade-shadows-luminance", 0.0),
-    ("grade-midtones-hue", 0.0),
-    ("grade-midtones-saturation", 0.0),
-    ("grade-midtones-luminance", 0.0),
-    ("grade-highlights-luminance", 0.0),
-    ("grade-global-hue", 0.0),
-    ("grade-global-saturation", 0.0),
-    ("grade-global-luminance", 0.0),
-];
+/// Why a split-toning document carries [`legacy_split_toning`].
+const SPLIT_TONING: &str = "split toning written before Color Grading: Blending 100 and every \
+                            control Color Grading added at 0";
+/// Why [`legacy_split_toning`] is left out.
+const SPLIT_TONING_REFUSED: &str =
+    "a split-toning setting is refused, so the document's split toning is not reproduced";
+
+/// What a legacy split-toning document means for the controls Color Grading added: Blending 100,
+/// split toning's full overlap, and every other one at its neutral 0, on the fields [`ROWS`]
+/// transfers those settings to. Written beside the transferred split-toning values, never over
+/// them, since [`COLOR_GRADE`] holds none of split toning's own settings.
+fn legacy_split_toning() -> impl Iterator<Item = (&'static str, &'static str, f64)> {
+    COLOR_GRADE
+        .iter()
+        .filter_map(|name| match lookup(name)?.rule {
+            Rule::Transfer { action, field, .. } => {
+                let applied = if *name == "ColorGradeBlending" {
+                    100.0
+                } else {
+                    0.0
+                };
+                Some((action, field, applied))
+            }
+            _ => None,
+        })
+}
 
 use Neutral::{Empty, Equals, Identity, Never, Off, Zero};
 
@@ -1158,14 +1169,30 @@ const LEGACY_TONE: &[&str] = &[
     "ToneCurve",
 ];
 
-/// `major.minor` as written, without a sign, exponent or anything after the minor digits.
+fn digits(part: &str) -> bool {
+    !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// `major[.minor]` as written, without a sign, exponent or anything after the minor digits: a
+/// `ProcessVersion`.
 fn parse_version(text: &str) -> Option<(u32, u32)> {
     let (major, minor) = text.trim().split_once('.').unwrap_or((text.trim(), "0"));
-    let digits = |part: &str| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit());
     if !digits(major) || !digits(minor) {
         return None;
     }
     Some((major.parse().ok()?, minor.parse().ok()?))
+}
+
+/// A Camera Raw `Version`, `major[.minor[.patch]]`: Camera Raw writes point releases such as
+/// `11.4.1`, and only the major and minor decide which grading model wrote the document.
+fn parse_camera_raw_version(text: &str) -> Option<(u32, u32)> {
+    let text = text.trim();
+    match text.rsplit_once('.') {
+        Some((release, patch)) if release.contains('.') => {
+            digits(patch).then(|| parse_version(release)).flatten()
+        }
+        _ => parse_version(text),
+    }
 }
 
 fn era(settings: &HashMap<&str, &RawValue>) -> Era {
@@ -1196,7 +1223,7 @@ enum GradeEra {
     /// Color Grading (Camera Raw 13.0 and later): each setting is a direct transfer of its own
     /// field, and a field the document leaves out keeps the photo's value.
     ColorGrading,
-    /// Split toning only: the transferred values gain [`LEGACY_SPLIT_TONING`].
+    /// Split toning only: the transferred values gain [`legacy_split_toning`].
     SplitToning,
     /// The document does not show which: every grading setting is refused with this reason.
     Ambiguous(String),
@@ -1208,34 +1235,48 @@ enum GradeEra {
 /// the version says it cannot exist. A document with neither a version nor a Color Grading setting
 /// is ambiguous, because split toning alone is written by both models.
 fn grade_era(format: &str, settings: &HashMap<&str, &RawValue>) -> GradeEra {
-    let color_grade = COLOR_GRADE.iter().any(|name| settings.contains_key(name));
-    if format == super::FORMAT_TEMPLATE {
-        return if color_grade {
-            GradeEra::Ambiguous(
-                "Color Grading settings in a .lrtemplate preset, which Lightroom wrote only \
-                 before Color Grading existed"
-                    .into(),
-            )
-        } else {
-            GradeEra::SplitToning
-        };
+    /// What the document says about the version that wrote it.
+    enum Written {
+        Template,
+        Before,
+        Since,
+        Unreadable,
+        Missing,
     }
-    let version = settings
-        .get("Version")
-        .map(|value| (report_text(value), value.text().and_then(parse_version)));
-    match version {
-        Some((_, Some(version))) if version >= COLOR_GRADING_VERSION => GradeEra::ColorGrading,
-        Some((written, Some(_))) if color_grade => GradeEra::Ambiguous(format!(
-            "Color Grading settings in a document written by Camera Raw {written}, before Color \
-             Grading existed"
+    let version = settings.get("Version");
+    let written = if format == super::FORMAT_TEMPLATE {
+        Written::Template
+    } else {
+        match version.map(|value| value.text().and_then(parse_camera_raw_version)) {
+            Some(Some(version)) if version >= COLOR_GRADING_VERSION => Written::Since,
+            Some(Some(_)) => Written::Before,
+            Some(None) => Written::Unreadable,
+            None => Written::Missing,
+        }
+    };
+    let text = || version.map(|value| report_text(value)).unwrap_or_default();
+    let color_grade = COLOR_GRADE.iter().any(|name| settings.contains_key(name));
+    match (written, color_grade) {
+        (Written::Since, _) | (Written::Unreadable | Written::Missing, true) => {
+            GradeEra::ColorGrading
+        }
+        (Written::Template | Written::Before, false) => GradeEra::SplitToning,
+        (Written::Template, true) => GradeEra::Ambiguous(
+            "Color Grading settings in a .lrtemplate preset, which Lightroom wrote only before \
+             Color Grading existed"
+                .into(),
+        ),
+        (Written::Before, true) => GradeEra::Ambiguous(format!(
+            "Color Grading settings in a document written by Camera Raw {}, before Color Grading \
+             existed",
+            text()
         )),
-        Some((_, Some(_))) => GradeEra::SplitToning,
-        _ if color_grade => GradeEra::ColorGrading,
-        Some((written, None)) => GradeEra::Ambiguous(format!(
-            "unrecognised Camera Raw version {written}, so split toning cannot be told from \
-             Color Grading"
+        (Written::Unreadable, false) => GradeEra::Ambiguous(format!(
+            "unrecognised Camera Raw version {}, so split toning cannot be told from Color \
+             Grading",
+            text()
         )),
-        None => GradeEra::Ambiguous(
+        (Written::Missing, false) => GradeEra::Ambiguous(
             "no Camera Raw version, so split toning cannot be told from Color Grading".into(),
         ),
     }
@@ -1481,9 +1522,9 @@ pub(super) fn map(
     }
     let era = era(&by_name);
     let grading = grade_era(format, &by_name);
-    // The first split-toning setting transferred from a legacy split-toning document, which also
-    // carries the later controls' values (`LEGACY_SPLIT_TONING`).
-    let mut split_toning: Option<&RawSetting> = None;
+    // Whether a legacy split-toning document transferred a split-toning setting, so that it also
+    // carries the later controls' values (`legacy_split_toning`).
+    let mut split_toning = false;
     let auto_tone = by_name.get("AutoTone").and_then(|value| boolean(value)) == Some(true);
     // What the Auto tone step overwrites, as its descriptor declares: the fields a preset
     // carrying Auto does not import.
@@ -1603,9 +1644,7 @@ pub(super) fn map(
                 };
                 match applied {
                     Ok(applied) => {
-                        if row.panel == GRADING && grading == GradeEra::SplitToning {
-                            split_toning.get_or_insert(setting);
-                        }
+                        split_toning |= row.panel == GRADING && grading == GradeEra::SplitToning;
                         insert(&mut out, action, field, applied.clone());
                         mapped.push(MappedSetting {
                             setting: setting.name.clone(),
@@ -1733,19 +1772,28 @@ pub(super) fn map(
         }
     }
     // A legacy split-toning document's transferred values mean split toning: Blending 100 and the
-    // controls Color Grading added at neutral, reported under the first transferred setting.
-    if let Some(setting) = split_toning {
-        for (field, applied) in LEGACY_SPLIT_TONING {
-            let applied = Value::from(*applied);
-            insert(&mut out, MIXER, field, applied.clone());
-            mapped.push(MappedSetting {
-                setting: setting.name.clone(),
-                value: report_text(&setting.value),
-                action: MIXER.to_owned(),
-                field: Some((*field).to_owned()),
-                applied,
-            });
+    // controls Color Grading added at neutral, one derived entry rather than any setting's. With
+    // one of its grading settings refused they would replace the photo's grade without the tint
+    // that was meant to replace it, so they are reported and left out.
+    let mut derived = Vec::new();
+    if split_toning {
+        let refusal = refused
+            .iter()
+            .any(|entry| lookup(&entry.setting).is_some_and(|row| row.panel == GRADING))
+            .then(|| SPLIT_TONING_REFUSED.to_owned());
+        let mut settings = Map::new();
+        for (action, field, applied) in legacy_split_toning() {
+            let applied = Value::from(applied);
+            if refusal.is_none() {
+                insert(&mut out, action, field, applied.clone());
+            }
+            insert(&mut settings, action, field, applied);
         }
+        derived.push(DerivedSettings {
+            reason: SPLIT_TONING.to_owned(),
+            settings,
+            refused: refusal,
+        });
     }
     let process_version = by_name
         .get("ProcessVersion")
@@ -1770,6 +1818,7 @@ pub(super) fn map(
             neutral,
             unsupported: unsupported_list,
             refused,
+            derived,
         },
     })
 }
@@ -1889,6 +1938,14 @@ mod tests {
         for text in ["", "6.", ".7", "+6.7", "6.7.1", "v6", "6,7"] {
             assert_eq!(parse_version(text), None, "{text}");
         }
+        // A Camera Raw version may name its point release.
+        assert_eq!(parse_camera_raw_version("11.4.1"), Some((11, 4)));
+        assert_eq!(parse_camera_raw_version(" 13.0.1 "), Some((13, 0)));
+        assert_eq!(parse_camera_raw_version("15.4"), Some((15, 4)));
+        assert_eq!(parse_camera_raw_version("16"), Some((16, 0)));
+        for text in ["", "11.4.", "11..1", "11.4.1.2", "11.4.x", "+11.4.1", "v11"] {
+            assert_eq!(parse_camera_raw_version(text), None, "{text}");
+        }
         let text = |value: &str| RawValue::Text(value.to_owned());
         let era_of = |pairs: &[(&'static str, RawValue)]| {
             let map: HashMap<&str, &RawValue> =
@@ -1914,5 +1971,34 @@ mod tests {
             era_of(&[("Exposure", text("0")), ("Exposure2012", text("0.5"))]),
             Era::Modern
         );
+    }
+
+    /// The split-toning fill is the nine controls Color Grading added, on the mixer fields their
+    /// own rows transfer to, none of them one of split toning's own.
+    #[test]
+    fn the_split_toning_fill_covers_every_color_grade_row() {
+        let fill: Vec<_> = legacy_split_toning().collect();
+        assert_eq!(fill.len(), COLOR_GRADE.len());
+        let split: Vec<&str> = ROWS
+            .iter()
+            .filter(|row| row.name.starts_with("SplitToning"))
+            .filter_map(|row| match row.rule {
+                Rule::Transfer { field, .. } => Some(field),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(split.len(), 5);
+        for (action, field, applied) in fill {
+            assert_eq!(action, MIXER);
+            assert!(!split.contains(&field), "{field}");
+            assert_eq!(
+                applied,
+                if field == "grade-blending" {
+                    100.0
+                } else {
+                    0.0
+                }
+            );
+        }
     }
 }

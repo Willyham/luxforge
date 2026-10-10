@@ -9,7 +9,7 @@ use crate::{
     modules::{STAGE_ACTION, StageModule},
 };
 use serde_json::{Value, json};
-use std::{path::PathBuf, sync::Arc};
+use std::{collections::BTreeMap, path::PathBuf, sync::Arc};
 
 fn builtin() -> SettingsGroups {
     settings_groups(ModuleRegistry::builtin().descriptors())
@@ -352,31 +352,194 @@ fn a_photos_groups_are_custom_or_original_against_the_named_entry() {
     std::fs::remove_file(path).expect("the catalog is removed");
 }
 
-/// Tab views and their duplicate wheel/number presentations form two capture groups, preserving
-/// every field once. Capturing a grade reaches the same settings the preset applies.
+/// The mixer is two capture groups: HSL gathers its Hue, Saturation and Luminance groups, and
+/// Grading holds its fourteen fields once each, in the order its views first show them, however
+/// many views draw a field.
 #[test]
 fn grading_views_capture_all_four_wheels_once_and_keep_hsl_separate() {
     let groups = builtin();
     let hsl = groups.group("luxforge.mixer/hsl").unwrap();
     let grading = groups.group("luxforge.mixer/grading").unwrap();
     assert_eq!(hsl.fields["set-mixer"].len(), 24);
-    assert_eq!(grading.fields["set-mixer"].len(), 14);
-    let fields = &grading.fields["set-mixer"];
     assert_eq!(
-        fields
-            .iter()
-            .collect::<std::collections::BTreeSet<_>>()
-            .len(),
-        14
+        serde_json::to_value(&grading.fields).unwrap(),
+        json!({"set-mixer": [
+            "grade-midtones-hue", "grade-midtones-saturation", "grade-midtones-luminance",
+            "grade-shadows-hue", "grade-shadows-saturation", "grade-shadows-luminance",
+            "grade-highlights-hue", "grade-highlights-saturation", "grade-highlights-luminance",
+            "grade-blending", "grade-balance",
+            "grade-global-hue", "grade-global-saturation", "grade-global-luminance"
+        ]})
     );
-    for band in ["shadows", "midtones", "highlights", "global"] {
-        for channel in ["hue", "saturation", "luminance"] {
-            assert!(fields.contains(&format!("grade-{band}-{channel}")));
-        }
-    }
-    assert!(fields.contains(&"grade-blending".into()));
-    assert!(fields.contains(&"grade-balance".into()));
     assert!(hsl.default_checked && grading.default_checked);
+}
+
+/// Grading captured from one photograph, dormant values included (a hue at zero saturation,
+/// Blending and Balance), reproduces that grade over another photograph's different grade and
+/// leaves the target's HSL as it was.
+#[test]
+fn a_captured_grade_applies_over_another_grade_and_keeps_hsl() {
+    let (mut service, source, path) = opened("grade-capture", None);
+    let target = service
+        .import(&luxforge_testbase::paths::fixture("s0/orientation-6.jpg"))
+        .expect("a second import")
+        .asset
+        .id;
+    let grade = json!({
+        "grade-shadows-hue": 220, "grade-shadows-saturation": 30,
+        "grade-midtones-hue": 40, "grade-blending": 70, "grade-balance": -25
+    });
+    service
+        .apply_action(&source, mutation(0, "grade"), "set-mixer", grade)
+        .expect("the source's grade");
+    service
+        .apply_action(
+            &target,
+            mutation(0, "target"),
+            "set-mixer",
+            json!({
+                "red-hue": 15, "blue-saturation": -20,
+                "grade-midtones-saturation": 25, "grade-highlights-hue": 60,
+                "grade-highlights-saturation": 10, "grade-blending": 30
+            }),
+        )
+        .expect("the target's HSL and grade");
+    let groups = service.preset_groups(None).expect("groups");
+    let grading = groups.capture_fields(&["luxforge.mixer/grading"]).unwrap();
+    let hsl = groups.capture_fields(&["luxforge.mixer/hsl"]).unwrap();
+    // Every field as a number, so a stored integer and a default compare alike.
+    let mixer = |settings: &Map<String, Value>| -> BTreeMap<String, f64> {
+        settings["set-mixer"]
+            .as_object()
+            .expect("mixer fields")
+            .iter()
+            .map(|(field, value)| (field.clone(), value.as_f64().expect("a number")))
+            .collect()
+    };
+    let captured = service
+        .capture_preset(&source, &current(&service, &source), &grading)
+        .unwrap();
+    let mut expected: BTreeMap<String, f64> = grading["set-mixer"]
+        .as_array()
+        .expect("grading's fields")
+        .iter()
+        .map(|field| (field.as_str().unwrap().to_owned(), 0.0))
+        .collect();
+    expected.extend(
+        [
+            ("grade-shadows-hue", 220.0),
+            ("grade-shadows-saturation", 30.0),
+            ("grade-midtones-hue", 40.0),
+            ("grade-blending", 70.0),
+            ("grade-balance", -25.0),
+        ]
+        .map(|(field, value)| (field.to_owned(), value)),
+    );
+    assert_eq!(expected.len(), 14);
+    assert_eq!(mixer(&captured), expected);
+    service
+        .run_action(
+            &target,
+            mutation(1, "apply"),
+            "apply-settings",
+            json!({"settings": captured, "origin": {"kind": "preset", "name": "Grade"}}),
+        )
+        .expect("the grade applies");
+    let applied = current(&service, &target);
+    assert_eq!(
+        mixer(&service.capture_preset(&target, &applied, &grading).unwrap()),
+        expected
+    );
+    let kept = mixer(&service.capture_preset(&target, &applied, &hsl).unwrap());
+    assert_eq!((kept["red-hue"], kept["blue-saturation"]), (15.0, -20.0));
+    assert!(
+        kept.iter().all(|(field, value)| *value == 0.0
+            || ["red-hue", "blue-saturation"].contains(&field.as_str())),
+        "{kept:?}"
+    );
+    drop(service);
+    std::fs::remove_file(path).expect("the catalog is removed");
+}
+
+/// Capture scopes follow which groups own fields, not layout: a top-level group is a scope; a
+/// group that owns no fields directly gathers every group nested in it, whether its children are
+/// tabs or stacked, per photo when any of them is; a group nested in one that owns fields is a
+/// scope of its own.
+#[test]
+fn capture_scopes_follow_field_ownership_not_layout() {
+    let number = |name: &str| {
+        ParameterDescriptor::number(name, -1.0, 1.0)
+            .default(0.0)
+            .notes("n")
+    };
+    let value = |name: &str| Control::number("set-look", name, name).into();
+    let module = ModuleDescriptor {
+        id: "fixture.look".into(),
+        title: "Look".into(),
+        actions: vec![crate::ActionDescriptor {
+            patch: true,
+            parameters: ["a", "b", "c", "d", "e", "f"].map(number).into(),
+            ..crate::ActionDescriptor::new("set-look", "Set look", "patch")
+        }],
+        controls: vec![
+            Control::group(
+                "Stacked",
+                vec![
+                    Control::group("One", vec![value("a")]).into(),
+                    Control::group("Two", vec![value("b")])
+                        .per_photo(true)
+                        .into(),
+                ],
+            )
+            .into(),
+            Control::group(
+                "Owner",
+                vec![value("c"), Control::group("Inner", vec![value("d")]).into()],
+            )
+            .into(),
+            Control::group(
+                "Tabbed",
+                vec![
+                    Control::group("Three", vec![value("e")]).id("three").into(),
+                    Control::group("Four", vec![value("f")]).id("four").into(),
+                ],
+            )
+            .id("tabbed")
+            .group_layout(crate::ModuleLayout::Tabs)
+            .into(),
+        ],
+        ..ModuleDescriptor::default()
+    };
+    module.validate().expect("a valid fixture descriptor");
+    let groups = settings_groups([&module]);
+    let scopes: Vec<(&str, Value, bool)> = groups
+        .groups
+        .iter()
+        .map(|group| {
+            (
+                group.id.as_str(),
+                serde_json::to_value(&group.fields).unwrap(),
+                group.per_photo,
+            )
+        })
+        .collect();
+    assert_eq!(
+        scopes,
+        [
+            (
+                "fixture.look/stacked",
+                json!({"set-look": ["a", "b"]}),
+                true
+            ),
+            ("fixture.look/owner", json!({"set-look": ["c"]}), false),
+            ("fixture.look/inner", json!({"set-look": ["d"]}), false),
+            (
+                "fixture.look/tabbed",
+                json!({"set-look": ["e", "f"]}),
+                false
+            ),
+        ]
+    );
 }
 
 /// A group capture refuses on this entry is Refused with capture's own reason, and the others are

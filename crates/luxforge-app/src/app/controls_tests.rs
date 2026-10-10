@@ -851,6 +851,7 @@ fn group_module_and_field_resets_each_run_one_declared_action() {
                         }
                         luxforge_core::Control::Wheel(wheel) => into.extend(wheel.parameters()),
                         luxforge_core::Control::Group(group) => drawn(&group.controls, into),
+                        luxforge_core::Control::View(view) => drawn(&view.controls, into),
                         _ => {}
                     }
                 }
@@ -1550,18 +1551,22 @@ fn a_curve_in_a_hidden_section_queries_no_samples() {
 fn a_curve_in_a_hidden_tab_queries_no_samples() {
     let mut tabs = controls_descriptor();
     tabs.layout = luxforge_core::ModuleLayout::Tabs;
-    let luxforge_core::Control::Group(luxforge_core::GroupControl { controls, .. }) =
+    let luxforge_core::Control::Group(luxforge_core::GroupControl { id, controls, .. }) =
         &mut tabs.controls[0]
     else {
         unreachable!("the fixture's controls are one group")
     };
+    *id = Some("fields".into());
     let curve = controls
         .iter()
         .position(|control| matches!(control, luxforge_core::Control::Curve(_)))
         .expect("the fixture's curve");
     let curve = controls.remove(curve);
-    tabs.controls
-        .push(luxforge_core::Control::group("Curve", vec![curve]).into());
+    tabs.controls.push(
+        luxforge_core::Control::group("Curve", vec![curve])
+            .id("curve")
+            .into(),
+    );
     let module_id = tabs.id.clone();
     let (mut editor, catalog) = sampling(vec![tabs]);
     assert!(
@@ -1573,8 +1578,8 @@ fn a_curve_in_a_hidden_tab_queries_no_samples() {
     session.revision += 1;
     session.workspace.views = vec![luxforge_core::ViewSelection {
         module: module_id,
-        group: Vec::new(),
-        view: "Curve".into(),
+        group: None,
+        view: "curve".into(),
     }];
     let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
     assert!(

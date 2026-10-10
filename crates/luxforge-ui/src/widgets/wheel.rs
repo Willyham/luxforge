@@ -12,11 +12,13 @@
 //! the hue follows, and
 //! Option/Alt moves the handle a tenth of the pointer's travel from where it stood. The modifiers
 //! are read only while this wheel holds a gesture. At the centre, where no angle exists, the hue
-//! the handle already had is kept. The disc is drawn from the hue and saturation alone, never from
-//! a picture. The host maps the two numbers onto its declared parameters, drafts them together and
-//! commits once on [`WheelEvent::Release`].
+//! the handle already had is kept. The disc is drawn from the declared colour wheel alone, never
+//! from a picture, and tessellated once per theme; the handle and its spoke are a separate, small
+//! layer drawn from the hue and radius. The host maps the two numbers onto its declared
+//! parameters, drafts them together and commits once on [`WheelEvent::Release`].
 
 use super::curve_editor::invalidate_on_version_change;
+use super::double_click::ClickRun;
 use crate::theme;
 use crate::widgets::text::control_label;
 use crate::{Element, Theme, Token};
@@ -30,7 +32,6 @@ use iced::{
 };
 use std::cell::Cell;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
 
 /// The share of the pointer's travel a fine (Option/Alt) drag moves the handle by.
 pub const FINE: f32 = 0.1;
@@ -40,9 +41,9 @@ pub const CENTRE: f32 = 1e-3;
 pub const COMPACT_DIAMETER: f32 = 104.0;
 /// The disc's diameter in the large style an individual view draws.
 pub const LARGE_DIAMETER: f32 = 184.0;
-const DOUBLE_CLICK: Duration = Duration::from_millis(350);
-const DOUBLE_CLICK_SLOP: f32 = 4.0;
-/// Hue wedges and saturation rings the disc is tessellated into, once per version and theme.
+/// How far outside the rim a press still lands on the disc, and the crosshair still shows.
+const RIM_SLOP: f32 = 4.0;
+/// Hue wedges and saturation rings the disc is tessellated into, once per theme.
 const WEDGES: usize = 72;
 const RINGS: usize = 6;
 
@@ -54,13 +55,11 @@ pub struct WheelModel {
     /// The handle's hue in degrees, `0..=360`.
     pub hue: f32,
     /// The handle's distance from the centre, as a fraction of the rim, `0..=1`.
-    pub saturation: f32,
+    pub radius: f32,
     pub large: bool,
     /// The wheel's gesture is open: the handle is drawn in the accent.
     pub dragging: bool,
     pub enabled: bool,
-    /// Increment when anything drawn changes.
-    pub version: u64,
 }
 
 /// What a wheel reports.
@@ -118,17 +117,17 @@ pub fn point_at(hue: f32, radius: f32) -> [f32; 2] {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Grab {
     /// The handle's last hue, kept at the centre.
-    pub hue: f32,
-    pub radius: f32,
+    hue: f32,
+    radius: f32,
     /// The handle's last position on the unit disc.
-    pub handle: [f32; 2],
+    handle: [f32; 2],
     /// The pointer's last position while fine adjustment is on, and whether it is.
-    pub anchor: [f32; 2],
-    pub fine: bool,
+    anchor: [f32; 2],
+    fine: bool,
     /// The hue Shift keeps and the radius Cmd/Ctrl keeps: the handle's own when the modifier went
     /// down, so pressing one never moves the handle.
-    pub hue_lock: Option<f32>,
-    pub radius_lock: Option<f32>,
+    hue_lock: Option<f32>,
+    radius_lock: Option<f32>,
 }
 
 impl Grab {
@@ -237,18 +236,35 @@ struct WheelCanvas<'a, M> {
 
 #[derive(Default)]
 struct WheelState {
-    cache: canvas::Cache,
-    key: Cell<Option<(u64, u64)>>,
+    /// The colour disc and its rim, which depend on the theme alone; the cache redraws for a new
+    /// size by itself.
+    disc: canvas::Cache,
+    disc_key: Cell<Option<u64>>,
+    /// The spoke, the handle and the disabled veil, drawn from the model's own values.
+    overlay: canvas::Cache,
+    overlay_key: Cell<Option<OverlayKey>>,
     grab: Option<Grab>,
     modifiers: keyboard::Modifiers,
-    last_click: Option<(Instant, Point)>,
+    clicks: ClickRun,
 }
+
+/// What the overlay's drawing depends on: the handle's hue and radius (as bits, so the key is
+/// exact), whether it is dragged, whether the wheel is enabled, and the theme's generation.
+type OverlayKey = (u32, u32, bool, bool, u64);
 
 impl<M> WheelCanvas<'_, M> {
     /// The disc's centre and radius inside `bounds`' own coordinates.
     fn disc(&self, bounds: Rectangle) -> (Point, f32) {
         let radius = ((bounds.width.min(bounds.height)) / 2.0 - 4.0).max(1.0);
         (Point::new(bounds.width / 2.0, bounds.height / 2.0), radius)
+    }
+
+    /// Whether `point`, in `bounds`' own coordinates, is on the disc or within [`RIM_SLOP`] of its
+    /// rim: where a press grabs the handle and the pointer shows a crosshair.
+    fn on_disc(&self, point: Point, bounds: Rectangle) -> bool {
+        let (centre, radius) = self.disc(bounds);
+        let offset = point - centre;
+        offset.x.hypot(offset.y) <= radius + RIM_SLOP
     }
 
     /// `point`, in `bounds`' own coordinates, as a unit-disc offset.
@@ -273,35 +289,27 @@ impl<M: Clone> canvas::Program<M, Theme> for WheelCanvas<'_, M> {
             return None;
         }
         if !self.model.enabled {
-            state.grab = None;
-            return None;
+            // A wheel disabled under a live gesture lets it go as a release does, so the host's
+            // draft is never left open by a gesture nothing can end any more.
+            return state
+                .grab
+                .take()
+                .map(|_| Action::publish((self.on_event)(WheelEvent::Release)));
         }
         match event {
             Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)) => {
                 let point = cursor.position_in(bounds)?;
-                let (centre, radius) = self.disc(bounds);
-                if (point - centre).x.hypot((point - centre).y) > radius + 4.0 {
+                if !self.on_disc(point, bounds) {
                     return None;
                 }
-                let double = state.last_click.is_some_and(|(when, at)| {
-                    when.elapsed() <= DOUBLE_CLICK
-                        && (point.x - at.x).abs() <= DOUBLE_CLICK_SLOP
-                        && (point.y - at.y).abs() <= DOUBLE_CLICK_SLOP
-                });
-                state.last_click = Some((Instant::now(), point));
-                if double {
+                if state.clicks.double(point) {
                     state.grab = None;
-                    state.last_click = None;
                     return Some(Action::publish((self.on_event)(WheelEvent::Reset)).and_capture());
                 }
                 let modifiers = WheelModifiers::of(state.modifiers);
                 let pointer = self.unit(point, bounds);
-                let mut grab = Grab::new(
-                    self.model.hue,
-                    self.model.saturation,
-                    pointer,
-                    modifiers.fine,
-                );
+                let mut grab =
+                    Grab::new(self.model.hue, self.model.radius, pointer, modifiers.fine);
                 let (hue, radius) = grab.moved(pointer, modifiers);
                 state.grab = Some(grab);
                 Some(
@@ -342,33 +350,36 @@ impl<M: Clone> canvas::Program<M, Theme> for WheelCanvas<'_, M> {
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
             return Vec::new();
         }
-        invalidate_on_version_change(&state.key, (self.model.version, theme.generation()), || {
-            state.cache.clear()
-        });
         let (centre, radius) = self.disc(bounds);
         let model = &self.model;
-        let geometry = state.cache.draw(renderer, bounds.size(), |frame| {
-            let palette = theme.palette();
-            // The disc: hue wedges, each a run of rings from grey at the centre to the hue at the
-            // rim, drawn from the declared colour wheel and nothing else.
+        let generation = theme.generation();
+        invalidate_on_version_change(&state.disc_key, generation, || state.disc.clear());
+        let disc = state.disc.draw(renderer, bounds.size(), |frame| {
+            // The disc: hue wedges, each a run of annular cells from grey at the centre to the hue
+            // at the rim, drawn from the declared colour wheel and nothing else. A cell covers its
+            // own ring alone, reaching half a point into the ring inside it so no seam shows, so
+            // the disc is filled about once rather than once per ring.
             for wedge in 0..WEDGES {
                 let from = wedge as f32 * 360.0 / WEDGES as f32;
                 let to = from + 360.0 / WEDGES as f32 + 0.6;
                 let middle = (from + to) / 2.0;
-                for ring in (0..RINGS).rev() {
+                for ring in 0..RINGS {
+                    let inner = (radius * ring as f32 / RINGS as f32 - 0.5).max(0.0);
                     let outer = radius * (ring + 1) as f32 / RINGS as f32;
                     let saturation = (ring as f32 + 0.5) / RINGS as f32;
                     let rgb =
                         crate::hsv_to_rgb([f64::from(middle) / 360.0, f64::from(saturation), 0.82]);
-                    let corner = |hue: f32| {
-                        let [x, y] = point_at(hue, outer);
+                    let corner = |hue: f32, distance: f32| {
+                        let [x, y] = point_at(hue, distance);
                         Point::new(centre.x + x, centre.y + y)
                     };
                     let path = Path::new(|builder| {
-                        builder.move_to(centre);
-                        builder.line_to(corner(from));
-                        builder.line_to(corner(middle));
-                        builder.line_to(corner(to));
+                        builder.move_to(corner(from, inner));
+                        builder.line_to(corner(from, outer));
+                        builder.line_to(corner(middle, outer));
+                        builder.line_to(corner(to, outer));
+                        builder.line_to(corner(to, inner));
+                        builder.line_to(corner(middle, inner));
                         builder.close();
                     });
                     frame.fill(&path, Color::from_rgb8(rgb[0], rgb[1], rgb[2]));
@@ -376,10 +387,23 @@ impl<M: Clone> canvas::Program<M, Theme> for WheelCanvas<'_, M> {
             }
             frame.stroke(
                 &Path::circle(centre, radius),
-                Stroke::default().with_color(palette.border).with_width(1.0),
+                Stroke::default()
+                    .with_color(theme.palette().border)
+                    .with_width(1.0),
             );
+        });
+        let key = (
+            model.hue.to_bits(),
+            model.radius.to_bits(),
+            model.dragging,
+            model.enabled,
+            generation,
+        );
+        invalidate_on_version_change(&state.overlay_key, key, || state.overlay.clear());
+        let overlay = state.overlay.draw(renderer, bounds.size(), |frame| {
+            let palette = theme.palette();
             // The handle and its spoke from the centre.
-            let [x, y] = point_at(model.hue, model.saturation.clamp(0.0, 1.0) * radius);
+            let [x, y] = point_at(model.hue, model.radius.clamp(0.0, 1.0) * radius);
             let handle = centre + Vector::new(x, y);
             let ink = if model.dragging {
                 palette.accent
@@ -413,7 +437,7 @@ impl<M: Clone> canvas::Program<M, Theme> for WheelCanvas<'_, M> {
                 );
             }
         });
-        vec![geometry]
+        vec![disc, overlay]
     }
 
     fn mouse_interaction(
@@ -429,16 +453,8 @@ impl<M: Clone> canvas::Program<M, Theme> for WheelCanvas<'_, M> {
             return mouse::Interaction::Grabbing;
         }
         match cursor.position_in(bounds) {
-            Some(point) => {
-                let (centre, radius) = self.disc(bounds);
-                let offset = point - centre;
-                if offset.x.hypot(offset.y) <= radius {
-                    mouse::Interaction::Crosshair
-                } else {
-                    mouse::Interaction::None
-                }
-            }
-            None => mouse::Interaction::None,
+            Some(point) if self.on_disc(point, bounds) => mouse::Interaction::Crosshair,
+            _ => mouse::Interaction::None,
         }
     }
 }
@@ -546,11 +562,10 @@ mod tests {
                 label: "Wheel".into(),
                 readout: String::new(),
                 hue: 90.0,
-                saturation: 0.5,
+                radius: 0.5,
                 large: false,
                 dragging: false,
                 enabled: true,
-                version: 0,
             },
             on_event: Rc::new(|event| event),
         }
@@ -600,8 +615,14 @@ mod tests {
             Some(WheelEvent::Release)
         );
         // A second press at the same place soon after is a double-click: the wheel's reset.
+        // `mouse::Click` needs the second press strictly later than the first, so the test waits
+        // only until the clock has moved.
         let _ = canvas.update(&mut state, &press, bounds, at(70.0, 74.0));
+        let pressed = std::time::Instant::now();
         let _ = canvas.update(&mut state, &release, bounds, Cursor::Unavailable);
+        luxforge_testbase::wait_until("the clock moving past the first press", || {
+            std::time::Instant::now() > pressed
+        });
         assert_eq!(
             published(canvas.update(&mut state, &press, bounds, at(70.0, 74.0))),
             Some(WheelEvent::Reset)
@@ -637,6 +658,58 @@ mod tests {
                 )
                 .is_none(),
             "the corner beside the disc"
+        );
+    }
+
+    /// A wheel disabled while it holds a gesture lets the gesture go with a release, once, so the
+    /// host's draft is not left open.
+    #[test]
+    fn a_wheel_disabled_under_a_gesture_releases_it() {
+        let enabled = canvas();
+        let mut state = WheelState::default();
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(108.0, 108.0));
+        let press = Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left));
+        let at = Cursor::Available(Point::new(80.0, 54.0));
+        assert!(matches!(
+            published(enabled.update(&mut state, &press, bounds, at)),
+            Some(WheelEvent::Moved { .. })
+        ));
+        let mut disabled = canvas();
+        disabled.model.enabled = false;
+        let moved = Event::Mouse(mouse::Event::CursorMoved {
+            position: Point::new(90.0, 54.0),
+        });
+        assert_eq!(
+            published(disabled.update(&mut state, &moved, bounds, at)),
+            Some(WheelEvent::Release)
+        );
+        assert!(state.grab.is_none());
+        assert!(disabled.update(&mut state, &moved, bounds, at).is_none());
+    }
+
+    /// The crosshair shows exactly where a press grabs the handle: on the disc and just past its
+    /// rim, and nowhere else.
+    #[test]
+    fn the_crosshair_marks_where_a_press_lands() {
+        let canvas = canvas();
+        let state = WheelState::default();
+        // The disc's centre is (54, 54) and its radius 50.
+        let bounds = Rectangle::new(Point::ORIGIN, Size::new(108.0, 108.0));
+        // The centre, the rim, and just past the rim on either side.
+        for x in [54.0, 104.0, 107.9, 2.0] {
+            let point = Point::new(x, 54.0);
+            assert!(canvas.on_disc(point, bounds), "{x}");
+            assert_eq!(
+                canvas.mouse_interaction(&state, bounds, Cursor::Available(point)),
+                mouse::Interaction::Crosshair,
+                "{x}"
+            );
+        }
+        let corner = Point::new(4.0, 4.0);
+        assert!(!canvas.on_disc(corner, bounds));
+        assert_eq!(
+            canvas.mouse_interaction(&state, bounds, Cursor::Available(corner)),
+            mouse::Interaction::None
         );
     }
 }

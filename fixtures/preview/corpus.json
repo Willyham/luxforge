@@ -62,7 +62,7 @@
       "id": "mixer-grading",
       "family": "mixer",
       "class": "pointwise",
-      "description": "Colour grading in the mixer: all four wheels tinted with luminance moves, Blending 35 and Balance -20, over a moved HSL range, so the HSL and grading programs run in one colour run.",
+      "description": "Colour grading in the mixer: all four wheels tinted with luminance moves, Blending 35 and Balance -20, over a moved HSL range, so the HSL and grading stages run in the mixer's one colour program.",
       "sources": ["jpeg-24mp", "jpeg-60mp", "zone-plate", "presence-fixture", "raw-z6", "raw-x100vi", "raw-air2s"],
       "steps": [
         {"api": {"method": "edit.set-mixer", "params": {"orange-hue": -20, "blue-saturation": 30, "grade-shadows-hue": 190, "grade-shadows-saturation": 45, "grade-shadows-luminance": 20, "grade-midtones-hue": 35, "grade-midtones-saturation": 20, "grade-midtones-luminance": -10, "grade-highlights-hue": 55, "grade-highlights-saturation": 40, "grade-highlights-luminance": -30, "grade-global-hue": 300, "grade-global-saturation": 8, "grade-global-luminance": 10, "grade-blending": 35, "grade-balance": -20}}}

@@ -2686,34 +2686,26 @@ impl Editor {
             constrain_saturation: command,
             fine: option,
         };
-        let Some(saturation) = crate::app::controls::wheel_of(&self.modules, action, hue)
-            .map(|wheel| wheel.saturation.clone())
-        else {
+        // The handle where the panel draws it: the wheel's own model, read as its view reads it.
+        let inputs = self.inputs();
+        let Some((hue_degrees, radius)) = self.workspace.tools.all().find_map(|section| {
+            let controls = crate::state::tools::controls_of(section, &inputs);
+            walk(&controls).find_map(|control| match control {
+                crate::state::tools::ControlModel::Wheel(wheel)
+                    if wheel.action == action && wheel.hue.parameter == hue =>
+                {
+                    Some((wheel.hue.value, wheel.radius()))
+                }
+                _ => None,
+            })
+        }) else {
             return Vec::new();
-        };
-        let value = |editor: &Self, parameter: &str| {
-            editor
-                .control_field_value(action, parameter)
-                .and_then(|value| value.as_f64())
-                .unwrap_or(0.0)
-        };
-        let max = crate::state::fields::declared(&self.modules, action, &saturation)
-            .and_then(crate::state::number::NumberSpec::of)
-            .map_or(1.0, |spec| spec.max);
-        let radius = if max > 0.0 {
-            (value(self, &saturation) / max).clamp(0.0, 1.0)
-        } else {
-            0.0
         };
         let Some(first) = positions.first() else {
             return Vec::new();
         };
-        let mut grab = luxforge_ui::Grab::new(
-            value(self, hue) as f32,
-            radius as f32,
-            *first,
-            modifiers.fine,
-        );
+        let mut grab =
+            luxforge_ui::Grab::new(hue_degrees as f32, radius as f32, *first, modifiers.fine);
         positions
             .iter()
             .map(|position| {
@@ -3429,7 +3421,7 @@ impl Editor {
     /// captured at once.
     fn tab_step(&mut self, step: TabStep) -> Task<Message> {
         let Some(views) = crate::state::tools::module_of(&self.modules, &step.module)
-            .and_then(|module| module.views_at(&step.group))
+            .and_then(|module| module.views_at(step.group.as_deref()))
             .map(|views| views.into_iter().map(str::to_owned).collect::<Vec<_>>())
         else {
             return self.fail_step("the module declares no such tab row");
@@ -3440,7 +3432,7 @@ impl Editor {
         let shown = self
             .session
             .workspace
-            .view(&step.module, &step.group)
+            .view(&step.module, step.group.as_deref())
             .and_then(|chosen| views.iter().position(|offered| offered == chosen))
             .unwrap_or(0);
         let task = self.update(Message::Control(ControlMessage::SelectView {

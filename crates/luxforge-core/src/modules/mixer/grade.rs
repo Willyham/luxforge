@@ -1,12 +1,14 @@
-//! The colour mixer's grading unit: Shadows, Midtones, Highlights and Global tints with their
-//! luminance treatments, Blending and Balance, evaluated after the HSL unit in the same colour run.
+//! The colour mixer's grading stage: Shadows, Midtones, Highlights and Global tints with their
+//! luminance treatments, Blending and Balance, evaluated after the HSL stage in the mixer's one
+//! colour unit ([`super::unit::Mixer`]), on the same Oklab pixel.
 //!
 //! These are the initial equations `docs/design/colour-grading.md` delegates to the implementation.
 //! They are chosen for smoothness, bounded cost and exact neutrality rather than measured against
 //! Lightroom; the design's final refinement task owns any change to them. Every constant is stated
 //! once below with what it controls.
 //!
-//! Per pixel, in Oklab ([`crate::colour::oklab`], the conversion the HSL unit already uses):
+//! Per pixel, in Oklab ([`crate::colour::oklab`], the conversion the HSL stage already uses; the
+//! unit converts once, before the HSL stage, and back once, after this one):
 //!
 //! 1. **Tonal selection.** The pixel's post-HSL lightness `L`, clamped to `[0, 1]`, is the bounded
 //!    coordinate `t` the weights read; it is read once and the clamp never touches the pixel
@@ -20,7 +22,7 @@
 //!    even the narrowest transition is a smooth ramp, never a step.
 //! 2. **Luminance.** The three tonal luminance amounts, weighted by the same selection, form one
 //!    exponent `m`, and `L` takes the gamma `2^(-m)` on its `[0, 1]` part with any excess passed
-//!    through, exactly as the HSL unit's luminance response does. The luminance weights use the
+//!    through, exactly as the HSL stage's luminance response does. The luminance weights use the
 //!    same boundaries but a width of at least [`LUMINANCE_WIDTH_FLOOR`]: at a narrower width two
 //!    neighbouring ranges driven in opposite directions could fold the tone scale, and this floor
 //!    keeps the mapping monotone for every combination of settings. A positive Shadows amount also
@@ -41,34 +43,28 @@
 //! **Extended input.** A RAW photograph's linear path can bring signed and above-white values.
 //! Only the weight coordinate and the envelope read the clamped lightness; the luminance responses
 //! pass any part of `L` outside `[0, 1]` through unchanged (after the lift's offset), and the tint
-//! is zero there, so the unit is continuous across black and white and never truncates headroom.
+//! is zero there, so the stage is continuous across black and white and never truncates headroom.
 //! Every output is finite for finite input, and the unit touches only the three colour channels the
 //! host gives it, so alpha is never read or changed.
 //!
-//! **Neutrality.** The unit is compiled only when at least one of the four saturation or four
-//! luminance amounts is non-zero ([`Grading::is_active`]): hue, Blending and Balance alone change
-//! no pixel, so a dormant choice is kept as parameter state without any processing. With every
-//! tint zero the `(a, b)` sums are exactly zero and the pixel's own `(a, b)` passes unchanged.
+//! **Neutrality.** The stage runs only when at least one of the four saturation or four luminance
+//! amounts is non-zero ([`Grading::is_active`]): hue, Blending and Balance alone change no pixel,
+//! so a dormant choice is kept as parameter state without any processing. With every tint zero the
+//! `(a, b)` sums are exactly zero and the pixel's own `(a, b)` passes unchanged.
 //!
-//! Coefficients are computed once per compile in `f64` and cast into the fixed 18-word `f32` pack
-//! [`Coefficients`] holds; the per-pixel path is `f32` and identical on the CPU and the GPU
-//! (`grade.wgsl`).
-use crate::{
-    colour::{
-        oklab::{self, Oklab},
-        srgb,
-    },
-    modules::PointwiseColor,
-    render::gpu::{GpuDescription, GpuProgram, GpuProgramKind},
-};
-
-/// The grading unit's GPU program (`grade.wgsl`): the 18 words [`Coefficients::words`] packs.
-pub(crate) static PROGRAM: GpuProgram = GpuProgram {
-    entry: "lf_mixer_grade",
-    source: include_str!("grade.wgsl"),
-    kind: GpuProgramKind::Colour,
-    words: WORDS,
-    enabled: true,
+//! **Per-compile choices.** Coefficients are computed once per compile in `f64` and cast into the
+//! fixed [`WORDS`]-word pack [`Coefficients`] holds; the per-pixel path is `f32` and identical on
+//! the CPU and the GPU (`unit.wgsl`). The compile also decides which work a pixel skips, each an
+//! exact rewrite of the equations above: the luminance weights reuse the tint weights when both
+//! widths are the same (Blending at or above about 33.3, the default included); the tonal
+//! exponent is not formed when the three tonal luminance amounts are zero; Global's gamma folds
+//! into the tonal one when nothing lifts black or dims white, since `(x^p)^q = x^(pq)` on the
+//! `[0, 1]` part and the excess passes through both; and Global's own exponent `2^(-m)` is packed
+//! rather than raised per pixel.
+use super::unit::{power, smoothstep};
+use crate::colour::{
+    oklab::{self, Oklab},
+    srgb,
 };
 
 /// The four wheels, in field order: the three tonal ranges and Global.
@@ -94,10 +90,12 @@ const BALANCE_REACH: f64 = 0.25;
 const WIDTH_AT_NO_BLENDING: f64 = 0.1;
 const WIDTH_AT_FULL_BLENDING: f64 = 1.0;
 
-/// The narrowest transition the luminance weights use. The gamma response stays increasing while
-/// the exponent's slope is below `e / (ln 2 · LUMINANCE_STRENGTH)` per unit of `L`; two neighbours
-/// at ±100 give a slope of `3 · LUMINANCE_STRENGTH / width`, so 0.4 keeps every combination
-/// monotone with margin (`grade_luminance_is_monotone_for_every_extreme_combination`).
+/// The narrowest transition the luminance weights use. The gamma response `L^(2^-m)` stays
+/// increasing while the exponent's slope is below `e / ln 2 ≈ 3.92` per unit of `L`. Two
+/// neighbours at ±100 give at most `3 · LUMINANCE_STRENGTH / width` (the smoothstep's steepest
+/// slope, `1.5 / width`, across a difference of two), so 0.4 gives 3.75: monotone, by a margin of
+/// about 4% (the least floor that holds is about 0.383).
+/// `grade_luminance_is_monotone_for_every_extreme_combination` samples it in `f32`.
 const LUMINANCE_WIDTH_FLOOR: f64 = 0.4;
 
 /// The exponent a luminance amount of ±100 gives at full weight: `L^(2^∓0.5)`.
@@ -111,13 +109,20 @@ const HIGHLIGHT_DIM: f64 = 0.08;
 /// The Oklab chroma a saturation of 100 adds at full weight and full envelope.
 const TINT_CHROMA: f64 = 0.1;
 
-/// The uniform words: two boundaries, two inverse widths, four `(a, b)` tints, four luminance
-/// exponents, the lift and the dim.
-const WORDS: usize = 18;
+/// The pack's words: two boundaries, two inverse widths, four `(a, b)` tints, three tonal luminance
+/// amounts, the Global amount folded into them, Global's own gamma exponent, the black lift, the
+/// affine map's scale, and the flags.
+pub(super) const WORDS: usize = 20;
+
+/// The flags word's bits: the tonal exponent is formed; the luminance weights are the tint weights;
+/// the lift and dim's affine map runs.
+const TONAL_LUMINANCE: u32 = 1;
+const SHARED_WIDTH: u32 = 2;
+const AFFINE: u32 = 4;
 
 /// One wheel's three fields, as stored.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub(super) struct Wheel {
+pub(super) struct WheelValues {
     /// Degrees on the RGB colour wheel, `[0, 360]`; 0 and 360 are the same direction.
     pub(super) hue: f64,
     /// Tint strength, `[0, 100]`.
@@ -130,7 +135,7 @@ pub(super) struct Wheel {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Grading {
     /// Shadows, Midtones, Highlights and Global, in [`WHEEL_NAMES`] order.
-    pub(super) wheels: [Wheel; WHEEL_COUNT],
+    pub(super) wheels: [WheelValues; WHEEL_COUNT],
     /// Range overlap, `[0, 100]`.
     pub(super) blending: f64,
     /// Range balance, `[-100, 100]`.
@@ -140,7 +145,7 @@ pub(super) struct Grading {
 impl Default for Grading {
     fn default() -> Self {
         Self {
-            wheels: [Wheel::default(); WHEEL_COUNT],
+            wheels: [WheelValues::default(); WHEEL_COUNT],
             blending: DEFAULT_BLENDING,
             balance: 0.0,
         }
@@ -183,7 +188,7 @@ fn tint_direction(hue_deg: f64) -> [f64; 2] {
     [a / length, b / length]
 }
 
-/// The unit's whole per-pixel state: 18 `f32` values.
+/// The stage's whole per-pixel state: 19 `f32` values and the flags.
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct Coefficients {
     /// The shadow/midtone and midtone/highlight boundaries after Balance.
@@ -194,12 +199,19 @@ struct Coefficients {
     luminance_inverse_width: f32,
     /// Each wheel's Oklab `(a, b)` tint at full weight, in [`WHEEL_NAMES`] order.
     tints: [[f32; 2]; WHEEL_COUNT],
-    /// Each wheel's luminance exponent amount, `LUMINANCE_STRENGTH * luminance / 100`.
-    luminance: [f32; WHEEL_COUNT],
+    /// The three tonal ranges' luminance exponent amounts, `LUMINANCE_STRENGTH * luminance / 100`.
+    luminance: [f32; 3],
+    /// Global's exponent amount where it folds into the tonal exponent, otherwise zero.
+    folded_global: f32,
+    /// Global's own gamma exponent, `2^(-amount)`, where it does not fold; exactly one, which skips
+    /// it, where it does or where Global's luminance is zero.
+    global_exponent: f32,
     /// The lightness black is lifted to.
     lift: f32,
-    /// The amount white is dimmed by.
-    dim: f32,
+    /// The affine map's scale, `1 - lift - dim`.
+    scale: f32,
+    /// [`TONAL_LUMINANCE`], [`SHARED_WIDTH`] and [`AFFINE`].
+    flags: u32,
 }
 
 impl Coefficients {
@@ -215,38 +227,76 @@ impl Coefficients {
             }
             tint_direction(wheel.hue).map(|component| (chroma * component) as f32)
         });
-        let [shadows, _, highlights, _] = grading.wheels;
+        let [shadows, midtones, highlights, global] = grading.wheels;
+        let amount = |wheel: WheelValues| LUMINANCE_STRENGTH * wheel.luminance / 100.0;
+        let luminance = [shadows, midtones, highlights].map(|wheel| amount(wheel) as f32);
+        let lift = SHADOW_LIFT * (shadows.luminance / 100.0).max(0.0);
+        let dim = HIGHLIGHT_DIM * (-highlights.luminance / 100.0).max(0.0);
+        let tint_inverse_width = (1.0 / width) as f32;
+        let luminance_inverse_width = (1.0 / width.max(LUMINANCE_WIDTH_FLOOR)) as f32;
+        let tonal = luminance.iter().any(|amount| *amount != 0.0);
+        let affine = lift != 0.0 || dim != 0.0;
+        // Global folds into the tonal exponent only where that exponent is formed and nothing
+        // between the two gammas moves the lightness.
+        let fold = tonal && !affine;
+        let mut flags = 0;
+        if tonal {
+            flags |= TONAL_LUMINANCE;
+        }
+        if luminance_inverse_width == tint_inverse_width {
+            flags |= SHARED_WIDTH;
+        }
+        if affine {
+            flags |= AFFINE;
+        }
         Self {
             boundaries: [
                 (SHADOW_BOUNDARY - shift) as f32,
                 (HIGHLIGHT_BOUNDARY - shift) as f32,
             ],
-            tint_inverse_width: (1.0 / width) as f32,
-            luminance_inverse_width: (1.0 / width.max(LUMINANCE_WIDTH_FLOOR)) as f32,
+            tint_inverse_width,
+            luminance_inverse_width,
             tints,
-            luminance: grading
-                .wheels
-                .map(|wheel| (LUMINANCE_STRENGTH * wheel.luminance / 100.0) as f32),
-            lift: (SHADOW_LIFT * (shadows.luminance / 100.0).max(0.0)) as f32,
-            dim: (HIGHLIGHT_DIM * (-highlights.luminance / 100.0).max(0.0)) as f32,
+            luminance,
+            folded_global: if fold { amount(global) as f32 } else { 0.0 },
+            global_exponent: if fold {
+                1.0
+            } else {
+                2f64.powf(-amount(global)) as f32
+            },
+            lift: lift as f32,
+            scale: (1.0 - lift - dim) as f32,
+            flags,
         }
     }
 
-    /// The pack in the order `grade.wgsl` reads it. Each word is the coefficient plus `+0.0`, so
-    /// a negative zero is written as the positive one it processes as.
-    fn words(&self) -> impl Iterator<Item = f32> + '_ {
+    /// The `f32` coefficients in the order `unit.wgsl` reads them.
+    fn values(&self) -> impl Iterator<Item = f32> + '_ {
         self.boundaries
             .iter()
             .copied()
             .chain([self.tint_inverse_width, self.luminance_inverse_width])
             .chain(self.tints.iter().flatten().copied())
-            .chain(self.luminance.iter().copied())
-            .chain([self.lift, self.dim])
-            .map(|value| value + 0.0)
+            .chain(self.luminance)
+            .chain([
+                self.folded_global,
+                self.global_exponent,
+                self.lift,
+                self.scale,
+            ])
+    }
+
+    /// The pack: each coefficient's bits, then the flags. Each coefficient is written plus `+0.0`,
+    /// so a negative zero is written as the positive one it processes as.
+    fn words(&self) -> impl Iterator<Item = u32> + '_ {
+        self.values()
+            .map(|value| (value + 0.0).to_bits())
+            .chain([self.flags])
     }
 
     /// The shadow, midtone and highlight weights of the bounded coordinate `t` at one inverse
     /// width. They sum to one.
+    #[inline]
     fn weights(&self, t: f32, inverse_width: f32) -> [f32; 3] {
         let [c1, c2] = self.boundaries;
         let rise = smoothstep((t - c1) * inverse_width + 0.5);
@@ -254,51 +304,46 @@ impl Coefficients {
         [1.0 - rise, rise - high, high]
     }
 
-    fn apply(&self, rgb: [f32; 3]) -> [f32; 3] {
-        let lab = oklab::to_oklab(rgb);
+    /// The stage on one Oklab pixel. Each branch tests a flag or a coefficient fixed at compile.
+    #[inline]
+    fn apply(&self, lab: Oklab) -> Oklab {
         let t = lab.l.clamp(0.0, 1.0);
         let [ws, wm, wh] = self.weights(t, self.tint_inverse_width);
-        let [vs, vm, vh] = self.weights(t, self.luminance_inverse_width);
-        let [ls, lm, lh, lg] = self.luminance;
-        let amount = vs * ls + vm * lm + vh * lh;
         let mut l = lab.l;
-        if amount != 0.0 {
-            l = gamma(l, amount);
+        if self.flags & TONAL_LUMINANCE != 0 {
+            let [vs, vm, vh] = if self.flags & SHARED_WIDTH != 0 {
+                [ws, wm, wh]
+            } else {
+                self.weights(t, self.luminance_inverse_width)
+            };
+            let [ls, lm, lh] = self.luminance;
+            let amount = vs * ls + vm * lm + vh * lh + self.folded_global;
+            if amount != 0.0 {
+                l = power(l, (-amount).exp2());
+            }
         }
-        if self.lift != 0.0 || self.dim != 0.0 {
+        if self.flags & AFFINE != 0 {
             let core = l.clamp(0.0, 1.0);
-            l = self.lift + (1.0 - self.lift - self.dim) * core + (l - core);
+            l = self.lift + self.scale * core + (l - core);
         }
-        if lg != 0.0 {
-            l = gamma(l, lg);
+        if self.global_exponent != 1.0 {
+            l = power(l, self.global_exponent);
         }
         let envelope = envelope(l);
         let [ts, tm, th, tg] = self.tints;
         let a = ws * ts[0] + wm * tm[0] + wh * th[0] + tg[0];
         let b = ws * ts[1] + wm * tm[1] + wh * th[1] + tg[1];
-        oklab::from_oklab(Oklab {
+        Oklab {
             l,
             a: lab.a + envelope * a,
             b: lab.b + envelope * b,
-        })
+        }
     }
-}
-
-/// The cubic smoothstep of `x` clamped to `[0, 1]`.
-fn smoothstep(x: f32) -> f32 {
-    let x = x.clamp(0.0, 1.0);
-    x * x * (3.0 - 2.0 * x)
-}
-
-/// The gamma `2^(-amount)` on the `[0, 1]` part of `l`, any excess passed through: 0 and 1 are
-/// fixed points.
-fn gamma(l: f32, amount: f32) -> f32 {
-    let core = l.clamp(0.0, 1.0);
-    core.powf((-amount).exp2()) + (l - core)
 }
 
 /// `1 - (2c - 1)^8` of the lightness clamped to `[0, 1]`: one in the middle of the scale, zero at
 /// black and white and outside them.
+#[inline]
 fn envelope(l: f32) -> f32 {
     let x = 2.0 * l.clamp(0.0, 1.0) - 1.0;
     let x2 = x * x;
@@ -306,7 +351,8 @@ fn envelope(l: f32) -> f32 {
     1.0 - x4 * x4
 }
 
-/// The grading unit: fourteen fields reduced to an 18-word coefficient pack.
+/// The grading stage: fourteen fields reduced to a [`WORDS`]-word coefficient pack, which the
+/// mixer's colour unit applies to the Oklab pixel after the HSL stage.
 #[derive(Debug)]
 pub(super) struct Grade {
     grading: Grading,
@@ -320,33 +366,26 @@ impl Grade {
             grading,
         }
     }
-}
 
-impl PointwiseColor for Grade {
-    /// The coefficient pack: a dormant hue, Blending or Balance that changes no pixel changes no
-    /// identity either.
-    fn identity(&self) -> crate::OperationIdentity {
-        crate::OperationIdentity::new(
-            "grade",
-            self.coefficients
-                .words()
-                .map(|value| u64::from(value.to_bits())),
-        )
+    /// The stage on one Oklab pixel.
+    #[inline]
+    pub(super) fn apply(&self, lab: Oklab) -> Oklab {
+        self.coefficients.apply(lab)
     }
 
-    fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {
-        for pixel in rgb {
-            *pixel = self.coefficients.apply(*pixel);
-        }
+    /// The coefficient pack, the stage's whole state: its part of the unit's identity and of the
+    /// GPU words alike, so a dormant hue, Blending or Balance that changes no pixel changes
+    /// neither.
+    pub(super) fn words(&self) -> impl Iterator<Item = u32> + '_ {
+        self.coefficients.words()
     }
 
-    fn is_finite(&self) -> bool {
-        self.grading.values().all(f64::is_finite) && self.coefficients.words().all(f32::is_finite)
+    pub(super) fn is_finite(&self) -> bool {
+        self.grading.values().all(f64::is_finite) && self.coefficients.values().all(f32::is_finite)
     }
 
-    /// The unit and every field away from its default.
-    fn describe(&self) -> String {
-        let mut fields = Vec::new();
+    /// Every field away from its default, as the payload names it.
+    pub(super) fn describe_fields(&self, fields: &mut Vec<String>) {
         for (name, wheel) in WHEEL_NAMES.iter().zip(&self.grading.wheels) {
             for (property, value) in [
                 ("hue", wheel.hue),
@@ -354,27 +393,16 @@ impl PointwiseColor for Grade {
                 ("luminance", wheel.luminance),
             ] {
                 if value != 0.0 {
-                    fields.push(format!("{name}-{property}:{value:+}"));
+                    fields.push(format!("grade-{name}-{property}:{value:+}"));
                 }
             }
         }
         if self.grading.blending != DEFAULT_BLENDING {
-            fields.push(format!("blending:{}", self.grading.blending));
+            fields.push(format!("grade-blending:{}", self.grading.blending));
         }
         if self.grading.balance != 0.0 {
-            fields.push(format!("balance:{:+}", self.grading.balance));
+            fields.push(format!("grade-balance:{:+}", self.grading.balance));
         }
-        if fields.is_empty() {
-            return "grade(neutral)".into();
-        }
-        format!("grade({})", fields.join(", "))
-    }
-
-    fn gpu(&self) -> Option<GpuDescription> {
-        Some(GpuDescription::new(
-            &PROGRAM,
-            self.coefficients.words().map(f32::to_bits).collect(),
-        ))
     }
 }
 

@@ -1,6 +1,8 @@
-//! The colour mixer's one pointwise unit.
+//! The colour mixer's one pointwise unit, [`Mixer`]: one Oklab round trip per pixel, with the HSL
+//! stage ([`Hsl`]) and then the grading stage ([`super::grade::Grade`]) applied to the Oklab pixel
+//! between the two conversions, each only when it changes a pixel.
 //!
-//! This is the production transcription of the equations frozen in
+//! The HSL stage is the production transcription of the equations frozen in
 //! `docs/design/mixer-study.md`: the eight range centres, the monotone hue warp the hue sliders
 //! drive, the raised-cosine weights the saturation and luminance sliders are distributed by, the
 //! chroma ramp, the chroma factor and the Oklab `L` gamma response, composed hue then chroma then
@@ -14,24 +16,32 @@
 //!
 //! Coefficients are computed in f64 — the frozen centres, the eight gaps derived from them, the
 //! hue warp's knots, slopes and per-segment cubics, and the sixteen saturation and luminance
-//! amounts — and cast once into the small fixed-size f32 arrays the unit holds. The per-pixel path
+//! amounts — and cast once into the small fixed-size f32 arrays the stage holds. The per-pixel path
 //! is f32 throughout, ignores the row coordinates and touches nothing but the pixel it was given
 //! and those arrays.
+use super::grade::{self, Grade};
 use crate::{
     colour::oklab::{self, Oklab},
     modules::PointwiseColor,
     render::gpu::{GpuDescription, GpuProgram, GpuProgramKind},
 };
 
-/// The mixer unit's GPU program (`unit.wgsl`): the hue warp's eight cubics and the two per-range
-/// coefficient arrays, 48 words.
+/// The HSL stage's words: the hue warp's eight cubics and the two per-range coefficient arrays.
+const HSL_WORDS: usize = 48;
+
+/// The mixer unit's GPU program (`unit.wgsl`): the stage flags, the HSL stage's 48 words and the
+/// grading stage's pack, 69 words.
 pub(crate) static PROGRAM: GpuProgram = GpuProgram {
     entry: "lf_mixer_mixer",
     source: include_str!("unit.wgsl"),
     kind: GpuProgramKind::Colour,
-    words: 48,
+    words: 1 + HSL_WORDS + grade::WORDS,
     enabled: true,
 };
+
+/// The stage flags' bits, the unit's first word: the HSL stage runs; the grading stage runs.
+const HSL_STAGE: u32 = 1;
+const GRADE_STAGE: u32 = 2;
 
 /// The eight hue ranges, in wheel order (ascending Oklab hue angle).
 pub(super) const RANGE_COUNT: usize = 8;
@@ -215,7 +225,14 @@ const GAPS: [f32; RANGE_COUNT] = as_f32(GAPS_DEG);
 /// The chroma ramp `w_c(C)`: exactly `0` on the achromatic axis, smoothstep to exactly `1` at and
 /// above [`CHROMA_RAMP_EDGE`]. It scales the rotation, the luminance amount and a chroma increase.
 fn chroma_ramp(chroma: f32) -> f32 {
-    let t = (chroma / CHROMA_RAMP_EDGE).clamp(0.0, 1.0);
+    smoothstep(chroma / CHROMA_RAMP_EDGE)
+}
+
+/// The cubic smoothstep of `x` clamped to `[0, 1]`: the chroma ramp's, and the grading stage's
+/// tonal transitions.
+#[inline]
+pub(super) fn smoothstep(x: f32) -> f32 {
+    let t = x.clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
 }
 
@@ -250,23 +267,28 @@ fn segment(hue_deg: f32) -> (usize, f32) {
     (lower, (lower_distance / GAPS[lower]).clamp(0.0, 1.0))
 }
 
-/// The Oklab `L` response for a weighted amount `m`: a gamma on the `[0, 1]` part of `L` with any
-/// excess passed through, so `0` and `1` are exact fixed points and out-of-gamut `L` is preserved
-/// rather than folded back.
-fn luminance_response(l: f32, amount: f32) -> f32 {
-    let gamma = LUMINANCE_GAMMA_BASE.powf(-amount);
+/// The gamma `L^exponent` on the `[0, 1]` part of `L` with any excess passed through, so `0` and
+/// `1` are exact fixed points and out-of-gamut `L` is preserved rather than folded back: the HSL
+/// stage's luminance response, and the grading stage's tonal and Global gammas.
+#[inline]
+pub(super) fn power(l: f32, exponent: f32) -> f32 {
     let core = l.clamp(0.0, 1.0);
-    core.powf(gamma) + (l - core)
+    core.powf(exponent) + (l - core)
 }
 
-/// The colour mixer unit: twenty-four sliders reduced to the hue warp's eight cubics and two
-/// per-range f32 coefficient arrays.
+/// The Oklab `L` response for a weighted amount `m`: the gamma `2^(-m)`.
+fn luminance_response(l: f32, amount: f32) -> f32 {
+    power(l, LUMINANCE_GAMMA_BASE.powf(-amount))
+}
+
+/// The HSL stage: twenty-four sliders reduced to the hue warp's eight cubics and two per-range f32
+/// coefficient arrays.
 ///
 /// The stored f64 values are kept only for [`PointwiseColor::describe`] and the finiteness check;
-/// nothing per-pixel reads them. The coefficient arrays are the whole of the unit's state: 48 f32
+/// nothing per-pixel reads them. The coefficient arrays are the whole of the stage's state: 48 f32
 /// values, a fixed 192 bytes, computed once when a layer compiles and never again.
 #[derive(Debug)]
-pub(super) struct Mixer {
+pub(super) struct Hsl {
     hue: [f64; RANGE_COUNT],
     saturation: [f64; RANGE_COUNT],
     luminance: [f64; RANGE_COUNT],
@@ -279,8 +301,8 @@ pub(super) struct Mixer {
     luminance_amount: [f32; RANGE_COUNT],
 }
 
-impl Mixer {
-    /// Build the unit from the twenty-four slider values, in the wheel order of [`RANGE_NAMES`].
+impl Hsl {
+    /// Build the stage from the twenty-four slider values, in the wheel order of [`RANGE_NAMES`].
     pub(super) fn new(
         hue: [f64; RANGE_COUNT],
         saturation: [f64; RANGE_COUNT],
@@ -328,67 +350,56 @@ impl Mixer {
         // a rounded sum landing a hair below -1.
         (rotation, factor.max(0.0), amount)
     }
-}
 
-impl PointwiseColor for Mixer {
-    fn identity(&self) -> crate::OperationIdentity {
-        crate::OperationIdentity::new(
-            "mixer",
-            self.hue
-                .iter()
-                .chain(&self.saturation)
-                .chain(&self.luminance)
-                .map(|v| v.to_bits()),
-        )
-        .with_words(
-            self.hue_warp
-                .iter()
-                .flatten()
-                .chain(&self.chroma_gain)
-                .chain(&self.luminance_amount)
-                .map(|v| u64::from(v.to_bits())),
-        )
-    }
-
-    /// One Oklab round trip per pixel, with the row coordinates ignored: the mixer is pointwise in
-    /// the strict sense.
+    /// The stage on one Oklab pixel.
     ///
     /// The branches are exactness, not approximation. A pixel with `a = b = 0` exactly — black,
     /// for one — has a ramp of zero, so its rotation and luminance amount are exactly zero and any
-    /// chroma factor leaves `(0, 0)` where it is: the frozen equations reconstruct it as `L^3`, and
-    /// the branch computes that without the hue angle. A zero rotation skips `sin_cos` where the
-    /// equations multiply by `cos 0 = 1` and `sin 0 = 0`, and a zero luminance amount skips the
-    /// response where they raise to the power `1`.
-    fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {
-        for pixel in rgb {
-            let lab = oklab::to_oklab(*pixel);
-            if lab.a == 0.0 && lab.b == 0.0 {
-                *pixel = oklab::from_oklab(lab);
-                continue;
-            }
-            let ramp = chroma_ramp(oklab::chroma(lab));
-            let (rotation, factor, amount) =
-                self.amounts(ramp, normalize_hue_deg(oklab::hue_degrees(lab)));
-            // Hue, then chroma, applied to the `(a, b)` vector directly — rotate, then scale —
-            // rather than by recomposing `C` and `h`: a rotation and a non-negative scalar commute,
-            // so this realizes the frozen `(C, h)` equations exactly while leaving a zero rotation
-            // and a unit factor as the exact identity in Oklab.
-            let (a, b) = if rotation == 0.0 {
-                (factor * lab.a, factor * lab.b)
-            } else {
-                let (sin, cos) = rotation.to_radians().sin_cos();
-                (
-                    factor * (lab.a * cos - lab.b * sin),
-                    factor * (lab.a * sin + lab.b * cos),
-                )
-            };
-            let l = if amount == 0.0 {
-                lab.l
-            } else {
-                luminance_response(lab.l, amount)
-            };
-            *pixel = oklab::from_oklab(Oklab { l, a, b });
+    /// chroma factor leaves `(0, 0)` where it is: the frozen equations leave it as it is, and the
+    /// branch does so without the hue angle. A zero rotation skips `sin_cos` where the equations
+    /// multiply by `cos 0 = 1` and `sin 0 = 0`, and a zero luminance amount skips the response
+    /// where they raise to the power `1`.
+    #[inline]
+    pub(super) fn apply(&self, lab: Oklab) -> Oklab {
+        if lab.a == 0.0 && lab.b == 0.0 {
+            return lab;
         }
+        let ramp = chroma_ramp(oklab::chroma(lab));
+        let (rotation, factor, amount) =
+            self.amounts(ramp, normalize_hue_deg(oklab::hue_degrees(lab)));
+        // Hue, then chroma, applied to the `(a, b)` vector directly — rotate, then scale — rather
+        // than by recomposing `C` and `h`: a rotation and a non-negative scalar commute, so this
+        // realizes the frozen `(C, h)` equations exactly while leaving a zero rotation and a unit
+        // factor as the exact identity in Oklab.
+        let (a, b) = if rotation == 0.0 {
+            (factor * lab.a, factor * lab.b)
+        } else {
+            let (sin, cos) = rotation.to_radians().sin_cos();
+            (
+                factor * (lab.a * cos - lab.b * sin),
+                factor * (lab.a * sin + lab.b * cos),
+            )
+        };
+        let l = if amount == 0.0 {
+            lab.l
+        } else {
+            luminance_response(lab.l, amount)
+        };
+        Oklab { l, a, b }
+    }
+
+    /// The stage's whole state as [`Self::apply`] reads it: the hue warp's cubics in wheel order,
+    /// then the chroma gains, then the luminance amounts. The description leaves out a slider at
+    /// zero of either sign, and every coefficient a negative zero gives is processed as the
+    /// positive one, so each word is the coefficient plus `+0.0`: a pure function of the sliders
+    /// the description writes.
+    fn words(&self) -> impl Iterator<Item = u32> + '_ {
+        self.hue_warp
+            .iter()
+            .flatten()
+            .chain(&self.chroma_gain)
+            .chain(&self.luminance_amount)
+            .map(|value| (value + 0.0).to_bits())
     }
 
     fn is_finite(&self) -> bool {
@@ -408,12 +419,8 @@ impl PointwiseColor for Mixer {
         stored && derived
     }
 
-    /// The unit and its non-neutral sliders, exactly. The host compares compiled operations by this
-    /// string, so two units that describe themselves identically must process identically: every
-    /// coefficient is a pure function of the values named here, and a slider left out is exactly
-    /// zero.
-    fn describe(&self) -> String {
-        let mut fields = Vec::new();
+    /// Every slider away from zero, as the payload names it.
+    fn describe_fields(&self, fields: &mut Vec<String>) {
         for (property, values) in [
             ("hue", &self.hue),
             ("saturation", &self.saturation),
@@ -425,28 +432,108 @@ impl PointwiseColor for Mixer {
                 }
             }
         }
+    }
+}
+
+/// The colour mixer's one unit: an Oklab round trip around the HSL stage, then the grading stage,
+/// each present only when it changes a pixel. A unit with neither, which only the GPU shape
+/// compiles, leaves every pixel untouched.
+#[derive(Debug)]
+pub(super) struct Mixer {
+    hsl: Option<Hsl>,
+    grade: Option<Grade>,
+}
+
+impl Mixer {
+    pub(super) fn new(hsl: Option<Hsl>, grade: Option<Grade>) -> Self {
+        Self { hsl, grade }
+    }
+
+    /// [`HSL_STAGE`] and [`GRADE_STAGE`] for the stages present.
+    fn stages(&self) -> u32 {
+        let mut stages = 0;
+        if self.hsl.is_some() {
+            stages |= HSL_STAGE;
+        }
+        if self.grade.is_some() {
+            stages |= GRADE_STAGE;
+        }
+        stages
+    }
+}
+
+/// One Oklab round trip per pixel around `stage`.
+#[inline]
+fn round_trip(rgb: &mut [[f32; 3]], stage: impl Fn(Oklab) -> Oklab) {
+    for pixel in rgb {
+        *pixel = oklab::from_oklab(stage(oklab::to_oklab(*pixel)));
+    }
+}
+
+impl PointwiseColor for Mixer {
+    /// The stage flags, then each present stage's words: the coefficients are the whole of what a
+    /// pixel reads, so a dormant grading hue, Blending or Balance changes no identity.
+    fn identity(&self) -> crate::OperationIdentity {
+        let mut identity = crate::OperationIdentity::new("mixer", [u64::from(self.stages())]);
+        if let Some(hsl) = &self.hsl {
+            identity = identity.with_words(hsl.words().map(u64::from));
+        }
+        if let Some(grade) = &self.grade {
+            identity = identity.with_words(grade.words().map(u64::from));
+        }
+        identity
+    }
+
+    /// One Oklab round trip per pixel, with the row coordinates ignored: the mixer is pointwise in
+    /// the strict sense. An HSL-only unit computes exactly what the HSL stage alone always has.
+    fn apply_row(&self, _y: u32, _x0: u32, rgb: &mut [[f32; 3]]) {
+        match (&self.hsl, &self.grade) {
+            (None, None) => {}
+            (Some(hsl), None) => round_trip(rgb, |lab| hsl.apply(lab)),
+            (None, Some(grade)) => round_trip(rgb, |lab| grade.apply(lab)),
+            (Some(hsl), Some(grade)) => round_trip(rgb, |lab| grade.apply(hsl.apply(lab))),
+        }
+    }
+
+    fn is_finite(&self) -> bool {
+        self.hsl.as_ref().is_none_or(Hsl::is_finite)
+            && self.grade.as_ref().is_none_or(Grade::is_finite)
+    }
+
+    /// The unit and the fields of its present stages away from their defaults, an HSL stage with
+    /// every slider at zero (which no compile builds) as `hsl:neutral`. Diagnostic only: the host
+    /// compares compiled units by [`PointwiseColor::identity`].
+    fn describe(&self) -> String {
+        let mut fields = Vec::new();
+        if let Some(hsl) = &self.hsl {
+            hsl.describe_fields(&mut fields);
+            if fields.is_empty() {
+                fields.push("hsl:neutral".into());
+            }
+        }
+        if let Some(grade) = &self.grade {
+            grade.describe_fields(&mut fields);
+        }
         if fields.is_empty() {
             return "mixer(neutral)".into();
         }
         format!("mixer({})", fields.join(", "))
     }
 
-    /// The unit's whole state as `apply_row` reads it: the hue warp's cubics in wheel order, then
-    /// the chroma gains, then the luminance amounts. The description leaves out a slider at zero of
-    /// either sign, and every coefficient a negative zero gives is processed as the positive one,
-    /// so each word is the coefficient plus `+0.0`: a pure function of the sliders the description
-    /// writes.
+    /// The stage flags, the HSL stage's 48 words and the grading stage's pack, an absent stage's
+    /// words zero: a pure function of the present stages' fields, which the description writes.
     fn gpu(&self) -> Option<GpuDescription> {
-        Some(GpuDescription::new(
-            &PROGRAM,
-            self.hue_warp
-                .iter()
-                .flatten()
-                .chain(&self.chroma_gain)
-                .chain(&self.luminance_amount)
-                .map(|value| (value + 0.0).to_bits())
-                .collect(),
-        ))
+        let mut words = Vec::with_capacity(PROGRAM.words);
+        words.push(self.stages());
+        match &self.hsl {
+            Some(hsl) => words.extend(hsl.words()),
+            None => words.extend([0; HSL_WORDS]),
+        }
+        match &self.grade {
+            Some(grade) => words.extend(grade.words()),
+            None => words.extend([0; grade::WORDS]),
+        }
+        Some(GpuDescription::new(&PROGRAM, words))
     }
 }
 
@@ -486,8 +573,22 @@ mod tests {
         row[0]
     }
 
+    /// The unit with an HSL stage at these sliders, neutral ones included, and no grading.
+    fn hsl_unit(
+        hue: [f64; RANGE_COUNT],
+        saturation: [f64; RANGE_COUNT],
+        luminance: [f64; RANGE_COUNT],
+    ) -> Mixer {
+        Mixer::new(Some(Hsl::new(hue, saturation, luminance)), None)
+    }
+
+    fn stage(unit: &Mixer) -> &Hsl {
+        unit.hsl.as_ref().expect("an HSL stage")
+    }
+
+    /// The HSL stage at every slider zero: the Oklab round trip and nothing else.
     fn neutral() -> Mixer {
-        Mixer::new([0.0; RANGE_COUNT], [0.0; RANGE_COUNT], [0.0; RANGE_COUNT])
+        hsl_unit([0.0; RANGE_COUNT], [0.0; RANGE_COUNT], [0.0; RANGE_COUNT])
     }
 
     #[test]
@@ -506,7 +607,7 @@ mod tests {
     }
 
     fn hue_only(hue: [f64; RANGE_COUNT]) -> Mixer {
-        Mixer::new(hue, [0.0; RANGE_COUNT], [0.0; RANGE_COUNT])
+        hsl_unit(hue, [0.0; RANGE_COUNT], [0.0; RANGE_COUNT])
     }
 
     fn srgb_codes(codes: [u8; 3]) -> [f32; 3] {
@@ -534,10 +635,10 @@ mod tests {
                 let unit = hue_only(hue);
                 let expected = HUE_REACH_F64 * gap;
                 assert!(
-                    (f64::from(unit.hue_warp[range][0]) - expected).abs() < 1e-5,
+                    (f64::from(stage(&unit).hue_warp[range][0]) - expected).abs() < 1e-5,
                     "{} at {value}: knot displacement {} against {expected}",
                     RANGE_NAMES[range],
-                    unit.hue_warp[range][0]
+                    stage(&unit).hue_warp[range][0]
                 );
                 let travelled =
                     (hue_of(apply(colour, &unit)) - start + 540.0).rem_euclid(360.0) - 180.0;
@@ -570,14 +671,14 @@ mod tests {
                 hue[next] = -magnitude;
                 let unit = hue_only(hue);
                 assert!(
-                    (f64::from(unit.hue_warp[range][0]) - expected_each).abs() < 1e-5
-                        && (f64::from(unit.hue_warp[next][0]) + expected_each).abs() < 1e-5,
+                    (f64::from(stage(&unit).hue_warp[range][0]) - expected_each).abs() < 1e-5
+                        && (f64::from(stage(&unit).hue_warp[next][0]) + expected_each).abs() < 1e-5,
                     "{} +{magnitude} against {} -{magnitude}: displacements {} and {}, expected \
                      ±{expected_each}",
                     RANGE_NAMES[range],
                     RANGE_NAMES[next],
-                    unit.hue_warp[range][0],
-                    unit.hue_warp[next][0]
+                    stage(&unit).hue_warp[range][0],
+                    stage(&unit).hue_warp[next][0]
                 );
             }
         }
@@ -599,7 +700,7 @@ mod tests {
             });
             let unit = hue_only(hue);
             let mut previous = f64::NEG_INFINITY;
-            for (range, [c0, c1, c2, c3]) in unit.hue_warp.iter().enumerate() {
+            for (range, [c0, c1, c2, c3]) in stage(&unit).hue_warp.iter().enumerate() {
                 for step in 0..SAMPLES {
                     let t = step as f32 / SAMPLES as f32;
                     let displacement = c0 + t * (c1 + t * (c2 + t * c3));
@@ -615,7 +716,7 @@ mod tests {
                     previous = output;
                 }
             }
-            let wrapped = CENTRE_HUES_DEG[0] + 360.0 + f64::from(unit.hue_warp[0][0]);
+            let wrapped = CENTRE_HUES_DEG[0] + 360.0 + f64::from(stage(&unit).hue_warp[0][0]);
             assert!(
                 wrapped > previous,
                 "{hue:?}: the warp folds across the seam"
@@ -634,7 +735,7 @@ mod tests {
                 let mut hue = [0.0; RANGE_COUNT];
                 hue[range] = value;
                 let unit = hue_only(hue);
-                for (segment, coefficients) in unit.hue_warp.iter().enumerate() {
+                for (segment, coefficients) in stage(&unit).hue_warp.iter().enumerate() {
                     let offset = (segment + RANGE_COUNT - range) % RANGE_COUNT;
                     let inside = matches!(offset, 0 | 1 | 6 | 7);
                     assert_eq!(
@@ -666,7 +767,7 @@ mod tests {
                     for property in 0..3 {
                         let mut sliders = [[0.0; RANGE_COUNT]; 3];
                         sliders[property][range] = value;
-                        let unit = Mixer::new(sliders[0], sliders[1], sliders[2]);
+                        let unit = hsl_unit(sliders[0], sliders[1], sliders[2]);
                         let produced = apply(grey, &unit);
                         if property == 1 && value < 0.0 {
                             assert_eq!(
@@ -709,7 +810,7 @@ mod tests {
                     for value in [-100.0, 50.0, 100.0] {
                         let mut sliders = [[0.0; RANGE_COUNT]; 3];
                         sliders[property][range] = value;
-                        let unit = Mixer::new(sliders[0], sliders[1], sliders[2]);
+                        let unit = hsl_unit(sliders[0], sliders[1], sliders[2]);
                         assert_eq!(
                             apply(rgb, &unit),
                             expected,
@@ -756,7 +857,7 @@ mod tests {
     /// achromatic result reconstructs to three bit-identical channels.
     #[test]
     fn every_saturation_slider_at_minus_100_makes_every_pixel_exactly_grey() {
-        let unit = Mixer::new(
+        let unit = hsl_unit(
             [0.0; RANGE_COUNT],
             [-100.0; RANGE_COUNT],
             [0.0; RANGE_COUNT],
@@ -764,7 +865,11 @@ mod tests {
         for step in 0..36_000 {
             let hue = step as f32 / 100.0;
             for ramp in [0.0, 1e-6, 0.3, 1.0] {
-                assert_eq!(unit.amounts(ramp, hue).1, 0.0, "hue {hue}, ramp {ramp}");
+                assert_eq!(
+                    stage(&unit).amounts(ramp, hue).1,
+                    0.0,
+                    "hue {hue}, ramp {ramp}"
+                );
             }
         }
         for (index, pixel) in awkward_pixels(200_000).into_iter().enumerate() {
@@ -776,7 +881,7 @@ mod tests {
             );
         }
         // The same with every luminance slider set too: the grey then carries the response.
-        let lit = Mixer::new(
+        let lit = hsl_unit(
             [0.0; RANGE_COUNT],
             [-100.0; RANGE_COUNT],
             [60.0; RANGE_COUNT],
@@ -804,8 +909,8 @@ mod tests {
             ] {
                 let mut saturation = [0.0; RANGE_COUNT];
                 saturation[range] = value;
-                let unit = Mixer::new([0.0; RANGE_COUNT], saturation, [0.0; RANGE_COUNT]);
-                let factor = unit.amounts(ramp, centre).1;
+                let unit = hsl_unit([0.0; RANGE_COUNT], saturation, [0.0; RANGE_COUNT]);
+                let factor = stage(&unit).amounts(ramp, centre).1;
                 assert!(
                     (factor - expected).abs() < 1e-6,
                     "{} at {value}, ramp {ramp}: factor {factor}, expected {expected}",
@@ -819,12 +924,13 @@ mod tests {
     /// never describe themselves the same way.
     #[test]
     fn describe_names_the_non_neutral_fields() {
-        assert_eq!(neutral().describe(), "mixer(neutral)");
+        assert_eq!(Mixer::new(None, None).describe(), "mixer(neutral)");
+        assert_eq!(neutral().describe(), "mixer(hsl:neutral)");
         let mut hue = [0.0; RANGE_COUNT];
         hue[0] = 20.0;
         let mut luminance = [0.0; RANGE_COUNT];
         luminance[4] = -15.0;
-        let unit = Mixer::new(hue, [0.0; RANGE_COUNT], luminance);
+        let unit = hsl_unit(hue, [0.0; RANGE_COUNT], luminance);
         assert_eq!(unit.describe(), "mixer(red-hue:+20, aqua-luminance:-15)");
         assert!(unit.is_finite());
     }
@@ -875,7 +981,7 @@ mod tests {
                 .iter()
                 .find(|set| set["name"] == case["parameters"])
                 .unwrap_or_else(|| panic!("{name}: the named parameter set"));
-            let unit = Mixer::new(
+            let unit = hsl_unit(
                 slider_array(set, "hue"),
                 slider_array(set, "saturation"),
                 slider_array(set, "luminance"),
@@ -918,9 +1024,10 @@ mod tests {
         assert!(worst < 1e-5 + 1e-5, "the worst case stays inside the bound");
     }
 
-    /// The GPU program's 48 words are the unit's whole state in order, two separately built units
-    /// that describe themselves identically carry identical uniforms, and the program's centres,
-    /// gaps and Oklab matrices are the `f32` values the CPU unit reads, bit for bit.
+    /// The GPU program's words are the unit's whole state in order — the stage flags, the HSL
+    /// stage's 48 words, the grading stage's pack, an absent stage's words zero — two separately
+    /// built units that describe themselves identically carry identical uniforms, and the program's
+    /// centres, gaps and Oklab matrices are the `f32` values the CPU unit reads, bit for bit.
     #[test]
     fn gpu_uniforms_follow_the_description() {
         let mut sets: Vec<[[f64; RANGE_COUNT]; 3]> = vec![[[0.0; RANGE_COUNT]; 3]];
@@ -938,10 +1045,25 @@ mod tests {
             [-100.0; RANGE_COUNT],
             [100.0; RANGE_COUNT],
         ]);
+        let mut grading = grade::Grading::default();
+        grading.wheels[1] = grade::WheelValues {
+            hue: 30.0,
+            saturation: 40.0,
+            luminance: -5.0,
+        };
         let build = || -> Vec<Mixer> {
-            sets.iter()
-                .map(|[hue, saturation, luminance]| Mixer::new(*hue, *saturation, *luminance))
-                .collect()
+            let mut units: Vec<Mixer> = sets
+                .iter()
+                .map(|[hue, saturation, luminance]| hsl_unit(*hue, *saturation, *luminance))
+                .collect();
+            units.push(Mixer::new(None, None));
+            units.push(Mixer::new(None, Some(Grade::new(grading))));
+            let [hue, saturation, luminance] = sets[1];
+            units.push(Mixer::new(
+                Some(Hsl::new(hue, saturation, luminance)),
+                Some(Grade::new(grading)),
+            ));
+            units
         };
         let (first, second) = (build(), build());
         let units: Vec<&dyn PointwiseColor> = first
@@ -952,9 +1074,20 @@ mod tests {
         crate::render::gpu::testing::assert_uniforms_follow_descriptions(&units);
         for mixer in &first {
             let words = mixer.gpu().expect("the mixer has a program").words;
-            assert_eq!(f32::from_bits(words[4 * 3 + 2]), mixer.hue_warp[3][2]);
-            assert_eq!(f32::from_bits(words[32 + 5]), mixer.chroma_gain[5]);
-            assert_eq!(f32::from_bits(words[40 + 7]), mixer.luminance_amount[7]);
+            assert_eq!(words[0], mixer.stages());
+            let (hsl, grading) = words[1..].split_at(HSL_WORDS);
+            match &mixer.hsl {
+                Some(stage) => {
+                    assert_eq!(f32::from_bits(hsl[4 * 3 + 2]), stage.hue_warp[3][2]);
+                    assert_eq!(f32::from_bits(hsl[32 + 5]), stage.chroma_gain[5]);
+                    assert_eq!(f32::from_bits(hsl[40 + 7]), stage.luminance_amount[7]);
+                }
+                None => assert!(hsl.iter().all(|word| *word == 0)),
+            }
+            match &mixer.grade {
+                Some(stage) => assert!(grading.iter().copied().eq(stage.words())),
+                None => assert!(grading.iter().all(|word| *word == 0)),
+            }
         }
         let constant = |name: &str| crate::render::gpu::testing::wgsl_constant(&PROGRAM, name);
         let bits = |values: &[f32]| values.iter().map(|v| v.to_bits()).collect::<Vec<_>>();
@@ -972,6 +1105,132 @@ mod tests {
                     "{name} row {row}"
                 );
             }
+        }
+    }
+
+    /// The mixer layer's CPU colour cost: the units one layer compiles to, applied row by row as
+    /// the host applies them, for HSL alone, grading alone and both. Two figures: a 24 MP
+    /// (6000 × 4000) frame on the shared Rayon pool, and one thread's least time per pixel over
+    /// many passes of a 64 Ki-pixel slice, the figure least exposed to a loaded host's scheduling.
+    /// Each case's output over the whole input pattern is hashed, so two builds can be compared
+    /// byte for byte. A measurement, not a gate; its figures are scoped to the host that ran it.
+    #[test]
+    #[ignore = "measurement, run explicitly in release"]
+    fn measure_the_mixer_colour_cost_at_24_mp() {
+        use crate::modules::{MixerModule, Processing, ToolModule};
+        use rayon::prelude::*;
+        use serde_json::json;
+        const WIDTH: usize = 6000;
+        const HEIGHT: usize = 4000;
+        const SAMPLES: usize = 9;
+        const SLICE: usize = 1 << 16;
+        const PASSES: usize = 400;
+        let hsl = json!({
+            "red-hue": 30, "orange-saturation": -40, "green-saturation": 40,
+            "aqua-hue": -25, "blue-luminance": -30, "magenta-saturation": 25
+        });
+        let grading = json!({
+            "grade-shadows-hue": 190, "grade-shadows-saturation": 60,
+            "grade-midtones-hue": 35, "grade-midtones-saturation": 25,
+            "grade-midtones-luminance": 15, "grade-highlights-hue": 55,
+            "grade-highlights-saturation": 60, "grade-highlights-luminance": -45,
+            "grade-global-hue": 300, "grade-global-saturation": 10,
+            "grade-global-luminance": 20, "grade-blending": 35, "grade-balance": -20
+        });
+        let folded = json!({
+            "grade-shadows-hue": 190, "grade-shadows-saturation": 60,
+            "grade-midtones-luminance": 15, "grade-highlights-hue": 55,
+            "grade-highlights-saturation": 60, "grade-global-luminance": 20
+        });
+        let both = |grade: &Value| {
+            let mut payload = hsl.as_object().unwrap().clone();
+            payload.extend(grade.as_object().unwrap().clone());
+            Value::Object(payload)
+        };
+        let pixels: Vec<[f32; 3]> = awkward_pixels(WIDTH * 64);
+        let module = MixerModule::new();
+        let stage = crate::Stage {
+            width: WIDTH as u32,
+            height: HEIGHT as u32,
+        };
+        for (name, payload) in [
+            ("HSL alone", hsl.clone()),
+            ("grading alone (every wheel, Blending 35)", grading.clone()),
+            (
+                "grading alone (folded luminance, default Blending)",
+                folded.clone(),
+            ),
+            ("HSL and grading (every wheel, Blending 35)", both(&grading)),
+            (
+                "HSL and grading (folded luminance, default Blending)",
+                both(&folded),
+            ),
+        ] {
+            let Processing::Color(operation) = module
+                .compile(
+                    super::super::MIXER_EFFECT,
+                    super::super::MIXER_EFFECT_FORMAT,
+                    &payload,
+                    crate::CompileStage::exact(stage),
+                )
+                .unwrap()
+            else {
+                panic!("a colour operation");
+            };
+            let apply = |rows: &mut [[f32; 3]]| {
+                for (y, row) in rows.chunks_mut(WIDTH).enumerate() {
+                    for unit in operation.units() {
+                        unit.apply_row(y as u32, 0, row);
+                    }
+                }
+            };
+            let mut frame = vec![[0.0f32; 3]; WIDTH * HEIGHT];
+            let mut times = Vec::with_capacity(SAMPLES);
+            for _ in 0..SAMPLES {
+                for chunk in frame.chunks_mut(pixels.len()) {
+                    chunk.copy_from_slice(&pixels[..chunk.len()]);
+                }
+                let start = std::time::Instant::now();
+                frame
+                    .par_chunks_mut(WIDTH)
+                    .enumerate()
+                    .for_each(|(y, row)| {
+                        for unit in operation.units() {
+                            unit.apply_row(y as u32, 0, row);
+                        }
+                    });
+                times.push(start.elapsed().as_secs_f64() * 1e3);
+                std::hint::black_box(&frame);
+            }
+            times.sort_by(f64::total_cmp);
+            let slice = &mut frame[..SLICE];
+            let mut single = f64::INFINITY;
+            for _ in 0..PASSES {
+                slice.copy_from_slice(&pixels[..SLICE]);
+                let start = std::time::Instant::now();
+                apply(slice);
+                single = single.min(start.elapsed().as_secs_f64() * 1e9 / SLICE as f64);
+                std::hint::black_box(&slice);
+            }
+            let mut pattern = pixels.clone();
+            apply(&mut pattern);
+            let checksum = pattern
+                .iter()
+                .flatten()
+                .fold(0xcbf2_9ce4_8422_2325u64, |hash, value| {
+                    (hash ^ u64::from(value.to_bits())).wrapping_mul(0x0100_0000_01b3)
+                });
+            let units: Vec<String> = operation.units().iter().map(|u| u.describe()).collect();
+            println!(
+                "{name}: {} unit(s); 24 MP median {:.1} ms, min {:.1} ms, max {:.1} ms over \
+                 {SAMPLES} samples on {} Rayon threads; one thread least {single:.1} ns/pixel \
+                 over {PASSES} passes; output {checksum:016x}; units {units:?}",
+                operation.units().len(),
+                times[SAMPLES / 2],
+                times[0],
+                times[SAMPLES - 1],
+                rayon::current_num_threads()
+            );
         }
     }
 }

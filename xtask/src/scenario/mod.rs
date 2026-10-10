@@ -16,7 +16,7 @@ pub mod plan;
 pub mod recipe;
 
 pub use checks::Checks;
-pub use frame::{Frame, columns, events, preamble};
+pub use frame::{Frame, asked_no_frame, columns, drawn_wheel, events, preamble, selected_view};
 pub use launch::{Launch, Launched, Run};
 pub use pixels::{Fixture, Tolerance};
 pub use plan::{Checked, Plan, Step};

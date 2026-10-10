@@ -153,17 +153,26 @@ impl Editor {
             // and any nested group's, selected through the session as a click on the tab would.
             let mut controls = &module.controls[..];
             let mut layout = module.layout;
-            let mut labels: Vec<String> = Vec::new();
+            let mut row: Option<String> = None;
             for index in path.iter().take(groups) {
-                let Some(Control::Group(group)) = controls.get(*index) else {
+                let Some(control) = controls.get(*index) else {
                     break;
                 };
-                if layout == ModuleLayout::Tabs {
-                    views.push(json!({"module": module.id, "group": labels, "view": group.label}));
+                if layout == ModuleLayout::Tabs
+                    && let Some(tab) = control.tab_id()
+                {
+                    views.push(json!(luxforge_core::ViewSelection {
+                        module: module.id.clone(),
+                        group: row.clone(),
+                        view: tab.to_owned(),
+                    }));
                 }
-                labels.push(group.label.clone());
-                controls = &group.controls;
-                layout = group.layout;
+                (row, layout) = match control {
+                    Control::Group(group) => (group.id.clone(), group.layout),
+                    Control::View(_) => (None, ModuleLayout::Stacked),
+                    _ => break,
+                };
+                controls = control.children();
             }
         }
         let views = if views.is_empty() {
