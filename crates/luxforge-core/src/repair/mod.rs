@@ -26,18 +26,50 @@
 //! quality to fit. Every pass checks its cancellation token per row or per sweep.
 
 pub(crate) mod footprint;
+pub(crate) mod gpu;
 pub(crate) mod heal;
+#[cfg(feature = "qualification")]
+pub mod qualification;
 pub(crate) mod search;
 
 #[cfg(test)]
 mod tests;
 
 use crate::{
-    Cancel, Error,
+    Cancel, Error, GpuProgram,
     modules::{Region, Stage},
     path,
+    render::gpu::GpuProgramKind,
 };
 use footprint::Footprint;
+
+/// The repair program (`repair.wgsl`): one group of operations' Clone and Heal under the spatial
+/// convention, with each operation's tiles in a per-level atlas ([`gpu`]). Not enabled: no plan
+/// names it until the render integration does, and its kernels are held to these units by the
+/// desktop's `gpu_repair` readback tests.
+pub(crate) static REPAIR_PROGRAM: GpuProgram = GpuProgram {
+    entry: "lf_repair",
+    source: include_str!("repair.wgsl"),
+    kind: GpuProgramKind::Spatial,
+    words: 0,
+    enabled: false,
+};
+
+/// The kernels and the apply of [`REPAIR_PROGRAM`].
+pub(crate) fn gpu_functions() -> (Vec<&'static str>, Vec<&'static str>) {
+    (
+        vec![
+            "lf_repair_gather",
+            "lf_repair_coarse",
+            "lf_repair_start",
+            "lf_repair_relax",
+            "lf_repair_restrict",
+            "lf_repair_correct",
+            "lf_repair_composite",
+        ],
+        vec!["lf_repair_apply"],
+    )
+}
 
 /// Which repair an operation performs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,7 +82,7 @@ pub(crate) enum RepairKind {
 /// counted in the 16 x 16 tiles the solver allocates. At about 41 bytes a cell over every level
 /// (`f64` values, a class byte, a right-hand side on the coarse levels) the bound is about 350 MB
 /// of scratch, held only while the operation solves. It admits a spot of radius `0.25` content
-/// heights on a 60 MP photograph (about 8.0 Mi cells with tile rounding) and refuses larger.
+/// heights on a 60 MP photograph (about 8.0 million cells with tile rounding) and refuses larger.
 pub(crate) const HEAL_CELLS_MAX: usize = 8 << 20;
 
 /// One stored operation bound to a stage.

@@ -174,6 +174,7 @@ pub use previews::{DecodedPreview, decode_preview};
 pub mod qualification {
     pub use crate::modules::detail_qualification as detail;
     pub use crate::modules::presence_qualification as presence;
+    pub use crate::repair::qualification as repair;
 
     /// The picture at rest of `evaluation` on the GPU at `view`, as a displayed stack's job plans
     /// it ([`crate::GpuRest`]): the plan of the whole stack from the source, and the boundary it
