@@ -20,9 +20,13 @@ use serde_json::{Map, Value};
 /// first layer of a RAW asset's stack.
 pub(super) const RAW_EFFECT: &str = "luxforge.raw";
 
-/// The RAW development's own payload format, listed among [`super::BUILTIN_FORMATS`]; a RAW layer
-/// of any other format is refused as `incompatible` and never rewritten.
+/// The RAW development's own payload format; a RAW layer of any other format is refused as
+/// `incompatible` and never rewritten.
 pub(super) const RAW_EFFECT_FORMAT: u32 = 2;
+
+/// The RAW effect and its format, as [`super::BUILTIN_FORMATS`] lists it, so only this module
+/// names its identity.
+pub(super) const RAW_BUILTIN_FORMAT: (&str, u32) = (RAW_EFFECT, RAW_EFFECT_FORMAT);
 
 /// The RAW module's identity, which Basic's control variants name.
 pub(crate) const RAW_MODULE: &str = "luxforge.raw";
