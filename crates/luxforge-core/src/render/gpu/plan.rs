@@ -179,6 +179,9 @@ pub enum GpuFallback {
     /// or the export cannot be drawn in staged sweeps, or the read draws one tile: the reference
     /// draws it rather than a light with those layers left out. `why` says which.
     LightStage { layer: usize, why: String },
+    /// Layer `layer` is a repair (Corrections) layer the GPU plan cannot draw, for the reason
+    /// `why`: the reference draws the frame with every operation, never without them.
+    Repair { layer: usize, why: String },
     /// The draft changes no layer of the stack yet, and drafts no layer of its own: there is
     /// nothing for a plan to start from, and its frame is the entry's.
     Unchanged,
@@ -198,6 +201,7 @@ impl GpuFallback {
             Self::NoProgram { .. } => "no-program",
             Self::DisabledProgram { .. } => "disabled-program",
             Self::LightStage { .. } => "light-stage",
+            Self::Repair { .. } => "repair",
             Self::Unchanged => "unchanged",
             Self::Unplannable(_) => "unplannable",
         }
@@ -212,7 +216,8 @@ impl GpuFallback {
             | Self::BetweenResamples { layer }
             | Self::NoProgram { layer, .. }
             | Self::DisabledProgram { layer, .. }
-            | Self::LightStage { layer, .. } => Some(*layer),
+            | Self::LightStage { layer, .. }
+            | Self::Repair { layer, .. } => Some(*layer),
             Self::Unchanged | Self::Unplannable(_) => None,
         }
     }
@@ -249,6 +254,10 @@ impl std::fmt::Display for GpuFallback {
                 f,
                 "layer {layer} reads a light behind a spatial layer, which only staged sweeps \
                  compute: {why}"
+            ),
+            Self::Repair { layer, why } => write!(
+                f,
+                "layer {layer} is a Corrections layer the GPU plan cannot draw: {why}"
             ),
             Self::Unchanged => write!(f, "the draft changes no layer yet"),
             Self::Unplannable(reason) => {
@@ -855,9 +864,23 @@ impl Compiled {
                         Err(fallback) => return Ok(Err(fallback)),
                     }
                 }
-                // A spatial operation, resample or warp is an entry, never an operation.
-                Processing::Spatial(_) | Processing::Resample(_) | Processing::Warp(_) => {}
+                // A spatial operation, repair, resample or warp is an entry, never an operation.
+                Processing::Spatial(_)
+                | Processing::Repair(_)
+                | Processing::Resample(_)
+                | Processing::Warp(_) => {}
             }
+        }
+
+        // A repair boundary after the plan's boundary: the GPU program for it is not in this
+        // build, so the reference draws the frame with every operation.
+        if let Some(index) = (first + 1..=last)
+            .find(|&index| matches!(self.segments[index].entry, Some(Entry::Repair(_))))
+        {
+            return Ok(Err(GpuFallback::Repair {
+                layer: self.entry_layer(index),
+                why: "this build has no GPU program for Clone and Heal".into(),
+            }));
         }
 
         // The spatial operations the boundary segment's frame enters, in order, at that frame's
@@ -959,7 +982,10 @@ impl Compiled {
                         Ok(operation) => step.after.push(operation),
                         Err(fallback) => return Ok(Err(fallback)),
                     },
-                    Processing::Spatial(_) | Processing::Resample(_) | Processing::Warp(_) => {}
+                    Processing::Spatial(_)
+                    | Processing::Repair(_)
+                    | Processing::Resample(_)
+                    | Processing::Warp(_) => {}
                 }
             }
             tail_reads = (all, chained.stage());

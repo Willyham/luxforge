@@ -6,7 +6,7 @@
 //! by the area average this plan's coverage names ([`ProxyPlan::coverage`]).
 use super::preview::output_window;
 use crate::{
-    EffectStage, Error, ModuleRegistry, ProxyBounds, ProxyPlan, ProxyWindow, Recipe,
+    Error, ModuleRegistry, ProxyBounds, ProxyPlan, ProxyWindow, Recipe,
     mask_field::MaskSampling,
     modules::{Region, Stage},
     render::Compiled,
@@ -56,15 +56,14 @@ pub(crate) struct ReducedStage {
     pub(crate) compiled: Compiled,
 }
 
-/// Whether every layer of `recipe` scales with the stage it is compiled against: a pixel-stage
-/// layer addresses content pixels, which no reduced stage has, and a layer whose stage is unknown
-/// cannot be judged. `O(layers)`.
+/// Whether every layer of `recipe` scales with the stage it is compiled against: a layer whose
+/// stage is unknown cannot be judged. Every declared stage scales; a repair layer's geometry is in
+/// normalized content coordinates, so it binds to a reduced stage as a mask does. `O(layers)`.
 fn scalable(registry: &ModuleRegistry, recipe: &Recipe) -> bool {
-    recipe.layers.iter().all(|layer| {
-        registry
-            .effect_stage(&layer.effect_id)
-            .is_some_and(|stage| stage != EffectStage::Pixel)
-    })
+    recipe
+        .layers
+        .iter()
+        .all(|layer| registry.effect_stage(&layer.effect_id).is_some())
 }
 
 /// The reduced stage `recipe`, over a `source`-sized source whose full-resolution output stage is

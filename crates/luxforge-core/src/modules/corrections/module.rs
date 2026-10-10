@@ -212,7 +212,7 @@ impl CorrectionsModule {
                         identity: IdentityKind::Correction,
                         max: MAX_CORRECTIONS as u32,
                     }),
-                    ..EffectDescriptor::new(CORRECTIONS_EFFECT, EffectStage::Pixel)
+                    ..EffectDescriptor::new(CORRECTIONS_EFFECT, EffectStage::Repair)
                 }],
                 actions,
                 queries,
@@ -373,13 +373,30 @@ impl ToolModule for CorrectionsModule {
         RepairPayload::default().stored()
     }
 
+    fn compile_with_strokes(
+        &self,
+        effect_id: &str,
+        format: u32,
+        payload: &Value,
+        _at: crate::CompileStage,
+        strokes: &crate::path::StrokeTable,
+    ) -> Result<Processing, Error> {
+        table::compile(&stored(effect_id, format, payload)?, strokes)
+    }
+
+    /// A repair layer's rows are its strokes' positions, so it compiles through
+    /// [`ToolModule::compile_with_strokes`]; asked without the strokes, only the empty layer can
+    /// compile, and a layer holding operations is refused rather than drawn without them.
     fn compile(
         &self,
         effect_id: &str,
         format: u32,
         payload: &Value,
-        at: crate::CompileStage,
+        _at: crate::CompileStage,
     ) -> Result<Processing, Error> {
-        table::compile(&stored(effect_id, format, payload)?, at)
+        table::compile(
+            &stored(effect_id, format, payload)?,
+            &crate::path::StrokeTable::default(),
+        )
     }
 }

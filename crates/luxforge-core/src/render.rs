@@ -33,6 +33,7 @@ pub(crate) mod map;
 pub(crate) mod parallel;
 mod pipeline;
 mod raster;
+pub(crate) mod repair_entry;
 pub(crate) mod spatial;
 #[cfg(test)]
 pub(crate) mod testing;
@@ -51,6 +52,8 @@ mod geometry_tests;
 mod locate_tests;
 #[cfg(test)]
 mod mask_tests;
+#[cfg(test)]
+mod repair_tests;
 #[cfg(test)]
 mod sample_tests;
 #[cfg(test)]

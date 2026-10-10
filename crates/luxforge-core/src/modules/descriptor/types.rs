@@ -24,7 +24,7 @@ fn is_default<T: Default + PartialEq>(value: &T) -> bool {
 }
 
 /// Where an effect acts, and so where the host puts a new layer. The stages run in this order:
-/// a source effect prepares the content stage at index zero; pixel and colour effects address that
+/// a source effect prepares the content stage at index zero; repair and colour effects address that
 /// content stage and join the stack before everything that follows; a spatial effect reads a
 /// bounded neighbourhood of the content stage, so it follows the pointwise work; a geometry effect
 /// changes the stage and extends the geometry tail; and a finish effect is evaluated last, in the
@@ -35,7 +35,10 @@ fn is_default<T: Default + PartialEq>(value: &T) -> bool {
 pub enum EffectStage {
     Source,
     Geometry,
-    Pixel,
+    /// Clone and Heal over the developed source, in content coordinates, before restoration and
+    /// colour: compiled into [`crate::Processing::Repair`]. A repair layer belongs to the leading
+    /// run, after a source layer and before everything else.
+    Repair,
     /// Bounded pre-tone restoration in content coordinates.
     Restoration,
     /// Pointwise colour over the whole stage, compiled into [`crate::Processing::Color`].
@@ -53,7 +56,7 @@ impl EffectStage {
         match self {
             Self::Source => "source",
             Self::Geometry => "geometry",
-            Self::Pixel => "pixel",
+            Self::Repair => "repair",
             Self::Restoration => "restoration",
             Self::Color => "color",
             Self::Spatial => "spatial",

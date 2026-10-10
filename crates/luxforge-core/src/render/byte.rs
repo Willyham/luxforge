@@ -54,8 +54,12 @@ pub(crate) fn byte_frame_widths(compiled: &Compiled) -> Vec<FrameWidths> {
         let next_spatial = compiled
             .segments
             .get(index + 1)
-            .is_some_and(|next| matches!(&next.entry, Some(super::Entry::Spatial(_))));
-        let spatial = matches!(&segment.entry, Some(super::Entry::Spatial(_)));
+            .and_then(|next| next.entry.as_ref())
+            .is_some_and(super::Entry::materializes);
+        let spatial = segment
+            .entry
+            .as_ref()
+            .is_some_and(super::Entry::materializes);
         let pass_through = !segment.has_color;
         let input = spatial && (segment.has_color || (pass_through && next_spatial));
         widths[index] = FrameWidths {
@@ -804,6 +808,32 @@ pub(super) fn spatial_frame(
         entry,
         stage,
         tiling,
+        cancel,
+        context,
+        wide,
+        |region, planes, parallelism| fill_planes(region, planes, parallelism, read),
+    )
+}
+
+/// The byte driver's frame of the repair boundary `entry` over `input`, the finished byte frame of
+/// the `stage` it receives, read through the sRGB decode table.
+pub(super) fn repair_frame(
+    domain: &Byte<'_>,
+    entry: &super::repair_entry::RepairEntry,
+    input: &ByteFrame,
+    stage: Stage,
+    cancel: &Cancel,
+    context: &RenderContext,
+    wide: bool,
+) -> Result<ByteFrame, Error> {
+    let table = decode16_table();
+    let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
+        Ok(decoded_in(table, input.pixel(stage, x, y)))
+    };
+    super::repair_entry::repair_frame(
+        domain,
+        entry,
+        stage,
         cancel,
         context,
         wide,
