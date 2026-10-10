@@ -332,7 +332,14 @@ fn usage_a_headless_host_reports_the_inactive_destination_and_claims_nothing() {
     assert_eq!(read["limits"]["window_events"], json!(512));
     assert_eq!(
         read["diagnostics"],
-        json!({"recorded": 0, "dropped": 0, "sent": 0})
+        json!({
+            "recorded": 0,
+            "dropped": 0,
+            "sent": 0,
+            "attempts": 0,
+            "accepted": 0,
+            "delivery": {"state": "ready", "reason": null},
+        })
     );
     let claim = harness.ok(
         harness.desktop,

@@ -12,13 +12,16 @@
 //! the write fails; turning on writes first and takes effect only once the write succeeded. A read
 //! failure, an unusable record, an ineligible launch or another disclosure version collects
 //! nothing. There is no preferences watch or polling: the statistics worker confirms the stored
-//! record with [`Usage::confirm_stored`] before detaching a window and before every upload.
+//! record with [`Usage::confirm_stored`] before detaching a window and before every upload. Every
+//! change of the effective state calls the one watcher a statistics supervisor registers
+//! ([`Usage::watch`]), a coalesced wake rather than a poll.
 use super::{
     DISCLOSURE_VERSION, Gate, Generation,
     eligibility::{Eligibility, LaunchMode, Reason},
     encode::{Release, ReportId},
     event::Diagnostics,
     image_id::ImageKey,
+    registry::Trigger,
 };
 use crate::{
     ClientAuthority, Error,
@@ -31,7 +34,7 @@ use std::{
     fmt,
     path::PathBuf,
     sync::{
-        Mutex, MutexGuard,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -283,10 +286,18 @@ pub struct UsageState {
     pub diagnostics: Diagnostics,
 }
 
-/// [`Diagnostics`] as `usage.read` answers them: `{recorded, dropped, sent}`.
+/// [`Diagnostics`] as `usage.read` answers them:
+/// `{recorded, dropped, sent, attempts, accepted, delivery: {state, reason}}`.
 fn diagnostics<S: Serializer>(counts: &Diagnostics, serializer: S) -> Result<S::Ok, S::Error> {
-    json!({"recorded": counts.recorded, "dropped": counts.dropped, "sent": counts.sent})
-        .serialize(serializer)
+    json!({
+        "recorded": counts.recorded,
+        "dropped": counts.dropped,
+        "sent": counts.sent,
+        "attempts": counts.attempts,
+        "accepted": counts.accepted,
+        "delivery": {"state": counts.delivery.state(), "reason": counts.delivery.reason()},
+    })
+    .serialize(serializer)
 }
 
 /// The stored consent as the statistics worker confirms it: whether the record is consent to the
@@ -327,13 +338,16 @@ impl ConsentReader {
 
 /// The identity collection runs under while the gate is on: its generation, the installation ID
 /// ([`InstallationId::report_id`] for the encoder) and the image key, from the record that enabled
-/// it. The key is never serialized and its `Debug` is redacted; the session's collector takes it
-/// as it is.
+/// it, and whether the launch read or an opt-in turned it on. The key is never serialized and its
+/// `Debug` is redacted; the session's collector takes it as it is.
 #[derive(Clone)]
 pub struct Active {
     pub generation: Generation,
     pub installation_id: InstallationId,
     pub image_key: ImageKey,
+    /// [`Trigger::Launch`] for the launch read of a stored opt-in, [`Trigger::OptIn`] for an
+    /// enable in this process: the first session's `session.start` trigger.
+    pub trigger: Trigger,
 }
 
 impl fmt::Debug for Active {
@@ -375,7 +389,15 @@ pub struct Usage {
     /// the gate back on.
     revocations: AtomicU64,
     diagnostics: Mutex<Diagnostics>,
+    /// The statistics worker's current session ID, which `usage.read` answers while collecting.
+    session_id: Mutex<Option<ReportId>>,
+    /// Called after every change of the effective state, outside every lock of this runtime.
+    watcher: Mutex<Option<Watcher>>,
 }
+
+/// What [`Usage::watch`] registers: a coalesced wake, which must not block or call back into the
+/// runtime's writers.
+pub type Watcher = Arc<dyn Fn() + Send + Sync>;
 
 impl fmt::Debug for Usage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -404,7 +426,56 @@ impl Usage {
             writer: Mutex::new(()),
             revocations: AtomicU64::new(0),
             diagnostics: Mutex::new(Diagnostics::default()),
+            session_id: Mutex::new(None),
+            watcher: Mutex::new(None),
         }
+    }
+
+    /// Register the one watcher (the statistics supervisor's wake), replacing any earlier one. It
+    /// is called after each change of the effective state: the launch read or an enable turning
+    /// collection on, an opt-out (before its write is attempted) and [`Usage::confirm_stored`]
+    /// ending a generation. There is no preferences watch or polling behind it.
+    pub fn watch(&self, watcher: Option<Watcher>) {
+        *self
+            .watcher
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = watcher;
+    }
+
+    /// Tell the watcher the effective state changed. Never called while a lock of this runtime is
+    /// held, so the watcher may read [`Usage::active`].
+    fn changed(&self) {
+        let watcher = self
+            .watcher
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        if let Some(watcher) = watcher {
+            watcher();
+        }
+    }
+
+    /// The launch read for a host that has no catalog owner to make it: read the stored record
+    /// under `preferences_dir` once, as an owner does when it starts. It never writes and never
+    /// grants consent that is not stored.
+    pub fn launch(&self, preferences_dir: Option<PathBuf>) {
+        self.start(PreferenceStore::new(preferences_dir).read().as_ref());
+    }
+
+    /// Record the statistics worker's current session, which `usage.read` answers as its
+    /// `session_id` while collection is effective.
+    pub fn set_session(&self, session: Option<ReportId>) {
+        *self
+            .session_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = session;
+    }
+
+    fn session_id(&self) -> Option<ReportId> {
+        *self
+            .session_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     /// A host without a desktop, such as `luxforge-json`: never eligible.
@@ -482,6 +553,8 @@ impl Usage {
             _ => {
                 self.gate.disable();
                 runtime.active = None;
+                drop(runtime);
+                self.changed();
                 false
             }
         }
@@ -506,7 +579,10 @@ impl Usage {
             generation: self.gate.enable(),
             installation_id,
             image_key,
+            trigger: Trigger::Launch,
         });
+        drop(runtime);
+        self.changed();
     }
 
     /// `usage.read`: the stored record and this process's state. Reads one small file and makes no
@@ -540,7 +616,10 @@ impl Usage {
             destination: self.eligibility.destination().to_owned(),
             release: self.eligibility.release(),
             installation_id,
-            session_id: None,
+            session_id: self
+                .session_id()
+                .filter(|_| effective)
+                .map(|id| String::from_utf8_lossy(&id.to_wire()).into_owned()),
             reason: (!effective).then(|| self.eligibility.reason().unwrap_or(stored_reason)),
             limits: Limits::CONTRACT,
             diagnostics: self.diagnostics(),
@@ -691,7 +770,10 @@ impl Usage {
                 generation: self.gate.enable(),
                 installation_id,
                 image_key,
+                trigger: Trigger::OptIn,
             });
+            drop(runtime);
+            self.changed();
         }
         Ok(changed)
     }
@@ -700,6 +782,8 @@ impl Usage {
         self.revocations.fetch_add(1, Ordering::AcqRel);
         self.gate.disable();
         self.lock().active = None;
+        // The supervisor stops producers and cancels the request in flight before the write.
+        self.changed();
         let _writer = self.lock_writer();
         let written = store.update_usage(|record| {
             let next = UsageRecord {

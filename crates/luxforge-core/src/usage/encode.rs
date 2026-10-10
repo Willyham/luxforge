@@ -283,6 +283,13 @@ impl BodyBuffer {
     pub fn storage_bytes(&self) -> usize {
         self.0.capacity()
     }
+
+    /// Exchange the body's storage with `other`, so the sender hands the encoded body to the
+    /// transport's request and takes the reserved storage back afterwards, without a second
+    /// 64 KiB copy.
+    pub(crate) fn swap(&mut self, other: &mut Vec<u8>) {
+        std::mem::swap(&mut self.0, other);
+    }
 }
 
 /// What [`encode_batch`] wrote.
