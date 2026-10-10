@@ -16,6 +16,9 @@ use crate::{
 /// stroke is refused naming its operation, never compiled as an empty row. `O(operations)`; each
 /// row shares its stroke's positions.
 pub(super) fn compile(payload: &RepairPayload, strokes: &StrokeTable) -> Result<Processing, Error> {
+    if payload.operations.is_empty() {
+        return Ok(Processing::Repair(RepairTable::neutral()));
+    }
     let rows = payload
         .operations
         .iter()

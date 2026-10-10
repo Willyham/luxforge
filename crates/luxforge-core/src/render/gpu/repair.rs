@@ -142,11 +142,7 @@ fn meets(a: Region, b: Region) -> bool {
 /// while it reads nothing that group writes.
 fn groups(entry: &RepairEntry) -> Vec<std::ops::Range<usize>> {
     let mut groups: Vec<std::ops::Range<usize>> = Vec::new();
-    for (index, (operation, regions)) in entry
-        .operations()
-        .iter()
-        .zip(entry.regions())
-        .enumerate()
+    for (index, (operation, regions)) in entry.operations().iter().zip(entry.regions()).enumerate()
     {
         let joins = operation.kind == RepairKind::Clone
             && groups.last().is_some_and(|group| {
@@ -418,7 +414,9 @@ pub(crate) fn plan_repair(layer: usize, entry: &RepairEntry, linear: bool) -> Gp
             let ring = 1u32;
             let dx = regions.delta[0].unsigned_abs();
             let dy = regions.delta[1].unsigned_abs();
-            u32::try_from(dx.max(dy)).unwrap_or(u32::MAX).saturating_add(ring)
+            u32::try_from(dx.max(dy))
+                .unwrap_or(u32::MAX)
+                .saturating_add(ring)
         })
         .max()
         .unwrap_or(0);

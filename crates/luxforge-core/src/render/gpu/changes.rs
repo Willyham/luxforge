@@ -178,10 +178,7 @@ fn repair_change(
     let positions = before.operations.len().max(after.operations.len());
     let mut first = None;
     for index in 0..positions {
-        let (was, is) = (
-            before.operations.get(index),
-            after.operations.get(index),
-        );
+        let (was, is) = (before.operations.get(index), after.operations.get(index));
         if was.map(|op| op.key) == is.map(|op| op.key) {
             continue;
         }
@@ -191,7 +188,11 @@ fn repair_change(
     }
     if let Some(first) = first {
         for op in &after.operations[(first + 1).min(after.operations.len())..] {
-            if op.reads.iter().any(|read| changed.iter().any(|area| meets(*read, *area))) {
+            if op
+                .reads
+                .iter()
+                .any(|read| changed.iter().any(|area| meets(*read, *area)))
+            {
                 changed.push(op.writes);
             }
         }
