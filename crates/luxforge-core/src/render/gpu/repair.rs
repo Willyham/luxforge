@@ -1,33 +1,24 @@
 //! A repair layer on the GPU (`docs/design/corrections.md`, "Rendering (TASK-003)"): the repair
-//! boundary as one spatial step of the plan, its program `repair/repair.wgsl`, its operation table
-//! in the step's storage block.
+//! boundary as one spatial step of the plan, its program the numerics study's `repair/repair.wgsl`
+//! and its groups `repair/gpu.rs` describes (`docs/design/corrections-numerics.md`, "GPU form").
 //!
-//! - **Groups.** The operations evaluate in table order, grouped into ordered passes: consecutive
-//!   Clone operations share one pass until one reads (its destination, its source) a pixel an
-//!   earlier operation of the group writes; each Heal is a group of its own. A Clone group is one
-//!   pass over the window from one state plane into the next, so independent dust spots cost one
-//!   dispatch; a Heal group is its solve's passes over planes of its solve rectangle, then one
-//!   composite pass into the next state plane.
-//! - **State.** The first group reads the step's input; groups then alternate between two state
-//!   planes of the window, and the last writes the plane the step's one apply reads. Planes are
-//!   `rgba16float` on the byte path, whose boundary is half floats, and `rgba32float` on the linear
-//!   path.
-//! - **Heal.** Its levels are planes of fixed sizes, the solve rectangle halved rounding up to one
-//!   cell, each level two value planes (a red-black half iteration reads one and writes the other)
-//!   and a right-hand side; the planes of a level are shared by every Heal, sized for the largest.
-//!   The passes are the CPU's schedule (`repair/heal.rs`): classes, the start's climb and descent,
-//!   three V(2, 2) cycles, the composite. A level past the CPU's last is inert: it holds no unknown,
-//!   so it neither starts nor corrects one.
+//! - **Groups.** The operations evaluate in table order, grouped into ordered passes: a run of
+//!   consecutive operations none of whose reads (destination with Heal's ring, source) meets an
+//!   earlier destination of the run reads one input, so one set of dispatches over a per-level
+//!   atlas serves every operation of it, independent dust spots costing one.
+//! - **Chained.** One group alone is the step's one apply over its input. Groups before the last
+//!   each end in a blend pass that writes the state the next reads — the window's own planes,
+//!   alternating — and the last group's apply blends over the last state. Every group's block is
+//!   the step's storage block from its own offset, which its passes' fourth word names.
 //! - **Reads.** The step's window holds every pixel its operations read for the output it is
 //!   asked for (`RepairEntry::window_reads`); an operation no output pixel needs may compute values
 //!   outside that set from clamped reads, which nothing reads.
 //!
-//! Planned on the catalog owner from the bound table: `O(operations · cells + segments)` for the
-//! block's indexes, no pixel read.
+//! Planned on the catalog owner from the bound table: `O(operations + segments × nearby tiles +
+//! tiles)` for the groups' blocks, no pixel read.
 use super::{
     GpuFallback, GpuPass, GpuPassShape, GpuPlane, GpuPlaneFormat, GpuPlaneSize, GpuSpatial,
     plan::Planning,
-    program::{GpuProgram, GpuProgramKind},
     spatial::GpuApply,
 };
 use crate::{
@@ -35,15 +26,6 @@ use crate::{
     render::repair_entry::RepairEntry,
 };
 use std::sync::Arc;
-
-/// The repair program: Clone, Heal and their coverage under the spatial convention.
-pub static REPAIR_PROGRAM: GpuProgram = GpuProgram {
-    entry: "lf_repair",
-    source: include_str!("../../repair/repair.wgsl"),
-    kind: GpuProgramKind::Spatial,
-    words: 0,
-    enabled: true,
-};
 
 /// The most bytes a repair step's Heal level planes may take on either GPU device. A layer whose
 /// largest Heal needs more is drawn by the reference, which refuses past its own solve bound; the
@@ -67,10 +49,10 @@ pub(crate) fn admit(
             ),
         });
     }
-    if !REPAIR_PROGRAM.enabled && !planning.qualifying {
+    if !crate::repair::REPAIR_PROGRAM.enabled && !planning.qualifying {
         return Err(GpuFallback::DisabledProgram {
             layer,
-            program: REPAIR_PROGRAM.entry,
+            program: crate::repair::REPAIR_PROGRAM.entry,
         });
     }
     let step = plan_repair(layer, entry, planning.linear);
@@ -102,13 +84,6 @@ pub(crate) fn admit(
     Ok(step)
 }
 
-/// One operation record's words in the block.
-const RECORD_WORDS: u32 = 20;
-
-/// A level plane's sides are rounded up to a multiple of this, so a stroke that grows by a pixel
-/// keeps its planes, and the step its pipelines.
-const LEVEL_GRANULE: u32 = 32;
-
 /// What a repair step carries beside its passes: each operation's identity and regions at the
 /// step's stage, for the change between two plans of one gesture, and how far its reads reach
 /// beyond its writes, for the staged sweeps.
@@ -138,131 +113,200 @@ fn meets(a: Region, b: Region) -> bool {
         && b.y0 < a.y1()
 }
 
-/// The ordered groups: ranges of the table, a Heal alone, a Clone joining the group before it
-/// while it reads nothing that group writes.
-fn groups(entry: &RepairEntry) -> Vec<std::ops::Range<usize>> {
+/// The ordered groups: runs of consecutive operations none of whose reads meets an earlier
+/// destination of the run.
+pub(crate) fn groups(entry: &RepairEntry) -> Vec<std::ops::Range<usize>> {
+    let regions = entry.regions();
     let mut groups: Vec<std::ops::Range<usize>> = Vec::new();
-    for (index, (operation, regions)) in entry.operations().iter().zip(entry.regions()).enumerate()
-    {
-        let joins = operation.kind == RepairKind::Clone
-            && groups.last().is_some_and(|group| {
-                group.end == index
-                    && entry.operations()[group.start].kind == RepairKind::Clone
-                    && group.clone().all(|earlier| {
-                        let writes = entry.regions()[earlier].writes;
-                        !meets(writes, regions.reads[0]) && !meets(writes, regions.reads[1])
-                    })
-            });
-        if joins {
-            groups.last_mut().expect("a group").end = index + 1;
-        } else {
-            groups.push(index..index + 1);
+    for (index, op) in regions.iter().enumerate() {
+        let joins = groups.last().is_some_and(|group| {
+            group.clone().all(|earlier| {
+                let writes = regions[earlier].writes;
+                !meets(writes, op.reads[0]) && !meets(writes, op.reads[1])
+            })
+        });
+        match groups.last_mut() {
+            Some(group) if joins => group.end = index + 1,
+            _ => groups.push(index..index + 1),
         }
     }
     groups
 }
 
-/// The storage block: header, records, then each operation's index and segments in pixels.
-fn block(entry: &RepairEntry) -> Arc<[u32]> {
+/// The repair boundary `entry` of layer `layer` as a spatial step of the plan, its input and output
+/// clamped where the byte path quantizes ([module](self) docs).
+pub(crate) fn plan_repair(layer: usize, entry: &RepairEntry, linear: bool) -> GpuSpatial {
     let bound = entry.bound();
-    let stage = entry.stage;
-    let h = f64::from(stage.height);
-    let count = bound.len() as u32;
-    let mut words: Vec<u32> = vec![count, stage.width, stage.height];
-    let records = words.len() as u32;
-    words.extend(std::iter::repeat_n(0, bound.len()));
-    let mut tails: Vec<u32> = Vec::new();
-    let mut records_words: Vec<u32> = Vec::with_capacity(bound.len() * RECORD_WORDS as usize);
-    // Records first, tails after; offsets are fixed once the records' extent is known.
-    let tail_start = records + count + count * RECORD_WORDS;
-    for (index, op) in bound.iter().enumerate() {
-        words[(records + index as u32) as usize] = records + count + index as u32 * RECORD_WORDS;
-        let footprint = &op.footprint;
-        let support = footprint.support();
-        let (cell, columns, offsets, entries) = footprint.index();
-        let rows = if support.is_empty() {
-            0
-        } else {
-            support.height.div_ceil(cell.max(1))
-        };
-        let offsets_at = tail_start + tails.len() as u32;
-        if offsets.is_empty() {
-            tails.extend([0, 0]);
-        } else {
-            tails.extend_from_slice(offsets);
-        }
-        let entries_at = tail_start + tails.len() as u32;
-        tails.extend_from_slice(entries);
-        let segments_at = tail_start + tails.len() as u32;
-        for segment in footprint.segments_ref() {
-            tails.extend(
-                [
-                    segment.ax * h,
-                    segment.ay * h,
-                    segment.ex * h,
-                    segment.ey * h,
-                    segment.len2 * h * h,
-                ]
-                .map(|value| (value as f32).to_bits()),
-            );
-        }
-        let solve = if op.kind == RepairKind::Heal {
-            footprint.solve_rect().unwrap_or(Region::EMPTY)
-        } else {
-            Region::EMPTY
-        };
-        let (x1, y1) = if support.is_empty() {
-            (0, 0)
-        } else {
-            (support.x1(), support.y1())
-        };
-        records_words.extend([
-            u32::from(op.kind == RepairKind::Heal),
-            ((footprint.radius() * h) as f32).to_bits(),
-            ((footprint.band() * h) as f32).to_bits(),
-            (footprint.amount() as f32).to_bits(),
-            (op.delta[0] as i32) as u32,
-            (op.delta[1] as i32) as u32,
-            support.x0,
-            support.y0,
-            x1,
-            y1,
-            cell.max(1),
-            columns,
-            rows,
-            offsets_at,
-            entries_at,
-            segments_at,
-            solve.x0,
-            solve.y0,
-            solve.width,
-            solve.height,
-        ]);
+    let groups = groups(entry);
+    let state_format = if linear {
+        GpuPlaneFormat::Quad
+    } else {
+        GpuPlaneFormat::Colour
+    };
+    let mut words: Vec<u32> = Vec::new();
+    let mut planes: Vec<GpuPlane> = Vec::new();
+    let mut passes: Vec<GpuPass> = Vec::new();
+    let mut block: Vec<u32> = Vec::new();
+    let states: Vec<usize> = match groups.len() {
+        0 | 1 => Vec::new(),
+        2 => vec![0],
+        _ => vec![0, 1],
+    };
+    for _ in &states {
+        planes.push(GpuPlane {
+            format: state_format,
+            size: GpuPlaneSize::Reduced(1),
+            scratch: false,
+        });
     }
-    words.extend(records_words);
-    debug_assert_eq!(words.len() as u32, tail_start);
-    words.extend(tails);
-    words.into()
-}
-
-/// Every kernel and the apply a repair step names, for the core's WGSL validation, which calls
-/// each.
-#[cfg(test)]
-pub(crate) fn functions() -> (Vec<&'static str>, Vec<&'static str>) {
-    (
-        vec![
-            "lf_repair_clone",
-            "lf_repair_heal_setup",
-            "lf_repair_heal_coarse",
-            "lf_repair_heal_descend",
-            "lf_repair_heal_sweep",
-            "lf_repair_heal_clear",
-            "lf_repair_heal_restrict",
-            "lf_repair_heal_prolong",
-            "lf_repair_heal_composite",
-        ],
-        vec!["lf_repair_apply"],
-    )
+    // The state the group being placed reads: the step's input, or a state plane.
+    let mut state: Option<usize> = None;
+    let mut apply = None;
+    for (number, group) in groups.iter().enumerate() {
+        let described = crate::repair::gpu::describe(&bound[group.clone()], entry.stage, None);
+        let offset = block.len() as u32;
+        block.extend_from_slice(&described.block);
+        let words_at = words.len();
+        // Each four-word record: level, parity, flags, the group's block offset.
+        words.extend_from_slice(&described.words);
+        let planes_at = planes.len();
+        let last = number + 1 == groups.len();
+        for (index, &(width, height)) in described.planes.iter().enumerate() {
+            planes.push(GpuPlane {
+                format: GpuPlaneFormat::Quad,
+                size: GpuPlaneSize::Fixed { width, height },
+                // The last group's composite is what the apply reads.
+                scratch: !(last && index == described.apply_plane),
+            });
+        }
+        // Every record names the group's block offset; a pass that reads the input reads the
+        // state plane, when there is one, bound after its own inputs.
+        let mut record = |at: usize, flags: u32| {
+            words[words_at + at + 2] |= flags;
+            words[words_at + at + 3] = offset;
+        };
+        for pass in &described.passes {
+            record(pass.words, 0);
+        }
+        record(described.apply_words, 0);
+        for pass in &described.passes {
+            let mut inputs: Vec<usize> = pass.inputs.iter().map(|&plane| planes_at + plane).collect();
+            let reads_source = match (pass.reads_source, state) {
+                (true, Some(plane)) => {
+                    let slot = inputs.len() as u32;
+                    words[words_at + pass.words + 2] |= 4 | (slot << 8);
+                    inputs.push(plane);
+                    false
+                }
+                (reads, _) => reads,
+            };
+            passes.push(GpuPass {
+                kernel: pass.kernel,
+                inputs,
+                output: planes_at + pass.output,
+                words: words_at + pass.words,
+                source: 0,
+                shape: GpuPassShape::Texels { span: [1, 1] },
+                reads_source,
+                unit: 0,
+            });
+        }
+        let composite = planes_at + described.apply_plane;
+        if last {
+            apply = Some(match state {
+                None => GpuApply {
+                    function: "lf_repair_apply",
+                    planes: vec![composite],
+                    words: words_at + described.apply_words,
+                    identity: false,
+                },
+                Some(plane) => GpuApply {
+                    function: "lf_repair_apply_over",
+                    planes: vec![plane, composite],
+                    words: words_at + described.apply_words,
+                    identity: false,
+                },
+            });
+        } else {
+            // The blend into the next state: words `[-, -, flags, offset, composite slot]`.
+            let output = match state {
+                Some(plane) if plane == states[0] && states.len() > 1 => states[1],
+                _ => states[0],
+            };
+            let mut inputs = vec![composite];
+            let mut flags = 0;
+            let mut reads_source = true;
+            if let Some(plane) = state {
+                flags = 4 | (1 << 8);
+                inputs.push(plane);
+                reads_source = false;
+            }
+            let at = words.len();
+            words.extend([0, 0, flags, offset, 0]);
+            passes.push(GpuPass {
+                kernel: "lf_repair_blend",
+                inputs,
+                output,
+                words: at,
+                source: 0,
+                shape: GpuPassShape::Texels { span: [1, 1] },
+                reads_source,
+                unit: 0,
+            });
+            state = Some(output);
+        }
+    }
+    let apply = apply.expect("a repair layer of at least one operation");
+    let reach = entry
+        .regions()
+        .iter()
+        .map(|regions| {
+            let dx = regions.delta[0].unsigned_abs();
+            let dy = regions.delta[1].unsigned_abs();
+            u32::try_from(dx.max(dy)).unwrap_or(u32::MAX).saturating_add(1)
+        })
+        .max()
+        .unwrap_or(0);
+    let operations = entry
+        .operations()
+        .iter()
+        .zip(entry.regions())
+        .map(|(operation, regions)| GpuRepairOperation {
+            key: {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::hash::DefaultHasher::new();
+                (
+                    operation.id,
+                    operation.kind == RepairKind::Heal,
+                    &operation.points[..],
+                    operation.radius,
+                    operation.feather,
+                    operation.opacity,
+                    operation.offset,
+                )
+                    .hash(&mut hasher);
+                hasher.finish()
+            },
+            heal: operation.kind == RepairKind::Heal,
+            writes: regions.writes,
+            reads: regions.reads,
+        })
+        .collect();
+    GpuSpatial {
+        layer,
+        program: &crate::repair::REPAIR_PROGRAM,
+        words,
+        planes,
+        passes,
+        applies: vec![apply],
+        clamps: !linear,
+        mask: None,
+        after: Vec::new(),
+        halos: Vec::new(),
+        light: None,
+        block: Some(block.into()),
+        repair: Some(Arc::new(GpuRepair { operations, reach })),
+    }
 }
 
 /// The plans a Corrections gesture on a stack draws, for the desktop to warm before it begins
@@ -463,353 +507,3 @@ fn with_table(
     Some(compiled)
 }
 
-/// The level sizes of a solve rectangle of `width × height` cells: halved rounding up until one
-/// cell remains.
-fn level_sizes(width: u32, height: u32) -> Vec<(u32, u32)> {
-    let mut sizes = vec![(width.max(1), height.max(1))];
-    while let Some(&(w, h)) = sizes.last()
-        && (w > 1 || h > 1)
-    {
-        sizes.push((w.div_ceil(2), h.div_ceil(2)));
-    }
-    sizes
-}
-
-/// What the step's passes and planes are built from.
-struct Builder {
-    words: Vec<u32>,
-    planes: Vec<GpuPlane>,
-    passes: Vec<GpuPass>,
-}
-
-impl Builder {
-    fn plane(&mut self, format: GpuPlaneFormat, size: GpuPlaneSize, scratch: bool) -> usize {
-        self.planes.push(GpuPlane {
-            format,
-            size,
-            scratch,
-        });
-        self.planes.len() - 1
-    }
-
-    fn pass(&mut self, kernel: &'static str, inputs: Vec<usize>, output: usize, words: &[u32]) {
-        let reads_source = words.first() == Some(&1);
-        self.passes.push(GpuPass {
-            kernel,
-            inputs,
-            output,
-            words: self.words.len(),
-            source: 0,
-            shape: GpuPassShape::Texels { span: [1, 1] },
-            reads_source,
-            unit: 0,
-        });
-        self.words.extend_from_slice(words);
-    }
-}
-
-/// The state a group reads: the step's input, or a state plane.
-#[derive(Clone, Copy)]
-enum State {
-    Input,
-    Plane(usize),
-}
-
-impl State {
-    /// The input word, and the planes a pass binds before its own.
-    fn read(self) -> (u32, Vec<usize>) {
-        match self {
-            Self::Input => (1, Vec::new()),
-            Self::Plane(plane) => (0, vec![plane]),
-        }
-    }
-}
-
-/// The repair boundary `entry` of layer `layer` as a spatial step of the plan, its input and output
-/// clamped where the byte path quantizes (`clamps`), its planes in `format`.
-pub(crate) fn plan_repair(layer: usize, entry: &RepairEntry, linear: bool) -> GpuSpatial {
-    let format = if linear {
-        GpuPlaneFormat::Quad
-    } else {
-        GpuPlaneFormat::Colour
-    };
-    let groups = groups(entry);
-    // The apply's word, first, so every pass's words follow it.
-    let mut builder = Builder {
-        words: vec![0],
-        planes: Vec::new(),
-        passes: Vec::new(),
-    };
-    let full = GpuPlaneSize::Reduced(1);
-    // The level planes, sized for the largest Heal's level.
-    let heals: Vec<Vec<(u32, u32)>> = entry
-        .operations()
-        .iter()
-        .enumerate()
-        .filter(|(_, operation)| operation.kind == RepairKind::Heal)
-        .map(|(index, _)| {
-            let solve = entry.bound()[index]
-                .footprint
-                .solve_rect()
-                .unwrap_or(Region::EMPTY);
-            level_sizes(solve.width, solve.height)
-        })
-        .collect();
-    let depth = heals.iter().map(Vec::len).max().unwrap_or(0);
-    let granule = |side: u32| side.div_ceil(LEVEL_GRANULE) * LEVEL_GRANULE;
-    let levels: Vec<([usize; 2], usize)> = (0..depth)
-        .map(|level| {
-            let (w, h) = heals
-                .iter()
-                .filter_map(|sizes| sizes.get(level))
-                .fold((1, 1), |(w, h), &(sw, sh)| (w.max(sw), h.max(sh)));
-            let size = GpuPlaneSize::Fixed {
-                width: granule(w),
-                height: granule(h),
-            };
-            let quad = GpuPlaneFormat::Quad;
-            (
-                [
-                    builder.plane(quad, size, true),
-                    builder.plane(quad, size, true),
-                ],
-                builder.plane(quad, size, true),
-            )
-        })
-        .collect();
-    let states = [
-        builder.plane(format, full, true),
-        builder.plane(format, full, true),
-    ];
-    let last = builder.plane(format, full, false);
-    let mut state = State::Input;
-    for (number, group) in groups.iter().enumerate() {
-        let output = if number + 1 == groups.len() {
-            last
-        } else {
-            match state {
-                State::Plane(plane) if plane == states[0] => states[1],
-                _ => states[0],
-            }
-        };
-        let (flag, mut inputs) = state.read();
-        let first = group.start;
-        if entry.operations()[first].kind == RepairKind::Clone {
-            builder.pass(
-                "lf_repair_clone",
-                inputs,
-                output,
-                &[flag, first as u32, group.len() as u32],
-            );
-        } else {
-            let solve = entry.bound()[first]
-                .footprint
-                .solve_rect()
-                .unwrap_or(Region::EMPTY);
-            let sizes = level_sizes(solve.width, solve.height);
-            heal_passes(&mut builder, &levels, &sizes, first as u32, state);
-            let finest = builder
-                .passes
-                .last()
-                .map(|pass| pass.output)
-                .expect("a heal's passes");
-            let (w, h) = sizes[0];
-            let slot = inputs.len() as u32;
-            inputs.push(finest);
-            builder.pass(
-                "lf_repair_heal_composite",
-                inputs,
-                output,
-                &[flag, first as u32, w, h, slot],
-            );
-        }
-        state = State::Plane(output);
-    }
-    let reach = entry
-        .regions()
-        .iter()
-        .map(|regions| {
-            let ring = 1u32;
-            let dx = regions.delta[0].unsigned_abs();
-            let dy = regions.delta[1].unsigned_abs();
-            u32::try_from(dx.max(dy))
-                .unwrap_or(u32::MAX)
-                .saturating_add(ring)
-        })
-        .max()
-        .unwrap_or(0);
-    let operations = entry
-        .operations()
-        .iter()
-        .zip(entry.regions())
-        .map(|(operation, regions)| GpuRepairOperation {
-            key: {
-                use std::hash::{Hash, Hasher};
-                let mut hasher = std::hash::DefaultHasher::new();
-                (
-                    operation.id,
-                    operation.kind == RepairKind::Heal,
-                    &operation.points[..],
-                    operation.radius,
-                    operation.feather,
-                    operation.opacity,
-                    operation.offset,
-                )
-                    .hash(&mut hasher);
-                hasher.finish()
-            },
-            heal: operation.kind == RepairKind::Heal,
-            writes: regions.writes,
-            reads: regions.reads,
-        })
-        .collect();
-    GpuSpatial {
-        layer,
-        program: &REPAIR_PROGRAM,
-        words: builder.words,
-        planes: builder.planes,
-        passes: builder.passes,
-        applies: vec![GpuApply {
-            function: "lf_repair_apply",
-            planes: vec![last],
-            words: 0,
-            identity: false,
-        }],
-        clamps: !linear,
-        mask: None,
-        after: Vec::new(),
-        halos: Vec::new(),
-        light: None,
-        block: Some(block(entry)),
-        repair: Some(Arc::new(GpuRepair { operations, reach })),
-    }
-}
-
-/// One Heal's solve over the level planes: classes and the boundary difference, the start's climb
-/// and descent, three V(2, 2) cycles. Its finest level's current plane is the last pass's output.
-fn heal_passes(
-    builder: &mut Builder,
-    levels: &[([usize; 2], usize)],
-    sizes: &[(u32, u32)],
-    op: u32,
-    state: State,
-) {
-    let depth = sizes.len();
-    // Which of each level's two value planes holds its current values.
-    let mut current = vec![0usize; depth];
-    let value = |levels: &[([usize; 2], usize)], current: &[usize], level: usize| {
-        levels[level].0[current[level]]
-    };
-    let (flag, inputs) = state.read();
-    let (w, h) = sizes[0];
-    builder.pass(
-        "lf_repair_heal_setup",
-        inputs,
-        levels[0].0[0],
-        &[flag, op, w, h],
-    );
-    for level in 1..depth {
-        let (w, h) = sizes[level];
-        let (fw, fh) = sizes[level - 1];
-        builder.pass(
-            "lf_repair_heal_coarse",
-            vec![value(levels, &current, level - 1)],
-            levels[level].0[0],
-            &[0, op, w, h, fw, fh],
-        );
-    }
-    for level in (0..depth.saturating_sub(1)).rev() {
-        let (w, h) = sizes[level];
-        let (cw, ch) = sizes[level + 1];
-        let next = 1 - current[level];
-        builder.pass(
-            "lf_repair_heal_descend",
-            vec![
-                value(levels, &current, level),
-                value(levels, &current, level + 1),
-            ],
-            levels[level].0[next],
-            &[0, op, w, h, cw, ch],
-        );
-        current[level] = next;
-    }
-    for _ in 0..3 {
-        v_cycle(builder, levels, sizes, op, &mut current, 0);
-    }
-    // The finest level's current values are the last pass's output when the last pass wrote it;
-    // make it so by a final copy if a coarser pass ran last (it never does: post sweeps end a
-    // cycle at level 0).
-    debug_assert_eq!(
-        builder.passes.last().map(|pass| pass.output),
-        Some(levels[0].0[current[0]])
-    );
-}
-
-fn v_cycle(
-    builder: &mut Builder,
-    levels: &[([usize; 2], usize)],
-    sizes: &[(u32, u32)],
-    op: u32,
-    current: &mut [usize],
-    level: usize,
-) {
-    let (w, h) = sizes[level];
-    let has_rhs = u32::from(level > 0);
-    let sweeps = |builder: &mut Builder, current: &mut [usize]| {
-        for _ in 0..2 {
-            for parity in 0..2u32 {
-                let mut inputs = vec![levels[level].0[current[level]]];
-                if level > 0 {
-                    inputs.push(levels[level].1);
-                }
-                let next = 1 - current[level];
-                builder.pass(
-                    "lf_repair_heal_sweep",
-                    inputs,
-                    levels[level].0[next],
-                    &[0, op, w, h, has_rhs, parity],
-                );
-                current[level] = next;
-            }
-        }
-    };
-    sweeps(builder, current);
-    if level + 1 < sizes.len() {
-        let coarse = level + 1;
-        let (cw, ch) = sizes[coarse];
-        let next = 1 - current[coarse];
-        builder.pass(
-            "lf_repair_heal_clear",
-            vec![levels[coarse].0[current[coarse]]],
-            levels[coarse].0[next],
-            &[0, op, cw, ch],
-        );
-        current[coarse] = next;
-        let mut inputs = vec![
-            levels[level].0[current[level]],
-            levels[coarse].0[current[coarse]],
-        ];
-        if level > 0 {
-            inputs.push(levels[level].1);
-        }
-        builder.pass(
-            "lf_repair_heal_restrict",
-            inputs,
-            levels[coarse].1,
-            &[0, op, w, h, has_rhs, 0, cw, ch],
-        );
-        v_cycle(builder, levels, sizes, op, current, coarse);
-        let next = 1 - current[level];
-        builder.pass(
-            "lf_repair_heal_prolong",
-            vec![
-                levels[level].0[current[level]],
-                levels[coarse].0[current[coarse]],
-            ],
-            levels[level].0[next],
-            &[0, op, w, h, cw, ch],
-        );
-        current[level] = next;
-    }
-    sweeps(builder, current);
-}

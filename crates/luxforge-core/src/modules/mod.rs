@@ -45,7 +45,7 @@ pub static GPU_PROGRAMS: &[&crate::GpuProgram] = &[
     &mixer::GRADE_PROGRAM,
     &vignette::VIGNETTE_PROGRAM,
     &presence::PRESENCE_PROGRAM,
-    &crate::render::gpu::REPAIR_PROGRAM,
+    &crate::repair::REPAIR_PROGRAM,
 ];
 /// The current payload format marker of a built-in effect: the shared [`crate::EFFECT_FORMAT`],
 /// except for an effect whose payload changed meaning and declares its own (the RAW development
@@ -157,11 +157,7 @@ pub use registry::{ActionRef, QueryRef};
 pub use registry::{ModuleRegistry, Provider, RegistryOptions, insertion_index_among};
 pub(crate) use registry::{Superseded, settings_action_in, superseded_in, superseded_refusal_in};
 pub use repair::{MAX_REPAIR_OPERATIONS, RepairTable};
-#[allow(
-    unused_imports,
-    reason = "the Corrections module (TASK-005) compiles into these"
-)]
-pub(crate) use repair::{REPAIR_OFFSET_MAX, REPAIR_RADIUS_MAX, RepairKind, RepairOperation};
+pub(crate) use repair::{RepairKind, RepairOperation};
 pub(crate) use spatial::{
     ESTIMATE_REDUCTION, Global, MAX_REDUCTION_PIXELS, MAX_SPATIAL_HALO, Parallelism, Planes,
     PlanesMut, Reduction, SPATIAL_BUDGET_BYTES, SpatialUnit,

@@ -30,7 +30,7 @@
 use super::{
     gpu_plan::{WarpGrid, install_output_encoding, surface_plan_over},
     gpu_tiles::GpuTiles,
-    gpu_tiles_tests::{families, gpu_source, host_adapter},
+    gpu_tiles_tests::{families, gpu_source, host_adapter, registry as repair_registry},
     gpu_window_tests::{HEIGHT, WIDTH, source},
     tasks::call as owner_call,
     testing::{entry, fresh_stack, import_and_adopt},
@@ -99,7 +99,7 @@ fn clients(count: usize) -> Vec<ClientId> {
 
 /// `recipe` over `source`, bound as the catalog owner binds a saved entry's stack.
 fn stack(source: &PreviewSource, recipe: &Recipe) -> Evaluation {
-    let registry = Arc::new(ModuleRegistry::builtin());
+    let registry = Arc::new(repair_registry());
     let context = RenderContext::new();
     Evaluation::new(
         registry,
@@ -313,7 +313,7 @@ fn a_read_through_the_worker_equals_the_headless_surfaces_tile_bit_for_bit() {
     let service = GpuTiles::new(Some((backend, name)), false);
     service.poison(true);
     let client = clients(1)[0];
-    let registry = ModuleRegistry::builtin();
+    let registry = repair_registry();
     let mut versions = 0;
     for (format, path) in [
         (BoundaryFormat::Half, "the byte path"),
@@ -426,14 +426,17 @@ fn a_read_is_within_the_display_limit_of_the_reference_service() {
     let service = GpuTiles::new(Some((backend, name)), false);
     let reference = ReferenceTiles::new();
     let client = clients(1)[0];
-    let registry = ModuleRegistry::builtin();
+    let registry = repair_registry();
     for (format, path) in [
         (BoundaryFormat::Half, "the byte path"),
         (BoundaryFormat::Float, "the linear path"),
     ] {
         let source = source(format);
         for (family, recipe) in families() {
-            let class = if family.contains("Presence") || family.contains("Detail") {
+            let class = if family.contains("Presence")
+                || family.contains("Detail")
+                || family.contains("Heal")
+            {
                 Class::Spatial
             } else {
                 Class::Pointwise
@@ -515,7 +518,7 @@ fn a_picks_25_points_render_one_window() {
     assert!(install_output_encoding());
     let service = GpuTiles::new(Some((backend, name)), false);
     let client = clients(1)[0];
-    let registry = ModuleRegistry::builtin();
+    let registry = repair_registry();
     let recipe = Recipe {
         layers: vec![
             Layer::new(
@@ -626,7 +629,7 @@ fn a_seed_is_the_code_of_the_sample_input() {
     assert!(install_output_encoding());
     let service = GpuTiles::new(Some((backend, name)), false);
     let client = clients(1)[0];
-    let registry = ModuleRegistry::builtin();
+    let registry = repair_registry();
     let mut seeds = 0;
     for format in [BoundaryFormat::Half, BoundaryFormat::Float] {
         let source = source(format);
