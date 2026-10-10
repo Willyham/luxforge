@@ -11,9 +11,17 @@
 //! a list of evidence-script steps over the sources it names, in a class that says which limits it
 //! is held to.
 //!
+//! A recipe whose steps start a developer module's task — the frozen-patch family, whose candidate
+//! the developer producer `luxforge.candidates` generates from a fixed seed before
+//! `edit.accept-correction-patch` accepts it — says so with `"developer": true`, and its cell's
+//! catalog serves what a `--developer` run serves; no other recipe's does. A `task.*` step settles
+//! once its job has ended, and a later step names that job `{"started_by": "task.…"}`
+//! ([`luxforge_evidence::JobReference`]).
+//!
 //! [`Corpus::load`] checks the file's own consistency (every required source and recipe family is
 //! present; every step is a step the evidence driver parses and every call is one the committed
-//! descriptors declare), which `cargo test` runs on every build. [`run`] (`cargo xtask
+//! descriptors declare, a developer recipe's against the developer snapshot too; every job a step
+//! names is started by an earlier step of its recipe), which `cargo test` runs on every build. [`run`] (`cargo xtask
 //! preview-corpus`) goes further on a host that has the files: it re-hashes each source and, with
 //! `--manifest`, resolves the RAW entries. A source it could not check on this host is
 //! `unresolved`, which makes the run incomplete (its own exit code), never a pass.
@@ -29,6 +37,9 @@ pub const GENERATED: &str = "fixtures/generated";
 /// The committed snapshot of every method's declared parameters, which a recipe's calls are
 /// checked against.
 const DESCRIPTORS: &str = "fixtures/modules/builtin-descriptors.json";
+/// The committed snapshot of what a developer run serves beyond the built-in registry, which a
+/// developer recipe's calls are checked against too.
+const DEVELOPER_DESCRIPTORS: &str = "fixtures/modules/developer-descriptors.json";
 
 /// The views every recipe is measured at: Fit, the two percentages below 100% the desktop draws
 /// from a displayed-size proxy, and 100%.
@@ -46,8 +57,9 @@ const REQUIRED_SOURCES: [&str; 7] = [
 ];
 
 /// Every recipe family and the class its limits come from: pointwise for the colour units, masks,
-/// the vignette and geometry under a colour edit, spatial for Presence, Detail, Clone and Heal.
-const FAMILIES: [(&str, Class); 17] = [
+/// the vignette and geometry under a colour edit, spatial for Presence, Detail, Clone, Heal and the
+/// frozen patch.
+const FAMILIES: [(&str, Class); 18] = [
     ("basic", Class::Pointwise),
     ("tone-curve", Class::Pointwise),
     ("mixer", Class::Pointwise),
@@ -65,12 +77,13 @@ const FAMILIES: [(&str, Class); 17] = [
     ("detail", Class::Spatial),
     ("repair-clone", Class::Spatial),
     ("repair-heal", Class::Spatial),
+    ("repair-patch", Class::Spatial),
 ];
 
 /// The families the design lists, which the corpus must hold at least one recipe of. The component
 /// algebra's `mask-composed` and the four colour recipes together, `colour-stack`, are recipes the
 /// corpus adds beyond them.
-const REQUIRED_FAMILIES: [&str; 15] = [
+const REQUIRED_FAMILIES: [&str; 16] = [
     "basic",
     "tone-curve",
     "mixer",
@@ -86,6 +99,7 @@ const REQUIRED_FAMILIES: [&str; 15] = [
     "detail",
     "repair-clone",
     "repair-heal",
+    "repair-patch",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -147,6 +161,9 @@ struct Recipe {
     class: String,
     description: String,
     sources: Vec<String>,
+    /// Its catalog serves the developer modules, whose task a step starts.
+    #[serde(default)]
+    developer: bool,
     steps: Vec<Value>,
 }
 
@@ -161,7 +178,10 @@ impl Corpus {
     /// The committed corpus, read and checked against the committed descriptors.
     pub fn load(root: &Path) -> Result<Self> {
         let corpus: Self = serde_json::from_slice(&fs::read(root.join(FILE))?)?;
-        corpus.check(&read_json(&root.join(DESCRIPTORS))?)?;
+        corpus.check(
+            &read_json(&root.join(DESCRIPTORS))?,
+            &read_json(&root.join(DEVELOPER_DESCRIPTORS))?,
+        )?;
         Ok(corpus)
     }
 
@@ -199,8 +219,9 @@ impl Corpus {
         self.sources.iter().map(|source| source.id.as_str())
     }
 
-    /// The corpus's own consistency, against `descriptors` (the `fixtures/modules` snapshot).
-    pub fn check(&self, descriptors: &Value) -> Result {
+    /// The corpus's own consistency, against `descriptors` (the `fixtures/modules` snapshot of the
+    /// built-in registry) and `developer` (its snapshot of what a developer run adds).
+    pub fn check(&self, descriptors: &Value, developer: &Value) -> Result {
         ensure(self.format == 1, "The corpus's format is 1")?;
         ensure(!self.scope.trim().is_empty(), "The corpus states no scope")?;
         ensure(
@@ -283,6 +304,11 @@ impl Corpus {
             methods.is_object(),
             "The descriptors snapshot lists no methods",
         )?;
+        let developer_methods = &developer["schema.list"]["methods"];
+        ensure(
+            developer_methods.is_object(),
+            "The developer descriptors snapshot lists no methods",
+        )?;
         let families: HashMap<&str, Class> = FAMILIES.into_iter().collect();
         let mut recipe_ids = HashSet::new();
         let mut used = HashSet::new();
@@ -328,13 +354,48 @@ impl Corpus {
                 !recipe.steps.is_empty(),
                 format!("Recipe {id} has no steps"),
             )?;
-            luxforge_evidence::parse(&Value::Array(recipe.steps.clone()).to_string())
+            let steps = luxforge_evidence::parse(&Value::Array(recipe.steps.clone()).to_string())
                 .map_err(|error| format!("Recipe {id}: {error}"))?;
-            for step in &recipe.steps {
-                if let Some(call) = step.get("api") {
-                    check_call(id, call, methods)?;
+            let mut started = HashSet::new();
+            let mut developer_calls = 0;
+            for (step, value) in steps.iter().zip(&recipe.steps) {
+                if let Some(call) = value.get("api") {
+                    let method = call["method"].as_str().unwrap_or_default();
+                    let declared = if methods.get(method).is_some()
+                        || developer_methods.get(method).is_none()
+                    {
+                        methods
+                    } else {
+                        developer_calls += 1;
+                        ensure(
+                            recipe.developer,
+                            format!(
+                                "Recipe {id} calls {method}, which only a developer run serves, without \"developer\": true"
+                            ),
+                        )?;
+                        developer_methods
+                    };
+                    check_call(id, call, declared)?;
+                }
+                if let luxforge_evidence::Step::Api { method, params } = step {
+                    if let Some(reference) = luxforge_evidence::JobReference::of(params)? {
+                        ensure(
+                            started.contains(reference.started_by.as_str()),
+                            format!(
+                                "Recipe {id} names the job of {}, which no earlier step starts",
+                                reference.started_by
+                            ),
+                        )?;
+                    }
+                    if method.starts_with(luxforge_evidence::TASK_METHOD_PREFIX) {
+                        started.insert(method.as_str());
+                    }
                 }
             }
+            ensure(
+                !recipe.developer || developer_calls > 0,
+                format!("Recipe {id} says it needs a developer run but calls nothing only one serves"),
+            )?;
         }
         for family in REQUIRED_FAMILIES {
             ensure(
@@ -550,7 +611,10 @@ mod tests {
     fn check(corpus: &Value) -> Result {
         let (root, _) = committed();
         let corpus: Corpus = serde_json::from_value(corpus.clone())?;
-        corpus.check(&read_json(&root.join(DESCRIPTORS))?)
+        corpus.check(
+            &read_json(&root.join(DESCRIPTORS))?,
+            &read_json(&root.join(DEVELOPER_DESCRIPTORS))?,
+        )
     }
 
     /// The committed corpus with one change, and the refusal it produces.
@@ -860,6 +924,79 @@ mod tests {
         assert!(check(&unknown).is_err(), "an unknown field is refused");
     }
 
+    /// The frozen-patch family's candidate comes from the developer producer: its recipes say they
+    /// need a developer run, name the job of an earlier step's task and call only what the
+    /// committed descriptors declare, the producer's task in the developer snapshot.
+    #[test]
+    fn preview_error_corpus_holds_developer_recipes_to_their_task_and_snapshot() {
+        let (root, _) = committed();
+        let corpus = Corpus::load(&root).unwrap();
+        let patches: Vec<&Recipe> = corpus
+            .recipes
+            .iter()
+            .filter(|recipe| recipe.family == "repair-patch")
+            .collect();
+        assert!(!patches.is_empty());
+        for recipe in &patches {
+            assert!(recipe.developer, "{}", recipe.id);
+            assert!(
+                recipe.steps.iter().any(|step| step["api"]["params"]["job_id"]
+                    == json!({"started_by": "task.generate-proof-patches"})),
+                "{}",
+                recipe.id
+            );
+        }
+        // Only the developer recipes say so.
+        assert!(
+            corpus
+                .recipes
+                .iter()
+                .all(|recipe| recipe.developer == (recipe.family == "repair-patch"))
+        );
+        let id = patches[0].id.clone();
+        assert!(
+            refused(|c| {
+                recipe(c, &id).as_object_mut().unwrap().remove("developer");
+            })
+            .contains("only a developer run serves")
+        );
+        assert!(
+            refused(|c| {
+                recipe(c, "mixer")["developer"] = json!(true);
+            })
+            .contains("calls nothing only one serves")
+        );
+        assert!(
+            refused(|c| {
+                let steps = recipe(c, &id)["steps"].as_array_mut().unwrap();
+                steps.retain(|step| step["api"]["method"] != "task.generate-proof-patches");
+            })
+            .contains("which no earlier step starts")
+        );
+        assert!(
+            refused(|c| {
+                let steps = recipe(c, &id)["steps"].as_array_mut().unwrap();
+                let task = steps
+                    .iter_mut()
+                    .find(|step| step["api"]["method"] == "task.generate-proof-patches")
+                    .unwrap();
+                task["api"]["params"]["radius"] = json!(1);
+            })
+            .contains("declares no parameter radius")
+        );
+        assert!(
+            refused(|c| {
+                let steps = recipe(c, &id)["steps"].as_array_mut().unwrap();
+                let accept = steps
+                    .iter_mut()
+                    .find(|step| step["api"]["method"] == "edit.accept-correction-patch")
+                    .unwrap();
+                accept["api"]["params"]["job_id"] = json!({"started_by": "edit.set-basic"});
+            })
+            .contains("names a task method")
+        );
+    }
+
     /// The baseline journey the performance document's Presence error figures were taken with is a
     /// script the editor's driver reads, whose calls the committed descriptors declare.
     #[test]
@@ -1008,7 +1145,7 @@ mod tests {
         let (real, _) = committed();
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
-        for file in [FILE, DESCRIPTORS] {
+        for file in [FILE, DESCRIPTORS, DEVELOPER_DESCRIPTORS] {
             fs::create_dir_all(root.join(file).parent().unwrap()).unwrap();
             fs::copy(real.join(file), root.join(file)).unwrap();
         }
