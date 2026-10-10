@@ -394,3 +394,66 @@ fn gpu_repair_ticks_draw_what_whole_evaluations_draw() {
     );
     assert!(largest < 0.25, "a tick changes about its corrections' own area");
 }
+
+/// A hundred corrections as an agent filling a photograph places them, over a `size` stage: spots
+/// and short strokes over the frame, a third of them Clones, each source a few radii away.
+pub(crate) fn hundred(size: (u32, u32), seed: u64) -> Vec<Value> {
+    let mut stream = Stream(seed);
+    let (w, h) = (f64::from(size.0), f64::from(size.1));
+    (1..=100u32)
+        .map(|id| {
+            let mut unit = || stream.unit();
+            let (x, y) = (0.05 + 0.9 * unit(), 0.05 + 0.9 * unit());
+            let radius = h * (0.006 + 0.01 * unit());
+            let angle = std::f64::consts::TAU * unit();
+            let reach = radius * (3.0 + 2.0 * unit());
+            let points = if id % 4 == 0 {
+                vec![[x * w, y * h], [x * w + 3.0 * radius, y * h + radius]]
+            } else {
+                vec![[x * w, y * h]]
+            };
+            op(
+                id,
+                id % 3 != 0,
+                size,
+                &points,
+                radius,
+                [reach * angle.cos(), reach * angle.sin()],
+                50,
+                100,
+            )
+        })
+        .collect()
+}
+
+/// The limit: a hundred corrections drawn by the GPU in one bounded step, on both paths, within
+/// the spatial class of the reference's frame.
+#[test]
+fn gpu_repair_a_hundred_corrections_meet_the_spatial_limits() {
+    let test = "gpu_repair_a_hundred_corrections_meet_the_spatial_limits";
+    let Some(qualifier) = super::gpu_qualification::headless(test) else {
+        return;
+    };
+    let registry = registry();
+    let size = (1536u32, 1024u32);
+    let pixels = photograph(size.0, size.1, 9);
+    let stack = Recipe {
+        layers: vec![repair(hundred(size, 3))],
+        ..Recipe::default()
+    };
+    let plan = plan_of(&registry, &stack, size, false);
+    let passes = plan.spatial[0].passes.len();
+    let mut missed = Vec::new();
+    for (path, measured) in [
+        ("byte", byte_case(&qualifier, &registry, &stack, size, &pixels)),
+        ("linear", linear_case(&qualifier, &registry, &stack, size, &pixels)),
+    ] {
+        let passed = preview_error::verdict(&measured, Class::Spatial).passed();
+        eprintln!("{test}: {path}: {passes} passes: {}", figures(&measured));
+        if !passed {
+            missed.push(path);
+        }
+    }
+    assert!(passes <= luxforge_core::REPAIR_PASSES_MAX, "{passes} passes");
+    assert!(missed.is_empty(), "{missed:?}");
+}

@@ -187,6 +187,15 @@ pub(super) fn families() -> Vec<(&'static str, Recipe)> {
             recipe(vec![corrections(), basic.clone()], Vec::new()),
         ),
         (
+            "a hundred Clone and Heal corrections",
+            recipe(
+                vec![super::gpu_repair_plan_tests::repair(
+                    super::gpu_repair_plan_tests::hundred((WIDTH, HEIGHT), 4),
+                )],
+                Vec::new(),
+            ),
+        ),
+        (
             "Clone and Heal before Detail",
             recipe(
                 vec![

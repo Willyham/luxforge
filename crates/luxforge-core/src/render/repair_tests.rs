@@ -971,3 +971,42 @@ fn a_hundred_corrections_plan_in_few_groups_and_bounded_passes() {
         assert_eq!(seen, (0..100).collect::<Vec<_>>());
     }
 }
+
+/// A drag of the repair layer — a drafted correction — is drawn on the GPU at Fit, over the
+/// reduced stage, its table bound to that stage: the motion contract's reduced-source frame, its
+/// difference from the picture at rest reported, not a reference fallback.
+#[test]
+fn a_drafted_repair_draws_on_the_gpu_at_fit() {
+    let full = Stage {
+        width: 3000,
+        height: 2000,
+    };
+    let reduced = Stage {
+        width: 750,
+        height: 500,
+    };
+    let ops = varied_ops(full);
+    let registry = repair_registry();
+    let stack = recipe(vec![
+        repair_layer(&ops),
+        Layer::new(crate::BASIC_EFFECT, json!({"exposure": 0.3})),
+    ]);
+    let answer = crate::gpu_plan(
+        &registry,
+        &stack,
+        crate::GpuPlanRequest::fit(0, reduced, full)
+            .from_source()
+            .drafted(0),
+    )
+    .unwrap();
+    let plan = answer
+        .plan()
+        .unwrap_or_else(|| panic!("{:?}", answer.fallback()));
+    assert_eq!(plan.boundary.stage, reduced);
+    let step = &plan.spatial[0];
+    assert!(step.repair.is_some());
+    // Bound to the reduced stage: every destination lies inside it.
+    for op in &step.repair.as_ref().unwrap().operations {
+        assert!(op.writes.x1() <= reduced.width && op.writes.y1() <= reduced.height);
+    }
+}
