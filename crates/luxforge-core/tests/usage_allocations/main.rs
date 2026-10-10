@@ -73,6 +73,7 @@ fn usage_recording_and_encoding_allocate_nothing_per_event() {
         Trigger::Launch,
         SessionStart::parse("2026-10-09T14:03:12Z").unwrap(),
         SessionClock::monotonic(),
+        ImageKey::from_bytes([3; 32]),
     );
     let release = Release::parse("0.0.0+9d4138ca1f2e").unwrap();
     let installation = ReportId::random();

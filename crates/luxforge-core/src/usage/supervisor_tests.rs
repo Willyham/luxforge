@@ -14,7 +14,7 @@ use crate::{
         OsProfile, Percent, ProcessSample, Renderer, Version, decode_batch,
         device_profile::{AppleTier, Arch},
         eligibility::{Eligibility, TestReceiver},
-        event::Event,
+        event::{Event, Recorded},
         registry::{MAX_BODY_BYTES, MAX_EVENTS},
     },
 };
@@ -962,7 +962,10 @@ fn usage_an_opt_out_before_detaching_or_during_serialization_sends_nothing() {
     harness.record(3);
     harness.clock.advance(11 * MINUTE);
     harness.revoke("off");
+    // Before the worker wakes: the collector's gate is off and producers record nothing.
     assert!(harness.session().is_none(), "producers stop at once");
+    assert_eq!(harness.collector.gate().current(), None);
+    assert_eq!(harness.collector.record(idle()), Recorded::Off);
     assert_eq!(harness.step(), Step::Off);
     assert_eq!(harness.transport.count(), 0);
     assert_eq!(harness.storage(), 0, "every buffer is freed");
@@ -1273,6 +1276,7 @@ fn usage_the_process_sampler_plugs_in_and_parks_while_off_or_hidden() {
         Trigger::OptIn,
         SessionStart::from_unix_seconds(WALL.as_secs()).unwrap(),
         clock,
+        crate::usage::ImageKey::from_bytes([1; 32]),
     );
     assert_eq!(
         sampler.step(&collector, MINUTE, WALL),
@@ -1465,6 +1469,7 @@ fn usage_the_worker_starts_on_consent_and_ends_when_consent_ends() {
     parts.clock.advance(11 * MINUTE);
     wait_until("the first batch", || parts.transport.count() == 1);
     revoke(&parts.usage, &parts.dir.store(), "off");
+    assert_eq!(parts.collector.record(idle()), Recorded::Off);
     assert!(
         parts.collector.session().is_none(),
         "producers stop at once"

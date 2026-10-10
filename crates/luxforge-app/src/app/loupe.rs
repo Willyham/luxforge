@@ -172,16 +172,34 @@ impl Editor {
     /// One loupe message.
     pub(crate) fn loupe_update(&mut self, message: LoupeMessage) -> Task<Message> {
         match message {
-            LoupeMessage::Open => return self.loupe_show(),
-            LoupeMessage::Close => return self.loupe_close(),
-            LoupeMessage::Frame(travel) => self.loupe_key(Goto::Frame(travel), travel),
-            LoupeMessage::Moment(travel) => self.loupe_key(Goto::Moment(travel), travel),
+            LoupeMessage::Open | LoupeMessage::Close => {
+                let opening = matches!(message, LoupeMessage::Open);
+                if opening != self.select.state.loupe.open {
+                    self.usage_interaction(luxforge_core::usage::Feature::LoupeToggle, false);
+                }
+                return if opening {
+                    self.loupe_show()
+                } else {
+                    self.loupe_close()
+                };
+            }
+            LoupeMessage::Frame(travel) => {
+                self.usage_interaction(luxforge_core::usage::Feature::NavigatePhoto, false);
+                self.loupe_key(Goto::Frame(travel), travel)
+            }
+            LoupeMessage::Moment(travel) => {
+                self.usage_interaction(luxforge_core::usage::Feature::NavigatePhoto, false);
+                self.loupe_key(Goto::Moment(travel), travel)
+            }
             LoupeMessage::Jump(index) => {
                 let travel = self.select.state.loupe.travel;
                 self.loupe_key(Goto::Frame0(index), travel);
             }
             LoupeMessage::ToggleFocus => {
                 let pressed_ms = self.log_ms();
+                if self.select.state.loupe.open {
+                    self.usage_interaction(luxforge_core::usage::Feature::FocusCheck, false);
+                }
                 let loupe = &mut self.select.state.loupe;
                 if loupe.open {
                     loupe.focus = !loupe.focus;
@@ -197,7 +215,12 @@ impl Editor {
                     );
                 }
             }
-            LoupeMessage::ToggleCompare => self.loupe_compare(),
+            LoupeMessage::ToggleCompare => {
+                if self.select.state.loupe.open {
+                    self.usage_interaction(luxforge_core::usage::Feature::CompareMoment, false);
+                }
+                self.loupe_compare()
+            }
             LoupeMessage::Pick => return self.loupe_pick(),
             LoupeMessage::Pointer(pointer) => {
                 self.select.state.loupe.pointer =

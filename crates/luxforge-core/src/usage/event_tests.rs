@@ -14,6 +14,10 @@ fn start() -> SessionStart {
     SessionStart::parse("2026-10-09T14:03:12Z").unwrap()
 }
 
+fn key(byte: u8) -> ImageKey {
+    ImageKey::from_bytes([byte; 32])
+}
+
 fn idle() -> EventKind {
     EventKind::AppIdle {
         state: Idle::Active,
@@ -198,9 +202,11 @@ fn usage_concurrent_floods_stay_within_the_banks_and_every_seq_is_stored_or_drop
             totals.0 + 1,
             "every stored event is in exactly one batch"
         );
+        // Drops while the active window is empty carry over into the next window, so the last
+        // (empty) window may still hold some.
         assert_eq!(
-            dropped,
-            totals.1 as u64 + u64::from(session.window().dropped)
+            dropped + u64::from(session.window().dropped),
+            totals.1 as u64
         );
         assert_eq!(session.diagnostics().dropped, totals.1 as u64);
     });
@@ -235,7 +241,7 @@ fn usage_a_collector_that_is_off_stores_nothing_and_owns_no_session() {
     let collector = Collector::new();
     assert_eq!(collector.record(idle()), Recorded::Off);
     assert!(collector.session().is_none());
-    let session = collector.start(Trigger::OptIn, start(), SessionClock::manual().0);
+    let session = collector.start(Trigger::OptIn, start(), SessionClock::manual().0, key(1));
     let generation = collector.gate().current().unwrap();
     assert_eq!(session.generation(), generation);
     assert_eq!(collector.record(idle()), Recorded::Stored(1));
@@ -243,7 +249,7 @@ fn usage_a_collector_that_is_off_stores_nothing_and_owns_no_session() {
     assert_eq!(collector.record(idle()), Recorded::Off);
     assert!(collector.session().is_none());
     // Work started in the ended generation records nothing after a new opt-in.
-    let next = collector.start(Trigger::OptIn, start(), SessionClock::manual().0);
+    let next = collector.start(Trigger::OptIn, start(), SessionClock::manual().0, key(1));
     assert_ne!(next.id(), session.id(), "a new session ID per off/on");
     assert_eq!(collector.record_in(generation, idle()), Recorded::Off);
     assert_eq!(collector.record(idle()), Recorded::Stored(1));
@@ -318,4 +324,31 @@ fn usage_all_statistics_storage_fits_256_kib() {
     assert_eq!(body.storage_bytes(), MAX_BODY_BYTES);
     assert!(total <= 256 * 1024, "{total} bytes");
     assert!(size_of::<DeviceProfile>() <= MAX_DEVICE_BYTES);
+}
+
+#[test]
+fn usage_the_image_id_is_keyed_by_the_session_and_absent_while_off() {
+    let fingerprint = "a".repeat(64);
+    let collector = Collector::new();
+    assert_eq!(collector.image_id(&fingerprint), None, "off: no key, no ID");
+    let first = collector.start(Trigger::OptIn, start(), SessionClock::manual().0, key(1));
+    let id = collector.image_id(&fingerprint).expect("on: an ID");
+    assert_eq!(Some(id), key(1).image_id_of_hex(&fingerprint));
+    assert_eq!(
+        collector.image_id(&fingerprint),
+        Some(id),
+        "the same photograph keeps its ID within one key"
+    );
+    assert_ne!(collector.image_id(&"b".repeat(64)), Some(id));
+    assert_eq!(collector.image_id("not a fingerprint"), None);
+    assert!(!format!("{first:?}").contains(&format!("{:?}", key(1).as_bytes())));
+    collector.stop();
+    assert_eq!(
+        collector.image_id(&fingerprint),
+        None,
+        "the key ends with the session"
+    );
+    // Opting in again brings a new key, and so a different ID for the same photograph.
+    collector.start(Trigger::OptIn, start(), SessionClock::manual().0, key(2));
+    assert_ne!(collector.image_id(&fingerprint), Some(id));
 }

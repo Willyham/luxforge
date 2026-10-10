@@ -275,6 +275,8 @@ impl LibraryLane {
             origin: Some(origin),
             control: JobControl::new(),
         });
+        // A retry's answer is not a second operation: it records no usage event.
+        jobs.forget_usage(&job_id);
         jobs.finish(&job_id, Ok(Output::Value(answer)));
         JobStarted {
             job_id,
