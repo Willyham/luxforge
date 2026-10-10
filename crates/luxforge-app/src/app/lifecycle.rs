@@ -50,7 +50,7 @@ pub(super) fn host_config(config: &Config, tiles: Arc<GpuTiles>) -> HostConfig {
     };
     let paths = config.paths.as_ref();
     HostConfig {
-        usage: Arc::new(luxforge_core::usage::Usage::new(usage_eligibility(config))),
+        usage_consent: Arc::new(luxforge_core::usage::Usage::new(usage_eligibility(config))),
         preferences_dir: paths.map(|paths| paths.config.clone()),
         config_dir: paths.map(Paths::module_config),
         resource_dir: paths.map(Paths::module_resources),
@@ -122,7 +122,7 @@ pub(crate) fn run(mut config: Config, size: (f32, f32)) -> Result<(), String> {
     let tiles = super::gpu_tiles::launch(launch);
     let host = host_config(&config, tiles);
     // The notice and the Privacy tab exist exactly where the host can act on them.
-    config.usage_eligible = host.usage.eligibility().is_eligible();
+    config.usage_eligible = host.usage_consent.eligibility().is_eligible();
     let (owner, join) =
         OwnerHandle::start_with_host(&catalog, registry, host).map_err(|error| {
             match error.kind {

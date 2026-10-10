@@ -29,7 +29,7 @@ host_params! {
 
 /// `usage.read`.
 pub(in crate::api) fn read(owner: &mut Owner, _: &Call<'_>, _: NoParams) -> Result<Value, Error> {
-    value(owner.host.usage().read(&owner.host.preferences))
+    value(owner.host.usage_consent().read(&owner.host.preferences))
 }
 
 /// `usage.prompt.claim`: only the host's own client with permission authority may claim the one
@@ -44,7 +44,7 @@ pub(in crate::api) fn claim(
             "claiming the usage statistics notice needs permission authority",
         ));
     }
-    let usage = owner.host.usage();
+    let usage = owner.host.usage_consent();
     let show_prompt = usage.claim(&owner.host.preferences)?;
     if show_prompt {
         announce_once(&mut owner.announced, &call.origin);
@@ -62,7 +62,7 @@ pub(in crate::api) fn set(
     params: UsageSet,
 ) -> Result<Value, Error> {
     let authority = owner.authority(call.client);
-    let outcome = owner.host.usage().set(
+    let outcome = owner.host.usage_consent().set(
         &owner.host.preferences,
         authority,
         params.enabled,
@@ -92,7 +92,7 @@ pub(in crate::api) fn deduplicated(owner: &Owner, method: &str, answer: &mut Val
         if fields.contains_key("state") {
             fields.insert(
                 "state".into(),
-                json!(owner.host.usage().read(&owner.host.preferences)),
+                json!(owner.host.usage_consent().read(&owner.host.preferences)),
             );
         }
     }

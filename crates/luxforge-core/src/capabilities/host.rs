@@ -88,7 +88,7 @@ pub struct HostConfig {
     /// identity. Its consent record is read from and written to `preferences.json` under
     /// [`Self::preferences_dir`]. Every host but an eligible desktop or an explicit test host
     /// passes a headless one, which is never eligible.
-    pub usage: Arc<crate::usage::consent::Usage>,
+    pub usage_consent: Arc<crate::usage::consent::Usage>,
 }
 
 impl HostConfig {
@@ -108,7 +108,7 @@ impl HostConfig {
             launch_flags: Default::default(),
             renderer: crate::Renderer::headless(),
             tiles: None,
-            usage: Arc::new(crate::usage::consent::Usage::headless()),
+            usage_consent: Arc::new(crate::usage::consent::Usage::headless()),
         }
     }
 }
@@ -125,7 +125,7 @@ impl std::fmt::Debug for HostConfig {
             .field("launch_flags", &self.launch_flags)
             .field("renderer", &self.renderer)
             .field("tiles", &self.tiles.as_ref().map(|tiles| tiles.status()))
-            .field("usage", &self.usage)
+            .field("usage_consent", &self.usage_consent)
             .finish()
     }
 }
@@ -318,9 +318,9 @@ impl CapabilityHost {
         &self.config.launch_flags
     }
 
-    /// The process-wide usage statistics consent runtime ([`HostConfig::usage`]).
-    pub(crate) fn usage(&self) -> &crate::usage::consent::Usage {
-        &self.config.usage
+    /// The process-wide usage statistics consent runtime ([`HostConfig::usage_consent`]).
+    pub(crate) fn usage_consent(&self) -> &crate::usage::consent::Usage {
+        &self.config.usage_consent
     }
 
     /// The renderer the host said it draws with when it started ([`HostConfig::renderer`]).

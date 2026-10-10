@@ -1491,7 +1491,7 @@ fn owner_loop(
     let preferences = host.preferences.read();
     // The process's one launch read of the stored usage statistics consent; a later owner of the
     // same process, for another catalog, changes nothing.
-    host.usage().start(preferences.as_ref());
+    host.usage_consent().start(preferences.as_ref());
     let preferences = preferences.unwrap_or_default();
     service.set_auto_collapse(preferences.auto_collapse_history());
     service.set_auto_lens_profile(preferences.auto_lens_profile());

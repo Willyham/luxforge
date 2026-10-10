@@ -327,7 +327,7 @@ fn usage_only_an_evidence_run_with_a_test_receiver_is_eligible() {
     ] {
         let eligibility = usage_eligibility(&config);
         assert_eq!(eligibility.reason(), Some(Reason::InactiveDestination));
-        assert!(!host_of(&config).usage.eligibility().is_eligible());
+        assert!(!host_of(&config).usage_consent.eligibility().is_eligible());
     }
     let receiver = "http://127.0.0.1:9/v1/usage/batches";
     let test = Config {
@@ -336,8 +336,8 @@ fn usage_only_an_evidence_run_with_a_test_receiver_is_eligible() {
         ..Config::default()
     };
     let host = host_of(&test);
-    assert!(host.usage.eligibility().is_eligible());
-    assert_eq!(host.usage.eligibility().destination(), receiver);
-    assert_ne!(host.usage.eligibility().destination(), DESTINATION);
+    assert!(host.usage_consent.eligibility().is_eligible());
+    assert_eq!(host.usage_consent.eligibility().destination(), receiver);
+    assert_ne!(host.usage_consent.eligibility().destination(), DESTINATION);
     assert!(TestReceiver::loopback(DESTINATION).is_err());
 }
