@@ -627,7 +627,7 @@ On the canvas the selected correction shows its outline, its dashed source and a
 
 Every gesture is also an API request — `edit.add-correction`, `edit.update-correction`, `edit.delete-correction`, `edit.reorder-correction`, `edit.reset-corrections`, `query.corrections` and `query.correction-sources` ([modules and API](design/modules-and-api.md#corrections)). AI Remove is not part of this build and is not drawn.
 
-Heal blends its source into the destination's surroundings, so it works best on small blemishes inside an even or textured area. Across a hard edge, or over a line that carries on past the brush (a road, a wire, the bar a lamp hangs from), it pulls that tone in as a smear; cover the whole object, and paint a stroke rather than a spot for something long. The automatic source can pick a patch that holds a nearby line or object; press `/` for the next one, or `⌥`-click a source yourself.
+Heal blends its source into the destination's surroundings, so it works best on small blemishes inside an even or textured area. Across a hard edge, or over a line that carries on past the brush (a road, a wire, the bar a lamp hangs from), it pulls that tone in as a smear; cover the whole object, and paint a stroke rather than a spot for something long. A large repair can repeat the structure of its source in a visible patch; several smaller corrections, or a set source, often blend better. The automatic source can pick a patch that holds a nearby line or object; press `/` for the next one, or `⌥`-click a source yourself.
 
 ### Vignette
 
