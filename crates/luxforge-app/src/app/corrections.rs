@@ -46,7 +46,7 @@ const RANKED: u64 = 8;
 pub(crate) enum CorrectionOp {
     /// A new correction: the press, its path so far and the source it samples from, if set.
     Add {
-        press: Option<BrushGesture>,
+        press: Option<Box<BrushGesture>>,
         path: StrokeCapture,
         settings: BrushSettings,
         source: Option<[f64; 2]>,
@@ -825,7 +825,7 @@ impl Editor {
                 binding,
                 op: CorrectionOp::Add {
                     path: StrokeCapture::new(),
-                    press: Some(press),
+                    press: Some(Box::new(press)),
                     settings,
                     source: None,
                     set: true,
@@ -850,7 +850,7 @@ impl Editor {
         let gesture = CorrectionGesture {
             binding,
             op: CorrectionOp::Add {
-                press: Some(press),
+                press: Some(Box::new(press)),
                 path,
                 settings,
                 set: source.is_some(),
@@ -1000,7 +1000,7 @@ impl Editor {
             if let CorrectionOp::Add {
                 press: Some(press), ..
             } = held.op
-                && let Released::SetSource(at) = press.release(view, content)
+                && let Released::SetSource(at) = (*press).release(view, content)
             {
                 self.corrections.source.set(at);
                 self.corrections.notice = None;
@@ -1031,7 +1031,7 @@ impl Editor {
                 if let Released::Add {
                     path: released,
                     pulled,
-                } = held.release(view, content)
+                } = (*held).release(view, content)
                 {
                     last_end = released.last();
                     *path = released;
