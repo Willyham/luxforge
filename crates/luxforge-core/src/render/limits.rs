@@ -22,6 +22,9 @@ pub(crate) enum RenderPass {
     Spatial,
     /// A proxy source's box downscale, counted over the source pixels it reads.
     Proxy,
+    /// The reference's repair frame: its working set's reads and its band writes, counted over
+    /// its stage. Threshold provisional until photo-sized measurement.
+    Repair,
 }
 
 /// [`RenderPass::Transform`]: a quarter turn is 0.61 to 0.73 at 0.5 MP and 1.24 to 1.26 at 0.25 MP.
@@ -43,6 +46,9 @@ pub(crate) const PARALLEL_RESAMPLE_PIXELS: u64 = 100_000;
 /// Provisional: use the resample gate until warp-specific distributions are measured.
 pub(crate) const PARALLEL_WARP_PIXELS: u64 = PARALLEL_RESAMPLE_PIXELS;
 
+/// Provisional: use the spatial gate until the repair frame's distributions are measured.
+pub(crate) const PARALLEL_REPAIR_PIXELS: u64 = PARALLEL_SPATIAL_PIXELS;
+
 /// [`RenderPass::Spatial`]: at 0.25 MP each Presence unit's fastest runs are 0.21 to 0.88 and all
 /// three together 0.33 to 0.34 at the p50; at 0.1 MP Texture or Dehaze alone breaks even or loses.
 pub(crate) const PARALLEL_SPATIAL_PIXELS: u64 = 250_000;
@@ -62,6 +68,7 @@ pub(crate) const fn parallel_pixels(pass: RenderPass) -> u64 {
         RenderPass::Warp => PARALLEL_WARP_PIXELS,
         RenderPass::Spatial => PARALLEL_SPATIAL_PIXELS,
         RenderPass::Proxy => PARALLEL_PROXY_PIXELS,
+        RenderPass::Repair => PARALLEL_REPAIR_PIXELS,
     }
 }
 
