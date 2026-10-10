@@ -76,6 +76,8 @@ mod gpu_preview_tests;
 #[cfg(test)]
 pub(crate) mod gpu_qualification;
 #[cfg(test)]
+mod gpu_repair_plan_tests;
+#[cfg(test)]
 mod gpu_repair_tests;
 #[cfg(test)]
 mod gpu_rest_tests;
