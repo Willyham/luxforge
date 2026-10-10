@@ -868,3 +868,255 @@ fn search_texture_term_keeps_texture_with_texture() {
         "the source stays in the texture: {best:?}"
     );
 }
+
+// ---- The automatic source on the quadrant fixture --------------------------------------------
+
+/// The ring term `A` and texture term `T` of one candidate, recomputed beside the reference's
+/// score so a review can say which term decided it.
+fn terms(reduced: &Image, sets: &repair::Sets, delta: [i64; 2]) -> (f64, f64) {
+    let inside = |p: [i64; 2]| {
+        p[0] >= 0
+            && p[1] >= 0
+            && (p[0] as usize) < reduced.width
+            && (p[1] as usize) < reduced.height
+    };
+    let ring: Vec<[i64; 2]> = sets.ring.iter().copied().filter(|p| inside(*p)).collect();
+    let energy = |set: &[[i64; 2]], shift: [i64; 2]| {
+        let member = |p: [i64; 2]| {
+            set.binary_search_by(|q| (q[1], q[0]).cmp(&(p[1], p[0])))
+                .is_ok()
+        };
+        let (mut sum, mut n) = (0.0, 0usize);
+        for &[x, y] in set {
+            for next in [[x + 1, y], [x, y + 1]] {
+                if member(next) {
+                    let a = reduced.at((x + shift[0]) as usize, (y + shift[1]) as usize);
+                    let b =
+                        reduced.at((next[0] + shift[0]) as usize, (next[1] + shift[1]) as usize);
+                    for c in 0..3 {
+                        sum += (a[c] - b[c]) * (a[c] - b[c]);
+                    }
+                    n += 1;
+                }
+            }
+        }
+        if n == 0 {
+            0.0
+        } else {
+            (sum / (3 * n) as f64).sqrt()
+        }
+    };
+    let mut sum = 0.0;
+    for q in &ring {
+        let a = reduced.at(q[0] as usize, q[1] as usize);
+        let b = reduced.at((q[0] + delta[0]) as usize, (q[1] + delta[1]) as usize);
+        for c in 0..3 {
+            sum += (a[c] - b[c]) * (a[c] - b[c]);
+        }
+    }
+    let a = if ring.is_empty() {
+        0.0
+    } else {
+        (sum / (3 * ring.len()) as f64).sqrt()
+    };
+    let t = (energy(&sets.interior, delta) - energy(&ring, [0, 0])).abs();
+    (a, t)
+}
+
+/// The share of an operation's full-resolution footprint, moved by `delta`, that is near-white
+/// (every channel's code above 200): on the quadrant fixture, its labels and arrow.
+fn white_share(img: &Image, op: &Operation, delta: [i64; 2]) -> f64 {
+    let stage = img.stage();
+    let compiled = Compiled::new(op, &stage);
+    let (mut white, mut n) = (0usize, 0usize);
+    for y in 0..img.height {
+        for x in 0..img.width {
+            if compiled.coverage(&stage, x, y) <= 0.0 {
+                continue;
+            }
+            let (sx, sy) = (x as i64 + delta[0], y as i64 + delta[1]);
+            if sx < 0 || sy < 0 || sx as usize >= img.width || sy as usize >= img.height {
+                continue;
+            }
+            n += 1;
+            if img
+                .at(sx as usize, sy as usize)
+                .iter()
+                .all(|v| srgb::code(*v) > 200)
+            {
+                white += 1;
+            }
+        }
+    }
+    if n == 0 { 0.0 } else { white as f64 / n as f64 }
+}
+
+/// The `corrections` smoke's automatic Heals over the quadrant fixture's flat green quadrant (its
+/// painted stroke and its `⇧`-click straight stroke, radius 0.04 content heights), every surviving
+/// candidate with its ring term, texture term and the near-white share of its source, and the
+/// Heal the best candidate makes written under `artifacts/repair-study/`. Run on request:
+/// `cargo test -p luxforge-reference --release --test studies repair::search_review_quadrants --
+/// --ignored --nocapture`.
+#[test]
+#[ignore = "a review of the automatic source on the quadrant fixture; prints and writes images"]
+fn search_review_quadrants() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../fixtures/s0/orientation-1.jpg");
+    let photo = image::open(&path).expect("the quadrant fixture").to_rgb8();
+    let (w, h) = photo.dimensions();
+    let img = crop(&photo, 0, 0, w, h);
+    let stage = img.stage();
+    let cases: [(&str, Vec<[f64; 2]>); 2] = [
+        ("stroke", vec![[0.62, 0.30], [0.72, 0.30], [0.82, 0.30]]),
+        ("straight", vec![[0.82, 0.30], [0.82, 0.40]]),
+    ];
+    for (name, path) in cases {
+        let op = Operation {
+            kind: Kind::Heal,
+            paths: vec![path],
+            radius: 0.04,
+            feather: 50.0,
+            opacity: 100.0,
+            offset: [0.0, 0.0],
+        };
+        let e = repair::extent(&op, &stage);
+        let r = repair::reduction(e, &stage);
+        let reduced = repair::reduced(&img, r);
+        let sets = repair::sets(&op, &stage, r);
+        let window = [0, 0, reduced.width as i64, reduced.height as i64];
+        let ranked = ranked(repair::search(&reduced, &op, &stage, r, window));
+        println!(
+            "{name}: extent {:.1} px, reduction {r}, {} candidates survive of 96",
+            e * f64::from(stage.height),
+            ranked.len()
+        );
+        println!("rank ring dir   delta(px)        A        T    score  white");
+        for (rank, c) in ranked.iter().enumerate() {
+            let (a, t) = terms(&reduced, &sets, c.delta);
+            let full = repair::delta(c.offset, &stage);
+            println!(
+                "{:>4} {:>4} {:>3} {:>5},{:>5} {:>8.4} {:>8.4} {:>8.4} {:>6.3}",
+                rank + 1,
+                repair::RINGS[c.ring],
+                c.direction * 15,
+                full[0],
+                full[1],
+                a,
+                t,
+                c.score,
+                white_share(&img, &op, full)
+            );
+        }
+        // A candidate set this review proposes beside the frozen one: in each direction, offsets
+        // that are multiples of the least shift that clears the destination's grown footprint
+        // (its width across that direction, not the stroke's half-diagonal), scored by the same
+        // terms. Not the frozen contract: evidence for a proposed change.
+        let grown = &sets.grown;
+        let member = |p: [i64; 2]| {
+            grown
+                .binary_search_by(|q| (q[1], q[0]).cmp(&(p[1], p[0])))
+                .is_ok()
+        };
+        let (mut bx0, mut by0, mut bx1, mut by1) = (i64::MAX, i64::MAX, i64::MIN, i64::MIN);
+        for p in grown.iter().chain(
+            sets.ring
+                .iter()
+                .filter(|p| p[0] >= 0 && p[1] >= 0 && p[0] < window[2] && p[1] < window[3]),
+        ) {
+            bx0 = bx0.min(p[0]);
+            by0 = by0.min(p[1]);
+            bx1 = bx1.max(p[0]);
+            by1 = by1.max(p[1]);
+        }
+        let mut proposed = Vec::new();
+        for j in 0..repair::DIRECTIONS {
+            let [cu, cv] = repair::direction(j);
+            let mut clear = None;
+            for step in 1..4096 {
+                let t = step as f64 * 0.5;
+                let d = [(t * cu).round() as i64, (t * cv).round() as i64];
+                if !grown.iter().any(|p| member([p[0] + d[0], p[1] + d[1]])) {
+                    clear = Some(t);
+                    break;
+                }
+            }
+            let Some(clear) = clear else { continue };
+            for m in [1.0, 1.5, 2.25, 3.25] {
+                let t = clear * m;
+                let d = [(t * cu).round() as i64, (t * cv).round() as i64];
+                if bx0 + d[0] < 0
+                    || by0 + d[1] < 0
+                    || bx1 + d[0] >= window[2]
+                    || by1 + d[1] >= window[3]
+                {
+                    continue;
+                }
+                if grown.iter().any(|p| member([p[0] + d[0], p[1] + d[1]])) {
+                    continue;
+                }
+                let (a, t_term) = terms(&reduced, &sets, d);
+                let full = [d[0] * r as i64, d[1] * r as i64];
+                proposed.push((
+                    a + t_term + repair::DISTANCE_WEIGHT * m,
+                    m,
+                    j,
+                    full,
+                    a,
+                    t_term,
+                ));
+            }
+        }
+        proposed.sort_by(|a, b| {
+            a.0.total_cmp(&b.0)
+                .then(a.1.total_cmp(&b.1))
+                .then(a.2.cmp(&b.2))
+        });
+        println!(
+            "{name}, proposed clearing-distance candidates: {} survive",
+            proposed.len()
+        );
+        for (rank, (score, m, j, full, a, t)) in proposed.iter().take(8).enumerate() {
+            println!(
+                "{:>4} {:>4} {:>3} {:>5},{:>5} {:>8.4} {:>8.4} {:>8.4} {:>6.3}",
+                rank + 1,
+                m,
+                j * 15,
+                full[0],
+                full[1],
+                a,
+                t,
+                score,
+                white_share(&img, &op, *full)
+            );
+        }
+        if let Some((_, _, _, full, _, _)) = proposed.first() {
+            let offset = [
+                full[0] as f64 / f64::from(stage.width),
+                full[1] as f64 / f64::from(stage.height),
+            ];
+            let healed = repair::heal(
+                &img,
+                &Compiled::new(
+                    &Operation {
+                        offset,
+                        ..op.clone()
+                    },
+                    &stage,
+                ),
+            );
+            write(&healed, &format!("quadrants-{name}-heal-proposed.png"));
+        }
+        let best = ranked[0];
+        let healed = repair::heal(
+            &img,
+            &Compiled::new(
+                &Operation {
+                    offset: best.offset,
+                    ..op.clone()
+                },
+                &stage,
+            ),
+        );
+        write(&healed, &format!("quadrants-{name}-heal.png"));
+    }
+}
