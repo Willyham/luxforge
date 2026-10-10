@@ -162,9 +162,7 @@ impl Starting {
             | Self::Crop
             | Self::Correction
             | Self::Pick
-            | Self::Action => {
-                (true, true, true)
-            }
+            | Self::Action => (true, true, true),
             Self::Slider => (true, true, false),
             Self::Gallery | Self::History | Self::Compare => (true, false, true),
             Self::Mode | Self::Preset | Self::Refit | Self::Workspace | Self::Photograph => {

@@ -187,7 +187,9 @@ pub(crate) fn tools_panel<'a>(
     panel = panel.push(inspector(plot));
     // The Corrections band sits where the Masks band does in Mask mode, followed by the sections.
     if corrections.active {
-        panel = panel.push(crate::view::corrections_panel::corrections_band(corrections));
+        panel = panel.push(crate::view::corrections_panel::corrections_band(
+            corrections,
+        ));
     }
     if masking {
         panel = panel.push(crate::view::masks_panel::masks_panel(masks, menu, plot));

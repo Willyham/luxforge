@@ -340,27 +340,23 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CanvasModel {
                 })
             }),
     );
-    modes.extend(
-        inputs
-            .modules
-            .iter()
-            .filter(shown)
-            .filter_map(|module| match module.canvas.as_ref() {
-                Some(canvas @ CanvasInteraction::CropFrame { .. }) => Some(ModeEntry {
-                    id: module.id.clone(),
-                    label: canvas.title().to_owned(),
-                    icon: canvas.icon().map(str::to_owned),
-                    shortcut: canvas.shortcut().map(str::to_owned),
-                    selected: inputs.session.workspace.mode == module.id,
-                    enabled: editable,
-                }),
-                // A declared brush is listed above, after Mask.
-                Some(CanvasInteraction::PointPick { .. })
-                | Some(CanvasInteraction::SampleApply { .. })
-                | Some(CanvasInteraction::BrushMask { .. })
-                | None => None,
+    modes.extend(inputs.modules.iter().filter(shown).filter_map(|module| {
+        match module.canvas.as_ref() {
+            Some(canvas @ CanvasInteraction::CropFrame { .. }) => Some(ModeEntry {
+                id: module.id.clone(),
+                label: canvas.title().to_owned(),
+                icon: canvas.icon().map(str::to_owned),
+                shortcut: canvas.shortcut().map(str::to_owned),
+                selected: inputs.session.workspace.mode == module.id,
+                enabled: editable,
             }),
-    );
+            // A declared brush is listed above, after Mask.
+            Some(CanvasInteraction::PointPick { .. })
+            | Some(CanvasInteraction::SampleApply { .. })
+            | Some(CanvasInteraction::BrushMask { .. })
+            | None => None,
+        }
+    }));
     let photo = photo_view(inputs, drafting);
     CanvasModel {
         photo: photo.clone(),

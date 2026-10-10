@@ -20,8 +20,8 @@ use crate::{
     view::{
         Surfaces,
         canvas_view::CanvasView,
-        crop_canvas::{CropCanvas, Mode},
         corrections_canvas::CorrectionsCanvas,
+        crop_canvas::{CropCanvas, Mode},
         mask_canvas::{MaskCanvas, Placement},
     },
 };

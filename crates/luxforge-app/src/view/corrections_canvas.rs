@@ -10,11 +10,7 @@
 //! app's. Overlays are white over a translucent dark under-stroke so they read on any photograph,
 //! and they are never themed: the accent marks only the selected pin, a set source and the gesture
 //! being drafted. Pins and handles keep their point size at every zoom.
-use super::{
-    brush_overlay,
-    mask_canvas::Placement,
-    warped_path::Outline,
-};
+use super::{brush_overlay, mask_canvas::Placement, warped_path::Outline};
 use crate::{
     app::message::{
         Message,
@@ -27,8 +23,7 @@ use crate::{
     state::corrections::Listed,
 };
 use iced::{
-    Color, Point, Rectangle, Renderer, Size,
-    keyboard,
+    Color, Point, Rectangle, Renderer, Size, keyboard,
     mouse::{self, Cursor},
     widget::canvas::{self, Action, Event, Frame, Geometry, LineDash, Path, Stroke},
 };
@@ -106,7 +101,9 @@ pub(crate) struct CorrectionsCanvas<'a> {
 
 impl<'a> CorrectionsCanvas<'a> {
     pub(crate) fn new(data: CanvasData<'a>, placement: Placement) -> Self {
-        let edited = data.gesture.and_then(|gesture| gesture.edited().map(str::to_owned));
+        let edited = data
+            .gesture
+            .and_then(|gesture| gesture.edited().map(str::to_owned));
         let live = data.gesture.and_then(|gesture| {
             gesture.drawn(edited.as_ref().and_then(|id| {
                 data.operations
@@ -246,7 +243,9 @@ impl CorrectionsCanvas<'_> {
                 .data
                 .operations
                 .get(index)
-                .map_or(CanvasHit::Add, |listed| CanvasHit::Pin(listed.operation.clone())),
+                .map_or(CanvasHit::Add, |listed| {
+                    CanvasHit::Pin(listed.operation.clone())
+                }),
             Hit::Add => CanvasHit::Add,
         }
     }
@@ -270,7 +269,11 @@ impl CorrectionsCanvas<'_> {
 
     fn pin(frame: &mut Frame, at: ViewPoint, selected: bool) {
         let centre = Point::new(at.0, at.1);
-        let fill = if selected { theme::PHOTO_ANCHOR } else { PIN_FILL };
+        let fill = if selected {
+            theme::PHOTO_ANCHOR
+        } else {
+            PIN_FILL
+        };
         frame.fill(&Path::circle(centre, PIN_RADIUS), fill);
         frame.stroke(
             &Path::circle(centre, PIN_RADIUS + 0.75),
@@ -314,7 +317,8 @@ impl CorrectionsCanvas<'_> {
     fn tooltip(frame: &mut Frame, at: Point, lead: &str, detail: &str, size: Size) {
         const PAD: f32 = 6.0;
         const LINE: f32 = 15.0;
-        let width = 7.0 * detail.chars().count().max(lead.chars().count()) as f32 * 0.82 + 2.0 * PAD;
+        let width =
+            7.0 * detail.chars().count().max(lead.chars().count()) as f32 * 0.82 + 2.0 * PAD;
         let height = 2.0 * LINE + PAD;
         let x = (at.x + 14.0).min(size.width - width).max(0.0);
         let y = (at.y - height - 12.0).max(0.0);
@@ -499,10 +503,22 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
             if self.data.automatic {
                 frame.fill(&filled(&outline), FOOTPRINT);
             }
-            stroke_outline(&mut frame, &joined(&outline), OUTLINE, theme::PHOTO_ANCHOR, false);
+            stroke_outline(
+                &mut frame,
+                &joined(&outline),
+                OUTLINE,
+                theme::PHOTO_ANCHOR,
+                false,
+            );
             if let Some(source) = at_source(live) {
                 let dashed = brush_overlay::outline(&self.placement, &source);
-                stroke_outline(&mut frame, &joined(&dashed), OUTLINE, theme::PHOTO_ANCHOR, true);
+                stroke_outline(
+                    &mut frame,
+                    &joined(&dashed),
+                    OUTLINE,
+                    theme::PHOTO_ANCHOR,
+                    true,
+                );
                 if let Some(at) = live.source
                     && let Some(centre) = self.placement.canvas_point(at[0], at[1])
                 {
@@ -581,9 +597,7 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
             CanvasHit::Handle(_) => mouse::Interaction::Grab,
             CanvasHit::Pin(_) => mouse::Interaction::Pointer,
             // The brush draws its own cursor; a refused press says so with the system's.
-            CanvasHit::Add if self.data.refused && !state.pressed => {
-                mouse::Interaction::NotAllowed
-            }
+            CanvasHit::Add if self.data.refused && !state.pressed => mouse::Interaction::NotAllowed,
             CanvasHit::Add => mouse::Interaction::Hidden,
         }
     }
@@ -621,7 +635,11 @@ mod tests {
         }
     }
 
-    fn data<'a>(map: &'a ContentMap, operations: &'a [Listed], selected: Option<&'a str>) -> CanvasData<'a> {
+    fn data<'a>(
+        map: &'a ContentMap,
+        operations: &'a [Listed],
+        selected: Option<&'a str>,
+    ) -> CanvasData<'a> {
         CanvasData {
             map,
             operations,
@@ -670,10 +688,7 @@ mod tests {
         // Inside correction 1's footprint but away from its pin: adds.
         let inside = placement.canvas_point(0.3 + 0.03, 0.5).unwrap();
         assert_eq!(canvas.hit_at(inside, none), CanvasHit::Add);
-        let alt = Modifiers {
-            alt: true,
-            ..none
-        };
+        let alt = Modifiers { alt: true, ..none };
         assert_eq!(canvas.hit_at(pin_1, alt), CanvasHit::Add);
         let hidden = CorrectionsCanvas::new(
             CanvasData {

@@ -22,18 +22,18 @@ pub(crate) mod testing;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use binding::{BrushBinding, BrushSettings, clamp, step};
 #[cfg(test)]
 pub(crate) use binding::EditRequest;
+pub(crate) use binding::{BrushBinding, BrushSettings, clamp, step};
 pub(crate) use capture::StrokeCapture;
 #[cfg(test)]
 pub(crate) use capture::counts;
+pub(crate) use gesture::{
+    BrushGesture, Handle, HandleChange, HandleEdit, HeldOperation, Hit, Modifiers, Moved, Released,
+    SourceChoice, ViewPoint, hit,
+};
 #[cfg(test)]
 pub(crate) use gesture::{CLICK_SLOP, HIT_RADIUS};
-pub(crate) use gesture::{
-    BrushGesture, Handle, HandleChange, HandleEdit, HeldOperation, Hit,
-    Modifiers, Moved, Released, SourceChoice, ViewPoint, hit,
-};
 pub(crate) use map::{ContentMap, Displayed, MapRefusal};
 
 /// The brush cursor's two rings for a radius (units of the content height) and a feather (percent
