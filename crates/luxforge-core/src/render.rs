@@ -53,6 +53,8 @@ mod locate_tests;
 #[cfg(test)]
 mod mask_tests;
 #[cfg(test)]
+mod repair_tests;
+#[cfg(test)]
 mod sample_tests;
 #[cfg(test)]
 pub(crate) mod tests;
