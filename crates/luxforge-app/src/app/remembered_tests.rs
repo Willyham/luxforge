@@ -299,6 +299,7 @@ fn export_to(editor: &mut Editor, asset: &AssetId, destination: PathBuf) {
         pixels_per_inch: None,
         reference: false,
         plan,
+        acknowledge_stale: None,
     };
     let queued = super::export::send_now(&editor.owner, editor.client, &choice);
     let _ = editor.update(Message::Export(ExportMessage::Chosen(Ok(Some(Box::new(
@@ -411,6 +412,7 @@ fn remembered_export_folder_is_not_stored_for_a_cancelled_or_failed_export() {
         pixels_per_inch: None,
         reference: false,
         plan: plan_now(&editor.owner, editor.client, &asset, &entry).unwrap(),
+        acknowledge_stale: None,
     };
     let queued = super::export::send_now(&editor.owner, editor.client, &choice);
     let _ = editor.update(Message::Export(ExportMessage::Chosen(Ok(Some(Box::new(
