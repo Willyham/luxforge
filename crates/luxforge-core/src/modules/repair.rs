@@ -110,7 +110,11 @@ impl RepairOperation {
     fn check(&self) -> Result<(), Error> {
         let name = self.name();
         if self.kind == RepairKind::Patch || self.patch.is_some() {
-            let Some(patch) = self.patch.as_ref().filter(|_| self.kind == RepairKind::Patch) else {
+            let Some(patch) = self
+                .patch
+                .as_ref()
+                .filter(|_| self.kind == RepairKind::Patch)
+            else {
                 return Err(Error::internal(format!(
                     "{name} mixes a patch with a stroke operation"
                 )));

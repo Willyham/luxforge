@@ -175,7 +175,9 @@ impl EditorService {
         let input = self.correction_input(asset_id).ok();
         let [width, height] = input
             .as_ref()
-            .map_or([head.asset.width, head.asset.height], |input| input.dimensions);
+            .map_or([head.asset.width, head.asset.height], |input| {
+                input.dimensions
+            });
         Ok(crate::artifacts::candidates::CandidateBasis {
             asset_id: head.asset.id,
             revision: head.revision,

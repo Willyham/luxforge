@@ -224,7 +224,11 @@ fn a_task_publishes_candidates_that_any_client_lists_reads_and_releases() {
     let input = &done["candidates"][0]["input"];
     assert_eq!(input["dimensions"], json!([480, 320]), "{input}");
     for component in ["source", "upstream", "earlier"] {
-        assert_eq!(input[component].as_str().map(str::len), Some(64), "{component}");
+        assert_eq!(
+            input[component].as_str().map(str::len),
+            Some(64),
+            "{component}"
+        );
     }
     let row = |candidate: u64| {
         json!({

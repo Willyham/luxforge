@@ -7,7 +7,7 @@
 //! (`query.<list>`, [`Listing`]); a name is the module's (`Heal 5`), never an identity the desktop
 //! spells, and the limit is the one the module answers.
 //!
-//! Selection, hover, the set source, hidden pins and the New correction settings are this desktop's
+//! Selection, hover, the set source and the New correction settings are this desktop's
 //! own view state ([`CorrectionsPanel`]): none of them writes an entry or reaches `session.state`.
 use crate::brush::{BrushBinding, BrushSettings, SourceChoice};
 use crate::state::Inputs;
@@ -129,6 +129,44 @@ pub(crate) struct RowDrag {
     pub(crate) over: Option<usize>,
 }
 
+/// What a band slider's typed field edits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum TypingTarget {
+    /// One New correction slider, by its declared parameter.
+    New(String),
+    /// One slider of the selected row, by the operation and its declared parameter.
+    Row { operation: String, name: String },
+}
+
+impl TypingTarget {
+    /// The focus identity of the field's input, so beginning to type can focus it.
+    pub(crate) fn field_id(&self) -> String {
+        match self {
+            Self::New(name) => format!("correction-new-{name}"),
+            Self::Row { operation, name } => format!("correction-row-{operation}-{name}"),
+        }
+    }
+
+    /// The target as a captured frame reports it.
+    pub(crate) fn summary(&self) -> Value {
+        match self {
+            Self::New(name) => serde_json::json!({"new": name}),
+            Self::Row { operation, name } => {
+                serde_json::json!({"row": operation, "field": name})
+            }
+        }
+    }
+}
+
+/// The band's one text field: what it edits, the text typed so far and the text it opened with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CorrectionTyping {
+    pub(crate) target: TypingTarget,
+    pub(crate) text: String,
+    /// The value as the slider showed it when typing began: submitting it unchanged writes nothing.
+    pub(crate) seed: String,
+}
+
 /// A refusal or a held stroke the band and canvas say something about.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CorrectionNotice {
@@ -150,8 +188,6 @@ pub(crate) struct CorrectionsPanel {
     pub(crate) settings: Option<BrushSettings>,
     /// Automatic, or the source an `⌥`-click set.
     pub(crate) source: SourceChoice,
-    /// `H`: pins and outlines hidden, and no hit targets.
-    pub(crate) hidden: bool,
     pub(crate) drag: Option<RowDrag>,
     /// The operation `/` last stepped and the rank it asks for next.
     pub(crate) ranking: Option<(String, usize)>,
@@ -165,6 +201,8 @@ pub(crate) struct CorrectionsPanel {
     pub(crate) row_drag: Option<(String, String, f64)>,
     /// A New correction slider being dragged.
     pub(crate) new_drag: Option<String>,
+    /// A slider's value being typed.
+    pub(crate) typing: Option<CorrectionTyping>,
 }
 
 impl CorrectionsPanel {
@@ -217,6 +255,12 @@ pub(crate) struct BandSlider {
     /// The rail position, 0..1.
     pub(crate) fraction: f64,
     pub(crate) text: String,
+    /// What typing into its field edits.
+    pub(crate) target: TypingTarget,
+    /// The text being typed into its field, as typed, while it is.
+    pub(crate) typing: Option<String>,
+    /// Why the typed text cannot be applied, when it cannot.
+    pub(crate) invalid: Option<String>,
 }
 
 /// One kind the band's controls offer.
@@ -283,6 +327,8 @@ pub(crate) struct CorrectionsModel {
     pub(crate) drag_over: Option<usize>,
     pub(crate) notice: Option<CorrectionNotice>,
     pub(crate) pins_hidden: bool,
+    /// The mode the band's close leaves for: the pointer.
+    pub(crate) leave_mode: String,
 }
 
 /// The no-source notice's second line: how to finish, and the core's reason when it is not the
@@ -429,10 +475,7 @@ fn patch_description(stale: Option<&Value>) -> String {
             other => other,
         })
         .collect();
-    format!(
-        "stale \u{b7} {} since it was generated",
-        changed.join(", ")
-    )
+    format!("stale \u{b7} {} since it was generated", changed.join(", "))
 }
 
 /// The pin, the band and the status bar's name for the add a press would make now.
@@ -443,31 +486,118 @@ pub(crate) fn next_name(listing: Option<&Listing>, kind: &str) -> String {
     }
 }
 
-/// The band's sliders for one set of settings.
+/// The label the band gives a bound number.
+fn field_label<'a>(binding: &BrushBinding, name: &str) -> &'a str {
+    if name == binding.radius {
+        "Size"
+    } else if binding.feather.as_deref() == Some(name) {
+        "Feather"
+    } else {
+        "Opacity"
+    }
+}
+
+/// The value the text typed into a band slider's field describes, as the declared parameter stores
+/// it: Size is the brush diameter in content pixels (a radius when no content stage is known),
+/// Feather and Opacity are whole numbers over their declared range. Out of range or not a number
+/// says why, in the words the field's caption shows, rather than clamping a guess.
+pub(crate) fn typed_value(
+    binding: &BrushBinding,
+    name: &str,
+    text: &str,
+    content: Option<(u32, u32)>,
+) -> Result<f64, String> {
+    let label = field_label(binding, name);
+    let digits = text.trim().trim_end_matches("px").trim();
+    let Some(typed) = crate::state::masks::parse_number(digits) else {
+        return Err("Type a number".to_owned());
+    };
+    if name == binding.radius {
+        let (min, max) = radius_range(binding);
+        return match content {
+            Some((_, height)) => {
+                let height = f64::from(height);
+                let radius = typed / (2.0 * height);
+                // Half a displayed pixel either side: the field shows whole pixels.
+                let slack = 0.25 / height;
+                if radius < min - slack || radius > max + slack {
+                    Err(format!(
+                        "{label} is {:.0} to {:.0} px",
+                        (2.0 * min * height).ceil(),
+                        (2.0 * max * height).floor()
+                    ))
+                } else {
+                    Ok(radius.clamp(min, max))
+                }
+            }
+            None if typed < min || typed > max => Err(format!("{label} is {min} to {max}")),
+            None => Ok(typed),
+        };
+    }
+    let (min, max) = match binding
+        .action
+        .parameter(name)
+        .map(|declared| &declared.kind)
+    {
+        Some(ParameterKind::Number { min, max }) => (*min, *max),
+        Some(ParameterKind::Integer { min, max }) => (*min as f64, *max as f64),
+        _ => (0.0, 100.0),
+    };
+    let value = typed.round();
+    if value < min || value > max {
+        Err(format!("{label} is {min:.0} to {max:.0}"))
+    } else {
+        Ok(value)
+    }
+}
+
+/// The band's sliders for one set of settings. `scope` is the selected row's operation, or `None`
+/// for the New correction group; `typing` is the band's field when it edits one of these.
 fn sliders(
     binding: &BrushBinding,
     radius: f64,
     feather: Option<f64>,
     opacity: Option<f64>,
     content: Option<(u32, u32)>,
+    scope: Option<&str>,
+    typing: Option<&CorrectionTyping>,
 ) -> Vec<BandSlider> {
-    let mut fields = vec![BandSlider {
-        name: binding.radius.clone(),
-        label: "Size".into(),
-        fraction: size_fraction(binding, radius),
-        text: size_text(radius, content),
-    }];
+    let slider = |name: &str, label: &str, fraction: f64, text: String| {
+        let target = match scope {
+            Some(operation) => TypingTarget::Row {
+                operation: operation.to_owned(),
+                name: name.to_owned(),
+            },
+            None => TypingTarget::New(name.to_owned()),
+        };
+        let typed = typing.filter(|typing| typing.target == target);
+        BandSlider {
+            name: name.to_owned(),
+            label: label.to_owned(),
+            fraction,
+            text,
+            invalid: typed.and_then(|typed| typed_value(binding, name, &typed.text, content).err()),
+            typing: typed.map(|typed| typed.text.clone()),
+            target,
+        }
+    };
+    let mut fields = vec![slider(
+        &binding.radius,
+        "Size",
+        size_fraction(binding, radius),
+        size_text(radius, content),
+    )];
     for (name, label, value) in [
         (&binding.feather, "Feather", feather),
         (&binding.opacity, "Opacity", opacity),
     ] {
         if let (Some(name), Some(value)) = (name, value) {
-            fields.push(BandSlider {
-                name: name.clone(),
-                label: label.into(),
-                fraction: (value / 100.0).clamp(0.0, 1.0),
-                text: format!("{value:.0}"),
-            });
+            fields.push(slider(
+                name,
+                label,
+                (value / 100.0).clamp(0.0, 1.0),
+                format!("{value:.0}"),
+            ));
         }
     }
     fields
@@ -544,7 +674,15 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CorrectionsModel {
                     )),
                 expanded: is_selected.then(|| ExpandedRow {
                     kind: kinds.iter().position(|kind| kind.option == listed.kind),
-                    fields: sliders(&binding, radius, feather, opacity, content),
+                    fields: sliders(
+                        &binding,
+                        radius,
+                        feather,
+                        opacity,
+                        content,
+                        Some(&listed.operation),
+                        panel.typing.as_ref(),
+                    ),
                     source: match (listed.anchor(), listed.source()) {
                         (Some(anchor), Some(source)) => format!(
                             "{} \u{b7} {}",
@@ -588,6 +726,8 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CorrectionsModel {
             settings.feather,
             settings.opacity,
             content,
+            None,
+            panel.typing.as_ref(),
         ),
         kinds,
         new_kind,
@@ -608,7 +748,8 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> CorrectionsModel {
         drag_from,
         drag_over: panel.drag.as_ref().and_then(|drag| drag.over),
         notice: panel.notice.clone(),
-        pins_hidden: panel.hidden,
+        pins_hidden: !inputs.session.workspace.mask_handles,
+        leave_mode: luxforge_core::POINTER_MODE.to_owned(),
     }
 }
 
@@ -620,7 +761,7 @@ impl CorrectionsModel {
             "count": self.count,
             "footer": self.footer,
             "new_kind": self.kinds.get(self.new_kind).map(|kind| kind.option.clone()),
-            "new_fields": self.new_fields.iter().map(|field| serde_json::json!({"name": field.name, "text": field.text})).collect::<Vec<_>>(),
+            "new_fields": self.new_fields.iter().map(|field| serde_json::json!({"name": field.name, "text": field.text, "typing": field.typing, "invalid": field.invalid})).collect::<Vec<_>>(),
             "source_set": self.source_set,
             "source_offset": self.source_offset,
             "rows": self.rows.iter().map(|row| serde_json::json!({
@@ -631,6 +772,7 @@ impl CorrectionsModel {
                 "index": row.index,
                 "selected": row.selected,
                 "source": row.expanded.as_ref().map(|expanded| expanded.source.clone()),
+                "fields": row.expanded.as_ref().map(|expanded| expanded.fields.iter().map(|field| serde_json::json!({"name": field.name, "text": field.text, "typing": field.typing, "invalid": field.invalid})).collect::<Vec<_>>()),
             })).collect::<Vec<_>>(),
             "drafting": self.drafting.as_ref().map(|(name, _)| name.clone()),
             "notice": self.notice.as_ref().map(|notice| match notice {

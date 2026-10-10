@@ -1429,7 +1429,13 @@ fn check_declared<'a>(
         )));
     }
     let accepting = declared.accepts_candidate && kind == "action";
-    declared_parameters(declarer, kind, &declared.id, &declared.parameters, accepting)?;
+    declared_parameters(
+        declarer,
+        kind,
+        &declared.id,
+        &declared.parameters,
+        accepting,
+    )?;
     if declared.accepts_candidate {
         check_accepting(declarer, kind, declared)?;
     }
@@ -1528,7 +1534,11 @@ pub(crate) const ACCEPT_CANDIDATE: &str = "candidate";
 /// A candidate-accepting action ([`ActionDescriptor::accepts_candidate`]): a module's action, not a
 /// preset's, requiring `job_id` (a job) and `candidate` (`0..=3`). That the module declares an
 /// artifact effect is checked with the whole descriptor.
-fn check_accepting(declarer: Declarer, kind: &str, declared: &ActionDescriptor) -> Result<(), Error> {
+fn check_accepting(
+    declarer: Declarer,
+    kind: &str,
+    declared: &ActionDescriptor,
+) -> Result<(), Error> {
     let refuse = |why: &str| {
         Err(Error::validation(format!(
             "{kind} {} accepts a candidate, so it {why}",
@@ -1548,10 +1558,12 @@ fn check_accepting(declarer: Declarer, kind: &str, declared: &ActionDescriptor) 
                     of: IdentityKind::Job,
                 }
     });
-    let candidate = declared.parameter(ACCEPT_CANDIDATE).is_some_and(|parameter| {
-        parameter.required
-            && matches!(parameter.kind, ParameterKind::Integer { min: 0, max: 3 })
-    });
+    let candidate = declared
+        .parameter(ACCEPT_CANDIDATE)
+        .is_some_and(|parameter| {
+            parameter.required
+                && matches!(parameter.kind, ParameterKind::Integer { min: 0, max: 3 })
+        });
     if !job || !candidate {
         return refuse("must require job_id, a job, and candidate, an integer within 0..=3");
     }

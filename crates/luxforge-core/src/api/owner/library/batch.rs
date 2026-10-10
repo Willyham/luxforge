@@ -357,13 +357,12 @@ pub(in crate::api) fn batch_export(
                 job.pause(Phase::NextPhotograph);
                 let target = asset.clone();
                 let acknowledgements = acknowledgements.clone();
-                let planned =
-                    match ask_owner(job, client, move |owner: &mut Owner| {
-                        plan(owner, &target, &acknowledgements)
-                    }) {
-                        Ok(planned) => planned,
-                        Err(stopped) => return Box::new(move |_: &mut Owner| Err(stopped)),
-                    };
+                let planned = match ask_owner(job, client, move |owner: &mut Owner| {
+                    plan(owner, &target, &acknowledgements)
+                }) {
+                    Ok(planned) => planned,
+                    Err(stopped) => return Box::new(move |_: &mut Owner| Err(stopped)),
+                };
                 let (plan, original) = match planned {
                     Ok(Planned::Export { plan, original }) => (plan, original),
                     Ok(Planned::Skipped(skip)) => {
@@ -445,7 +444,12 @@ fn plan(
     let acknowledgement = acknowledgements
         .iter()
         .find(|acknowledgement| acknowledgement.asset_id == *asset)
-        .map(|acknowledgement| (&acknowledgement.entry_id, acknowledgement.operations.as_slice()));
+        .map(|acknowledgement| {
+            (
+                &acknowledgement.entry_id,
+                acknowledgement.operations.as_slice(),
+            )
+        });
     if let Err(refused) = crate::editor::acknowledged(&entry_id, stale.clone(), acknowledgement) {
         return Ok(Planned::Skipped(crate::catalog_types::BatchSkip {
             entry_id: Some(entry_id),

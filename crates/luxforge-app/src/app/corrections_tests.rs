@@ -587,7 +587,7 @@ fn handles_rows_and_keys_edit_one_entry_each() {
     );
     // `H` hides pins and outlines: no canvas targets.
     c.key(Key::Character("h".into()), Keys::empty());
-    assert!(c.editor.corrections.hidden);
+    assert!(!c.editor.session.workspace.mask_handles);
     // Reset, the band's own.
     c.message(CorrectionMessage::Reset);
     c.run_sent();
@@ -681,4 +681,205 @@ fn the_limit_refuses_a_press_before_any_draft() {
         c.editor.workspace.corrections.footer,
         format!("{limit} of {limit}")
     );
+}
+
+/// A correction added at `at`, as a click, committed.
+fn add_spot(c: &mut Correcting, at: [f64; 2]) {
+    c.press(at, Modifiers::default(), CanvasHit::Add);
+    c.release(at);
+    c.commit();
+}
+
+/// A band slider's value is typed into its field: Enter applies it as the one entry a slider
+/// release commits, a value outside the declared range stays open with its reason, the value as
+/// shown writes nothing, and Escape closes the field with nothing sent.
+#[test]
+fn band_sliders_take_typed_values() {
+    use crate::app::message::corrections::TypingEdit;
+    use crate::state::corrections::TypingTarget;
+    let mut c = Correcting::opened();
+    add_spot(&mut c, [0.3, 0.4]);
+    let before = c.history().len();
+    let row = |name: &str| TypingTarget::Row {
+        operation: "correction-1".into(),
+        name: name.into(),
+    };
+    let typing = |c: &mut Correcting, edit: TypingEdit| c.message(CorrectionMessage::Typing(edit));
+    let field = |c: &Correcting, name: &str| {
+        c.editor.workspace.corrections.rows[0]
+            .expanded
+            .as_ref()
+            .unwrap()
+            .fields
+            .iter()
+            .find(|field| field.name == name)
+            .unwrap()
+            .clone()
+    };
+    // Opacity opens on its shown value; a typed 55 is one `Heal 1 · Opacity 55` entry.
+    typing(&mut c, TypingEdit::Begin(row("opacity")));
+    assert_eq!(field(&c, "opacity").typing.as_deref(), Some("100"));
+    assert!(c.editor.key_context().correction_typing);
+    typing(&mut c, TypingEdit::Text("55".into()));
+    typing(&mut c, TypingEdit::Submit);
+    c.run_sent();
+    c.one_entry(before, "Heal 1 \u{b7} Opacity 55");
+    assert!(c.editor.corrections.typing.is_none());
+    assert_eq!(c.operations()[0]["opacity"].as_f64(), Some(55.0));
+    // Out of range or not a number: the field stays open and says why; nothing is written.
+    typing(&mut c, TypingEdit::Begin(row("opacity")));
+    typing(&mut c, TypingEdit::Text("150".into()));
+    assert_eq!(
+        field(&c, "opacity").invalid.as_deref(),
+        Some("Opacity is 0 to 100")
+    );
+    typing(&mut c, TypingEdit::Submit);
+    assert!(c.editor.corrections.typing.is_some());
+    assert_eq!(c.editor.status.text, "Opacity is 0 to 100");
+    typing(&mut c, TypingEdit::Text("abc".into()));
+    typing(&mut c, TypingEdit::Submit);
+    assert_eq!(c.editor.status.text, "Type a number");
+    // Escape closes it, sending nothing.
+    c.key(Key::Named(Named::Escape), Keys::empty());
+    assert!(c.editor.corrections.typing.is_none());
+    assert_eq!(c.history().len(), before + 1);
+    // The value as shown, submitted unchanged, writes nothing.
+    typing(&mut c, TypingEdit::Begin(row("opacity")));
+    typing(&mut c, TypingEdit::Submit);
+    assert_eq!(c.history().len(), before + 1);
+    assert!(c.editor.correction_reads.last_request.is_none());
+    // Size is the diameter in content pixels: 40 px is a radius of 20 / content height.
+    typing(&mut c, TypingEdit::Begin(row("radius")));
+    typing(&mut c, TypingEdit::Text("40 px".into()));
+    typing(&mut c, TypingEdit::Submit);
+    c.run_sent();
+    let history = c.history();
+    assert_eq!(history.len(), before + 2, "{history:?}");
+    assert!(history[0].starts_with("Resize Heal 1"), "{history:?}");
+    let height = f64::from(c.editor.correction_content().unwrap().1);
+    let radius = c.operations()[0]["radius"].as_f64().unwrap();
+    assert!((radius * 2.0 * height - 40.0).abs() < 1e-6, "{radius}");
+    // The New correction group types into view state and commits nothing.
+    typing(
+        &mut c,
+        TypingEdit::Begin(TypingTarget::New("feather".into())),
+    );
+    typing(&mut c, TypingEdit::Text("30".into()));
+    typing(&mut c, TypingEdit::Submit);
+    let feather = c
+        .editor
+        .workspace
+        .corrections
+        .new_fields
+        .iter()
+        .find(|field| field.name == "feather")
+        .unwrap()
+        .text
+        .clone();
+    assert_eq!(feather, "30");
+    assert_eq!(c.history().len(), before + 2);
+    // Selecting another row closes a row's open field.
+    typing(&mut c, TypingEdit::Begin(row("feather")));
+    c.message(CorrectionMessage::Select(None));
+    assert!(c.editor.corrections.typing.is_none());
+}
+
+/// `H` is the session's one handles key: it flips `mask_handles` in the session the owner keeps,
+/// and the canvas hides its pins from it.
+#[test]
+fn h_flips_the_sessions_handles_key() {
+    let mut c = Correcting::opened();
+    assert!(c.editor.session.workspace.mask_handles);
+    c.key(Key::Character("h".into()), Keys::empty());
+    assert!(!c.editor.session.workspace.mask_handles);
+    assert!(c.editor.correction_canvas().unwrap().hidden);
+    assert_eq!(c.editor.corrections_summary()["hidden"], json!(true));
+    // The same `workspace.set` anyone can send puts them back.
+    let _ = call(
+        &c.owner(),
+        c.editor.client,
+        "workspace.set",
+        json!({"mask_handles": true}),
+    );
+    c.adopt_session();
+    assert!(!c.editor.correction_canvas().unwrap().hidden);
+}
+
+/// Selecting a row whose correction is outside a zoomed view pans the photograph through
+/// `view.set` until it is inside; one already in view moves nothing.
+#[test]
+fn selecting_a_row_scrolls_its_correction_into_view() {
+    let mut c = Correcting::opened();
+    add_spot(&mut c, [0.05, 0.05]);
+    add_spot(&mut c, [0.95, 0.95]);
+    let zoom = json!({"zoom": {"mode": "percent", "value": 1600.0}, "pan_x": 0.0, "pan_y": 0.0});
+    let _ = call(&c.owner(), c.editor.client, "view.set", zoom).unwrap();
+    c.adopt_session();
+    c.editor.view_state.local_pan = (0.0, 0.0);
+    // Heal 1 is at the top-left: in view at pan 0.
+    c.message(CorrectionMessage::Select(Some("correction-1".into())));
+    assert_eq!(
+        (
+            c.editor.session.preview.view.pan_x,
+            c.editor.session.preview.view.pan_y
+        ),
+        (0.0, 0.0),
+        "a correction already in view moves nothing"
+    );
+    // Heal 2 is at the bottom-right: the view moves, in the owner's session too.
+    c.message(CorrectionMessage::Select(Some("correction-2".into())));
+    let view = c.editor.session.preview.view.clone();
+    assert!(view.pan_x > 0.0 && view.pan_y > 0.0, "{view:?}");
+    let (session, _) = call(&c.owner(), c.editor.client, "session.state", json!({})).unwrap();
+    assert_eq!(
+        session["preview"]["view"]["pan_x"].as_f64().unwrap() as f32,
+        view.pan_x
+    );
+    assert_eq!(c.editor.view_state.local_pan, (view.pan_x, view.pan_y));
+    // And back: selecting Heal 1 scrolls to it again.
+    c.message(CorrectionMessage::Select(Some("correction-1".into())));
+    assert_eq!(c.editor.session.preview.view.pan_x, 0.0);
+    // At Fit nothing scrolls.
+    let _ = call(
+        &c.owner(),
+        c.editor.client,
+        "view.set",
+        json!({"zoom": {"mode": "fit"}}),
+    )
+    .unwrap();
+    c.adopt_session();
+    c.message(CorrectionMessage::Select(Some("correction-2".into())));
+    assert_eq!(c.editor.session.preview.view.pan_x, 0.0);
+}
+
+/// The overlay's first draw after a message is logged once, after the next message, at the draw's
+/// own instant: nothing is logged without a draw, and a second draw before the next message adds
+/// no second event.
+#[test]
+fn the_overlay_draw_is_logged_once_per_message_at_most() {
+    use crate::view::corrections_canvas::stamp_overlay_drawn;
+    let mut c = Correcting::opened();
+    let log = testing::attach_log(&mut c.editor);
+    // The first message arms the stamp; nothing was drawn before it.
+    c.message(CorrectionMessage::HoverRow(None));
+    stamp_overlay_drawn(3, 0);
+    stamp_overlay_drawn(5, 9);
+    // The next message logs the first draw only, and arms the next.
+    c.message(CorrectionMessage::HoverRow(None));
+    // No draw since: nothing more to log.
+    c.message(CorrectionMessage::HoverRow(None));
+    stamp_overlay_drawn(1, 4);
+    c.message(CorrectionMessage::HoverRow(None));
+    let records = testing::logged(&mut c.editor, &log);
+    let drawn = testing::events(&records, "correction_overlay_drawn");
+    assert_eq!(drawn.len(), 2, "{drawn:?}");
+    assert_eq!(
+        (&drawn[0]["pins"], &drawn[0]["live_points"]),
+        (&json!(3), &json!(0))
+    );
+    assert_eq!(
+        (&drawn[1]["pins"], &drawn[1]["live_points"]),
+        (&json!(1), &json!(4))
+    );
+    assert!(drawn[0]["drawn_ms"].as_f64().unwrap() >= 0.0);
 }

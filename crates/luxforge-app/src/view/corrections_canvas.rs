@@ -77,6 +77,52 @@ pub(crate) struct CanvasData<'a> {
     pub(crate) waiting: bool,
 }
 
+/// The first draw of the overlay after the editor armed the stamp, for evidence of input to
+/// overlay. Nothing here runs unless a run logs events (only then does the editor arm it), nothing
+/// wakes the editor, and it holds one record: the editor reads it after its next message and logs
+/// the draw at the draw's own instant.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct OverlayDrawn {
+    pub(crate) at: std::time::Instant,
+    /// How many corrections' pins the draw placed.
+    pub(crate) pins: usize,
+    /// How many points of the gesture in progress it drew (0 with none).
+    pub(crate) live_points: usize,
+}
+
+struct Stamp {
+    armed: bool,
+    drawn: Option<OverlayDrawn>,
+}
+
+static STAMP: std::sync::Mutex<Stamp> = std::sync::Mutex::new(Stamp {
+    armed: false,
+    drawn: None,
+});
+
+/// Take the stamped draw, if one happened since the last take, and arm the next draw to be
+/// stamped. The editor calls it after each message while a run logs events.
+pub(crate) fn rearm_overlay_stamp() -> Option<OverlayDrawn> {
+    let mut stamp = STAMP.lock().ok()?;
+    stamp.armed = true;
+    stamp.drawn.take()
+}
+
+/// Stamp this draw when the stamp is armed: the first draw after an update is the one that shows
+/// what the update changed.
+pub(crate) fn stamp_overlay_drawn(pins: usize, live_points: usize) {
+    if let Ok(mut stamp) = STAMP.try_lock()
+        && stamp.armed
+    {
+        stamp.armed = false;
+        stamp.drawn = Some(OverlayDrawn {
+            at: std::time::Instant::now(),
+            pins,
+            live_points,
+        });
+    }
+}
+
 /// The canvas's own pointer bookkeeping.
 #[derive(Debug, Default)]
 pub(crate) struct Interaction {
@@ -495,6 +541,10 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
         cursor: Cursor,
     ) -> Vec<Geometry> {
         let mut frame = Frame::new(renderer, bounds.size());
+        stamp_overlay_drawn(
+            self.data.operations.len(),
+            self.live.as_ref().map_or(0, |live| live.points.len()),
+        );
         let shown = !self.data.hidden;
         // The gesture in progress: a faint footprint while its source waits for the release, or
         // its live outline and source.

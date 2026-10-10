@@ -111,7 +111,10 @@ pub(crate) fn accept(
         rect: read.rect,
         label: read.label.clone(),
         provenance: read.provenance.clone(),
-        input: read.input.clone().expect("a candidate of a stack that says its input"),
+        input: read
+            .input
+            .clone()
+            .expect("a candidate of a stack that says its input"),
     });
     let result = service.accept_candidate(
         asset,
@@ -136,7 +139,15 @@ pub(crate) fn add_patch(
 ) -> Result<(ActionResult, ArtifactId), Error> {
     let (job, number) = candidate(service, asset, spec)?;
     let revision = service.state(asset)?.revision;
-    accept(service, asset, revision, request, &job, number, spec.opacity)
+    accept(
+        service,
+        asset,
+        revision,
+        request,
+        &job,
+        number,
+        spec.opacity,
+    )
 }
 
 /// The sRGB code a linear value is drawn as in an 8-bit frame, rounded.

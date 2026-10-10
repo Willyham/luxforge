@@ -88,7 +88,9 @@ impl RepairInput {
             ));
         }
         if self.dimensions.contains(&0) {
-            return Err(Error::validation("a patch's input dimensions must be positive"));
+            return Err(Error::validation(
+                "a patch's input dimensions must be positive",
+            ));
         }
         Ok(())
     }
@@ -120,13 +122,9 @@ fn digest(bytes: &[u8]) -> String {
 /// The `source` component of an asset: its fingerprint, kind and interpretation and its decoded
 /// dimensions, never its locator or file identity. `O(1)`; reads the catalog row only.
 pub(crate) fn source_identity(asset: &AssetRecord) -> String {
-    let canonical = serde_json::to_vec(&(
-        &asset.fingerprint,
-        &asset.source,
-        asset.width,
-        asset.height,
-    ))
-    .expect("an asset's interpretation is serializable");
+    let canonical =
+        serde_json::to_vec(&(&asset.fingerprint, &asset.source, asset.width, asset.height))
+            .expect("an asset's interpretation is serializable");
     digest(&canonical)
 }
 

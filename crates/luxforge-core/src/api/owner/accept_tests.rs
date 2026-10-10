@@ -63,7 +63,10 @@ impl Harness {
                     .asset
                     .id
             };
-            (import("s0/orientation-1.jpg"), import("s0/orientation-6.jpg"))
+            (
+                import("s0/orientation-1.jpg"),
+                import("s0/orientation-6.jpg"),
+            )
         };
         Self::start(root, catalog, asset, other)
     }
@@ -199,9 +202,12 @@ impl Harness {
             let list = self.ok("activity.list", json!({}));
             Some(()).filter(|_| {
                 list["active"].as_array().is_none_or(|active| {
-                    active
-                        .iter()
-                        .all(|entry| !entry["kind"].as_str().unwrap_or("").starts_with("artifacts"))
+                    active.iter().all(|entry| {
+                        !entry["kind"]
+                            .as_str()
+                            .unwrap_or("")
+                            .starts_with("artifacts")
+                    })
                 })
             })
         });
@@ -210,7 +216,9 @@ impl Harness {
 
     /// The accept job the source worker holds at the gate.
     fn held_accept(&self) -> Value {
-        let job = wait_for("the accept to reach the source worker", || self.publishing());
+        let job = wait_for("the accept to reach the source worker", || {
+            self.publishing()
+        });
         wait_for("the accept to wait at the gate", || {
             Some(()).filter(|_| self.gate.holding())
         });
@@ -301,7 +309,11 @@ fn a_candidate_is_accepted_once_as_one_patch_entry_and_a_retry_answers_the_first
     assert_eq!(retried["deduplicated"], true);
     assert_eq!(retried["correction"], accepted["correction"]);
     assert_eq!(harness.revision(), revision + 1);
-    assert_eq!(harness.events().len(), events.len(), "a retry records nothing");
+    assert_eq!(
+        harness.events().len(),
+        events.len(),
+        "a retry records nothing"
+    );
     // The same candidate again, under another request, is no longer live.
     let again = harness.refused(
         ACCEPT,
@@ -329,12 +341,8 @@ fn what_is_not_a_live_candidate_of_this_photograph_is_refused_before_anything_is
     let refused = |params: Value| harness.refused(ACCEPT, params);
     let never = refused(harness.accept_params(&job, 3, revision, "never"));
     assert_eq!(never.code, "validation", "{never:?}");
-    let unknown = refused(harness.accept_params(
-        &json!(crate::JobId::new()),
-        0,
-        revision,
-        "unknown",
-    ));
+    let unknown =
+        refused(harness.accept_params(&json!(crate::JobId::new()), 0, revision, "unknown"));
     assert_eq!(unknown.code, "validation", "{unknown:?}");
     let mut out_of_range = harness.accept_params(&job, 0, revision, "range");
     out_of_range["opacity"] = json!(101);
@@ -400,15 +408,16 @@ fn a_disconnect_or_cancel_while_the_candidate_is_published_commits_nothing() {
     // The caller leaves while its accept waits on the source worker.
     harness.hold();
     let leaving = harness.owner.register();
-    let call = harness.accept_on_thread(
-        leaving,
-        harness.accept_params(&job, 0, revision, "leaving"),
-    );
+    let call =
+        harness.accept_on_thread(leaving, harness.accept_params(&job, 0, revision, "leaving"));
     harness.held_accept();
     assert_eq!(harness.states(&job), ["live"]);
     harness.owner.disconnect(leaving);
     harness.gate.open();
-    assert!(call.join().unwrap().is_none(), "a gone caller is not answered");
+    assert!(
+        call.join().unwrap().is_none(),
+        "a gone caller is not answered"
+    );
     wait_for("the accept job to end", || {
         Some(()).filter(|_| harness.publishing().is_none())
     });
@@ -457,15 +466,25 @@ fn a_commit_while_the_candidate_is_published_refuses_the_accept_and_leaves_a_col
     let answer = call.join().unwrap().expect("the caller is answered");
     let error = answer.error.expect("the accept is refused");
     assert_eq!(error.code, "conflict", "{error:?}");
-    assert_eq!(harness.states(&job), ["live"], "the candidate is still there");
+    assert_eq!(
+        harness.states(&job),
+        ["live"],
+        "the candidate is still there"
+    );
     assert!(harness.corrections().is_empty());
     let objects = harness.catalog.with_extension("artifacts").join("objects");
-    assert_eq!(files(&objects), 1, "the published bytes are an unreferenced object");
+    assert_eq!(
+        files(&objects),
+        1,
+        "the published bytes are an unreferenced object"
+    );
     // This process holds it live; the next one's collection removes it.
     let harness = harness.restart();
     harness.ok(
         "artifact.collect",
         json!({"mutation": {"request_id": "collect", "actor": "test"}}),
     );
-    wait_for("the collection", || Some(()).filter(|_| files(&objects) == 0));
+    wait_for("the collection", || {
+        Some(()).filter(|_| files(&objects) == 0)
+    });
 }

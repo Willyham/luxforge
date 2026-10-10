@@ -140,8 +140,26 @@ pub(super) fn corrections() -> Layer {
     let size = (WIDTH, HEIGHT);
     repair(vec![
         op(1, true, size, &[[90.0, 60.0]], 9.0, [40.0, 12.0], 50, 100),
-        op(2, false, size, &[[250.0, 170.0]], 7.0, [-60.0, -30.0], 30, 100),
-        op(3, true, size, &[[60.0, 190.0], [120.0, 200.0]], 6.0, [230.0, -150.0], 40, 90),
+        op(
+            2,
+            false,
+            size,
+            &[[250.0, 170.0]],
+            7.0,
+            [-60.0, -30.0],
+            30,
+            100,
+        ),
+        op(
+            3,
+            true,
+            size,
+            &[[60.0, 190.0], [120.0, 200.0]],
+            6.0,
+            [230.0, -150.0],
+            40,
+            90,
+        ),
         op(4, false, size, &[[95.0, 62.0]], 6.0, [0.0, 50.0], 0, 80),
         op(5, true, size, &[[355.0, 120.0]], 8.0, [20.0, 0.0], 50, 100),
     ])
@@ -159,7 +177,10 @@ pub(super) fn patches(after: Vec<Layer>) -> Recipe {
             let value = |channel: u32| {
                 ((x * 7 + y * 3 + channel * 61 + seed) % 256) as f32 / 255.0 * 1.5 - 0.25
             };
-            ([value(0), value(1), value(2)], ((x + y + seed) % 5) as f32 / 4.0)
+            (
+                [value(0), value(1), value(2)],
+                ((x + y + seed) % 5) as f32 / 4.0,
+            )
         })
     };
     repair_stack(

@@ -1178,7 +1178,13 @@ fn stale_patch(catalog: &Path, asset: &AssetId) {
             json!({"points": [[0.3, 0.3]], "radius": 0.02, "source-x": 0.6, "source-y": 0.6}),
         )
         .unwrap();
-    add_patch(&mut service, asset, "patch", PatchSpec::at([10, 10, 16, 16])).unwrap();
+    add_patch(
+        &mut service,
+        asset,
+        "patch",
+        PatchSpec::at([10, 10, 16, 16]),
+    )
+    .unwrap();
     let revision = service.state(asset).unwrap().revision;
     service
         .run_action(
@@ -1239,7 +1245,10 @@ fn a_stale_patch_is_exported_only_as_acknowledged_singly_and_in_a_batch() {
     }
     assert_eq!(names(&out), Vec::<String>::new(), "nothing was queued");
     let acknowledge = json!({"entry_id": entry, "operations": ["correction-2"]});
-    let accepted = harness.prepared("export.jpeg", single("acknowledged", Some(acknowledge.clone())));
+    let accepted = harness.prepared(
+        "export.jpeg",
+        single("acknowledged", Some(acknowledge.clone())),
+    );
     assert_eq!(accepted["acknowledged_stale"], stale);
     let settled = harness.settle(&accepted["job_id"]);
     assert_eq!(settled["status"], "ready", "{settled}");
@@ -1271,17 +1280,26 @@ fn a_stale_patch_is_exported_only_as_acknowledged_singly_and_in_a_batch() {
             skipped["entry_id"].clone(),
             skipped["stale"].clone()
         ),
-        (json!(photographs[0]), json!("stale-unacknowledged"), entry.clone(), stale)
+        (
+            json!(photographs[0]),
+            json!("stale-unacknowledged"),
+            entry.clone(),
+            stale
+        )
     );
     assert_eq!(names(&folder), ["Plain-edited.jpg"]);
     // A commit since the plan makes an old acknowledgement name another entry.
     harness.expose(&photographs[0], 0.25);
     let refused = harness.refused(
         "export.jpeg",
-        single("after-commit", Some(json!({"entry_id": entry, "operations": ["correction-2"]}))),
+        single(
+            "after-commit",
+            Some(json!({"entry_id": entry, "operations": ["correction-2"]})),
+        ),
     );
     assert_eq!(refused.code, "conflict");
-    let current = harness.prepared("export.plan", json!({"asset_id": photographs[0]}))["entry_id"].clone();
+    let current =
+        harness.prepared("export.plan", json!({"asset_id": photographs[0]}))["entry_id"].clone();
     // Acknowledged, the batch exports both.
     let again = harness.dir.join("again");
     fs::create_dir_all(&again).unwrap();

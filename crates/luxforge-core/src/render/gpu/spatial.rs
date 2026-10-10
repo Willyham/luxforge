@@ -201,7 +201,11 @@ impl std::fmt::Debug for GpuResident {
         f.debug_struct("GpuResident")
             .field(
                 "blocks",
-                &self.blocks.iter().map(|block| block.len()).collect::<Vec<_>>(),
+                &self
+                    .blocks
+                    .iter()
+                    .map(|block| block.len())
+                    .collect::<Vec<_>>(),
             )
             .field("key", &self.key)
             .finish()

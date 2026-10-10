@@ -467,9 +467,27 @@ fn resident_blocks_pack_before_the_program_and_are_not_written_again() {
     // A longer table: the patch stays where it was and only the table's chunk is written.
     let longer = block([1, 2, 3, 4, 5]);
     let held = written.words().to_vec();
-    let update = tick(&mut written, &held, &[colour(&block([9])), resident(&longer)], "longer");
-    assert!(update.ranges.iter().all(|range| range.start >= 1 + patch.len() - (1 + patch.len()) % CHUNK));
+    let update = tick(
+        &mut written,
+        &held,
+        &[colour(&block([9])), resident(&longer)],
+        "longer",
+    );
+    assert!(
+        update
+            .ranges
+            .iter()
+            .all(|range| range.start >= 1 + patch.len() - (1 + patch.len()) % CHUNK)
+    );
     let others = longer.len() as u64 + 1;
-    assert!(update.compared <= others, "the patch is not compared: {}", update.compared);
-    assert!(update.copied <= others, "the patch is not copied: {}", update.copied);
+    assert!(
+        update.compared <= others,
+        "the patch is not compared: {}",
+        update.compared
+    );
+    assert!(
+        update.copied <= others,
+        "the patch is not copied: {}",
+        update.copied
+    );
 }

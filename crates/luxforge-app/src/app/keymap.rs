@@ -137,6 +137,8 @@ pub(crate) struct KeyContext {
     /// The Masks panel's text field is open, so Escape closes it without sending anything,
     /// whichever widget last saw the key.
     pub(crate) mask_typing: bool,
+    /// A Corrections band slider's text field is open, so Escape closes it with nothing sent.
+    pub(crate) correction_typing: bool,
     /// One of the Masks panel's menus is open, so Escape closes it before anything else hears it.
     pub(crate) mask_menu_open: bool,
     /// The New mask or Add component menu is open, with the letter of each kind it lists: while it
@@ -425,6 +427,13 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     // focus and has already taken the key, so this acts whatever `status` says.
     if context.mask_typing && matches!(key, Key::Named(Named::Escape)) {
         return Some(Message::Mask(MaskMessage::Typing(TypingEdit::Cancel)));
+    }
+    if context.correction_typing && matches!(key, Key::Named(Named::Escape)) {
+        return Some(Message::Corrections(
+            crate::app::message::corrections::CorrectionMessage::Typing(
+                crate::app::message::corrections::TypingEdit::Cancel,
+            ),
+        ));
     }
     // So does an open Masks panel menu: Escape puts the menu away before it reaches an armed brush
     // or the mode.
@@ -1269,6 +1278,7 @@ mod tests {
             leave_to: None,
             modes: vec![('R', "luxforge.crop".into())],
             mask_typing: false,
+            correction_typing: false,
             mask_menu_open: false,
             kind_menu: None,
             mask_keys: false,

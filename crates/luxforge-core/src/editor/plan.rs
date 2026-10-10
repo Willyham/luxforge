@@ -3887,7 +3887,11 @@ mod tests {
         for descriptor in registry.descriptors() {
             // A candidate-accepting action commits only through the owner's accept flow, whose
             // tests check its label (`api/owner/accept_tests.rs`).
-            for declared in descriptor.actions.iter().filter(|declared| !declared.accepts_candidate) {
+            for declared in descriptor
+                .actions
+                .iter()
+                .filter(|declared| !declared.accepts_candidate)
+            {
                 assert!(
                     table
                         .iter()

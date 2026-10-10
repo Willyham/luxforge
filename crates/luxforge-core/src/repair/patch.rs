@@ -218,7 +218,9 @@ static DRAWN: std::sync::Mutex<DrawnCache> = std::sync::Mutex::new(DrawnCache {
 pub(crate) fn drawn(source: &PatchSource, stage: Stage) -> Arc<Drawn> {
     let key = (source.artifact.id.clone(), source.rect, source.full, stage);
     {
-        let mut cache = DRAWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut cache = DRAWN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Some(at) = cache.entries.iter().position(|(held, _)| *held == key) {
             let entry = cache.entries.remove(at);
             let found = entry.1.clone();
@@ -256,7 +258,9 @@ pub(crate) fn drawn(source: &PatchSource, stage: Stage) -> Arc<Drawn> {
             reduced: true,
         }
     });
-    let mut cache = DRAWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut cache = DRAWN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     cache.bytes += built.bytes();
     cache.entries.push((key, built.clone()));
     while cache.bytes > DRAWN_BYTES && cache.entries.len() > 1 {
@@ -357,7 +361,9 @@ pub(crate) fn composite(
                     (i + o * (mean[channel] - coverage * i)) as f32
                 })
             } else {
-                let texel = patch.source.texel(x - patch.source.rect[0], y - patch.source.rect[1]);
+                let texel = patch
+                    .source
+                    .texel(x - patch.source.rect[0], y - patch.source.rect[1]);
                 let Some((rgb, alpha)) = covering(texel) else {
                     continue;
                 };
@@ -451,7 +457,8 @@ mod tests {
                     if inside {
                         let target = [0.25, 0.5, 2.0][channel];
                         let c = 0.5 * 0.8;
-                        let expected = (f64::from(before) + c * (target - f64::from(before))) as f32;
+                        let expected =
+                            (f64::from(before) + c * (target - f64::from(before))) as f32;
                         assert_eq!(after.to_bits(), expected.to_bits(), "({x}, {y})");
                     } else {
                         assert_eq!(after.to_bits(), before.to_bits(), "({x}, {y}) untouched");
@@ -500,7 +507,10 @@ mod tests {
         composite(&mut frame, &bound, &Cancel::never()).unwrap();
         assert!((values[0] - 1.0).abs() < 1e-9, "fully covered");
         assert_eq!(values[1], 0.0, "outside its region");
-        assert!((values[3] - 0.5).abs() < 1e-9, "half covered blends half way");
+        assert!(
+            (values[3] - 0.5).abs() < 1e-9,
+            "half covered blends half way"
+        );
     }
 
     #[test]
@@ -514,7 +524,12 @@ mod tests {
         });
         let mut values = vec![0.5f32; 12];
         let mut frame = RepairFrame::new(full, Region::whole(full), &mut values).unwrap();
-        composite(&mut frame, &BoundPatch::new(patch, 100, full), &Cancel::never()).unwrap();
+        composite(
+            &mut frame,
+            &BoundPatch::new(patch, 100, full),
+            &Cancel::never(),
+        )
+        .unwrap();
         assert_eq!(&values[..3], &[0.5, 0.5, 0.5]);
         assert_eq!(values[3], 1.0, "coverage above one is one");
     }
