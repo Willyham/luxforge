@@ -305,7 +305,7 @@ impl Coefficients {
     }
 
     /// The stage on one Oklab pixel. Each branch tests a flag or a coefficient fixed at compile.
-    #[inline]
+    #[inline(always)]
     fn apply(&self, lab: Oklab) -> Oklab {
         let t = lab.l.clamp(0.0, 1.0);
         let [ws, wm, wh] = self.weights(t, self.tint_inverse_width);
@@ -368,7 +368,7 @@ impl Grade {
     }
 
     /// The stage on one Oklab pixel.
-    #[inline]
+    #[inline(always)]
     pub(super) fn apply(&self, lab: Oklab) -> Oklab {
         self.coefficients.apply(lab)
     }
