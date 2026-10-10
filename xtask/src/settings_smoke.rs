@@ -535,7 +535,7 @@ fn usage_statistics(launch: &Checked, checks: &mut Checks) -> Result {
     )?;
     let share = launch.at("usage-share")?;
     // The card is drawn above the status bar, centred: the band there changes when it goes.
-    let changed = band_changed(notice, share, [0.3, 0.7], [0.78, 0.97])?;
+    let changed = band_changed(notice, share, [0.3, 0.7], [0.70, 0.95])?;
     ensure(
         changed > 2_000,
         format!("The notice is not drawn: only {changed} pixels of its band changed when it went"),

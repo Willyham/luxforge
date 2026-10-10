@@ -524,4 +524,17 @@ mod tests {
         .unwrap();
         assert_eq!(unreadable.enabled, None);
     }
+
+    #[test]
+    fn usage_what_is_sent_lists_exactly_the_registrys_events() {
+        let listed: Vec<&str> = EVENTS.iter().map(|(name, _)| *name).collect();
+        let mut registry: Vec<&str> = luxforge_core::usage::EventName::ALL
+            .iter()
+            .map(|name| name.as_str())
+            .collect();
+        let mut sorted = listed.clone();
+        sorted.sort_unstable();
+        registry.sort_unstable();
+        assert_eq!(sorted, registry);
+    }
 }
