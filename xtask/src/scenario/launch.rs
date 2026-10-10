@@ -945,6 +945,39 @@ fn file_name(path: &Path) -> Result<String> {
         .into_owned())
 }
 
+/// One `luxforge-ctl call` against the live session of the editor that owns `catalog`, recorded
+/// with what it printed and named `name` for the scenario's checks: the harness's live-session
+/// client, beside the editor launches it may run during.
+pub fn ctl_call(
+    ctl: &Path,
+    catalog: &Path,
+    name: &str,
+    method: &str,
+    params: Value,
+    asset: Option<&str>,
+) -> Result<Value> {
+    let mut command = Command::new(ctl);
+    command
+        .arg("--catalog")
+        .arg(catalog)
+        .args(["call", method, "--params", &params.to_string()]);
+    if let Some(asset) = asset {
+        command.args(["--asset", asset]);
+    }
+    let started = Instant::now();
+    let output = command.output()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(json!({
+        "name": name,
+        "method": method,
+        "params": params,
+        "exit_code": output.status.code(),
+        "elapsed_ms": started.elapsed().as_millis() as u64,
+        "result": serde_json::from_str::<Value>(stdout.trim()).unwrap_or_else(|_| json!(stdout)),
+        "stderr": String::from_utf8_lossy(&output.stderr),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
