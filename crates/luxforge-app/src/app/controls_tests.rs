@@ -834,23 +834,32 @@ fn group_module_and_field_resets_each_run_one_declared_action() {
             groups += 1;
             let mut named: Vec<&str> = reset.preset.keys().map(String::as_str).collect();
             named.sort_unstable();
-            let mut own: Vec<&str> = controls
-                .iter()
-                .flat_map(|control| match control {
-                    luxforge_core::Control::Number(luxforge_core::NumberControl {
-                        parameter,
-                        ..
-                    }) => vec![parameter.as_str()],
-                    luxforge_core::Control::Curve(luxforge_core::CurveControl {
-                        channels, ..
-                    }) => channels
-                        .iter()
-                        .map(|channel| channel.parameter.as_str())
-                        .collect(),
-                    _ => Vec::new(),
-                })
-                .collect();
+            // Every field the group draws, through its own controls, its subgroups, its views
+            // and its wheels; a field several views show counts once.
+            fn drawn<'c>(controls: &'c [luxforge_core::Control], into: &mut Vec<&'c str>) {
+                for control in controls {
+                    match control {
+                        luxforge_core::Control::Number(luxforge_core::NumberControl {
+                            parameter,
+                            ..
+                        }) => into.push(parameter.as_str()),
+                        luxforge_core::Control::Curve(luxforge_core::CurveControl {
+                            channels,
+                            ..
+                        }) => {
+                            into.extend(channels.iter().map(|channel| channel.parameter.as_str()))
+                        }
+                        luxforge_core::Control::Wheel(wheel) => into.extend(wheel.parameters()),
+                        luxforge_core::Control::Group(group) => drawn(&group.controls, into),
+                        luxforge_core::Control::View(view) => drawn(&view.controls, into),
+                        _ => {}
+                    }
+                }
+            }
+            let mut own = Vec::new();
+            drawn(controls, &mut own);
             own.sort_unstable();
+            own.dedup();
             assert_eq!(named, own, "{label} resets exactly its own fields");
             for (name, value) in &reset.preset {
                 assert_eq!(
@@ -1542,28 +1551,37 @@ fn a_curve_in_a_hidden_section_queries_no_samples() {
 fn a_curve_in_a_hidden_tab_queries_no_samples() {
     let mut tabs = controls_descriptor();
     tabs.layout = luxforge_core::ModuleLayout::Tabs;
-    let luxforge_core::Control::Group(luxforge_core::GroupControl { controls, .. }) =
+    let luxforge_core::Control::Group(luxforge_core::GroupControl { id, controls, .. }) =
         &mut tabs.controls[0]
     else {
         unreachable!("the fixture's controls are one group")
     };
+    *id = Some("fields".into());
     let curve = controls
         .iter()
         .position(|control| matches!(control, luxforge_core::Control::Curve(_)))
         .expect("the fixture's curve");
     let curve = controls.remove(curve);
-    tabs.controls
-        .push(luxforge_core::Control::group("Curve", vec![curve]).into());
+    tabs.controls.push(
+        luxforge_core::Control::group("Curve", vec![curve])
+            .id("curve")
+            .into(),
+    );
     let module_id = tabs.id.clone();
     let (mut editor, catalog) = sampling(vec![tabs]);
     assert!(
         editor.curve_sampling.requested.is_empty(),
         "the curve's tab is not the one shown"
     );
-    let _ = editor.update(Message::Control(ControlMessage::SelectTab {
-        module_id,
-        index: 1,
-    }));
+    // The session answers a view selection with the tab it now shows.
+    let mut session = editor.session.clone();
+    session.revision += 1;
+    session.workspace.views = vec![luxforge_core::ViewSelection {
+        module: module_id,
+        group: None,
+        view: "curve".into(),
+    }];
+    let _ = editor.update(Message::View(ViewMessage::WorkspaceUpdated(Ok(session))));
     assert!(
         editor
             .curve_sampling

@@ -497,9 +497,8 @@ mod tests {
                 "Detail \u{00b7} Sharpening",
                 "Detail \u{00b7} Noise reduction",
                 "Presence \u{00b7} Presence",
-                "Colour mixer \u{00b7} Hue",
-                "Colour mixer \u{00b7} Saturation",
-                "Colour mixer \u{00b7} Luminance",
+                "Colour mixer \u{00b7} HSL",
+                "Colour mixer \u{00b7} Grading",
                 "Vignette \u{00b7} Vignette",
             ],
             "RAW, transforms, crop and the pixel proof declare no field patch; Perspective's patch is not presettable"

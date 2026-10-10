@@ -103,6 +103,7 @@ impl Fixture {
                 kind: crate::SourceTag::Raw,
                 header: HeaderState::Pending,
                 last_seen_ms: 1,
+                born_ns: None,
             })
             .collect();
         seeder.files(&records).unwrap();

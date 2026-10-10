@@ -1,43 +1,58 @@
 //! The colour mixer module: one colour-stage layer holding hue, saturation and luminance for each
-//! of eight colour ranges, edited by one field-patch action.
+//! of eight colour ranges, and the colour grading of Shadows, Midtones, Highlights and Global with
+//! Blending and Balance, edited by one field-patch action.
 //!
 //! This is a field-patch module (`docs/design/modules-and-api.md`'s field-patch contract, shared in
 //! [`super::field_patch`]): a payload is a JSON object whose keys are the implemented parameter
-//! names, a missing key is neutral, and the canonical neutral payload is the empty object `{}`. The
-//! module owns exactly one layer of `luxforge.mixer.hsl`, declared order 10 so a mixer layer
-//! always follows the Basic layer in the colour run (`docs/design/presence-mixer-vignette.md`,
-//! "Placement and stage order"). The one pointwise unit's equations are frozen in
-//! `docs/design/mixer-study.md` and implemented in [`unit::Mixer`]; this file owns only the field
-//! table, the controls' rails and the compilation into that unit.
+//! names, a missing key is that field's default, and the canonical all-default payload is the empty
+//! object `{}`. The module owns exactly one layer of `luxforge.mixer.hsl` per target, at its own
+//! format marker [`MIXER_EFFECT_FORMAT`], declared order 10 so a mixer layer always follows the
+//! Basic layer in the colour run (`docs/design/presence-mixer-vignette.md`, "Placement and stage
+//! order"). The layer compiles to one colour unit, [`unit::Mixer`]: one Oklab round trip around
+//! the HSL stage, whose equations are frozen in `docs/design/mixer-study.md` and implemented in
+//! [`unit::Hsl`], followed by the grading stage (`docs/design/colour-grading.md`, implemented in
+//! [`grade::Grade`]); each stage is omitted when it would change nothing. This file owns only the
+//! field table, the controls' rails and the compilation into that unit.
+mod grade;
 mod unit;
 
-/// The mixer unit's GPU program, which [`super::GPU_PROGRAMS`] lists.
+/// The mixer's GPU program, which [`super::GPU_PROGRAMS`] lists: its one colour unit's, HSL and
+/// grading together.
 pub(crate) use unit::PROGRAM as MIXER_PROGRAM;
 
 use super::{
-    ColorOperation, EffectStage, PointwiseColor, Processing, RailDecoration,
-    field_patch::{Field, FieldPatch, FieldPatchModule, Group, Spec, Values},
+    ColorOperation, EffectStage, NumberStyle, PointwiseColor, Processing, RailDecoration,
+    WheelStyle,
+    descriptor::title_case,
+    field_patch::{
+        Field, FieldControl, FieldPatch, FieldPatchModule, Group, Spec, Values, View, Wheel,
+    },
 };
 use crate::Error;
 use std::sync::Arc;
 
-/// The colour mixer's one pointwise unit: hue, saturation and luminance for the eight colour
-/// ranges, declared order 10 so a mixer layer always follows the Basic layer in the colour run.
+/// The colour mixer's one effect: hue, saturation and luminance for the eight colour ranges and the
+/// colour grading, declared order 10 so a mixer layer always follows the Basic layer in the colour
+/// run. The identity keeps its historical `hsl` spelling; grading is part of the same layer.
 pub const MIXER_EFFECT: &str = "luxforge.mixer.hsl";
+
+/// The mixer effect's current payload format: 2 since the payload gained the fourteen grading
+/// fields, listed among [`super::BUILTIN_FORMATS`]. A stored mixer layer at any other format is
+/// refused as `incompatible` and never rewritten.
+pub(super) const MIXER_EFFECT_FORMAT: u32 = 2;
 
 const HUE: &str = "hue";
 const SATURATION: &str = "saturation";
 const LUMINANCE: &str = "luminance";
 
-/// Every implemented mixer field: the hue group, then saturation, then luminance, each in range
-/// order red, orange, yellow, green, aqua, blue, purple, magenta. This is the payload's declared
-/// order, the controls' rendering order and the order [`unit::Mixer::new`] expects its three
-/// eight-element arrays in.
+/// Every HSL field: the hue group, then saturation, then luminance, each in range order red,
+/// orange, yellow, green, aqua, blue, purple, magenta. They lead the payload's declared order, in
+/// the order [`unit::Mixer::new`] expects its three eight-element arrays in.
 ///
 /// Names are `<range>-<property>`, hyphen-separated: [`crate::modules::valid_name`] is the shared
 /// identity rule every action and parameter name is checked against (lowercase words joined by
 /// `-`), so `red-hue` is what actually registers.
-const FIELDS: [&str; 24] = [
+const HSL_FIELDS: [&str; 24] = [
     "red-hue",
     "orange-hue",
     "yellow-hue",
@@ -64,11 +79,59 @@ const FIELDS: [&str; 24] = [
     "magenta-luminance",
 ];
 
+/// One grading wheel: its id (`shadows`, as [`grade::WHEEL_NAMES`] spells it), which names its
+/// individual view and its three fields; the label its wheel, its view and its history words
+/// use; its `grade-<id>-hue`, `-saturation` and `-luminance` fields; and whether it is tonal, a
+/// range Blending and Balance shape, which Global is not.
+struct GradeWheel {
+    id: &'static str,
+    label: &'static str,
+    hue: &'static str,
+    saturation: &'static str,
+    luminance: &'static str,
+    tonal: bool,
+}
+
+/// A [`GradeWheel`] whose field names are derived from its id.
+macro_rules! grade_wheel {
+    ($id:literal, $label:literal, $tonal:literal) => {
+        GradeWheel {
+            id: $id,
+            label: $label,
+            hue: concat!("grade-", $id, "-hue"),
+            saturation: concat!("grade-", $id, "-saturation"),
+            luminance: concat!("grade-", $id, "-luminance"),
+            tonal: $tonal,
+        }
+    };
+}
+
+const SHADOWS: GradeWheel = grade_wheel!("shadows", "Shadows", true);
+const MIDTONES: GradeWheel = grade_wheel!("midtones", "Midtones", true);
+const HIGHLIGHTS: GradeWheel = grade_wheel!("highlights", "Highlights", true);
+const GLOBAL: GradeWheel = grade_wheel!("global", "Global", false);
+
+/// The four wheels in [`grade::WHEEL_NAMES`] order: the one table the grading fields, the Grading
+/// group's wheels and views and the grading values are all read from. Their fields follow the HSL
+/// fields in the payload's declared order, wheel by wheel, then Blending and Balance.
+const WHEELS: [GradeWheel; grade::WHEEL_COUNT] = [SHADOWS, MIDTONES, HIGHLIGHTS, GLOBAL];
+
+const GRADE_BLENDING: &str = "grade-blending";
+const GRADE_BALANCE: &str = "grade-balance";
+
+impl GradeWheel {
+    fn fields(&self) -> [&'static str; 3] {
+        [self.hue, self.saturation, self.luminance]
+    }
+}
+
 /// The group label a patch that returns every one of a property's eight fields to neutral takes in
 /// history, and the label the group's own control carries.
 const HUE_GROUP: &str = "Hue";
 const SATURATION_GROUP: &str = "Saturation";
 const LUMINANCE_GROUP: &str = "Luminance";
+const GRADING_GROUP: &str = "Grading";
+const HSL_GROUP: &str = "HSL";
 
 /// The neutral value of every mixer field.
 const NEUTRAL: f64 = 0.0;
@@ -86,16 +149,6 @@ fn parse_field(name: &str) -> Option<(usize, &'static str)> {
         _ => return None,
     };
     Some((range, property))
-}
-
-/// The capitalized range name a control label and a history label both use, e.g. `Red`.
-fn range_label(range: usize) -> String {
-    let name = unit::RANGE_NAMES[range];
-    let mut characters = name.chars();
-    match characters.next() {
-        Some(first) => first.to_uppercase().chain(characters).collect(),
-        None => String::new(),
-    }
 }
 
 /// The gradient rail for a colour's reference sRGB code, at one quarter (dark) and 60% of the way
@@ -145,9 +198,9 @@ fn luminance_rail(range: usize) -> RailDecoration {
 /// One `<range>-<property>` field: -100..100, step 1, no display decimals, no unit, a zero hint,
 /// the range's name on its slider and the range's colours on its rail. Its history label names
 /// the range and the property, e.g. `Red hue +20`.
-fn mixer_field(name: &'static str) -> Field {
+fn hsl_field(name: &'static str) -> Field {
     let (range, property) = parse_field(name).expect("a declared mixer field");
-    let label = range_label(range);
+    let label = title_case(unit::RANGE_NAMES[range]);
     let (notes, rail) = match property {
         HUE => (
             format!(
@@ -187,38 +240,199 @@ impl FieldPatch for Mixer {
         Spec::new(
             "luxforge.mixer",
             "Colour mixer",
-            "Hue, saturation and luminance by range",
+            "Hue, saturation and luminance by range, and colour grading",
             MIXER_EFFECT,
             EffectStage::Color,
         )
+        .format(MIXER_EFFECT_FORMAT)
         .order(10)
         .maskable()
-        .set_notes("merges the named mixer fields into the stack's one Colour mixer layer, which the host places after Basic by declared order on the first non-neutral value and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op")
-        .fields(FIELDS.map(mixer_field))
-        .group(Group::new(HUE_GROUP, FIELDS[0..8].iter().copied()))
-        .group(Group::new(SATURATION_GROUP, FIELDS[8..16].iter().copied()).collapsed())
-        .group(Group::new(LUMINANCE_GROUP, FIELDS[16..24].iter().copied()).collapsed())
+        .set_notes("merges the named mixer fields into the stack's one Colour mixer layer, which the host places after Basic by declared order on the first value away from its default and updates in place afterwards; omitted fields keep their stored values and a patch that changes nothing is a reported no-op. A grading hue, Blending or Balance with every grading saturation and luminance at 0 is kept as a setting but changes no pixel")
+        .reset_notes("returns the stack's one Colour mixer layer to its all-default payload, HSL and grading together (Blending 50), keeping its identity and position; a no-op without one and when it is already all default")
+        .fields(HSL_FIELDS.map(hsl_field))
+        .fields(grade_fields())
+        // HSL and Grading are the band's two tabs, each its own reset and preset-capture scope.
+        // HSL's Hue, Saturation and Luminance are three parallel subgroups over the same eight
+        // ranges, drawn as nested tabs and each resetting its own eight fields.
+        .group(
+            Group::new(HSL_GROUP, [])
+                .id("hsl")
+                .tabs()
+                .subgroup(Group::new(HUE_GROUP, HSL_FIELDS[0..8].iter().copied()).id(HUE))
+                .subgroup(
+                    Group::new(SATURATION_GROUP, HSL_FIELDS[8..16].iter().copied()).id(SATURATION),
+                )
+                .subgroup(
+                    Group::new(LUMINANCE_GROUP, HSL_FIELDS[16..24].iter().copied()).id(LUMINANCE),
+                ),
+        )
+        .group(grading_group())
         .collapsed()
-        // The three groups are parallel views of the same eight ranges, so the desktop draws them
-        // as one segmented row instead of stacked sections.
         .layout(crate::ModuleLayout::Tabs)
     }
 
-    /// Only a layer with a moved field reaches here; the shared field patch compiles a neutral one
-    /// to no units.
-    fn compile(&self, values: &Values<'_>, _: crate::CompileStage) -> Result<Processing, Error> {
-        // FIELDS is hue, then saturation, then luminance, each over the eight ranges in order.
+    /// Only a layer with a field away from its default reaches here, unless the GPU shape asks for
+    /// every unit; the shared field patch compiles an all-default one to no units.
+    ///
+    /// One colour unit, one Oklab round trip, with the HSL stage first and the grading stage
+    /// second. Each stage is present only when it changes a pixel: HSL when any of its twenty-four
+    /// fields is moved, grading when any saturation or luminance amount is
+    /// ([`grade::Grading::is_active`]), so a layer holding only a dormant hue, Blending or Balance
+    /// compiles to no units and an HSL-only layer renders exactly as it did before grading
+    /// existed. In the GPU shape the unit is compiled even with neither stage, as the identity, so
+    /// a drag that leaves or returns to neutral keeps one program sequence
+    /// (`CompileStage::gpu_shape`); no CPU compile asks for it.
+    fn compile(&self, values: &Values<'_>, at: crate::CompileStage) -> Result<Processing, Error> {
+        // HSL_FIELDS is hue, then saturation, then luminance, each over the eight ranges in order.
         let property = |offset: usize| -> [f64; unit::RANGE_COUNT] {
-            std::array::from_fn(|range| values.number(FIELDS[offset + range]))
+            std::array::from_fn(|range| values.number(HSL_FIELDS[offset + range]))
         };
         let (hue, saturation, luminance) = (
             property(0),
             property(unit::RANGE_COUNT),
             property(2 * unit::RANGE_COUNT),
         );
-        let mixer: Arc<dyn PointwiseColor> = Arc::new(unit::Mixer::new(hue, saturation, luminance));
-        Ok(Processing::Color(ColorOperation::new(vec![mixer])))
+        let hsl_moved = [hue, saturation, luminance]
+            .iter()
+            .flatten()
+            .any(|value| *value != NEUTRAL);
+        let hsl = hsl_moved.then(|| unit::Hsl::new(hue, saturation, luminance));
+        let grading = grading(values);
+        let grade = grading.is_active().then(|| grade::Grade::new(grading));
+        let mut units: Vec<Arc<dyn PointwiseColor>> = Vec::new();
+        if at.gpu_shape || hsl.is_some() || grade.is_some() {
+            units.push(Arc::new(unit::Mixer::new(hsl, grade)));
+        }
+        Ok(Processing::Color(ColorOperation::new(units)))
     }
+}
+
+/// The Grading tab: one group owning the fourteen grading fields and declaring the four wheels,
+/// with its reset (Blending back to 50), shown through presentation-only views. 3-way draws
+/// Midtones above Shadows and Highlights in compact wheels; each range and Global has a view of
+/// its own with its large wheel and exact hue and saturation. Blending and Balance follow every
+/// tonal view and are absent from Global, which does not read them; a view never changes a value,
+/// a reset scope or what a preset holds.
+fn grading_group() -> Group {
+    let fields = WHEELS
+        .iter()
+        .flat_map(GradeWheel::fields)
+        .chain([GRADE_BLENDING, GRADE_BALANCE]);
+    let three_way = [MIDTONES, SHADOWS, HIGHLIGHTS]
+        .iter()
+        .fold(View::new("three-way", "3-way"), |view, wheel| {
+            view.wheel(wheel.label, WheelStyle::Compact)
+        })
+        .field(GRADE_BLENDING)
+        .field(GRADE_BALANCE);
+    WHEELS.iter().fold(
+        Group::new(GRADING_GROUP, fields)
+            .id("grading")
+            .view(three_way),
+        |group, wheel| {
+            let view = View::new(wheel.id, wheel.label)
+                .wheel(wheel.label, WheelStyle::Large)
+                .field(wheel.hue)
+                .field(wheel.saturation);
+            let view = if wheel.tonal {
+                view.field(GRADE_BLENDING).field(GRADE_BALANCE)
+            } else {
+                view
+            };
+            group
+                .wheel(
+                    Wheel::new(wheel.label, wheel.hue, wheel.saturation).luminance(wheel.luminance),
+                )
+                .view(view)
+        },
+    )
+}
+
+/// The fourteen grading values a payload holds, defaults filled.
+fn grading(values: &Values<'_>) -> grade::Grading {
+    grade::Grading {
+        wheels: WHEELS.map(|wheel| grade::WheelValues {
+            hue: values.number(wheel.hue),
+            saturation: values.number(wheel.saturation),
+            luminance: values.number(wheel.luminance),
+        }),
+        blending: values.number(GRADE_BLENDING),
+        balance: values.number(GRADE_BALANCE),
+    }
+}
+
+/// The black-to-white rail every grading luminance slider draws.
+fn grade_luminance_rail() -> RailDecoration {
+    RailDecoration::Gradient {
+        stops: vec![[0, 0, 0], MID_GREY, [255, 255, 255]],
+    }
+}
+
+/// The fourteen grading fields, wheel by wheel in [`WHEELS`] order, then Blending and Balance. Hue
+/// is a direction on the RGB colour wheel, 0..360 with 0 and 360 the same direction, kept as
+/// stored even at zero saturation; saturation is a one-sided strength, 0..100; luminance is
+/// signed, -100..100; Blending defaults to 50 and Balance to 0.
+fn grade_fields() -> Vec<Field> {
+    let mut fields = Vec::with_capacity(3 * WHEELS.len() + 2);
+    for wheel in &WHEELS {
+        let label = wheel.label;
+        let scope = if wheel.tonal {
+            format!("the {} range", wheel.id)
+        } else {
+            "every tone, independent of Blending and Balance".to_owned()
+        };
+        fields.push(
+            Field::slider(
+                wheel.hue,
+                format!("{label} hue"),
+                format!(
+                    "the direction of the {label} tint on the RGB colour wheel (red 0, green 120, blue 240), in degrees; 0 and 360 are the same direction. Kept as a setting at zero saturation, where it changes no pixel"
+                ),
+            )
+            .range(0.0, 360.0)
+            .control(FieldControl::Number(NumberStyle::Field)),
+        );
+        fields.push(
+            Field::slider(
+                wheel.saturation,
+                format!("{label} saturation"),
+                format!(
+                    "the strength of the {label} tint over {scope}: 0 adds no colour, 100 the strongest tint; greys are tinted too, and black and white stay neutral unless the luminance treatment moves them"
+                ),
+            )
+            .range(0.0, 100.0)
+            .control(FieldControl::Number(NumberStyle::Field)),
+        );
+        fields.push(
+            Field::slider(
+                wheel.luminance,
+                format!("{label} luminance"),
+                format!(
+                    "brightens or darkens {scope} through a bounded gamma on Oklab L; works without any tint"
+                ),
+            )
+            .zero(NEUTRAL)
+            .rail(grade_luminance_rail()),
+        );
+    }
+    fields.push(
+        Field::slider(
+            GRADE_BLENDING,
+            "Blending",
+            "how much the Shadows, Midtones and Highlights ranges overlap: 0 is the narrowest smooth transition, 100 the widest; does not affect Global",
+        )
+        .range(0.0, 100.0)
+        .default(grade::DEFAULT_BLENDING),
+    );
+    fields.push(
+        Field::slider(
+            GRADE_BALANCE,
+            "Balance",
+            "moves the split between the tonal ranges: negative extends Shadows, positive extends Highlights; does not affect Global",
+        )
+        .zero(NEUTRAL),
+    );
+    fields
 }
 
 #[cfg(test)]
@@ -234,11 +448,12 @@ mod tests {
         height: 4,
     };
 
-    /// The words a history label and the recipe row use for each field, with its declared decimals,
-    /// sign and unit. The rules that choose a label — a group reset, the module reset, a field count
-    /// — are the shared field-patch rules the conformance suite proves for every module.
+    /// The words a history label and the recipe row use for each field, with its declared decimals
+    /// and sign: an HSL field by its range and property, a grading field by its wheel and
+    /// property, Blending and Balance by themselves; and the documented wheel and group labels.
+    /// The rules that choose a label are the shared field-patch rules.
     #[test]
-    fn each_field_is_named_by_its_own_history_words() {
+    fn each_field_and_wheel_is_named_by_its_own_history_words() {
         let module = MixerModule::new();
         for (parameters, expected) in [
             (json!({"red-hue": 20.0}), "Red hue +20"),
@@ -246,6 +461,31 @@ mod tests {
             (
                 json!({"magenta-saturation": -100.0}),
                 "Magenta saturation -100",
+            ),
+            (json!({"grade-shadows-hue": 210.0}), "Shadows hue 210"),
+            (
+                json!({"grade-global-saturation": 35.0}),
+                "Global saturation 35",
+            ),
+            (
+                json!({"grade-highlights-luminance": -20.0}),
+                "Highlights luminance -20",
+            ),
+            (json!({"grade-blending": 70.0}), "Blending 70"),
+            (json!({"grade-balance": 15.0}), "Balance +15"),
+            (
+                json!({"grade-shadows-hue": 120.0, "grade-shadows-saturation": 40.0}),
+                "Shadows tint",
+            ),
+            (
+                json!({"grade-midtones-hue": 30.0, "grade-midtones-saturation": 20.0,
+                       "grade-midtones-luminance": 10.0}),
+                "Midtones",
+            ),
+            (
+                json!({"grade-global-hue": 0.0, "grade-global-saturation": 0.0,
+                       "grade-global-luminance": 0.0}),
+                "Reset Global",
             ),
         ] {
             let label = module.label(
@@ -259,20 +499,113 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_moved_field_compiles_to_the_one_colour_unit() {
+    fn compiled(payload: serde_json::Value, gpu_shape: bool) -> Vec<Arc<dyn PointwiseColor>> {
         let module = MixerModule::new();
-        let coloured = module
+        match module
             .compile(
                 MIXER_EFFECT,
-                1,
-                &json!({"red-hue": 20.0}),
-                crate::CompileStage::exact(STAGE),
+                MIXER_EFFECT_FORMAT,
+                &payload,
+                crate::CompileStage::exact(STAGE).shaped(gpu_shape),
             )
-            .unwrap();
-        match coloured {
-            Processing::Color(operation) => assert_eq!(operation.len(), 1),
+            .unwrap()
+        {
+            Processing::Color(operation) => operation.units().to_vec(),
             other => panic!("expected a colour operation, got {other:?}"),
         }
+    }
+
+    fn units(payload: serde_json::Value, gpu_shape: bool) -> Vec<String> {
+        compiled(payload, gpu_shape)
+            .iter()
+            .map(|unit| unit.describe())
+            .collect()
+    }
+
+    fn identity(payload: serde_json::Value, gpu_shape: bool) -> crate::OperationIdentity {
+        let units = compiled(payload, gpu_shape);
+        assert_eq!(units.len(), 1);
+        units[0].identity()
+    }
+
+    /// A layer compiles to one unit holding each stage only when it changes a pixel, HSL first: a
+    /// dormant hue, Blending or Balance compiles to nothing, and the GPU shape holds the unit with
+    /// neither stage.
+    #[test]
+    fn each_stage_compiles_only_when_it_changes_a_pixel() {
+        assert_eq!(
+            units(json!({"red-hue": 20.0}), false),
+            ["mixer(red-hue:+20)"]
+        );
+        assert_eq!(
+            units(json!({"grade-midtones-saturation": 20.0}), false),
+            ["mixer(grade-midtones-saturation:+20)"]
+        );
+        assert_eq!(
+            units(json!({"grade-shadows-luminance": -5.0}), false),
+            ["mixer(grade-shadows-luminance:-5)"]
+        );
+        assert_eq!(
+            units(
+                json!({"red-hue": 20.0, "grade-global-saturation": 5.0}),
+                false
+            ),
+            ["mixer(red-hue:+20, grade-global-saturation:+5)"]
+        );
+        assert!(
+            units(
+                json!({"grade-shadows-hue": 200.0, "grade-blending": 0.0, "grade-balance": 40.0}),
+                false
+            )
+            .is_empty()
+        );
+        assert_eq!(units(json!({}), true), ["mixer(neutral)"]);
+        assert_eq!(
+            units(json!({"grade-shadows-hue": 200.0}), true),
+            ["mixer(neutral)"]
+        );
+    }
+
+    /// The compiled unit's identity is its stage flags and coefficients: a dormant grading edit
+    /// changes none of it, while a Blending the active grading reads does.
+    #[test]
+    fn a_dormant_edit_keeps_the_identity() {
+        let with = |base: &serde_json::Value, extra: serde_json::Value| {
+            let mut payload = base.as_object().unwrap().clone();
+            payload.extend(extra.as_object().unwrap().clone());
+            serde_json::Value::Object(payload)
+        };
+        let dormant =
+            json!({"grade-shadows-hue": 200.0, "grade-blending": 10.0, "grade-balance": 40.0});
+        let hsl = json!({"red-hue": 20.0});
+        for gpu_shape in [false, true] {
+            assert_eq!(
+                identity(with(&hsl, dormant.clone()), gpu_shape),
+                identity(hsl.clone(), gpu_shape)
+            );
+        }
+        assert_eq!(identity(dormant, true), identity(json!({}), true));
+        let grade = json!({"grade-midtones-saturation": 20.0});
+        assert_eq!(
+            identity(with(&grade, json!({"grade-shadows-hue": 200.0})), false),
+            identity(grade.clone(), false)
+        );
+        assert_ne!(
+            identity(with(&grade, json!({"grade-blending": 10.0})), false),
+            identity(grade, false)
+        );
+    }
+
+    /// The wheel table is in the grading unit's wheel order, each label is its id read as a
+    /// word, and only Global is not tonal.
+    #[test]
+    fn the_wheel_table_follows_the_grading_units_wheel_order() {
+        assert_eq!(WHEELS.map(|wheel| wheel.id), grade::WHEEL_NAMES);
+        assert!(
+            WHEELS
+                .iter()
+                .all(|wheel| title_case(wheel.id) == wheel.label)
+        );
+        assert_eq!(WHEELS.map(|wheel| wheel.tonal), [true, true, true, false]);
     }
 }

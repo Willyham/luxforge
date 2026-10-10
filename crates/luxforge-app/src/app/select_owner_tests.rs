@@ -108,6 +108,7 @@ pub(super) fn file(
         kind: SourceTag::Raw,
         header: HeaderState::Ok(Box::new(header)),
         last_seen_ms: 1,
+        born_ns: None,
     }
 }
 

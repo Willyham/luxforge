@@ -159,7 +159,9 @@ pub(crate) fn tabs_descriptor() -> ModuleDescriptor {
             .notes("test")
     };
     let group = |label: &str, name: &str| -> Control {
-        Control::group(label, vec![Control::number(SET, name, label).into()]).into()
+        Control::group(label, vec![Control::number(SET, name, label).into()])
+            .id(name)
+            .into()
     };
     let descriptor = ModuleDescriptor {
         id: "fixture.tabs".into(),
@@ -305,6 +307,8 @@ pub(crate) fn crop_descriptor() -> ModuleDescriptor {
             label: "Crop".into(),
             reset: None,
             collapsed: false,
+            layout: luxforge_core::ModuleLayout::Stacked,
+            id: None,
             per_photo: false,
             controls: vec![Control::Action(luxforge_core::ActionControl {
                 action: "crop-reset".into(),

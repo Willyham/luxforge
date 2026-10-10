@@ -697,7 +697,8 @@ fn white_balance_group(frame: &Value) -> Result<Value> {
         json!({"kind": "number", "label": "Tint", "action": SET_RAW, "parameter": TINT,
                "unit": null}),
         json!({"kind": "picker", "label": "Neutral picker", "mode": RAW_MODULE}),
-        json!({"kind": "action", "label": "As shot", "action": SET_RAW}),
+        json!({"kind": "action", "label": "As shot", "action": SET_RAW,
+               "runnable": true, "reason": null, "explanation": null}),
     ];
     ensure(
         group.len() == expected.len() && group.iter().zip(&expected).all(|(a, b)| *a == b),
@@ -1764,8 +1765,8 @@ mod tests {
     ) -> Option<Option<luxforge_core::ResetAction>> {
         controls.iter().find_map(|control| {
             match control {
-                luxforge_core::Control::Group(luxforge_core::GroupControl { controls, .. }) => {
-                    declared_reset(controls, action, parameter)
+                luxforge_core::Control::Group(_) | luxforge_core::Control::View(_) => {
+                    declared_reset(control.children(), action, parameter)
                 }
                 luxforge_core::Control::Number(luxforge_core::NumberControl {
                     action: declared,

@@ -1,14 +1,18 @@
 //! Developer proof for the complete first-slice control vocabulary, as a field-patch module: a
 //! field of every kind a field patch holds, drawn by a control of every kind and style, with the
 //! action buttons and the two-channel curve its group lists beside them, and the curve's sample
-//! query. It shares every field-patch rule with Basic and the other modules; its stored layer
-//! describes control values but compiles to an identity colour operation, so it cannot change
-//! photo pixels.
+//! query; and a nested group whose tab row shows a hue and saturation wheel's three fields in two
+//! presentation-only views, a compact wheel and a large one beside its numbers. It shares every
+//! field-patch rule with Basic and the other modules, and is the field-patch tests' fixture for
+//! nested groups, views and wheels; its stored layer describes control values but compiles to an
+//! identity colour operation, so it cannot change photo pixels.
 use super::{
     ActionDescriptor, ActionInput, ActionPlan, ActionStyle, ChoiceStyle, ColorOperation,
     ColorStyle, Control, CurveBackground, CurveChannel, EffectStage, NumberStyle,
-    ParameterDescriptor, Processing, QueryChoiceControl, RailDecoration, StageContext,
-    field_patch::{Field, FieldControl, FieldPatch, FieldPatchModule, Group, Spec, Values},
+    ParameterDescriptor, Processing, QueryChoiceControl, RailDecoration, StageContext, WheelStyle,
+    field_patch::{
+        Field, FieldControl, FieldPatch, FieldPatchModule, Group, Spec, Values, View, Wheel,
+    },
 };
 use crate::Error;
 use serde_json::{Map, Value, json};
@@ -22,6 +26,16 @@ const SAMPLE_SEGMENTS: usize = 256;
 const NOTES: &str = "Developer control parity fixture; values never alter pixels";
 /// The two curve fields, which are the curve control's channels and the sample query's parameters.
 const CURVES: [(&str, &str, bool); 2] = [("master", "Master", true), ("red", "Red", false)];
+/// The wheel's three fields: an angle on the RGB colour wheel, a radius and a luminance rail.
+pub(super) const WHEEL_HUE: &str = "wheel-hue";
+pub(super) const WHEEL_SATURATION: &str = "wheel-saturation";
+pub(super) const WHEEL_LUMINANCE: &str = "wheel-luminance";
+/// The nested group that owns the wheel's fields, shown as two tabs over them: a compact wheel,
+/// and a large wheel with the hue and saturation numbers. Its id names its tab row.
+pub(super) const WHEEL_GROUP: &str = "Colour wheel";
+pub(super) const WHEEL_GROUP_ID: &str = "colour-wheel";
+/// The proof's one wheel, over hue, saturation and the luminance rail.
+const WHEEL: &str = "Wheel";
 
 /// The controls proof's table, identity compilation and curve sampling.
 #[derive(Debug, Default)]
@@ -114,6 +128,35 @@ impl FieldPatch for Controls {
         fields.extend(CURVES.map(|(name, label, monotone)| {
             field(curve(name, monotone).default(identity.clone()), label)
         }));
+        fields.extend([
+            field(
+                ParameterDescriptor::number(WHEEL_HUE, 0.0, 360.0)
+                    .step(1.0)
+                    .precision(0)
+                    .unit("deg")
+                    .default(0.0),
+                "Hue",
+            )
+            .history("Wheel hue")
+            .rail(RailDecoration::Hue),
+            field(
+                ParameterDescriptor::number(WHEEL_SATURATION, 0.0, 100.0)
+                    .step(1.0)
+                    .precision(0)
+                    .default(0.0),
+                "Saturation",
+            )
+            .history("Wheel saturation"),
+            field(
+                ParameterDescriptor::number(WHEEL_LUMINANCE, -100.0, 100.0)
+                    .step(1.0)
+                    .precision(0)
+                    .zero(0.0)
+                    .default(0.0),
+                "Luminance",
+            )
+            .history("Wheel luminance"),
+        ]);
         let names: Vec<&'static str> = [
             "amount",
             "coordinate",
@@ -142,6 +185,24 @@ impl FieldPatch for Controls {
         // one per style, each send a one-field patch.
         .group(
             Group::new("Control vocabulary", names)
+                // The wheel's fields belong to a nested group that declares the wheel once and
+                // shows it as two tabs: compact, and large beside the exact numbers. Both tabs are
+                // views; the group alone captures and resets the fields.
+                .subgroup(
+                    Group::new(WHEEL_GROUP, [WHEEL_HUE, WHEEL_SATURATION, WHEEL_LUMINANCE])
+                        .id(WHEEL_GROUP_ID)
+                        .wheel(
+                            Wheel::new(WHEEL, WHEEL_HUE, WHEEL_SATURATION)
+                                .luminance(WHEEL_LUMINANCE),
+                        )
+                        .view(View::new("compact", "Compact").wheel(WHEEL, WheelStyle::Compact))
+                        .view(
+                            View::new("large", "Large")
+                                .wheel(WHEEL, WheelStyle::Large)
+                                .field(WHEEL_HUE)
+                                .field(WHEEL_SATURATION),
+                        ),
+                )
                 .extra(
                     Control::curve(
                         SET_CONTROLS,

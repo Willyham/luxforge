@@ -67,10 +67,10 @@ pub use api::{
     ApiEvent, ApiFailure, ApiRequest, ApiResponse, ClientAuthority, ClientId, ClientSession,
     Envelope, EventWake, EventsResult, JobMonitorStats, LIVE_SESSIONS_DIR, LiveSessionEntry,
     LocalServer, LocalSessionInfo, MASK_MODE, MAX_EVENT_WAIT_MS, MAX_REQUEST_BYTES,
-    MaskOverlayColour, MaskOverlayMode, OwnerHandle, PIXEL_READ_REQUIRED, POINTER_MODE, PROTOCOL,
-    PreviewRenderIntent, PreviewRequest, PreviewSelection, PreviewStack, Renderer, RendererReason,
-    RendererRecord, RevisionOf, RunningSession, WorkspaceState, live_session_file,
-    running_sessions, schemas, serve_json_lines_with,
+    MAX_VIEW_SELECTIONS, MaskOverlayColour, MaskOverlayMode, OwnerHandle, PIXEL_READ_REQUIRED,
+    POINTER_MODE, PROTOCOL, PreviewRenderIntent, PreviewRequest, PreviewSelection, PreviewStack,
+    Renderer, RendererReason, RendererRecord, RevisionOf, RunningSession, ViewSelection,
+    WorkspaceState, live_session_file, running_sessions, schemas, serve_json_lines_with,
 };
 pub use artifacts::{ArtifactId, ArtifactTable, PreparedArtifact};
 pub use cancel::{Cancel, ProgressCounts};
@@ -112,17 +112,18 @@ pub use modules::{
     RangeControl, RawModule, RawPayload, Region, RegistryOptions, Resample, ResetAction,
     ResolvedControl, ResolvedReset, SamplingScale, SettingsOrigin, SpatialOperation, Stage,
     StageContext, StageQuestions, TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT,
-    WhiteBalanceMode, check_parameters, check_value, controls_module, gains_from_temperature_tint,
-    guide_angle, insertion_index_among, largest_with_ratio_inside, palette_bytes, resolve_control,
+    ViewControl, WheelControl, WheelStyle, WhiteBalanceMode, check_parameters, check_value,
+    controls_module, current_effect_format, gains_from_temperature_tint, guide_angle,
+    insertion_index_among, largest_with_ratio_inside, palette_bytes, resolve_control,
     resolve_group_reset, temperature_tint_from_gains,
 };
 pub use modules::{Chord, HOST_CHORDS, host_chord};
 pub use modules::{OriginalContext, OriginalLayer, OriginalPreferences};
 pub use presets::{
-    GroupOnKind, GroupState, ImportReport, ImportedPreset, KindSkip, MAX_PRESET_BYTES,
-    MappedSetting, PresetOrigin, PresetRecord, PresetSummary, ReportCounts, ReportedSetting,
-    SettingsAnalysis, SettingsGroup, SettingsGroups, SettingsPhoto, USER_PRESET_GROUP,
-    inspect_preset, settings_groups,
+    DerivedSettings, GroupOnKind, GroupState, ImportReport, ImportedPreset, KindSkip,
+    MAX_PRESET_BYTES, MappedSetting, PresetOrigin, PresetRecord, PresetSummary, ReportCounts,
+    ReportedSetting, SettingsAnalysis, SettingsGroup, SettingsGroups, SettingsPhoto,
+    USER_PRESET_GROUP, inspect_preset, settings_groups,
 };
 pub use preview::{
     AssetSelection, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,

@@ -41,6 +41,23 @@ pub static GPU_PROGRAMS: &[&crate::GpuProgram] = &[
     &vignette::VIGNETTE_PROGRAM,
     &presence::PRESENCE_PROGRAM,
 ];
+/// The built-in effects whose payload changed meaning, each with the format marker it declares
+/// now; every other built-in effect is at the shared [`crate::EFFECT_FORMAT`].
+const BUILTIN_FORMATS: &[(&str, u32)] = &[
+    raw::RAW_BUILTIN_FORMAT,
+    (MIXER_EFFECT, mixer::MIXER_EFFECT_FORMAT),
+];
+
+/// The current payload format marker of a built-in effect ([`BUILTIN_FORMATS`]). What
+/// [`crate::Layer::new`] stamps on a layer it builds directly;
+/// `current_effect_formats_match_the_builtin_descriptors` holds it to the registry's descriptors.
+pub fn current_effect_format(effect_id: &str) -> u32 {
+    BUILTIN_FORMATS
+        .iter()
+        .find(|(effect, _)| *effect == effect_id)
+        .map_or(crate::EFFECT_FORMAT, |(_, format)| *format)
+}
+
 pub use basic::BASIC_EFFECT;
 pub(crate) use basic::BasicModule;
 /// Basic's Auto tone: its solver and forward model, public for the fitting rig and measurements.
@@ -75,7 +92,7 @@ pub use descriptor::{
 };
 pub use descriptor::{
     ChoiceControl, ColorControl, ControlVariant, IdentityKind, RangeControl, ResolvedControl,
-    ResolvedReset, TaskControl, ToggleControl,
+    ResolvedReset, TaskControl, ToggleControl, ViewControl, WheelControl, WheelStyle,
 };
 pub use descriptor::{Chord, HOST_CHORDS, host_chord};
 pub(crate) use descriptor::{

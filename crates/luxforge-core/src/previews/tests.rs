@@ -90,6 +90,7 @@ pub(crate) fn add_file(
         kind,
         header,
         last_seen_ms: 0,
+        born_ns: None,
     };
     let tx = index.connection_mut().transaction().unwrap();
     let id = upsert_file(&tx, &record).unwrap();

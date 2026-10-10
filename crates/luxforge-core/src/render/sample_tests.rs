@@ -62,7 +62,7 @@ fn effect(effect_id: &str, payload: Value) -> Layer {
     Layer {
         id: crate::LayerId::new(),
         effect_id: effect_id.into(),
-        effect_format: crate::EFFECT_FORMAT,
+        effect_format: crate::current_effect_format(effect_id),
         payload,
         mask: None,
         artifacts: Vec::new(),
