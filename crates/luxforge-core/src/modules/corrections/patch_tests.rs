@@ -56,7 +56,10 @@ fn check_composite(before: &Raster, after: &Raster, spec: PatchSpec, opacity: u8
 }
 
 fn rows(session: &Session) -> Vec<Value> {
-    session.corrections()["operations"].as_array().unwrap().clone()
+    session.corrections()["operations"]
+        .as_array()
+        .unwrap()
+        .clone()
 }
 
 fn repair_layer(session: &Session) -> Layer {
@@ -72,7 +75,10 @@ fn repair_layer(session: &Session) -> Layer {
 }
 
 fn stale(session: &Session) -> Value {
-    let description = session.service.describe_entry(&session.asset, None).unwrap();
+    let description = session
+        .service
+        .describe_entry(&session.asset, None)
+        .unwrap();
     let row = description
         .layers
         .iter()
@@ -115,14 +121,22 @@ fn an_accepted_patch_composites_its_coverage_and_keeps_every_other_pixel() {
         })
     );
     assert_eq!(stale(&session), json!([]));
-    let description = session.service.describe_entry(&session.asset, None).unwrap();
+    let description = session
+        .service
+        .describe_entry(&session.asset, None)
+        .unwrap();
     assert_eq!(description.layers[0].summary, "1 correction");
     assert_eq!(
         description.layers[0].artifacts,
         std::slice::from_ref(&artifact)
     );
     // A sample of a covered pixel is the rendered one.
-    let entry = session.service.state(&session.asset).unwrap().current_entry.id;
+    let entry = session
+        .service
+        .state(&session.asset)
+        .unwrap()
+        .current_entry
+        .id;
     let sampled = session
         .service
         .sample_entry(&session.asset, &entry, 41, 30)
@@ -167,10 +181,7 @@ fn a_patch_is_stale_only_when_its_input_changes_and_keeps_rendering() {
     // Undoing the change makes it current again; reordering a later operation below it stales it.
     session
         .service
-        .undo(
-            &session.asset,
-            mutation(session.revision(), "undo-opacity"),
-        )
+        .undo(&session.asset, mutation(session.revision(), "undo-opacity"))
         .unwrap();
     assert!(rows(&session)[1].get("stale").is_none());
     session.ok(
@@ -179,7 +190,10 @@ fn a_patch_is_stale_only_when_its_input_changes_and_keeps_rendering() {
     );
     let listed = rows(&session);
     assert_eq!(listed[2]["name"], "Patch 2");
-    assert_eq!(listed[2]["stale"], json!({"reasons": ["earlier-correction"]}));
+    assert_eq!(
+        listed[2]["stale"],
+        json!({"reasons": ["earlier-correction"]})
+    );
     // Deleting it leaves the stack without stale reports.
     session.ok("delete-correction", json!({"operation": "correction-2"}));
     assert_eq!(stale(&session), json!([]));
@@ -200,7 +214,11 @@ fn the_input_identity_names_each_component_that_changed() {
         file_identity: "unix:1:2".into(),
         ..asset.clone()
     };
-    assert_eq!(source_identity(&moved), source, "Locate keeps the source identity");
+    assert_eq!(
+        source_identity(&moved),
+        source,
+        "Locate keeps the source identity"
+    );
     let other = crate::AssetRecord {
         fingerprint: "f".repeat(64),
         ..asset.clone()
@@ -295,7 +313,12 @@ fn a_patch_changes_only_its_opacity_and_moves_like_any_correction() {
         .service
         .run_query(
             &session.asset,
-            &session.service.state(&session.asset).unwrap().current_entry.id,
+            &session
+                .service
+                .state(&session.asset)
+                .unwrap()
+                .current_entry
+                .id,
             "correction-sources",
             json!({"operation": "correction-1"}),
         )
@@ -327,7 +350,11 @@ fn a_patch_changes_only_its_opacity_and_moves_like_any_correction() {
         "accept-correction-patch",
         json!({"job_id": crate::JobId::new(), "candidate": 0}),
     );
-    assert!(error.detail.contains("cannot be drafted"), "{}", error.detail);
+    assert!(
+        error.detail.contains("cannot be drafted"),
+        "{}",
+        error.detail
+    );
 }
 
 #[test]
@@ -338,16 +365,16 @@ fn the_layer_lists_each_distinct_patch_artifact_once_and_at_most_sixteen() {
     // The same bytes twice are one artifact, listed once.
     let (_, again) = add_patch(&mut session.service, &session.asset, "b", spec).unwrap();
     assert_eq!(first, again);
-    assert_eq!(repair_layer(&session).artifacts, std::slice::from_ref(&first));
+    assert_eq!(
+        repair_layer(&session).artifacts,
+        std::slice::from_ref(&first)
+    );
     for seed in 1..15u64 {
         add_patch(
             &mut session.service,
             &session.asset,
             &format!("seed-{seed}"),
-            PatchSpec {
-                seed,
-                ..spec
-            },
+            PatchSpec { seed, ..spec },
         )
         .unwrap();
     }
@@ -381,10 +408,11 @@ fn the_layer_lists_each_distinct_patch_artifact_once_and_at_most_sixteen() {
         .position(|layer| layer.effect_id == CORRECTIONS_EFFECT)
         .unwrap();
     recipe.layers[at] = reversed;
-    let Err(error) = session
-        .service
-        .registry()
-        .compile(state.asset.width, state.asset.height, &recipe)
+    let Err(error) =
+        session
+            .service
+            .registry()
+            .compile(state.asset.width, state.asset.height, &recipe)
     else {
         panic!("a layer listing other artifacts compiles");
     };
@@ -420,7 +448,10 @@ fn a_refused_accept_leaves_only_an_artifact_that_a_collection_removes() {
     )
     .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Conflict);
-    assert_eq!(error.data.as_deref(), Some(&json!({"reasons": ["earlier-correction"]})));
+    assert_eq!(
+        error.data.as_deref(),
+        Some(&json!({"reasons": ["earlier-correction"]}))
+    );
     assert_eq!(session.revision(), revision, "nothing was committed");
     assert_eq!(
         session.service.candidates().read_job(&job)[0].state,
@@ -459,7 +490,10 @@ fn a_reopened_patch_renders_without_a_producer_and_missing_or_corrupt_bytes_are_
     let (catalog, asset) = (session.catalog.clone(), session.asset.clone());
     drop(session);
     // The built-in registry has no producer at all: the patch renders from its bytes alone.
-    assert_eq!(reopened_render(&catalog, &asset).unwrap().rgba, rendered.rgba);
+    assert_eq!(
+        reopened_render(&catalog, &asset).unwrap().rgba,
+        rendered.rgba
+    );
     let root = catalog.with_extension("artifacts");
     let object = object_path(&root, &artifact);
     let bytes = fs::read(&object).unwrap();
@@ -480,7 +514,10 @@ fn a_reopened_patch_renders_without_a_producer_and_missing_or_corrupt_bytes_are_
     // Put back, it renders again.
     fs::write(&object, &bytes).unwrap();
     drop(service);
-    assert_eq!(reopened_render(&catalog, &asset).unwrap().rgba, rendered.rgba);
+    assert_eq!(
+        reopened_render(&catalog, &asset).unwrap().rgba,
+        rendered.rgba
+    );
 }
 
 #[test]
@@ -497,7 +534,13 @@ fn a_catalog_moved_with_its_artifacts_keeps_its_patches_and_a_copied_database_do
             .unwrap()
             .asset
             .id;
-        add_patch(&mut service, &asset, "accept", PatchSpec::at([30, 40, 16, 16])).unwrap();
+        add_patch(
+            &mut service,
+            &asset,
+            "accept",
+            PatchSpec::at([30, 40, 16, 16]),
+        )
+        .unwrap();
         (asset.clone(), service.render_current(&asset).unwrap())
     };
     let after = directory.join("after");
@@ -559,9 +602,15 @@ fn a_gpu_plan_holds_a_patch_resident_at_full_and_reduced_stages() {
     let exact = plan(crate::GpuPlanRequest::exact(0, full).from_source());
     let step = &exact.spatial[0];
     assert_eq!(step.resident.blocks.len(), 1);
-    assert_eq!(step.resident.len(), 40 * 30 * 2, "two words a pixel at full resolution");
+    assert_eq!(
+        step.resident.len(),
+        40 * 30 * 2,
+        "two words a pixel at full resolution"
+    );
     assert!(
-        step.passes.iter().any(|pass| pass.kernel == "lf_repair_patch_blend"),
+        step.passes
+            .iter()
+            .any(|pass| pass.kernel == "lf_repair_patch_blend"),
         "the Clone reads the patch's output, so the patch is a pass of its own"
     );
     let again = plan(crate::GpuPlanRequest::exact(0, full).from_source());
@@ -591,7 +640,14 @@ fn the_warm_list_of_a_patched_stack_warms_its_patch() {
     use crate::{AssetId, EntryId, HistoryEntry, Snapshot, SnapshotId};
     let (width, height) = (160u32, 120u32);
     let rgba: Vec<u8> = (0..width * height)
-        .flat_map(|index| [(index % 251) as u8, (index % 239) as u8, (index % 113) as u8, 255])
+        .flat_map(|index| {
+            [
+                (index % 251) as u8,
+                (index % 239) as u8,
+                (index % 113) as u8,
+                255,
+            ]
+        })
         .collect();
     let source = crate::SourceImage {
         width,
@@ -655,7 +711,9 @@ fn the_warm_list_of_a_patched_stack_warms_its_patch() {
         })
         .collect();
     assert!(
-        functions.iter().any(|name| name.starts_with("lf_repair_patch")),
+        functions
+            .iter()
+            .any(|name| name.starts_with("lf_repair_patch")),
         "{functions:?}"
     );
 }

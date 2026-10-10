@@ -84,7 +84,78 @@ fn pinched_view(
     (target.zoom != current.zoom || (target.pan_x, target.pan_y) != pan).then_some(target)
 }
 
+/// How far inside the canvas's edge a revealed point is kept, in logical pixels.
+const REVEAL_MARGIN: f32 = 32.0;
+
+/// The pan that brings a stage point into view at a percentage zoom, or `None` when it already is
+/// (or when the stage fits the canvas on that axis, where there is nothing to scroll). A point
+/// outside the view, or within [`REVEAL_MARGIN`] of its edge, is centred on that axis, clamped to
+/// the scrollable range, so a point near the photograph's border sits as near the middle as the
+/// photograph allows.
+pub(crate) fn revealed_pan(
+    stage: (f64, f64),
+    canvas: (f32, f32),
+    scale: f32,
+    point: (f64, f64),
+    pan: (f32, f32),
+) -> Option<(f32, f32)> {
+    if !(scale.is_finite() && scale > 0.0) {
+        return None;
+    }
+    let axis = |stage: f64, available: f32, point: f64, pan: f32| {
+        let content = stage as f32 * scale;
+        let range = (content - available).max(0.0);
+        if range <= 0.0 {
+            return pan;
+        }
+        let at = point as f32 * scale;
+        let margin = REVEAL_MARGIN.min(available / 4.0);
+        let shown = at - pan;
+        if shown >= margin && shown <= available - margin {
+            return pan;
+        }
+        (at - available / 2.0).clamp(0.0, range)
+    };
+    let target = (
+        axis(stage.0, canvas.0, point.0, pan.0),
+        axis(stage.1, canvas.1, point.1, pan.1),
+    );
+    (target != pan).then_some(target)
+}
+
 impl Editor {
+    /// Scroll the photograph to `pan` through `view.set`, as a pinch does: the session is told in
+    /// this update and the scrollable follows.
+    pub(super) fn reveal_pan(&mut self, pan: (f32, f32)) -> Task<Message> {
+        let params = json!({"pan_x": pan.0, "pan_y": pan.1});
+        match tasks::call(&self.owner, self.client, "view.set", params.clone()).and_then(
+            |(value, _)| serde_json::from_value::<ClientSession>(value).map_err(|e| e.to_string()),
+        ) {
+            Ok(session) => {
+                self.adopt(session);
+                self.view_state.local_pan = pan;
+                self.view_state.pan.drop_pending();
+                if self.view_state.pan.in_flight() {
+                    self.view_state.pan.offer(pan);
+                }
+                self.note_view_motion();
+                self.event("view_revealed", || json!({"params": params}));
+                self.outcome(Outcome::SessionAnswered);
+                operation::scroll_to(
+                    super::crop::SURFACE_ID,
+                    AbsoluteOffset {
+                        x: Some(pan.0),
+                        y: Some(pan.1),
+                    },
+                )
+            }
+            Err(reason) => {
+                self.status.text = reason;
+                Task::none()
+            }
+        }
+    }
+
     pub(super) fn pinch(&mut self, input: Pinch) -> Task<Message> {
         if self.document.state.is_none()
             || self.gallery_page().is_some()
@@ -160,6 +231,43 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_point_outside_the_view_is_centred_and_one_inside_it_is_left_alone() {
+        // A 4000x3000 stage at 50% in a 1000x700 canvas: 2000x1500 of content.
+        let stage = (4000.0, 3000.0);
+        let canvas = (1000.0, 700.0);
+        // In view: no pan.
+        assert_eq!(
+            revealed_pan(stage, canvas, 0.5, (1000.0, 800.0), (400.0, 300.0)),
+            None
+        );
+        // Out of view to the right and below: centred on both axes.
+        assert_eq!(
+            revealed_pan(stage, canvas, 0.5, (3000.0, 2400.0), (0.0, 0.0)),
+            Some((1000.0, 800.0))
+        );
+        // Near the far border the pan clamps to the scrollable range.
+        assert_eq!(
+            revealed_pan(stage, canvas, 0.5, (3990.0, 2990.0), (0.0, 0.0)),
+            Some((1000.0, 800.0))
+        );
+        // Near the origin it clamps to zero; a point inside the margin counts as outside.
+        assert_eq!(
+            revealed_pan(stage, canvas, 0.5, (10.0, 10.0), (100.0, 100.0)),
+            Some((0.0, 0.0))
+        );
+        assert_eq!(
+            revealed_pan(stage, canvas, 0.5, (1050.0, 800.0), (500.0, 300.0)),
+            Some((25.0, 300.0)),
+            "an x just inside the left margin moves; y is in view and keeps its pan"
+        );
+        // An axis the content does not overflow has nothing to scroll.
+        assert_eq!(
+            revealed_pan((400.0, 3000.0), canvas, 0.5, (390.0, 2900.0), (0.0, 0.0)),
+            Some((0.0, 800.0))
+        );
+    }
 
     fn show_picture(editor: &mut Editor, dimensions: (u32, u32)) {
         let (_, raster) = crate::app::testing::analysed(editor, 1, &[[80, 90, 100, 255]], 1, 1);

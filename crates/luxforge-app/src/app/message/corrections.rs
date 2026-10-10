@@ -3,7 +3,7 @@
 use crate::{
     app::draft::GestureId,
     brush::{Handle, Modifiers, ViewPoint},
-    state::corrections::ListingBody,
+    state::corrections::{ListingBody, TypingTarget},
 };
 use luxforge_core::{AssetId, EntryId, MappingDescriptor};
 use serde_json::Value;
@@ -15,6 +15,19 @@ pub(crate) enum CanvasHit {
     Handle(Handle),
     Pin(String),
     Add,
+}
+
+/// One edit of the band's typed slider field.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum TypingEdit {
+    /// The field of this slider was pressed: open it on the value as shown and focus it.
+    Begin(TypingTarget),
+    /// The text typed so far.
+    Text(String),
+    /// Enter: apply the value when it reads, or say why not and stay open.
+    Submit,
+    /// Escape: close it with nothing sent.
+    Cancel,
 }
 
 #[derive(Clone, Debug)]
@@ -95,6 +108,8 @@ pub(crate) enum CorrectionMessage {
         entry: EntryId,
         result: Result<ListingBody, String>,
     },
+    /// The band's typed slider field.
+    Typing(TypingEdit),
     /// Nothing: a control that has no typed field of its own.
     Nothing,
 }

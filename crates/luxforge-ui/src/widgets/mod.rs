@@ -124,7 +124,9 @@ pub use popover::popover;
 pub use range_slider::{RangeGrip, RangeSliderModel, RangeValues, range_slider};
 pub use readout_card::readout_card;
 pub use section_header::{SectionHeaderModel, band_header, band_header_with_reset, module_section};
-pub use segmented::{SegmentedModel, chevron_segment, segment, segment_track, segmented};
+pub use segmented::{
+    SegmentedModel, chevron_segment, segment, segment_track, segmented, segmented_fill,
+};
 pub use slider::{RailDecoration, SliderModel, slider};
 pub use sparkline::SparklineModel;
 pub use stepper::{StepperModel, StepperRail, StepperRailMessages, stepper};

@@ -309,9 +309,7 @@ impl RepairPayload {
             }
         }
         if self.artifacts().len() > MAX_LAYER_ARTIFACTS {
-            return refuse(format!(
-                "more than {MAX_LAYER_ARTIFACTS} distinct patches"
-            ));
+            return refuse(format!("more than {MAX_LAYER_ARTIFACTS} distinct patches"));
         }
         let strokes: Vec<&StrokeId> = self.brushes().map(|brush| &brush.stroke).collect();
         if self.strokes.len() != strokes.len()

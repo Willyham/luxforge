@@ -84,11 +84,10 @@ pub use capabilities::redact::redact_params;
 pub use cpu_proxy::{ProxyApproximation, ProxyOutcome};
 pub use draft::{Draft, DraftTarget, declared_target};
 pub use editor::{
-    BatchStaleAcknowledgement, StaleAcknowledgement,
-    ActionResult, AssetRecord, DraftStamp, EditorService, EditorState, Evaluation, FirstOpen,
-    HistoryPage, LayerDescription, Lineage, LineageStep, MASK_FIELD, MutationOutcome,
-    MutationResult, PixelInput, PixelSample, RawInterpretation, RecipeDescription, SkippedSetting,
-    SourceKind, SourceTag, Version, operations_limit,
+    ActionResult, AssetRecord, BatchStaleAcknowledgement, DraftStamp, EditorService, EditorState,
+    Evaluation, FirstOpen, HistoryPage, LayerDescription, Lineage, LineageStep, MASK_FIELD,
+    MutationOutcome, MutationResult, PixelInput, PixelSample, RawInterpretation, RecipeDescription,
+    SkippedSetting, SourceKind, SourceTag, StaleAcknowledgement, Version, operations_limit,
 };
 pub use error::{AnalysisRefusal, Error, ErrorKind, Preparation, PreparationNeeds};
 pub use export::{CaptureInfo, CaptureMetadata};
@@ -102,27 +101,26 @@ pub use model::{
 /// Basic's Auto tone solver and forward model, which the fitting rig and the measurements call.
 pub use modules::auto_tone;
 pub use modules::{
-    AcceptedCandidate, RepairInput, StaleCorrection, StaleReason,
-    ActionControl, ActionDescriptor, ActionInput, ActionPlan, ActionRef, ActionStyle,
-    AnalysisAction, Availability, BASIC_EFFECT, BoxRect, BrushEdit, BrushSource, CONTROLS_EFFECT,
-    CROP_EFFECT, CURVE_EFFECT, CanvasInteraction, CapabilityModule, ChoiceControl, ChoiceStyle,
-    ColorControl, ColorOperation, ColorStyle, CompileStage, Control, ControlVariant, CropAspect,
-    CropPayload, CropStage, CurveBackground, CurveChannel, CurveControl, DETAIL_EFFECT, Edge,
-    EffectDescriptor, EffectOperations, EffectStage, ExactGeometry, GPU_PROGRAMS, GroupControl,
-    IdentityKind, LENS_EFFECT, LOOK_EFFECT, LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE,
-    MAX_MASKED_SPATIAL_LAYERS, MAX_OPERATIONS, MAX_REPAIR_OPERATIONS, MAX_SOURCE_NAME, MIN_ANGLE,
-    MIXER_EFFECT, MIXER_EFFECT_FORMAT, ModuleDescriptor, ModuleLayout, ModuleRegistry, NewLayer,
-    NumberControl, NumberStyle, OPERATIONS_FIELD, ORIENTATION_EFFECT, OperationIdentity,
+    AcceptedCandidate, ActionControl, ActionDescriptor, ActionInput, ActionPlan, ActionRef,
+    ActionStyle, AnalysisAction, Availability, BASIC_EFFECT, BoxRect, BrushEdit, BrushSource,
+    CONTROLS_EFFECT, CROP_EFFECT, CURVE_EFFECT, CanvasInteraction, CapabilityModule, ChoiceControl,
+    ChoiceStyle, ColorControl, ColorOperation, ColorStyle, CompileStage, Control, ControlVariant,
+    CropAspect, CropPayload, CropStage, CurveBackground, CurveChannel, CurveControl, DETAIL_EFFECT,
+    Edge, EffectDescriptor, EffectOperations, EffectStage, ExactGeometry, GPU_PROGRAMS,
+    GroupControl, IdentityKind, LENS_EFFECT, LOOK_EFFECT, LayerEdit, LayerReport, LayerUpdate,
+    MAX_ANGLE, MAX_MASKED_SPATIAL_LAYERS, MAX_OPERATIONS, MAX_REPAIR_OPERATIONS, MAX_SOURCE_NAME,
+    MIN_ANGLE, MIXER_EFFECT, MIXER_EFFECT_FORMAT, ModuleDescriptor, ModuleLayout, ModuleRegistry,
+    NewLayer, NumberControl, NumberStyle, OPERATIONS_FIELD, ORIENTATION_EFFECT, OperationIdentity,
     OutputRect, PERSPECTIVE_EFFECT, PRESENCE_EFFECT, PROOF_GENERATE_PATH, PROOF_PALETTE,
     PROOF_PALETTE_PATH, ParameterDescriptor, ParameterKind, PickerControl, PointwiseColor,
     PresetsControl, Processing, Provider, QueryChoiceControl, QueryRef, RailDecoration,
-    RangeControl, RawModule, RawPayload, Region, RegistryOptions, RepairTable, Resample,
-    ResetAction, ResolvedControl, ResolvedReset, SamplingScale, SettingsOrigin, SpatialOperation,
-    Stage, StageContext, StageQuestions, TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT,
-    WheelControl, WheelStyle, WhiteBalanceMode, check_parameters, check_value, controls_module,
-    current_effect_format, gains_from_temperature_tint, guide_angle, insertion_index_among,
-    largest_with_ratio_inside, palette_bytes, resolve_control, resolve_group_reset,
-    temperature_tint_from_gains,
+    RangeControl, RawModule, RawPayload, Region, RegistryOptions, RepairInput, RepairTable,
+    Resample, ResetAction, ResolvedControl, ResolvedReset, SamplingScale, SettingsOrigin,
+    SpatialOperation, Stage, StageContext, StageQuestions, StaleCorrection, StaleReason,
+    TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT, WheelControl, WheelStyle,
+    WhiteBalanceMode, check_parameters, check_value, controls_module, current_effect_format,
+    gains_from_temperature_tint, guide_angle, insertion_index_among, largest_with_ratio_inside,
+    palette_bytes, resolve_control, resolve_group_reset, temperature_tint_from_gains,
 };
 pub use modules::{Chord, HOST_CHORDS, host_chord};
 pub use modules::{OriginalContext, OriginalLayer, OriginalPreferences};
@@ -146,14 +144,14 @@ pub use render::gpu::{
     GpuChange, GpuClipping, GpuComponent, GpuDescription, GpuFallback, GpuGeometry, GpuLight,
     GpuLightInput, GpuLightPasses, GpuLightRestoration, GpuLightSweep, GpuMask, GpuOperation,
     GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest, GpuPlane, GpuPlaneFormat, GpuPlaneSize,
-    GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuRepair, GpuRepairOperation, GpuRest,
-    REPAIR_LEVEL_BYTES, REPAIR_PASSES_MAX,
-    GpuResident, GpuSpatial, GpuSpatialUnit, GpuStaging, GpuSweep, GpuSweeps, GpuView, GpuWarmList,
-    PreparedStream, REDUCED_AFTER_BYTES, REST_SHARE_MAX, REST_TILE_SIDES, REST_TILE_WORK,
-    RestReduction, RestTile, RestTiles, STREAM_TILE_SIDES, SWEEP_SPLIT_REACH, SWEEP_STAGE_TEXTURES,
-    SourceBoundary, StreamPlan, TilePlan, anchored, gpu_fit_plan, gpu_lights, gpu_plan, plan_read,
-    plan_stream, plan_stream_light_sweeps, plan_stream_sweeps, plan_stream_sweeps_at,
-    rest_light_bytes, rest_slot_bytes,
+    GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuRepair, GpuRepairOperation,
+    GpuResident, GpuRest, GpuSpatial, GpuSpatialUnit, GpuStaging, GpuSweep, GpuSweeps, GpuView,
+    GpuWarmList, PreparedStream, REDUCED_AFTER_BYTES, REPAIR_LEVEL_BYTES, REPAIR_PASSES_MAX,
+    REST_SHARE_MAX, REST_TILE_SIDES, REST_TILE_WORK, RestReduction, RestTile, RestTiles,
+    STREAM_TILE_SIDES, SWEEP_SPLIT_REACH, SWEEP_STAGE_TEXTURES, SourceBoundary, StreamPlan,
+    TilePlan, anchored, gpu_fit_plan, gpu_lights, gpu_plan, plan_read, plan_stream,
+    plan_stream_light_sweeps, plan_stream_sweeps, plan_stream_sweeps_at, rest_light_bytes,
+    rest_slot_bytes,
 };
 pub use render::{BOUNDARY_MAX_BYTES, BoundaryFormat, BoundaryFrame};
 pub use render::{
@@ -172,10 +170,10 @@ pub use previews::{DecodedPreview, decode_preview};
 /// only with the `qualification` feature, which only a `[dev-dependencies]` table may turn on.
 #[cfg(feature = "qualification")]
 pub mod qualification {
+    pub use crate::modules::corrections_qualification as corrections;
     pub use crate::modules::detail_qualification as detail;
     pub use crate::modules::presence_qualification as presence;
     pub use crate::repair::qualification as repair;
-    pub use crate::modules::corrections_qualification as corrections;
 
     /// The picture at rest of `evaluation` on the GPU at `view`, as a displayed stack's job plans
     /// it ([`crate::GpuRest`]): the plan of the whole stack from the source, and the boundary it

@@ -2532,7 +2532,10 @@ mod tests {
         assert!(crop.enabled);
         // The declared brush workspace follows Mask, then the crop frames.
         let corrections = &strip[2];
-        assert_eq!(corrections.id, "luxforge.corrections", "Corrections follows Mask");
+        assert_eq!(
+            corrections.id, "luxforge.corrections",
+            "Corrections follows Mask"
+        );
         assert_eq!(corrections.shortcut.as_deref(), Some("Q"));
         assert_eq!(corrections.icon.as_deref(), Some("heal"));
         assert_eq!(strip[3].id, crop.id, "the crop frame follows Corrections");

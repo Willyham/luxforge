@@ -612,7 +612,7 @@ Corrections removes dust, spots and small distractions with **Heal** and **Clone
 
 The band's **New correction** group describes the next press — Heal or Clone, Size (the brush diameter in photograph pixels), Feather and Opacity, and Source — and commits nothing. The **Stack** lists one row per correction, top of the stack first, named by kind and a number the photograph never reuses (`Heal 5`), with a short description and its opacity; hovering a row offers Delete, and a right-click opens its menu (Heal, Clone, New automatic source, Move up, Move down, Delete). The selected row expands with its own Kind, Size, Feather and Opacity, its source (`Auto · 175 px below`), **New source** and **Delete**. Drag a row by its grip to reorder the stack. The footer counts corrections against the photograph's limit, `5 of 100`; a press at the limit is refused before anything is drafted.
 
-On the canvas the selected correction shows its outline, its dashed source and an arrow from the source; drag its pin to move it (the source stays put), its source pin or dashed outline to resample, and a spot's square size handle to resize it. Each drag, slider release, kind change, reorder and delete is one undoable entry with its own label (`Move Heal 5`, `Move Heal 5 source`, `Resize Heal 2`, `Heal 5 · Opacity 80`, `Change Heal 5 to Clone`, `Reorder Heal 2`, `Delete Heal 5`), and the band's reset is `Reset corrections`.
+On the canvas the selected correction shows its outline, its dashed source and an arrow from the source; drag its pin to move it (the source stays put), its source pin or dashed outline to resample, and a spot's square size handle to resize it. Selecting a row scrolls the photograph to its correction when you are zoomed in and it is out of view, as `↑` and `↓` do. Type into any band slider's number as in other sliders (Size in pixels, Feather and Opacity from 0 to 100) and press Return to apply it; Escape closes the field. Each drag, slider release, typed value, kind change, reorder and delete is one undoable entry with its own label (`Move Heal 5`, `Move Heal 5 source`, `Resize Heal 2`, `Heal 5 · Opacity 80`, `Change Heal 5 to Clone`, `Reorder Heal 2`, `Delete Heal 5`), and the band's reset is `Reset corrections`.
 
 | Key | Does |
 | --- | --- |
@@ -622,7 +622,7 @@ On the canvas the selected correction shows its outline, its dashed source and a
 | `↑` / `↓` | Select the correction above or below |
 | `⌥↑` / `⌥↓` | Move the selected correction up or down the stack |
 | `[` / `]` | Brush size down or up by 10%; with `⇧`, feather by 10 |
-| `H` | Hide or show pins and outlines |
+| `H` | Hide or show pins and outlines (the same handles setting Masks uses) |
 | Escape | Cancel the held stroke, then deselect, then clear a set source, then leave the mode |
 
 Every gesture is also an API request — `edit.add-correction`, `edit.update-correction`, `edit.delete-correction`, `edit.reorder-correction`, `edit.reset-corrections`, `query.corrections` and `query.correction-sources` ([modules and API](design/modules-and-api.md#corrections)). AI Remove is not part of this build and is not drawn.

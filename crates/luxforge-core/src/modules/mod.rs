@@ -78,15 +78,15 @@ pub use capabilities_proof::{
 };
 pub use capability::CapabilityModule;
 pub use controls::{CONTROLS_EFFECT, controls_module};
-pub use corrections::{CORRECTIONS_EFFECT, RepairInput, StaleCorrection, StaleReason};
-pub(crate) use corrections::{new_top_input as corrections_top_input, stale_corrections};
 #[cfg(test)]
 pub(crate) use corrections::patch_testing as corrections_patch_testing;
 #[cfg(feature = "qualification")]
 pub use corrections::qualification as corrections_qualification;
+pub use corrections::{CORRECTIONS_EFFECT, RepairInput, StaleCorrection, StaleReason};
 pub(crate) use corrections::{
     CorrectionsModule, RepairCarrier, source_identity as corrections_source_identity,
 };
+pub(crate) use corrections::{new_top_input as corrections_top_input, stale_corrections};
 pub(crate) use crop::CropModule;
 pub use crop::ORIENTATION_EFFECT;
 pub use crop::geometry::{

@@ -29,11 +29,9 @@ impl EditorService {
         asset: &AssetRecord,
         recipe: &Recipe,
     ) -> Result<Vec<StaleCorrection>, Error> {
-        if !recipe
-            .layers
-            .iter()
-            .any(|layer| layer.effect_id == crate::modules::CORRECTIONS_EFFECT && !layer.artifacts.is_empty())
-        {
+        if !recipe.layers.iter().any(|layer| {
+            layer.effect_id == crate::modules::CORRECTIONS_EFFECT && !layer.artifacts.is_empty()
+        }) {
             return Ok(Vec::new());
         }
         self.with_stage_context(asset, recipe, None, crate::modules::stale_corrections)

@@ -23,9 +23,7 @@
 //! The caller leaving — a disconnect stops its accept job — or `job.cancel` of the accept job drops
 //! the call and the pin before anything is committed. A caller that may not wait
 //! ([`super::OwnerHandle::call_unparked`]) is answered `not-ready` before anything is pinned.
-use super::{
-    Call, Owner, OwnerCall, SourceFlightKey, SourceResult, SourceTaskKind, methods,
-};
+use super::{Call, Owner, OwnerCall, SourceFlightKey, SourceResult, SourceTaskKind, methods};
 use crate::{
     AcceptedCandidate, AssetId, Error, JobId, Mutation,
     api::{ApiResponse, Origin, announce_once, params},
@@ -207,13 +205,11 @@ fn check_input(generated: &crate::RepairInput, now: &crate::RepairInput) -> Resu
     }
     let names: Vec<&str> = reasons.iter().map(|reason| reason.as_str()).collect();
     let said: Vec<&str> = reasons.iter().map(|reason| reason.sentence()).collect();
-    Err(
-        Error::conflict(format!(
-            "the candidate was generated against another input: {}",
-            said.join(", ")
-        ))
-        .with_data(json!({ "reasons": names })),
-    )
+    Err(Error::conflict(format!(
+        "the candidate was generated against another input: {}",
+        said.join(", ")
+    ))
+    .with_data(json!({ "reasons": names })))
 }
 
 impl Owner {

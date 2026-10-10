@@ -192,7 +192,10 @@ fn updates_change_one_operation_with_a_label_per_field_and_detect_no_ops() {
     assert_eq!(moved.answer["correction"]["source-x"], json!(on_grid(0.3)));
     assert_eq!(moved.answer["correction"]["source-y"], json!(on_grid(0.4)));
     assert_eq!(
-        session.payload().unwrap().operations[0].brush().unwrap().offset,
+        session.payload().unwrap().operations[0]
+            .brush()
+            .unwrap()
+            .offset,
         [
             quantize(0.3) - quantize(0.55),
             quantize(0.4) - quantize(0.45)
@@ -223,7 +226,10 @@ fn updates_change_one_operation_with_a_label_per_field_and_detect_no_ops() {
         op(json!({"mode": "heal", "opacity": 70})),
     );
     assert_eq!(session.label(), "Edit Clone 1");
-    let operation = session.payload().unwrap().operations[0].brush().unwrap().clone();
+    let operation = session.payload().unwrap().operations[0]
+        .brush()
+        .unwrap()
+        .clone();
     assert_eq!(
         (operation.feather, operation.opacity, operation.origin),
         (40, 70, super::payload::Origin::Auto)
@@ -470,9 +476,18 @@ fn history_versions_and_reopen_keep_every_operation_and_its_stroke() {
         .service
         .undo(&session.asset, mutation(revision, "undo"))
         .unwrap();
-    assert_eq!(session.payload().unwrap().operations[0].brush().unwrap().opacity, 50);
     assert_eq!(
-        session.payload().unwrap().operations[0].brush().unwrap().offset,
+        session.payload().unwrap().operations[0]
+            .brush()
+            .unwrap()
+            .opacity,
+        50
+    );
+    assert_eq!(
+        session.payload().unwrap().operations[0]
+            .brush()
+            .unwrap()
+            .offset,
         [quantize(0.3) - quantize(0.5), quantize(0.4) - quantize(0.5)]
     );
     let revision = session.revision();
@@ -538,7 +553,11 @@ fn a_missing_or_corrupt_stroke_is_refused_naming_its_operation_and_history_stays
     for corrupt in [false, true] {
         let mut session = Session::new(&format!("corrections-broken-{corrupt}.sqlite"));
         session.ok("add-correction", spot(0.5, 0.5, 0.3, 0.4));
-        let stroke = session.payload().unwrap().operations[0].brush().unwrap().stroke.clone();
+        let stroke = session.payload().unwrap().operations[0]
+            .brush()
+            .unwrap()
+            .stroke
+            .clone();
         let Session {
             service,
             asset,

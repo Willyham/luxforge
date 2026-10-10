@@ -195,7 +195,12 @@ pub(crate) fn delta(offset: [i32; 2], stage: Stage) -> [i64; 2] {
 
 /// [`RepairOp::reads`] from an operation's kind, the pixels it may write, its offset in pixels and
 /// its stage: what the host's region planning reads without building a footprint.
-pub(crate) fn reads(kind: RepairKind, writes: Region, delta: [i64; 2], stage: Stage) -> [Region; 2] {
+pub(crate) fn reads(
+    kind: RepairKind,
+    writes: Region,
+    delta: [i64; 2],
+    stage: Stage,
+) -> [Region; 2] {
     // A patch blends over what it covers and reads nothing else.
     if kind == RepairKind::Patch {
         return [writes, Region::EMPTY];
@@ -237,7 +242,10 @@ pub(crate) struct RepairFrame<'a> {
 }
 
 impl<'a> RepairFrame<'a> {
-    #[cfg_attr(not(test), allow(dead_code, reason = "a frame of one rectangle, for the tests"))]
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "a frame of one rectangle, for the tests")
+    )]
     pub(crate) fn new(stage: Stage, region: Region, values: &'a mut [f32]) -> Result<Self, Error> {
         Self::with_parts(stage, vec![(region, values)])
     }
