@@ -415,7 +415,7 @@ fn api_draft_view_workspace_preview_palette_and_pick_round_trip() {
         (json!({"settings":{}}), "missing field `open`"),
         (
             json!({"settings":{"open":true,"tab":"colours"}}),
-            "settings tab must be one of general, appearance, experiments, not \"colours\"",
+            "settings tab must be one of general, appearance, experiments, privacy, not \"colours\"",
         ),
         (
             json!({"settings":{"open":false,"tab":"general"}}),
