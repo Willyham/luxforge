@@ -88,6 +88,8 @@ impl Editor {
                 );
                 self.await_select(Task::batch([task, scrolled]))
             }
+            SelectStep::Merge { position, mode } => self.merge_step(position, mode),
+            SelectStep::Merged => self.merged_step(),
         }
     }
 
@@ -428,6 +430,7 @@ impl Editor {
             Err(error) => json!({ "owner_browse_error": error }),
         };
         self.note_step(owner);
+        self.note_step(self.owner_merges());
         if std::mem::take(&mut self.select.evidence_indexed) {
             let indexed = match call(&self.owner, self.client, "index.folders", json!({})) {
                 Ok((folders, _)) => json!({ "owner_indexed": folders }),
@@ -436,5 +439,35 @@ impl Editor {
             self.note_step(indexed);
         }
         self.settle_step(Settle::Select, by);
+    }
+
+    /// The owner's own answers a merge's frames are checked against: the session's development set
+    /// (`development-set.read`) and every HDR merge on the activity board, running or recent, by
+    /// job (`activity.list`).
+    pub(super) fn owner_merges(&self) -> Value {
+        let set = match call(&self.owner, self.client, "development-set.read", json!({})) {
+            Ok((set, _)) => json!({
+                "set_id": set["set_id"],
+                "revision": set["revision"],
+                "members": set["members"].as_array().into_iter().flatten().map(|member| json!({
+                    "asset_id": member["asset_id"],
+                    "merge_id": member["merge_id"],
+                    "removed": member["removed"],
+                })).collect::<Vec<_>>(),
+            }),
+            Err(error) => json!({ "error": error }),
+        };
+        let merges = match call(&self.owner, self.client, "activity.list", json!({})) {
+            Ok((board, _)) => json!(
+                ["active", "recent"]
+                    .into_iter()
+                    .flat_map(|list| board[list].as_array().cloned().unwrap_or_default())
+                    .filter(|entry| entry["kind"] == "merge.hdr")
+                    .map(|entry| json!({"job_id": entry["job_id"], "outcome": entry["outcome"]}))
+                    .collect::<Vec<_>>()
+            ),
+            Err(error) => json!({ "error": error }),
+        };
+        json!({ "owner_set": set, "owner_merge_jobs": merges })
     }
 }

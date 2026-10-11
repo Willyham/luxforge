@@ -2204,6 +2204,14 @@ pub const MAX_AGENT_PICKS: usize = 64;
 /// `"cancel_work"` presses Cancel on the Performance section's first such row and waits until the
 /// job has ended on the activity board, the view that waited on it has heard, and the section has
 /// read the board again.
+///
+/// HDR merges: `{"merge": {"position": 0, "mode": "pick"}}` presses the Pick merged (`"import"`:
+/// Import merged) action of the bracket holding that view position, as its header does, and is
+/// captured once the merge's pending row shows the job's first progress, or fails with the reason
+/// when the merge is refused or has already ended. `"merged"` is captured once the merge this
+/// desktop started has ended ready and the view it read again holds its result, selected, with
+/// nothing Select asked for still in flight, its previews among it; a failed
+/// or cancelled merge fails it with the row's words.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum SelectStep {
@@ -2239,6 +2247,20 @@ pub enum SelectStep {
     ContinueInBackground,
     CancelWork,
     AddFolder(String),
+    Merge {
+        position: u32,
+        mode: MergeMode,
+    },
+    Merged,
+}
+
+/// Which merge a bracket header's action makes: Pick merged, which adds the result to the
+/// Development set, or Import merged, into the catalog alone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeMode {
+    Pick,
+    Import,
 }
 
 /// Library undo or redo, as `Cmd+Z` and `Shift+Cmd+Z` press them.
@@ -2301,7 +2323,9 @@ impl SelectStep {
             | Self::Library(_)
             | Self::PickAll { .. }
             | Self::ContinueInBackground
-            | Self::CancelWork => Ok(()),
+            | Self::CancelWork
+            | Self::Merge { .. }
+            | Self::Merged => Ok(()),
         }
     }
 }
