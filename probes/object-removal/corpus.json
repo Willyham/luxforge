@@ -1,0 +1,437 @@
+{
+  "format": 1,
+  "private": {
+    "directory": "private/object-removal/corpus",
+    "environment": "LUXFORGE_REMOVAL_CORPUS",
+    "committed": false,
+    "note": "The owner's photographs, developed to JPEG outside Luxforge's pipeline. They live in the ignored private/ directory and are never committed; this list names them and their use, not their content.",
+    "images": [
+      {
+        "file": "z6-bridge.jpg",
+        "size": "6048 x 4024, EXIF-rotated",
+        "source": "fixtures/raw/nikon_z6.NEF",
+        "use": "A boy on a bamboo bridge, people and poles behind: one object on structured texture; the known removal"
+      },
+      {
+        "file": "x100vi-sunflowers.jpg",
+        "size": "7728 x 5152",
+        "source": "fixtures/raw/fujifilm_x100vi.RAF",
+        "use": "Sunflowers on a blurred background"
+      },
+      {
+        "file": "air2s-kayaks.jpg",
+        "size": "5464 x 3640",
+        "source": "fixtures/raw/mavic_air_2s.DNG",
+        "use": "Many small kayaks on water: several objects under one stroke"
+      },
+      {
+        "file": "sapa-road.jpg",
+        "size": "3389 x 4236",
+        "source": "fixtures/jpg/will-sapa-drone.jpg",
+        "use": "A road through terraces: a long thin object"
+      },
+      {
+        "file": "quadrants-24mp.jpg",
+        "size": "6000 x 4000",
+        "source": "fixtures/generated/",
+        "use": "Timing at 24 MP and colour order"
+      },
+      {
+        "file": "quadrants-60mp.jpg",
+        "size": "10000 x 6000",
+        "source": "fixtures/generated/",
+        "use": "Timing at 60 MP and colour order"
+      }
+    ]
+  },
+  "public": {
+    "directory": "private/object-removal/public",
+    "environment": "LUXFORGE_REMOVAL_PUBLIC",
+    "licence": "CC0 1.0 Universal (public domain dedication), as recorded on each file's Wikimedia Commons page when it was listed",
+    "note": "Fetched by hand, never by the probe: `removal-probe corpus` prints each file's URL and `removal-probe corpus --verify` checks the files that are present against the size and SHA-256 listed here.",
+    "images": [
+      {
+        "file": "people-utrecht-pub.jpg",
+        "category": "people",
+        "use": "People: figures and groups on street and beach scenes, for person removal and for pasted-object ground truth against skin, clothing and crowds",
+        "title": "People are walking & talking in front of a pub facade in the street Utrechtsestraat; free photo Amsterdam, Fons Heijnsbroek, 12-10-2021.jpg",
+        "author": "Fons Heijnsbroek",
+        "licence": "CC0 1.0",
+        "page": "https://commons.wikimedia.org/wiki/File:People_are_walking_%26_talking_in_front_of_a_pub_facade_in_the_street_Utrechtsestraat;_free_photo_Amsterdam,_Fons_Heijnsbroek,_12-10-2021.jpg",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/b/b5/People_are_walking_%26_talking_in_front_of_a_pub_facade_in_the_street_Utrechtsestraat%3B_free_photo_Amsterdam%2C_Fons_Heijnsbroek%2C_12-10-2021.jpg",
+        "width": 4000,
+        "height": 3000,
+        "bytes": 8215862,
+        "sha256": "da9a518fcf71fa62d3dd3a4fdfe25b281a4d5e989b6e4bf1a4285ef22966eb6b"
+      },
+      {
+        "file": "people-olinda-craftsman.jpg",
+        "category": "people",
+        "use": "People: figures and groups on street and beach scenes, for person removal and for pasted-object ground truth against skin, clothing and crowds",
+        "title": "Street Craftsman in Olinda.jpg",
+        "author": "Wilfredor",
+        "licence": "CC0 1.0",
+        "page": "https://commons.wikimedia.org/wiki/File:Street_Craftsman_in_Olinda.jpg",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/d/d7/Street_Craftsman_in_Olinda.jpg",
+        "width": 4288,
+        "height": 2848,
+        "bytes": 7143212,
+        "sha256": "db7e11af28b2c52fd5da483df31c57e8adf89f2dfed2184f8e9b6a2f90c3af9c"
+      },
+      {
+        "file": "people-juan-griego-beach.jpg",
+        "category": "people",
+        "use": "People: figures and groups on street and beach scenes, for person removal and for pasted-object ground truth against skin, clothing and crowds",
+        "title": "Couple wading beside fishing boats at Juan Griego Beach, Margarita Island, Venezuela.jpg",
+        "author": "Wilfredor",
+        "licence": "CC0 1.0",
+        "page": "https://commons.wikimedia.org/wiki/File:Couple_wading_beside_fishing_boats_at_Juan_Griego_Beach,_Margarita_Island,_Venezuela.jpg",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/b/b1/Couple_wading_beside_fishing_boats_at_Juan_Griego_Beach%2C_Margarita_Island%2C_Venezuela.jpg",
+        "width": 4274,
+        "height": 2826,
+        "bytes": 10149658,
+        "sha256": "5b311279d83ef5aed2ca1ca4a62844e6d272860037ca0ca3044c3a2ba8ac4272"
+      },
+      {
+        "file": "sky-clouds-blue.jpg",
+        "category": "skies",
+        "use": "Skies: smooth gradients and cloud texture, where a fill must not band or smear",
+        "title": "Clouds and Blue Sky.jpg",
+        "author": "TrudiJ",
+        "licence": "CC0 1.0",
+        "page": "https://commons.wikimedia.org/wiki/File:Clouds_and_Blue_Sky.jpg",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/6/62/Clouds_and_Blue_Sky.jpg",
+        "width": 4032,
+        "height": 2670,
+        "bytes": 1944054,
+        "sha256": "8f660493d912c06fa56c1e6bb052912d5318430aa95ee6c48786dcb95796d3db"
+      },
+      {
+        "file": "sky-evening-2024.jpg",
+        "category": "skies",
+        "use": "Skies: smooth gradients and cloud texture, where a fill must not band or smear",
+        "title": "Evening sky 2024.jpg",
+        "author": "Swathi sri srinivasa raghavan",
+        "licence": "CC0 1.0",
+        "page": "https://commons.wikimedia.org/wiki/File:Evening_sky_2024.jpg",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/f/f3/Evening_sky_2024.jpg",
+        "width": 4000,
+        "height": 2992,
+        "bytes": 3527047,
+        "sha256": "163ab8528e9937c507902f07aac54179b0cc530364a8ad36e654922421a2598b"
+      },
+      {
+        "file": "sky-clouds-atmosphere.jpg",
+        "category": "skies",
+        "use": "Skies: smooth gradients and cloud texture, where a fill must not band or smear",
+        "title": "Sky Clouds Atmosphere.jpg",
+        "author": "Unknown author",
+        "licence": "CC0 1.0",
+        "page": "https://commons.wikimedia.org/wiki/File:Sky_Clouds_Atmosphere.jpg",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/4/42/Sky_Clouds_Atmosphere.jpg",
+        "width": 3992,
+        "height": 2242,
+        "bytes": 1882137,
+        "sha256": "5975a3afa2e611a89a96e06f3bc5f07a846028a79e3cdf69e047de6977821ed7"
+      },
+      {
+        "file": "water-minnewanka.jpg",
+        "category": "water",
+        "use": "Water: reflections, ripples and horizons, where structure runs past the region",
+        "title": "Lake Minnewanka, Canada.jpg",
+        "author": "Vlunyak",
+        "licence": "CC0 1.0",
+        "page": "https://commons.wikimedia.org/wiki/File:Lake_Minnewanka,_Canada.jpg",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/6/68/Lake_Minnewanka%2C_Canada.jpg",
+        "width": 3840,
+        "height": 2880,
+        "bytes": 2513065,
+        "sha256": "5be45a982f7c7f06e3f3619a9612053c7f7d4b883d70a81ebfc402f77d1c4f8a"
+      },
+      {
+        "file": "water-badukskoe.jpg",
+        "category": "water",
+        "use": "Water: reflections, ripples and horizons, where structure runs past the region",
+        "title": "First Badukskoe Lake water.jpg",
+        "author": "Alexander Roumega",
+        "licence": "CC0 1.0",
+        "page": "https://commons.wikimedia.org/wiki/File:First_Badukskoe_Lake_water.jpg",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/e/ee/First_Badukskoe_Lake_water.jpg",
+        "width": 4000,
+        "height": 2250,
+        "bytes": 5992325,
+        "sha256": "8e38f4d1c1875b577ca3c6bb830d8ea562ea8fa0a33e1e96fa1fe14f9bc39ca6"
+      },
+      {
+        "file": "water-rhine-eltville.jpg",
+        "category": "water",
+        "use": "Water: reflections, ripples and horizons, where structure runs past the region",
+        "title": "Sky at sunset reflected in Rhine at Eltville.jpg",
+        "author": "Gerda Arendt",
+        "licence": "CC0 1.0",
+        "page": "https://commons.wikimedia.org/wiki/File:Sky_at_sunset_reflected_in_Rhine_at_Eltville.jpg",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/8/8a/Sky_at_sunset_reflected_in_Rhine_at_Eltville.jpg",
+        "width": 4000,
+        "height": 3000,
+        "bytes": 2777994,
+        "sha256": "6149ca823e3a5ac8f54c26d919d88e20a6c32ffa431acab3a3cc961fe8e9138f"
+      },
+      {
+        "file": "object-green-heron.jpg",
+        "category": "small objects",
+        "use": "Small objects: a bird or a bicycle against a busy or clean background, the typical single-object removal",
+        "title": "Perched Green Heron.jpg",
+        "author": "Serebit",
+        "licence": "CC0 1.0",
+        "page": "https://commons.wikimedia.org/wiki/File:Perched_Green_Heron.jpg",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/e/e1/Perched_Green_Heron.jpg",
+        "width": 6000,
+        "height": 4000,
+        "bytes": 5461217,
+        "sha256": "272262e70a29886d8cd55f710a8bc2b4e311085908fac5d753d168b7936b5db6"
+      },
+      {
+        "file": "object-razorbill.jpg",
+        "category": "small objects",
+        "use": "Small objects: a bird or a bicycle against a busy or clean background, the typical single-object removal",
+        "title": "Perched razorbill.jpg",
+        "author": "DrDomuch",
+        "licence": "CC0 1.0",
+        "page": "https://commons.wikimedia.org/wiki/File:Perched_razorbill.jpg",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/9/94/Perched_razorbill.jpg",
+        "width": 5152,
+        "height": 3864,
+        "bytes": 4379219,
+        "sha256": "68aca01e0646d2dcf0d7cba4ed910fae06924d7d037c0de169f720d254a80270"
+      },
+      {
+        "file": "object-bicycle-bk.jpg",
+        "category": "small objects",
+        "use": "Small objects: a bird or a bicycle against a busy or clean background, the typical single-object removal",
+        "title": "Bicycle BK (1).jpg",
+        "author": "Biddut Khoshnobish",
+        "licence": "CC0 1.0",
+        "page": "https://commons.wikimedia.org/wiki/File:Bicycle_BK_(1).jpg",
+        "url": "https://upload.wikimedia.org/wikipedia/commons/d/d8/Bicycle_BK_%281%29.jpg",
+        "width": 4032,
+        "height": 3024,
+        "bytes": 5547249,
+        "sha256": "b0beb9f1166508a562f3cb955b9d47fd55a6eec5c6cce2a133ed310dca384847"
+      }
+    ]
+  },
+  "ground_truth": {
+    "ring_width": 8,
+    "note": "A pasted-object case is a clean image plus the synthetic object and shadow of `commands::fill::paste_object` composited at a fixed position, with the region covering every changed pixel dilated by `dilate`. No randomness is involved, so a case is the same on every run. `centre` is a fraction of the image's width and height, `size` a fraction of its shorter side (width, height).",
+    "cases": [
+      {
+        "id": "bridge-deck",
+        "image": "private:z6-bridge.jpg",
+        "centre": [
+          0.5,
+          0.75
+        ],
+        "size": [
+          0.15,
+          0.09
+        ],
+        "dilate": 6
+      },
+      {
+        "id": "sunflowers-bokeh",
+        "image": "private:x100vi-sunflowers.jpg",
+        "centre": [
+          0.35,
+          0.45
+        ],
+        "size": [
+          0.3,
+          0.18
+        ],
+        "dilate": 6
+      },
+      {
+        "id": "kayaks-water",
+        "image": "private:air2s-kayaks.jpg",
+        "centre": [
+          0.6,
+          0.5
+        ],
+        "size": [
+          0.15,
+          0.09
+        ],
+        "dilate": 6
+      },
+      {
+        "id": "road-terraces",
+        "image": "private:sapa-road.jpg",
+        "centre": [
+          0.5,
+          0.55
+        ],
+        "size": [
+          0.3,
+          0.18
+        ],
+        "dilate": 6
+      },
+      {
+        "id": "people-utrecht-pub",
+        "image": "public:people-utrecht-pub.jpg",
+        "centre": [
+          0.5,
+          0.6
+        ],
+        "size": [
+          0.15,
+          0.09
+        ],
+        "dilate": 6
+      },
+      {
+        "id": "people-olinda-craftsman",
+        "image": "public:people-olinda-craftsman.jpg",
+        "centre": [
+          0.3,
+          0.5
+        ],
+        "size": [
+          0.15,
+          0.09
+        ],
+        "dilate": 6
+      },
+      {
+        "id": "people-juan-griego-beach",
+        "image": "public:people-juan-griego-beach.jpg",
+        "centre": [
+          0.5,
+          0.75
+        ],
+        "size": [
+          0.3,
+          0.18
+        ],
+        "dilate": 6
+      },
+      {
+        "id": "sky-clouds-blue",
+        "image": "public:sky-clouds-blue.jpg",
+        "centre": [
+          0.5,
+          0.35
+        ],
+        "size": [
+          0.15,
+          0.09
+        ],
+        "dilate": 6
+      },
+      {
+        "id": "sky-evening-2024",
+        "image": "public:sky-evening-2024.jpg",
+        "centre": [
+          0.5,
+          0.3
+        ],
+        "size": [
+          0.3,
+          0.18
+        ],
+        "dilate": 6
+      },
+      {
+        "id": "sky-clouds-atmosphere",
+        "image": "public:sky-clouds-atmosphere.jpg",
+        "centre": [
+          0.4,
+          0.4
+        ],
+        "size": [
+          0.15,
+          0.09
+        ],
+        "dilate": 6
+      },
+      {
+        "id": "water-minnewanka",
+        "image": "public:water-minnewanka.jpg",
+        "centre": [
+          0.5,
+          0.75
+        ],
+        "size": [
+          0.15,
+          0.09
+        ],
+        "dilate": 6
+      },
+      {
+        "id": "water-badukskoe",
+        "image": "public:water-badukskoe.jpg",
+        "centre": [
+          0.5,
+          0.6
+        ],
+        "size": [
+          0.3,
+          0.18
+        ],
+        "dilate": 6
+      },
+      {
+        "id": "water-rhine-eltville",
+        "image": "public:water-rhine-eltville.jpg",
+        "centre": [
+          0.5,
+          0.7
+        ],
+        "size": [
+          0.15,
+          0.09
+        ],
+        "dilate": 6
+      },
+      {
+        "id": "object-green-heron",
+        "image": "public:object-green-heron.jpg",
+        "centre": [
+          0.7,
+          0.3
+        ],
+        "size": [
+          0.15,
+          0.09
+        ],
+        "dilate": 6
+      },
+      {
+        "id": "object-razorbill",
+        "image": "public:object-razorbill.jpg",
+        "centre": [
+          0.25,
+          0.7
+        ],
+        "size": [
+          0.15,
+          0.09
+        ],
+        "dilate": 6
+      },
+      {
+        "id": "object-bicycle-bk",
+        "image": "public:object-bicycle-bk.jpg",
+        "centre": [
+          0.7,
+          0.7
+        ],
+        "size": [
+          0.3,
+          0.18
+        ],
+        "dilate": 6
+      }
+    ]
+  }
+}

@@ -299,51 +299,14 @@ pub fn paste_object(
     }
 }
 
-/// The region's pixels within `width` of its outside (a square neighbourhood): where a seam shows.
+/// The region's edge ring: its pixels within `width` of its outside, where a seam shows.
 pub fn edge_band(region: &Mask, width: u32) -> Mask {
-    let (w, h) = region.image;
-    let outside: Vec<bool> = (0..h)
-        .flat_map(|y| (0..w).map(move |x| (x, y)))
-        .map(|(x, y)| region.get(x, y) == 0)
-        .collect();
-    let near = fill::dilate(&outside, w as usize, h as usize, width as usize);
-    let data = outside
-        .iter()
-        .zip(&near)
-        .map(|(&o, &n)| if !o && n { 255 } else { 0 })
-        .collect();
-    Mask::new(
-        (w, h),
-        RectPx {
-            x: 0,
-            y: 0,
-            width: w,
-            height: h,
-        },
-        data,
-    )
+    crate::score::ring(region, width)
 }
 
 /// PSNR over the pixels with non-zero coverage, all channels, in dB.
 pub fn psnr_inside(a: &Rgb8, b: &Rgb8, region: &Mask) -> f64 {
-    let (mut se, mut n) = (0f64, 0u64);
-    for y in 0..a.height {
-        for x in 0..a.width {
-            if region.get(x, y) == 0 {
-                continue;
-            }
-            let (p, q) = (a.pixel(x, y), b.pixel(x, y));
-            for c in 0..3 {
-                let d = p[c] as f64 - q[c] as f64;
-                se += d * d;
-                n += 1;
-            }
-        }
-    }
-    if se == 0.0 {
-        return f64::INFINITY;
-    }
-    10.0 * (255.0f64 * 255.0 / (se / n as f64)).log10()
+    crate::score::psnr(a, b, region)
 }
 
 /// The evidence directory for this task's model runs.
@@ -361,12 +324,7 @@ mod tests {
     use crate::fill::tests::{FakeLama, mask_from, noise_image};
 
     fn corpus(name: &str) -> PathBuf {
-        std::env::var_os("LUXFORGE_REMOVAL_CORPUS")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from("/Users/will/projects/lightwell/private/object-removal/corpus")
-            })
-            .join(name)
+        crate::paths::corpus_directory(None).join(name)
     }
 
     fn backend() -> Backend {

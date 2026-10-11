@@ -476,7 +476,6 @@ fn an_embedding_from_the_other_family_is_refused() {
 
 // ---- With the pinned models and the corpus ----
 
-const BRIDGE: &str = "/Users/will/projects/lightwell/private/object-removal/corpus/z6-bridge.jpg";
 /// On the boy's shorts, walking toward the camera (the image is portrait after EXIF rotation).
 const BOY_POINT: Point = Point {
     x: 1690.0,
@@ -504,7 +503,8 @@ fn fixture(family: Family) -> &'static Fixture {
         Family::Sam21Small => &SAM,
     };
     cell.get_or_init(|| {
-        let image = Rgb8::load(std::path::Path::new(BRIDGE)).unwrap();
+        let image =
+            Rgb8::load(&crate::paths::corpus_directory(None).join("z6-bridge.jpg")).unwrap();
         assert_eq!(
             (image.width, image.height),
             (4024, 6048),

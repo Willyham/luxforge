@@ -445,8 +445,7 @@ fn the_picture_and_rasters_are_handed_over_once() {
 #[test]
 #[ignore = "needs the pinned models and corpus"]
 fn the_lab_removes_the_boy_on_the_bridge_with_lama() {
-    let bridge =
-        PathBuf::from("/Users/will/projects/lightwell/private/object-removal/corpus/z6-bridge.jpg");
+    let bridge = crate::paths::corpus_directory(None).join("z6-bridge.jpg");
     let out = std::env::temp_dir().join(format!("removal-lab-bridge-{}", std::process::id()));
     let mut lab = Lab::start(
         Config::new(bridge.clone(), out.clone()),
