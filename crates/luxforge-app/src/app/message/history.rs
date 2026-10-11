@@ -33,6 +33,9 @@ pub(crate) enum HistoryMessage {
     CompareToggle,
     CompareExit,
     ComparePosition(f32),
+    /// The comparison's loading delay has passed while it still waits for a picture: the update
+    /// that follows derives the canvas again, which then shows the loading bar.
+    CompareLoadingDue,
     LoadOlder,
     /// An older history page.
     OlderLoaded(Result<HistoryPage, String>),

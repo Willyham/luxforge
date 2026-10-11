@@ -272,6 +272,9 @@ pub(crate) struct Activity {
     /// The bar over the photograph while a long render's exact phase runs, kept from one
     /// derivation to the next so it stays until that phase ends ([`state::canvas::render_bar`]).
     pub(crate) render_bar: Option<state::canvas::RenderBar>,
+    /// When the comparison began waiting for a picture it needs, which shows the loading bar over
+    /// the photograph once the wait outlasts its delay ([`state::canvas::CompareLoading`]).
+    pub(crate) compare_loading: state::canvas::CompareLoading,
 }
 
 impl Activity {
@@ -290,6 +293,7 @@ impl Activity {
             request_started: Instant::now(),
             render: None,
             render_bar: None,
+            compare_loading: state::canvas::CompareLoading::default(),
         }
     }
 }
@@ -1004,6 +1008,9 @@ impl Editor {
         // whenever a message arrives, and nothing polls it.
         self.activity.render_bar =
             state::canvas::render_bar(self.presentation.queue.progress(), self.activity.render_bar);
+        self.activity
+            .compare_loading
+            .observe(self.comparison_pending(), Instant::now());
         if self.select.state.shown == state::select::Shown::Develop {
             let source = self
                 .document
@@ -1124,6 +1131,7 @@ impl Editor {
             // under the frame on screen, marked rendering, short of the threshold.
             rest_compiling: self.gpu_rest_compiling() && !self.gpu_compile_deadline(),
             render_bar: self.activity.render_bar,
+            compare_loading: self.activity.compare_loading.shown(Instant::now()),
             render_error: self.presentation.render_error.as_ref(),
             analysis: self.presentation.shown_analysis(),
             // While a draft is open the counts plotted are updating unless they are an exact

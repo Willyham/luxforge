@@ -37,6 +37,7 @@ use luxforge_ui::{
     notice_card, theme,
 };
 use luxforge_ui::{Element, Theme, Token};
+use std::time::{Duration, Instant};
 
 /// The Develop canvas's one photo surface. The plain photograph at every zoom and a crop draft's
 /// input stage all draw on it, so the photograph's textures stay while a draft shows the stage, and
@@ -99,6 +100,9 @@ pub(crate) fn surface<'a>(model: &'a CanvasModel, surfaces: Surfaces<'a>) -> Ele
         layers.push(overlay);
     }
     if let Some(bar) = render_bar(model) {
+        layers.push(bar);
+    }
+    if let Some(bar) = compare_loading_bar(model) {
         layers.push(bar);
     }
     if let Some(top) = top_chrome(model) {
@@ -464,17 +468,72 @@ fn render_bar(model: &CanvasModel) -> Option<Element<'_, Message>> {
     })
 }
 
+/// The comparison's loading bar along the top of the photograph, while the comparison has waited
+/// past its delay for a picture it needs ([`CanvasModel::compare_loading`]). It has no extent to
+/// report, so an accent segment sweeps along its track; laid out as the render bar is.
+fn compare_loading_bar(model: &CanvasModel) -> Option<Element<'_, Message>> {
+    if !model.compare_loading {
+        return None;
+    }
+    let layer = canvas(CompareLoadingBar {
+        dimensions: model.dimensions?,
+        zoom: model.zoom,
+        scale_factor: model.scale_factor,
+    })
+    .width(Length::Fill)
+    .height(Length::Fill);
+    Some(match model.zoom {
+        ZoomView::Fit => container(layer)
+            .padding(FIT_PADDING)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into(),
+        ZoomView::Percent(_) => layer.into(),
+    })
+}
+
 /// Where the render bar lies in a layer of `size`: along the bottom of the part of the photograph
-/// on screen, its full width. At Fit that is the contained image rectangle. At a percentage the
-/// zoomed photograph is centred on an axis where it is smaller than the canvas and fills the
-/// canvas on one where it is larger, so its visible part is the same wherever it is panned.
+/// on screen ([`shown_photo_rect`]), its full width.
 fn render_bar_rect(
     dimensions: (u32, u32),
     zoom: ZoomView,
     scale_factor: f32,
     size: Size,
 ) -> Option<Rectangle> {
-    let photo = match zoom {
+    let photo = shown_photo_rect(dimensions, zoom, scale_factor, size)?;
+    let height = theme::RENDER_BAR_HEIGHT.min(photo.height);
+    Some(Rectangle::new(
+        Point::new(photo.x, photo.y + photo.height - height),
+        Size::new(photo.width, height),
+    ))
+}
+
+/// Where the comparison's loading bar lies in a layer of `size`: along the top of the part of the
+/// photograph on screen, its full width, as thick as the render bar.
+fn compare_loading_rect(
+    dimensions: (u32, u32),
+    zoom: ZoomView,
+    scale_factor: f32,
+    size: Size,
+) -> Option<Rectangle> {
+    let photo = shown_photo_rect(dimensions, zoom, scale_factor, size)?;
+    Some(Rectangle::new(
+        photo.position(),
+        Size::new(photo.width, theme::RENDER_BAR_HEIGHT.min(photo.height)),
+    ))
+}
+
+/// The part of the photograph on screen in a layer of `size`. At Fit that is the contained image
+/// rectangle. At a percentage the zoomed photograph is centred on an axis where it is smaller than
+/// the canvas and fills the canvas on one where it is larger, so its visible part is the same
+/// wherever it is panned.
+fn shown_photo_rect(
+    dimensions: (u32, u32),
+    zoom: ZoomView,
+    scale_factor: f32,
+    size: Size,
+) -> Option<Rectangle> {
+    Some(match zoom {
         ZoomView::Fit => fit_rect(dimensions, size)?,
         ZoomView::Percent(value) => {
             let zoomed = percent_size(dimensions, value, scale_factor);
@@ -490,12 +549,7 @@ fn render_bar_rect(
                 shown,
             )
         }
-    };
-    let height = theme::RENDER_BAR_HEIGHT.min(photo.height);
-    Some(Rectangle::new(
-        Point::new(photo.x, photo.y + photo.height - height),
-        Size::new(photo.width, height),
-    ))
+    })
 }
 
 /// The render bar: a translucent track the photograph's width with the finished share filled in
@@ -531,6 +585,103 @@ impl canvas::Program<Message, Theme> for RenderBar {
             Size::new(filled, track.height),
             theme.palette().accent,
         );
+        vec![frame.into_geometry()]
+    }
+
+    fn mouse_interaction(
+        &self,
+        _state: &Self::State,
+        _bounds: Rectangle,
+        _cursor: Cursor,
+    ) -> iced::mouse::Interaction {
+        iced::mouse::Interaction::None
+    }
+}
+
+/// How long the loading bar's segment takes to sweep its track once.
+const COMPARE_LOADING_SWEEP: Duration = Duration::from_millis(1200);
+
+/// How often the loading bar redraws while it is shown: about thirty times a second, enough for
+/// the sweep to read as motion without redrawing the window at the display's rate.
+const COMPARE_LOADING_FRAME: Duration = Duration::from_millis(33);
+
+/// The share of the track the sweeping segment covers.
+const COMPARE_LOADING_SEGMENT: f32 = 0.3;
+
+/// Where the sweeping segment lies on a track of `width` at `phase` (`0.0..1.0` of one sweep):
+/// it enters at the left edge and leaves at the right, clipped to the track.
+fn sweep_span(width: f32, phase: f32) -> (f32, f32) {
+    let segment = width * COMPARE_LOADING_SEGMENT;
+    let start = (width + segment) * phase.clamp(0.0, 1.0) - segment;
+    let left = start.max(0.0);
+    (left, (start + segment).min(width) - left)
+}
+
+/// The comparison's loading bar: the render bar's translucent track with an accent segment
+/// sweeping along it. Its clock is the widget's own, advanced by the redraws it asks for while it
+/// is on screen, so it costs the editor no message. Decoration only: every pointer event belongs
+/// to the photograph under it.
+struct CompareLoadingBar {
+    dimensions: (u32, u32),
+    zoom: ZoomView,
+    scale_factor: f32,
+}
+
+/// When the bar first drew and the frame it is drawing now.
+#[derive(Default)]
+struct SweepClock {
+    started: Option<Instant>,
+    now: Option<Instant>,
+}
+
+impl canvas::Program<Message, Theme> for CompareLoadingBar {
+    type State = SweepClock;
+
+    fn update(
+        &self,
+        state: &mut Self::State,
+        event: &canvas::Event,
+        _bounds: Rectangle,
+        _cursor: Cursor,
+    ) -> Option<canvas::Action<Message>> {
+        let canvas::Event::Window(iced::window::Event::RedrawRequested(now)) = event else {
+            return None;
+        };
+        state.started.get_or_insert(*now);
+        state.now = Some(*now);
+        Some(canvas::Action::request_redraw_at(
+            *now + COMPARE_LOADING_FRAME,
+        ))
+    }
+
+    fn draw(
+        &self,
+        state: &Self::State,
+        renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        _cursor: Cursor,
+    ) -> Vec<canvas::Geometry> {
+        let Some(track) =
+            compare_loading_rect(self.dimensions, self.zoom, self.scale_factor, bounds.size())
+        else {
+            return Vec::new();
+        };
+        let elapsed = match (state.started, state.now) {
+            (Some(started), Some(now)) => now.saturating_duration_since(started),
+            _ => Duration::ZERO,
+        };
+        let phase = (elapsed.as_secs_f32() / COMPARE_LOADING_SWEEP.as_secs_f32()).fract();
+        let (left, width) = sweep_span(track.width, phase);
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        frame.fill_rectangle(track.position(), track.size(), theme::RENDER_BAR_TRACK);
+        if width > 0.0 {
+            frame.fill_rectangle(
+                Point::new(track.x + left, track.y),
+                Size::new(width, track.height),
+                theme.palette().accent,
+            );
+        }
         vec![frame.into_geometry()]
     }
 
@@ -1251,6 +1402,59 @@ mod tests {
             })
             .is_none()
         );
+    }
+
+    /// The loading bar lies along the top of the part of the photograph on screen, its full width,
+    /// and is a layer only while the model carries it; its segment sweeps in from the left edge
+    /// and out at the right, never outside the track.
+    #[test]
+    fn the_compare_loading_bar_lies_along_the_top_of_the_photograph_while_shown() {
+        let height = theme::RENDER_BAR_HEIGHT;
+        assert_eq!(
+            compare_loading_rect((200, 100), ZoomView::Fit, 2.0, Size::new(400.0, 400.0)),
+            Some(Rectangle::new(
+                Point::new(0.0, 100.0),
+                Size::new(400.0, height)
+            ))
+        );
+        assert_eq!(
+            compare_loading_rect(
+                (600, 200),
+                ZoomView::Percent(100.0),
+                2.0,
+                Size::new(400.0, 400.0)
+            ),
+            Some(Rectangle::new(
+                Point::new(50.0, 150.0),
+                Size::new(300.0, height)
+            ))
+        );
+        let base = CanvasModel {
+            photo: PhotoView::Plain,
+            zoom: ZoomView::Fit,
+            dimensions: Some((480, 320)),
+            ..CanvasModel::default()
+        };
+        assert!(compare_loading_bar(&base).is_none());
+        let loading = CanvasModel {
+            compare_loading: true,
+            ..base
+        };
+        assert!(compare_loading_bar(&loading).is_some());
+        assert!(
+            compare_loading_bar(&CanvasModel {
+                dimensions: None,
+                ..loading
+            })
+            .is_none()
+        );
+        assert_eq!(sweep_span(100.0, 0.0), (0.0, 0.0), "enters at the left");
+        assert_eq!(sweep_span(100.0, 0.5), (35.0, 30.0));
+        assert_eq!(sweep_span(100.0, 1.0), (100.0, 0.0), "leaves at the right");
+        for step in 0..=20 {
+            let (left, width) = sweep_span(100.0, step as f32 / 20.0);
+            assert!(left >= 0.0 && width >= 0.0 && left + width <= 100.0 + 1e-4);
+        }
     }
 
     /// The overlay's guides land on the contained image rectangle the photo is drawn into, not on
