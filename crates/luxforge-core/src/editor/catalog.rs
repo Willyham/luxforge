@@ -11,16 +11,14 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// Format 15 adds the development set ([`DEVELOPMENT_SET_SCHEMA`]): the sets a catalog session
-/// replaces, the current one marked, their ordered members, and the journal's `set-member` item.
-/// Format 14 holds none of them and is refused like every other marker.
-///
 /// Format 14 adds derived sources ([`DERIVED_SOURCE_SCHEMA`]): the rows recording each source an
 /// HDR merge stores under the artifact root, their manifest-chunk references and the asset-source
 /// reference that retains one for its photograph, and a `derived` source kind; and merges
 /// ([`MERGE_SCHEMA`]): each merge's immutable provenance and exact inputs, its result-led stack's
-/// state and the inputs an active stack claims, with the journal's `merge-stack` item. Format 13
-/// holds none of them and is refused like every other marker.
+/// state and the inputs an active stack claims, with the journal's `merge-stack` item; and the
+/// development set ([`DEVELOPMENT_SET_SCHEMA`]): the sets a catalog session replaces, the current
+/// one marked, their ordered members, and the journal's `set-member` item. Format 13 holds none of
+/// them and is refused like every other marker.
 ///
 /// Format 13 is the union of two changes made side by side as format 12. The catalog of developed
 /// picks (`docs/design/catalog.md`): the volumes picks and photographs live on, picks, indexed
@@ -43,7 +41,7 @@ use std::{
 /// catalog's own identity with the derived-artifact tables. Format 4 made entry records the only
 /// stored copy of a stack and format 3 stored each entry's rendered label. Every other marker,
 /// earlier or later, is refused by name and left as it is; choose a new catalog path.
-pub(crate) const CATALOG_FORMAT: i64 = 15;
+pub(crate) const CATALOG_FORMAT: i64 = 14;
 pub(super) const ASSET_COLUMNS: &str =
     "id,source_root,locator,fingerprint,file_identity,byte_len,width,height,source_json";
 
@@ -377,7 +375,7 @@ const MERGE_SCHEMA: &str = "
         SELECT RAISE(ABORT, 'merges are permanent');
     END;";
 
-/// Format 15's development set (`docs/design/catalog.md`, "Develop and the development set";
+/// Format 14's development set (`docs/design/catalog.md`, "Develop and the development set";
 /// `crate::library::development_set`), beside the library and the index:
 ///
 /// - `development_sets` records each set a session made, by its identity, with the global
@@ -1136,20 +1134,20 @@ mod tests {
             .collect()
     }
 
-    /// An empty database initializes as format 15 with every table, index and trigger of the
+    /// An empty database initializes as format 14 with every table, index and trigger of the
     /// design's storage, the catalog's, auto-collapse's, the derived sources', the merges' and the
     /// development set's alike, and makes no
     /// index directory until the index is first used.
     #[test]
     fn catalog_format_an_empty_database_initializes_every_table_index_and_trigger() {
-        let catalog = temp("format-15.sqlite");
+        let catalog = temp("format-14.sqlite");
         let service = EditorService::open(&catalog).unwrap();
         let connection = &service.connection;
         let format: i64 = connection
             .pragma_query_value(None, "user_version", |row| row.get(0))
             .unwrap();
-        assert_eq!(format, 15);
-        assert_eq!(CATALOG_FORMAT, 15);
+        assert_eq!(format, 14);
+        assert_eq!(CATALOG_FORMAT, 14);
         assert_eq!(
             schema_names(connection, "table"),
             [
@@ -1271,7 +1269,7 @@ mod tests {
     /// they are, with no artifact or index directory made for them.
     #[test]
     fn catalog_format_thirteen_twelve_eleven_and_any_other_marker_are_refused_by_name_unchanged() {
-        for marker in [0, 11, 12, 13, 14, CATALOG_FORMAT - 1, 1, CATALOG_FORMAT + 1] {
+        for marker in [0, 11, 12, 13, CATALOG_FORMAT - 1, 1, CATALOG_FORMAT + 1] {
             let catalog = temp("unsupported-format.sqlite");
             let mut service = EditorService::open(&catalog).unwrap();
             service.import(&fixture()).unwrap();
