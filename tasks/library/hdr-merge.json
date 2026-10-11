@@ -8,10 +8,10 @@
     {
       "id": "TASK-001",
       "description": "Implement durable chunked derived-image sources and reference-aware retention.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
-        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Planning does not authorize implementation. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
+        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
         "Independent of the HDR numerical/registration implementation. Add current-shape derived-linear source interpretation, versioned f32 source manifest, bounded content-addressed chunks and asset-source/manifest-child references under the existing catalog artifact root.",
         "Keep individual artifact objects and the generic prepared-artifact cache at their current 256 MiB bounds. Do not route a photo-sized source through recipe-layer artifact binding. Use at most 256 chunks, each no more than 16 MiB, within the current 128 MP/1.5 GiB decoded-linear source limit.",
         "Increment the single current catalog marker coherently; refuse unsupported shapes without rewrites or migrations. Coordinate consumers against the final merged marker rather than adding sequential compatibility formats.",
@@ -86,10 +86,10 @@
     {
       "id": "TASK-002",
       "description": "Implement deterministic HDR exposure resolution and linear radiance fusion with independent fixtures.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
-        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Planning does not authorize implementation. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
+        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
         "The owner selected RAW brackets only on 2026-10-07; no further product input is required. Refuse JPEG or mixed bracket requests with the RAW-only reason, while preserving current JPEG browse/edit/export behavior.",
         "Implement the HDR module numerical helpers directly from the design once scope is settled; no algorithm bake-off, Lightroom export or private corpus is a prerequisite. Use original pixels, common reference RAW WB, required embedded corrections and sensor clipping evidence; never fuse current recipes or camera previews.",
         "Use typed linear exposure inputs and resolved EV/reference/provenance outputs which TASK-003 can consume independently. Resolve metadata versus bias without double counting; measured image offsets require robust fit/confidence and explicit overrides.",
@@ -165,10 +165,10 @@
     {
       "id": "TASK-003",
       "description": "Implement bracket registration, valid output coverage and the selected motion policy.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
-        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Planning does not authorize implementation. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
+        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
         "The owner selected automatic alignment and deghosting on 2026-10-07; both are enabled by default with Auto/Off options. No additional scope approval is required.",
         "Implement from the typed exposure/coordinate contract in the design independently of TASK-002: synthetic linear exposures suffice. Use bounded exposure-robust global registration and coherent motion-region selection; keep exact identity/framing validation for alignment Off.",
         "Prefer one resample into reference coordinates, deterministic valid common rectangular crop and saved transforms/coverage. No filled borders, panorama projection, manual ghost painting or promise of severe-parallax correction.",
@@ -230,12 +230,12 @@
     {
       "id": "TASK-004",
       "description": "Implement persistent merge provenance, stacks and reversible generated-asset lifecycle.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
       "extra_context": [
-        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Planning does not authorize implementation. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
+        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
         "Consume TASK-001 source/reference retention. Store input fingerprints/locators/interpretations independent of disposable index rows; original inputs need not be developed into catalog assets.",
         "Use immutable provenance plus journaled active-stack/result-visibility item kinds. Undo creation retains edited results internally/Removed instead of deleting their histories. Removal, Put back, redo and purge preserve original files and follow per-actor conflict rules.",
         "Enforce one active stack per original input, exact matching-result reuse and explicit restoration for a removed match. No nested/generated merge inputs or general grouping manager.",
@@ -303,12 +303,12 @@
     {
       "id": "TASK-005",
       "description": "Integrate derived linear sources with preparation, editing, GPU rendering, samples, tiers and JPEG export.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
       "extra_context": [
-        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Planning does not authorize implementation. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
+        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
         "This uses synthetic stored sources from TASK-001 and does not depend on exposure fusion/registration. Add PreparedSource derived handling without a sensor mosaic and stream verified chunks into one accounted immutable LinearImage.",
         "Declare module applicability by source capability: relative RGB WB, Basic/headroom, curves/mixer, spatial Detail/Presence, masks and geometry. Never expose sensor WB, camera matching or duplicate baked optical corrections.",
         "Preserve GPU renderer-of-record paths and existing budgets for uploads, Fit/100%, tile/window reads, histogram, samples, previews and export; use explicit reference fallback where required.",
@@ -390,7 +390,7 @@
     {
       "id": "TASK-006",
       "description": "Deliver the bounded HDR worker, shared merge commands and atomic publication.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002",
@@ -398,7 +398,7 @@
         "TASK-004"
       ],
       "extra_context": [
-        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Planning does not authorize implementation. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
+        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
         "Compose RAW-only fusion with automatic alignment/deghosting with durable source and lifecycle outputs. The HDR module owns image validation/processing; the core owns admission, identities, jobs/resources and one publication transaction.",
         "Register proposed merge.plan/create/inspect/rerun/remove/restore contracts in the current command service, with exact target inputs, exposure/options/folder, add_to_development_set intent and mutation identity. Pixel-dependent planning is worker work.",
         "Use one running plus one pending merge, 2-9 inputs, sequential shared verified source development, bounded chunk spooling/fusion and accounted 256 MiB scratch. Preflight the 16 GiB temporary-disk ceiling and release/spill before requesting another plane lease.",
@@ -468,12 +468,12 @@
     {
       "id": "TASK-007",
       "description": "Implement filter-aware stack browsing and authoritative development-set membership with API parity.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-004"
       ],
       "extra_context": [
-        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Planning does not authorize implementation. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
+        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
         "Consume stable stack/provenance/lifecycle rows. Implement mixed file/catalog/generated/provenance browsing, without developing every source or tying durable input identity to index FileId.",
         "Collapse only matching present inputs; surface originals whose filters match when their leader does not. Explicit Show all originals may reveal labelled out-of-filter children. Selection never implicitly includes hidden children.",
         "Move set identity/ordered membership into the command service, reconciling current Develop N, direct-open and view-set construction. Keep active display/layout/scroll/preview windows in presentation state. Merge-created membership uses item-level journal inverses.",
@@ -557,14 +557,14 @@
     {
       "id": "TASK-008",
       "description": "Deliver Select merge actions, progress, result tiles, stack disclosure and original picking.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-005",
         "TASK-006",
         "TASK-007"
       ],
       "extra_context": [
-        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Planning does not authorize implementation. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
+        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
         "Use core answers/schemas only. Pick merged is the primary bracket/selection action, Import merged secondary; both stay in Select and make the completed result active. Pick appends by default without pressing Develop N.",
         "Provide compact optional Merge options with the decided alignment/deghosting/reference/EV controls and folder selection. Retain original Pick all and source picks; do not hide originals until atomic success.",
         "Draw one pending work row plus existing activity-board progress/Cancel, HDR/N exposure badge, inline stack disclosure, offline-source reasons and Remove/Put back semantics. Expansion is view state with API parity.",
@@ -639,12 +639,12 @@
     {
       "id": "TASK-009",
       "description": "Hand off the working HDR workflow with recovery, rendered correctness and current documentation.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-008"
       ],
       "extra_context": [
-        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Planning does not authorize implementation. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
+        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
         "This is working-feature delivery, not an owner-review gate. All ordinary source preservation, recovery, CPU/GPU correctness and background rendered integration evidence must ship now; final natural-scene refinement/timing is TASK-010 with no dependency back here.",
         "Extend existing smoke/scenario/verify and GPU qualification tooling with an HDR journey/derived source families; register the new scenario before listing or running it. Keep automated app launches background-only and use isolated evidence/catalogs.",
         "Run quick once for the finished change and rendered at this integration. Full is required only when making an explicit milestone claim with the applicable corpus manifest. Report unrun/unsupported native platforms or private real-bracket inputs honestly.",
@@ -732,12 +732,12 @@
     {
       "id": "TASK-010",
       "description": "Qualify natural-bracket quality and measure photo-sized merge/editor resource costs after delivery.",
-      "status": "pending",
+      "status": "ready",
       "dependencies": [
         "TASK-009"
       ],
       "extra_context": [
-        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Planning does not authorize implementation. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
+        "Minimum implementation model: roadmap high tier or stronger. Re-review current main and active worktrees before starting. Numerical/backend/layout details are delegated within the settled design; do not add a product-review or research gate. New test filters listed here must execute the tests this task adds, never count an empty filtered run as evidence. Run quick once at each completed implementation handoff; full/rendered/timing integration checks follow the project verification rules.",
         "Final refinement only: no dependency back into TASK-009. Real RAW brackets with handheld motion, clipping, shadows and difficult alignment improve quality evidence; absent owner files leave those cases unmeasured and do not delay fixture/tooling or the working feature.",
         "Use a quiet native M4 and host-wide timing lock after feature work. Add any HDR-specific Rust xtask measurement command before documenting it as available; reuse existing resources.read/activity attribution and editor-latency where suitable.",
         "Measure three/nine frames at 24/60 MP, cold/warm reads/preparation/registration/fusion/save, cancellation, temporary disk, process/source/scratch/GPU memory and editor/browse work beside a merge. Distinguish scratch budgets from total native memory.",

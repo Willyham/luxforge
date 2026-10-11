@@ -43,7 +43,7 @@ Selection, catalog sources and library operations.
 
 | Plan | Purpose |
 | --- | --- |
-| [HDR exposure merges](library/hdr-merge.json) ([design](../docs/design/hdr-merge.md)) | Planned Import merged and Pick merged, durable float derived sources, result-led stacks, original picks and reversible removal/undo; RAW-only inputs with automatic alignment/deghosting; storage, radiance and alignment tasks are independently ready, implementation is not authorized; panoramas are outside the plan |
+| [HDR exposure merges](library/hdr-merge.json) ([design](../docs/design/hdr-merge.md)) | Import merged and Pick merged, durable float derived sources, result-led stacks, original picks and reversible removal/undo for RAW brackets with automatic alignment/deghosting are implemented (TASK-001–009); TASK-010, natural-bracket quality and photo-sized measurement, remains; panoramas are outside the plan |
 
 ### Editing tools (`editing/`)
 
