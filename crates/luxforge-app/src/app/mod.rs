@@ -160,6 +160,9 @@ mod query_choice;
 mod remembered;
 #[cfg(test)]
 mod remembered_tests;
+pub(crate) mod remove;
+#[cfg(test)]
+mod remove_tests;
 pub(crate) mod renderer;
 #[cfg(test)]
 mod renderer_tests;
@@ -437,6 +440,12 @@ pub(crate) struct Editor {
     /// The Corrections workspace's pins' map, the press held before its draft opens and what it
     /// says next ([`corrections`]).
     pub(crate) correction_reads: corrections::Corrections,
+    /// The Corrections band's Remove mode: the selection, the fill jobs this desktop started and
+    /// their candidates ([`state::remove`]).
+    pub(crate) remove: state::remove::RemovePanel,
+    /// Remove's stroke in progress, its decoded candidate previews and its last request
+    /// ([`remove`]).
+    pub(crate) remove_reads: remove::Remove,
     /// One active and one replaceable pending job filling every mask's coverage thumbnail, and the
     /// settled stack it describes.
     pub(crate) thumbnailer: thumbnails::Thumbnailer,
@@ -550,12 +559,13 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 29] = [
+const AFTER_MESSAGE: [AfterMessage; 30] = [
     view_state::after_message,
     performance::after_message,
     visibility::after_message,
     slider::after_message,
     presets::after_message,
+    remove::after_message,
     evidence::after_message,
     controls::after_message,
     preview::after_message,
@@ -584,16 +594,17 @@ const AFTER_MESSAGE: [AfterMessage; 29] = [
 
 /// The seams whose work reads the screen just derived: what a capability section or a curve shows
 /// is the derived model's answer, so they run after [`Editor::rederive`], in this order.
-const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 4] = [
+const AFTER_DERIVE: [fn(&mut Editor) -> Task<Message>; 5] = [
     capabilities::after_derive,
     controls::after_derive,
     palette::after_derive,
     loupe::after_derive,
+    remove::after_derive,
 ];
 
 /// Every seam's subscription, each listed once. A seam with nothing to listen to returns
 /// [`Subscription::none`], so no timer or stream exists that no seam gates.
-const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 15] = [
+const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 16] = [
     keymap::subscription,
     view_state::subscription,
     visibility::subscription,
@@ -603,6 +614,7 @@ const SUBSCRIPTIONS: [fn(&Editor) -> Subscription<Message>; 15] = [
     performance::subscription,
     evidence::subscription,
     capabilities::subscription,
+    remove::subscription,
     export::subscription,
     select::subscription,
     loupe::subscription,
@@ -692,6 +704,8 @@ impl Editor {
             resting: None,
             corrections: Default::default(),
             correction_reads: Default::default(),
+            remove: Default::default(),
+            remove_reads: Default::default(),
             thumbnailer: Default::default(),
             coverage_worker: Default::default(),
             palette: Default::default(),
@@ -1078,13 +1092,15 @@ impl Editor {
                 &self.session,
                 self.busy,
             )
-            .or_else(|| self.mask_tool_refusal()),
+            .or_else(|| self.mask_tool_refusal())
+            .or_else(|| self.generation_lock()),
             draft: self.crop(),
             mask_panel: &self.mask_panel,
             mask_draft: self.mask_shape(),
             corrections: &self.corrections,
             correction_draft: self.correction_draft_info(),
             correction_content: self.correction_content(),
+            remove: &self.remove,
             // The generated sections follow the open mask while Mask mode is active, and the global
             // layer everywhere else: one target at a time, so a field always shows the layer the
             // control in front of it would edit.
@@ -1169,6 +1185,7 @@ impl Editor {
             Message::Crop(message) => self.crop_update(message),
             Message::Mask(message) => self.mask_message(message),
             Message::Corrections(message) => self.correction_message(message),
+            Message::Remove(message) => self.remove_message(message),
             Message::Draft(message) => self.draft_message(message),
             Message::Preset(message) => self.preset_update(message),
             Message::CopySettings(message) => self.copy_settings_update(message),
@@ -1363,6 +1380,7 @@ impl Editor {
                 &self.workspace,
                 self.surfaces(),
                 self.develop.strip_images(),
+                self.remove_images(),
             ),
         };
         let mut timing = self.log.loop_timing.get();

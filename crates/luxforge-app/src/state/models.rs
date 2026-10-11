@@ -396,6 +396,7 @@ mod tests {
             resources: vec![serde_json::from_value(resource).unwrap()],
             permissions: Default::default(),
             jobs: Vec::new(),
+            fill_tiers: Vec::new(),
             runtime: Some(RuntimeStatus {
                 held_bytes: models.iter().map(|model| model.resident_bytes).sum(),
                 budget_bytes: 16 << 30,

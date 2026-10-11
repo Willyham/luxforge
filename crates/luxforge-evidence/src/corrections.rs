@@ -41,7 +41,8 @@ pub enum CorrectionHandle {
 /// chooses a row's kind. `{"reorder": {"row": 2, "to": 0}}` drags a row to a list position.
 /// `{"menu": 0}` opens a row's menu. `{"kind": "clone"}`, `{"field": {"name": "radius", "fraction":
 /// 0.4}}` and `"source_auto"` set the New correction group. `"new_source"` and `"delete"` press the
-/// selected row's buttons. `"reset"` presses the band's reset.
+/// selected row's buttons. `"reset"` presses the band's reset. `{"kind": "remove"}` chooses Remove,
+/// whose controls `{"remove": …}` presses ([`RemoveStep`]); a press then paints its selection.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub enum CorrectionStep {
@@ -60,7 +61,44 @@ pub enum CorrectionStep {
     NewSource,
     Delete,
     Reset,
+    Remove(RemoveStep),
 }
+
+/// What a Generate or Regenerate step waits for before its frame is captured.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoveUntil {
+    /// The generation reports a candidate's step, or has ended: a frame of the ring and the
+    /// status bar's progress.
+    Progress,
+    /// The generation has ended and every candidate in the strip has its preview.
+    Done,
+}
+
+/// One control of the Remove band (`docs/design/ai-editing.md`, "Desktop surface").
+///
+/// `{"generate": "done"}` and `{"regenerate": "done"}` press Generate (Replace, with a prompt) and
+/// Regenerate and wait for the strip; `"progress"` captures the generation while it runs.
+/// `"cancel"` presses Cancel. `{"candidate": 1}` chooses the strip's second candidate. `{"prompt":
+/// "a red bicycle"}` types into the prompt field, replacing what it held. `{"tier": "generative"}`
+/// chooses a Fill tier. `"download"` presses the text encoder's Download when the field offers it,
+/// or else the action of the tier that is not offered. `"accept"` presses Accept.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub enum RemoveStep {
+    Generate(RemoveUntil),
+    Regenerate(RemoveUntil),
+    Cancel,
+    Candidate(usize),
+    Prompt(String),
+    Tier(String),
+    Download,
+    Accept,
+}
+
+/// The longest prompt a step may type. The field holds what the fill task declares and cuts a
+/// longer one there, as typing would; past this it is a script's mistake.
+const MAX_PROMPT: usize = 1024;
 
 /// A press on the photograph that catches no pin or handle.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -142,7 +180,12 @@ impl CorrectionStep {
                 text(name, "correction field name")?;
                 fraction(*value, "correction field fraction")
             }
-            Self::Pin(_)
+            Self::Remove(RemoveStep::Tier(tier)) => text(tier, "correction remove tier"),
+            Self::Remove(RemoveStep::Prompt(prompt)) if prompt.chars().count() > MAX_PROMPT => Err(
+                format!("correction remove prompt holds at most {MAX_PROMPT} characters"),
+            ),
+            Self::Remove(_)
+            | Self::Pin(_)
             | Self::Row(_)
             | Self::Reorder { .. }
             | Self::Menu(_)
@@ -179,6 +222,38 @@ mod tests {
         };
         assert_eq!(drag.interval_ms, Some(24));
         assert_eq!(write(&steps), value);
+    }
+
+    /// Every Remove control round-trips as it is written, and a bad one is refused.
+    #[test]
+    fn remove_steps_round_trip() {
+        let value = json!([
+            {"correction":{"kind":"remove"}},
+            {"correction":{"remove":{"tier":"generative"}}},
+            {"correction":{"remove":{"generate":"progress"}}},
+            {"correction":{"remove":"cancel"}},
+            {"correction":{"remove":{"generate":"done"}}},
+            {"correction":{"remove":{"candidate":1}}},
+            {"correction":{"remove":{"regenerate":"done"}}},
+            {"correction":{"remove":{"prompt":"a red bicycle"}}},
+            {"correction":{"remove":"download"}},
+            {"correction":{"remove":"accept"}},
+        ]);
+        let steps = parse(&value.to_string()).unwrap();
+        assert_eq!(
+            steps[2],
+            Step::Correction(CorrectionStep::Remove(crate::RemoveStep::Generate(
+                crate::RemoveUntil::Progress
+            )))
+        );
+        assert_eq!(write(&steps), value);
+        for refused in [
+            json!({"correction":{"remove":{"tier":""}}}),
+            json!({"correction":{"remove":{"prompt":"x".repeat(1025)}}}),
+            json!({"correction":{"remove":{"generate":"soon"}}}),
+        ] {
+            assert!(parse(&json!([refused]).to_string()).is_err(), "{refused}");
+        }
     }
 
     #[test]
