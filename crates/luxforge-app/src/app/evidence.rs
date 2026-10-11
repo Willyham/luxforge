@@ -9,6 +9,7 @@ mod long_work;
 mod loupe;
 mod select;
 mod select_catalog;
+mod select_merge;
 mod select_missing;
 use crate::state::MenuTarget;
 use crate::state::palette::PaletteAction;
@@ -133,6 +134,8 @@ pub(crate) struct Evidence {
     pub(crate) agent_host: Option<AgentHostWait>,
     /// What a running long-running-work step still waits for.
     pub(crate) long_work_wait: Option<long_work::LongWorkWait>,
+    /// What a running HDR merge step still waits for.
+    pub(crate) merge_wait: Option<select_merge::MergeWait>,
     /// A running loupe `arrows` step's presses still to send. Its timer exists only
     /// while presses remain after the first.
     pub(crate) loupe_arrows: Option<loupe::HeldArrows>,
@@ -230,6 +233,7 @@ impl Evidence {
             agent_wait: None,
             agent_host: None,
             long_work_wait: None,
+            merge_wait: None,
             loupe_arrows: None,
             grid_scroll: None,
             sync: CaptureSync::default(),
@@ -542,6 +546,9 @@ pub(crate) enum Settle {
     /// Long-running work shows what a long-work step waits for: a view's progress sheet, the sheet
     /// sent to the background, or a cancelled job ended.
     LongWork,
+    /// An HDR merge step's pending row shows the job's progress, or the merge has ended and the
+    /// view read again holds its result.
+    Merge,
     /// Nothing developing picks or the development set asked for is in flight, and the photograph
     /// open in Develop has its exact frame on screen.
     Develop,
@@ -582,6 +589,7 @@ impl Settle {
             Self::Select => "select",
             Self::MissingStop => "missing_stop",
             Self::LongWork => "long_work",
+            Self::Merge => "merge",
             Self::Develop => "develop",
             Self::DevelopAhead => "develop_ahead",
         }
@@ -5227,6 +5235,7 @@ impl Editor {
             }
             Outcome::SelectSettled => self.select_settled(by),
             Outcome::LongWorkShown => self.long_work_shown(by),
+            Outcome::MergeShown => self.merge_shown(by),
         }
     }
 
@@ -6234,6 +6243,7 @@ mod tests {
             agent_wait: None,
             agent_host: None,
             long_work_wait: None,
+            merge_wait: None,
             loupe_arrows: None,
             grid_scroll: None,
             sync: CaptureSync::default(),

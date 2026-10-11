@@ -1191,7 +1191,25 @@ fn every_select_step_round_trips_and_a_malformed_one_is_refused() {
         {"select": "continue_in_background"},
         {"select": "cancel_work"},
         {"select": {"add_folder": "/Volumes/SSD/Card dumps"}},
+        {"select": {"merge": {"position": 3, "mode": "pick"}}},
+        {"select": {"merge": {"position": 0, "mode": "import"}}},
+        {"select": "merged"},
     ]));
+    assert_eq!(
+        steps[19],
+        Step::Select(SelectStep::Merge {
+            position: 3,
+            mode: MergeMode::Pick
+        })
+    );
+    assert_eq!(
+        steps[20],
+        Step::Select(SelectStep::Merge {
+            position: 0,
+            mode: MergeMode::Import
+        })
+    );
+    assert_eq!(steps[21], Step::Select(SelectStep::Merged));
     assert_eq!(
         steps[12],
         Step::Select(SelectStep::Library(LibraryKey::Undo))

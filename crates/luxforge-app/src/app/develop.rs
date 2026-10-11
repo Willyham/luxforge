@@ -1343,6 +1343,8 @@ impl Editor {
                 "asset_id": document.asset.id,
                 "entry_id": document.current_entry.id,
                 "file": document.asset.locator.file_name().map(|name| name.to_string_lossy().into_owned()),
+                // The name the title bar draws.
+                "title": self.workspace.title.file_name,
                 "source": document.asset.source.tag().label(),
             })
         });

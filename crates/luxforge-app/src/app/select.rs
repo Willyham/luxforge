@@ -2095,6 +2095,14 @@ impl Editor {
                 })),
                 "moment": item.moment,
                 "metadata": item.metadata.iter().map(|(label, _)| label).collect::<Vec<_>>(),
+                "stack": item.stack.as_ref().map(|band| json!({
+                    "merge_id": band.merge_id,
+                    "title": band.title,
+                    "note": band.note,
+                    "leader": band.leader,
+                    "in_set": band.in_set,
+                    "expanded": band.expanded,
+                })),
             }),
             model::InfoModel::Several { count, active } => {
                 json!({"kind": "several", "count": count, "active": active})
@@ -2257,9 +2265,48 @@ impl Editor {
             })),
             "catalog": self.catalog_summary(),
             "merge": self.merge_summary(),
+            "stacks": self.stacks_summary(),
         })
     }
+
+    /// The rows the desktop holds that are in an HDR stack, as their cells draw them: the item,
+    /// its role and place in the stack, the leader's badge words and whether it is in the
+    /// Development set, an original's EV offset and note. At most the first [`STACK_ROWS`]
+    /// positions are looked at.
+    fn stacks_summary(&self) -> Value {
+        let state = &self.select.state;
+        let count = state.summary.as_ref().map_or(0, |summary| summary.count);
+        let rows: Vec<Value> = (0..count.min(STACK_ROWS))
+            .filter_map(|position| state.rows.row(position))
+            .filter_map(|row| {
+                let stack = row.stack.as_ref()?;
+                let cell =
+                    crate::state::select_merge::stack_cell(Some(stack), row.reason.as_deref());
+                Some(json!({
+                    "position": row.position,
+                    "item": row.item,
+                    "file_name": row.file_name,
+                    "picked": row.picked,
+                    "in_set": row.in_development_set,
+                    "merge_id": stack.merge_id,
+                    "role": stack.role,
+                    "exposures": stack.exposures,
+                    "collapsed": stack.collapsed,
+                    "expansion": stack.expansion,
+                    "ordinal": stack.ordinal,
+                    "offset_ev": stack.offset_ev,
+                    "badge": cell.badge.map(|(long, short, open)| json!([long, short, open])),
+                    "exposure": cell.exposure,
+                    "note": cell.note,
+                }))
+            })
+            .collect();
+        json!(rows)
+    }
 }
+
+/// How many of a view's first positions a frame's stack record looks at.
+const STACK_ROWS: u32 = 512;
 
 /// After every message: read the rows near the screen — with the loupe open, the grid under it
 /// following its active frame first — and start a staleness check a wake asked for. An evidence
@@ -2273,8 +2320,11 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     let rows = editor.request_rows();
     let previews = editor.want_previews();
     let check = editor.start_check();
-    if editor.evidence.is_some() && editor.select_shown() && editor.select_quiet() {
-        editor.outcome(Outcome::SelectSettled);
+    if editor.evidence.is_some() && editor.select_shown() {
+        if editor.select_quiet() {
+            editor.outcome(Outcome::SelectSettled);
+        }
+        editor.outcome(Outcome::MergeShown);
     }
     Task::batch([rows, previews, check])
 }
