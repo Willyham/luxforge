@@ -209,7 +209,7 @@ Registration checks that each named parameter exists on its action with the righ
 
 **Empty Removed.** The scan's key is the serialized `"strokes"` field, which every repair layer carries (empty or not), so `catalog.empty-removed` retains correction strokes named by a surviving entry with no change to its query. A mixed mask/correction, cross-photograph retention test holds it.
 
-**Catalog and originals.** Format 13 unchanged; no migration, second store or collector. Photographs enter through `pick.develop`, `source.prepare` and `job.adopt` (`EditorService::import` in tests). Same-byte `source.locate` and folder recovery preserve operations and patch validity; a missing, offline or changed original is a source-availability failure. Library Remove/Put back and their undo keep all entries, strokes and artifacts; Send back refuses an edited photograph. Select's rendered previews and filmstrip include repair through the existing entry-keyed preview lane and its GPU/reference tiers.
+**Catalog and originals.** Format 14 unchanged; no migration, second store or collector. Photographs enter through `pick.develop`, `source.prepare` and `job.adopt` (`EditorService::import` in tests). Same-byte `source.locate` and folder recovery preserve operations and patch validity; a missing, offline or changed original is a source-availability failure. Library Remove/Put back and their undo keep all entries, strokes and artifacts; Send back refuses an edited photograph. Select's rendered previews and filmstrip include repair through the existing entry-keyed preview lane and its GPU/reference tiers.
 
 ### Rendering
 
