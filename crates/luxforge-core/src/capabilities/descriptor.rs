@@ -271,8 +271,12 @@ impl ReadBoundary {
     }
 }
 
-/// A pinned file a module may install: exact bytes, hash and origin.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// Pinned files a module may install together: exact bytes, hash and origin. The resource's own
+/// file is `url`, `bytes` and `sha256`, installed under the resource's identity; `files` adds the
+/// further files of a model that is several (an encoder and a decoder, a transformer and its
+/// autoencoder), each installed beside it under its own name. They install together or not at
+/// all, are removed together, and come from one origin, which the download grant names.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceDescriptor {
     pub id: String,
@@ -290,6 +294,92 @@ pub struct ResourceDescriptor {
     /// The HTTPS origins a download may be redirected to; none allows no redirect.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub redirect_origins: Vec<String>,
+    /// The resource's further files, at most [`MAX_RESOURCE_FILES`] with its own, each pinned as
+    /// its own file is and served from the same origin.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files: Vec<ResourceFile>,
+    /// The plain trade-off a person chooses this model by, such as "Finds smaller objects; slower
+    /// to start and uses more memory": one line, never a technical name alone. Every model offered
+    /// as a choice beside another carries one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tradeoff: Option<String>,
+    /// One plain line, present only when the licence restricts how the person may use their own
+    /// results, such as "Non-commercial use only". The resource card and the download disclosure
+    /// show it; nothing is gated on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub use_restriction: Option<String>,
+    /// The least memory a machine must have to install the resource. For a model a `local-runtime`
+    /// capability holds, it counts the model resident, the candidates held across jobs and the
+    /// analysis cache together, so it is at least their sum ([`machine_floor`]). A machine with
+    /// less sees the requirement and cannot install it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_memory_bytes: Option<u64>,
+}
+
+/// One further file of a resource, pinned as the resource's own file is.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceFile {
+    /// A plain file name, installed beside the resource's own file.
+    pub name: String,
+    pub url: String,
+    pub bytes: u64,
+    pub sha256: String,
+}
+
+/// One file of a resource as an install fetches it: its own file, named after the resource, or a
+/// further file.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PinnedFile<'a> {
+    pub name: &'a str,
+    pub url: &'a str,
+    pub bytes: u64,
+    pub sha256: &'a str,
+}
+
+impl ResourceDescriptor {
+    /// Every file of the resource, its own first.
+    pub fn pinned_files(&self) -> impl Iterator<Item = PinnedFile<'_>> {
+        std::iter::once(PinnedFile {
+            name: &self.id,
+            url: &self.url,
+            bytes: self.bytes,
+            sha256: &self.sha256,
+        })
+        .chain(self.files.iter().map(|file| PinnedFile {
+            name: &file.name,
+            url: &file.url,
+            bytes: file.bytes,
+            sha256: &file.sha256,
+        }))
+    }
+
+    /// The bytes of every file together: what an install downloads and the quota counts.
+    pub fn total_bytes(&self) -> u64 {
+        self.pinned_files()
+            .fold(0u64, |total, file| total.saturating_add(file.bytes))
+    }
+}
+
+/// A resource holds at most this many files, its own included.
+pub(crate) const MAX_RESOURCE_FILES: usize = 8;
+/// The longest trade-off label and use restriction, in characters: one line of a card.
+pub(crate) const MAX_TRADEOFF_CHARS: usize = 120;
+pub(crate) const MAX_USE_RESTRICTION_CHARS: usize = 160;
+/// The machine memory a resource may require: from 1 GiB to 4 TiB.
+pub(crate) const MIN_MACHINE_MEMORY_BYTES: u64 = 1024 * 1024 * 1024;
+pub(crate) const MAX_MACHINE_MEMORY_BYTES: u64 = 4 * 1024 * 1024 * 1024 * 1024;
+/// What the analysis cache holds beside the resident models, as the AI editing design records it,
+/// which a model's machine minimum counts. The cache arrives with analysis; this is the recorded
+/// default it will be measured against.
+pub const ANALYSIS_CACHE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// The least machine memory a model held resident at `resident_bytes` may require: the model, the
+/// candidates held across jobs and the analysis cache together.
+pub fn machine_floor(resident_bytes: u64) -> u64 {
+    resident_bytes
+        .saturating_add(crate::artifacts::candidates::MAX_HELD_CANDIDATE_BYTES)
+        .saturating_add(ANALYSIS_CACHE_BYTES)
 }
 
 /// A worker task, reached through the generated `task.<id>` method.
@@ -613,6 +703,16 @@ fn validate_local_runtime(
             "capability {id} declares resident_bytes {resident_bytes}; it is 1..={MAX_RESIDENT_BYTES}"
         )));
     }
+    let floor = machine_floor(resident_bytes);
+    if let Some(minimum) = module
+        .resource(resource)
+        .and_then(|declared| declared.min_memory_bytes)
+        .filter(|minimum| *minimum < floor)
+    {
+        return Err(Error::validation(format!(
+            "resource {resource} declares min_memory_bytes {minimum}; capability {id} holds it at {resident_bytes} resident bytes, so it is at least {floor}: the model, the held candidates and the analysis cache together"
+        )));
+    }
     if backends.is_empty() || backends.len() > MAX_BACKENDS {
         return Err(Error::validation(format!(
             "capability {id} declares {} backends; it is 1..={MAX_BACKENDS}",
@@ -659,13 +759,7 @@ fn validate_resource<'a>(
         }
     }
     let version = &resource.version;
-    let plain = !version.is_empty()
-        && version.len() <= MAX_VERSION_LENGTH
-        && version
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
-        && !version.starts_with('.');
-    if !plain {
+    if !plain_name(version) {
         return Err(Error::validation(format!(
             "resource {id} declares version {version:?}; a version is 1..={MAX_VERSION_LENGTH} ASCII letters, digits, '.', '-' or '_' and does not start with '.'"
         )));
@@ -680,12 +774,7 @@ fn validate_resource<'a>(
             resource.url, error.detail
         ))
     })?;
-    let hex = resource.sha256.len() == 64
-        && resource
-            .sha256
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
-    if !hex {
+    if !sha256_hex(&resource.sha256) {
         return Err(Error::validation(format!(
             "resource {id} declares sha256 {:?}; it is 64 lowercase hexadecimal digits",
             resource.sha256
@@ -704,7 +793,128 @@ fn validate_resource<'a>(
             )));
         }
     }
+    validate_files(resource)?;
+    for (name, value, max) in [
+        ("tradeoff", &resource.tradeoff, MAX_TRADEOFF_CHARS),
+        (
+            "use_restriction",
+            &resource.use_restriction,
+            MAX_USE_RESTRICTION_CHARS,
+        ),
+    ] {
+        let Some(value) = value else { continue };
+        if value.trim().is_empty() {
+            return Err(Error::validation(format!(
+                "resource {id} declares an empty {name}; one that says nothing is left out"
+            )));
+        }
+        let characters = value.chars().count();
+        if characters > max {
+            return Err(Error::validation(format!(
+                "resource {id} declares a {name} of {characters} characters; it is one line of at most {max}"
+            )));
+        }
+        if value.chars().any(char::is_control) || value.trim() != value {
+            return Err(Error::validation(format!(
+                "resource {id} declares a {name} that is not one plain line"
+            )));
+        }
+    }
+    if let Some(minimum) = resource.min_memory_bytes
+        && !(MIN_MACHINE_MEMORY_BYTES..=MAX_MACHINE_MEMORY_BYTES).contains(&minimum)
+    {
+        return Err(Error::validation(format!(
+            "resource {id} declares min_memory_bytes {minimum}; it is {MIN_MACHINE_MEMORY_BYTES}..={MAX_MACHINE_MEMORY_BYTES}"
+        )));
+    }
     Ok(())
+}
+
+/// A resource's further files: at most [`MAX_RESOURCE_FILES`] with its own, each a plain name that
+/// is not the resource's own file, the install record's or another's, each pinned as the resource
+/// is, all from the origin of the resource's own URL, and at most [`MAX_RESOURCE_BYTES`] together.
+fn validate_files(resource: &ResourceDescriptor) -> Result<(), Error> {
+    let id = &resource.id;
+    if resource.files.len() + 1 > MAX_RESOURCE_FILES {
+        return Err(Error::validation(format!(
+            "resource {id} declares {} files; a resource has at most {MAX_RESOURCE_FILES}, its own included",
+            resource.files.len() + 1
+        )));
+    }
+    let origin = |url: &str| {
+        parse_endpoint(url, &[EndpointClass::Remote, EndpointClass::Loopback])
+            .map(|endpoint| endpoint.origin())
+    };
+    let own_origin = origin(&resource.url)?;
+    let mut names = HashSet::with_capacity(resource.files.len() + 1);
+    names.insert(id.as_str());
+    for file in &resource.files {
+        let name = &file.name;
+        if !plain_name(name) {
+            return Err(Error::validation(format!(
+                "resource {id} declares file name {name:?}; a file name is 1..={MAX_VERSION_LENGTH} ASCII letters, digits, '.', '-' or '_' and does not start with '.'"
+            )));
+        }
+        if name == super::resources::INSTALLED_FILE {
+            return Err(Error::validation(format!(
+                "resource {id} declares file name {name}, which the install's own record takes"
+            )));
+        }
+        if !names.insert(name.as_str()) {
+            return Err(Error::validation(format!(
+                "resource {id} declares file {name} twice; its own file is named {id}"
+            )));
+        }
+        let served = origin(&file.url).map_err(|error| {
+            Error::validation(format!(
+                "resource {id} file {name} declares url {}: {}",
+                file.url, error.detail
+            ))
+        })?;
+        if served != own_origin {
+            return Err(Error::validation(format!(
+                "resource {id} file {name} is served from {served}; every file of a resource comes from {own_origin}, the origin its download grant names"
+            )));
+        }
+        if !sha256_hex(&file.sha256) {
+            return Err(Error::validation(format!(
+                "resource {id} file {name} declares sha256 {:?}; it is 64 lowercase hexadecimal digits",
+                file.sha256
+            )));
+        }
+        if file.bytes == 0 {
+            return Err(Error::validation(format!(
+                "resource {id} file {name} declares bytes 0; a file holds at least one byte"
+            )));
+        }
+    }
+    let total = resource
+        .pinned_files()
+        .fold(0u128, |total, file| total + u128::from(file.bytes));
+    if total > u128::from(MAX_RESOURCE_BYTES) {
+        return Err(Error::validation(format!(
+            "resource {id} declares {total} bytes across its files; a resource is at most {MAX_RESOURCE_BYTES}"
+        )));
+    }
+    Ok(())
+}
+
+/// A plain directory or file name: 1..=[`MAX_VERSION_LENGTH`] ASCII letters, digits, '.', '-' or
+/// '_', not starting with '.'.
+fn plain_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= MAX_VERSION_LENGTH
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+        && !name.starts_with('.')
+}
+
+fn sha256_hex(text: &str) -> bool {
+    text.len() == 64
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 /// `https://host[:port]` exactly as the origin serializes: no credentials, path, query or fragment,
@@ -821,6 +1031,61 @@ mod tests {
             .expect_err("the descriptor was expected to be refused");
         assert_eq!(error.kind, ErrorKind::Validation, "{}", error.detail);
         error.detail
+    }
+
+    /// A further file of the capability descriptor's palette, served from its origin.
+    fn file(name: &str) -> ResourceFile {
+        ResourceFile {
+            name: name.into(),
+            url: format!("https://example.com/{name}"),
+            bytes: 12,
+            sha256: "b".repeat(64),
+        }
+    }
+
+    #[test]
+    fn a_model_resource_with_files_labels_and_a_machine_minimum_round_trips() {
+        let mut descriptor = capability_descriptor();
+        let resource = &mut descriptor.resources[0];
+        resource.files = vec![file("decoder"), file("embedding.bin")];
+        resource.tradeoff = Some("Finds smaller objects; slower to start".into());
+        resource.use_restriction = Some("Non-commercial use only".into());
+        resource.min_memory_bytes = Some(8 << 30);
+        descriptor.validate().unwrap();
+        let resource = &descriptor.resources[0];
+        assert_eq!(resource.total_bytes(), 36);
+        assert_eq!(
+            resource
+                .pinned_files()
+                .map(|file| file.name)
+                .collect::<Vec<_>>(),
+            ["palette", "decoder", "embedding.bin"]
+        );
+        let value = serde_json::to_value(&descriptor).unwrap();
+        assert_eq!(
+            value["resources"][0]["files"][1],
+            json!({"name": "embedding.bin", "url": "https://example.com/embedding.bin",
+                   "bytes": 12, "sha256": "b".repeat(64)})
+        );
+        assert_eq!(
+            value["resources"][0]["tradeoff"],
+            "Finds smaller objects; slower to start"
+        );
+        assert_eq!(
+            value["resources"][0]["use_restriction"],
+            "Non-commercial use only"
+        );
+        assert_eq!(value["resources"][0]["min_memory_bytes"], json!(8u64 << 30));
+        assert_eq!(ModuleDescriptor::deserialize(&value).unwrap(), descriptor);
+        // A resource without them serializes none of them.
+        let plain = serde_json::to_value(capability_descriptor()).unwrap();
+        for key in ["files", "tradeoff", "use_restriction", "min_memory_bytes"] {
+            assert!(plain["resources"][0].get(key).is_none(), "{key}");
+        }
+        // An unknown resource field is refused rather than ignored.
+        let mut unknown = value["resources"][0].clone();
+        unknown["training_data"] = json!("a note");
+        assert!(serde_json::from_value::<ResourceDescriptor>(unknown).is_err());
     }
 
     #[test]
@@ -1256,6 +1521,104 @@ mod tests {
                 |d| d.resources[0].license = String::new(),
                 "resource palette declares no license",
             ),
+            // A resource's further files, its labels and its machine minimum.
+            (
+                |d| d.resources[0].files = vec![file("decoder"); MAX_RESOURCE_FILES],
+                "resource palette declares 9 files; a resource has at most 8, its own included",
+            ),
+            (
+                |d| d.resources[0].files = vec![file("../decoder")],
+                "resource palette declares file name \"../decoder\"",
+            ),
+            (
+                |d| d.resources[0].files = vec![file("installed.json")],
+                "resource palette declares file name installed.json, which the install's own record takes",
+            ),
+            (
+                |d| d.resources[0].files = vec![file("palette")],
+                "resource palette declares file palette twice; its own file is named palette",
+            ),
+            (
+                |d| d.resources[0].files = vec![file("decoder"), file("decoder")],
+                "resource palette declares file decoder twice",
+            ),
+            (
+                |d| {
+                    d.resources[0].files = vec![ResourceFile {
+                        url: "https://cdn.example.com/decoder".into(),
+                        ..file("decoder")
+                    }]
+                },
+                "resource palette file decoder is served from https://cdn.example.com; every file of a resource comes from https://example.com",
+            ),
+            (
+                |d| {
+                    d.resources[0].files = vec![ResourceFile {
+                        url: "http://example.com/decoder".into(),
+                        ..file("decoder")
+                    }]
+                },
+                "resource palette file decoder declares url http://example.com/decoder: a remote endpoint must use https",
+            ),
+            (
+                |d| {
+                    d.resources[0].files = vec![ResourceFile {
+                        sha256: "B".repeat(64),
+                        ..file("decoder")
+                    }]
+                },
+                "resource palette file decoder declares sha256",
+            ),
+            (
+                |d| {
+                    d.resources[0].files = vec![ResourceFile {
+                        bytes: 0,
+                        ..file("decoder")
+                    }]
+                },
+                "resource palette file decoder declares bytes 0",
+            ),
+            (
+                |d| {
+                    d.resources[0].files = vec![ResourceFile {
+                        bytes: MAX_RESOURCE_BYTES,
+                        ..file("decoder")
+                    }]
+                },
+                "resource palette declares 17179869196 bytes across its files; a resource is at most 17179869184",
+            ),
+            (
+                |d| d.resources[0].tradeoff = Some(" ".into()),
+                "resource palette declares an empty tradeoff",
+            ),
+            (
+                |d| d.resources[0].tradeoff = Some("x".repeat(MAX_TRADEOFF_CHARS + 1)),
+                "resource palette declares a tradeoff of 121 characters; it is one line of at most 120",
+            ),
+            (
+                |d| d.resources[0].tradeoff = Some("Faster\nbut rougher".into()),
+                "resource palette declares a tradeoff that is not one plain line",
+            ),
+            (
+                |d| d.resources[0].use_restriction = Some(String::new()),
+                "resource palette declares an empty use_restriction",
+            ),
+            (
+                |d| d.resources[0].use_restriction = Some("x".repeat(MAX_USE_RESTRICTION_CHARS + 1)),
+                "resource palette declares a use_restriction of 161 characters",
+            ),
+            (
+                |d| d.resources[0].use_restriction = Some(" Non-commercial use only".into()),
+                "resource palette declares a use_restriction that is not one plain line",
+            ),
+            (
+                |d| d.resources[0].min_memory_bytes = Some(MIN_MACHINE_MEMORY_BYTES - 1),
+                "resource palette declares min_memory_bytes 1073741823; it is 1073741824..=4398046511104",
+            ),
+            (
+                |d| d.resources[0].min_memory_bytes = Some(MAX_MACHINE_MEMORY_BYTES + 1),
+                "resource palette declares min_memory_bytes 4398046511105",
+            ),
             // Tasks.
             (
                 |d| d.tasks[0].uses.push("missing".into()),
@@ -1453,6 +1816,11 @@ mod tests {
                     }
                 },
                 "capability fill declares resident_bytes 68719476737",
+            ),
+            (
+                // 1 MiB resident, 1 GiB of held candidates and 256 MiB of analysis cache.
+                |d| d.resources[0].min_memory_bytes = Some(MIN_MACHINE_MEMORY_BYTES),
+                "resource palette declares min_memory_bytes 1073741824; capability fill holds it at 1048576 resident bytes, so it is at least 1343225856: the model, the held candidates and the analysis cache together",
             ),
             (
                 |d| {
