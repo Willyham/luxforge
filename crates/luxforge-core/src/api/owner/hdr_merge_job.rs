@@ -1360,6 +1360,86 @@ fn hdr_merge_job_undoing_a_pick_merge_takes_only_its_member_out_of_the_set() {
     bench.originals_unchanged();
 }
 
+/// `merge.rerun` takes the replaced result out of every development set it is a member of, as
+/// Remove does, and puts the new result at its place in the current set, in the change that
+/// publishes it; `library.undo` puts the replaced result back in each set, at its place, and takes
+/// the new one out; `library.redo` makes the replacement again.
+#[test]
+fn hdr_merge_job_rerun_takes_the_replaced_results_place_in_the_development_set() {
+    let bench = Bench::new("rerun-set", 2);
+    let photograph = json!(bench.photograph);
+    // The old result is a member of a retired set and, between two others, of the current one.
+    let old = bench.picked(0, "pick-alone", None);
+    let old_result = old["result_asset_id"].clone();
+    bench.replace_set(Some(&photograph), "open");
+    let other = bench.merged(1, "import")["result_asset_id"].clone();
+    bench.ok(
+        "development-set.add",
+        json!({"asset_ids": [old_result, other], "mutation": envelope("add")}),
+    );
+    let before = [photograph.clone(), old_result.clone(), other.clone()];
+    assert_eq!(bench.members(), before);
+    let memberships = |asset: &Value| {
+        bench.count(&format!(
+            "SELECT COUNT(*) FROM development_set_members m
+             JOIN assets a ON a.row_id = m.asset_row WHERE a.id = '{}'",
+            asset.as_str().unwrap()
+        ))
+    };
+    assert_eq!(memberships(&old_result), 2);
+
+    let rerun = bench.ok(
+        "merge.rerun",
+        json!({"merge_id": old["merge_id"], "deghost": "off", "mutation": envelope("rerun")}),
+    );
+    let new = bench.settled(&rerun["job_id"]);
+    assert_eq!(new["status"], "ready", "{new}");
+    let new = new["result"].clone();
+    let new_result = new["result_asset_id"].clone();
+    let after = [photograph.clone(), new_result.clone(), other.clone()];
+    assert_eq!(
+        bench.members(),
+        after,
+        "the new result in the old one's place"
+    );
+    assert!(
+        bench.set()["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|member| member.get("removed").is_none()),
+        "no removed member is left behind"
+    );
+    assert_eq!(memberships(&old_result), 0, "out of every set");
+    assert_eq!(memberships(&new_result), 1, "only in the current set");
+    assert_eq!(
+        bench.count(
+            "SELECT COUNT(*) FROM library_change_rows WHERE item_kind = 'set-member'
+             AND change_seq = (SELECT max(change_seq) FROM library_change_rows)"
+        ),
+        3,
+        "one change: the old result out of both sets and the new one in"
+    );
+
+    let undone = bench.ok("library.undo", json!({"mutation": envelope("undo")}));
+    assert_eq!(undone["outcome"], "applied", "{undone}");
+    assert_eq!(bench.members(), before);
+    assert_eq!(memberships(&old_result), 2, "back in both sets");
+    assert_eq!(memberships(&new_result), 0);
+    let state =
+        |merge: &Value| bench.ok("merge.inspect", json!({"merge_id": merge}))["state"].clone();
+    assert_eq!(state(&old["merge_id"]), "active");
+    assert_eq!(state(&new["merge_id"]), "undone");
+
+    let redone = bench.ok("library.redo", json!({"mutation": envelope("redo")}));
+    assert_eq!(redone["outcome"], "applied", "{redone}");
+    assert_eq!(bench.members(), after);
+    assert_eq!(memberships(&old_result), 0);
+    assert_eq!(state(&old["merge_id"]), "removed");
+    assert_eq!(state(&new["merge_id"]), "active");
+    bench.originals_unchanged();
+}
+
 /// Across a restart: a merge the process stopped in answers `interrupted` and publishes nothing,
 /// another job sweeps the spool it left, a published merge answers its retries, and a corrupt
 /// chunk found after reopening is reported and merged again by a rerun.
