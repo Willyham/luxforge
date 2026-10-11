@@ -12,6 +12,8 @@ publish.workspace = true
 # `#[path]` modules, so a core test build compiles the core once.
 [dependencies]
 luxforge-core = { path = "../luxforge-core" }
+# `hdr_bracket` admits the RAW test cameras its synthetic body is one of.
+luxforge-raw = { path = "../luxforge-raw" }
 luxforge-reference = { path = "../luxforge-reference" }
 luxforge-testbase = { path = "../luxforge-testbase" }
 serde_json.workspace = true

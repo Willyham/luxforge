@@ -19,7 +19,7 @@ The caller must read/hash a stable original through the catalog's source-verific
 
 The native decode is two calls on one handle, which a Rust guard owns and closes on every return path:
 
-1. `lf_raw_open` runs LibRaw's `open_buffer` (identify only), refuses LibRaw's High Efficiency decoder, a camera outside the catalog allowlist, a frame count outside one or two and a size outside the adapter bounds, and returns the identify-time identity: make, model, decoder name and flags, raw width and height, `raw_bps`, DNG version, frame count, and the CFA dimensions and pattern.
+1. `lf_raw_open` runs LibRaw's `open_buffer` (identify only), refuses LibRaw's High Efficiency decoder, a camera outside the catalog allowlist (the test cameras' table counts only once they are admitted), a frame count outside one or two and a size outside the adapter bounds, and returns the identify-time identity: make, model, decoder name and flags, raw width and height, `raw_bps`, DNG version, frame count, and the CFA dimensions and pattern.
 2. Rust bounds the size, reads and checks the DNG opcode lists, and classifies the mode from that identity and the container's compression marker. An unknown mode, an unimplemented required opcode or an opcode the mode's profile does not handle is refused here, before any unpack work.
 3. `lf_raw_unpack` unpacks once with the mode's catalog `unpacker`: LibRaw's own decoder (`NativeUnpacker::Libraw`, 0) or RawSpeed in its place (`NativeUnpacker::Rawspeed`, 1, below); any other selector is refused before unpack. It checks that the geometry and stride are unchanged and that the result is one integer mosaic, then fills the complete metadata (black levels, white, matrices, crops). Nothing is published on failure or cancellation.
 
@@ -86,6 +86,20 @@ produces the native pre-unpack allowlist and the catalog itself as static Rust
 data from it, so nothing parses JSON at run time. A test proves the static data
 equals the parsed JSON. `RawMode` is a reference into that catalog: it serializes
 as the mode's identifier, and only a declared identifier deserializes.
+
+The shipped catalog holds real bodies only. [data/test-cameras.json](data/test-cameras.json)
+holds the test cameras, in the same schema and validated the same way: the synthetic
+`Luxforge` `Synthetic Bracket`, whose DNGs only `luxforge_testkit::hdr_bracket` writes.
+The build refuses a test camera that shares an identity or a mode identifier with a shipped one,
+and emits the table as a second static catalog and a second native table. Until a process calls
+`admit_test_cameras()`, every lookup behaves as if the test cameras did not exist: `RawMode`
+neither finds nor deserializes their modes, and `lf_raw_open` refuses their files at identify,
+because Rust passes it the switch and the adapter consults its test table only when it is on.
+Afterwards, for the rest of the process, lookups consult the test cameras after the shipped
+catalog. Writing a bracket with `luxforge_testkit::hdr_bracket` admits them; the editor admits
+them only when started with `LUXFORGE_TEST_CAMERAS=1`, as the `hdr-merge` smoke scenario does.
+`cargo test -p luxforge-raw --test test_cameras` checks a synthetic DNG is refused before the
+switch and decodes after it, in a test binary of its own, since the switch is process-wide.
 Adding a camera that uses existing capabilities requires a data entry and authentic
 qualification, without a new camera-name branch. Unknown models/modes and invalid
 capability combinations fail explicitly.

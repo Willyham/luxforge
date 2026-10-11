@@ -1,9 +1,12 @@
 //! Deterministic synthetic RAW exposure brackets for HDR merging (`docs/design/hdr-merge.md`):
 //! two to nine uncompressed 16-bit Bayer DNGs of one synthetic outdoor scene, recorded by one
-//! synthetic body, `Luxforge Synthetic Bracket`, which the RAW camera catalog
-//! (`crates/luxforge-raw/data/cameras.json`) admits like any DNG camera, so each file is read,
-//! indexed, decoded and developed exactly as a person's DNG is. [`write_bracket`] materialises one
-//! into a folder; [`Bracket`] also answers the scene's ground truth.
+//! synthetic body, `Luxforge Synthetic Bracket`. The body is a RAW test camera
+//! (`crates/luxforge-raw/data/test-cameras.json`), never in the shipped catalog: once a process
+//! calls `luxforge_raw::admit_test_cameras`, which [`Bracket::write`] and [`write_bracket`] do, it
+//! is admitted like any catalogued DNG camera, so each file is read, indexed, decoded and developed
+//! exactly as a person's DNG is. An editor launched over the files needs `LUXFORGE_TEST_CAMERAS=1`.
+//! [`write_bracket`] materialises one into a folder; [`Bracket`] also answers the scene's ground
+//! truth.
 //!
 //! The scene holds real HDR range: a sky and a lit window that clip in the metered (0 EV) frame
 //! and are recorded by the shorter exposures, a sun no exposure records, a doorway in deep shadow
@@ -35,10 +38,10 @@ use std::{
     sync::OnceLock,
 };
 
-/// The synthetic body, as its DNGs' `Make` and `Model` and the camera catalog record it.
+/// The synthetic body, as its DNGs' `Make` and `Model` and the test camera table record it.
 pub const MAKE: &str = "Luxforge";
 pub const MODEL: &str = "Synthetic Bracket";
-/// The sensor, which the catalog's one recording mode of this body requires exactly.
+/// The sensor, which the test camera table's one recording mode of this body requires exactly.
 pub const SENSOR_WIDTH: u32 = 1536;
 pub const SENSOR_HEIGHT: u32 = 1024;
 /// The DNG default crop's origin on the sensor; the developed frame is [`WIDTH`] × [`HEIGHT`].
@@ -263,8 +266,11 @@ impl Bracket {
         &self.frames
     }
 
-    /// Write every frame into `dir`, made if missing: the paths, in capture order.
+    /// Write every frame into `dir`, made if missing: the paths, in capture order. The process
+    /// admits the RAW test cameras first, so it can read what it wrote; [`Bracket::dng`]'s bytes
+    /// alone admit nothing.
     pub fn write(&self, dir: &Path) -> io::Result<Vec<PathBuf>> {
+        luxforge_raw::admit_test_cameras();
         fs::create_dir_all(dir)?;
         let mut paths = Vec::with_capacity(self.frames.len());
         for (at, frame) in self.frames.iter().enumerate() {

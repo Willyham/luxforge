@@ -230,7 +230,6 @@ private:
   int rawspeed_status_ = LF_STATUS_OK;
   char rawspeed_message_[256] = {};
 };
-using CameraEntry = std::remove_reference_t<decltype(lf_cameras[0])>;
 
 // Test observability, per thread because each decode runs synchronously on its caller's thread:
 // how many handles are alive and how many LibRaw unpacks have started.
@@ -245,7 +244,7 @@ struct Handle {
   const uint8_t *bytes = nullptr;
   size_t length = 0;
   const char *decoder_name = nullptr;
-  const CameraEntry *profile = nullptr;
+  const LfCamera *profile = nullptr;
   bool opened = false;
   unsigned width = 0, height = 0, pitch = 0;
   // One unpack attempt per handle, successful or not.
@@ -322,10 +321,26 @@ bool read_cfa(LibRaw &decoder, uint32_t &width, uint32_t &height, uint8_t cfa[36
 }
 
 namespace {
+// The table's entry for a make and model, or null.
+template <size_t N>
+const LfCamera *find_camera(const LfCamera (&table)[N], const char *make, const char *model) noexcept {
+  const auto *found = std::find_if(std::begin(table), std::end(table), [&](const LfCamera &camera) {
+    return std::strcmp(make, camera.make) == 0 && std::strcmp(model, camera.model) == 0;
+  });
+  return found == std::end(table) ? nullptr : found;
+}
+// The catalog entry for LibRaw's identified make and model: the shipped table's, else, only when
+// the caller admits test cameras, the test table's; null when neither holds it.
+const LfCamera *catalogued_camera(const char *make, const char *model, bool test_cameras) noexcept {
+  const LfCamera *shipped = find_camera(lf_cameras, make, model);
+  if (shipped || !test_cameras) return shipped;
+  return find_camera(lf_test_cameras, make, model);
+}
+
 // lf_raw_open, with the catalog check only when `catalogued`.
 int open_handle(const uint8_t *bytes, size_t length, LfCancel cancel, void *cancel_context,
-                void **handle_out, LfIdentity *identity, char *err, size_t err_len,
-                bool catalogued) noexcept {
+                int test_cameras, void **handle_out, LfIdentity *identity, char *err,
+                size_t err_len, bool catalogued) noexcept {
   if (!bytes || !length || !handle_out || !identity || length > LF_MAX_SOURCE_BYTES) {
     error(err, err_len, "invalid or oversized RAW input"); return LF_STATUS_INVALID_INPUT;
   }
@@ -358,10 +373,8 @@ int open_handle(const uint8_t *bytes, size_t length, LfCancel cancel, void *canc
     if (std::strcmp(opened.decoder_name, "sony_arw6_load_raw()") == 0)
       h->decoder.imgdata.rawparams.max_raw_memory_mb = 1024;
     const auto &d = h->decoder.imgdata;
-    const auto *profile = std::find_if(std::begin(lf_cameras),std::end(lf_cameras),[&](const auto &camera){
-      return std::strcmp(d.idata.make,camera.make)==0 && std::strcmp(d.idata.model,camera.model)==0;
-    });
-    if(catalogued && profile == std::end(lf_cameras)){error(err,err_len,"camera model is outside the RAW catalog");return LF_STATUS_UNSUPPORTED_MODE;}
+    const LfCamera *profile = catalogued_camera(d.idata.make, d.idata.model, test_cameras != 0);
+    if(catalogued && !profile){error(err,err_len,"camera model is outside the RAW catalog");return LF_STATUS_UNSUPPORTED_MODE;}
     if(d.idata.raw_count<1||d.idata.raw_count>2){error(err,err_len,"RAW frame count exceeds primary-frame mode bounds");return LF_STATUS_UNSUPPORTED_MODE;}
     const auto &s = d.sizes;
     const uint64_t n=uint64_t(s.raw_width)*s.raw_height;
@@ -379,7 +392,7 @@ int open_handle(const uint8_t *bytes, size_t length, LfCancel cancel, void *canc
     identity->raw_bps = d.color.raw_bps; identity->dng_version = d.idata.dng_version;
     identity->decoder_flags = opened.decoder_flags; identity->raw_count = d.idata.raw_count;
     h->bytes = bytes; h->length = length; h->decoder_name = opened.decoder_name;
-    h->profile = profile == std::end(lf_cameras) ? nullptr : profile;
+    h->profile = profile;
     h->opened = true;
     h->width = s.raw_width; h->height = s.raw_height; h->pitch = s.raw_pitch;
     *handle_out = h.release();
@@ -392,25 +405,27 @@ int open_handle(const uint8_t *bytes, size_t length, LfCancel cancel, void *canc
 
 // Identify without unpacking: open the caller's bytes, refuse what the adapter never unpacks
 // (LibRaw's High Efficiency decoder, a camera outside the catalog, a frame count or size outside
-// the bounds), and return what classification reads. On success the handle belongs to the caller,
-// who passes it to lf_raw_unpack and always to lf_raw_close; on failure no handle is returned.
-// The bytes stay borrowed until the handle closes.
+// the bounds), and return what classification reads. The catalog is the shipped camera table, and
+// the test camera table too only when `test_cameras` is nonzero, which Rust passes only once its
+// process has admitted test cameras. On success the handle belongs to the caller, who passes it to
+// lf_raw_unpack and always to lf_raw_close; on failure no handle is returned. The bytes stay
+// borrowed until the handle closes.
 extern "C" int lf_raw_open(const uint8_t *bytes, size_t length,
-                            LfCancel cancel, void *cancel_context,
+                            LfCancel cancel, void *cancel_context, int test_cameras,
                             void **handle_out, LfIdentity *identity,
                             char *err, size_t err_len) noexcept {
-  return open_handle(bytes, length, cancel, cancel_context, handle_out, identity, err, err_len,
-                     true);
+  return open_handle(bytes, length, cancel, cancel_context, test_cameras, handle_out, identity,
+                     err, err_len, true);
 }
 
 // lf_raw_open without the catalog check, for crate tests that compare the two unpackers on
 // authentic files whose camera or mode the catalog does not yet hold. Production never calls it.
 extern "C" int lf_raw_open_uncatalogued(const uint8_t *bytes, size_t length,
-                                         LfCancel cancel, void *cancel_context,
+                                         LfCancel cancel, void *cancel_context, int test_cameras,
                                          void **handle_out, LfIdentity *identity,
                                          char *err, size_t err_len) noexcept {
-  return open_handle(bytes, length, cancel, cancel_context, handle_out, identity, err, err_len,
-                     false);
+  return open_handle(bytes, length, cancel, cancel_context, test_cameras, handle_out, identity,
+                     err, err_len, false);
 }
 
 // Unpack the opened file once with the selected decoder and fill the complete metadata. The
