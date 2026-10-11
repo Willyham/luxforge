@@ -261,35 +261,17 @@ fn a_single_parameter_actions_slider_drafts_previews_and_commits_once() {
 #[test]
 fn a_multi_parameter_actions_slider_sends_nothing_until_release() {
     let (mut editor, catalog, log, _, _, _) = drafting();
-    let (action, parameter) = editor
-        .modules
-        .iter()
-        // Crop's fields belong to its canvas draft, not the generic multi-field gesture.
-        .filter(|module| {
-            !matches!(
-                module.canvas,
-                Some(luxforge_core::CanvasInteraction::CropFrame { .. })
-            )
-        })
-        .flat_map(|module| module.actions.iter())
-        .find(|action| {
-            !action.patch
-                && action.parameters.len() > 1
-                && matches!(
-                    action.parameters[0].kind,
-                    luxforge_core::ParameterKind::Integer { .. }
-                        | luxforge_core::ParameterKind::Number { .. }
-                )
-        })
-        .map(|action| (action.id.clone(), action.parameters[0].name.clone()))
-        .expect("a built-in declares a multi-parameter action led by a slider field");
-
+    // Neutral picking has two required numeric coordinates; supply the other field as the
+    // control would, rather than selecting an arbitrary action with an inline settings document.
+    let action = "pick-raw-neutral";
+    let parameter = "x";
+    editor.controls.fields.set(action, "y", "1".into());
     for value in [3.0, 7.0] {
-        let _ = testing::slide(&mut editor, &action, &parameter, value);
+        let _ = testing::slide(&mut editor, action, parameter, value);
     }
     assert!(editor.slider_gesture().is_none(), "no draft was opened");
     assert_eq!(
-        editor.controls.fields.get(&action, &parameter),
+        editor.controls.fields.get(action, parameter),
         Some("7"),
         "the field still follows the pointer"
     );
@@ -298,7 +280,7 @@ fn a_multi_parameter_actions_slider_sends_nothing_until_release() {
         "nothing was sent while dragging"
     );
 
-    let _ = testing::let_go(&mut editor, &action, &parameter);
+    let _ = testing::let_go(&mut editor, action, parameter);
     assert_eq!(
         editor.status.text,
         format!("Running edit.{action}…"),

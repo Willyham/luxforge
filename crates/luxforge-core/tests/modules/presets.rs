@@ -147,9 +147,11 @@ fn a_preset_commits_one_entry_whose_stack_equals_the_individual_actions() {
     assert_eq!(Some(&entry.id), result.created_entry_id.as_ref());
     assert_eq!(entry.action_id, "apply-settings");
     assert_eq!(entry.label, "Preset: Soft film");
+    let mut expected = sent.clone();
+    expected["amount"] = json!(100.0);
     assert_eq!(
-        entry.parameters, sent,
-        "the entry stores the request as sent"
+        entry.parameters, expected,
+        "the entry stores the request with its default Amount"
     );
 
     // A retried request returns the original result and writes nothing more.
@@ -735,6 +737,121 @@ fn a_drafted_preset_resolves_to_exactly_what_it_commits() {
     fs::remove_file(path).expect("the catalog is removed");
 }
 
+#[test]
+fn preset_amount_uses_module_defaults_and_validates_whole_sets() {
+    let registry = ModuleRegistry::builtin();
+    let settings = json!({"set-basic": {"exposure": 2, "contrast": 80}, "set-vignette": {"amount": -40, "midpoint": 30}, "set-curve": {"luminance": [[0, 0.1], [0.5, 0.8], [1, 1]]}});
+    let fields = settings.as_object().unwrap();
+    let scaled = |amount| {
+        luxforge_core::settings_at_amount(&registry.descriptors(), fields, amount).unwrap()
+    };
+    assert_eq!(
+        scaled(100.0),
+        *fields,
+        "100 is byte-for-byte settings transfer"
+    );
+    assert_eq!(
+        Value::Object(scaled(50.0)),
+        json!({"set-basic": {"exposure": 1.0, "contrast": 40.0}, "set-vignette": {"amount": -20.0, "midpoint": 40.0}, "set-curve": {"luminance": [[0.0, 0.05], [0.5, 0.65], [1.0, 1.0]]}})
+    );
+    assert_eq!(
+        scaled(0.0)["set-basic"],
+        json!({"exposure": 0.0, "contrast": 0.0})
+    );
+    assert_eq!(
+        scaled(200.0)["set-basic"],
+        json!({"exposure": 4.0, "contrast": 100.0})
+    );
+    for amount in [-1.0, 201.0, f64::NAN, f64::INFINITY] {
+        assert!(
+            luxforge_core::settings_at_amount(&registry.descriptors(), fields, amount).is_err()
+        );
+    }
+    for unsupported in [
+        json!({"auto-tone": {}}),
+        json!({"set-raw": {"white-balance": "as-shot"}}),
+    ] {
+        assert!(
+            luxforge_core::settings_at_amount(
+                &registry.descriptors(),
+                unsupported.as_object().unwrap(),
+                50.0
+            )
+            .is_err()
+        );
+        assert_eq!(
+            luxforge_core::settings_at_amount(
+                &registry.descriptors(),
+                unsupported.as_object().unwrap(),
+                100.0
+            )
+            .unwrap(),
+            *unsupported.as_object().unwrap()
+        );
+    }
+    let falling = json!({"set-curve": {"luminance": [[0, 0.2], [0.4, 0.3], [0.8, 0.4], [1, 0.5]]}});
+    let projected = luxforge_core::settings_at_amount(
+        &registry.descriptors(),
+        falling.as_object().unwrap(),
+        200.0,
+    )
+    .unwrap();
+    luxforge_core::check_parameters(
+        registry.action("set-curve").unwrap().1,
+        &projected["set-curve"],
+    )
+    .unwrap();
+}
+
+#[test]
+fn preset_amount_reference_buffers_match_direct_patches_and_preserve_originals() {
+    let source_before = fs::read(jpeg()).unwrap();
+    for amount in [0.0, 50.0, 100.0, 200.0] {
+        let (mut service, asset, path) = opened("amount", None);
+        let (mut direct, direct_asset, direct_path) = opened("amount-direct", None);
+        for (editor, id) in [(&mut service, &asset), (&mut direct, &direct_asset)] {
+            editor
+                .apply_action(
+                    id,
+                    mutation(0, "initial"),
+                    "set-basic",
+                    json!({"exposure": -1, "saturation": 9}),
+                )
+                .unwrap();
+        }
+        let fields = json!({"settings": {"set-basic": {"exposure": 1.5, "contrast": 20}, "set-curve": {"luminance": [[0, 0.05], [0.5, 0.6], [1, 0.95]]}}, "origin": {"kind": "preset", "name": "Amount"}, "amount": amount});
+        let mut draft = Draft::new("apply-settings", asset.clone(), revision(&service, &asset));
+        draft.merge(fields.as_object().unwrap().clone());
+        let (drafted, _) = service.draft_recipe(&asset, &draft).unwrap();
+        assert_eq!(entries(&service, &asset), 2, "a draft writes no history");
+        apply_preset(&mut service, &asset, "preset", fields).unwrap();
+        assert_eq!(
+            contents(&drafted.layers),
+            contents(&recipe(&service, &asset).layers)
+        );
+        direct
+            .apply_action(
+                &direct_asset,
+                mutation(1, "direct"),
+                "set-basic",
+                json!({"exposure": 1.5 * amount / 100.0, "contrast": 20.0 * amount / 100.0}),
+            )
+            .unwrap();
+        direct.apply_action(&direct_asset, mutation(revision(&direct, &direct_asset), "curve"), "set-curve",
+            json!({"luminance": [[0.0, 0.05 * amount / 100.0], [0.5, 0.5 + (0.6 - 0.5) * amount / 100.0], [1.0, 1.0 + (0.95 - 1.0) * amount / 100.0]]})).unwrap();
+        assert_eq!(
+            service.render_current(&asset).unwrap().rgba,
+            direct.render_current(&direct_asset).unwrap().rgba,
+            "exact reference buffer at {amount}%"
+        );
+        drop(service);
+        drop(direct);
+        fs::remove_file(path).unwrap();
+        fs::remove_file(direct_path).unwrap();
+    }
+    assert_eq!(fs::read(jpeg()).unwrap(), source_before);
+}
+
 // -------------------------------------------------------------------------------------------
 // Masked photos.
 // -------------------------------------------------------------------------------------------
@@ -1103,7 +1220,9 @@ fn paste_settings_keeps_provenance_matches_direct_edits_and_is_undoable() {
         .unwrap();
     let entry = service.state(&asset).unwrap().current_entry;
     assert_eq!(entry.label, "Paste settings from source.jpg");
-    assert_eq!(entry.parameters, parameters);
+    let mut expected = parameters.clone();
+    expected["amount"] = json!(100.0);
+    assert_eq!(entry.parameters, expected);
     assert_eq!(
         contents(&recipe(&service, &asset).layers),
         contents(&recipe(&direct, &other).layers)

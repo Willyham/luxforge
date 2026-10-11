@@ -123,7 +123,7 @@ pub use presets::{
     DerivedSettings, GroupOnKind, GroupState, ImportReport, ImportedPreset, KindSkip,
     MAX_PRESET_BYTES, MappedSetting, PresetOrigin, PresetRecord, PresetSummary, ReportCounts,
     ReportedSetting, SettingsAnalysis, SettingsGroup, SettingsGroups, SettingsPhoto,
-    USER_PRESET_GROUP, inspect_preset, settings_groups,
+    USER_PRESET_GROUP, inspect_preset, settings_at_amount, settings_can_preview, settings_groups,
 };
 pub use preview::{
     AssetSelection, ExactOutcome, HistorySelection, MAX_SELECTIONS, MaskCoverage,

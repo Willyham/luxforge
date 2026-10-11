@@ -1297,6 +1297,7 @@ Each step is an object with exactly one key.
   The name matches exactly, case included, and `group` is needed only when two groups hold that
   name; no match, or more than one, fails the step. The click is the section action's own
   `ActionMessage::Run`, so the frame is captured on its pixels like an `api` step's.
+- `preset_hover` takes the same name/group pick as `preset`, or `null` to leave. It captures the temporary draft picture or restored committed picture without a commit. `preset_amount` moves the real Amount control with `{"value": 50, "release": true}`; without release it captures the draft, and release commits once for a selected preset.
 - `preset_create` fills the create form through its own messages and presses Create:
   `{"name": "Tone only", "group": "User presets", "groups": ["Basic · Tone"]}`, where `groups`
   lists exactly the checkbox labels to leave checked and `group` defaults to the form's. With

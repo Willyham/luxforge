@@ -9,6 +9,17 @@ use std::path::PathBuf;
 /// section's own action, the same path every other declared action takes.
 #[derive(Clone, Debug)]
 pub(crate) enum PresetMessage {
+    /// Enter/leave a library row. Leave carries its row identity so an old leave cannot cancel a
+    /// newer row's preview.
+    Hover(String),
+    Leave(String),
+    Amount(f64),
+    AmountReleased,
+    AmountEdit,
+    AmountText(String),
+    AmountSubmit,
+    AmountCancel,
+    AmountReset,
     /// `preset.list` answered, with the event sequence it was read at.
     Listed(Result<(Vec<PresetSummary>, u64), String>),
     /// Show or hide the create form the `+` button reveals.
@@ -18,12 +29,18 @@ pub(crate) enum PresetMessage {
     /// The create form's group text.
     Group(String),
     /// One create-form checkbox, by its settings-group identity.
-    Check { id: String, checked: bool },
+    Check {
+        id: String,
+        checked: bool,
+    },
     /// Capture the checked groups from the displayed entry and store them as a new preset.
     Create,
     /// Check or clear one declared analysis step, by identity, which recomputes its fields on
     /// every photo the preset is applied to.
-    Analysis { id: String, checked: bool },
+    Analysis {
+        id: String,
+        checked: bool,
+    },
     /// Close the create form and forget what was typed.
     Cancel,
     /// `preset.capture`, `preset.create` and the listing after them answered.
