@@ -46,8 +46,17 @@ pub struct StaleCorrection {
 /// The input identity a new top correction of the context's stack would be generated against: what
 /// a task's candidates are generated against and what accepting one checks.
 pub(crate) fn new_top_input(context: &StageContext<'_>) -> Result<super::RepairInput, Error> {
+    Ok(repair_stage(context)?.1)
+}
+
+/// The stage a new top correction reads: the repair layer's index, or the index a new one would
+/// take, and the input identity a new top correction is generated against there. What a task's
+/// host-planned read of the repair stage's input reads and reports.
+pub(crate) fn repair_stage(
+    context: &StageContext<'_>,
+) -> Result<(usize, super::RepairInput), Error> {
     let (index, _, payload) = layer(context)?;
-    actions::top_input(context, index, &payload)
+    Ok((index, actions::top_input(context, index, &payload)?))
 }
 
 /// Every stale frozen patch of the context's stack, in operation order; empty for a stack without

@@ -3,7 +3,7 @@
 //! here ever holds a secret: a scope names a resource version, or a profile, adapter, origin, data
 //! class and asset. See `docs/design/module-capabilities.md#capability-and-consent-contract`.
 use super::{
-    descriptor::{CapabilityKind, DataClass},
+    descriptor::{CapabilityDescriptor, CapabilityKind, DataClass},
     document::JsonDocument,
 };
 #[cfg(test)]
@@ -42,10 +42,16 @@ pub enum GrantKind {
 }
 
 impl GrantKind {
-    pub(crate) fn of(kind: &CapabilityKind) -> Self {
-        match kind {
-            CapabilityKind::DownloadArtifact { .. } => Self::DownloadArtifact,
-            CapabilityKind::RemoteImageRequest { .. } => Self::RemoteImageRequest,
+    /// The grant a capability is gated by, or a `validation` error for a kind no grant gates:
+    /// `local-runtime` runs a model on this machine and sends nothing.
+    pub(crate) fn of(capability: &CapabilityDescriptor) -> Result<Self, Error> {
+        match &capability.kind {
+            CapabilityKind::DownloadArtifact { .. } => Ok(Self::DownloadArtifact),
+            CapabilityKind::RemoteImageRequest { .. } => Ok(Self::RemoteImageRequest),
+            CapabilityKind::LocalRuntime { .. } => Err(Error::validation(format!(
+                "capability {} is local-runtime, which no permission gates",
+                capability.id
+            ))),
         }
     }
 

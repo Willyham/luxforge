@@ -26,10 +26,10 @@ use crate::{
         grants,
         host::{
             self, ClearSecretParams, CreateProfileParams, DenyParams, GrantParams, InstallParams,
-            ModuleParams, PermissionList, RemoveProfileParams, ResetParams, ResourceParams,
-            RevokeParams, SetParams, SetSecretParams, TASK_PREFIX,
+            LoadParams, ModuleParams, PermissionList, RemoveProfileParams, ResetParams,
+            ResourceParams, RevokeParams, SetParams, SetSecretParams, TASK_PREFIX, UnloadParams,
         },
-        resources, settings,
+        resources, runtime, settings,
     },
     editor::{MAX_HISTORY_PAGE, MAX_VERSION_NAME, PointPlan},
     jobs::{JOB_CANCEL, JOB_READ, JOB_WAIT},
@@ -631,7 +631,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         |owner, _, params| owner
             .host
             .status(&owner.jobs, owner.service.registry(), params),
-        "{module_id, settings: {state, revision, missing}, resources, permissions: {live, revoked, denials}, jobs}; permissions counts the module's grants and denials, whose records module.permission.list returns; reads settings, stats installed markers and reads grants, and loads nothing"
+        "{module_id, settings: {state, revision, missing}, resources, permissions: {live, revoked, denials}, jobs, runtime?}; permissions counts the module's grants and denials, whose records module.permission.list returns; runtime, for a module that declares local-runtime, is {available, held_bytes, budget_bytes, models: [{resource_id, capability, model, state (loaded or loading), resident_bytes, placement?, loaded_ms?, idle_ms?, in_use?}]}, the resident set as it stands, held_bytes and budget_bytes across every module; reads settings, stats installed markers and reads grants, and loads nothing"
     ),
     owner!(
         resources::RESOURCE_LIST,
@@ -664,10 +664,38 @@ pub(super) const METHODS: &[MethodSpec] = &[
                 owner.service.registry(),
                 params,
                 &call.origin,
+                &mut owner.announced,
             )
         },
-        "queues a transfer-lane job that deletes the installed version; never touches a catalog, recipe or artifact; returns {module_id, resource_id, state, job_id?, status?, deduplicated}",
+        "queues a transfer-lane job that deletes the installed version, first releasing the model a local-runtime capability holds of it and cancelling its load; never touches a catalog, recipe or artifact; returns {module_id, resource_id, state, job_id?, status?, deduplicated}",
         retries: Owner,
+    ),
+    owner!(
+        runtime::LOAD,
+        LoadParams,
+        |owner, call, params| {
+            owner.host.runtime_load(
+                &mut owner.jobs,
+                owner.service.registry(),
+                params,
+                &call.origin,
+            )
+        },
+        "loads the model a local-runtime capability of the module holds, ahead of its first task (a tool's warm-up): a resident model answers state: loaded and counts as used now; a load already queued or running answers state: loading with its job; otherwise the host's local inference runtime (not-ready when this host has none), the installed resource (not-ready with data.requirements) and the resident budget (resource-limit, after releasing least recently used models no task holds) are checked and a module-lane job opens the model, never the owner; returns {module_id, resource_id, state, job_id?, status?}; the job's result is {module_id, resource_id, resident_bytes}; nothing else ever loads a model but a task that uses it"
+    ),
+    owner!(
+        runtime::UNLOAD,
+        UnloadParams,
+        |owner, call, params| {
+            owner.host.runtime_unload(
+                &mut owner.jobs,
+                owner.service.registry(),
+                params,
+                &call.origin,
+                &mut owner.announced,
+            )
+        },
+        "releases the model of resource_id, or every model of the module (Unload now), at once, and cancels their queued or running loads with cancelled: unloaded; a task already using a model keeps it until the task ends; announced when something was released or cancelled; returns {module_id, unloaded: [resource_id], cancelled_jobs: [job_id]}"
     ),
     mutating!(
         "history.undo",

@@ -69,7 +69,7 @@ impl CapabilityHost {
         let registry = service.registry();
         let descriptor = registered(registry, &request.module_id)?;
         let capability = declared_capability(descriptor, &request.capability)?;
-        let scope = GrantScope::parse(GrantKind::of(&capability.kind), &request.scope)?;
+        let scope = GrantScope::parse(GrantKind::of(capability)?, &request.scope)?;
         self.check_usable(service, descriptor, capability, &scope)?;
         let outcome = self.grants()?.grant(NewGrant {
             module_id: &descriptor.id,
@@ -158,7 +158,7 @@ impl CapabilityHost {
     ) -> Result<Value, Error> {
         let descriptor = registered(registry, &request.module_id)?;
         let capability = declared_capability(descriptor, &request.capability)?;
-        let scope = GrantScope::parse(GrantKind::of(&capability.kind), &request.scope)?;
+        let scope = GrantScope::parse(GrantKind::of(capability)?, &request.scope)?;
         let denial = self.grants()?.deny(
             &descriptor.id,
             &capability.id,

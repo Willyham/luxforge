@@ -14,18 +14,21 @@ use super::{
     data::DisclosedData,
     descriptor::{AdapterAuth, AdapterDescriptor},
     endpoint::Endpoint,
+    read::{GrantedRead, StageReader},
+    runtime::{Loaded, RuntimeGrant},
     secrets::{SecretKey, SecretStore, SecretValue},
     transport::{Method, RedirectPolicy, SendOptions, Transport, TransportRequest},
 };
 #[cfg(test)]
 use crate::ErrorKind;
 use crate::{
-    Error,
+    Cancel, Error,
     artifacts::{
         ArtifactId, ArtifactMeta, ArtifactRecord, ArtifactWriter, MAX_ARTIFACT_BYTES,
         PreparedArtifact,
         candidates::{CandidatePatch, CandidateShape, CandidateSink, Reservation},
     },
+    inference::{Generator, Session},
     jobs::JobControl,
 };
 use serde_json::{Map, Value};
@@ -110,6 +113,10 @@ pub struct ModuleContext {
     outcome: Arc<TaskOutcome>,
     /// Where a task that takes an asset publishes candidates; `None` for any other job.
     candidates: Option<CandidateSink>,
+    /// The models the task may load and use, by `local-runtime` capability.
+    runtimes: BTreeMap<String, RuntimeGrant>,
+    /// The stage a task that declares `reads` reads, as the owner planned it.
+    read: Option<GrantedRead>,
     control: Arc<JobControl>,
 }
 
@@ -124,6 +131,8 @@ impl std::fmt::Debug for ModuleContext {
             .field("sends", &self.sends.keys().collect::<Vec<_>>())
             .field("publishes", &self.writer.is_some())
             .field("candidates", &self.candidates.is_some())
+            .field("runtimes", &self.runtimes.keys().collect::<Vec<_>>())
+            .field("reads", &self.read.as_ref().map(|read| read.plan.boundary))
             .finish_non_exhaustive()
     }
 }
@@ -146,8 +155,22 @@ impl ModuleContext {
             writer: None,
             outcome: Arc::default(),
             candidates: None,
+            runtimes: BTreeMap::new(),
+            read: None,
             control,
         }
+    }
+
+    /// The model a `local-runtime` capability `capability_id` the task uses holds.
+    pub(crate) fn with_runtime(mut self, capability_id: &str, grant: RuntimeGrant) -> Self {
+        self.runtimes.insert(capability_id.to_owned(), grant);
+        self
+    }
+
+    /// The stage a task that declares `reads` reads, as the owner planned it.
+    pub(crate) fn with_read(mut self, read: GrantedRead) -> Self {
+        self.read = Some(read);
+        self
     }
 
     /// The module-level values and the secret fields the module declares.
@@ -393,6 +416,63 @@ impl ModuleContext {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn publish_candidate(&self, patch: CandidatePatch<'_>) -> Result<u8, Error> {
         self.reserve_candidate(patch.shape())?.publish(patch)
+    }
+
+    fn loaded(&self, capability_id: &str) -> Result<Loaded, Error> {
+        self.checkpoint()?;
+        let grant = self.runtimes.get(capability_id).ok_or_else(|| {
+            Error::validation(format!(
+                "module {} uses no local-runtime capability {capability_id} in this job",
+                self.module_id
+            ))
+        })?;
+        grant.acquire(self.cancel())
+    }
+
+    /// The tensor session a `local-runtime` capability the task uses holds: the resident one, or
+    /// opened now, here on the module lane, and kept in the host's slot for later tasks. Cheap once
+    /// resident. A capability that opens its model as a generator is a `validation` error.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn session(&self, capability_id: &str) -> Result<Arc<dyn Session>, Error> {
+        match self.loaded(capability_id)? {
+            Loaded::Session(session) => Ok(session),
+            Loaded::Generator(_) => Err(Error::validation(format!(
+                "capability {capability_id} holds a generator, not a session"
+            ))),
+        }
+    }
+
+    /// The generator a `local-runtime` capability the task uses holds, as [`Self::session`].
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn generator(&self, capability_id: &str) -> Result<Arc<dyn Generator>, Error> {
+        match self.loaded(capability_id)? {
+            Loaded::Generator(generator) => Ok(generator),
+            Loaded::Session(_) => Err(Error::validation(format!(
+                "capability {capability_id} holds a session, not a generator"
+            ))),
+        }
+    }
+
+    /// Open a reader of the stage the task declares it `reads`, which the owner planned when the
+    /// task was requested: reference reads of the asset's entry as it was then, on this lane,
+    /// whatever renderer the host draws with ([`super::read`]). Refused `resource-limit` while
+    /// another module reader is open, and `validation` for a task that declares no `reads`.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn stage_reader(&self) -> Result<StageReader<'_>, Error> {
+        self.checkpoint()?;
+        let read = self.read.as_ref().ok_or_else(|| {
+            Error::validation(format!(
+                "this job of module {} declares no stage it reads",
+                self.module_id
+            ))
+        })?;
+        StageReader::open(read, self.cancel())
+    }
+
+    /// The job's cancellation as a token, for work that takes one: a generator's steps, a
+    /// session's run and a stage read stop at their next boundary once the job is cancelled.
+    pub(crate) fn cancel(&self) -> &Cancel {
+        self.control.render_cancel()
     }
 
     /// Report progress: a fraction of 0 to 1 when the extent is known, and a short message.

@@ -93,6 +93,7 @@ impl CandidateProofModule {
                             .notes("linear: values code / 255 × 1.5 − 0.25 in linear light; srgb8: the codes as 8-bit sRGB"),
                     ],
                     apply: None,
+                    reads: None,
                 }],
                 ..ModuleDescriptor::default()
             },
