@@ -7,8 +7,10 @@
 //! - `job` is the merge lane's worker job, which composes those functions with the shared verified
 //!   source development, bounded spooling and durable derived storage; the command service
 //!   (`crate::api` `merge.*`) starts it and the owner publishes what it answers.
-//!
-//! Only `hdr` is a merge kind.
+//! - `providers` is the registry of the kinds this build can merge
+//!   ([`MergeKind`](crate::catalog_types::MergeKind)): `hdr` alone. The catalog records and
+//!   browses panoramas too, but a panorama request is `not-ready` until its provider is registered.
 
 pub mod hdr;
 pub(crate) mod job;
+pub(crate) mod providers;

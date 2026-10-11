@@ -90,3 +90,31 @@ fn usage_the_owners_interaction_table_agrees_with_the_inventory() {
         }
     }
 }
+
+/// A panorama merge is an explicit exemption, recorded in the inventory, and never counted as an
+/// HDR merge; an HDR merge, named or rerun without a kind, is `hdr-merge` as before.
+#[test]
+fn merge_kind_usage_exempts_panorama_merges_and_counts_hdr_merges() {
+    use crate::api::owner::usage_events::host_feature;
+    use serde_json::json;
+    for method in ["merge.create", "merge.rerun"] {
+        assert!(
+            host_feature(method, &json!({"kind": "panorama"})).is_none(),
+            "{method}"
+        );
+        for params in [json!({"kind": "hdr"}), json!({})] {
+            let (feature, _) = host_feature(method, &params).expect(method);
+            assert_eq!(feature, Feature::HdrMerge, "{method} {params}");
+        }
+        let (_, event) = inventoried()
+            .into_iter()
+            .find(|(name, _)| name == method)
+            .expect(method);
+        assert!(event.contains("hdr-merge"), "{method}: {event}");
+        let row = INVENTORY
+            .lines()
+            .find(|line| line.starts_with(&format!("| `{method}` |")))
+            .unwrap();
+        assert!(row.contains("panorama merge is exempt"), "{row}");
+    }
+}

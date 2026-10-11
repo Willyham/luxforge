@@ -167,7 +167,7 @@ impl Scene {
         let provenance = self.bench.provenance(inputs, DeghostMode::Auto);
         let source = self.bench.source(inputs.len() as u32);
         let folder = self.bench.folder();
-        let reference = provenance.reference().path.clone();
+        let reference = provenance.reference_input().path.clone();
         let at = self
             .bench
             .files
@@ -400,7 +400,8 @@ fn hdr_merge_browse_sources_show_the_result_once_over_its_collapsed_originals() 
     let first_rows = raw_rows(&live, client, &summary);
     assert_eq!(first_rows[0]["asset_id"], merge.result.as_str());
     assert_eq!(first_rows[0]["stack"]["merge_id"], merge.merge_id.as_str());
-    assert_eq!(first_rows[0]["stack"]["exposures"], 3);
+    assert_eq!(first_rows[0]["stack"]["size"], 3);
+    assert_eq!(first_rows[0]["stack"]["kind"], "hdr");
     assert_eq!(first_rows[0]["stack"]["expansion"], "collapsed");
 
     // The bracket's parent with its subfolders covers the same files: the same rows.
@@ -741,10 +742,7 @@ fn hdr_merge_browse_offline_and_unlisted_originals_have_provenance_rows() {
         json!({"merge_id": merge.merge_id}),
     );
     let originals = inspected["originals"].as_array().unwrap();
-    assert_eq!(
-        (inspected["exposures"].as_u64(), originals.len()),
-        (Some(3), 3)
-    );
+    assert_eq!((inspected["size"].as_u64(), originals.len()), (Some(3), 3));
     assert_eq!(originals[0]["availability"], "missing");
     assert!(originals[0].get("file_id").is_none());
     assert_eq!(originals[1]["asset_id"], developed.as_str());
@@ -1096,5 +1094,145 @@ fn hdr_merge_browse_a_replaced_set_refuses_the_publication_whole() {
     .unwrap();
     let picked = scene.pick("person", "pick-alone", &[3, 4]).unwrap();
     assert_eq!(scene.members(), [picked.result]);
+    scene.finish();
+}
+
+/// Browse reads a panorama stack, which this build cannot make, beside an HDR one: its rows carry
+/// its kind and size and no EV offset, and `stack.inspect` lists its originals without offsets
+/// and, since this build reads no panorama provenance, without a reference; HDR's reference comes
+/// from its provenance.
+#[test]
+fn merge_kind_browse_reads_a_panorama_stack_beside_an_hdr_one() {
+    let mut scene = Scene::new("panorama");
+    let hdr = scene.import(&[0, 1, 2]);
+    let connection = &scene.bench.service.connection;
+    let source: String = connection
+        .query_row(
+            "SELECT source_id FROM merges WHERE id = ?1",
+            [hdr.merge_id.as_str()],
+            |row| row.get(0),
+        )
+        .unwrap();
+    // A panorama of the two singles, led by the other folder's photograph, as a later build
+    // records one: its inputs have no EV offset.
+    let panorama = MergeId::new();
+    connection
+        .execute(
+            "INSERT INTO merges (id, kind, result_asset_id, source_id, match_key,
+                 provenance_json, created_ms)
+             VALUES (?1, 'panorama', ?2, ?3, 'key', ?4, 1)",
+            rusqlite::params![
+                panorama.as_str(),
+                scene.other.as_str(),
+                source,
+                json!({"format": 2, "kind": "panorama", "parameters": {"panorama": {}}})
+                    .to_string(),
+            ],
+        )
+        .unwrap();
+    for (ordinal, at) in [3, 4].into_iter().enumerate() {
+        connection
+            .execute(
+                "INSERT INTO merge_inputs (merge_id, ordinal, path, asset_id, offset_ev)
+                 VALUES (?1, ?2, ?3, NULL, NULL)",
+                rusqlite::params![panorama.as_str(), ordinal as i64, scene.path(at)],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "INSERT INTO stack_claims (path, merge_id) VALUES (?1, ?2)",
+                [scene.path(at), panorama.to_string()],
+            )
+            .unwrap();
+    }
+    connection
+        .execute(
+            "INSERT INTO merge_stacks (merge_id, state) VALUES (?1, 'active')",
+            [panorama.as_str()],
+        )
+        .unwrap();
+    let bracket = scene.bracket();
+    let live = scene.live();
+    let client = live.owner.register();
+    let folder = json!({"source": {"kind": "folder", "path": bracket}});
+    let (summary, shown) = view(&live, client, folder);
+    assert_eq!(
+        sorted(shown),
+        [
+            "DSC_0002 HDR leader collapsed=3",
+            "IMG_0001.JPG leader collapsed=2"
+        ]
+    );
+    let rows = raw_rows(&live, client, &summary);
+    let led = |merge: &MergeId| {
+        rows.iter()
+            .find(|row| row["stack"]["merge_id"] == merge.as_str())
+            .unwrap()["stack"]
+            .clone()
+    };
+    assert_eq!(
+        (&led(&hdr.merge_id)["kind"], &led(&hdr.merge_id)["size"]),
+        (&json!("hdr"), &json!(3))
+    );
+    assert_eq!(
+        (&led(&panorama)["kind"], &led(&panorama)["size"]),
+        (&json!("panorama"), &json!(2))
+    );
+    let expanded = ok(
+        &live,
+        client,
+        "stack.set-expanded",
+        json!({"merge_id": panorama, "expansion": "expanded"}),
+    );
+    let originals: Vec<Value> = raw_rows(&live, client, &expanded)
+        .into_iter()
+        .filter(|row| row["stack"]["role"] == "original")
+        .map(|row| row["stack"].clone())
+        .collect();
+    assert_eq!(originals.len(), 2, "{originals:?}");
+    for original in &originals {
+        assert_eq!(original["kind"], "panorama");
+        assert!(original.get("offset_ev").is_none(), "{original}");
+    }
+
+    let inspected = ok(
+        &live,
+        client,
+        "stack.inspect",
+        json!({"merge_id": panorama}),
+    );
+    assert_eq!(
+        (&inspected["kind"], &inspected["size"]),
+        (&json!("panorama"), &json!(2))
+    );
+    for original in inspected["originals"].as_array().unwrap() {
+        assert!(original.get("offset_ev").is_none(), "{original}");
+        assert!(original.get("reference").is_none(), "{original}");
+    }
+    let inspected = ok(
+        &live,
+        client,
+        "stack.inspect",
+        json!({"merge_id": hdr.merge_id}),
+    );
+    let offsets: Vec<&Value> = inspected["originals"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|original| &original["offset_ev"])
+        .collect();
+    assert_eq!(offsets, [&json!(-1.0), &json!(0.0), &json!(1.0)]);
+    assert_eq!(inspected["originals"][1]["reference"], true);
+    // The panorama's provenance is kept as it was written, and read as incompatible.
+    let refused = call(
+        &live,
+        client,
+        "merge.inspect",
+        json!({"merge_id": panorama}),
+    )
+    .unwrap_err();
+    assert_eq!(refused.0, "incompatible", "{refused:?}");
+    drop(live);
+    scene.bench.service = EditorService::open(&scene.bench.catalog).unwrap();
     scene.finish();
 }

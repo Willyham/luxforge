@@ -12,10 +12,16 @@ use crate::{
         owner::{OwnerMessage, catalog::CatalogMessage, library::LibraryMessage},
     },
     artifacts::derived_source::read_derived_source,
-    catalog_types::MergeProvenance,
+    catalog_types::{HdrResolution, MergeProvenance, MergeResolution},
     merge::hdr::{ExposureOrigin, MetadataSource, ReferenceOrigin},
 };
 use std::{sync::atomic::AtomicBool, thread::JoinHandle};
+
+/// An HDR merge's resolution, inside its kind's tag.
+fn resolution(provenance: &MergeProvenance) -> &HdrResolution {
+    let MergeResolution::Hdr(resolved) = &provenance.resolved;
+    resolved
+}
 
 // The generator, compiled in from its one source: the core cannot name `luxforge-testkit`, which
 // depends on it. Its `Bracket::write`, which every test here calls before reading a frame, admits
@@ -344,7 +350,7 @@ impl Merging {
         );
         let folder_id = created["folder"]["id"].clone();
         let targets = json!({"kind": "paths", "paths": self.paths});
-        let plan = self.ok("merge.plan", json!({"targets": targets}));
+        let plan = self.ok("merge.plan", json!({"kind": "hdr", "targets": targets}));
         let job = self.ok(
             "merge.create",
             json!({
@@ -452,7 +458,7 @@ const REGISTERED_PX: f64 = 0.25;
 /// fit is within its own uncertainty of no motion, and within [`REGISTERED_PX`] at every frame
 /// corner of a handheld frame's generated motion.
 fn assert_registered(bracket: &Bracket, provenance: &MergeProvenance) {
-    let registration = &provenance.resolved.registration;
+    let registration = &resolution(provenance).registration;
     for (at, frame) in bracket.frames().iter().enumerate() {
         let transform = &registration.inputs[at].transform;
         if frame.motion == hdr_bracket::Rigid::IDENTITY {
@@ -482,7 +488,7 @@ fn assert_registered(bracket: &Bracket, provenance: &MergeProvenance) {
 /// The merged result, opened through `source.prepare`, against the scene's ground truth over its
 /// coverage, in the merged tolerance.
 fn compare_result(merging: &Merging, result: &Value, provenance: &MergeProvenance) -> Comparison {
-    let coverage = &provenance.resolved.coverage;
+    let coverage = &resolution(provenance).coverage;
     let image = merging.result_planes(&result["result_asset_id"]);
     assert_eq!(
         (image.width(), image.height()),
@@ -558,7 +564,7 @@ fn hdr_merge_end_to_end_merges_a_still_bracket_to_its_ground_truth() {
         (range[0] + 2.0).abs() < 1e-6 && (range[1] - 2.0).abs() < 1e-6,
         "{range:?}"
     );
-    let resolved = &provenance.resolved;
+    let resolved = resolution(&provenance);
     assert_eq!(resolved.exposures.reference, 0);
     assert_eq!(
         resolved.exposures.reference_origin,
@@ -634,7 +640,7 @@ fn hdr_merge_end_to_end_aligns_and_deghosts_a_handheld_bracket() {
     let merging = Merging::new("handheld", &spec);
     let (_, result, provenance) = merging.merge();
     let bracket = &merging.bracket;
-    let resolved = &provenance.resolved;
+    let resolved = resolution(&provenance);
     assert_eq!(resolved.exposures.reference, 0);
     assert_registered(bracket, &provenance);
     let coverage = &resolved.coverage;
@@ -707,7 +713,7 @@ fn merges_a_bracket(name: &str, spec: &BracketSpec) {
     assert_eq!(plan["suitable"], true, "{plan}");
     assert_eq!(plan["needs_fit"], false, "{plan}");
     let bracket = &merging.bracket;
-    let resolved = &provenance.resolved;
+    let resolved = resolution(&provenance);
     assert_eq!(resolved.exposures.reference, 0);
     for (at, frame) in bracket.frames().iter().enumerate() {
         let exposure = &resolved.exposures.inputs[at];
