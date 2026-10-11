@@ -21,6 +21,8 @@ const FULL_COMMANDS: &[&str] = &[
     "lensfun-import",
     "inventory",
     "package",
+    "release-build",
+    "release-sign",
     "editor-acceptance",
     "editor-performance",
     "detail-performance",
@@ -30,6 +32,7 @@ const FULL_COMMANDS: &[&str] = &[
     "verify",
     "check-capture",
     "catalog-measure",
+    "usage-measure",
     "hardening",
     "measure",
     "preview-error",
@@ -68,6 +71,20 @@ fn main_result() -> Result<ExitCode> {
     let op = original.first().cloned().unwrap_or_else(|| "help".into());
     let mut a = Args(original.iter().skip(1).cloned().collect());
     match op.to_str().ok_or("Invalid command")? {
+        "release" => xtask_cli::release::run(&root, &mut a)?,
+        "release-tag" => xtask_cli::release_tag::run(&mut a)?,
+        "release-assemble" => {
+            let tag = a.value("--tag")?.ok_or("Required: --tag")?;
+            let input = a.path("--input")?;
+            let out = a.path("--output")?;
+            a.done()?;
+            xtask_cli::release_artifacts::assemble(
+                &root,
+                &input,
+                &out,
+                tag.to_str().ok_or("Tag encoding")?,
+            )?;
+        }
         "check" => {
             let quick = a.flag("--quick");
             a.done()?;
@@ -172,6 +189,9 @@ mod tests {
         routes.extend(
             [
                 "check",
+                "release",
+                "release-tag",
+                "release-assemble",
                 "check-repository",
                 "test",
                 "build",

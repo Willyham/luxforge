@@ -24,6 +24,7 @@ use crate::{
     artifacts::{
         ArtifactId, ArtifactMeta, ArtifactRecord, ArtifactWriter, MAX_ARTIFACT_BYTES,
         PreparedArtifact,
+        candidates::{CandidatePatch, CandidateShape, CandidateSink, Reservation},
     },
     jobs::JobControl,
 };
@@ -107,6 +108,8 @@ pub struct ModuleContext {
     /// Where a task publishes artifacts; `None` for a job that publishes none.
     writer: Option<ArtifactWriter>,
     outcome: Arc<TaskOutcome>,
+    /// Where a task that takes an asset publishes candidates; `None` for any other job.
+    candidates: Option<CandidateSink>,
     control: Arc<JobControl>,
 }
 
@@ -120,6 +123,7 @@ impl std::fmt::Debug for ModuleContext {
             .field("resources", &self.resources.keys().collect::<Vec<_>>())
             .field("sends", &self.sends.keys().collect::<Vec<_>>())
             .field("publishes", &self.writer.is_some())
+            .field("candidates", &self.candidates.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -141,6 +145,7 @@ impl ModuleContext {
             sends: BTreeMap::new(),
             writer: None,
             outcome: Arc::default(),
+            candidates: None,
             control,
         }
     }
@@ -183,6 +188,12 @@ impl ModuleContext {
     ) -> Self {
         self.writer = Some(writer);
         self.outcome = outcome;
+        self
+    }
+
+    /// Publish candidates into `sink`'s store, for the job and asset it names.
+    pub(crate) fn with_candidates(mut self, sink: CandidateSink) -> Self {
+        self.candidates = Some(sink);
         self
     }
 
@@ -353,6 +364,35 @@ impl ModuleContext {
             published.push((record, prepared));
         }
         Ok(id)
+    }
+
+    /// Admit one candidate of `shape` before making it: the host charges its bytes against the
+    /// job's four candidates of 64 MiB and the 1 GiB held across jobs, releasing the oldest finished
+    /// job's live candidates (`budget`) when that makes room, and refuses it `resource-limit`
+    /// otherwise, so a producer asks before it allocates. Only a task that takes an asset publishes
+    /// candidates. The reservation is published with [`Reservation::publish`]; dropping it returns
+    /// its bytes.
+    pub(crate) fn reserve_candidate(&self, shape: CandidateShape) -> Result<Reservation, Error> {
+        self.checkpoint()?;
+        let sink = self.candidates.as_ref().ok_or_else(|| {
+            Error::validation(format!(
+                "this job of module {} publishes no candidates: only a task that takes an asset does",
+                self.module_id
+            ))
+        })?;
+        sink.store.reserve(sink, shape)
+    }
+
+    /// Publish one candidate patch: a disposable result of this job, which a client reads in chunks
+    /// and accepts or releases, never an artifact until it is accepted. The host admits it
+    /// ([`Self::reserve_candidate`]), validates its rectangle against the asset's content pixels,
+    /// every value and coverage, its preview, label and provenance, converts it to the stored
+    /// `repair-patch` form here, on the worker, and writes it under the artifact root's
+    /// `tmp/candidates/`. Returns its number, `0..=3`.
+    /// The proof producer reserves first; a producer that has its patch in hand calls this.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn publish_candidate(&self, patch: CandidatePatch<'_>) -> Result<u8, Error> {
+        self.reserve_candidate(patch.shape())?.publish(patch)
     }
 
     /// Report progress: a fraction of 0 to 1 when the extent is known, and a short message.

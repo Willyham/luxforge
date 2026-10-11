@@ -75,13 +75,15 @@ Import from and alignment with Lightroom Classic.
 
 ### Project (`project/`)
 
-Owner decisions, host services and repository upkeep.
+Owner decisions, release preparation, host services and repository upkeep.
 
 | Plan | Purpose |
 | --- | --- |
 | [Dependency advisories](project/dependency-advisories.json) | Remove or re-review the two expiring advisory exceptions the dependency audit enforces |
 | [Product decisions](project/product-decisions.json) | Open product questions |
-| [Optional usage statistics](project/usage-statistics.json) ([design](../docs/design/usage-statistics.md)) | Planned once-only opt-in and Settings Privacy controls, protected consent, random persistent ID and approved device details, full-app timelines of typed events linked by installation, session and keyed per-image ID without PII/IP tracking/photo contents or metadata, no hourly/daily caps, bounded best-effort HTTPS batches, production activation off until the real endpoint is deployed, and an independent open-source backend reference; working client before final native/privacy/live qualification. Implementation is not authorized |
+| [Tag-triggered builds](project/tag-release-builds.json) ([design](../docs/design/tag-release-builds.md)) | Implemented guarded one-command initiation from clean synchronized main, versioned macOS/Linux build candidates, short/full SemVer tag identity, optional signing/notarization, integrity checks and automatic pre-release CI; hosted credentials and actual hosted/native qualification remain external inputs |
+| [v0.1 release preparation](project/release-v0-1.json) ([design](../docs/design/release-v0.1.md)) | Version/identity, complete source/notices, distribution advisory review, macOS bundle/signing and Linux tarball/desktop integration, packet verification/pre-release publication, installation/help and final native/corpus/install qualification; macOS and Linux chosen together; paid Apple membership active, signing setup reported complete with profile `luxforge-notarization`, identity/profile validation and native Linux qualification outstanding, owner-pushed tags request automatic pre-release publication |
+| [Optional usage statistics](project/usage-statistics.json) ([design](../docs/design/usage-statistics.md)) | Planned once-only opt-in and Settings Privacy controls, protected consent, random persistent ID and approved device details, full-app timelines of typed events linked by installation, session and keyed per-image ID without PII/IP tracking/photo contents or metadata, no hourly/daily caps, bounded best-effort HTTPS batches, production activation off until the real endpoint is deployed, and an independent open-source backend reference; working client before final native/privacy/live qualification. Working client, backend journey and M4 qualification implemented; RAW corpus, Windows/Linux and live activation remain |
 
 The post-consolidation programme, the Tone curve, Detail, Lens and perspective and the live-session CLI are complete and their plans are deleted; their outcome lives in the specs, their designs and [feature status](../docs/features.md).
 

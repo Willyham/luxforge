@@ -415,7 +415,7 @@ fn api_draft_view_workspace_preview_palette_and_pick_round_trip() {
         (json!({"settings":{}}), "missing field `open`"),
         (
             json!({"settings":{"open":true,"tab":"colours"}}),
-            "settings tab must be one of general, appearance, experiments, not \"colours\"",
+            "settings tab must be one of general, appearance, experiments, privacy, not \"colours\"",
         ),
         (
             json!({"settings":{"open":false,"tab":"general"}}),
@@ -1384,5 +1384,71 @@ fn a_key_step_takes_a_chord_written_as_an_action_shortcut() {
     ] {
         let written = write(&[Step::key(key)]);
         assert!(parse(&written.to_string()).is_err(), "{key}");
+    }
+}
+
+#[test]
+fn usage_steps_round_trip_and_refuse_what_they_do_not_take() {
+    let steps = round_trip(json!([
+        {"usage": "notice"},
+        {"usage": {"answer": "share"}},
+        {"usage": {"answer": "decline"}},
+        {"settings": {"open": true, "tab": "privacy"}},
+        {"usage": {"share": false}},
+        {"usage": {"details": true}},
+        {"usage": {"advance": 660}},
+        {"usage": {"await": {"accepted": 1, "edited": true, "timeout_ms": 20000}}},
+        {"open": {"path": "fixtures/a.jpg"}},
+    ]));
+    assert_eq!(steps[6], Step::from(UsageStep::Advance(660)));
+    assert_eq!(
+        steps[7],
+        Step::from(UsageStep::Await(UsageAwait {
+            accepted: Some(1),
+            edited: true,
+            timeout_ms: Some(20_000),
+            ..UsageAwait::default()
+        }))
+    );
+    assert_eq!(
+        steps[8],
+        Step::Open {
+            path: "fixtures/a.jpg".into()
+        }
+    );
+    assert_eq!(steps[0], Step::from(UsageStep::Notice));
+    assert_eq!(steps[1], Step::from(UsageStep::Answer(NoticeAnswer::Share)));
+    assert_eq!(steps[3], Step::settings_tab("privacy"));
+    assert_eq!(steps[4], Step::from(UsageStep::Share(false)));
+    for (script, expected) in [
+        (
+            json!({"usage": {"answer": "maybe"}}),
+            "unknown variant `maybe`",
+        ),
+        (json!({"usage": {"share": "yes"}}), "expected a boolean"),
+        (json!({"usage": "reset"}), "unknown variant `reset`"),
+        (
+            json!({"usage": {"advance": 0}}),
+            "usage advance takes whole seconds",
+        ),
+        (
+            json!({"usage": {"await": {}}}),
+            "needs at least one condition",
+        ),
+        (
+            json!({"usage": {"await": {"accepted": 1, "timeout_ms": 60000}}}),
+            "timeout_ms takes an integer",
+        ),
+        (
+            json!({"usage": {"await": {"sent": 1}}}),
+            "unknown field `sent`",
+        ),
+        (json!({"open": {"path": ""}}), "open path"),
+        (
+            json!({"settings": {"open": true, "tab": "telemetry"}}),
+            "settings tab must be one of general, appearance, experiments, privacy",
+        ),
+    ] {
+        refused(json!([script]), expected);
     }
 }

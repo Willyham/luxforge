@@ -174,6 +174,9 @@ pub(crate) struct SyncResult {
     /// A `theme.*` method changed the theme library, which the desktop lists again whether or not
     /// the sheet is open.
     pub(crate) themes: bool,
+    /// A `usage.*` method changed the usage statistics consent, which an eligible desktop reads
+    /// again.
+    pub(crate) usage: bool,
     /// This desktop's own requests whose events the poll read and skipped, because the answer to
     /// each had already read its change back.
     pub(crate) own: Vec<String>,
@@ -192,6 +195,7 @@ impl SyncResult {
             flags: false,
             preferences: false,
             themes: false,
+            usage: false,
             own: Vec::new(),
         }
     }
@@ -1852,6 +1856,30 @@ pub(crate) fn transform_task(
     )
 }
 
+/// [`transform_task`] answered as `answer` says: the Corrections workspace's pins ask for the map
+/// of the entry on screen through the same `render.transform`, answered to their own seam.
+pub(crate) fn transform_task_to(
+    owner: OwnerHandle,
+    client: ClientId,
+    gesture: GestureId,
+    asset_id: AssetId,
+    entry_id: Option<EntryId>,
+    answer: fn(GestureId, Result<MappingDescriptor, String>) -> Message,
+) -> Task<Message> {
+    owner_task(
+        move || {
+            let (transform, _) = call(
+                &owner,
+                client,
+                "render.transform",
+                json!({"asset_id":asset_id,"entry_id":entry_id}),
+            )?;
+            parse::<MappingDescriptor>(transform)
+        },
+        move |result| answer(gesture, result),
+    )
+}
+
 pub(crate) fn session_task(
     owner: OwnerHandle,
     client: ClientId,
@@ -2105,6 +2133,12 @@ pub(crate) fn sync_now(
             .events
             .iter()
             .any(|event| event.method.starts_with("theme."));
+    // A consent change touches no asset: it alone reads the consent again.
+    let usage = events.gap
+        || events
+            .events
+            .iter()
+            .any(|event| event.method.starts_with("usage."));
     let asset = held.as_ref().is_some_and(|(asset_id, held)| {
         events.gap
             || events.events.iter().any(|event| {
@@ -2135,6 +2169,7 @@ pub(crate) fn sync_now(
         flags,
         preferences,
         themes,
+        usage,
         own: read.into_iter().map(|event| event.request_id).collect(),
     })
 }
@@ -2870,6 +2905,7 @@ mod tests {
             flags: false,
             preferences: false,
             themes: false,
+            usage: false,
             own: Vec::new(),
         };
         let _ = editor.update(Message::Sync(SyncMessage::Synced(Ok(stale))));

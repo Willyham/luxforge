@@ -191,6 +191,20 @@ pub struct GpuSpatial {
     /// by every unit's reach ([`GpuSpatial::pass_rect`]), and an incremental tick's only over its
     /// change grown unit by unit. An operation that names no halo for a unit runs whole.
     pub halos: Vec<u32>,
+    /// Its output changes only inside the change the plan names for its input: a repair step,
+    /// whose plan computes where its operations' changes reach, a Heal's whole patch and every
+    /// later operation reading it included. It still runs whole, but the links after it run over
+    /// that change alone, not the whole boundary.
+    pub contained: bool,
+    /// Shared storage blocks packed before the program's, in order: data a tick hands again
+    /// unchanged, such as a repair step's frozen patches. The program reads them below its own
+    /// block's base, the first [`Self::resident_len`] words before it. A tick that hands the same
+    /// allocations at the same place neither compares nor writes them ([`super::blocks`]), and a
+    /// link's keys take `resident_key`, which the caller derives from their content, rather than
+    /// hashing their words every tick. Empty for every other step.
+    pub resident: Vec<std::sync::Arc<[u32]>>,
+    /// The content key of `resident`.
+    pub resident_key: u64,
 }
 
 /// A half-open rectangle `[x0, x1) × [y0, y1)` of a boundary's texels or of a plane's.
@@ -328,7 +342,13 @@ impl GpuSpatial {
         self.mask_words() + self.program.words.len()
     }
 
-    /// The block words the step packs: the program's, then the mask's.
+    /// The resident blocks' words, packed before the program's block ([`Self::resident`]).
+    pub fn resident_len(&self) -> usize {
+        self.resident.iter().map(|block| block.len()).sum()
+    }
+
+    /// The block words the step packs from its base: the program's, then the mask's. Its resident
+    /// blocks come before the base ([`Self::resident_len`]).
     pub fn block_count(&self) -> usize {
         self.program.block.len() + self.coverage().map_or(0, |coverage| coverage.block_count())
     }
@@ -2648,7 +2668,7 @@ impl Schedule {
                 // Its passes read its program's words and blocks, not its mask's.
                 let program = own.get(spatial.mask_words()..).unwrap_or(&[]);
                 let program_blocks = own_blocks.get(..spatial.program.block.len()).unwrap_or(&[]);
-                let inward = hash_of((upstream, position, program_blocks));
+                let inward = hash_of((upstream, position, program_blocks, spatial.resident_key));
                 let texture = |plane: u32| {
                     textures
                         .location(index, plane)
@@ -2658,7 +2678,15 @@ impl Schedule {
                 // A later step's source runs this one's applies over the planes they read.
                 let identities: Vec<bool> =
                     spatial.applies.iter().map(|apply| apply.identity).collect();
-                upstream = hash_of((upstream, position, own, own_blocks, identities, keys));
+                upstream = hash_of((
+                    upstream,
+                    position,
+                    own,
+                    own_blocks,
+                    spatial.resident_key,
+                    identities,
+                    keys,
+                ));
             } else {
                 upstream = hash_of((upstream, position, own, own_blocks));
             }

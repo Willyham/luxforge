@@ -1,7 +1,7 @@
 //! The registry a run serves and where the capability host keeps its state.
 use super::{
     gpu_tiles::{AdapterNaming, GpuTiles},
-    lifecycle::host_config,
+    lifecycle::{host_config, usage_eligibility},
 };
 use crate::Config;
 use luxforge_core::ModuleRegistry;
@@ -36,8 +36,8 @@ fn desktop_registry_contains_every_core_builtin_including_raw() {
     })
     .unwrap();
     for id in [
-        "luxforge.pixel",
         "luxforge.controls",
+        "luxforge.candidates",
         "luxforge.capabilities",
     ] {
         assert!(ids(&developer).contains(&id.to_owned()), "{id}");
@@ -301,4 +301,43 @@ fn the_windows_naming_follows_the_launchs() {
     assert!(!refused.adopt_adapter("Metal", "Apple M4 Pro", AdapterNaming::Launch));
     assert_eq!(named(&refused), None);
     assert!(!confirmed.started() && !replaced.started() && !refused.started());
+}
+
+/// Only an evidence run given a loopback test receiver shows the usage statistics notice and the
+/// Privacy tab; every other launch is ineligible while the production switch is off, and the test
+/// receiver is never the production destination.
+#[test]
+fn usage_only_an_evidence_run_with_a_test_receiver_is_eligible() {
+    use luxforge_core::usage::{DESTINATION, Reason, TestReceiver};
+    let evidence = Some(std::path::PathBuf::from("/evidence"));
+    for config in [
+        Config::default(),
+        Config {
+            evidence: evidence.clone(),
+            ..Config::default()
+        },
+        Config {
+            hidden: true,
+            ..Config::default()
+        },
+        Config {
+            developer: true,
+            ..Config::default()
+        },
+    ] {
+        let eligibility = usage_eligibility(&config);
+        assert_eq!(eligibility.reason(), Some(Reason::InactiveDestination));
+        assert!(!host_of(&config).usage_consent.eligibility().is_eligible());
+    }
+    let receiver = "http://127.0.0.1:9/v1/usage/batches";
+    let test = Config {
+        evidence,
+        usage_receiver: Some(TestReceiver::loopback(receiver).unwrap()),
+        ..Config::default()
+    };
+    let host = host_of(&test);
+    assert!(host.usage_consent.eligibility().is_eligible());
+    assert_eq!(host.usage_consent.eligibility().destination(), receiver);
+    assert_ne!(host.usage_consent.eligibility().destination(), DESTINATION);
+    assert!(TestReceiver::loopback(DESTINATION).is_err());
 }

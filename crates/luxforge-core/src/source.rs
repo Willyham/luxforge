@@ -1815,8 +1815,8 @@ mod tests {
 mod jpeg_tests {
     use super::*;
     use crate::{
-        AssetId, Layer, ModuleRegistry, Orientation, RECIPE_FORMAT, Recipe, Snapshot, SnapshotId,
-        Transform, render::testing::render,
+        Layer, ModuleRegistry, Orientation, RECIPE_FORMAT, Recipe, SnapshotId, Transform,
+        render::testing::render,
     };
 
     fn fixture(name: &str) -> std::path::PathBuf {
@@ -1959,30 +1959,6 @@ mod jpeg_tests {
                 }
             }
             assert_eq!(std::fs::read(path).unwrap(), original);
-        }
-    }
-
-    #[test]
-    fn pixel_edits_use_upright_coordinates_for_every_exif_orientation() {
-        for orientation in 1..=8 {
-            let path = fixture(&format!("orientation-{orientation}.jpg"));
-            let bytes = std::fs::read(&path).unwrap();
-            let source = open_source(&path).unwrap();
-            let snapshot = Snapshot::original(AssetId::new())
-                .append(Layer::pixel(source.width - 1, source.height - 1, [1, 2, 3]))
-                .unwrap();
-            let raster = render(
-                &ModuleRegistry::developer(),
-                &source,
-                snapshot.id,
-                &snapshot.recipe,
-            )
-            .unwrap();
-            assert_eq!(
-                raster.pixel(source.width - 1, source.height - 1),
-                Some([1, 2, 3, 255])
-            );
-            assert_eq!(std::fs::read(path).unwrap(), bytes);
         }
     }
 

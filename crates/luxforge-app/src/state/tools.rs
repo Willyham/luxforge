@@ -949,6 +949,12 @@ pub(crate) fn derive(inputs: &Inputs<'_>) -> ToolsModel {
         if module.developer && !inputs.developer {
             continue;
         }
+        // The brush workspace's band stands in for its section while its mode is active.
+        if inputs.session.workspace.mode == module.id
+            && crate::state::corrections::is_brush_mode(inputs.modules, &module.id)
+        {
+            continue;
+        }
         let target = if module.developer {
             &mut developer
         } else {
@@ -1037,8 +1043,8 @@ fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionModel {
     SectionModel {
         module_id: module.id.clone(),
         title: module.title.clone(),
-        hint: module.hint.clone(),
-        expanded,
+        hint: brush_hint(module, inputs).or_else(|| module.hint.clone()),
+        expanded: expanded && !crate::state::corrections::is_brush_mode(inputs.modules, &module.id),
         active,
         unavailable,
         // The reset is declared, so it is always drawn: a section that cannot edit (a historical
@@ -1065,6 +1071,22 @@ fn section(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> SectionModel {
                 None => SectionMark::Section,
             }),
     }
+}
+
+/// A brush workspace's collapsed hint: what its layer's provider says of the displayed entry
+/// (`5 corrections`), while the layer holds anything.
+fn brush_hint(module: &ModuleDescriptor, inputs: &Inputs<'_>) -> Option<String> {
+    if !matches!(module.canvas, Some(CanvasInteraction::BrushMask { .. })) {
+        return None;
+    }
+    inputs
+        .document
+        .recipe
+        .as_ref()?
+        .layers
+        .iter()
+        .find(|row| !row.neutral && module.effects.iter().any(|effect| effect.id == row.effect))
+        .map(|row| row.summary.clone())
 }
 
 /// The control models of one module's section: its declared controls, then the host's crop-frame
@@ -1149,7 +1171,10 @@ pub(crate) fn controls_of<'a>(
 pub(crate) fn draws_section(module: &ModuleDescriptor) -> bool {
     !module.controls.is_empty()
         || capabilities::declares(module)
-        || matches!(module.canvas, Some(CanvasInteraction::CropFrame { .. }))
+        || matches!(
+            module.canvas,
+            Some(CanvasInteraction::CropFrame { .. } | CanvasInteraction::BrushMask { .. })
+        )
 }
 
 /// The controls of the one group a stacked module's controls consist of, when that is their whole
@@ -2788,19 +2813,24 @@ pub(crate) fn module_of<'a>(
     modules.iter().find(|module| module.id == id)
 }
 
-/// The first available module that declares a plain canvas point pick: its action and coordinate
-/// parameters. Dispatch goes through [`canvas_pick`], which answers for the mode that is actually
-/// on screen; this is the tests' way of naming the one module that declares a point pick without
-/// hard-coding it.
+/// The first available module that declares a plain canvas point pick, one that only fills its
+/// coordinate parameters and commits nothing: its action and coordinate parameters. Dispatch goes
+/// through [`canvas_pick`], which answers for the mode that is actually on screen; this is the
+/// tests' way of naming the module that declares such a pick without hard-coding it.
 #[cfg(test)]
 pub(crate) fn point_pick(modules: &[ModuleDescriptor]) -> Option<(&str, &str, &str)> {
     modules.iter().find_map(|module| match &module.canvas {
-        Some(CanvasInteraction::PointPick { action, x, y, .. }) if module.is_available() => {
-            Some((action.as_str(), x.as_str(), y.as_str()))
-        }
+        Some(CanvasInteraction::PointPick {
+            action,
+            x,
+            y,
+            commit: false,
+            ..
+        }) if module.is_available() => Some((action.as_str(), x.as_str(), y.as_str())),
         Some(CanvasInteraction::PointPick { .. })
         | Some(CanvasInteraction::SampleApply { .. })
         | Some(CanvasInteraction::CropFrame { .. })
+        | Some(CanvasInteraction::BrushMask { .. })
         | None => None,
     })
 }
@@ -2892,7 +2922,7 @@ pub(crate) fn canvas_pick<'a>(
             y: y.as_str(),
             action: action.as_str(),
         }),
-        CanvasInteraction::CropFrame { .. } => None,
+        CanvasInteraction::CropFrame { .. } | CanvasInteraction::BrushMask { .. } => None,
     }
 }
 
@@ -3051,6 +3081,11 @@ pub(crate) fn palette_entries(
                 CanvasInteraction::PointPick { .. } | CanvasInteraction::SampleApply { .. } => {
                     picks.contains(&module.id.as_str())
                 }
+                // As the mode strip: a declared brush is offered when it binds an editable list,
+                // which is what the Corrections workspace draws.
+                CanvasInteraction::BrushMask { .. } => {
+                    crate::state::corrections::is_brush_mode(modules, &module.id)
+                }
             };
             if reachable {
                 entries.push((
@@ -3174,8 +3209,8 @@ mod tests {
             .into_iter()
             .cloned()
             .collect();
-        // The RAW sensor picker and the pixel proof both declare a plain point pick, and each
-        // answers only for its own mode. RAW's declares that the pick commits; the proof's fills.
+        // The RAW sensor picker declares a plain point pick that commits, and answers only for
+        // its own mode.
         assert_eq!(
             canvas_pick(&modules, "luxforge.raw"),
             Some(CanvasPick::Point {
@@ -3183,15 +3218,6 @@ mod tests {
                 x: "x",
                 y: "y",
                 commit: true,
-            })
-        );
-        assert_eq!(
-            canvas_pick(&modules, "luxforge.pixel"),
-            Some(CanvasPick::Point {
-                action: "set-pixel",
-                x: "x",
-                y: "y",
-                commit: false,
             })
         );
         // Basic's neutral picker is a sample-apply pick: a query first, then one command.
@@ -3238,8 +3264,8 @@ mod tests {
             "a patch action declares more than one field; it drafts for the other reason"
         );
         // An action with a second parameter cannot send one field alone, so its slider does not
-        // draft: the crop rectangle, the pixel proof's coordinates and colour.
-        for (action, parameter) in [("crop", "angle"), ("set-pixel", "x"), ("set-pixel", "y")] {
+        // draft: the crop rectangle.
+        for (action, parameter) in [("crop", "angle"), ("crop", "x"), ("crop", "y")] {
             assert!(
                 !drafts(&modules, action, parameter),
                 "{action}.{parameter} is one field of several"

@@ -50,6 +50,7 @@ mod previews;
 mod profile;
 mod proxy;
 mod render;
+mod repair;
 pub mod resources;
 /// Generated catalogs and indexes, written in bulk for `cargo xtask generate-catalog` and tests.
 pub mod seed;
@@ -59,6 +60,8 @@ pub mod theme;
 /// The service that answers every pixel read off the catalog owner and renders an export's bands:
 /// the contract a host's GPU provider implements, and the reference renderer's own service.
 pub mod tiles;
+/// Optional usage and performance statistics: consent, typed events and bounded delivery.
+pub mod usage;
 
 // The public surface: what the desktop, `luxforge-json`, `luxforge-net`, `luxforge-testkit`, xtask
 // and this crate's integration tests name through the crate root, and every type a public item's
@@ -72,7 +75,10 @@ pub use api::{
     Renderer, RendererReason, RendererRecord, RevisionOf, RunningSession, ViewSelection,
     WorkspaceState, live_session_file, running_sessions, schemas, serve_json_lines_with,
 };
-pub use artifacts::{ArtifactId, ArtifactTable, PreparedArtifact};
+pub use artifacts::{
+    ArtifactId, ArtifactTable, CandidatePart, CandidateRead, CandidateState, PATCH_FORMAT,
+    PREVIEW_FORMAT, PreparedArtifact, PreviewSize, ReleaseReason,
+};
 pub use cancel::{Cancel, ProgressCounts};
 pub use capabilities::context::ModuleContext;
 pub use capabilities::host::HostConfig;
@@ -80,42 +86,43 @@ pub use capabilities::redact::redact_params;
 pub use cpu_proxy::{ProxyApproximation, ProxyOutcome};
 pub use draft::{Draft, DraftTarget, declared_target};
 pub use editor::{
-    ActionResult, AssetRecord, DraftStamp, EditorService, EditorState, Evaluation, FirstOpen,
-    HistoryPage, LayerDescription, Lineage, LineageStep, MASK_FIELD, MutationOutcome,
-    MutationResult, PixelInput, PixelSample, RawInterpretation, RecipeDescription, SkippedSetting,
-    SourceKind, SourceTag, Version,
+    ActionResult, AssetRecord, BatchStaleAcknowledgement, DraftStamp, EditorService, EditorState,
+    Evaluation, FirstOpen, HistoryPage, LayerDescription, Lineage, LineageStep, MASK_FIELD,
+    MutationOutcome, MutationResult, PixelInput, PixelSample, RawInterpretation, RecipeDescription,
+    SkippedSetting, SourceKind, SourceTag, StaleAcknowledgement, Version, operations_limit,
 };
 pub use error::{AnalysisRefusal, Error, ErrorKind, Preparation, PreparationNeeds};
 pub use export::{CaptureInfo, CaptureMetadata};
 pub use mask::MASK_GPU_PROGRAMS;
 pub use model::{
-    AssetId, COMPONENTS_PER_MASK, Component, ComponentId, ComponentMode, DraftId, EFFECT_FORMAT,
-    EntryId, HistoryEntry, HistoryRow, JobId, Layer, LayerId, MASKS_PER_RECIPE, Mask, MaskId,
-    Mutation, MutationRequest, Orientation, PresetId, RECIPE_FORMAT, Recipe, Snapshot, SnapshotId,
-    Transform,
+    AssetId, COMPONENTS_PER_MASK, Component, ComponentId, ComponentMode, CorrectionId, DraftId,
+    EFFECT_FORMAT, EntryId, HistoryEntry, HistoryRow, JobId, Layer, LayerId, MASKS_PER_RECIPE,
+    Mask, MaskId, Mutation, MutationRequest, Orientation, PresetId, RECIPE_FORMAT, Recipe,
+    Snapshot, SnapshotId, Transform,
 };
 /// Basic's Auto tone solver and forward model, which the fitting rig and the measurements call.
 pub use modules::auto_tone;
 pub use modules::{
-    ActionControl, ActionDescriptor, ActionInput, ActionPlan, ActionRef, ActionStyle,
-    AnalysisAction, Availability, BASIC_EFFECT, BoxRect, CONTROLS_EFFECT, CROP_EFFECT,
-    CURVE_EFFECT, CanvasInteraction, CapabilityModule, ChoiceControl, ChoiceStyle, ColorControl,
-    ColorOperation, ColorStyle, CompileStage, Control, ControlVariant, CropAspect, CropPayload,
-    CropStage, CurveBackground, CurveChannel, CurveControl, DETAIL_EFFECT, Edge, EffectDescriptor,
-    EffectStage, ExactGeometry, GPU_PROGRAMS, GroupControl, IdentityKind, LENS_EFFECT, LOOK_EFFECT,
-    LayerEdit, LayerReport, LayerUpdate, MAX_ANGLE, MAX_MASKED_SPATIAL_LAYERS, MAX_SOURCE_NAME,
+    AcceptedCandidate, ActionControl, ActionDescriptor, ActionInput, ActionPlan, ActionRef,
+    ActionStyle, AnalysisAction, Availability, BASIC_EFFECT, BoxRect, BrushEdit, BrushSource,
+    CONTROLS_EFFECT, CROP_EFFECT, CURVE_EFFECT, CanvasInteraction, CapabilityModule, ChoiceControl,
+    ChoiceStyle, ColorControl, ColorOperation, ColorStyle, CompileStage, Control, ControlVariant,
+    CropAspect, CropPayload, CropStage, CurveBackground, CurveChannel, CurveControl, DETAIL_EFFECT,
+    Edge, EffectDescriptor, EffectOperations, EffectStage, ExactGeometry, GPU_PROGRAMS,
+    GroupControl, IdentityKind, LENS_EFFECT, LOOK_EFFECT, LayerEdit, LayerReport, LayerUpdate,
+    MAX_ANGLE, MAX_MASKED_SPATIAL_LAYERS, MAX_OPERATIONS, MAX_REPAIR_OPERATIONS, MAX_SOURCE_NAME,
     MIN_ANGLE, MIXER_EFFECT, ModuleDescriptor, ModuleLayout, ModuleRegistry, NewLayer,
-    NumberControl, NumberStyle, ORIENTATION_EFFECT, OperationIdentity, OutputRect,
-    PERSPECTIVE_EFFECT, PIXEL_EFFECT, PRESENCE_EFFECT, PROOF_GENERATE_PATH, PROOF_PALETTE,
+    NumberControl, NumberStyle, OPERATIONS_FIELD, ORIENTATION_EFFECT, OperationIdentity,
+    OutputRect, PERSPECTIVE_EFFECT, PRESENCE_EFFECT, PROOF_GENERATE_PATH, PROOF_PALETTE,
     PROOF_PALETTE_PATH, ParameterDescriptor, ParameterKind, PickerControl, PointwiseColor,
     PresetsControl, Processing, Provider, QueryChoiceControl, QueryRef, RailDecoration,
-    RangeControl, RawModule, RawPayload, Region, RegistryOptions, Resample, ResetAction,
-    ResolvedControl, ResolvedReset, SamplingScale, SettingsOrigin, SpatialOperation, Stage,
-    StageContext, StageQuestions, TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT,
-    ViewControl, WheelControl, WheelStyle, WhiteBalanceMode, check_parameters, check_value,
-    controls_module, current_effect_format, gains_from_temperature_tint, guide_angle,
-    insertion_index_among, largest_with_ratio_inside, palette_bytes, resolve_control,
-    resolve_group_reset, temperature_tint_from_gains,
+    RangeControl, RawModule, RawPayload, Region, RegistryOptions, RepairInput, RepairTable,
+    Resample, ResetAction, ResolvedControl, ResolvedReset, SamplingScale, SettingsOrigin,
+    SpatialOperation, Stage, StageContext, StageQuestions, StaleCorrection, StaleReason,
+    TaskControl, ToggleControl, ToolModule, VIGNETTE_EFFECT, ViewControl, WheelControl, WheelStyle,
+    WhiteBalanceMode, check_parameters, check_value, controls_module, current_effect_format,
+    gains_from_temperature_tint, guide_angle, insertion_index_among, largest_with_ratio_inside,
+    palette_bytes, resolve_control, resolve_group_reset, temperature_tint_from_gains,
 };
 pub use modules::{Chord, HOST_CHORDS, host_chord};
 pub use modules::{OriginalContext, OriginalLayer, OriginalPreferences};
@@ -139,8 +146,9 @@ pub use render::gpu::{
     GpuChange, GpuClipping, GpuComponent, GpuDescription, GpuFallback, GpuGeometry, GpuLight,
     GpuLightInput, GpuLightPasses, GpuLightRestoration, GpuLightSweep, GpuMask, GpuOperation,
     GpuPass, GpuPassShape, GpuPlan, GpuPlanRequest, GpuPlane, GpuPlaneFormat, GpuPlaneSize,
-    GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuRest, GpuSpatial, GpuSpatialUnit,
-    GpuStaging, GpuSweep, GpuSweeps, GpuView, GpuWarmList, PreparedStream, REDUCED_AFTER_BYTES,
+    GpuPosition, GpuPreview, GpuProgram, GpuProgramKind, GpuRepair, GpuRepairOperation,
+    GpuResident, GpuRest, GpuSpatial, GpuSpatialUnit, GpuStaging, GpuSweep, GpuSweeps, GpuView,
+    GpuWarmList, PreparedStream, REDUCED_AFTER_BYTES, REPAIR_LEVEL_BYTES, REPAIR_PASSES_MAX,
     REST_SHARE_MAX, REST_TILE_SIDES, REST_TILE_WORK, RestReduction, RestTile, RestTiles,
     STREAM_TILE_SIDES, SWEEP_SPLIT_REACH, SWEEP_STAGE_TEXTURES, SourceBoundary, StreamPlan,
     TilePlan, anchored, gpu_fit_plan, gpu_lights, gpu_plan, plan_read, plan_stream,
@@ -164,8 +172,10 @@ pub use previews::{DecodedPreview, decode_preview};
 /// only with the `qualification` feature, which only a `[dev-dependencies]` table may turn on.
 #[cfg(feature = "qualification")]
 pub mod qualification {
+    pub use crate::modules::corrections_qualification as corrections;
     pub use crate::modules::detail_qualification as detail;
     pub use crate::modules::presence_qualification as presence;
+    pub use crate::repair::qualification as repair;
 
     /// The picture at rest of `evaluation` on the GPU at `view`, as a displayed stack's job plans
     /// it ([`crate::GpuRest`]): the plan of the whole stack from the source, and the boundary it
@@ -840,7 +850,7 @@ pub mod qualification {
 
 // The crate root paths the core itself uses.
 pub(crate) use editor::{AnalysisPlan, AnalysisSelection};
-pub(crate) use model::{JobStatus, MAX_MASK_NAME, POINTS_PER_MASK, PixelReplace};
+pub(crate) use model::{JobStatus, MAX_MASK_NAME, POINTS_PER_MASK};
 pub(crate) use modules::{
     MAX_PRESET_NAME, MAX_SETTINGS_ACTIONS, MAX_SETTINGS_FIELDS, Superseded, lightroom_to_luxforge,
     valid_name,

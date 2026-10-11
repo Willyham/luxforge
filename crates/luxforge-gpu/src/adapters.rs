@@ -14,6 +14,22 @@ pub struct Adapter {
 }
 
 impl Adapter {
+    /// The facts a device profile may carry about this adapter, normalized without opening it:
+    /// enums, numeric ids and a numeric driver version; no name or driver string survives.
+    pub fn facts(&self) -> luxforge_gpu_types::adapter_facts::GpuFacts {
+        luxforge_gpu_types::adapter_facts::normalize(
+            &luxforge_gpu_types::adapter_facts::AdapterDescription {
+                name: &self.name,
+                vendor: self.vendor,
+                device: self.device,
+                device_type: &self.device_type,
+                backend: &self.backend,
+                driver: &self.driver,
+                driver_info: &self.driver_info,
+            },
+        )
+    }
+
     fn of(info: wgpu::AdapterInfo) -> Self {
         Self {
             device_type: format!("{:?}", info.device_type),
@@ -150,5 +166,27 @@ fn ready<F: std::future::Future>(future: F) -> Option<F::Output> {
     {
         std::task::Poll::Ready(value) => Some(value),
         std::task::Poll::Pending => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_adapter_normalizes_without_keeping_its_strings() {
+        let adapter = Adapter {
+            name: "Apple M4 Pro".into(),
+            vendor: 0x106B,
+            device: 0,
+            device_type: "IntegratedGpu".into(),
+            backend: "Metal".into(),
+            driver: "secret driver".into(),
+            driver_info: "private build".into(),
+        };
+        let facts = adapter.facts();
+        assert_eq!(facts.apple_generation, Some(4));
+        assert!(facts.unified_memory);
+        assert_eq!(facts.driver_version, None);
     }
 }

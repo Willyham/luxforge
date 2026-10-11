@@ -46,8 +46,8 @@ const REQUIRED_SOURCES: [&str; 7] = [
 ];
 
 /// Every recipe family and the class its limits come from: pointwise for the colour units, masks,
-/// the vignette and geometry under a colour edit, spatial for Presence and Detail.
-const FAMILIES: [(&str, Class); 15] = [
+/// the vignette and geometry under a colour edit, spatial for Presence, Detail, Clone and Heal.
+const FAMILIES: [(&str, Class); 17] = [
     ("basic", Class::Pointwise),
     ("tone-curve", Class::Pointwise),
     ("mixer", Class::Pointwise),
@@ -63,12 +63,14 @@ const FAMILIES: [(&str, Class); 15] = [
     ("lens-perspective", Class::Pointwise),
     ("presence", Class::Spatial),
     ("detail", Class::Spatial),
+    ("repair-clone", Class::Spatial),
+    ("repair-heal", Class::Spatial),
 ];
 
 /// The families the design lists, which the corpus must hold at least one recipe of. The component
 /// algebra's `mask-composed` and the four colour recipes together, `colour-stack`, are recipes the
 /// corpus adds beyond them.
-const REQUIRED_FAMILIES: [&str; 13] = [
+const REQUIRED_FAMILIES: [&str; 15] = [
     "basic",
     "tone-curve",
     "mixer",
@@ -82,6 +84,8 @@ const REQUIRED_FAMILIES: [&str; 13] = [
     "lens-perspective",
     "presence",
     "detail",
+    "repair-clone",
+    "repair-heal",
 ];
 
 #[derive(Debug, Deserialize)]

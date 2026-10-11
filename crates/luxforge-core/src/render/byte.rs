@@ -33,7 +33,7 @@ pub(super) fn source_pixel(source: &SourceImage, x: u32, y: u32) -> [u8; 4] {
 }
 
 /// The byte domain: a JPEG's decoded 8-bit sRGB, opaque. Each colour run decodes through the
-/// sRGB table, runs its units in `f32` and quantizes at its end, so a point replacement, a resample,
+/// sRGB table, runs its units in `f32` and quantizes at its end, so a resample,
 /// a spatial operation's output and the end of the recipe are all quantization boundaries, and a
 /// frame between two segments is exactly the bytes the next boundary reads.
 #[derive(Clone, Copy)]
@@ -54,11 +54,14 @@ pub(crate) fn byte_frame_widths(compiled: &Compiled) -> Vec<FrameWidths> {
         let next_spatial = compiled
             .segments
             .get(index + 1)
-            .is_some_and(|next| matches!(&next.entry, Some(super::Entry::Spatial(_))));
-        let spatial = matches!(&segment.entry, Some(super::Entry::Spatial(_)));
-        let pass_through = !segment.writes_pixels();
-        let input = spatial
-            && ((segment.has_color && !segment.has_pixels) || (pass_through && next_spatial));
+            .and_then(|next| next.entry.as_ref())
+            .is_some_and(super::Entry::materializes);
+        let spatial = segment
+            .entry
+            .as_ref()
+            .is_some_and(super::Entry::materializes);
+        let pass_through = !segment.has_color;
+        let input = spatial && (segment.has_color || (pass_through && next_spatial));
         widths[index] = FrameWidths {
             input,
             output: next_spatial && (segment.has_color || input),
@@ -146,9 +149,6 @@ impl PixelDomain for Byte<'_> {
         let p = source_pixel(self.0, x, y);
         Ok([p[0], p[1], p[2]].map(|v| u16::from(v) * 257))
     }
-    fn replace(_: Self::Pixel, rgb: [u8; 3]) -> Self::Pixel {
-        rgb.map(|v| u16::from(v) * 257)
-    }
     fn colour<'r>(
         mut pixel: Self::Pixel,
         runs: impl Iterator<Item = ColorRun<'r>>,
@@ -160,7 +160,7 @@ impl PixelDomain for Byte<'_> {
         for run in runs {
             let mut rgb = [decoded(pixel)];
             apply_units(&run, y, x, &mut rgb, &mut snapshot)?;
-            pixel = encoded(rgb[0], wide && !run.followed_by_replace());
+            pixel = encoded(rgb[0], wide);
         }
         Ok(pixel)
     }
@@ -179,7 +179,6 @@ impl PixelDomain for Byte<'_> {
             linear.clear();
             linear.extend(pixels.iter().map(|pixel| decoded_in(table, *pixel)));
             apply_units(&run, y, x0, linear, snapshot)?;
-            let wide = wide && !run.followed_by_replace();
             for (pixel, rgb) in pixels.iter_mut().zip(linear.iter()) {
                 *pixel = encoded_in(quantizers, *rgb, wide);
             }
@@ -375,17 +374,6 @@ impl SegmentRows for ByteRows<'_> {
         Ok(())
     }
 
-    fn replace(
-        &self,
-        _: &mut Self::Scratch,
-        chunk: &mut [u8],
-        offset: usize,
-        rgb: [u8; 3],
-    ) -> Result<(), Error> {
-        chunk[offset * 4..offset * 4 + 3].copy_from_slice(&rgb);
-        Ok(())
-    }
-
     fn run(
         &self,
         linear: &mut Self::Scratch,
@@ -453,7 +441,7 @@ fn colour_byte_rows(
 /// This driver materializes every segment's output as a byte frame, which is exactly what the next
 /// boundary reads: a segment's input frame is the source, or the frame its boundary writes from the
 /// frame before it ([`super::Entry::byte_frame`]), and one [`segment_pass`] writes the segment's
-/// frame from it through its exact geometry, replacements and colour runs. A segment whose geometry
+/// frame from it through its exact geometry and colour runs. A segment whose geometry
 /// is the identity writes in place over a frame this render wrote, loads the shared source's rows
 /// into its new frame inside the pass, and shares its input when it writes nothing, so an identity
 /// stack returns the source allocation itself. At most two frames exist at once.
@@ -546,7 +534,7 @@ pub(super) fn frames(
         }
         let output_wide = widths[index].output;
         let identity = segment.geometry.is_identity(stage.width, stage.height);
-        if identity && !segment.writes_pixels() && frame.wide() == output_wide {
+        if identity && !segment.has_color && frame.wide() == output_wide {
             continue;
         }
         let band = band(compiled, index);
@@ -725,16 +713,6 @@ impl<S: SampleStore> SegmentRows for FloatRows<'_, S> {
         }
         Ok(())
     }
-    fn replace(
-        &self,
-        scratch: &mut Self::Scratch,
-        _: &mut [S::Sample],
-        offset: usize,
-        rgb: [u8; 3],
-    ) -> Result<(), Error> {
-        scratch[offset] = decode_pixel_in(decode_table(), rgb);
-        Ok(())
-    }
     fn run(
         &self,
         scratch: &mut Self::Scratch,
@@ -745,15 +723,9 @@ impl<S: SampleStore> SegmentRows for FloatRows<'_, S> {
         snapshot: &mut [MaskedInput],
     ) -> Result<(), Error> {
         let width = self.segment.width as usize;
-        let (table, quantizer) = (decode_table(), quantizer());
         for row in rows {
             let pixels = &mut scratch[row * width..(row + 1) * width];
             apply_units(run, y0 + row as u32, 0, pixels, snapshot)?;
-            if run.followed_by_replace() {
-                for pixel in pixels {
-                    *pixel = decode_pixel_in(table, quantizer.pixel(*pixel));
-                }
-            }
         }
         Ok(())
     }
@@ -843,54 +815,75 @@ pub(super) fn spatial_frame(
     )
 }
 
+/// The byte driver's frame of the repair boundary `entry` over `input`, the finished byte frame of
+/// the `stage` it receives, read through the sRGB decode table.
+pub(super) fn repair_frame(
+    domain: &Byte<'_>,
+    entry: &super::repair_entry::RepairEntry,
+    input: &ByteFrame,
+    stage: Stage,
+    cancel: &Cancel,
+    context: &RenderContext,
+    wide: bool,
+) -> Result<ByteFrame, Error> {
+    let table = decode16_table();
+    let read = |x: u32, y: u32| -> Result<[f32; 3], Error> {
+        Ok(decoded_in(table, input.pixel(stage, x, y)))
+    };
+    super::repair_entry::repair_frame(
+        domain,
+        entry,
+        stage,
+        cancel,
+        context,
+        wide,
+        |region, planes, parallelism| fill_planes(region, planes, parallelism, read),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::{Entry, RenderOptions, tests::gradient};
     use super::*;
     use crate::{BASIC_EFFECT, Layer, ModuleRegistry, PRESENCE_EFFECT, Recipe};
     use serde_json::json;
-    fn segment(spatial: bool, colour: bool, pixels: bool) -> Segment {
+    fn segment(spatial: bool, colour: bool) -> Segment {
         let mut segment = Segment::new(
             spatial.then(|| Entry::spatial(crate::SpatialOperation::neutral())),
             10,
             10,
         );
         segment.has_color = colour;
-        segment.has_pixels = pixels;
         segment
     }
     #[test]
     fn byte_frame_widths_follow_the_hand_off_rules() {
         let cases = [
             (
-                vec![segment(false, false, false), segment(true, true, false)],
+                vec![segment(false, false), segment(true, true)],
                 vec![(false, false), (true, false)],
             ),
             (
-                vec![segment(false, true, false), segment(true, false, false)],
+                vec![segment(false, true), segment(true, false)],
                 vec![(false, true), (false, false)],
             ),
             (
-                vec![segment(false, false, false), segment(true, false, false)],
-                vec![(false, false), (false, false)],
-            ),
-            (
-                vec![segment(false, false, false), segment(true, true, true)],
+                vec![segment(false, false), segment(true, false)],
                 vec![(false, false), (false, false)],
             ),
             (
                 vec![
-                    segment(false, false, false),
-                    segment(true, false, false),
-                    segment(true, false, false),
+                    segment(false, false),
+                    segment(true, false),
+                    segment(true, false),
                 ],
                 vec![(false, false), (true, true), (false, false)],
             ),
             (
                 vec![
-                    segment(false, false, false),
-                    segment(true, false, false),
-                    segment(true, true, false),
+                    segment(false, false),
+                    segment(true, false),
+                    segment(true, true),
                 ],
                 vec![(false, false), (true, true), (true, false)],
             ),
@@ -906,7 +899,7 @@ mod tests {
                 .collect();
             assert_eq!(actual, expected);
         }
-        let mut segments = vec![segment(false, true, false), segment(false, true, false)];
+        let mut segments = vec![segment(false, true), segment(false, true)];
         segments[1].entry = Some(Entry::resample(crate::Resample {
             map: crate::modules::Mapping::Affine([1.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
             output_width: 10,

@@ -1,15 +1,21 @@
 //! The Settings sheet: a modal sheet centred over the dimmed workspace, with a tab rail on its
 //! leading side and the selected tab's content. General holds the person's preferences;
-//! Appearance lists the themes; Experiments lists every flag with the control its kind needs
+//! Appearance lists the themes; Experiments lists every flag with the control its kind needs;
+//! Privacy, in a launch eligible for usage statistics, holds their switch and what they send
 //! ([design](../../../../docs/design/settings-and-flags.md#settings-surface),
-//! [themes](../../../../docs/design/ui-themes.md#appearance-tab)).
+//! [themes](../../../../docs/design/ui-themes.md#appearance-tab),
+//! [usage statistics](../../../../docs/design/usage-statistics.md#settings-and-programmatic-parity)).
 use crate::{
-    app::message::{Message, settings::SettingsMessage, theme::ThemeMessage, view::ViewMessage},
+    app::message::{
+        Message, settings::SettingsMessage, theme::ThemeMessage, usage::UsageMessage,
+        view::ViewMessage,
+    },
     state::{
         MenuTarget,
         preferences::{GeneralControl, GeneralRow, GeneralValue},
         settings::{FlagControl, FlagRow, SettingsModel, SettingsTab},
         themes::{FolderLine, ThemeRow},
+        usage::{self as statistics, PrivacyModel},
     },
 };
 use iced::{
@@ -18,8 +24,9 @@ use iced::{
 };
 use luxforge_ui::{
     BadgeModel, ButtonSize, ButtonTone, Icon, IconButtonModel, LabelledButtonModel, SegmentedModel,
-    ToggleModel, badge, boxed_input, caption, error_caption, icon_button, inline_menu, label,
-    labelled_button, segmented, switch, text_button, theme, title,
+    ToggleModel, badge, boxed_input, caption, disclosure_heading, error_caption, icon_button,
+    inline_menu, label, labelled_button, section_label, segmented, switch, text_button, theme,
+    title,
 };
 use luxforge_ui::{Element, Theme, Token};
 use serde_json::Value;
@@ -60,8 +67,10 @@ pub(crate) fn settings(model: &SettingsModel) -> Option<Element<'_, Message>> {
     .padding([theme::SPACING, theme::SPACING * 2.0]);
 
     let rail =
-        SettingsTab::ALL
-            .into_iter()
+        model
+            .tabs
+            .iter()
+            .copied()
             .fold(column![].spacing(theme::ROW_SPACING), |rail, tab| {
                 rail.push(labelled_button(
                     &LabelledButtonModel {
@@ -84,6 +93,7 @@ pub(crate) fn settings(model: &SettingsModel) -> Option<Element<'_, Message>> {
         SettingsTab::General => general(model),
         SettingsTab::Appearance => appearance(model),
         SettingsTab::Experiments => experiments(model),
+        SettingsTab::Privacy => privacy(model.privacy.as_ref()),
     };
     let body = row![
         container(rail)
@@ -130,7 +140,75 @@ fn tab_icon(tab: SettingsTab) -> Icon {
         // The colour drop the Masks panel's colour range draws: the interface's colours.
         SettingsTab::Appearance => Icon::Colour,
         SettingsTab::Experiments => Icon::Beaker,
+        SettingsTab::Privacy => Icon::Lock,
     }
+}
+
+/// The Privacy tab: the statistics switch beside the short disclosure, why statistics are off when
+/// that is not the person's choice, a failed read or save, and the collapsed What is sent list of
+/// the identifiers, device fields and events a report can hold. There is no send button and no
+/// delivery status: the switch is the whole control.
+fn privacy(model: Option<&PrivacyModel>) -> Element<'_, Message> {
+    let mut content = column![title("Privacy")]
+        .spacing(theme::SPACING)
+        .width(Length::Fill);
+    let Some(privacy) = model else {
+        return content.into();
+    };
+    let mut text = column![label(statistics::SWITCH), caption(statistics::DISCLOSURE)]
+        .spacing(theme::ROW_SPACING)
+        .width(Length::Fill);
+    if privacy.loading {
+        text = text.push(caption("Reading the setting\u{2026}"));
+    }
+    if privacy.saving {
+        text = text.push(caption("Saving\u{2026}"));
+    }
+    if let Some(note) = &privacy.note {
+        text = text.push(caption(note.clone()));
+    }
+    if let Some(error) = &privacy.error {
+        text = text.push(error_caption(error.clone()));
+    }
+    let control = switch(
+        &ToggleModel {
+            label: statistics::SWITCH.into(),
+            on: privacy.on,
+            enabled: !privacy.loading,
+        },
+        |on| Message::Usage(UsageMessage::Set(on)),
+    );
+    content = content
+        .push(horizontal_rule())
+        .push(
+            row![text, control]
+                .spacing(theme::SPACING * 2.0)
+                .align_y(Alignment::Start),
+        )
+        .push(horizontal_rule())
+        .push(disclosure_heading(
+            statistics::WHAT_IS_SENT,
+            None,
+            privacy.details_open,
+            Some(Message::Usage(UsageMessage::Details(!privacy.details_open))),
+        ));
+    if privacy.details_open {
+        for (heading, items) in [
+            ("Identifiers", &statistics::IDENTIFIERS[..]),
+            ("Device", &statistics::DEVICE[..]),
+            ("Events", &statistics::EVENTS[..]),
+        ] {
+            content = content.push(section_label(heading));
+            for (name, meaning) in items {
+                content = content
+                    .push(column![label(*name), caption(*meaning)].spacing(theme::ROW_SPACING));
+            }
+        }
+        content = content.push(caption(
+            "Every event also carries its order in the session and its time.",
+        ));
+    }
+    content.into()
 }
 
 /// The Appearance tab: Import Omarchy theme… and Import theme file…, what the last folder import

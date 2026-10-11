@@ -29,6 +29,10 @@ The ttf-parser exception was re-reviewed on 2026-09-29:
 
 License and source checks pass (BSL-1.0 in `clipboard-win` and `error-code` is GPL-compatible). `cargo xtask inventory` records resolved packages and copies top-level license files; it is not a notice audit. Before any distribution: inspect embedded fonts and assets, native linking and license-file declarations, assemble corresponding source and sanitize local manifest paths from dependency metadata. The manual license, native and asset review is deferred by the owner and remains incomplete.
 
+## Usage statistics ingress
+
+`services/usage-ingest` is a standalone package outside the desktop workspace, with its own `Cargo.lock`, so none of its crates is in the desktop graph or inventory. It uses `hyper` 1.12.0 (server and client, HTTP/1 only, no HTTP/2, TLS or proxy support), `hyper-util` 0.1.21 (only its Tokio adapter), `http-body-util` 0.1.5, `bytes` 1.12.1, `serde` 1.0.229, `serde_json` 1.0.149 and `tokio` 1.53.1 (the version the desktop already locks; multi-thread runtime, `net`, `time`, `sync`, `macros`, `signal`), all pinned exactly in its manifest, with the rest of its 36 locked packages (itself included) (`http`, `httparse`, `mio`, `socket2`, `libc` and `smallvec` at the desktop's versions) pinned by its lockfile. Its manifest and lockfile are held by `check-repository`, and `cargo xtask audit` runs the licence, source and advisory policy over its lockfile with no exceptions. It has `NOTICE.md` and, like every dependency, no completed manual licence review.
+
 ## Job monitoring transport
 
 The core uses the workspace's existing pinned Tokio 1.53.1 with `rt`, `net`, `io-util` and the workspace's `time` feature for the loopback transport's current-thread event loop. Socket EOF can cancel an indefinitely held `job.wait` without a polling timer or another thread. The socket features add `mio` 1.2.4 and `socket2` 0.6.5, pinned in `Cargo.lock`; no new GUI stack, background runtime worker or thread per held request is introduced. The manual license, native and notice review remains deferred and incomplete.
@@ -62,6 +66,10 @@ The [RAW backend selection](../research/raw-backend-selection.md) records pinned
 ## Module capability dependencies
 
 The [module capabilities](../design/module-capabilities.md) transport and secret store, which live in `luxforge-net` so that `luxforge-core` and its test binaries link none of them (only `url`, `idna_adapter` and `zeroize` below are the core's), add `rustls` 0.23.45 with only the `ring` provider (no aws-lc-rs or CMake) and TLS 1.2/1.3, `rustls-platform-verifier` 0.7.0 so certificates are checked by the operating system's own verifier on macOS and Windows (native roots with webpki on Linux), `url` 2.5.8 with `idna_adapter` pinned to 1.0.0, the IDNA back end without Unicode data (a non-ASCII host is refused, punycode is accepted, and no ICU4X crate is built), `ureq` 3.4.2 with no features for the transport's HTTP/1.1, whose agent runs on the transport's own resolver, socket and rustls session (it adds `ureq-proto` 0.6.4 with its `client` feature, which the transport also names, `http` 1.5.0, `httparse` 1.10.1, `base64` 0.23.1 and `utf8-zero` 0.8.1, all MIT or Apache-2.0, and no TLS, pool, proxy or compression code), `security-framework` 3.7.0 for the macOS Keychain (macOS only, keychain item APIs only) and `zeroize` 1.9.0. `ring` carries native C and assembly. The verifier's CDLA-licensed root bundle is a wasm32-only dependency, outside the three audited target graphs, so `deny.toml` is unchanged and the license and source checks pass. As with every other dependency, passing the automated checks is not the deferred manual review.
+
+## Usage statistics dependencies
+
+The [usage statistics](../design/usage-statistics.md) consent record's image key is 32 bytes of the operating system's cryptographic randomness from `getrandom` 0.4.3 (MIT or Apache-2.0), a direct dependency of `luxforge-core` with no features. It is the version `uuid` already draws its v4 IDs from, so it adds no package to the lockfile.
 
 ## Hardware SHA-256 on aarch64
 

@@ -680,6 +680,7 @@ fn fields_are_seeded_from_the_displayed_entrys_values() {
                 neutral: false,
                 input_stage: None,
                 input_orientation: None,
+                stale: Vec::new(),
             })
             .collect();
         let _ = editor.update(Message::Sync(SyncMessage::Refreshed(Ok(Box::new(refresh)))));
@@ -1057,6 +1058,7 @@ fn historical_values_fill_the_disabled_fields_and_return_to_current_restores_the
             neutral: false,
             input_stage: None,
             input_orientation: None,
+            stale: Vec::new(),
         }];
         Box::new(refresh)
     };
@@ -1606,6 +1608,7 @@ fn a_curve_module_that_does_not_apply_to_the_photo_queries_no_samples() {
         artifacts: false,
         single: false,
         sources: vec![luxforge_core::SourceTag::Raw],
+        operations: None,
     }];
     let (mut editor, catalog) = sampling(vec![raw_only]);
     assert_eq!(editor.workspace.tools.all().count(), 0);
@@ -1757,6 +1760,10 @@ fn a_collapsed_sections_snapshot_equals_its_open_sections() {
         .tools
         .all()
         .filter(|section| !section.expanded)
+        // The Corrections section's disclosure enters its mode rather than expanding.
+        .filter(|section| {
+            !crate::state::corrections::is_brush_mode(&editor.modules, &section.module_id)
+        })
         .map(|section| section.module_id.clone())
         .collect();
     assert!(closed.len() > 3, "several sections start collapsed");
@@ -1779,7 +1786,8 @@ fn a_collapsed_sections_snapshot_equals_its_open_sections() {
             module.clone(),
         )));
     }
-    assert!(editor.workspace.tools.all().all(|section| section.expanded));
+    assert!(editor.workspace.tools.all().all(|section| section.expanded
+        || crate::state::corrections::is_brush_mode(&editor.modules, &section.module_id)));
     assert_eq!(before, report(&editor));
     finish(editor, catalog);
 }
