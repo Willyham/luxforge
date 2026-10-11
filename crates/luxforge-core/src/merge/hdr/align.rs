@@ -52,6 +52,7 @@
 //! pyramids and the input's gradients is at most about 24 bytes a proxy pixel (24 MiB), released
 //! before the next input. `cancel` is checked before each input, level and iteration.
 
+use super::exposure::median_of_sorted;
 use super::frame::{FrameMetadata, MAX_INPUTS, MIN_INPUTS, Refusal};
 use super::proxy::AnalysisProxy;
 use crate::{Cancel, Error, ParameterDescriptor};
@@ -1076,7 +1077,7 @@ fn fit(
     texture(input, coarse_reference, Some((coarse, &affine)))?;
     // Refinement, coarse to fine.
     let mut parameters = start;
-    parameters.brightness = median_offset(coarse_reference, coarse, &start, width, height)
+    parameters.brightness = brightness_offset(coarse_reference, coarse, &start, width, height)
         .ok_or(Refusal::AlignmentSupport { input, samples: 0 })?;
     let limit = (
         2.0 * MAX_SHIFT_FRACTION * f64::from(width),
@@ -1258,7 +1259,7 @@ fn texture(
 }
 
 /// The median of `L_input(q) − L_reference(p)` over the shared pixels of one level.
-fn median_offset(
+fn brightness_offset(
     reference: &Level,
     level: &Level,
     parameters: &Parameters,
@@ -1278,27 +1279,27 @@ fn median_offset(
             }
         }
     }
-    median(&mut differences)
+    middle(&mut differences)
 }
 
-fn median(values: &mut [f64]) -> Option<f64> {
+/// The median of `values`, sorting them in place; `None` when empty.
+fn middle(values: &mut [f64]) -> Option<f64> {
     if values.is_empty() {
         return None;
     }
-    let middle = values.len() / 2;
-    let (_, value, _) = values.select_nth_unstable_by(middle, f64::total_cmp);
-    Some(*value)
+    values.sort_unstable_by(f64::total_cmp);
+    Some(median_of_sorted(values))
 }
 
 /// `1.4826 · median |r − median r|`.
 fn robust_sigma(residuals: &mut [f64]) -> f64 {
-    let Some(centre) = median(residuals) else {
+    let Some(centre) = middle(residuals) else {
         return 0.0;
     };
     for r in residuals.iter_mut() {
         *r = (*r - centre).abs();
     }
-    1.4826 * median(residuals).unwrap_or(0.0)
+    1.4826 * middle(residuals).unwrap_or(0.0)
 }
 
 /// The Huber-weighted normal equations of one level at `parameters`, over a grid of at most

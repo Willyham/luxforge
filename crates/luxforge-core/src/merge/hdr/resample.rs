@@ -23,14 +23,14 @@ use super::fusion::MAX_FUSION_PIXELS;
 use crate::{Cancel, Error};
 
 /// The input pixels `rect`'s bilinear taps read under `transform`, in a `width × height` frame:
-/// see the module documentation. `None` when `rect` is empty.
+/// see the module documentation. `None` when `rect` or the frame is empty.
 pub fn source_window(
     transform: &RigidTransform,
     rect: PixelRect,
     width: u32,
     height: u32,
 ) -> Option<PixelRect> {
-    if rect.is_empty() {
+    if rect.is_empty() || width == 0 || height == 0 {
         return None;
     }
     if transform.is_identity() {

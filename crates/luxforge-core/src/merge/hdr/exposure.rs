@@ -581,7 +581,9 @@ struct Pair {
     count: usize,
 }
 
-fn median_of_sorted(values: &[f64]) -> f64 {
+/// The median of an ascending slice, the mean of the middle two for an even count; the HDR
+/// estimators' one median (alignment's brightness and robust deviation read it too).
+pub(crate) fn median_of_sorted(values: &[f64]) -> f64 {
     let n = values.len();
     if n % 2 == 1 {
         values[n / 2]
