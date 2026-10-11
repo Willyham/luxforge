@@ -105,7 +105,7 @@ pub struct Options {
 }
 
 /// The commit the run measured, and whether the tree had uncommitted changes.
-fn git(root: &Path) -> Value {
+pub(crate) fn git(root: &Path) -> Value {
     let sha = output(root, "git", &["rev-parse", "HEAD"])
         .ok()
         .map(|sha| sha.trim().to_owned());
@@ -121,7 +121,7 @@ fn git(root: &Path) -> Value {
 
 /// The host: its model, processor, logical CPUs, memory and operating system, each null where
 /// the platform cannot say.
-fn host(root: &Path) -> Value {
+pub(crate) fn host(root: &Path) -> Value {
     let read = |program: &str, args: &[&str]| {
         output(root, program, args)
             .ok()

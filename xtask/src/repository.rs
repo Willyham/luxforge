@@ -1107,6 +1107,8 @@ const SOURCE_RULES: &[SourceRule] = &[
             "xtask/src/grade_align.rs",
             // `usage-measure`'s contending producers and the window detacher beside them.
             "xtask/src/usage_measure.rs",
+            // `hdr-merge-measure`'s scoped pool writing a photo-sized frame's bands.
+            "xtask/src/hdr_merge_measure/mod.rs",
         ],
         mode: Match::Whole,
         tests: false,
