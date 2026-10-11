@@ -12,7 +12,7 @@ use crate::theme;
 use crate::{Element, Token};
 use iced::widget::text::{LineHeight, Wrapping};
 use iced::widget::{Column, Space, button, container, row, text};
-use iced::{Alignment, Length};
+use iced::{Alignment, Length, Padding};
 
 /// Plain data for a dropdown button.
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +30,9 @@ pub enum MenuEntry<M> {
     Item(MenuItem<M>),
     /// A rule between two groups of items.
     Separator,
+    /// A quiet line under the item before it, aligned with its label, saying what it does beyond
+    /// its name ("Merge HDR and add to Development set"). It wraps; it is not pressable.
+    Hint(String),
 }
 
 /// One menu item. With no message it is drawn disabled.
@@ -95,6 +98,19 @@ pub fn menu_list<'a, M: Clone + 'a>(entries: Vec<MenuEntry<M>>) -> Element<'a, M
                     .style(theme::menu_separator),
             )
             .padding(theme::MENU_SEPARATOR_MARGIN)
+            .width(Length::Fill)
+            .into(),
+            MenuEntry::Hint(hint) => container(
+                text(hint)
+                    .size(theme::SIZE_SMALL_CAPTION)
+                    .style(theme::ink(Token::TextTertiary)),
+            )
+            .padding(Padding {
+                top: 0.0,
+                right: theme::MENU_ITEM_PADDING,
+                bottom: theme::MENU_PADDING,
+                left: theme::MENU_ITEM_PADDING + theme::HEADER_ICON_SIZE + theme::MENU_ITEM_SPACING,
+            })
             .width(Length::Fill)
             .into(),
         }
