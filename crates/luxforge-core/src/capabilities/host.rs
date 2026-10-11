@@ -43,6 +43,7 @@ pub(crate) use permissions::{DenyParams, GrantParams, PermissionList, RevokePara
 pub(crate) use resources::{InstallParams, ResourceParams};
 pub(crate) use runtime::{LoadParams, UnloadParams};
 pub use tasks::TASK_PREFIX;
+pub(crate) use tasks::locked;
 
 /// A module's capability status.
 pub const STATUS: &str = "module.status";
@@ -289,6 +290,8 @@ pub(crate) enum RequirementKind {
     Profile,
     /// A `local-runtime` capability the task uses has no local inference runtime on this host.
     Runtime,
+    /// A flag that gates the task is off ([`crate::TaskNeeds::flags`]).
+    Flag,
 }
 
 impl RequirementKind {
@@ -297,6 +300,7 @@ impl RequirementKind {
             Self::Resource => "resource",
             Self::Profile => "profile",
             Self::Runtime => "runtime",
+            Self::Flag => "flag",
         }
     }
 }
@@ -756,13 +760,26 @@ impl CapabilityHost {
                 counts
             }
         };
+        let resources = self.resource_rows(jobs, descriptor);
         let mut status = json!({
             "module_id": descriptor.id,
             "settings": settings,
-            "resources": self.resource_rows(jobs, descriptor),
+            "resources": resources,
             "permissions": permissions,
             "jobs": jobs.of_module(&descriptor.id),
         });
+        // The module's own fields, from the same rows: what it offers with what is installed now.
+        if let Some(hooks) = registry.capabilities(&descriptor.id) {
+            let flag = |id: &str| crate::flags::toggle(&self.preferences, id).unwrap_or(false);
+            let fields = hooks.status(&crate::HostView {
+                resources: &resources,
+                runtime: self.runtime.configured().is_ok(),
+                flag: &flag,
+            });
+            for (name, value) in fields {
+                status[name.as_str()] = value;
+            }
+        }
         // A module that declares local-runtime also reports what it holds loaded, from the
         // resident set's own table: no model is opened or touched to answer.
         if descriptor

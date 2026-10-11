@@ -108,7 +108,11 @@ fn run() -> Result<(), (String, String)> {
         config_dir: paths.as_ref().map(Paths::module_config),
         resource_dir: paths.as_ref().map(Paths::module_resources),
         secrets,
-        transport: Arc::new(HttpTransport::system()),
+        // A developer run installs the developer models from memory.
+        transport: luxforge_core::DeveloperModels::for_run(
+            developer,
+            Arc::new(HttpTransport::system()),
+        ),
         // ONNX Runtime, compiling under the data root; a developer run also serves the
         // deterministic fake, as the `fake` backend. Nothing starts until a model opens.
         inference: Some(luxforge_onnx::host_runtime(

@@ -1262,7 +1262,7 @@ pub(super) const METHODS: &[MethodSpec] = &[
         "batch.apply-settings",
         crate::catalog_types::api::BatchApplySettings,
         owner::library::batch::batch_apply_settings,
-        "starts a batch-settings job, answering {job_id, status, deduplicated}, whose result is {done, skipped: [{asset_id, code, reason}], settings_skipped?: [{asset_id, settings: [{action, parameter?, reason}]}]}: the set is either inline settings with their origin ({kind: preset, name, preset_id?} or {kind: paste, source, source_asset?}) or a library preset_id, read once, whose origin is {kind: preset, name, preset_id}; exactly one of settings and preset_id, and origin only with settings; it is checked once as edit.apply-settings checks it, so an unknown, non-presettable or overlapping action or a refused field refuses the submission, and a step whose module does not apply to a photograph's kind is skipped for that photograph; then it is applied to each photograph targets names, one at a time, exactly as edit.apply-settings applies it (against the photograph's current revision, by the envelope's actor under the request identity <request_id>/<asset_id>), analysis steps such as Auto tone running after the field patches and recomputed per photograph; so each done photograph has its own entry labelled by the origin (Preset: <name> or Paste settings from <source>) and records an event naming it and its revision; settings_skipped lists the settings left out of a done photograph because they do not apply to it; skipped names every photograph left out: removed (in Removed), draft-open (the caller holds a draft on it), history-selected (the caller previews its history), not-applicable (none of the set's settings apply to it), unchanged (it already has them) or the code and message edit.apply-settings refuses it with; a stack that needs its source prepared is prepared first, one photograph at a time; targets are photographs by id, by their originals' paths or index rows, or the photographs selected in the caller's view; an unknown preset or photograph is validation; the job's detail is the entry label and the photograph count; while it runs job.read's result is the report so far and its progress reads n of N; job.cancel stops it between photographs or during deferred analysis, keeping every one done; a retry after a restart applies nothing twice; resource-limit past 50,000 photographs or when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id",
+        "starts a batch-settings job, answering {job_id, status, deduplicated}, whose result is {done, skipped: [{asset_id, code, reason}], settings_skipped?: [{asset_id, settings: [{action, parameter?, reason}]}]}: the set is either inline settings with their origin ({kind: preset, name, preset_id?} or {kind: paste, source, source_asset?}) or a library preset_id, read once, whose origin is {kind: preset, name, preset_id}; exactly one of settings and preset_id, and origin only with settings; it is checked once as edit.apply-settings checks it, so an unknown, non-presettable or overlapping action or a refused field refuses the submission, and a step whose module does not apply to a photograph's kind is skipped for that photograph; then it is applied to each photograph targets names, one at a time, exactly as edit.apply-settings applies it (against the photograph's current revision, by the envelope's actor under the request identity <request_id>/<asset_id>), analysis steps such as Auto tone running after the field patches and recomputed per photograph; so each done photograph has its own entry labelled by the origin (Preset: <name> or Paste settings from <source>) and records an event naming it and its revision; settings_skipped lists the settings left out of a done photograph because they do not apply to it; skipped names every photograph left out: removed (in Removed), draft-open (the caller holds a draft on it), history-selected (the caller previews its history), locked (a running task such as task.fill-generative holds it locked), not-applicable (none of the set's settings apply to it), unchanged (it already has them) or the code and message edit.apply-settings refuses it with; a stack that needs its source prepared is prepared first, one photograph at a time; targets are photographs by id, by their originals' paths or index rows, or the photographs selected in the caller's view; an unknown preset or photograph is validation; the job's detail is the entry label and the photograph count; while it runs job.read's result is the report so far and its progress reads n of N; job.cancel stops it between photographs or during deferred analysis, keeping every one done; a retry after a restart applies nothing twice; resource-limit past 50,000 photographs or when 4 library jobs already wait; the job records one event as it ends, however it ends, naming its job_id",
         retries: Owner,
     ),
     owner!(
@@ -1303,6 +1303,17 @@ pub(super) const METHODS: &[MethodSpec] = &[
         owner::views::browse_select,
         "changes the caller's selection in its view and answers the session, whose browse.selection holds disjoint ascending position ranges, their count and the active position: the union of items, range and all is replaced, added, removed or toggled by mode (replace by default); without items, range or all only active moves, and {all: false} selects none; conflict when revision names another view; writes nothing"
     ),
+];
+
+/// The host methods that edit an asset's recipe or open or commit an edit of it, besides the
+/// module actions: what a running task's lock on the asset refuses.
+const ASSET_EDITS: &[&str] = &[
+    "history.undo",
+    "history.redo",
+    "history.restore",
+    "draft.begin",
+    "draft.reapply",
+    "draft.commit",
 ];
 
 /// The host methods whose effect lives only in the calling client's session, which ends with its
@@ -1398,6 +1409,17 @@ impl Method {
                 .map(|(_, of)| *of),
             Self::Action(_) => Some(RevisionOf::Asset),
             Self::Task(_) | Self::Query(_) => None,
+        }
+    }
+
+    /// Whether the method edits its asset's recipe or opens or commits an edit of it: every module
+    /// action and [`ASSET_EDITS`]. A task that locks its asset refuses these on that asset while it
+    /// runs ([`crate::TaskNeeds::locks_asset`]).
+    pub(super) fn edits_asset(&self) -> bool {
+        match self {
+            Self::Action(_) => true,
+            Self::Host(spec) => ASSET_EDITS.contains(&spec.name),
+            Self::Task(_) | Self::Query(_) => false,
         }
     }
 

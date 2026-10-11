@@ -2141,6 +2141,21 @@ impl Owner {
             usage::deduplicated(self, &request.method, &mut first);
             return Ok(Planned::Value(first));
         }
+        // A photograph a running task holds locked takes no edit until the task ends.
+        if method.edits_asset() {
+            let asset = match self.sessions.get(&client) {
+                Some(session) => subject(session, &request.params),
+                None => request
+                    .params
+                    .get("asset_id")
+                    .and_then(|asset| serde_json::from_value(asset.clone()).ok()),
+            };
+            if let Some(asset_id) = asset
+                && let Some(running) = self.host.locking_task(&self.jobs, &asset_id)
+            {
+                return Err(crate::capabilities::host::locked(&asset_id, &running));
+            }
+        }
         let origin = Origin::new(&request.method, &request.id);
         // Whether a standing answer records its usage interaction: one atomic load while off.
         let usage = self.service.usage.on();

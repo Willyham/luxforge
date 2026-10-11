@@ -1,6 +1,7 @@
 //! Tool modules: each one owns its descriptor, input parsing, state validation, no-op detection
 //! and the compilation of its persisted payloads into host processing primitives. Modules never
 //! write the catalog, never keep an undo stack and never render.
+pub(crate) mod ai;
 pub(crate) mod basic;
 #[cfg(test)]
 pub(crate) mod brush_consumer;
@@ -63,6 +64,7 @@ pub fn current_effect_format(effect_id: &str) -> u32 {
         .map_or(crate::EFFECT_FORMAT, |(_, format)| *format)
 }
 
+pub use ai::DeveloperModels;
 pub use basic::BASIC_EFFECT;
 pub(crate) use basic::BasicModule;
 /// Basic's Auto tone: its solver and forward model, public for the fitting rig and measurements.
@@ -81,7 +83,7 @@ pub(crate) use capabilities_proof::{
 pub use capabilities_proof::{
     PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH, palette_bytes,
 };
-pub use capability::CapabilityModule;
+pub use capability::{CapabilityModule, HostView, TaskAdmission, TaskNeeds};
 pub use controls::{CONTROLS_EFFECT, controls_module};
 #[cfg(test)]
 pub(crate) use corrections::patch_testing as corrections_patch_testing;

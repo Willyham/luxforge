@@ -55,7 +55,11 @@ pub(super) fn host_config(config: &Config, tiles: Arc<GpuTiles>) -> HostConfig {
         config_dir: paths.map(Paths::module_config),
         resource_dir: paths.map(Paths::module_resources),
         secrets,
-        transport: Arc::new(HttpTransport::system()),
+        // A developer run installs the developer models from memory.
+        transport: luxforge_core::DeveloperModels::for_run(
+            config.developer,
+            Arc::new(HttpTransport::system()),
+        ),
         launch_flags: config.launch_flags.clone(),
         // What the launch knows of its renderer before the window opens, which every client's
         // session reports until the photo surface has checked its GPU stage.

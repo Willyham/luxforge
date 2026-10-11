@@ -31,7 +31,7 @@ use super::{
     BasicModule, CandidateProofModule, CanvasInteraction, CapabilitiesProofModule,
     CorrectionsModule, CropModule, CurveModule, DetailModule, LensModule, LookModule, MixerModule,
     ModuleDescriptor, PerspectiveModule, PresenceModule, PresetsModule, RawModule, ToolModule,
-    VignetteModule, controls_module,
+    VignetteModule, ai::AiModule, controls_module,
 };
 use crate::Error;
 #[cfg(test)]
@@ -51,7 +51,7 @@ use std::{
 /// them. [`ModuleRegistry::assemble`] registers these; a test that builds a variant registry of its
 /// own starts from them too. External loading is a later, separately measured step.
 pub(crate) fn linked_modules(developer: bool) -> Vec<Arc<dyn ToolModule>> {
-    let linked: [Arc<dyn ToolModule>; 15] = [
+    let linked: [Arc<dyn ToolModule>; 16] = [
         Arc::new(CropModule::new()),
         Arc::new(PresetsModule::new()),
         Arc::new(CorrectionsModule::new()),
@@ -67,6 +67,7 @@ pub(crate) fn linked_modules(developer: bool) -> Vec<Arc<dyn ToolModule>> {
         Arc::new(VignetteModule::new()),
         Arc::new(controls_module()),
         Arc::new(CandidateProofModule::new()),
+        Arc::new(AiModule::developer()),
     ];
     linked
         .into_iter()
