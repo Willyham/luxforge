@@ -634,7 +634,7 @@ fn model_rows(frame: &Frame) -> Result<(&Value, &Value)> {
 
 /// Every Models frame against the `module.status` answer it was drawn from: the row's state from
 /// the resource's state and the resident set, a kept partial download named exactly when one is
-/// staged, Remove offered exactly when there is something to remove, the fit and requirement from
+/// staged and nothing is installing it, Remove offered exactly when there is something to remove, the fit and requirement from
 /// the status's own, the loaded models from the resident set and the machine line from the
 /// machine's memory.
 fn correlated(step: &str, frame: &Frame) -> Result<Value> {
@@ -664,7 +664,9 @@ fn correlated(step: &str, frame: &Frame) -> Result<Value> {
         .unwrap_or_default();
     ensure(
         expected_state
-            && state.contains("downloaded, resumes") == staged.is_some()
+            // A row names a kept partial download while nothing is installing it.
+            && state.contains("downloaded, resumes")
+                == (staged.is_some() && status["state"] != "installing")
             && row["removable"] == json!(status["state"] == "installed" || staged.is_some())
             && row["fits"] == status["fits"]
             && row["tradeoff"] == PROOF_MODEL_TRADEOFF
@@ -888,7 +890,7 @@ fn usage_statistics(launch: &Checked, checks: &mut Checks) -> Result {
     ensure(
         settings(privacy)["open"] == "privacy"
             && settings(privacy)["tabs"]
-                == json!(["general", "appearance", "experiments", "privacy"])
+                == json!(["general", "appearance", "models", "experiments", "privacy"])
             && usage(privacy)["privacy"]["switch"] == true
             && usage(privacy)["privacy"]["error"].is_null()
             && usage(privacy)["privacy"]["details_open"] == false,
