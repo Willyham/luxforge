@@ -1,6 +1,6 @@
 # Panorama merges
 
-Status: planned, implementation not authorized. On 2026-10-11 the owner asked for a panorama merge design and chose its scope ([decisions](../decisions.md#panorama-merges)): RAW or JPEG frames; selection only, with no automatic grouping; automatic crop with a Boundary Warp option; and raised source limits, so a panorama is not scaled down to today's 128 MP. The [task plan](../../tasks/library/panorama-merge.json) carries the work.
+Status: planned. Panorama implementation is not authorized; the HDR parts the owner asked to align to this design are the kind-tagged merge boundary (delivered) and the merge preview for HDR (in progress). On 2026-10-11 the owner asked for a panorama merge design and chose its scope ([decisions](../decisions.md#panorama-merges)): RAW or JPEG frames; selection only, with no automatic grouping; automatic crop with a Boundary Warp option; and raised source limits, so a panorama is not scaled down to today's 128 MP. The [task plan](../../tasks/library/panorama-merge.json) carries the work.
 
 ## Boards
 
