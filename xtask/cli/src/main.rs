@@ -30,6 +30,7 @@ const FULL_COMMANDS: &[&str] = &[
     "verify",
     "check-capture",
     "catalog-measure",
+    "usage-measure",
     "hardening",
     "measure",
     "preview-error",
