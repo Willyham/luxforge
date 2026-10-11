@@ -722,7 +722,7 @@ pub(crate) fn selected_names(
         .filter_map(|position| row_at(state, position))
         .filter_map(|row| match &row.item {
             RowItem::Photo { asset_id } => Some((asset_id.clone(), row.file_name.clone())),
-            RowItem::File { .. } => None,
+            RowItem::File { .. } | RowItem::Input { .. } => None,
         })
         .collect()
 }

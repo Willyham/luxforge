@@ -12,8 +12,15 @@
 //!   jobs too), never a timer, and its record read with `job.read`. Then Develop opens on the first
 //!   photograph it developed, with the photographs it answered as the development set. A failed or
 //!   cancelled Develop says so; what it committed stays in the catalog, as the core keeps it.
-//! - **Opening a catalog photograph.** A double-click opens Develop on the photograph with the
-//!   view's photographs as the set, read into it a window of `browse.rows` at a time.
+//! - **The development set** is the owner's, one for every client
+//!   ([`development-set.*`](../../../../docs/design/catalog.md#hdr-stacks-and-the-development-set)):
+//!   the photographs a Develop answered, a catalog view's photographs around the one opened, or the
+//!   one photograph Develop is entered on replace it (`development-set.replace`), and a file opened
+//!   alone leaves none. The filmstrip shows the set read back a page of `development-set.read` at a
+//!   time, and reads it again when an event names a revision past the one it holds, so a
+//!   membership another client changed, a Pick merged among them, reaches it.
+//! - **Opening a catalog photograph.** A double-click opens Develop on the photograph at once, and
+//!   the view's photographs around it become the set.
 //! - **Moving through the set.** `←`, `→`, the filmstrip's buttons and a press on its cell replace
 //!   the one document through the open path every open shares ([`tasks::open_photograph`]:
 //!   `source.prepare`, then `job.adopt`), refused with the one start refusal's reason while a draft
@@ -42,16 +49,16 @@ use crate::layout;
 use crate::state::{
     self,
     develop::{
-        Confirmation, DevelopSet, Developing, SetPhoto, ShownPreview, develop_params,
+        Confirmation, DevelopSet, Developing, ReadSet, SetPhoto, ShownPreview, develop_params,
         developed_photos, developed_sentence,
     },
-    select::RowsRequest,
 };
 use iced::{Subscription, Task, widget::image::Handle};
 use luxforge_core::{
     AssetId, ClientId, JobId, OwnerHandle,
     catalog_types::{
-        CatalogFolders, DevelopPlan, DevelopReport, PreviewItem, PreviewState, RowItem, ViewRows,
+        CatalogFolders, DevelopPlan, DevelopReport, DevelopmentSetPage, DevelopmentSetReplaced,
+        PreviewItem, PreviewState, RowItem,
     },
 };
 use serde_json::{Value, json};
@@ -68,11 +75,12 @@ pub(crate) const AHEAD: usize = 2;
 /// The filmstrip's decoded grid previews: a strip's window and a window either side, at a cell's
 /// 144 × 104 pixels, several times over.
 pub(crate) const STRIP_BUDGET_BYTES: usize = 32 << 20;
-/// The most photographs a view's development set holds, around the photograph it opens on: the
-/// design's catalog of 100,000 photographs, 16 bytes of identity and a name each.
-pub(crate) const MAX_SET: u32 = 100_000;
-/// The rows one `browse.rows` of a set's read asks for: the method's most.
-const SET_WINDOW: u32 = 1000;
+/// The members one `development-set.read` asks for: the method's most. The owner holds at most
+/// `MAX_SET_MEMBERS` (100,000) photographs in a set, 16 bytes of identity and a name each here.
+const SET_WINDOW: usize = luxforge_core::catalog_types::MAX_SET_PAGE;
+/// How many times a read of the set starts again because another change moved it on while it was
+/// read, before it is answered as it last stood.
+const SET_RETRIES: u32 = 4;
 
 /// The last Develop this desktop sent, for evidence: its request, what `pick.develop` answered
 /// and the job's record when it ended.
@@ -110,6 +118,9 @@ pub(crate) struct Develop {
     plan_serial: u64,
     /// The newest set's number.
     set_serial: u64,
+    /// The owner's development-set revision the set Develop shows was read at: an event naming a
+    /// later one reads it again.
+    pub(crate) held_set: u64,
     pub(crate) last: DevelopRecord,
     /// The move in flight.
     pub(crate) switch: Option<Switch>,
@@ -131,6 +142,7 @@ impl Default for Develop {
             state: Default::default(),
             plan_serial: 0,
             set_serial: 0,
+            held_set: 0,
             last: DevelopRecord::default(),
             switch: None,
             timing: SwitchTiming::default(),
@@ -225,66 +237,106 @@ pub(crate) fn ended_now(owner: &OwnerHandle, client: ClientId, job: &str) -> Res
     }
 }
 
-/// The photographs of the caller's view at `revision`, around `position`: at most [`MAX_SET`],
-/// read a window of [`SET_WINDOW`] rows at a time, never all at once. Answers them and where
-/// `position` is among them.
+/// Replace the owner's development set with the photographs `source` names
+/// (`development-set.replace`) and read it back: where the photograph it opens on is among them,
+/// for a view's set, and the first otherwise.
+pub(crate) fn replace_set_now(
+    owner: &OwnerHandle,
+    client: ClientId,
+    source: Value,
+) -> Result<ReadSet, String> {
+    let (replaced, _) = call(
+        owner,
+        client,
+        "development-set.replace",
+        json!({ "source": source, "mutation": request() }),
+    )?;
+    let replaced: DevelopmentSetReplaced = parse(replaced)?;
+    let mut read = read_set_now(owner, client)?;
+    read.active = replaced.active.map_or(0, |active| active as usize);
+    Ok(read)
+}
+
+/// The owner's development set, read a page of [`SET_WINDOW`] members at a time, never all at
+/// once. A page at another revision than the first means the set changed under the read, which
+/// starts again, at most [`SET_RETRIES`] times.
+pub(crate) fn read_set_now(owner: &OwnerHandle, client: ClientId) -> Result<ReadSet, String> {
+    let mut retries = 0;
+    let mut photos: Vec<SetPhoto> = Vec::new();
+    let mut revision = None;
+    loop {
+        let (page, _) = call(
+            owner,
+            client,
+            "development-set.read",
+            json!({ "from": photos.len(), "limit": SET_WINDOW }),
+        )?;
+        let page: DevelopmentSetPage = parse(page)?;
+        if revision.is_some_and(|revision| revision != page.revision) && retries < SET_RETRIES {
+            retries += 1;
+            photos.clear();
+            revision = None;
+            continue;
+        }
+        revision = Some(page.revision);
+        let done = page.members.is_empty();
+        photos.extend(page.members.into_iter().map(|member| SetPhoto {
+            asset_id: member.asset_id,
+            kind: Some(member.kind),
+            name: member.file_name,
+        }));
+        if done || photos.len() >= page.count as usize {
+            return Ok(ReadSet {
+                photos,
+                active: 0,
+                revision: page.revision,
+            });
+        }
+    }
+}
+
+/// The photographs of the caller's view at `revision` around `position` made the development set:
+/// at most the owner's `MAX_SET_MEMBERS`, with where `position` is among them.
 pub(crate) fn set_now(
     owner: &OwnerHandle,
     client: ClientId,
     revision: u64,
-    count: u32,
     position: u32,
-) -> Result<(Vec<SetPhoto>, usize), String> {
-    let start = position
-        .saturating_sub(MAX_SET / 2)
-        .min(count.saturating_sub(MAX_SET));
-    let end = start.saturating_add(MAX_SET).min(count);
-    let mut photos = Vec::with_capacity((end - start) as usize);
-    let mut at = start;
-    while at < end {
-        let request = RowsRequest {
-            revision,
-            from: at,
-            count: SET_WINDOW.min(end - at),
-        };
-        let (rows, _) = call(
-            owner,
-            client,
-            "browse.rows",
-            state::select::rows_params(&request),
-        )?;
-        let rows: ViewRows = parse(rows)?;
-        if rows.rows.is_empty() {
-            break;
-        }
-        for row in rows.rows {
-            if let RowItem::Photo { asset_id } = row.item {
-                photos.push(SetPhoto {
-                    asset_id,
-                    kind: Some(row.kind),
-                    name: row.file_name,
-                });
-            }
-            at = row.position + 1;
-        }
-    }
-    let active = (position - start) as usize;
-    Ok((photos, active))
+) -> Result<ReadSet, String> {
+    replace_set_now(
+        owner,
+        client,
+        json!({ "kind": "view", "revision": revision, "position": position }),
+    )
 }
 
+/// The catalog folder `query` names made the development set, read through a client of its own so
+/// the Select view's session is left as it is, opening on `active` when it is among them. A folder
+/// without photographs leaves the set as it was.
 pub(crate) fn folder_set_now(
     owner: &OwnerHandle,
     query: &luxforge_core::catalog_types::ViewQuery,
     active: Option<&AssetId>,
-) -> Result<(Vec<SetPhoto>, usize), String> {
+) -> Result<ReadSet, String> {
     let client = owner.register();
     let result = (|| {
         let summary = super::select::evaluate_now(owner, client, query)?.0;
-        let (photos, _) = set_now(owner, client, summary.revision, summary.count, 0)?;
-        let index = active
-            .and_then(|asset| photos.iter().position(|photo| &photo.asset_id == asset))
+        if summary.count == 0 {
+            return Ok(ReadSet {
+                photos: Vec::new(),
+                active: 0,
+                revision: 0,
+            });
+        }
+        let mut read = set_now(owner, client, summary.revision, 0)?;
+        read.active = active
+            .and_then(|asset| {
+                read.photos
+                    .iter()
+                    .position(|photo| &photo.asset_id == asset)
+            })
             .unwrap_or(0);
-        Ok((photos, index))
+        Ok(read)
     })();
     owner.disconnect(client);
     result
@@ -353,8 +405,10 @@ impl Editor {
                 }
                 self.develop.state.folder_loading = false;
                 match result {
-                    Ok((photos, index)) if !photos.is_empty() => {
-                        self.develop.state.set = Some(DevelopSet::new(serial, photos, index));
+                    Ok(read) if !read.photos.is_empty() => {
+                        let index = read.active;
+                        self.develop.held_set = read.revision;
+                        self.develop.state.set = Some(DevelopSet::new(serial, read.photos, index));
                         self.develop.state.collapsed = false;
                         self.status.text = "Showing Develop".into();
                         let shown = self.show_develop_workspace();
@@ -642,11 +696,41 @@ impl Editor {
         }
         self.develop.set_serial += 1;
         self.develop.state.folder_query = None;
-        self.develop.state.set = Some(DevelopSet::new(self.develop.set_serial, photos, 0));
+        let assets: Vec<AssetId> = photos.iter().map(|photo| photo.asset_id.clone()).collect();
+        let mut set = DevelopSet::new(self.develop.set_serial, photos, 0);
+        set.reading = true;
+        self.develop.state.set = Some(set);
         self.develop.state.collapsed = false;
         let shown = self.show_develop_workspace();
         let opened = self.switch_to(0);
-        Task::batch([shown, opened])
+        let replaced = self.replace_set_task(json!({ "kind": "assets", "asset_ids": assets }));
+        Task::batch([shown, opened, replaced])
+    }
+
+    /// Replace the owner's development set with `source` and read it back into the set Develop
+    /// shows, which keeps its photograph on screen.
+    fn replace_set_task(&self, source: Value) -> Task<Message> {
+        let serial = self.develop.set_serial;
+        let (owner, client) = (self.owner.clone(), self.client);
+        owner_task(
+            move || replace_set_now(&owner, client, source),
+            move |result| Message::Develop(DevelopMessage::SetRead { serial, result }),
+        )
+    }
+
+    /// Another client changed the owner's development set past `revision`, the newest an event
+    /// named (`u64::MAX` after a gap in the event log): the set Develop shows is read again. A
+    /// desktop showing no set has none of the owner's to follow.
+    pub(crate) fn development_set_changed(&mut self, revision: u64) -> Task<Message> {
+        if revision <= self.develop.held_set || self.develop.state.set.is_none() {
+            return Task::none();
+        }
+        let serial = self.develop.set_serial;
+        let (owner, client) = (self.owner.clone(), self.client);
+        owner_task(
+            move || read_set_now(&owner, client),
+            move |result| Message::Develop(DevelopMessage::SetRead { serial, result }),
+        )
     }
 
     /// Catalog views select or clear the Develop folder; import browsing preserves it.
@@ -716,7 +800,10 @@ impl Editor {
                 }],
                 0,
             ));
-            return self.show_develop_workspace();
+            let replaced = self.replace_set_task(
+                json!({ "kind": "assets", "asset_ids": [state.asset.id.clone()] }),
+            );
+            return Task::batch([self.show_develop_workspace(), replaced]);
         }
         self.status.text = "Pick a catalog folder or choose images to develop from the grid".into();
         Task::none()
@@ -761,7 +848,7 @@ impl Editor {
         let read = if count > 1 {
             let (owner, client) = (self.owner.clone(), self.client);
             owner_task(
-                move || set_now(&owner, client, revision, count, position),
+                move || set_now(&owner, client, revision, position),
                 move |result| Message::Develop(DevelopMessage::SetRead { serial, result }),
             )
         } else {
@@ -771,7 +858,7 @@ impl Editor {
     }
 
     /// A view's photographs were read into the set: the photograph Develop shows keeps its place.
-    fn set_read(&mut self, serial: u64, result: Result<(Vec<SetPhoto>, usize), String>) {
+    fn set_read(&mut self, serial: u64, result: Result<ReadSet, String>) {
         let Some(set) = self
             .develop
             .state
@@ -783,7 +870,12 @@ impl Editor {
         };
         set.reading = false;
         match result {
-            Ok((photos, index)) => {
+            Ok(ReadSet {
+                photos,
+                active: index,
+                revision,
+            }) => {
+                self.develop.held_set = self.develop.held_set.max(revision);
                 let active = set.photo(set.active).map(|photo| photo.asset_id.clone());
                 let index = match photos.get(index) {
                     Some(photo) if Some(&photo.asset_id) == active.as_ref() => index,
@@ -1046,12 +1138,15 @@ impl Editor {
             .map(|answers| strip_message(SelectPreviewMessage::Read(answers)))
     }
 
-    /// A file is opened as today, alone: the set, a move in flight and its preview are forgotten.
-    pub(crate) fn develop_opened_alone(&mut self) {
+    /// A file is opened as today, alone: the set, a move in flight and its preview are forgotten,
+    /// and the owner's set is retired with none in its place (`development-set.replace {none}`).
+    pub(crate) fn develop_opened_alone(&mut self) -> Task<Message> {
         self.develop.state.set = None;
         self.develop.state.switching = None;
         self.develop.state.preview = None;
         self.develop.switch = None;
+        self.develop.set_serial += 1;
+        self.replace_set_task(json!({ "kind": "none" }))
     }
 
     /// Develop's layout has the filmstrip under its canvas: Develop has a set and the strip is not

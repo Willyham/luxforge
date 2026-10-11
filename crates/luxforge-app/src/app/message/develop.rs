@@ -2,7 +2,7 @@
 //! filmstrip and moving through it. Handled in `app/develop.rs`.
 use crate::app::loupe_frames::LoupeFramesMessage;
 use crate::app::select_previews::SelectPreviewMessage;
-use crate::state::develop::SetPhoto;
+use crate::state::develop::ReadSet;
 use luxforge_core::catalog_types::{CatalogFolderId, CatalogFolders, DevelopPlan};
 use serde_json::Value;
 
@@ -44,16 +44,17 @@ pub(crate) enum DevelopMessage {
         job: String,
         result: Result<Value, String>,
     },
-    /// A view's photographs were read into the set numbered `serial`, with where the photograph it
-    /// was opened on is among them.
-    /// The last viewed catalog folder read in an independent browse session.
+    /// The last viewed catalog folder's photographs, made the owner's development set in an
+    /// independent browse session.
     FolderSetRead {
         serial: u64,
-        result: Result<(Vec<SetPhoto>, usize), String>,
+        result: Result<ReadSet, String>,
     },
+    /// The owner's development set was read into the set numbered `serial`: after this desktop
+    /// replaced it, or once another client changed it.
     SetRead {
         serial: u64,
-        result: Result<(Vec<SetPhoto>, usize), String>,
+        result: Result<ReadSet, String>,
     },
     /// `←` or `→` in Develop, or the filmstrip's previous and next buttons.
     Step(isize),

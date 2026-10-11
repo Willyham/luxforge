@@ -360,6 +360,16 @@ pub(crate) struct SetPhoto {
     pub(crate) name: String,
 }
 
+/// The development set as the owner holds it, read for Develop: its photographs in order, where
+/// the one Develop opens on is among them, and the catalog's development-set revision they were
+/// read at.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReadSet {
+    pub(crate) photos: Vec<SetPhoto>,
+    pub(crate) active: usize,
+    pub(crate) revision: u64,
+}
+
 /// The photographs Develop was opened with, in order, and the one on screen. Held as ids: a view's
 /// photographs are read into it a window of rows at a time.
 #[derive(Clone, Debug, PartialEq, Eq)]

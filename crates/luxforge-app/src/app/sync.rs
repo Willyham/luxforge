@@ -235,10 +235,14 @@ impl Editor {
                             sync.preferences,
                             sync.themes,
                         );
+                        let set = match sync.development_set {
+                            Some(revision) => self.development_set_changed(revision),
+                            None => Task::none(),
+                        };
                         if sync.capabilities {
-                            return Task::batch([flags, self.reload_capabilities()]);
+                            return Task::batch([flags, set, self.reload_capabilities()]);
                         }
-                        return flags;
+                        return Task::batch([flags, set]);
                     }
                     Err(error) => self.status.text = format!("Live refresh failed: {error}"),
                 }
@@ -295,7 +299,7 @@ impl Editor {
             self.activity.request_started = queued.started;
         }
         // A file opened is opened alone: Develop has no development set for it.
-        self.develop_opened_alone();
+        let alone = self.develop_opened_alone();
         let generation = self.activity.requested;
         self.open_generation.store(generation, Ordering::Release);
         // Preserve the last displayed photo, but prevent an older in-flight render from becoming
@@ -309,7 +313,7 @@ impl Editor {
             .unwrap_or_default();
         self.event("open_requested", || json!({"file":file}));
         let proxy = self.drawn();
-        import_task(
+        let import = import_task(
             self.owner.clone(),
             self.client,
             path,
@@ -317,7 +321,8 @@ impl Editor {
             self.open_generation.clone(),
             proxy,
             queued.map(|queued| queued.result),
-        )
+        );
+        Task::batch([alone, import])
     }
 
     pub(super) fn open_failed(&mut self, error_code: &str, message: &str) {
