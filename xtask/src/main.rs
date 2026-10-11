@@ -72,6 +72,7 @@ mod settings_smoke;
 mod smoke;
 mod stats;
 mod theme_smoke;
+mod usage_backend_smoke;
 mod usage_smoke;
 mod verify;
 mod viewport_smoke;
