@@ -879,5 +879,8 @@ mod tests {
             second_plan(&json!({"reopen": {"folder": "Jun 2026", "position": 0}})).unwrap();
         second.validate().unwrap();
         assert_eq!(second.len(), 6);
+        // Registered, opening nothing a checkout lacks, so `verify --tier rendered` runs it.
+        let row = crate::smoke::find(SCENARIO).unwrap();
+        assert!(row.rendered() && !row.takes_source());
     }
 }
