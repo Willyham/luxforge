@@ -457,6 +457,121 @@ fn a_set_source_persists_and_a_command_drag_pulls_one_out() {
     );
 }
 
+/// A set source carried to a press in each corner, a stroke painted along an edge and a source
+/// dragged off the photograph all commit a source whose whole footprint is inside the frame, and
+/// the overlay draws it where it commits. A kept offset that would leave turns to the other side.
+#[test]
+fn a_source_stays_on_the_photograph_in_every_corner() {
+    let mut c = Correcting::opened();
+    let (width, height) = c.editor.correction_content().expect("the content size");
+    let aspect = f64::from(width) / f64::from(height);
+    let inside = |operation: &Value| {
+        let radius = operation["radius"].as_f64().unwrap();
+        let points = operation["points"].as_array().unwrap();
+        let anchor = [
+            points[0][0].as_f64().unwrap(),
+            points[0][1].as_f64().unwrap(),
+        ];
+        let source = [
+            operation["source-x"].as_f64().unwrap(),
+            operation["source-y"].as_f64().unwrap(),
+        ];
+        points.iter().all(|point| {
+            let x = point[0].as_f64().unwrap() - anchor[0] + source[0];
+            let y = point[1].as_f64().unwrap() - anchor[1] + source[1];
+            x - radius / aspect >= 0.0
+                && x + radius / aspect <= 1.0
+                && y - radius >= 0.0
+                && y + radius <= 1.0
+        })
+    };
+    // Set a source up and to the left of the first press: the offset every later press keeps.
+    c.press([0.35, 0.3], alt(), CanvasHit::Add);
+    c.release([0.35, 0.3]);
+    c.press([0.5, 0.5], Modifiers::default(), CanvasHit::Add);
+    c.release([0.5, 0.5]);
+    c.commit();
+    let kept = {
+        let first = &c.operations()[0];
+        [
+            first["source-x"].as_f64().unwrap() - first["points"][0][0].as_f64().unwrap(),
+            first["source-y"].as_f64().unwrap() - first["points"][0][1].as_f64().unwrap(),
+        ]
+    };
+    for at in [[0.04, 0.05], [0.96, 0.05], [0.04, 0.95], [0.96, 0.95]] {
+        c.press(at, Modifiers::default(), CanvasHit::Add);
+        // While the button is down, the overlay draws the source where it will commit.
+        let drawn = c
+            .editor
+            .drawn_correction()
+            .and_then(|gesture| gesture.drawn(None))
+            .and_then(|held| held.source)
+            .expect("a set source is drawn");
+        c.release(at);
+        c.commit();
+        let operation = c.operations().last().unwrap().clone();
+        assert!(inside(&operation), "{at:?}: {operation}");
+        assert_eq!(operation["source-origin"], "set");
+        let source = [
+            operation["source-x"].as_f64().unwrap(),
+            operation["source-y"].as_f64().unwrap(),
+        ];
+        assert!(
+            (drawn[0] - source[0]).abs() < 1e-9 && (drawn[1] - source[1]).abs() < 1e-9,
+            "{at:?}: drawn {drawn:?}, committed {source:?}"
+        );
+        // Each axis that would leave turns to the other side at the kept distance.
+        let offset = [source[0] - at[0], source[1] - at[1]];
+        for axis in 0..2 {
+            let leaves = at[axis] + kept[axis] < 0.1;
+            let expected = if leaves { -kept[axis] } else { kept[axis] };
+            assert!(
+                (offset[axis] - expected).abs() < 1e-3,
+                "{at:?} axis {axis}: {offset:?} against {kept:?}"
+            );
+        }
+    }
+    // A stroke painted along the top edge with the kept offset takes its source below it.
+    c.press([0.3, 0.1], Modifiers::default(), CanvasHit::Add);
+    c.drag([0.45, 0.08]);
+    c.drag([0.6, 0.06]);
+    c.release([0.6, 0.06]);
+    c.commit();
+    let stroke = c.operations().last().unwrap().clone();
+    assert!(stroke["points"].as_array().unwrap().len() > 1, "{stroke}");
+    assert!(inside(&stroke), "{stroke}");
+    // A source dragged off the photograph stops inside it.
+    let count = c.operations().len();
+    let operation = format!("correction-{count}");
+    let source = [
+        stroke["source-x"].as_f64().unwrap(),
+        stroke["source-y"].as_f64().unwrap(),
+    ];
+    let anchor = [
+        stroke["points"][0][0].as_f64().unwrap(),
+        stroke["points"][0][1].as_f64().unwrap(),
+    ];
+    c.press(
+        anchor,
+        Modifiers::default(),
+        CanvasHit::Pin(operation.clone()),
+    );
+    c.release(anchor);
+    c.press(
+        source,
+        Modifiers::default(),
+        CanvasHit::Handle(Handle::Source),
+    );
+    c.drag([source[0] - 0.4, source[1] + 0.5]);
+    c.drag([source[0] - 0.6, source[1] + 1.2]);
+    c.release([source[0] - 0.6, source[1] + 1.2]);
+    c.commit();
+    let dragged = c.operations().last().unwrap().clone();
+    assert_eq!(dragged["operation"], json!(operation));
+    assert!(inside(&dragged), "{dragged}");
+    assert_ne!(dragged["source-x"], stroke["source-x"], "{dragged}");
+}
+
 /// Pin, source and size-handle drags each commit one entry with their label; a press that moved
 /// nothing writes nothing; row sliders, kind, reorder and delete each commit one entry.
 #[test]

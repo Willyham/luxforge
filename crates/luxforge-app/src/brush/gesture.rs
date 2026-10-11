@@ -303,6 +303,8 @@ pub(crate) struct HandleEdit {
     pointer: [f64; 2],
     /// The content stage's `W/H`: a radius is in units of its height on both axes.
     aspect: f64,
+    /// The content stage's size, when known: a dragged source stops inside its frame.
+    frame: Option<(u32, u32)>,
 }
 
 impl HandleEdit {
@@ -313,7 +315,15 @@ impl HandleEdit {
             press,
             pointer: press,
             aspect,
+            frame: None,
         }
+    }
+
+    /// The drag over a content stage of `frame` pixels: a source dragged towards an edge stops
+    /// with its whole footprint inside, as the core stores it ([`luxforge_core::SourceFit::Clamp`]).
+    pub(crate) fn within(mut self, frame: Option<(u32, u32)>) -> Self {
+        self.frame = frame;
+        self
     }
 
     pub(crate) fn drag(&mut self, content: [f64; 2]) {
@@ -359,8 +369,19 @@ impl HandleEdit {
                 ))
             }
             Handle::Source => {
-                let [x, y] = self.held.source?;
-                (dx != 0.0 || dy != 0.0).then_some(HandleChange::Source([x + dx, y + dy]))
+                let held = self.held.source?;
+                let mut source = [held[0] + dx, held[1] + dy];
+                if let Some(frame) = self.frame {
+                    source = luxforge_core::fit_correction_source(
+                        &self.held.points,
+                        self.held.radius,
+                        source,
+                        frame,
+                        luxforge_core::SourceFit::Clamp,
+                    )
+                    .unwrap_or(source);
+                }
+                (source != held).then_some(HandleChange::Source(source))
             }
             Handle::Size => {
                 // By the difference from the press, so a press slightly off the handle never
