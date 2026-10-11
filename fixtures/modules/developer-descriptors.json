@@ -734,7 +734,7 @@
           },
           {
             "backends": [
-              "cpu"
+              "fake"
             ],
             "id": "run-fake-generator",
             "kind": "local-runtime",

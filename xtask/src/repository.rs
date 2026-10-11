@@ -309,6 +309,7 @@ const SHIPPED_SOURCES: &[&str] = &[
     "crates/luxforge-gpu/src",
     "crates/luxforge-core/src",
     "crates/luxforge-net/src",
+    "crates/luxforge-onnx/src",
     "crates/luxforge-app/src",
     "crates/luxforge-cli/src",
     "crates/luxforge-ui/src",
@@ -326,6 +327,7 @@ const SHIPPED_CRATES: &[&str] = &[
     "crates/luxforge-gpu",
     "crates/luxforge-core",
     "crates/luxforge-net",
+    "crates/luxforge-onnx",
     "crates/luxforge-app",
     "crates/luxforge-cli",
     "crates/luxforge-ui",
@@ -1091,6 +1093,9 @@ const SOURCE_RULES: &[SourceRule] = &[
             // (blocking on its completion port); macOS delivers on a dispatch queue instead.
             "crates/luxforge-watch/src/linux.rs",
             "crates/luxforge-watch/src/windows.rs",
+            // The local model runtime's load watcher: one scoped thread, alive only while a model
+            // loads, that cancels the load through ONNX Runtime when its job is cancelled.
+            "crates/luxforge-onnx/src/cancel.rs",
             // The desktop's diagnostics log writer and its GPU tile worker.
             "crates/luxforge-app/src/diagnostics.rs",
             "crates/luxforge-app/src/app/gpu_tiles.rs",
@@ -1309,6 +1314,7 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
             "luxforge-app",
             "luxforge-cli",
             "luxforge-net",
+            "luxforge-onnx",
             "luxforge-raw",
             "luxforge-watch",
             "luxforge-jpeg",
@@ -1443,6 +1449,44 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
                  secret store's Keychain implementation belong to luxforge-net, injected through \
                  HostConfig",
     },
+    // The core declares the inference port and links no model runtime: ONNX Runtime lives in
+    // `luxforge-onnx`, which the desktop and `luxforge-json` give the host through `HostConfig`, so
+    // neither the core nor its test binaries build or link a runtime's native code.
+    DependencyRule {
+        name: "core-links-no-runtime",
+        refuses: Depends::Any(&[
+            "ort",
+            "ort-sys",
+            "ort-tract",
+            "ort-candle",
+            "onnxruntime",
+            "onnxruntime-sys",
+            "tract-onnx",
+            "tract-core",
+            "tract-hir",
+            "tract-metal",
+            "candle-core",
+            "candle-onnx",
+            "burn",
+            "wonnx",
+            "luxforge-onnx",
+        ]),
+        manifests: &["crates/luxforge-core"],
+        tables: EVERY_TABLE,
+        allowed: &[],
+        reason: "luxforge-core links no model runtime (ort, ort-sys, tract, candle, burn or \
+                 luxforge-onnx); the runtime belongs to luxforge-onnx, injected through \
+                 HostConfig::inference",
+    },
+    // One home for ONNX Runtime: only `luxforge-onnx` names the binding.
+    DependencyRule {
+        name: "onnx-runtime-home",
+        refuses: Depends::Any(&["ort", "ort-sys"]),
+        manifests: &["crates/*", "xtask"],
+        tables: EVERY_TABLE,
+        allowed: &["crates/luxforge-onnx"],
+        reason: "only luxforge-onnx may depend on ort or ort-sys",
+    },
     // The references are independent by construction: nothing they build against can reach the
     // core they check, directly or through a crate that depends on it.
     DependencyRule {
@@ -1474,6 +1518,7 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         refuses: Depends::Any(&[
             "luxforge-testkit",
             "luxforge-net",
+            "luxforge-onnx",
             "luxforge-cli",
             "luxforge-app",
             "xtask",
@@ -1482,7 +1527,7 @@ const DEPENDENCY_RULES: &[DependencyRule] = &[
         tables: EVERY_TABLE,
         allowed: &[],
         reason: "luxforge-core may not name a crate that depends on it (luxforge-testkit, \
-                 luxforge-net, luxforge-cli, luxforge-app or xtask), so its tests build it once",
+                 luxforge-net, luxforge-onnx, luxforge-cli, luxforge-app or xtask), so its tests build it once",
     },
     // The headless binary builds without the GUI stack: no window, renderer, shader compiler or
     // dialog crate, and not the widget crate or the desktop that bring them.
@@ -2422,6 +2467,7 @@ pub fn check(root: &Path) -> Result {
          crates.io sources, notice",
         services(root)?
     );
+    println!("PASS {}", crate::onnxruntime::check(root)?);
     Ok(())
 }
 #[cfg(test)]
@@ -4210,6 +4256,78 @@ fn frame() {}
                 "{what}: {error}"
             );
         }
+    }
+
+    #[test]
+    fn the_core_links_no_model_runtime_and_only_luxforge_onnx_names_ort() {
+        let tmp = tempfile::tempdir().unwrap();
+        let manifest = tmp.path().join("crates/luxforge-core/Cargo.toml");
+        fs::create_dir_all(manifest.parent().unwrap()).unwrap();
+        // The port's own needs, and a crate whose name only starts like a runtime's, are allowed.
+        let clean = "[package]\nname = \"luxforge-core\"\n\n[dependencies]\n\
+                     sha2.workspace = true\nserde.workspace = true\northo = \"1\"\n";
+        fs::write(&manifest, clean).unwrap();
+        let rule = &["core-links-no-runtime"];
+        assert_eq!(read(tmp.path(), rule).unwrap(), (0, 1));
+        // The crate that owns the runtime may name it; the rule reads only the core's manifest.
+        let onnx = tmp.path().join("crates/luxforge-onnx/Cargo.toml");
+        fs::create_dir_all(onnx.parent().unwrap()).unwrap();
+        fs::write(
+            &onnx,
+            "[dependencies]\nluxforge-core = { path = \"../luxforge-core\" }\n\
+             ort.workspace = true\n\n[target.'cfg(target_os = \"macos\")'.dependencies]\n\
+             ort = { workspace = true, features = [\"coreml\"] }\n",
+        )
+        .unwrap();
+        assert_eq!(read(tmp.path(), rule).unwrap(), (0, 1));
+        assert_eq!(read(tmp.path(), &["onnx-runtime-home"]).unwrap(), (0, 2));
+        for (what, extra) in [
+            ("ort", "ort.workspace = true\n"),
+            ("ort-sys", "ort-sys = \"=2.0.0-rc.13\"\n"),
+            ("tract", "tract-onnx = \"0.23\"\n"),
+            ("candle", "candle-core = \"0.9\"\n"),
+            (
+                "the runtime crate itself",
+                "luxforge-onnx = { path = \"../luxforge-onnx\" }\n",
+            ),
+            (
+                "ort for the tests",
+                "\n[dev-dependencies]\nort.workspace = true\n",
+            ),
+            (
+                "ort under a macOS target",
+                "\n[target.'cfg(target_os = \"macos\")'.dependencies]\n\
+                 ort = { workspace = true, features = [\"coreml\"] }\n",
+            ),
+            (
+                "ort under another name",
+                "runtime = { package = \"ort\", version = \"=2.0.0-rc.13\" }\n",
+            ),
+            (
+                "ort in the build script",
+                "\n[build-dependencies]\nort-sys = \"2\"\n",
+            ),
+        ] {
+            fs::write(&manifest, format!("{clean}{extra}")).unwrap();
+            let error = refusal(tmp.path(), rule, what);
+            assert!(
+                error.contains("luxforge-core/Cargo.toml:")
+                    && error.contains("links no model runtime")
+                    && error.contains("DEPENDENCY_RULES"),
+                "{what}: {error}"
+            );
+        }
+        // Any other crate naming the binding is refused too.
+        fs::write(&manifest, clean).unwrap();
+        let app = tmp.path().join("crates/luxforge-app/Cargo.toml");
+        fs::create_dir_all(app.parent().unwrap()).unwrap();
+        fs::write(&app, "[dependencies]\nort.workspace = true\n").unwrap();
+        let error = refusal(tmp.path(), &["onnx-runtime-home"], "ort in the desktop");
+        assert!(
+            error.contains("luxforge-app/Cargo.toml:")
+                && error.contains("only luxforge-onnx may depend on ort"),
+            "{error}"
+        );
     }
 
     #[test]

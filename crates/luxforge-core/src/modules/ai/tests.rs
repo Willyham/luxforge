@@ -21,7 +21,10 @@ use crate::{
         testing::{MemoryTransport, Owner, temp},
     },
     editor::mutation_json,
-    inference::fake::{FakeControls, FakeInference},
+    inference::{
+        CompositeInference,
+        fake::{FAKE_BACKEND, FAKE_HOST_BACKEND, FakeControls, FakeInference},
+    },
     modules::{CapabilityModule, Stage, TaskAdmission},
 };
 use luxforge_testbase::{Gate, wait_for};
@@ -81,8 +84,13 @@ impl Fixture {
             transport: DeveloperModels::wrap(MemoryTransport::new(|_, answer| {
                 answer.whole(404, b"")
             })),
-            inference: inference
-                .then(|| self.fake.clone() as Arc<dyn crate::inference::InferenceRuntime>),
+            // The fake under the name a developer host serves it by.
+            inference: inference.then(|| {
+                CompositeInference::new()
+                    .with_alias(FAKE_HOST_BACKEND, self.fake.clone(), FAKE_BACKEND)
+                    .unwrap()
+                    .shared()
+            }),
             ..HostConfig::unconfigured()
         }
     }

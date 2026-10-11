@@ -4,8 +4,8 @@
 //! the module is registered in developer runs only, with the developer model table below, and a
 //! production registry has no `luxforge.ai` at all until the real-models work adds its qualified
 //! models. The developer model is the deterministic fake generator
-//! ([`crate::inference::fake::FakeInference`]), which a developer host is handed as its inference
-//! runtime; its resources are two small pinned files whose URLs lie under the reserved
+//! ([`crate::inference::fake::FakeInference`]), which a developer host serves under the backend
+//! name [`crate::inference::fake::FAKE_HOST_BACKEND`]; its resources are two small pinned files whose URLs lie under the reserved
 //! `.invalid` domain, which never resolves. A developer host installs them through the ordinary
 //! download grant and install job, its transport wrapped in [`DeveloperModels`], which answers
 //! exactly those URLs from memory and passes every other request to the transport it wraps. A host
@@ -147,7 +147,7 @@ pub(crate) const DEVELOPER_MODELS: &[GenerativeModel] = &[GenerativeModel {
     generator: FAKE_GENERATOR,
     runtime: "run-fake-generator",
     resident_bytes: 64 * 1024 * 1024,
-    backends: &["cpu"],
+    backends: &[crate::inference::fake::FAKE_HOST_BACKEND],
     precision: Precision::Fp32,
     side: 512,
     steps: 8,

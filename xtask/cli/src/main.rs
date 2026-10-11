@@ -109,6 +109,11 @@ fn main_result() -> Result<ExitCode> {
             a.done()?;
             policy::audit(&root)?;
         }
+        "onnxruntime-attestation" => {
+            let out = a.path("--output")?;
+            a.done()?;
+            xtask_cli::onnxruntime::attest(&out)?;
+        }
         "help" => {
             a.done()?;
             println!("{}", xtask_cli::HELP);
@@ -198,6 +203,7 @@ mod tests {
                 "fmt",
                 "lint",
                 "audit",
+                "onnxruntime-attestation",
                 "help",
             ]
             .into_iter()
