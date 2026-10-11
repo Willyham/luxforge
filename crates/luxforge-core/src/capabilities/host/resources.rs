@@ -154,6 +154,19 @@ impl CapabilityHost {
         json!({"memory_bytes": self.config.machine_memory_bytes})
     }
 
+    /// The inference runtime, for a resource a `local-runtime` capability holds: what an install
+    /// asks to prepare the model and a removal asks to forget it. `None` for any other resource or
+    /// with no runtime configured.
+    fn model_runtime(
+        &self,
+        descriptor: &ModuleDescriptor,
+        resource_id: &str,
+    ) -> Option<Arc<dyn crate::inference::InferenceRuntime>> {
+        super::runtime::runtime_capability(descriptor, resource_id)
+            .ok()
+            .and(self.config.inference.clone())
+    }
+
     /// Whether this machine meets `resource`'s memory minimum: `None` when it declares none or the
     /// host cannot tell.
     fn fits(&self, resource: &ResourceDescriptor) -> Option<bool> {
@@ -261,6 +274,15 @@ impl CapabilityHost {
             quota: self.config.resource_quota_bytes,
             actor: request.mutation.actor.clone(),
             control: control.clone(),
+            runtime: self.model_runtime(descriptor, &resource.id).map(|runtime| {
+                let backends = match super::runtime::runtime_capability(descriptor, &resource.id)
+                    .map(|capability| &capability.kind)
+                {
+                    Ok(CapabilityKind::LocalRuntime { backends, .. }) => backends.clone(),
+                    _ => Vec::new(),
+                };
+                (runtime, backends)
+            }),
         };
         let record = jobs.submit(
             NewJob {
@@ -333,7 +355,10 @@ impl CapabilityHost {
             let control = control.clone();
             let module_id = descriptor.id.clone();
             let resource = resource.clone();
-            Box::new(move || transfer::remove(&store, &module_id, &resource, &control))
+            let runtime = self.model_runtime(descriptor, &resource.id);
+            Box::new(move || {
+                transfer::remove(&store, &module_id, &resource, &control, runtime.as_deref())
+            })
         };
         let record = jobs.submit(
             NewJob {

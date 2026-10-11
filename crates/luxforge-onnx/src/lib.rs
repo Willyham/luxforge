@@ -187,6 +187,12 @@ impl InferenceRuntime for OnnxRuntime {
         Ok(fixed::ensure(model, cancel)?.files(model.path()))
     }
 
+    /// Every Core ML compile of the model under the compile cache.
+    fn forget(&self, sha256: &str) -> usize {
+        self.cache_dir()
+            .map_or(0, |root| cache::remove_compiled(root, sha256))
+    }
+
     fn open_session(
         &self,
         model: &ModelFile,

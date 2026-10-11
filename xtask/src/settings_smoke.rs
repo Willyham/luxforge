@@ -669,7 +669,7 @@ fn correlated(step: &str, frame: &Frame) -> Result<Value> {
             && row["fits"] == status["fits"]
             && row["tradeoff"] == PROOF_MODEL_TRADEOFF
             && row["use_restriction"] == PROOF_MODEL_RESTRICTION
-            && row["requirement"] == "Needs 2 GB of memory · 64.0 MB while loaded · cpu · fp32"
+            && row["requirement"] == "Needs 2 GB of memory · 64.0 MB while loaded · fake · fp32"
             && status["requirements"]["min_memory_bytes"] == 2u64 << 30
             && resident.len() == loaded.len()
             && resident

@@ -188,6 +188,7 @@ struct Fixture {
     server: Server,
     descriptor: crate::ModuleDescriptor,
     machine: Option<u64>,
+    inference: Option<Arc<dyn crate::inference::InferenceRuntime>>,
 }
 
 impl Fixture {
@@ -199,6 +200,7 @@ impl Fixture {
             server: Server::new(),
             descriptor: descriptor(),
             machine: Some(32 * GIB),
+            inference: None,
         }
     }
 
@@ -238,6 +240,7 @@ impl Fixture {
                 transport: self.server.transport.clone(),
                 resource_quota_bytes: 1 << 20,
                 machine_memory_bytes: self.machine,
+                inference: self.inference.clone(),
                 ..HostConfig::unconfigured()
             },
         )
@@ -653,6 +656,118 @@ fn a_machine_below_a_models_minimum_sees_its_requirement_and_cannot_install_it()
         owner.status(MODULE)["machine"],
         json!({"memory_bytes": null})
     );
+    owner.stop();
+}
+
+/// A runtime that derives one file beside each model it prepares, records what it was asked to
+/// forget, and can be made to fail its preparation.
+#[derive(Default)]
+struct Deriving {
+    prepared: Mutex<Vec<(PathBuf, String)>>,
+    forgot: Mutex<Vec<String>>,
+    fail: std::sync::atomic::AtomicBool,
+}
+
+impl crate::inference::InferenceRuntime for Deriving {
+    fn identity(&self) -> crate::inference::RuntimeIdentity {
+        crate::inference::RuntimeIdentity {
+            name: "deriving".into(),
+            version: "1".into(),
+        }
+    }
+
+    fn backends(&self) -> Vec<String> {
+        vec!["coreml".into(), "cpu".into()]
+    }
+
+    fn prepare(
+        &self,
+        model: &crate::inference::ModelFile,
+        _: &crate::Cancel,
+    ) -> Result<Vec<PathBuf>, Error> {
+        self.prepared
+            .lock()
+            .unwrap()
+            .push((model.path().to_path_buf(), model.identity().sha256.clone()));
+        if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(Error::validation("not a model this runtime reads"));
+        }
+        let derived = model.path().with_extension("fixed");
+        fs::write(&derived, b"fixed").unwrap();
+        Ok(vec![derived])
+    }
+
+    fn open_session(
+        &self,
+        _: &crate::inference::ModelFile,
+        _: &crate::inference::OpenOptions,
+        _: &crate::Cancel,
+    ) -> Result<Box<dyn crate::inference::Session>, Error> {
+        Err(Error::validation("the deriving runtime opens nothing"))
+    }
+
+    fn forget(&self, sha256: &str) -> usize {
+        self.forgot.lock().unwrap().push(sha256.to_owned());
+        1
+    }
+}
+
+#[test]
+fn an_installed_model_is_prepared_its_derived_files_recorded_and_forgotten_on_removal() {
+    let mut fixture = Fixture::new("model-prepare");
+    let runtime = Arc::new(Deriving::default());
+    fixture.inference = Some(runtime.clone());
+    let owner = fixture.start();
+    grant(&owner, "segmenter-download", MODEL);
+    let done = install(&owner, MODEL);
+    assert_eq!(done["status"], json!("ready"), "{done}");
+    let version = fixture.version_dir(MODEL);
+    // The runtime prepared the installed model, the resource's own file, before it was marked.
+    assert_eq!(
+        *runtime.prepared.lock().unwrap(),
+        [(version.join(MODEL), sha256_hex(ENCODER))]
+    );
+    let derived = json!([{"path": format!("{MODEL}.fixed"), "bytes": 5}]);
+    assert_eq!(done["result"]["derived"], derived);
+    let marker: Value =
+        serde_json::from_slice(&fs::read(version.join(INSTALLED_FILE)).unwrap()).unwrap();
+    assert_eq!(marker["derived"], derived);
+    // What it derived counts against the quota beside the pinned files.
+    let total = (ENCODER.len() + DECODER.len()) as u64;
+    assert_eq!(
+        owner.ok(RESOURCE_LIST, json!({"module_id": MODULE}))["storage"]["used_bytes"],
+        json!(total + 5)
+    );
+    assert_eq!(row(&owner, MODEL)["state"], json!("installed"));
+
+    // Removal takes the derived file with the directory and asks the runtime to forget each file.
+    let removed = owner.ok(REMOVE, json!({"module_id": MODULE, "resource_id": MODEL}));
+    let finished = owner.finished(&removed["job_id"]);
+    assert_eq!(
+        finished["result"]["compiled_removed"],
+        json!(2),
+        "{finished}"
+    );
+    assert_eq!(
+        *runtime.forgot.lock().unwrap(),
+        [sha256_hex(ENCODER), sha256_hex(DECODER)]
+    );
+    assert!(!version.exists());
+
+    // A preparation that fails leaves the model installed, says why, and records nothing derived:
+    // the first open derives what it needs and reports its own failure.
+    runtime
+        .fail
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let done = install(&owner, MODEL);
+    assert_eq!(done["status"], json!("ready"), "{done}");
+    assert_eq!(
+        done["result"]["prepare_error"],
+        json!({"code": "validation", "message": "not a model this runtime reads"})
+    );
+    let marker: Value =
+        serde_json::from_slice(&fs::read(version.join(INSTALLED_FILE)).unwrap()).unwrap();
+    assert!(marker.get("derived").is_none(), "{marker}");
     owner.stop();
 }
 

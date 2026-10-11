@@ -54,7 +54,8 @@ pub(crate) struct ModelRow {
     pub(crate) title: String,
     /// `v1 · 8.8 KB · 2 files`.
     pub(crate) detail: String,
-    /// `Not installed`, `Installing 35%`, `Installed`, `Loaded` or `Failed: …`.
+    /// `Not installed`, `Installing 35%`, `Installing · preparing the model`, `Installed`,
+    /// `Loaded` or `Failed: …`.
     pub(crate) state: String,
     pub(crate) tradeoff: Option<String>,
     pub(crate) use_restriction: Option<String>,
@@ -274,7 +275,7 @@ fn row(
         (Some(ResourceState::Installed), Some(_)) => "Loading".to_owned(),
         (Some(ResourceState::Installed), None) => "Installed".to_owned(),
         (Some(ResourceState::Installing), _) => {
-            let fraction = reported
+            let progress = reported
                 .and_then(|row| row.job_id.as_ref())
                 .and_then(|job| {
                     state
@@ -287,10 +288,18 @@ fn row(
                         )
                         .find(|record| &record.job_id == job)
                 })
-                .and_then(|record| record.progress.fraction);
-            match fraction {
-                Some(fraction) => format!("Installing {:.0}%", fraction.clamp(0.0, 1.0) * 100.0),
-                None => "Installing".to_owned(),
+                .map(|record| &record.progress);
+            // Past the download, the step the install is on: checking the format, then preparing
+            // the model for this machine (the Core ML copy on a Mac).
+            match (
+                progress.and_then(|progress| progress.fraction),
+                progress.and_then(|progress| progress.message.as_deref()),
+            ) {
+                (_, Some(step)) if step != "downloading" => format!("Installing · {step}"),
+                (Some(fraction), _) => {
+                    format!("Installing {:.0}%", fraction.clamp(0.0, 1.0) * 100.0)
+                }
+                (None, _) => "Installing".to_owned(),
             }
         }
         (Some(ResourceState::NotInstalled | ResourceState::Failed), _) => {
@@ -508,6 +517,41 @@ mod tests {
             Some("This machine has 4 GB of memory. Segmenter needs 8 GB, more than it has.")
         );
         assert!(model.resident.is_empty());
+    }
+
+    #[test]
+    fn an_install_says_its_percentage_then_the_step_past_the_download() {
+        let modules = [module()];
+        let mut store = CapabilityStore::default();
+        let at = |fraction: f64, step: &str| {
+            let mut status = status(
+                row_json(
+                    "installing",
+                    json!({"job_id": "job-0123456789abcdef0123456789abcdef"}),
+                ),
+                Vec::new(),
+                Some(36 << 30),
+            );
+            status.jobs = vec![
+                serde_json::from_value(json!({
+                    "job_id": "job-0123456789abcdef0123456789abcdef", "kind": "install", "status": "running",
+                    "ownership": "catalog", "module_id": "m", "resource_id": "seg",
+                    "progress": {"fraction": fraction, "message": step},
+                }))
+                .unwrap(),
+            ];
+            status
+        };
+        store.module_mut("m").status = Some(at(0.35, "downloading"));
+        assert_eq!(
+            derive(&modules, &store, None).rows[0].state,
+            "Installing 35%"
+        );
+        store.module_mut("m").status = Some(at(1.0, "preparing the model"));
+        assert_eq!(
+            derive(&modules, &store, None).rows[0].state,
+            "Installing · preparing the model"
+        );
     }
 
     #[test]

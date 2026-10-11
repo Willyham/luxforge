@@ -12,7 +12,7 @@ use super::{
     ActionInput, ActionPlan, CapabilityModule, LayerReport, ModuleDescriptor, Processing,
     StageContext, ToolModule,
 };
-use crate::Error;
+use crate::{Error, inference::fake::FAKE_HOST_BACKEND};
 use serde_json::{Map, Value, json};
 use std::{io::Read, path::Path};
 
@@ -91,7 +91,7 @@ impl ModelsProofModule {
                 {
                     "id": PROOF_MODEL_RUNTIME, "kind": "local-runtime",
                     "resource": PROOF_MODEL_RESOURCE, "model": "session",
-                    "resident_bytes": RESIDENT_BYTES, "backends": ["cpu"], "precision": "fp32",
+                    "resident_bytes": RESIDENT_BYTES, "backends": [FAKE_HOST_BACKEND], "precision": "fp32",
                     "purpose": "Hold the proof segmenter loaded between uses.",
                 },
             ],
