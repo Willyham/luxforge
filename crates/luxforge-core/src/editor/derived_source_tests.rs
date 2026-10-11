@@ -11,8 +11,6 @@ use crate::artifacts::{
         read_derived_source, source_object_path,
     },
 };
-use crate::catalog_types::{CatalogFolderId, FileAvailability, HeaderMetadata, VolumeId};
-use crate::{EntryId, HistoryEntry, Snapshot};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeSet,
@@ -23,7 +21,7 @@ use std::{
 static NEXT: AtomicU64 = AtomicU64::new(1);
 
 /// A directory of its own for one test, so the catalog file and its artifact root sit side by side.
-fn directory(name: &str) -> PathBuf {
+pub(super) fn directory(name: &str) -> PathBuf {
     let directory = std::env::temp_dir().join(format!(
         "luxforge-derived-sources-{}-{}-{name}",
         std::process::id(),
@@ -38,7 +36,7 @@ fn jpeg() -> PathBuf {
 }
 
 /// A catalog holding one imported JPEG, whose catalog folder and volume derived photographs share.
-fn catalog(directory: &Path) -> (PathBuf, EditorService, AssetId) {
+pub(super) fn catalog(directory: &Path) -> (PathBuf, EditorService, AssetId) {
     let catalog = directory.join("catalog.sqlite");
     let mut service = EditorService::open(&catalog).unwrap();
     let jpeg = service.import(&jpeg()).unwrap().asset.id;
@@ -47,7 +45,7 @@ fn catalog(directory: &Path) -> (PathBuf, EditorService, AssetId) {
 
 /// Planes with signed values and headroom, different for each `seed`, except that every source's
 /// first chunk holds the same values when `shared_first` is set, so two sources share that chunk.
-fn planes(width: u32, height: u32, seed: u32, shared_first: bool) -> Vec<f32> {
+pub(super) fn planes(width: u32, height: u32, seed: u32, shared_first: bool) -> Vec<f32> {
     let plane = (width * height) as usize;
     let mut planes = vec![0.0; 3 * plane];
     for channel in 0..3 {
@@ -66,31 +64,13 @@ fn planes(width: u32, height: u32, seed: u32, shared_first: bool) -> Vec<f32> {
     planes
 }
 
-fn never() -> AtomicBool {
+pub(super) fn never() -> AtomicBool {
     AtomicBool::new(false)
 }
 
 fn write(writer: &DerivedSourceWriter, width: u32, height: u32, values: &[f32]) -> PublishedSource {
     writer
         .write_planes(width, height, values, None, &never())
-        .unwrap()
-}
-
-/// The catalog folder and volume of the catalog's first photograph.
-fn place(service: &EditorService) -> (CatalogFolderId, VolumeId) {
-    service
-        .connection
-        .query_row(
-            "SELECT catalog_folder_id, volume_id FROM assets ORDER BY row_id LIMIT 1",
-            [],
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-        )
-        .map(|(folder, volume)| {
-            (
-                CatalogFolderId::parse(folder).unwrap(),
-                VolumeId::parse(volume).unwrap(),
-            )
-        })
         .unwrap()
 }
 
@@ -102,64 +82,7 @@ fn publish_rows(
     published: &PublishedSource,
     extra: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<(), Error>,
 ) -> Result<AssetId, Error> {
-    let (folder, volume) = place(service);
-    let asset_id = AssetId::new();
-    let identity = format!("derived:{asset_id}");
-    let record = AssetRecord {
-        id: asset_id.clone(),
-        source_root: PathBuf::new(),
-        locator: PathBuf::from(&identity),
-        fingerprint: published.id.to_string(),
-        file_identity: identity.clone(),
-        byte_len: published.payload_bytes(),
-        width: published.width,
-        height: published.height,
-        source: SourceKind::Derived {
-            interpretation: published.interpretation(),
-        },
-    };
-    let original = HistoryEntry {
-        id: EntryId::new(),
-        asset_id: asset_id.clone(),
-        sequence: 0,
-        action_id: "original".into(),
-        label: "Original".into(),
-        parameters: json!({}),
-        actor: "system".into(),
-        timestamp_ms: now_ms(),
-        request_id: None,
-        base_revision: 0,
-        result_revision: 0,
-        snapshot: Snapshot::original(asset_id.clone()),
-        undo_parent: None,
-        restore_target: None,
-    };
-    let root = service.artifact_root().to_path_buf();
-    super::write(&mut service.connection, |tx| {
-        insert_photograph(
-            tx,
-            &root,
-            &original,
-            &NewAsset {
-                record: &record,
-                canonical_locator: &identity,
-                catalog_folder_id: &folder,
-                source_folder: Path::new("derived"),
-                volume_id: &volume,
-                file_name: "merge.hdr",
-                developed_ms: now_ms(),
-                removed_ms: None,
-                availability: FileAvailability::Available,
-                checked_ms: now_ms(),
-                develop_moment: None,
-            },
-            &HeaderMetadata::default(),
-            None,
-        )?;
-        link_asset_source(tx, &root, &asset_id, published)?;
-        extra(tx)
-    })?;
-    Ok(asset_id)
+    service.publish_derived_with(published, "merge.hdr", extra)
 }
 
 fn publish(service: &mut EditorService, published: &PublishedSource) -> AssetId {
@@ -554,10 +477,10 @@ fn linking_refuses_any_source_but_the_photographs_own_and_keeps_the_rows() {
 }
 
 /// A derived photograph is its own kind: its history reads, its interpretation serializes as one,
-/// and the paths that cannot read it yet — preparation, camera previews — refuse it by name rather
-/// than reading it as a JPEG.
+/// and it has no original file to prepare: its preparation reads its stored source, which an
+/// evaluation asks for as any unprepared source's.
 #[test]
-fn a_derived_photograph_reads_its_history_and_preparation_refuses_it_by_name() {
+fn a_derived_photograph_reads_its_history_and_has_no_original_file() {
     let directory = directory("kind");
     let (_, mut service, _) = catalog(&directory);
     let published = write(
@@ -594,12 +517,12 @@ fn a_derived_photograph_reads_its_history_and_preparation_refuses_it_by_name() {
     assert_eq!(stored_kind, "derived");
     let error = FilePreparation::for_recipe(&state.asset, &state.current_entry.snapshot.recipe)
         .unwrap_err();
-    assert_eq!(error.kind, ErrorKind::UnsupportedInput);
-    assert!(error.detail.contains("derived source"), "{error}");
+    assert_eq!(error.kind, ErrorKind::Internal);
+    assert!(error.detail.contains("no original file"), "{error}");
     let error = service
         .verified_prepared(&state.asset, &state.current_entry.snapshot.recipe)
         .unwrap_err();
-    assert_eq!(error.kind, ErrorKind::UnsupportedInput);
+    assert_eq!(error.kind, ErrorKind::PreparationRequired);
     drop(service);
     fs::remove_dir_all(directory).unwrap();
 }

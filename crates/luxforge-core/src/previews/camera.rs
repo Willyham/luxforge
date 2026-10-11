@@ -11,7 +11,8 @@
 //! of a photograph does — and refuses anything else as `source-unavailable`, and it checks again
 //! before writing. It never develops: a RAW with no usable camera preview (the Canon EOS R5 Mark
 //! II's and R8's H.265 previews) ends deferred, `not-ready`, since its render is its first
-//! preview.
+//! preview, as does a derived photograph (an HDR merge's result), which has no original file and
+//! no camera preview: its render, from its stored source, is its first preview.
 use super::{
     cache::{Store, intact},
     extract::{FileImages, Found},
@@ -97,6 +98,13 @@ pub(crate) fn make(
     control.checkpoint()?;
     if let Some(served) = served(store, source, tier)? {
         return Ok(served);
+    }
+    if source.kind == SourceTag::Derived {
+        ended.deferred = true;
+        return Err(Error::not_ready(format!(
+            "{} is a derived photograph with no camera preview; its render is its first preview",
+            source.asset_id
+        )));
     }
     let signature = original(source)?;
     let record = FileRecord {

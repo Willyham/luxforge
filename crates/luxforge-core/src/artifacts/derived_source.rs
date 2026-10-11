@@ -24,9 +24,9 @@
 //! a payload. The catalog's asset-source and manifest-chunk references retain a source
 //! (`crate::editor` `derived_source`), and a collection removes only objects nothing retains and no
 //! writer of this process published.
-// The HDR merge's publication and the derived source's preparation (`tasks/library/hdr-merge.json`
-// TASK-004 to TASK-006) write and read through here; until they do, only the tests call the writer
-// and the reader.
+// A derived photograph's preparation reads through here. The HDR merge's publication
+// (`tasks/library/hdr-merge.json` TASK-004 and TASK-006) writes through here; until it does, only
+// the tests and the qualification harness call the writer.
 #![cfg_attr(not(test), allow(dead_code))]
 use super::{
     lock,
@@ -182,12 +182,13 @@ pub struct ReferenceCrop {
     pub y: u32,
 }
 
-/// The refusal of a path that does not read derived sources yet — preparation, camera previews
-/// and lens admission, which `tasks/library/hdr-merge.json` TASK-005 integrates — named, never a
-/// fallback to another kind's reading.
-pub(crate) fn unsupported(what: &str) -> Error {
+/// The refusal of a path that reads an original file — a camera preview, a 100% region of the
+/// original — for a derived photograph, which has none: its pixels are its stored source's, which
+/// preparation, rendering and its rendered previews read. Named, never a fallback to another kind's
+/// reading.
+pub(crate) fn no_original_file(what: &str) -> Error {
     Error::unsupported_input(format!(
-        "{what} is not available for a derived source in this build"
+        "{what} is not available for a derived photograph, which has no original file"
     ))
 }
 
@@ -580,6 +581,34 @@ pub(crate) mod payload_work {
     pub(crate) fn take() -> u64 {
         WORK.replace(0)
     }
+}
+
+/// Planes of a merge's result for the tests, `width × height` as [`LinearImage`] holds them: in
+/// each channel a ramp from below zero to four times diffuse white, and every 61st column a patch
+/// out of the sRGB gamut whose red is negative.
+#[cfg(test)]
+pub(crate) fn merged_planes(width: u32, height: u32) -> Vec<f32> {
+    let plane = (width * height) as usize;
+    let mut values = vec![0.0_f32; 3 * plane];
+    for y in 0..height {
+        for x in 0..width {
+            let u = x as f32 / (width - 1).max(1) as f32;
+            let v = y as f32 / (height - 1).max(1) as f32;
+            let mut rgb = [
+                -0.2 + 4.2 * u * u,
+                -0.1 + 3.0 * u * v,
+                -0.15 + 1.9 * v * (1.0 - u),
+            ];
+            if x % 61 < 4 {
+                rgb = [-0.3, 0.8 + v, 0.4];
+            }
+            let at = (y * width + x) as usize;
+            for (channel, value) in rgb.into_iter().enumerate() {
+                values[channel * plane + at] = value;
+            }
+        }
+    }
+    values
 }
 
 /// Publishes derived sources into one catalog's artifact root from a worker thread: the worker

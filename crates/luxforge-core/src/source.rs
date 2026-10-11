@@ -1,7 +1,8 @@
 //! Decoding an original into pixels: the JPEG path (its limits, the profile check, upright decode,
 //! RGBA written straight into the frame the render returns) and the prepared original, byte-exact
-//! JPEG or an immutable RAW mosaic with one WB development. The two sources' own data types are
-//! [`SourceImage`], here, and [`LinearImage`], in [`linear`].
+//! JPEG, an immutable RAW mosaic with one WB development, or a derived photograph's stored linear
+//! planes. The sources' own data types are [`SourceImage`], here, and [`LinearImage`], in
+//! [`linear`].
 mod linear;
 mod optics;
 
@@ -322,6 +323,22 @@ fn convert_camera_planes(
 pub(crate) enum PreparedSource {
     Jpeg(SourceImage),
     Raw(RawPrepared),
+    /// A derived photograph's stored source (`docs/design/hdr-merge.md#durable-derived-source`),
+    /// read and verified on a worker into one allocation of linear planes.
+    Derived(DerivedPrepared),
+}
+
+/// A derived source as it is prepared: its verified planes, linear sRGB/D65 with their signs and
+/// headroom, in the identity view, fingerprinted with the source's identity. No mosaic, white
+/// balance or development of its own: every evaluation reads these planes as they are, and only the
+/// SDR boundary maps them to display codes. Immutable and shared, like a RAW development's planes,
+/// and leased on the source worker's memory gate for as long as any view of them lives.
+#[derive(Clone, Debug)]
+pub(crate) struct DerivedPrepared {
+    pub(crate) linear: LinearImage,
+    /// What an export writes of the photograph's capture: nothing yet, since the source was read
+    /// from no camera file.
+    pub(crate) capture: Arc<CaptureMetadata>,
 }
 
 #[derive(Clone, Debug)]
@@ -373,12 +390,22 @@ impl PreparedSource {
                     (crop.width, crop.height)
                 }
             }
+            Self::Derived(derived) => (derived.linear.width(), derived.linear.height()),
         }
     }
     pub(crate) fn metadata(&self) -> Option<&RawMetadata> {
         match self {
-            Self::Jpeg(_) => None,
+            Self::Jpeg(_) | Self::Derived(_) => None,
             Self::Raw(raw) => Some(raw.sensor.metadata()),
+        }
+    }
+
+    /// The capture metadata the source worker read with the pixels.
+    pub(crate) fn capture(&self) -> &Arc<CaptureMetadata> {
+        match self {
+            Self::Jpeg(image) => &image.capture,
+            Self::Raw(raw) => &raw.capture,
+            Self::Derived(derived) => &derived.capture,
         }
     }
 }
@@ -488,12 +515,12 @@ pub(crate) fn neutral_at(raw: &RawPrepared, x: u32, y: u32) -> Result<[f32; 3], 
     raw.sensor.neutral_gains_at(x, y).map_err(raw_error)
 }
 
-/// The source worker's memory gate: before it allocates another RAW development, the worker waits
-/// until every development it produced earlier has been released by the caches and previews that
-/// held it, except the one finished development the owner retains beside its current one
-/// ([`SecondDevelopment`]), whose [`Retention`] takes it out of the count. Each adopted development
-/// carries a [`PlaneLease`], shared by every view and clone of its planes; the last one dropping
-/// wakes the worker. A cancelled job wakes it through [`Self::wake`]. Nothing polls.
+/// The source worker's memory gate: before it allocates another RAW development or a derived
+/// photograph's stored planes, the worker waits until every set of planes it produced earlier has
+/// been released by the caches and previews that held it, except the one finished development the
+/// owner retains beside its current one ([`SecondDevelopment`]), whose [`Retention`] takes it out
+/// of the count. Each adopted set of planes carries a [`PlaneLease`], shared by every view and
+/// clone of them; the last one dropping wakes the worker. A cancelled job wakes it through [`Self::wake`]. Nothing polls.
 #[derive(Default)]
 pub(crate) struct PlaneGate {
     live: Mutex<usize>,
@@ -536,7 +563,7 @@ impl PlaneGate {
 
     /// How many developments the gate is waiting for.
     #[cfg(test)]
-    fn counted(&self) -> usize {
+    pub(crate) fn counted(&self) -> usize {
         *self.live()
     }
 }

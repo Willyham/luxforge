@@ -1013,12 +1013,19 @@ impl HostStage<'_> {
         Ok(self.source.get_or_init(|| source))
     }
 
-    /// A RAW stack's developed planes and the linear settings this recipe asks of them. Strict:
-    /// planes that do not hold the recipe's white balance, or no planes at all, are
-    /// `preparation-required`, because a sample is a number and is never approximated.
+    /// A RAW stack's developed planes and the linear settings this recipe asks of them, or a derived
+    /// source's planes, which no setting changes. Strict: planes that do not hold the recipe's
+    /// white balance, or no planes at all, are `preparation-required`, because a sample is a
+    /// number and is never approximated.
     fn linear(&self) -> Result<(&LinearImage, LinearSettings), Error> {
-        let PreparedSource::Raw(raw) = self.source()? else {
-            return Err(Error::incompatible("JPEG source has no linear image"));
+        let raw = match self.source()? {
+            PreparedSource::Raw(raw) => raw,
+            PreparedSource::Derived(derived) => {
+                return Ok((&derived.linear, LinearSettings::default()));
+            }
+            PreparedSource::Jpeg(_) => {
+                return Err(Error::incompatible("JPEG source has no linear image"));
+            }
         };
         let settings = match self.settings.get() {
             Some(settings) => *settings,
@@ -1106,7 +1113,8 @@ impl StageQuestions for HostStage<'_> {
             self.recipe.clone(),
             None,
         )
-        .with_sensor(sensor);
+        .with_sensor(sensor)
+        .of_kind(self.asset.source.tag());
         crate::tiles::grid::read(
             &evaluation,
             index,
@@ -1156,7 +1164,7 @@ impl StageQuestions for HostStage<'_> {
         let compiled = self.compiled_prefix(index)?;
         let source = match self.source()? {
             PreparedSource::Jpeg(image) => RenderSource::Byte(image),
-            PreparedSource::Raw(_) => {
+            PreparedSource::Raw(_) | PreparedSource::Derived(_) => {
                 let (image, settings) = self.linear()?;
                 RenderSource::Linear { image, settings }
             }
@@ -1206,7 +1214,7 @@ impl StageQuestions for HostStage<'_> {
         let compiled = self.compiled_prefix(index)?;
         let preview = match self.source()? {
             PreparedSource::Jpeg(image) => crate::PreviewSource::Jpeg(image.clone()),
-            PreparedSource::Raw(_) => {
+            PreparedSource::Raw(_) | PreparedSource::Derived(_) => {
                 let (image, settings) = self.linear()?;
                 crate::PreviewSource::Raw {
                     image: image.clone(),
@@ -1244,7 +1252,7 @@ impl StageQuestions for HostStage<'_> {
     fn sensor_neutral(&self, x: u32, y: u32) -> Result<[f32; 3], Error> {
         match self.source()? {
             PreparedSource::Raw(raw) => crate::source::neutral_at(raw, x, y),
-            PreparedSource::Jpeg(_) => Err(Error::validation(
+            PreparedSource::Jpeg(_) | PreparedSource::Derived(_) => Err(Error::validation(
                 "RAW neutral picker requires a RAW original",
             )),
         }
@@ -2970,7 +2978,9 @@ mod tests {
         let index = 1;
         let image = match service.verified_prepared(&state.asset, &recipe).unwrap() {
             PreparedSource::Jpeg(image) => image,
-            PreparedSource::Raw(_) => panic!("the JPEG fixture prepares a JPEG source"),
+            PreparedSource::Raw(_) | PreparedSource::Derived(_) => {
+                panic!("the JPEG fixture prepares a JPEG source")
+            }
         };
         reset_sample_compile_count();
         let mut sampled = Vec::new();

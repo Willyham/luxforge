@@ -1671,3 +1671,51 @@ fn a_tier_cancelled_while_it_is_drawn_writes_nothing() {
         .collect();
     assert!(grids.is_empty(), "no file of the cancelled tier: {grids:?}");
 }
+
+/// A derived photograph (an HDR merge's result) has no original file and no camera preview: a
+/// visible read of either tier queues a render from its stored source, whose tier is `rendered`
+/// at the tier's size, and the index records no camera preview for it.
+#[test]
+fn a_derived_source_photograph_renders_its_previews_with_no_camera_preview() {
+    let (width, height) = (900_u32, 600_u32);
+    let derived = std::sync::Mutex::new(None);
+    let (setup, _) = Setup::of(
+        "rendered-derived-photo",
+        &[paths::fixture("s0/orientation-1.jpg")],
+        |service, _, _| {
+            let asset = service
+                .publish_planes(
+                    "merge.hdr",
+                    width,
+                    height,
+                    &crate::artifacts::derived_source::merged_planes(width, height),
+                )
+                .unwrap();
+            let row: i64 = service
+                .connection
+                .query_row(
+                    "SELECT row_id FROM assets WHERE id = ?1",
+                    [asset.as_str()],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            *derived.lock().unwrap() = Some(Photo {
+                entry: service.current_entry_id(&asset).unwrap(),
+                row: AssetRowId(row),
+                asset,
+            });
+        },
+    );
+    let photo = derived.into_inner().unwrap().expect("a derived photograph");
+    for (tier, size) in [(GRID, (512, 341)), (LARGE, (width, height))] {
+        let preview = setup.ready(&photo, tier);
+        assert_eq!(preview["origin"], "rendered", "{preview}");
+        let path = PathBuf::from(preview["path"].as_str().unwrap());
+        assert_eq!(decoded(&path).dimensions(), size, "{}", tier.as_str());
+        assert!(setup.has_row(&photo, &photo.entry, tier, "rendered"));
+    }
+    assert!(
+        setup.rows(&photo).iter().all(|row| row.3 == "rendered"),
+        "no camera preview"
+    );
+}
