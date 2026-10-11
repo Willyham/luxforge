@@ -276,6 +276,24 @@ fn generated(asset: &AssetId) -> Error {
     ))
 }
 
+/// The name of `asset` when it is a merged photograph, with a derived source and no original file.
+/// One indexed read.
+pub(crate) fn merged(connection: &Connection, asset: &AssetId) -> Result<Option<String>, Error> {
+    Ok(connection
+        .prepare_cached("SELECT file_name FROM assets WHERE id = ?1 AND source_kind = 'derived'")?
+        .query_row([asset.as_str()], |row| row.get(0))
+        .optional()?)
+}
+
+/// Refuse to look for, locate or relink a merged photograph's original: its pixels are the merge's
+/// durable derived source, and there is no file anywhere to find. Names it in `data.asset_id`.
+pub(crate) fn no_original(asset: &AssetId, file_name: &str, action: &str) -> Error {
+    Error::validation(format!(
+        "{file_name} is a merged photograph and has no original file to {action}"
+    ))
+    .with_data(json!({ "asset_id": asset }))
+}
+
 /// Write the merge's immutable rows: its provenance and its inputs in the stack's order, each with
 /// its resolved EV offset.
 fn insert_merge(

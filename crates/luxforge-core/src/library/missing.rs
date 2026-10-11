@@ -78,6 +78,7 @@ pub(crate) fn missing(connection: &Connection) -> Result<MissingOriginals, Error
              SUM(a.availability = 'changed')
          FROM assets a JOIN catalog_folders f ON f.id = a.catalog_folder_id
          WHERE a.availability IN ('offline', 'missing', 'changed') AND a.removed_ms IS NULL
+             AND a.source_kind <> 'derived'
          GROUP BY a.source_folder, a.volume_id, f.id
          ORDER BY a.source_folder, a.volume_id",
     )?;
@@ -204,14 +205,20 @@ pub(crate) fn sought(
     connection: &Connection,
     assets: &[(AssetId, AssetRowId)],
 ) -> Result<Vec<Sought>, Error> {
-    let mut statement = connection
-        .prepare_cached("SELECT file_name, byte_len, fingerprint FROM assets WHERE row_id = ?1")?;
+    let mut statement = connection.prepare_cached(
+        "SELECT file_name, byte_len, fingerprint, source_kind FROM assets WHERE row_id = ?1",
+    )?;
     let mut sought = Vec::with_capacity(assets.len());
     for (asset_id, row) in assets {
-        let (file_name, byte_len, fingerprint): (String, i64, String) = statement
-            .query_row([row.0], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        let (file_name, byte_len, fingerprint, kind): (String, i64, String, String) = statement
+            .query_row([row.0], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
             .optional()?
             .ok_or_else(|| Error::validation(format!("unknown asset {asset_id}")))?;
+        if kind == "derived" {
+            return Err(super::merge::no_original(asset_id, &file_name, "look for"));
+        }
         sought.push(Sought {
             asset_id: asset_id.clone(),
             file_name,
@@ -229,7 +236,7 @@ pub(crate) fn sought_from(connection: &Connection, folder: &Path) -> Result<Vec<
     let mut statement = connection.prepare_cached(
         "SELECT id, file_name, byte_len, fingerprint FROM assets
          WHERE availability IN ('offline', 'missing', 'changed') AND source_folder = ?1
-             AND removed_ms IS NULL
+             AND removed_ms IS NULL AND source_kind <> 'derived'
          ORDER BY file_name, id LIMIT ?2",
     )?;
     let rows = statement.query_map(
@@ -565,6 +572,9 @@ pub(crate) fn plan_relink(
         }
         let source = library_rows::asset_source(connection, asset_id)?
             .ok_or_else(|| Error::validation(format!("unknown asset {asset_id}")))?;
+        if let Some(file_name) = super::merge::merged(connection, asset_id)? {
+            return Err(super::merge::no_original(asset_id, &file_name, "relink"));
+        }
         let Ok(canonical) = path.canonicalize() else {
             refused.push((pair, Refused::Gone));
             continue;
