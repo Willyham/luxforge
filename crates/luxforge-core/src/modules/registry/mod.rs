@@ -44,11 +44,12 @@ use std::{
 /// The linked providers a run serves, in the order a registry lists them, which is the order a
 /// client's tools panel draws their sections in: crop first, then presets (which owns no layer),
 /// Corrections, RAW, the RAW look, Basic, Tone curve, Detail, Presence, the colour mixer, lens
-/// correction, perspective, the vignette, the controls proof and the candidate proof. The list is a
-/// presentation order, not the pipeline's: a layer's place in a stack is its effect's declared stage
-/// and order, so the look's section sits above Basic's while its layer follows Basic's. The two
-/// proofs are test modules — their descriptors declare `developer` — so only a `developer` run gets
-/// them. [`ModuleRegistry::assemble`] registers these; a test that builds a variant registry of its
+/// correction, perspective, the vignette, the controls proof, the candidate proof and AI editing
+/// (`luxforge.ai`, which draws no section). The list is a presentation order, not the pipeline's: a
+/// layer's place in a stack is its effect's declared stage and order, so the look's section sits
+/// above Basic's while its layer follows Basic's. The two proofs are test modules — their
+/// descriptors declare `developer` — so only a `developer` run gets them; AI editing also serves
+/// the developer models in one. [`ModuleRegistry::assemble`] registers these; a test that builds a variant registry of its
 /// own starts from them too. External loading is a later, separately measured step.
 pub(crate) fn linked_modules(developer: bool) -> Vec<Arc<dyn ToolModule>> {
     let linked: [Arc<dyn ToolModule>; 16] = [

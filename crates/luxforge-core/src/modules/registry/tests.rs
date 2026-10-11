@@ -924,7 +924,7 @@ fn the_one_assembly_serves_test_modules_only_in_developer_mode() {
         .collect();
     assert_eq!(
         tests,
-        ["luxforge.controls", "luxforge.candidates", "luxforge.ai"]
+        ["luxforge.controls", "luxforge.candidates"]
     );
     for id in &tests {
         assert!(developer.module(id).unwrap().descriptor().developer, "{id}");

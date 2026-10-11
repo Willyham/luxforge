@@ -511,9 +511,9 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
             && ids
                 == [
                     json!("developer"),
+                    json!("ai.generative"),
                     json!("proof.choice"),
                     json!("proof.number"),
-                    json!("ai.generative"),
                 ],
         format!("The palette opened another sheet: {}", settings(sheet)),
     )?;
@@ -619,7 +619,7 @@ fn models_tab(frame: &Frame) -> &Value {
 }
 
 /// The proof model's one row and the `module.status` resource row it was drawn from. A developer
-/// run also lists `luxforge.ai`'s developer models, which the scenario leaves alone.
+/// run also lists `luxforge.ai`'s models, which the scenario leaves alone.
 fn model_rows(frame: &Frame) -> Result<(&Value, &Value)> {
     let tab = models_tab(frame);
     let row = tab["rows"]

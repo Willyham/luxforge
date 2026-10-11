@@ -3566,7 +3566,7 @@ mod tests {
             .flat_map(|descriptor| descriptor.tasks.iter())
             .map(|task| task_method(&task.id))
             .collect();
-        assert_eq!(tasks, ["task.generate-proof-tint"]);
+        assert_eq!(tasks, ["task.fill-generative", "task.generate-proof-tint"]);
         let schema = schemas(&registry);
         let listed = schema["methods"].as_object().unwrap();
         assert_eq!(
@@ -3586,21 +3586,21 @@ mod tests {
                 "{name}"
             );
         }
-        let method = find(&service, &tasks[0]).unwrap();
+        let method = find(&service, &tasks[1]).unwrap();
         // The method carries the task's identity, which the owner hands the capability host.
         assert!(matches!(method.route(), Route::Task("generate-proof-tint")));
         assert!(method.mutates(), "the request queues a job");
         assert!(method.envelope() == Envelope::Request);
-        assert_eq!(listed[&tasks[0]]["mutates"], json!(true));
-        assert_eq!(listed[&tasks[0]]["mutation"], json!("request"));
-        assert_eq!(listed[&tasks[0]]["required"][0], json!("mutation"));
+        assert_eq!(listed[&tasks[1]]["mutates"], json!(true));
+        assert_eq!(listed[&tasks[1]]["mutation"], json!("request"));
+        assert_eq!(listed[&tasks[1]]["required"][0], json!("mutation"));
         // The service never answers it: the catalog owner holds the capability host.
         let refused = method
             .serve(&mut service, &mut session, &json!({}))
             .unwrap_err();
         assert_eq!(refused.kind, ErrorKind::Internal);
         assert_eq!(
-            listed[&tasks[0]]["parameters"],
+            listed[&tasks[1]]["parameters"],
             json!([]),
             "its declared parameters"
         );

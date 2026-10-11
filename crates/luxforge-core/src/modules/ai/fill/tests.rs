@@ -422,7 +422,7 @@ fn the_model_hole_holds_every_covered_pixel_and_no_more_than_its_reach() {
             .model_mask
             .iter()
             .enumerate()
-            .filter(|(_, &m)| m > 0.0)
+            .filter(|(_, m)| **m > 0.0)
             .any(|(i, _)| context.model_image[i * 3..i * 3 + 3] != [0.0; 3])
     );
 }

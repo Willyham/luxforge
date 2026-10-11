@@ -103,11 +103,11 @@ impl Fixture {
         )
     }
 
-    /// The owner of a release build: the built-in modules, no `luxforge.ai` and no runtime.
+    /// The owner of a host with no `luxforge.ai` and no runtime: the built-in modules without it.
     fn start_without_ai(&self) -> Owner {
         Owner::start(
             &self.root.join("catalog.sqlite"),
-            Arc::new(ModuleRegistry::builtin()),
+            Arc::new(without_ai()),
             self.host(false),
         )
     }
@@ -128,8 +128,20 @@ impl Drop for Fixture {
     }
 }
 
+/// The product modules without `luxforge.ai`.
+fn without_ai() -> ModuleRegistry {
+    let mut registry = ModuleRegistry::new();
+    for module in crate::modules::registry::linked_modules(false) {
+        if module.descriptor().id != AI_MODULE {
+            registry.register(module).unwrap();
+        }
+    }
+    registry
+}
+
+/// The product modules with the developer `luxforge.ai`, whose jobs pass `gate`.
 fn registry(gate: &Arc<Gate>) -> Arc<ModuleRegistry> {
-    let mut registry = ModuleRegistry::builtin();
+    let mut registry = without_ai();
     registry
         .register(Arc::new(AiModule::gated(gate.clone())))
         .unwrap();
@@ -308,15 +320,27 @@ fn generate_regenerate_accept_undo_redo_and_reopen_without_the_model() {
     );
     let revision = owner.asset_revision(&asset);
 
-    // Generate: three candidates from consecutive seeds in one job.
-    let first = owner.generate(with(selection(&asset), json!({"seed": 7})));
+    // Generate makes one candidate unless asked for more (owner, 2026-10-11).
+    let single = owner.generate(with(selection(&asset), json!({"seed": 7})));
+    let result = &single["result"]["result"];
+    assert_eq!(result["candidates"], json!([0]), "{single}");
+    assert_eq!(result["seeds"], json!([7]));
+    assert_eq!(result["next_seed"], 8);
+    assert_eq!(single["candidates"].as_array().unwrap().len(), 1);
+    assert_eq!(fixture.controls().generations(), 1);
+
+    // Three candidates from consecutive seeds in one job.
+    let first = owner.generate(with(
+        selection(&asset),
+        json!({"seed": 7, "candidates": 3}),
+    ));
     let result = &first["result"]["result"];
     assert_eq!(result["candidates"], json!([0, 1, 2]), "{first}");
     assert_eq!(result["seeds"], json!([7, 8, 9]));
     assert_eq!(result["next_seed"], 10);
     assert_eq!(result["tier"], "generative");
     assert_eq!(result["prompt"], false);
-    assert_eq!(fixture.controls().generations(), 3);
+    assert_eq!(fixture.controls().generations(), 4);
     let rows = first["candidates"].as_array().unwrap();
     assert_eq!(rows.len(), 3);
     for (index, row) in rows.iter().enumerate() {
@@ -394,6 +418,7 @@ fn generate_regenerate_accept_undo_redo_and_reopen_without_the_model() {
             .clone()
     };
     assert_eq!(read(&again["job_id"]), read(&first["job_id"]));
+    assert_eq!(read(&single["job_id"]), read(&first["job_id"]));
 
     // Accept the second job's second candidate from the other client.
     let accepted = owner
@@ -435,7 +460,7 @@ fn generate_regenerate_accept_undo_redo_and_reopen_without_the_model() {
     let reopened = fixture.start_without_ai();
     assert_eq!(reopened.sample(&asset, centre.0, centre.1), after.1);
     assert_eq!(reopened.sample(&asset, outside.0, outside.1), before.0);
-    assert_eq!(fixture.controls().generations(), 6);
+    assert_eq!(fixture.controls().generations(), 7);
 }
 
 #[test]
