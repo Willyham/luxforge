@@ -40,7 +40,7 @@ use iced::{
     widget::image::Handle,
 };
 use luxforge_core::{
-    AssetId, CandidateState, ClientId, DecodedPreview, OwnerHandle,
+    AssetId, CandidateState, ClientId, DecodedPreview, ErrorKind, OwnerHandle,
     jobs::{JOB_CANCEL, JOB_READ, JobRecord, JobStatus},
     redact_params,
 };
@@ -88,9 +88,9 @@ pub(crate) struct Remove {
     /// The start in flight.
     pub(crate) starting: Option<Start>,
     /// Decoded previews, oldest first: one handle per candidate, kept while it is in the strip.
-    previews: Vec<(CandidateKey, Handle)>,
+    pub(crate) previews: Vec<(CandidateKey, Handle)>,
     /// Preview reads in flight, and those that failed, which are not asked again.
-    reading: BTreeSet<CandidateKey>,
+    pub(crate) reading: BTreeSet<CandidateKey>,
     failed: BTreeSet<CandidateKey>,
     /// The revision the strip's candidate states were last read at: another client's accept
     /// changes them.
@@ -218,6 +218,36 @@ pub(crate) fn read_preview(
         height: height as u32,
         rgba,
     })
+}
+
+/// How often a start waits through a preparation and asks again before it reports the refusal.
+const PREPARATION_RETRIES: usize = 4;
+
+/// The fill request, waiting for the source and asking again, under its one request id, when the
+/// owner answers `preparation-required`, as any client does. Runs on the blocking pool.
+pub(crate) fn start_fill(
+    owner: &OwnerHandle,
+    client: ClientId,
+    method: &str,
+    params: Value,
+) -> Result<Value, CallError> {
+    let mut attempt = 0;
+    loop {
+        match tasks::call_detailed(owner, client, method, params.clone()) {
+            Err(error)
+                if error.code == ErrorKind::PreparationRequired.code()
+                    && attempt < PREPARATION_RETRIES =>
+            {
+                attempt += 1;
+                let job = error
+                    .job_id
+                    .clone()
+                    .unwrap_or_else(|| error.message.clone());
+                tasks::wait_source_job(owner, client, &job)?;
+            }
+            other => return other,
+        }
+    }
 }
 
 /// One fill job's reader: its first record, each change and its end, through `job.wait`.
@@ -598,7 +628,7 @@ impl Editor {
         };
         let (owner, client) = (self.owner.clone(), self.client);
         owner_task(
-            move || tasks::call_detailed(&owner, client, &method, params),
+            move || start_fill(&owner, client, &method, params),
             |result| Message::Remove(RemoveMessage::Started(result)),
         )
     }
