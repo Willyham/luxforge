@@ -179,7 +179,7 @@ pub fn merge(
     mut between: Option<Between<'_>>,
 ) -> Result<Value> {
     let targets = json!({"kind": "paths", "paths": inputs});
-    let plan = session.ask("merge.plan", json!({"targets": targets}))?;
+    let plan = session.ask("merge.plan", json!({"kind": "hdr", "targets": targets}))?;
     ensure(
         plan["suitable"] == true,
         format!("the plan refused: {plan}"),
@@ -285,7 +285,7 @@ pub fn merge(
             "source_id": result["source_id"],
             "source_files": files,
             "source_bytes": bytes,
-            "resolved": inspected["provenance"]["resolved"],
+            "resolved": inspected["provenance"]["resolved"]["hdr"],
         });
     }
     Ok(run)

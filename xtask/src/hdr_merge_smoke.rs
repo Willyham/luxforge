@@ -248,7 +248,7 @@ fn make(generated: &Path) -> Result<(Value, Vec<PathBuf>)> {
             owner,
             client,
             "merge.plan",
-            json!({"targets": {"kind": "paths", "paths": still}}),
+            json!({"kind": "hdr", "targets": {"kind": "paths", "paths": still}}),
         )
     })?;
     let folder = |name: &str| brackets.join(name);
@@ -473,7 +473,8 @@ fn collapsed_leader(frame: &Frame, name: &str, result: &Value, in_set: bool) -> 
     ensure(
         row["item"]["asset_id"] == *result
             && row["role"] == "leader"
-            && row["exposures"] == FRAMES
+            && row["kind"] == "hdr"
+            && row["size"] == FRAMES
             && row["collapsed"] == FRAMES
             && row["badge"] == json!(["HDR \u{b7} 3 exposures", "HDR \u{b7} 3", false])
             && row["in_set"] == in_set,

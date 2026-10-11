@@ -225,7 +225,7 @@ fn refuses_every_unsuitable_request() {
     );
     assert_eq!(
         error.data.as_deref(),
-        Some(&serde_json::json!({"reason": "raw-only", "input": 2}))
+        Some(&serde_json::json!({"reason": "raw-only", "input": 2, "kind": "hdr"}))
     );
     assert_eq!(
         Error::from(Refusal::MixedIso { input: 1 }).kind,

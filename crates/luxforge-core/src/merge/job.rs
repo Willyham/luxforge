@@ -24,8 +24,8 @@
 //! 4. **Saving.** The writer stages, hashes, syncs and renames every chunk and the manifest; the
 //!    inputs' signatures are checked once more, and the owner's publication follows.
 //!
-//! **Bounds.** Scratch is accounted explicitly ([`Accounting`]) against [`SCRATCH_LIMIT`] (256
-//! MiB), by phase: the analysis phase holds the proxies, their aligned copies, the fit samples and
+//! **Bounds.** Scratch is accounted explicitly ([`Accounting`]) against HDR's scratch limit
+//! ([`MergeKind::scratch_limit`], 256 MiB), by phase: the analysis phase holds the proxies, their aligned copies, the fit samples and
 //! the motion map; the merging phase the motion map and one chunk's worth of every input's aligned
 //! samples, one source window and the band buffer it is read back through (at most 8 MiB, or one
 //! frame row: [`READ_BAND_BYTES`]), the chunk's motion selection and the writer's chunk and
@@ -35,8 +35,8 @@
 //! planes), which it does not take from the source worker's plane gate: the merge never waits on
 //! a lease the active editor holds, and the editor never waits on the merge. The spool holds
 //! [`SPOOL_PIXEL`] bytes a pixel an input; with the result's objects it is preflighted against the
-//! per-job temporary-disk ceiling ([`TEMP_CEILING`], 16 GiB) and the volume's free space before the
-//! first byte is spooled. Only this job's own spool files are removed, on every exit.
+//! per-job temporary-disk ceiling ([`MergeKind::temp_ceiling`], 16 GiB for HDR) and the volume's
+//! free space before the first byte is spooled. Only this job's own spool files are removed, on every exit.
 //!
 //! Progress names the phases `reading`, `aligning`, `merging` and `saving` on the job's activity,
 //! and its partial result reports the stage, the scratch it holds and its peak, the temporary
@@ -47,7 +47,8 @@ use crate::{
     atomic_file::file_error,
     catalog_types::{
         FileSignature, HdrDevelopment, HdrParameters, HdrResolution, HeaderMetadata,
-        MERGE_PROVENANCE_FORMAT, MergeInput, MergeKind, MergeProvenance, MergeProvider, Volume,
+        MERGE_PROVENANCE_FORMAT, MergeInput, MergeKind, MergeParameters, MergeProvenance,
+        MergeProvider, MergeResolution, Volume,
     },
     jobs::JobControl,
     merge::hdr::{
@@ -69,10 +70,6 @@ use std::{
 };
 
 const MIB: u64 = 1024 * 1024;
-/// The scratch one merge may hold beside its one development.
-pub(crate) const SCRATCH_LIMIT: u64 = 256 * MIB;
-/// The provisional per-job temporary-disk ceiling: nine maximum-size float inputs plus the result.
-pub(crate) const TEMP_CEILING: u64 = 16 * 1024 * MIB;
 /// One spooled pixel: its three little-endian binary32 samples, then its little-endian
 /// [`SensorLevel`].
 pub(crate) const SPOOL_PIXEL: u64 = 14;
@@ -85,18 +82,6 @@ const BAND_ROWS: u32 = 16;
 /// columns outside the window between its rows are read and skipped rather than sought past. A
 /// band holds as many rows as fit (at least one, whose span is at most a frame row).
 const READ_BAND_BYTES: u64 = 8 * MIB;
-
-/// The HDR provider this build carries: its module and the algorithm version every result it
-/// writes records, and a rerun must match.
-pub(crate) const PROVIDER_MODULE: &str = "luxforge.hdr";
-pub(crate) const PROVIDER_VERSION: u32 = 1;
-
-pub(crate) fn provider() -> MergeProvider {
-    MergeProvider {
-        module: PROVIDER_MODULE.to_owned(),
-        version: PROVIDER_VERSION,
-    }
-}
 
 /// Where a job stands, as a test may hold it ([`Hooks`]) and its partial result reports it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -141,7 +126,8 @@ impl Hooks {
     }
 }
 
-/// The limits a job is held to; only a test lowers them or names the free space.
+/// The limits a job is held to, its kind's ([`Limits::of`]); only a test lowers them or names the
+/// free space.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Limits {
     pub scratch: u64,
@@ -150,17 +136,16 @@ pub(crate) struct Limits {
     pub available: Option<u64>,
 }
 
-impl Default for Limits {
-    fn default() -> Self {
+impl Limits {
+    /// The limits of a merge of `kind`: its scratch limit and temporary-disk ceiling.
+    pub(crate) const fn of(kind: MergeKind) -> Self {
         Self {
-            scratch: SCRATCH_LIMIT,
-            temp_ceiling: TEMP_CEILING,
+            scratch: kind.scratch_limit(),
+            temp_ceiling: kind.temp_ceiling(),
             available: None,
         }
     }
-}
 
-impl Limits {
     /// Refuse `bytes` of temporary storage under `directory` beyond the ceiling or the volume's
     /// free space.
     pub(crate) fn preflight(&self, directory: &Path, bytes: u64) -> Result<(), Error> {
@@ -667,8 +652,8 @@ impl JobSpec {
                     frame: developed.frame.clone(),
                 })
                 .collect(),
-            parameters: self.parameters.clone(),
-            resolved: HdrResolution {
+            parameters: MergeParameters::Hdr(self.parameters.clone()),
+            resolved: MergeResolution::Hdr(HdrResolution {
                 development: HdrDevelopment {
                     white_balance: gains,
                     cam_xyz,
@@ -680,7 +665,7 @@ impl JobSpec {
                     .as_ref()
                     .map_or_else(MotionDiagnostics::default, MotionMap::diagnostics),
                 fusion,
-            },
+            }),
         };
         provenance.validate()?;
         let mut volumes: Vec<Volume> = Vec::with_capacity(n);

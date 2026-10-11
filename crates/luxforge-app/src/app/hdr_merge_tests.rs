@@ -31,8 +31,8 @@ use luxforge_core::{
     ClientId, OwnerHandle, SourceTag, SyntheticFrame,
     catalog_types::{
         CameraBody, CaptureTime, Dimensions, ExifOrientation, Exposure, FileRecord, FileSignature,
-        HeaderMetadata, HeaderState, IndexRoot, IndexedFolder, MergePlan, RootKind, RowItem,
-        StackExpansion, StackRole, ViewSource, Volume, VolumeId,
+        HeaderMetadata, HeaderState, IndexRoot, IndexedFolder, MergeKind, MergePlan, RootKind,
+        RowItem, StackExpansion, StackRole, ViewSource, Volume, VolumeId,
     },
     seed::{CatalogSeeder, IndexSeeder},
 };
@@ -543,7 +543,7 @@ fn hdr_merge_pick_merged_from_a_bracket_header_leads_a_collapsed_stack_in_the_se
     let planned = sent_merge(&editor, "merge.plan");
     assert_eq!(
         planned,
-        json!({"targets": {"kind": "files", "file_ids": files}})
+        json!({"kind": "hdr", "targets": {"kind": "files", "file_ids": files}})
     );
     let (plan, _) = call(&editor.owner, agent, "merge.plan", planned).unwrap();
     let plan: MergePlan = serde_json::from_value(plan).unwrap();
@@ -612,7 +612,7 @@ fn hdr_merge_pick_merged_from_a_bracket_header_leads_a_collapsed_stack_in_the_se
     );
     let stack = leader.stack.clone().expect("the result leads its stack");
     assert_eq!(stack.role, StackRole::Leader);
-    assert_eq!(stack.exposures, 3);
+    assert_eq!((stack.kind, stack.size), (MergeKind::Hdr, 3));
     assert_eq!(stack.collapsed, 3);
     assert!(leader.in_development_set);
     let at = editor.session.browse.selection.active.unwrap();
@@ -731,7 +731,10 @@ fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
     let menu = editor.workspace.select.merge.menu.clone().unwrap();
     assert!(menu.entries[1].action.is_some(), "{menu:?}");
     assert_eq!(menu.entries[2].trailing.as_deref(), Some("3 frames"));
-    act(&mut editor, MergeAction::Start(MergeMode::Import));
+    act(
+        &mut editor,
+        MergeAction::Start(MergeKind::Hdr, MergeMode::Import),
+    );
     start(&mut editor);
     assert!(
         sent_merge(&editor, "merge.create")
@@ -784,7 +787,10 @@ fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
     extend(&mut editor, first + 2);
     context(&mut editor, first + 2);
     plan(&mut editor);
-    act(&mut editor, MergeAction::Start(MergeMode::Pick));
+    act(
+        &mut editor,
+        MergeAction::Start(MergeKind::Hdr, MergeMode::Pick),
+    );
     start(&mut editor);
     let record = follow(&mut editor);
     assert_eq!(record["status"], "ready", "{record}");
