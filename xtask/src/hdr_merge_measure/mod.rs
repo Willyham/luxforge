@@ -572,8 +572,6 @@ fn spawn(job: &Job) -> Result<Value> {
             OsStr::new("--worker"),
             file.as_os_str(),
         ])
-        // Admits the synthetic test body where the camera catalog keeps it apart.
-        .env("LUXFORGE_TEST_CAMERAS", "1")
         .stdout(log.try_clone()?)
         .stderr(log)
         .status()?;
@@ -982,7 +980,6 @@ fn editor_drag(
             OsStr::new("--worker"),
             file.as_os_str(),
         ])
-        .env("LUXFORGE_TEST_CAMERAS", "1")
         .stdout(log.try_clone()?)
         .stderr(log)
         .spawn()?;

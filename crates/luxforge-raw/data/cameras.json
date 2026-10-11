@@ -8172,69 +8172,6 @@
         }
       ],
       "channels": 3
-    },
-    {
-      "make": "Luxforge",
-      "model": "Synthetic Bracket",
-      "sensor_size": [
-        1536,
-        1024
-      ],
-      "cfa_size": [
-        2,
-        2
-      ],
-      "crop": "dng_tags",
-      "dng": {
-        "container": "integer_cfa_single_segment",
-        "calibration": "root_fixed_matrix",
-        "illuminants": [
-          17,
-          21
-        ],
-        "selected_matrix": 2,
-        "calibration_identity": "ColorMatrix2-fixed-XYZ-to-camera",
-        "corrections": "stage_ordered",
-        "interpretation": "dng-stage-order-active-v1-unclipped-bicubic-a-0.75",
-        "required_opcodes": []
-      },
-      "modes": [
-        {
-          "id": "LuxforgeSyntheticBracketDng16",
-          "bits": 16,
-          "raw_count": 1,
-          "decoder": "packed_dng_load_raw()",
-          "dng_version": 17039360,
-          "validation": "decoder_metadata",
-          "compression": null
-        },
-        {
-          "id": "LuxforgeSyntheticBracketDng16W6016H4016",
-          "bits": 16,
-          "raw_count": 1,
-          "decoder": "packed_dng_load_raw()",
-          "dng_version": 17039360,
-          "validation": "decoder_metadata",
-          "compression": null,
-          "frame_size": [
-            6016,
-            4016
-          ]
-        },
-        {
-          "id": "LuxforgeSyntheticBracketDng16W9520H6352",
-          "bits": 16,
-          "raw_count": 1,
-          "decoder": "packed_dng_load_raw()",
-          "dng_version": 17039360,
-          "validation": "decoder_metadata",
-          "compression": null,
-          "frame_size": [
-            9520,
-            6352
-          ]
-        }
-      ]
     }
   ]
 }
