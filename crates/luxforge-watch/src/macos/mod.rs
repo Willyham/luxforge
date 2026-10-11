@@ -21,7 +21,7 @@ use std::{
 mod disks;
 mod fsevents;
 
-pub(crate) use fsevents::current_cursor;
+pub(crate) use fsevents::{current_cursor, path_of};
 
 /// What every callback reaches: the queue, the delivery and the retry timer's state.
 pub(crate) struct Shared {

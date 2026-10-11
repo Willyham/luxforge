@@ -249,6 +249,16 @@ pub fn current_cursor(path: &Path) -> Option<Resume> {
     platform::current_cursor(path)
 }
 
+/// Where the file whose identity is `inode` on the device `device` is now, asked of the file
+/// system without listing anything: one of its paths when it is still there, with firmlinks as a
+/// canonical path names them, and `None` when it is gone, the file system cannot say (one whose
+/// inode numbers are not stable), or the platform offers no such question (Linux, Windows). On
+/// macOS a rename's report can arrive seconds after the rename, past any wait for it, while
+/// `fseventsd` catches up; the caller asks this before it takes a path gone for a file deleted.
+pub fn path_of(device: u64, inode: u64) -> Option<PathBuf> {
+    platform::path_of(device, inode)
+}
+
 /// The error for an `id` already watched.
 fn already_watched(id: u64) -> io::Error {
     io::Error::new(

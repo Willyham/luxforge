@@ -23,3 +23,7 @@ impl Watcher {
 pub(crate) fn current_cursor(_path: &Path) -> Option<Resume> {
     None
 }
+
+pub(crate) fn path_of(_device: u64, _inode: u64) -> Option<std::path::PathBuf> {
+    None
+}

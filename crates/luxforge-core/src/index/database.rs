@@ -757,6 +757,25 @@ pub(crate) fn files_under_seen_before(
     Ok(rows.map(|row| row.map(FileId)).collect::<Result<_, _>>()?)
 }
 
+/// The row at `path`, or else the first under it in path order: the file a path gone was, or one
+/// of the files a folder gone held.
+pub(crate) fn file_at_or_under(
+    connection: &Connection,
+    path: &Path,
+) -> Result<Option<KnownFile>, Error> {
+    let (from, to) = under(path);
+    let mut statement = connection.prepare_cached(&format!(
+        "SELECT {KNOWN_COLUMNS} FROM files WHERE path = ?1
+         UNION ALL
+         SELECT * FROM (SELECT {KNOWN_COLUMNS} FROM files WHERE path >= ?2 AND path < ?3
+                        ORDER BY path LIMIT 1)
+         LIMIT 1"
+    ))?;
+    Ok(statement
+        .query_row(params![path.to_string_lossy(), from, to], known)
+        .optional()?)
+}
+
 /// Every row under `root`, in path order.
 pub(crate) fn files_under(connection: &Connection, root: &Path) -> Result<Vec<FileId>, Error> {
     files_under_seen_before(connection, root, i64::MAX)
