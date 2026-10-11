@@ -184,14 +184,20 @@ fn refuses_every_unsuitable_request() {
             Refusal::MixedAperture { input: 1 },
         ),
         (
-            "another ISO",
-            |f| f[1].exposure.iso = Some(400),
-            Refusal::MixedIso { input: 1 },
-        ),
-        (
             "another focal length",
             |f| f[2].exposure.focal_mm = Some(35.0),
             Refusal::MixedFocalLength { input: 2 },
+        ),
+        (
+            // 2 mm from 24 mm is beyond both 1 mm and 2% (0.48 mm).
+            "a focal length 2 mm away",
+            |f| f[1].exposure.focal_mm = Some(26.0),
+            Refusal::MixedFocalLength { input: 1 },
+        ),
+        (
+            "an unrecorded focal length beside recorded ones",
+            |f| f[1].exposure.focal_mm = None,
+            Refusal::MixedFocalLength { input: 1 },
         ),
     ];
     for (name, change, expected) in cases {
@@ -228,8 +234,165 @@ fn refuses_every_unsuitable_request() {
         Some(&serde_json::json!({"reason": "raw-only", "input": 2}))
     );
     assert_eq!(
-        Error::from(Refusal::MixedIso { input: 1 }).kind,
+        Error::from(Refusal::MixedAperture { input: 1 }).kind,
         ErrorKind::Validation
+    );
+}
+
+#[test]
+fn iso_may_vary_and_focal_lengths_round() {
+    let good = || bracket(&[1.0 / 250.0, 1.0 / 60.0, 1.0 / 15.0], &[-2.0, 0.0, 2.0]);
+    // Auto ISO within a camera's bracket, and an ISO recorded on some inputs only: neither is a
+    // suitability question.
+    let mut frames = good();
+    (frames[0].exposure.iso, frames[2].exposure.iso) = (Some(220), Some(130));
+    assert_eq!(validate_bracket(&frames), Ok(()));
+    frames[1].exposure.iso = None;
+    assert_eq!(validate_bracket(&frames), Ok(()));
+    // A zoom's whole-millimetre record flipping at a boundary (a Z 24-200 bracket at 60, 60 and
+    // 59 mm), within 1 mm at short focal lengths and 2% at long ones.
+    let focal = |values: [f64; 3]| {
+        let mut frames = good();
+        for (frame, value) in frames.iter_mut().zip(values) {
+            frame.exposure.focal_mm = Some(value);
+        }
+        validate_bracket(&frames)
+    };
+    assert_eq!(focal([60.0, 60.0, 59.0]), Ok(()));
+    assert_eq!(focal([24.0, 25.0, 23.0]), Ok(()));
+    assert_eq!(focal([200.0, 196.0, 204.0]), Ok(()));
+    assert_eq!(
+        focal([200.0, 195.0, 200.0]),
+        Err(Refusal::MixedFocalLength { input: 1 })
+    );
+    assert_eq!(
+        focal([24.0, 24.0, 26.0]),
+        Err(Refusal::MixedFocalLength { input: 2 })
+    );
+    // Absent on every input (a manual lens) agrees.
+    let mut manual = good();
+    for frame in &mut manual {
+        frame.exposure.focal_mm = None;
+    }
+    assert_eq!(validate_bracket(&manual), Ok(()));
+}
+
+/// A bracket of `(shutter, ISO, bias)` frames in capture order.
+fn iso_bracket(frames: &[(f64, u32, f64)]) -> Vec<FrameMetadata> {
+    frames
+        .iter()
+        .enumerate()
+        .map(|(i, &(shutter, iso, bias))| {
+            let mut frame = shot(&format!("f{i}"), Some(shutter), Some(bias), 1000 + i as i64);
+            frame.exposure.iso = Some(iso);
+            frame
+        })
+        .collect()
+}
+
+#[test]
+fn settings_count_iso_as_gain() {
+    let settings = ExposureOrigin::Metadata {
+        source: MetadataSource::Settings,
+    };
+    // An Air 2S AEB3 bracket (DJI_0606–0608): one shutter, auto ISO 100, 220 and 130 for −0.7,
+    // +0.7 and 0 EV. The settings vary through the ISO alone and agree with the bias within half
+    // a stop, so they decide: offsets `log2(ISO / 130)` from the zero-bias frame.
+    let frames = iso_bracket(&[
+        (1.0 / 15.0, 100, -0.7),
+        (1.0 / 15.0, 220, 0.7),
+        (1.0 / 15.0, 130, 0.0),
+    ]);
+    let result = resolved(&frames, &ExposureOptions::default());
+    assert_eq!(
+        (result.reference, result.reference_origin),
+        (2, ReferenceOrigin::ZeroBias)
+    );
+    let want = [(100.0_f64 / 130.0).log2(), (220.0_f64 / 130.0).log2(), 0.0];
+    assert!(close(&offsets_ev(&result), &want, 1e-12), "{result:?}");
+    assert!(close(&want, &[-0.379, 0.759, 0.0], 1e-3));
+    assert_eq!(result.inputs[0].origin, settings);
+    // Time and ISO both varying (DJI_0589–0591 style): their stops add.
+    let frames = iso_bracket(&[
+        (1.0 / 100.0, 110, 0.0),
+        (1.0 / 200.0, 110, -0.7),
+        (1.0 / 60.0, 100, 0.7),
+    ]);
+    let result = resolved(&frames, &ExposureOptions::default());
+    assert_eq!(result.reference, 0);
+    let want = [
+        0.0,
+        -1.0,
+        (100.0_f64 / 60.0).log2() + (100.0_f64 / 110.0).log2(),
+    ];
+    assert!(close(&offsets_ev(&result), &want, 1e-12), "{result:?}");
+    assert_eq!(result.inputs[2].origin, settings);
+    // A constant shutter with no ISO recorded on any input is still `log2(t)`, and a manual
+    // bracket at varying ISO resolves without a bias.
+    let mut frames = bracket(&[1.0 / 250.0, 1.0 / 60.0, 1.0 / 15.0], &[0.0; 3]);
+    for frame in &mut frames {
+        frame.exposure.iso = None;
+    }
+    let result = resolved(&frames, &ExposureOptions::default());
+    assert!(close(
+        &offsets_ev(&result),
+        &[(60.0_f64 / 250.0).log2(), 0.0, (60.0_f64 / 15.0).log2()],
+        1e-12
+    ));
+    let frames = iso_bracket(&[(1.0 / 60.0, 100, 0.0), (1.0 / 60.0, 400, 0.0)]);
+    let result = resolved(&frames, &ExposureOptions::default());
+    assert_eq!(result.reference, 0);
+    assert!(close(&offsets_ev(&result), &[0.0, 2.0], 1e-12));
+    // An ISO recorded on some inputs and not others leaves the settings unusable: the bias
+    // decides when every input records one, else the bracket is measured.
+    let mut frames = iso_bracket(&[
+        (1.0 / 15.0, 100, -0.7),
+        (1.0 / 15.0, 220, 0.7),
+        (1.0 / 15.0, 130, 0.0),
+    ]);
+    frames[1].exposure.iso = None;
+    assert!(matches!(
+        MetadataExposure::of(&frames),
+        MetadataExposure::Usable {
+            source: MetadataSource::Bias,
+            ..
+        }
+    ));
+    let result = resolved(&frames, &ExposureOptions::default());
+    assert!(close(&offsets_ev(&result), &[-0.7, 0.7, 0.0], 1e-12));
+    for frame in &mut frames {
+        frame.exposure.bias_ev = None;
+    }
+    assert_eq!(MetadataExposure::of(&frames), MetadataExposure::Absent);
+    assert!(matches!(
+        resolve_exposures(&frames, &ExposureOptions::default()),
+        Ok(ExposureResolution::NeedsFit(_))
+    ));
+    // Equal ISO at one shutter with a varying bias: the settings do not vary, a contradiction.
+    let frames = iso_bracket(&[(1.0 / 15.0, 130, -0.7), (1.0 / 15.0, 130, 0.7)]);
+    assert_eq!(
+        MetadataExposure::of(&frames),
+        MetadataExposure::Contradictory
+    );
+    // The bias is checked against time and ISO together: a stop of ISO the other way.
+    let frames = iso_bracket(&[
+        (1.0 / 15.0, 260, -0.7),
+        (1.0 / 15.0, 220, 0.7),
+        (1.0 / 15.0, 130, 0.0),
+    ]);
+    assert_eq!(
+        MetadataExposure::of(&frames),
+        MetadataExposure::Contradictory
+    );
+    // The shutter alone agrees with that bias, but the ISO undoes it: a contradiction.
+    let frames = iso_bracket(&[
+        (1.0 / 30.0, 200, -1.0),
+        (1.0 / 15.0, 100, 0.0),
+        (1.0 / 8.0, 50, 1.0),
+    ]);
+    assert_eq!(
+        MetadataExposure::of(&frames),
+        MetadataExposure::Contradictory
     );
 }
 
@@ -646,6 +809,26 @@ fn fusion_matches_the_reference_over_complete_buffers() {
         );
         assert_eq!(fusion.diagnostics.pixels, (WIDTH * HEIGHT) as u64);
     }
+}
+
+#[test]
+fn an_auto_iso_bracket_merges_from_its_settings() {
+    // The Air 2S bracket at one shutter and ISO 100, 220 and 130: the camera records each frame
+    // at the exposure its time and gain give, and the merge resolved from that metadata matches
+    // the reference fusion of those exposures.
+    let frames = iso_bracket(&[
+        (1.0 / 15.0, 100, -0.7),
+        (1.0 / 15.0, 220, 0.7),
+        (1.0 / 15.0, 130, 0.0),
+    ]);
+    let resolved = resolved(&frames, &ExposureOptions::default());
+    let offsets = offsets_ev(&resolved);
+    let exposures = record(&bayer(), &offsets, Some(5));
+    let refs: Vec<&Exposure> = exposures.iter().collect();
+    let params = FusionParameters::default();
+    let want = reference::fuse(&refs, params.rolloff_start, params.rolloff_end, None);
+    let fusion = fuse_all(&resolved, &exposures, None).unwrap();
+    assert_matches_reference(&fusion, &want, 1e-6, "auto ISO bracket");
 }
 
 #[test]
