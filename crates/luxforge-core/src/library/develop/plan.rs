@@ -21,7 +21,7 @@ use crate::{
     },
     editor::library_rows,
     index::volume_of,
-    library::{availability::mounted, folders, targets::NamedFile, tree},
+    library::{availability::mounted, targets::NamedFile},
     organize::{self, Gazetteer},
 };
 use rusqlite::{Connection, OptionalExtension};
@@ -601,55 +601,22 @@ pub(crate) fn destinations(
             .copied()
             .or(default)
             .unwrap_or(&event.proposal);
-        let at = match choice {
-            FolderChoice::Existing { folder_id, days } => {
-                folders::folder(catalog, folder_id)?;
-                let known = destinations.iter().position(|known| {
-                    matches!(known, Destination::Existing { folder_id: id, days: with }
-                        if id == folder_id && with == days)
-                });
-                known.unwrap_or_else(|| {
-                    destinations.push(Destination::Existing {
-                        folder_id: folder_id.clone(),
-                        days: *days,
-                    });
-                    destinations.len() - 1
-                })
+        let at = match destinations.iter().position(|known| known.shares(choice)) {
+            Some(at) => {
+                if let Destination::New { events, .. } = &mut destinations[at] {
+                    events.push(event.span.clone());
+                }
+                at
             }
-            // Each event its own: its folders are found by name as its photographs are filed, so
-            // events of one place share them, and a place folder records the event that made it.
-            FolderChoice::Place { name } => {
-                destinations.push(Destination::Place {
-                    name: tree::checked_name(name)?,
-                    event: made_from(std::slice::from_ref(&event.span)),
-                });
+            // A place is each event's own: its folders are found by name as its photographs are
+            // filed, so events of one place share them, and a place folder records the event
+            // that made it.
+            None => {
+                let span = made_from(std::slice::from_ref(&event.span));
+                destinations.push(Destination::chosen(catalog, choice, span, now_ms)?);
                 destinations.len() - 1
             }
-            FolderChoice::New { name, parent_id } => {
-                let name = tree::checked_name(name)?;
-                let shared = destinations.iter().position(|known| match known {
-                    Destination::New { folder, .. } => {
-                        folder.parent_id == *parent_id && tree::same_name(&folder.name, &name)
-                    }
-                    _ => false,
-                });
-                match shared {
-                    Some(at) => at,
-                    None => {
-                        let (folder, _) =
-                            folders::create(catalog, &name, parent_id.as_ref(), now_ms)?;
-                        destinations.push(Destination::New {
-                            folder,
-                            events: Vec::new(),
-                        });
-                        destinations.len() - 1
-                    }
-                }
-            }
         };
-        if let Destination::New { events, .. } = &mut destinations[at] {
-            events.push(event.span.clone());
-        }
         of_event.push(at);
     }
     for destination in &mut destinations {

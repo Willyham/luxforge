@@ -7,10 +7,17 @@
 //! it, recorded there as written (`catalog-folder`) before the photographs in it.
 use crate::{
     Error,
-    catalog_types::{CatalogFolderId, EventSpan, FolderValue, LibraryItem, LocalDay},
-    library::{items, journal::Desired, tree},
+    catalog_types::{
+        CatalogFolderId, EventSpan, FolderChoice, FolderValue, LibraryItem, LocalDay,
+    },
+    editor::library_rows::catalog_folder,
+    library::{
+        folders, items,
+        journal::{self, Desired, Outcome, Request},
+        tree,
+    },
 };
-use rusqlite::{OptionalExtension, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction};
 use std::collections::HashMap;
 
 /// The top-level folder a place's photographs with no capture time go into.
@@ -36,6 +43,99 @@ pub(crate) enum Destination {
         name: String,
         event: Option<EventSpan>,
     },
+}
+
+impl Destination {
+    /// The destination `choice` names for photographs of the event `event` spans (none for an
+    /// undated one): an existing folder must be in the catalog; a place's and a new folder's
+    /// name follow a folder's rules, and a new folder's must be free among its siblings, which it
+    /// is made in with `event`.
+    pub(crate) fn chosen(
+        catalog: &Connection,
+        choice: &FolderChoice,
+        event: Option<EventSpan>,
+        now_ms: i64,
+    ) -> Result<Self, Error> {
+        Ok(match choice {
+            FolderChoice::Existing { folder_id, days } => {
+                folders::folder(catalog, folder_id)?;
+                Self::Existing {
+                    folder_id: folder_id.clone(),
+                    days: *days,
+                }
+            }
+            FolderChoice::Place { name } => Self::Place {
+                name: tree::checked_name(name)?,
+                event,
+            },
+            FolderChoice::New { name, parent_id } => {
+                let (mut folder, _) = folders::create(catalog, name, parent_id.as_ref(), now_ms)?;
+                folder.event = event.clone();
+                Self::New {
+                    folder,
+                    events: vec![event],
+                }
+            }
+        })
+    }
+
+    /// Whether `choice` names this destination, so events given it share it: the same existing
+    /// folder with the same `days`, or the same new folder (its name ignoring case, under the same
+    /// parent). A place is never shared: its folders are found by name as photographs are filed.
+    pub(crate) fn shares(&self, choice: &FolderChoice) -> bool {
+        match (self, choice) {
+            (
+                Self::Existing { folder_id, days },
+                FolderChoice::Existing {
+                    folder_id: chosen,
+                    days: with,
+                },
+            ) => folder_id == chosen && days == with,
+            (Self::New { folder, .. }, FolderChoice::New { name, parent_id }) => {
+                folder.parent_id == *parent_id && tree::same_name(&folder.name, name.trim())
+            }
+            _ => false,
+        }
+    }
+
+    /// The folder a photograph captured on `day` (none with no capture time) would go into when
+    /// every folder on its path is already in the catalog, found as [`Filer::folder`] finds it,
+    /// reading only; none when filing it would make a folder.
+    pub(crate) fn found(
+        &self,
+        connection: &Connection,
+        day: Option<LocalDay>,
+    ) -> Result<Option<CatalogFolderId>, Error> {
+        match (self, day) {
+            (Self::Existing { folder_id, .. }, None)
+            | (
+                Self::Existing {
+                    folder_id,
+                    days: false,
+                },
+                _,
+            ) => Ok(Some(folder_id.clone())),
+            (Self::Existing { folder_id, .. }, Some(day)) => {
+                sibling(connection, Some(folder_id), &day_name(day))
+            }
+            (Self::New { folder, .. }, _) => Ok(catalog_folder(connection, &folder.id)?
+                .is_some()
+                .then(|| folder.id.clone())),
+            (Self::Place { name, .. }, day) => {
+                let top = day.map_or_else(|| UNDATED.to_owned(), year_name);
+                let Some(top) = sibling(connection, None, &top)? else {
+                    return Ok(None);
+                };
+                let Some(place) = sibling(connection, Some(&top), name)? else {
+                    return Ok(None);
+                };
+                match day {
+                    Some(day) => sibling(connection, Some(&place), &day_name(day)),
+                    None => Ok(Some(place)),
+                }
+            }
+        }
+    }
 }
 
 /// A day folder's name: the day without a leading zero and the month in English, "3 Sep".
@@ -76,6 +176,8 @@ pub(crate) struct Filer<'a> {
     resolved: HashMap<Option<LocalDay>, CatalogFolderId>,
     /// The folders it made, as written: the change records them before its photographs.
     pub changes: Vec<(LibraryItem, Desired)>,
+    /// The names of the folders it made, parents first.
+    made: Vec<String>,
 }
 
 impl<'a> Filer<'a> {
@@ -85,6 +187,7 @@ impl<'a> Filer<'a> {
             now_ms,
             resolved: HashMap::new(),
             changes: Vec::new(),
+            made: Vec::new(),
         }
     }
 
@@ -164,6 +267,7 @@ impl<'a> Filer<'a> {
             .map_err(|error| Error::internal(format!("cannot encode a folder: {error}")))?;
         items::write(tx, &item, Some(&value))?;
         self.changes.push((item, Desired::Written { before: None }));
+        self.made.push(folder.name.clone());
         Ok(())
     }
 }
@@ -171,7 +275,7 @@ impl<'a> Filer<'a> {
 /// The folder in `parent` (the top level when none) named `name`, ignoring case. One indexed
 /// query over its siblings (`catalog_folder_names`).
 pub(crate) fn sibling(
-    connection: &rusqlite::Connection,
+    connection: &Connection,
     parent: Option<&CatalogFolderId>,
     name: &str,
 ) -> Result<Option<CatalogFolderId>, Error> {
@@ -204,3 +308,36 @@ pub(crate) fn sibling(
         .map(|(id, _)| CatalogFolderId::parse(id.clone()))
         .transpose()
 }
+
+/// File the one photograph a merge publishes, captured on `day` (none with no capture time), by
+/// `destination`, in the publication's transaction: answers the folder it goes into. The folders
+/// it needs are made first and recorded as a library change of their own by the publication's
+/// actor under its request identity ("folder.create", "Created folders 2026 › Konstanz ›
+/// 12 Sep"), before the publication's change, so that undoing the publication — which keeps its
+/// result, in Removed, in that folder — leaves them, as it leaves a folder made before it.
+pub(crate) fn file_one(
+    tx: &Transaction<'_>,
+    request: Request<'_>,
+    destination: &Destination,
+    day: Option<LocalDay>,
+    now_ms: i64,
+) -> Result<(CatalogFolderId, Option<Outcome>), Error> {
+    let mut filer = Filer::new(destination, now_ms);
+    let folder = filer.folder(tx, day)?;
+    if filer.changes.is_empty() {
+        return Ok((folder, None));
+    }
+    let label = match filer.made.as_slice() {
+        [one] => format!("Created folder {one}"),
+        many => format!("Created folders {}", many.join(" › ")),
+    };
+    let request = Request {
+        method: MADE_FOR_MERGE,
+        ..request
+    };
+    let outcome = journal::apply_part(tx, request, filer.changes, |_| label)?;
+    Ok((folder, Some(outcome)))
+}
+
+/// The method a merge's folders are recorded under, apart from its publication's change.
+pub(crate) const MADE_FOR_MERGE: &str = "folder.create";
