@@ -86,7 +86,7 @@ fn hdr_merge_measure_reports_a_failed_or_unmeasured_row() {
     assert_eq!(measured["distribution"]["count"], 2);
     let empty = row("b", "ms", Vec::new(), "scope");
     assert_eq!(empty["status"], "not_measured");
-    assert_eq!(status(&[measured.clone()]), "passed");
+    assert_eq!(status(std::slice::from_ref(&measured)), "passed");
     assert_eq!(status(&[measured.clone(), empty]), "incomplete");
     assert_eq!(status(&[measured, failed("c", "why")]), "failed");
     let left = spool_row("w", &[&json!({"spool_files_left": 1})]);
