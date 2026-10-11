@@ -733,6 +733,35 @@ pub(crate) fn stack_note<'r>(stack: &RowStack, reason: Option<&'r str>) -> Optio
     }
 }
 
+/// What a grid cell draws for its row's stack: a leader's badge, an original's note and its EV
+/// offset.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct StackCell<'r> {
+    /// A leader's badge words, long and short, and whether its originals are shown.
+    pub(crate) badge: Option<(&'static str, &'static str, bool)>,
+    pub(crate) note: Option<&'r str>,
+    /// An original's EV offset from the reference, in words.
+    pub(crate) exposure: Option<&'static str>,
+}
+
+/// The cell words of a row with `stack`, whose reason is `reason`.
+pub(crate) fn stack_cell<'r>(stack: Option<&RowStack>, reason: Option<&'r str>) -> StackCell<'r> {
+    let Some(stack) = stack else {
+        return StackCell::default();
+    };
+    StackCell {
+        badge: (stack.role == StackRole::Leader).then(|| {
+            let (long, short) = stack_words(stack.exposures);
+            (long, short, expanded(stack))
+        }),
+        note: stack_note(stack, reason),
+        exposure: (stack.role == StackRole::Original)
+            .then_some(stack.offset_ev)
+            .flatten()
+            .and_then(ev_words),
+    }
+}
+
 /// The Info panel's stack band for a row: what the stack is and what can be done with it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct StackBand {
@@ -743,7 +772,10 @@ pub(crate) struct StackBand {
     pub(crate) leader: bool,
     /// A leader in the current development set.
     pub(crate) in_set: bool,
-    pub(crate) expansion: Option<StackExpansion>,
+    /// Whether the stack's originals are shown: always, for an original.
+    pub(crate) expanded: bool,
+    /// The expansion its Expand or Collapse stack button asks for.
+    pub(crate) toggle: StackExpansion,
 }
 
 /// The stack band of a row with `stack`.
@@ -775,14 +807,27 @@ pub(crate) fn stack_band(stack: &RowStack, in_set: bool, reason: Option<&str>) -
         )),
         _ => stack_note(stack, reason).map(str::to_owned),
     };
+    let expanded = !leader || expanded(stack);
     StackBand {
         merge_id: stack.merge_id.clone(),
         title,
         note,
         leader,
         in_set: leader && in_set,
-        expansion: stack.expansion,
+        expanded,
+        toggle: if expanded {
+            StackExpansion::Collapsed
+        } else {
+            StackExpansion::Expanded
+        },
     }
+}
+
+/// Whether a stack's originals are shown beside its leader.
+fn expanded(stack: &RowStack) -> bool {
+    stack
+        .expansion
+        .is_some_and(|expansion| expansion != StackExpansion::Collapsed)
 }
 
 #[cfg(test)]
