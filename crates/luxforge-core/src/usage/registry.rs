@@ -120,8 +120,8 @@ impl Tool {
 wire_enum! {
     /// A completed deliberate operation (`interaction`), across navigation, zoom, compare, clipping,
     /// information, history, versions, presets, copy/paste, masks, catalog organization, Locate,
-    /// HDR merges, the development set, preferences and export. Only shipped operations have a value; a continuous gesture is one
-    /// event at its completion. Adjustment commits are [`Tool`]s, not features.
+    /// HDR merges, preferences and export. Only shipped operations have a value; a continuous
+    /// gesture is one event at its completion. Adjustment commits are [`Tool`]s, not features.
     pub enum Feature {
         /// Select: a deliberate change of the view's source, filter, sort or grouping.
         BrowseView => "browse-view",
@@ -143,10 +143,6 @@ wire_enum! {
         CompareSlider => "compare-slider",
         /// Developing picks (`pick.develop`).
         DevelopPicks => "develop-picks",
-        /// Photographs added to the development set (`development-set.add`, Add to Develop).
-        DevelopmentSetAdd => "development-set-add",
-        /// Photographs taken out of the development set (`development-set.remove`).
-        DevelopmentSetRemove => "development-set-remove",
         /// An export of the displayed photograph started.
         Export => "export",
         /// A batch export of selected photographs started.

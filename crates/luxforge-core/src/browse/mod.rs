@@ -82,16 +82,14 @@ pub(crate) fn index_revision(index: &Connection) -> Result<u64, Error> {
     Ok(revision.unwrap_or(0).max(0) as u64)
 }
 
-/// The library change, index revision and development-set revision a view evaluated now would be
-/// stamped with: one read of each.
+/// The library change and index revision a view evaluated now would be stamped with: one read of
+/// each.
 pub(crate) fn current_stamp(service: &EditorService) -> Result<ViewStamp, Error> {
     let library_sequence = service.library_sequence()?;
     let index_revision = index_revision(service.index()?.connection())?;
-    let development_set_revision = crate::library::development_set::revision(&service.connection)?;
     Ok(ViewStamp {
         library_sequence,
         index_revision,
-        development_set_revision,
     })
 }
 

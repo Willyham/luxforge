@@ -70,15 +70,6 @@ impl ViewsLane {
         Ok(browse::selected_items(self.fresh(client)?))
     }
 
-    /// The items `client`'s view holds at `revision`, stale or not: what a development set opened
-    /// from it takes, the photographs the person saw. Refused with `validation` when the client
-    /// holds no view and with `conflict` when its view is at another revision.
-    pub(super) fn held(&self, client: ClientId, revision: u64) -> Result<&[ViewItem], Error> {
-        let view = self.views.get(&client).ok_or_else(no_view)?;
-        check_revision(view, Some(revision))?;
-        Ok(&view.items)
-    }
-
     /// `client`'s view, refused with `validation` when it holds none and with `conflict` when a
     /// later library or index change left it stale, so a library change never acts on a view its
     /// client has not seen since.
@@ -336,7 +327,6 @@ fn evaluate_into(
         unavailable: evaluation.unavailable,
         stacks: evaluation.stacks.stacks,
         collapsed: evaluation.stacks.collapsed,
-        in_development_set: evaluation.in_development_set,
         groups: evaluation.layout.clone(),
         library_sequence: evaluation.stamp.library_sequence,
         index_revision: evaluation.stamp.index_revision,
