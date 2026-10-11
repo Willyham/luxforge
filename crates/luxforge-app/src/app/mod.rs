@@ -776,7 +776,7 @@ impl Editor {
         editor.apply_display_preferences();
         editor.event(
             "startup",
-            || json!({"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"version":env!("CARGO_PKG_VERSION"),"debug_assertions":cfg!(debug_assertions),"mode":if editor.evidence.is_some() {"evidence"} else {"editor"}}),
+            || json!({"os":std::env::consts::OS,"arch":std::env::consts::ARCH,"version":env!("CARGO_PKG_VERSION"),"debug_assertions":cfg!(debug_assertions),"test_cameras":luxforge_core::test_cameras_admitted(),"mode":if editor.evidence.is_some() {"evidence"} else {"editor"}}),
         );
         let launch = editor.renderer.launch();
         editor.event("launch_renderer", || renderer::launch_record(launch));

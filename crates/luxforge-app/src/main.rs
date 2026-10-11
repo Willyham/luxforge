@@ -376,6 +376,24 @@ fn arguments() -> Result<Config, String> {
     Ok(config)
 }
 
+/// The environment variable that admits the RAW test cameras for this launch, read once at
+/// startup before any source is opened.
+const TEST_CAMERAS: &str = "LUXFORGE_TEST_CAMERAS";
+
+/// Admit the RAW test cameras, such as the synthetic HDR bracket body, when the launch's
+/// environment sets [`TEST_CAMERAS`] to `1`: only a harness does, for a journey over files a test
+/// wrote. Otherwise the editor refuses them as any camera outside the catalog.
+fn admit_test_cameras_from_environment() {
+    if test_cameras_requested(std::env::var_os(TEST_CAMERAS).as_deref()) {
+        luxforge_core::admit_test_cameras();
+    }
+}
+
+/// Whether the variable's value asks for the test cameras: exactly `1`.
+fn test_cameras_requested(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|value| value == "1")
+}
+
 fn main() {
     if luxforge_cli::version_requested(std::env::args_os().skip(1)) {
         println!("luxforge {}", luxforge_cli::VERSION);
@@ -386,6 +404,7 @@ fn main() {
         std::process::exit(2)
     });
     let size = config.window_size();
+    admit_test_cameras_from_environment();
     // The editor presents through the GPU device the counters read, so reading it opens nothing new.
     luxforge_core::resources::declare_gpu_presenter();
     if let Err(error) = app::run(config, size) {
@@ -397,6 +416,25 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only `LUXFORGE_TEST_CAMERAS=1` admits the RAW test cameras.
+    #[test]
+    fn only_one_admits_the_test_cameras() {
+        assert!(test_cameras_requested(Some("1".as_ref())));
+        for refused in [
+            None,
+            Some(""),
+            Some("0"),
+            Some("true"),
+            Some("1 "),
+            Some("yes"),
+        ] {
+            assert!(
+                !test_cameras_requested(refused.map(AsRef::as_ref)),
+                "{refused:?}"
+            );
+        }
+    }
 
     #[test]
     fn a_proof_endpoint_is_refused_outside_developer_mode() {

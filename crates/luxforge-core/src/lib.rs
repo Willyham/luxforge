@@ -99,6 +99,9 @@ pub use editor::{
 };
 pub use error::{AnalysisRefusal, Error, ErrorKind, Preparation, PreparationNeeds};
 pub use export::{CaptureInfo, CaptureMetadata};
+/// The RAW test cameras' process-wide switch, which the desktop turns on only for a launch with
+/// `LUXFORGE_TEST_CAMERAS=1`: see `luxforge_raw::admit_test_cameras`.
+pub use luxforge_raw::{admit_test_cameras, test_cameras_admitted};
 pub use mask::MASK_GPU_PROGRAMS;
 pub use model::{
     AssetId, COMPONENTS_PER_MASK, Component, ComponentId, ComponentMode, CorrectionId, DraftId,

@@ -260,18 +260,16 @@ fn mode(mode: &profiles::Mode) -> String {
     )
 }
 
-/// The validated catalog as static Rust data, so the library never parses JSON. Each camera's
-/// modes and opcodes are named statics its entry borrows. `Debug` prints every `f64` as its
-/// shortest round-tripping literal, so the coefficients are exact.
-fn static_catalog(catalog: &profiles::Catalog) -> String {
-    let mut out = String::from(
-        "// Generated from data/cameras.json; do not edit.\nuse crate::profiles::*;\nuse std::borrow::Cow;\n",
-    );
+/// A validated catalog as static Rust data, so the library never parses JSON: the static `name`,
+/// whose cameras' modes are named statics, prefixed `prefix`, that each entry borrows. `Debug`
+/// prints every `f64` as its shortest round-tripping literal, so the coefficients are exact.
+fn static_catalog(catalog: &profiles::Catalog, name: &str, prefix: &str) -> String {
+    let mut out = String::new();
     let mut cameras = Vec::new();
     for (index, camera) in catalog.cameras.iter().enumerate() {
         let modes: Vec<String> = camera.modes.iter().map(mode).collect();
         out.push_str(&format!(
-            "static MODES_{index}: [Mode; {}] = [{}];\n",
+            "static {prefix}MODES_{index}: [Mode; {}] = [{}];\n",
             modes.len(),
             modes.join(", ")
         ));
@@ -288,7 +286,7 @@ fn static_catalog(catalog: &profiles::Catalog) -> String {
             },
         );
         cameras.push(format!(
-            "Camera {{ make: {}, model: {}, sensor_size: {:?}, cfa_size: {:?}, channels: {}, crop: Crop::{:?}, dng: {dng}, calibration: {calibration}, modes: Cow::Borrowed(&MODES_{index}) }}",
+            "Camera {{ make: {}, model: {}, sensor_size: {:?}, cfa_size: {:?}, channels: {}, crop: Crop::{:?}, dng: {dng}, calibration: {calibration}, modes: Cow::Borrowed(&{prefix}MODES_{index}) }}",
             text(&camera.make),
             text(&camera.model),
             camera.sensor_size,
@@ -298,7 +296,7 @@ fn static_catalog(catalog: &profiles::Catalog) -> String {
         ));
     }
     out.push_str(&format!(
-        "static CAMERAS: [Camera; {}] = [\n{}\n];\npub(crate) static CATALOG: Catalog = Catalog {{ version: {}, cameras: Cow::Borrowed(&CAMERAS) }};\n",
+        "static {prefix}CAMERAS: [Camera; {}] = [\n{}\n];\npub(crate) static {name}: Catalog = Catalog {{ version: {}, cameras: Cow::Borrowed(&{prefix}CAMERAS) }};\n",
         cameras.len(),
         cameras.join(",\n"),
         catalog.version
@@ -306,42 +304,9 @@ fn static_catalog(catalog: &profiles::Catalog) -> String {
     out
 }
 
-fn main() {
-    let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("manifest dir"));
-    let libraw_upstream = manifest.join("vendor/libraw-0.22.2");
-    let rt_upstream = manifest.join("vendor/librtprocess-9a858270");
-    let catalog = profiles::Catalog::parse(include_str!("data/cameras.json"))
-        .expect("invalid RAW camera catalog");
-    let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("output dir"));
-    let libraw = out.join("libraw-0.22.2-arw6");
-    if libraw.exists() {
-        fs::remove_dir_all(&libraw).expect("remove staged LibRaw");
-    }
-    copy_tree(&libraw_upstream, &libraw);
-    apply_patch(
-        &libraw,
-        include_str!("patches/libraw-arw6.patch"),
-        &[
-            "internal/libraw_cameraids.h",
-            "internal/libraw_internal_funcs.h",
-            "src/metadata/identify.cpp",
-            "src/metadata/normalize_model.cpp",
-            "src/metadata/sony.cpp",
-            "src/metadata/tiff.cpp",
-            "src/tables/cameralist.cpp",
-            "src/tables/colordata.cpp",
-            "src/utils/decoder_info.cpp",
-            "src/utils/open.cpp",
-        ],
-    );
-    fs::write(
-        libraw.join("src/decoders/sony_arw6.cpp"),
-        include_bytes!("patches/sony_arw6.cpp"),
-    )
-    .expect("stage upstream Sony ARW6 decoder");
-    let mut native = String::from(
-        "// Generated from data/cameras.json; do not edit.\nstatic const struct { const char *make, *model; bool calibrated; double xyz_to_camera[9]; } lf_cameras[] = {\n",
-    );
+/// The native table `name`: each of `catalog`'s camera identities with its calibration.
+fn native_table(catalog: &profiles::Catalog, name: &str) -> String {
+    let mut native = format!("static const LfCamera {name}[] = {{\n");
     for camera in catalog.cameras.iter() {
         let (calibrated, matrix) = camera
             .calibration
@@ -369,8 +334,84 @@ fn main() {
             camera.make, camera.model, calibrated, matrix
         ));
     }
-    native.push_str("};\n\n#include \"native_limits.h\"\n");
-    // The limits and status codes both native adapters share; the camera table above is the
+    native.push_str("};\n");
+    native
+}
+
+/// The test table shares no camera identity and no mode identifier with the shipped catalog, so
+/// a lookup that consults both once test cameras are admitted finds at most one entry.
+fn disjoint(shipped: &profiles::Catalog, test: &profiles::Catalog) {
+    for camera in test.cameras.iter() {
+        assert!(
+            !shipped
+                .cameras
+                .iter()
+                .any(|other| other.make == camera.make && other.model == camera.model),
+            "test camera {} {} is also in the shipped catalog",
+            camera.make,
+            camera.model
+        );
+        for mode in camera.modes.iter() {
+            assert!(
+                !shipped
+                    .cameras
+                    .iter()
+                    .flat_map(|other| other.modes.iter())
+                    .any(|other| other.id == mode.id),
+                "test camera mode {} is also in the shipped catalog",
+                mode.id
+            );
+        }
+    }
+}
+
+fn main() {
+    let manifest = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("manifest dir"));
+    let libraw_upstream = manifest.join("vendor/libraw-0.22.2");
+    let rt_upstream = manifest.join("vendor/librtprocess-9a858270");
+    let catalog = profiles::Catalog::parse(include_str!("data/cameras.json"))
+        .expect("invalid RAW camera catalog");
+    // Bodies only tests record, such as the synthetic HDR bracket's: validated as the shipped
+    // catalog is, and admitted only once a process calls `admit_test_cameras`.
+    let test_catalog = profiles::Catalog::parse(include_str!("data/test-cameras.json"))
+        .expect("invalid RAW test camera table");
+    disjoint(&catalog, &test_catalog);
+    let out = PathBuf::from(std::env::var_os("OUT_DIR").expect("output dir"));
+    let libraw = out.join("libraw-0.22.2-arw6");
+    if libraw.exists() {
+        fs::remove_dir_all(&libraw).expect("remove staged LibRaw");
+    }
+    copy_tree(&libraw_upstream, &libraw);
+    apply_patch(
+        &libraw,
+        include_str!("patches/libraw-arw6.patch"),
+        &[
+            "internal/libraw_cameraids.h",
+            "internal/libraw_internal_funcs.h",
+            "src/metadata/identify.cpp",
+            "src/metadata/normalize_model.cpp",
+            "src/metadata/sony.cpp",
+            "src/metadata/tiff.cpp",
+            "src/tables/cameralist.cpp",
+            "src/tables/colordata.cpp",
+            "src/utils/decoder_info.cpp",
+            "src/utils/open.cpp",
+        ],
+    );
+    fs::write(
+        libraw.join("src/decoders/sony_arw6.cpp"),
+        include_bytes!("patches/sony_arw6.cpp"),
+    )
+    .expect("stage upstream Sony ARW6 decoder");
+    // The shipped cameras, then the test cameras, which the adapter consults only when its caller
+    // admits them.
+    let mut native = String::from(
+        "// Generated from data/cameras.json and data/test-cameras.json; do not edit.\nstruct LfCamera { const char *make, *model; bool calibrated; double xyz_to_camera[9]; };\n",
+    );
+    native.push_str(&native_table(&catalog, "lf_cameras"));
+    native.push_str(&native_table(&test_catalog, "lf_test_cameras"));
+    native.push_str("\n#include \"native_limits.h\"\n");
+    // The limits and status codes both native adapters share; the camera tables above are the
     // LibRaw adapter's alone.
     let mut shared = format!(
         "// Generated from src/limits.rs and src/native_status.rs; do not edit.\n#pragma once\n\n#define LF_MAX_SOURCE_BYTES {}ull\n#define LF_MAX_PIXELS {}ull\n#define LF_MAX_SIDE {}u\n#define LF_MAX_RGB_BYTES {}ull\n",
@@ -392,8 +433,12 @@ fn main() {
     fs::write(out.join("camera_allowlist.h"), native).expect("write native camera table");
     fs::write(out.join("rawspeed_decoders.h"), unpacker::native_header())
         .expect("write replaceable decoder table");
-    fs::write(out.join("camera_catalog.rs"), static_catalog(&catalog))
-        .expect("write static camera catalog");
+    let generated = format!(
+        "// Generated from data/cameras.json and data/test-cameras.json; do not edit.\nuse crate::profiles::*;\nuse std::borrow::Cow;\n{}{}",
+        static_catalog(&catalog, "CATALOG", ""),
+        static_catalog(&test_catalog, "TEST_CATALOG", "TEST_"),
+    );
+    fs::write(out.join("camera_catalog.rs"), generated).expect("write static camera catalogs");
     let rt = out.join("librtprocess-9a858270");
     if rt.exists() {
         fs::remove_dir_all(&rt).expect("remove previous staged native sources");
@@ -447,6 +492,7 @@ fn main() {
     build.compile("luxforge_raw_native");
     rawspeed(&manifest, &out);
     println!("cargo:rerun-if-changed=data/cameras.json");
+    println!("cargo:rerun-if-changed=data/test-cameras.json");
     println!("cargo:rerun-if-changed=src/profiles.rs");
     println!("cargo:rerun-if-changed=src/mat3.rs");
     println!("cargo:rerun-if-changed=src/opcodes.rs");

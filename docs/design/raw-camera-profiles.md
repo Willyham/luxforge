@@ -35,8 +35,10 @@ unknown versions/strategies, duplicate identities/mode identifiers, ambiguous mo
 selectors, invalid dimensions, and unsupported capability combinations fail the
 build. The build then emits the validated catalog as static Rust data, so the
 library parses no JSON at all, and a test proves that data equals the parsed
-file. No runtime file lookup, environment override, download or JSON parsing is
-introduced. Build-generated native allowlist entries come from the same
+file. No runtime file lookup, download or JSON parsing is introduced, and no
+environment variable changes the shipped catalog: the editor's
+`LUXFORGE_TEST_CAMERAS=1` admits only the built-in test table (see
+[Acceptance](#acceptance)). Build-generated native allowlist entries come from the same
 validated catalog, and a public recording mode is a reference to one of its
 modes, serialized as the mode's identifier; an identifier the catalog does not
 declare fails to deserialize. Unknown cameras, and unknown recording modes of
@@ -112,10 +114,16 @@ RAW payloads and generated outputs remain outside the repository.
 ## Acceptance
 
 - No Luxforge production branch selects processing by camera name or mode ID.
-- The catalog contains 259 camera/phone profiles and 316 recording modes, and
-  one synthetic test body, `Luxforge` `Synthetic Bracket` (one 16-bit
-  uncompressed DNG mode), whose files only `luxforge_testkit::hdr_bracket`
-  writes for the HDR merge tests.
+- The shipped catalog contains 259 camera/phone profiles and 316 recording
+  modes, all real bodies. The test table, `crates/luxforge-raw/data/test-cameras.json`,
+  in the same schema and validated the same way, holds the one synthetic test
+  body, `Luxforge` `Synthetic Bracket` (one 16-bit uncompressed DNG mode),
+  whose files only `luxforge_testkit::hdr_bracket` writes for the HDR merge
+  tests. It shares no identity or mode with the shipped catalog. Every lookup,
+  Rust's and the native adapter's, ignores it until the process calls
+  `luxforge_raw::admit_test_cameras()`: writing a bracket with the testkit
+  does, and the editor does only when started with `LUXFORGE_TEST_CAMERAS=1`,
+  as the background `hdr-merge` smoke journey starts it.
   The retained 341-source corpus freezes 315 modes on 258 exact identities;
   the owner Air 2S fixture supplies the remaining profile/mode. Every retained
   source passes strict M4 decode/development regression. Controlled colour and

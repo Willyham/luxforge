@@ -122,6 +122,10 @@ pub const RESULT: &str = "result.json";
 pub fn run(path: &Path) -> Result {
     let job: Job = serde_json::from_value(read_json(path)?)?;
     fs::create_dir_all(&job.dir)?;
+    // The synthetic brackets' body is a RAW test camera; a natural folder is read as shipped.
+    if job.mode != Mode::Natural {
+        luxforge_raw::admit_test_cameras();
+    }
     let result = match job.mode {
         Mode::Cold => cold(&job),
         Mode::Warm => warm(&job),
