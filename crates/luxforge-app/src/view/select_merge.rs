@@ -261,7 +261,7 @@ pub(crate) fn form(model: &FormModel) -> Element<'_, Message> {
         )
     };
     let buttons = row![
-        caption(MergeMode::Pick.hint()),
+        caption(model.hint),
         Space::new().width(Length::Fill),
         text_button(
             "Cancel",
