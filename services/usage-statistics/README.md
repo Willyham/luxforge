@@ -31,7 +31,7 @@ flowchart LR
 | `vector/vector.yaml` | The HTTP source, row routing and the two ClickHouse sinks |
 | `clickhouse/` | `initdb/001-schema.sql` (tables and views), `config.d/privacy.xml`, `users.d/users.xml` |
 | `grafana/` | `Dockerfile` (plugin baked in), `provisioning/`, and the five dashboards in `dashboards/` |
-| `test.sh`, `tests/` | The stack test (below) and its synthetic scenario |
+| `test.sh`, `tests/` | The stack test and the client test (below), with the stack test's synthetic scenario |
 | `probe.sh`, `probe.py` | The synthetic live-endpoint probe: sends only generated data to a base URL and checks the statuses, limits and replies ([checks](DEPLOYMENT.md#12-run-the-synthetic-live-probe)) |
 | `scan-logs.py` | Searches captured logs or table dumps for given values and for any IP address literal ([use](DEPLOYMENT.md#10-check-every-hop-for-addresses-and-request-data)) |
 | `DEPLOYMENT.md` | The activation checklist for `api.luxforge.app` |
@@ -184,11 +184,50 @@ Docker and `python3`, and runs the real containers; there is no mock. It checks:
 
 A skipped or unavailable check is not a pass: if Docker is missing the script fails.
 
-Two more tests need no Docker and run in seconds: `python3 -I tests/probe_test.py` runs the probe against a
-fake ingress in this process (a good endpoint, and one each of a redirect, a leaked header, a long
-reply, a missing `405`, a missing `413` and a missing limiter, which it must fail; TLS against a
-throwaway certificate when `openssl` is present, reported as skipped when it is not; the refusal of the
-production domain) and `python3 -I tests/scan_logs_test.py` tests `scan-logs.py`.
+### The desktop against the stack
+
+```sh
+services/usage-statistics/test.sh --client NEW_DIR
+```
+
+The same throwaway stack, with the ingress's per-installation limit at one batch per 5 seconds, and the
+real desktop as its client ([the backend journey](../../docs/design/usage-statistics.md#the-backend-journey)).
+It builds the release editor and `luxforge-ctl` with `tools/cargo-cached` (from the repository root),
+runs the xtask `usage-backend` smoke scenario into `NEW_DIR/smoke` with `LUXFORGE_USAGE_INGRESS`
+naming the ingress (three hidden, background-only launches with isolated configurations, each test
+receiver a relay that forwards the client's requests to the ingress byte for byte and records them in
+`receiver.json`), and then `tests/client_test.py` checks, from what the client actually sent:
+
+- **Storage**: every batch the ingress accepted is stored once as exactly its events, column by
+  column, with one profile per session equal to the client's device context and one loss counter per
+  batch; a batch whose reply was withheld is stored once and was never resent; nothing of the `429`
+  or the misrouted `404` batch is stored.
+- **Dashboards**: the session timeline shows the refused batch as a gap; the installation history
+  shows the installation's two launches; the image history follows the photograph across them and
+  shows nothing of the old image ID after an opt-out and opt-in.
+- **Negative fixtures** built from the client's own batch and device fields (identifying,
+  free-form or malformed additions, a raw content hash as image ID, broken limits) are refused, with
+  nothing stored; every registry `feature` and `tool` is accepted and stored as sent, and the two
+  `registry.json` copies are equal.
+- **Retention**: the client's rows expire under the stores' own DDL with a 10-second TTL, and a copy
+  received 91 days ago is not kept.
+- **Privacy at every hop**: no container log, and no Docker Desktop host or VM log written during the
+  run, holds the client's identifiers, image IDs, image keys or User-Agent; no container log holds the
+  machine's host name, home path, file names, a password or an IP address; stored rows hold no key,
+  name, path, User-Agent or address; the desktop's own logs and frames hold no identifier or key; no
+  request body holds any of the machine's names. The captures are kept in `NEW_DIR/hops`, and
+  `NEW_DIR/client-test.json` lists every check.
+
+The scenario alone (`tools/cargo-cached xtask smoke --scenario usage-backend --output NEW_DIR`) checks
+only the client's side, and only with `LUXFORGE_USAGE_INGRESS` naming a loopback ingress; it is in no
+`verify` tier, so nothing ordinary needs Docker.
+
+Two more tests need no Docker and run in seconds: `python3 -I tests/probe_test.py` runs the probe
+against a fake ingress in this process (a good endpoint, where its desktop-shaped batch carries exactly
+the desktop's header fields, and one each of a redirect, a leaked header, a long reply, a missing `405`,
+a missing `413` and a missing limiter, which it must fail; TLS against a throwaway certificate when
+`openssl` is present, reported as skipped when it is not; the refusal of the production domain) and
+`python3 -I tests/scan_logs_test.py` tests `scan-logs.py`.
 
 ## Privacy configuration, hop by hop
 
