@@ -154,16 +154,21 @@ pub(crate) fn fit_size(evaluation: &luxforge_core::Evaluation) -> Result<(u32, u
     }
 }
 
-/// One corpus cell's photograph: its file and the corpus's id for it.
+/// One corpus cell's photograph: its file and the corpus's id for it, or the dimensions of a
+/// synthetic derived source, which has no file.
 pub(crate) struct CorpusSource {
     pub(crate) id: String,
     pub(crate) path: std::path::PathBuf,
     pub(crate) raw: bool,
+    /// A synthetic derived source's dimensions: its planes are made by
+    /// [`luxforge_testkit::derived::planes`] and stored as a derived photograph (an HDR merge's
+    /// result), with no original file.
+    pub(crate) derived: Option<(u32, u32)>,
 }
 
-/// The corpus's sources this host has: the generated JPEGs under `generated`, and the RAWs the
-/// private manifest at `manifest` resolves, when it is given. A source without a file here is
-/// named and skipped.
+/// The corpus's sources this host has: the generated JPEGs under `generated`, the RAWs the private
+/// manifest at `manifest` resolves, when it is given, and every synthetic derived source, which
+/// every host makes. A source without a file here is named and skipped.
 pub(crate) fn corpus_sources(
     corpus: &Value,
     generated: &std::path::Path,
@@ -172,6 +177,21 @@ pub(crate) fn corpus_sources(
     let mut found = Vec::new();
     for source in corpus["sources"].as_array().expect("sources") {
         let id = source["id"].as_str().expect("an id").to_owned();
+        if source["kind"] == "synthetic-derived" {
+            let side = |index: usize| {
+                source["dimensions"][index]
+                    .as_u64()
+                    .and_then(|side| u32::try_from(side).ok())
+                    .expect("a derived source's dimensions")
+            };
+            found.push(CorpusSource {
+                id,
+                path: std::path::PathBuf::new(),
+                raw: false,
+                derived: Some((side(0), side(1))),
+            });
+            continue;
+        }
         let path = match source["kind"].as_str() {
             Some("generated-jpeg") => source["path"]
                 .as_str()
@@ -192,6 +212,7 @@ pub(crate) fn corpus_sources(
                 raw: source["kind"] == "raw",
                 id,
                 path,
+                derived: None,
             }),
             None => eprintln!("gap: {id} has no file on this host"),
         }
@@ -357,16 +378,45 @@ pub(crate) struct Opened {
 }
 
 impl Opened {
-    /// `source` imported into a new catalog at `catalog` and `steps` applied to it.
+    /// `source` imported into a new catalog at `catalog` and `steps` applied to it. A synthetic
+    /// derived source is stored and published into the catalog first, as a merge publishes its
+    /// result, and opened as any photograph of the catalog is: `source.prepare`, then `job.adopt`.
     pub(crate) fn new(
         source: &CorpusSource,
         steps: &[Value],
         catalog: &std::path::Path,
     ) -> Result<Self, String> {
+        let derived = source
+            .derived
+            .map(|(width, height)| {
+                luxforge_core::qualification::publish_derived(
+                    catalog,
+                    &luxforge_testbase::paths::jpeg(),
+                    width,
+                    height,
+                    &luxforge_testkit::derived::planes(width, height),
+                )
+                .map_err(|error| error.to_string())
+            })
+            .transpose()?;
         let (owner, join) =
             luxforge_core::OwnerHandle::start(catalog).map_err(|error| error.to_string())?;
         let client = owner.register();
-        let asset = crate::app::testing::import_and_adopt(&owner, client, &source.path);
+        let asset = match derived {
+            Some(asset) => {
+                use crate::app::tasks::{call, wait_source_job};
+                let (queued, _) =
+                    call(&owner, client, "source.prepare", json!({"asset_id": asset}))?;
+                let job = queued["job_id"]
+                    .as_str()
+                    .ok_or("a preparation job")?
+                    .to_owned();
+                wait_source_job(&owner, client, &job).map_err(|error| error.to_string())?;
+                call(&owner, client, "job.adopt", json!({"job_id": job}))?;
+                asset
+            }
+            None => crate::app::testing::import_and_adopt(&owner, client, &source.path),
+        };
         let opened = Self {
             owner,
             join: Some(join),
@@ -390,6 +440,13 @@ impl Drop for Opened {
             let mut path = self.catalog.clone().into_os_string();
             path.push(suffix);
             let _ = std::fs::remove_file(path);
+        }
+        // A derived photograph's stored source is a full frame of float planes in the catalog's
+        // artifact root; the catalog is gone, so it goes too.
+        if let (Some(parent), Some(stem)) = (self.catalog.parent(), self.catalog.file_stem()) {
+            let _ = std::fs::remove_dir_all(
+                parent.join(format!("{}.artifacts", stem.to_string_lossy())),
+            );
         }
     }
 }

@@ -40,6 +40,8 @@ pub(crate) mod cpu_proxy;
 #[cfg(test)]
 mod cpu_proxy_tests;
 pub(crate) mod crop;
+#[cfg(test)]
+mod derived_source_tests;
 pub(crate) mod develop;
 pub(crate) mod draft;
 mod drawn_frames;
