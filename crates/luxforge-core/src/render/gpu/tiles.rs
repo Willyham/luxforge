@@ -442,7 +442,7 @@ fn tile(
         })?;
     Ok(RestTile {
         rect,
-        window: super::plan::anchored_over(compiled, windows.reads(0), anchor),
+        window: super::anchored(windows.reads(0), anchor),
     })
 }
 

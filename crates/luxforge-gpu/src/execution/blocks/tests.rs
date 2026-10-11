@@ -109,6 +109,7 @@ fn spatial(block: &Arc<[u32]>, components: &[&Arc<[u32]>]) -> GpuStep {
         contained: false,
         resident: Vec::new(),
         resident_key: 0,
+        reads: None,
     }))
 }
 

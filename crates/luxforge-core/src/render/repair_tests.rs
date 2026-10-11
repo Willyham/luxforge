@@ -616,8 +616,7 @@ fn a_window_reads_only_what_its_operations_need() {
     assert_eq!(relevant, vec![0]);
     assert!(set.meets(first.reads[1]));
     assert!(set.rects().len() <= super::repair_entry::MAX_READ_RECTS);
-    // The GPU window is one rectangle: the set's bounding box.
-    assert_eq!(entry.window_reads(first.writes), set.bounds());
+    assert_eq!(entry.read_bounds(first.writes), set.bounds());
 }
 
 #[test]
@@ -1047,4 +1046,142 @@ fn a_lens_warp_reads_the_repaired_content() {
     };
     let expected = render(&registry, &bytes, SnapshotId::new(), &recipe(vec![lens()])).unwrap();
     assert_eq!(through.rgba, expected.rgba);
+}
+
+/// A repair whose sources lie across a frame wider than a GPU texture holds its read set, not the
+/// box around it: the step's atlas holds every rectangle its operations read within the device's
+/// side, while the box around them is wider than that side; and a read set that cannot fit one
+/// atlas is drawn by the reference, named, never cut down.
+#[test]
+fn a_far_read_set_is_held_in_an_atlas_and_one_past_it_is_refused_by_name() {
+    use crate::render::gpu::{REPAIR_ATLAS_SIDE, repair::pack};
+    let registry = repair_registry();
+    let wide = Stage {
+        width: 9000,
+        height: 400,
+    };
+    let far = [
+        Op::new(
+            1,
+            RepairKind::Heal,
+            wide,
+            &[[8800.0, 200.0]],
+            12.0,
+            [-8650.0, 0.0],
+        ),
+        Op::new(
+            2,
+            RepairKind::Clone,
+            wide,
+            &[[120.0, 150.0], [220.0, 180.0]],
+            10.0,
+            [8700.0, 20.0],
+        ),
+    ];
+    let answer = crate::gpu_plan(
+        &registry,
+        &recipe(vec![repair_layer(&far)]),
+        crate::GpuPlanRequest::exact(0, wide).from_source(),
+    )
+    .unwrap();
+    let plan = answer.plan().expect("a far read set is drawn on the GPU");
+    let repair = plan.spatial[0].repair.as_ref().expect("the repair step");
+    let atlas = repair.atlas.as_ref().expect("the step reads its input");
+    assert!(atlas.size.0 <= REPAIR_ATLAS_SIDE && atlas.size.1 <= REPAIR_ATLAS_SIDE);
+    // Its input and the one state its two chained groups leave, both atlas-sized.
+    assert_eq!((atlas.plane, atlas.planes), (0, 2));
+    let step = &plan.spatial[0];
+    for plane in &step.planes[..2] {
+        assert_eq!(
+            plane.size,
+            crate::render::gpu::GpuPlaneSize::Fixed {
+                width: atlas.size.0,
+                height: atlas.size.1
+            }
+        );
+    }
+    let (x0, x1) = atlas
+        .rects
+        .iter()
+        .fold((u32::MAX, 0), |(lo, hi), (rect, _)| {
+            (lo.min(rect.x0), hi.max(rect.x1()))
+        });
+    assert!(
+        x1 - x0 > REPAIR_ATLAS_SIDE,
+        "the box around the reads, {} wide, is past one texture",
+        x1 - x0
+    );
+    // Every operation's reads are held, each rectangle once, inside the atlas and apart.
+    for operation in &repair.operations {
+        for read in operation.reads.iter().filter(|read| !read.is_empty()) {
+            assert!(
+                atlas.rects.iter().any(|(rect, _)| rect.x0 <= read.x0
+                    && rect.y0 <= read.y0
+                    && read.x1() <= rect.x1()
+                    && read.y1() <= rect.y1()),
+                "{read:?} is held"
+            );
+        }
+    }
+    let placed: Vec<Region> = atlas
+        .rects
+        .iter()
+        .map(|(rect, at)| Region {
+            x0: at[0],
+            y0: at[1],
+            width: rect.width,
+            height: rect.height,
+        })
+        .collect();
+    for (index, a) in placed.iter().enumerate() {
+        assert!(a.x1() <= atlas.size.0 && a.y1() <= atlas.size.1, "{a:?}");
+        for b in &placed[index + 1..] {
+            assert!(
+                a.x1() <= b.x0 || b.x1() <= a.x0 || a.y1() <= b.y0 || b.y1() <= a.y0,
+                "{a:?} and {b:?} overlap"
+            );
+        }
+    }
+    // A Clone stroke across the frame reads one rectangle wider than an atlas's side: named.
+    let across = Op::new(
+        3,
+        RepairKind::Clone,
+        wide,
+        &[[100.0, 200.0], [8900.0, 200.0]],
+        10.0,
+        [0.0, 100.0],
+    );
+    let answer = crate::gpu_plan(
+        &registry,
+        &recipe(vec![repair_layer(&[across])]),
+        crate::GpuPlanRequest::exact(0, wide).from_source(),
+    )
+    .unwrap();
+    let fallback = answer.fallback().expect("a read past one atlas");
+    assert_eq!(fallback.code(), "repair");
+    assert!(
+        fallback.to_string().contains("past the 8192 a side"),
+        "{fallback}"
+    );
+    // Rectangles each within a side whose area does not pack into one atlas: named too.
+    let tiles = vec![
+        Region {
+            x0: 0,
+            y0: 0,
+            width: 5000,
+            height: 5000,
+        };
+        3
+    ];
+    let refused = pack(&tiles).expect_err("75 MP past one atlas");
+    assert!(refused.contains("do not pack"), "{refused}");
+    let quarter = Region {
+        x0: 0,
+        y0: 0,
+        width: 4000,
+        height: 4000,
+    };
+    let ((width, height), placed) = pack(&[quarter, quarter]).expect("two fit");
+    assert_eq!(placed, [[0, 0], [0, 4000]]);
+    assert!(width <= REPAIR_ATLAS_SIDE && height <= REPAIR_ATLAS_SIDE);
 }

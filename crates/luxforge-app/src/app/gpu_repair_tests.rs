@@ -67,6 +67,7 @@ fn step(gpu: &RepairGpu, clamps: bool) -> GpuStep {
         contained: false,
         resident: Vec::new(),
         resident_key: 0,
+        reads: None,
     }))
 }
 
