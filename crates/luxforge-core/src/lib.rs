@@ -75,6 +75,8 @@ pub use api::{
     Renderer, RendererReason, RendererRecord, RevisionOf, RunningSession, ViewSelection,
     WorkspaceState, live_session_file, running_sessions, schemas, serve_json_lines_with,
 };
+#[cfg(any(test, feature = "test-holds"))]
+pub use api::SyntheticFrame;
 pub use artifacts::{
     ArtifactId, ArtifactTable, DerivedColour, DerivedInterpretation, DerivedSourceId,
     PreparedArtifact, ReferenceCrop,

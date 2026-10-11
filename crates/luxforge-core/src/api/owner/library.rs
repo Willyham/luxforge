@@ -250,7 +250,7 @@ pub(super) enum LibraryMessage {
     #[cfg(test)]
     Hold(Option<Hold>),
     /// Run this on the owner, between messages, as a test arranges the catalog.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-holds"))]
     Run(Box<dyn FnOnce(&mut Owner) + Send>),
 }
 
@@ -550,7 +550,7 @@ pub(super) fn handle(owner: &mut Owner, kind: LaneKind, message: LibraryMessage)
         }
         #[cfg(test)]
         LibraryMessage::Hold(hold) => kind.of(owner).hold = hold,
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-holds"))]
         LibraryMessage::Run(run) => run(owner),
     }
 }

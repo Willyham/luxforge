@@ -15,6 +15,8 @@ pub use owner::{
     PreviewRenderIntent, PreviewRequest, PreviewSelection, PreviewStack,
 };
 pub(crate) use owner::{OWNER_THREAD, SourceFlightKey};
+#[cfg(any(test, feature = "test-holds"))]
+pub use owner::SyntheticFrame;
 
 pub use live_sessions::{LIVE_SESSIONS_DIR, LiveSessionEntry, RunningSession, running_sessions};
 pub use params::{Envelope, RevisionOf};

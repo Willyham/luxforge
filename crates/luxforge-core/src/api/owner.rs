@@ -63,6 +63,8 @@ pub(super) mod files;
 mod first_open_tests;
 pub(super) mod library;
 pub(super) mod merge;
+#[cfg(any(test, feature = "test-holds"))]
+pub use merge::SyntheticFrame;
 #[cfg(test)]
 mod original_tests;
 mod parked;
