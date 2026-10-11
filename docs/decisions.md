@@ -426,6 +426,7 @@ Decided by the owner on 2026-10-05, on the [AI editing](design/ai-editing.md) pr
 - **Consent to send photo data to a remote provider is remembered** per provider profile and data class until revoked, in place of the per-asset default of 2026-09-23; the capability contract changes with the remote tier.
 - **The repair stage** sits after source development and before colour, in content coordinates, and the developer-only `PointReplace` primitive is deleted rather than reused (the Corrections decision).
 - **Sky replacement** is a deterministic layer over the Select Sky mask, with imported skies or a CC0 set.
+- **Generative fill is delivered first** (2026-10-11). Its workflow (a brush selection in the Remove mode, the candidate strip, Regenerate, Replace and Accept) is built over the fake generator on the inference foundation and the delivered Corrections candidate seam, while the generative models are qualified beside it; the Fast tier, the analysis cache, object picking and Select follow and join the same Remove mode.
 
 Recorded defaults and the remaining open questions (the first hosted provider, a removal fine-tune, a macOS 27 Swift shim, what a CPU-only machine is offered) are in the [design](design/ai-editing.md#decisions).
 
