@@ -11,20 +11,46 @@
 //!    refuses as ambiguous or insufficient. Every offset records its [`ExposureOrigin`].
 //! 3. [`clipping`]: [`SensorClipModel`] derives each developed pixel's [`SensorLevel`], its
 //!    sensor-clipping evidence, from the developed linear planes and the RAW interpretation.
-//! 4. [`fusion`]: [`fuse_rect`] fuses one rectangle in reference coordinates from every input's
+//! 4. [`proxy`]: each developed input, as it is developed, reduces to a bounded
+//!    [`AnalysisProxy`] (log luminance and levels, at most 1024 a side), so no two full frames
+//!    are held for analysis.
+//! 5. [`align`]: [`register`] fits each input's rigid motion to the reference from the proxies,
+//!    exposure invariantly, with [`AlignmentOptions`] (alignment and deghosting, both automatic
+//!    by default), or checks the framing with alignment off; unalignable inputs are refused.
+//! 6. [`coverage`]: [`common_coverage`] is the largest rectangle every aligned input recorded,
+//!    the result's frame.
+//! 7. [`deghost`]: the [`AlignedProxies`] feed the exposure fit and [`detect_motion`], whose
+//!    [`MotionMap`] shows each moving region from one exposure and renders any rectangle's
+//!    [`MotionSelection`].
+//! 8. [`resample`]: [`resample_rect`] brings one input's bounded [`SourceWindow`] into reference
+//!    coordinates for one rectangle, the merge's single resample.
+//! 9. [`fusion`]: [`fuse_rect`] fuses one rectangle in reference coordinates from every input's
 //!    aligned linear samples and levels, with an optional [`MotionSelection`], into float32
 //!    linear sRGB/D65 at the reference's brightness, and reports [`FusionDiagnostics`] that
 //!    aggregate across rectangles.
 //!
 //! The equations, weights, tolerances and sample bounds are recorded in the design's
-//! "Exposure resolution and fusion equations".
+//! "Exposure resolution and fusion equations" and "Alignment, coverage and motion equations".
 
+pub mod align;
 pub mod clipping;
+pub mod coverage;
+pub mod deghost;
 pub mod exposure;
 pub mod frame;
 pub mod fusion;
+pub mod proxy;
+pub mod resample;
 
+pub use align::{
+    AlignmentEvidence, AlignmentMode, AlignmentOptions, DeghostMode, InputAlignment, PixelRect,
+    Registration, RigidTransform, register,
+};
 pub use clipping::{BAYER_INPUT_CEILING, SensorClipModel};
+pub use coverage::{Coverage, common_coverage};
+pub use deghost::{
+    AlignedProxies, MotionDiagnostics, MotionMap, MotionRect, MotionRegion, detect_motion,
+};
 pub use exposure::{
     ExposureFit, ExposureOptions, ExposureOrigin, ExposureResolution, FitPlan, FitSamples,
     MetadataExposure, MetadataSource, ReferenceOrigin, ResolvedExposure, ResolvedExposures,
@@ -38,6 +64,10 @@ pub use fusion::{
     FusedRect, FusionDiagnostics, FusionParameters, Limitations, PixelLimits, RangeOutcome,
     fuse_rect,
 };
+pub use proxy::{AnalysisProxy, ProxyBuilder};
+pub use resample::{AlignedRect, SourceWindow, resample_rect, source_window};
 
+#[cfg(test)]
+mod hdr_merge_alignment;
 #[cfg(test)]
 mod hdr_merge_fusion;

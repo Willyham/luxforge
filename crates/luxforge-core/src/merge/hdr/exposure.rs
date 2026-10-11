@@ -458,7 +458,7 @@ pub struct FitSamples {
 }
 
 /// Rec. 709 luminance of linear sRGB.
-fn luminance(rgb: [f32; 3]) -> f32 {
+pub(crate) fn luminance(rgb: [f32; 3]) -> f32 {
     0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
 }
 
