@@ -439,6 +439,84 @@ fn usage_settings_sets_and_mask_commands_record_their_interactions_and_changed_g
     );
 }
 
+/// Every Corrections command that commits records one `tool.commit` `corrections` with the image:
+/// an automatic add parked for its search and replayed records once, a retry and a drawn stroke's
+/// ticks record nothing more, and the layer's reads and source ranking record nothing.
+#[test]
+fn usage_corrections_commands_commit_the_corrections_tool_once() {
+    let harness = Harness::new("corrections");
+    let photo = harness.photo("orientation-1.jpg", "one.jpg");
+    let developed = harness.develop("develop-corrections", &[&photo]);
+    let asset = developed["result"]["developed"][0]["asset_id"].clone();
+    harness.start();
+    let state = harness.open(&asset);
+    let image = image_of(&state);
+    harness.events();
+    let path = json!([[0.5, 0.5], [0.52, 0.51]]);
+
+    // Ranking sources and reading the layer are reads.
+    harness.ok(
+        "query.correction-sources",
+        json!({"asset_id": asset, "points": path, "radius": 0.02}),
+    );
+    harness.ok("query.corrections", json!({"asset_id": asset}));
+    assert_eq!(harness.events(), []);
+
+    // An automatic add parks for its search and records once, when it commits; its retry nothing.
+    let params = json!({"asset_id": asset, "points": path, "radius": 0.02,
+                        "mutation": harness.asset_mutation(&asset, "add")});
+    let added = harness.respond("add", "edit.add-correction", params.clone());
+    assert!(added.error.is_none(), "{:?}", added.error);
+    let retried = harness.respond("add", "edit.add-correction", params);
+    assert_eq!(retried.result.unwrap()["deduplicated"], json!(true));
+    assert_eq!(harness.events(), [commit(Tool::Corrections, image)]);
+
+    // A drawn stroke: its ticks record nothing, its commit one tool commit.
+    let draft = harness.ok(
+        "draft.begin",
+        json!({"asset_id": asset, "action": "add-correction"}),
+    );
+    for tick in 1..=5 {
+        let points: Vec<Value> = (0..=tick)
+            .map(|step| json!([0.2 + f64::from(step) / 100.0, 0.3]))
+            .collect();
+        harness.ok(
+            "draft.set",
+            json!({"draft_id": draft["draft_id"],
+                   "fields": {"points": points, "radius": 0.01, "source-x": 0.4, "source-y": 0.6}}),
+        );
+    }
+    let mutation = harness.asset_mutation(&asset, "stroke");
+    harness.ok(
+        "draft.commit",
+        json!({"draft_id": draft["draft_id"], "mutation": mutation}),
+    );
+    assert_eq!(harness.events(), [commit(Tool::Corrections, image)]);
+
+    // Update, reorder, delete and reset each record one commit.
+    let mutation = harness.asset_mutation(&asset, "update");
+    harness.ok(
+        "edit.update-correction",
+        json!({"asset_id": asset, "operation": "correction-1", "opacity": 50, "mutation": mutation}),
+    );
+    let mutation = harness.asset_mutation(&asset, "reorder");
+    harness.ok(
+        "edit.reorder-correction",
+        json!({"asset_id": asset, "operation": "correction-1", "index": 1, "mutation": mutation}),
+    );
+    let mutation = harness.asset_mutation(&asset, "delete");
+    harness.ok(
+        "edit.delete-correction",
+        json!({"asset_id": asset, "operation": "correction-2", "mutation": mutation}),
+    );
+    let mutation = harness.asset_mutation(&asset, "reset");
+    harness.ok(
+        "edit.reset-corrections",
+        json!({"asset_id": asset, "mutation": mutation}),
+    );
+    assert_eq!(harness.events(), [commit(Tool::Corrections, image); 4]);
+}
+
 /// Catalog organization, a preference and a library undo record their interactions once; a
 /// retried request is answered from the request table and records nothing more.
 #[test]

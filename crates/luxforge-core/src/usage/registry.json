@@ -1,6 +1,7 @@
 {
   "tool": [
     "basic",
+    "corrections",
     "crop",
     "curve",
     "detail",
