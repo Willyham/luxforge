@@ -9,6 +9,7 @@ use crate::args::Args;
 pub mod bench;
 pub mod corpus;
 pub mod fill;
+pub mod generate;
 pub mod inspect;
 pub mod models;
 pub mod parity;
@@ -16,6 +17,7 @@ pub mod paste;
 pub mod remove;
 pub mod score;
 pub mod segment;
+pub mod sheet;
 
 /// A `removal-probe` command: its name, its usage text (each line indented two spaces) and entry.
 pub struct Command {
@@ -75,6 +77,16 @@ pub const ALL: &[Command] = &[
         name: "score",
         usage: score::USAGE,
         run: score::run,
+    },
+    Command {
+        name: "generate",
+        usage: generate::USAGE,
+        run: generate::run,
+    },
+    Command {
+        name: "sheet",
+        usage: sheet::USAGE,
+        run: sheet::run,
     },
 ];
 

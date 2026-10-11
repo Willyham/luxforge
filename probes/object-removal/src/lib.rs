@@ -5,6 +5,7 @@ pub mod args;
 pub mod commands;
 pub mod corpus;
 pub mod fill;
+pub mod generative;
 pub mod image;
 pub mod lab;
 pub mod mask;
