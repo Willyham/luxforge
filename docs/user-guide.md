@@ -173,9 +173,15 @@ In Develop, a photograph whose original is not where the catalog looks shows **O
 
 Reading a card or folder, reading previews, developing picks, checking and searching for originals, and applying a preset to or exporting many photographs run in the background. Each is a row with **Cancel** in the Performance section under the sources panel, and the one that has run longest is in the status bar with its bar; click it to open the section ([Performance](#performance)). Only a first look at a card or folder, which has nothing to show yet, shows its progress in the view, and you can send it to the background.
 
+#### Merging HDR brackets
+
+A bracket of RAW frames from one camera ([design](design/hdr-merge.md)) can become one HDR photograph. The bracket's header offers **Pick merged**, which merges it and adds the result to the development set, and **Import merged**, which only adds it to the catalog; right-clicking 2–9 selected frames offers the same, with **Merge options…** for the reference frame, each frame's exposure, Alignment and Deghosting (Auto or Off) and the catalog folder. Frames must share one camera, size, aperture, ISO and focal length; JPEG frames are refused with the reason. A row shows the merge's progress with Cancel while you keep working; nothing is hidden until it succeeds.
+
+The result is a new photograph named after its reference frame with "HDR", its highlights and shadows kept beyond what one frame holds, so Develop's Exposure, Highlights and Shadows can bring them back. It carries an **HDR** badge with its number of exposures and its originals collapse beneath it: press the badge or `S` to show them, each with its exposure, and pick any of them as usual. Its pixels are saved with the catalog, so it opens, edits and exports even when the original files are offline; the originals are never changed. **Remove merge** (or `Delete`) moves the result to Removed and shows the originals again; `Cmd+Z` undoes a merge or its removal, keeping the result's edits, and nothing is merged twice. Merging a bracket that was merged before with the same options selects that result, or offers **Put back merge** when it is in Removed.
+
 #### Not in Select yet
 
-HDR exposure merging is [planned](design/hdr-merge.md), not available yet. The proposed **Import merged** creates a saved HDR photograph with its originals in an expandable stack; **Pick merged** also adds it to the development set by default. Original frames remain individually pickable, and removing or undoing a merge retains the saved result and edits for restoration. The first version is planned for RAW brackets with automatic alignment and deghosting. Panorama stitching is outside that plan.
+Panorama stitching and merging JPEG brackets.
 
 Previews in Missing originals' rows, dragging photographs onto a folder (Move to… does it), moving a collection into another group and changing a smart collection's search (`collection.move` and `collection.update-smart` over the API), Locate original… when an export is refused, and narrowing the Metadata browser to photographs with no date, place, lens or known camera, which it lists with their counts but cannot select.
 
