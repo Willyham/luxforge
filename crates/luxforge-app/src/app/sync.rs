@@ -108,7 +108,10 @@ impl Editor {
                 }
                 // An open is what happened even when it is the photograph already on screen.
                 if let Some(state) = &self.document.state {
-                    self.status.happened = Some(state::status::Happened::opened(state));
+                    let name =
+                        state::title::document_name(&state.asset, self.develop.state.set.as_ref());
+                    self.status.happened =
+                        Some(state::status::Happened::opened(state).naming(name));
                 }
                 return Task::batch([refreshed, presets_task(self.owner.clone(), self.client)]);
             }
@@ -456,7 +459,13 @@ impl Editor {
             &refresh.state,
             known,
             refresh.collapsed.is_some(),
-        );
+        )
+        .map(|happened| {
+            happened.naming(state::title::document_name(
+                &refresh.state.asset,
+                self.develop.state.set.as_ref(),
+            ))
+        });
         // A composite that skipped settings says so beside what it did, and one that applied
         // nothing at all says that, since no entry moved to say anything else.
         self.status.skipped = (!refresh.skipped.is_empty()).then(|| {
