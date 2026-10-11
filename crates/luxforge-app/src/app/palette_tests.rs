@@ -258,6 +258,7 @@ fn an_entry_shows_its_declared_chord_beside_its_label() {
         assert_eq!(shown.as_deref(), Some(chord), "{label}");
         assert_eq!(refusal, command.refusal(&editor.copy_model()), "{label}");
     }
-    assert_eq!(shortcut(&mut editor, "Fit").0, None);
+    assert_eq!(shortcut(&mut editor, "Fit").0.as_deref(), Some("\u{2318}0"));
+    assert_eq!(shortcut(&mut editor, "100%").0, None);
     finish(editor, catalog);
 }

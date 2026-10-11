@@ -174,6 +174,10 @@ pub const HOST_CHORDS: &[(Chord, &str)] = &[
     (Chord::command('-').shift(), "Zoom out"),
     (Chord::command('-').option(), "Zoom out"),
     (Chord::command('-').option().shift(), "Zoom out"),
+    (Chord::command('0'), "Fit"),
+    (Chord::command('0').shift(), "Fit"),
+    (Chord::command('0').option(), "Fit"),
+    (Chord::command('0').option().shift(), "Fit"),
     (Chord::command('[').option(), "Show or hide the left panel"),
     (
         Chord::command('[').option().shift(),
