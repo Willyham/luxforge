@@ -9,8 +9,11 @@
 //!    (where its own pixel is usable) and brought to the reference by subtracting its resolved
 //!    offset `o_k`.
 //! 2. A pixel is a motion candidate where two inputs that both recorded it usably disagree by
-//!    more than [`MOTION_THRESHOLD_EV`], or where one is past the roll-off (or under the noise
-//!    floor) while the other's 3 × 3 neighbourhood, brought to its exposure, stays below
+//!    more than [`MOTION_THRESHOLD_EV`] (where either lost part of its neighbourhood, both
+//!    averaged over the neighbours both recorded usably, so the edge of a still surface one
+//!    exposure records past its roll-off or under its floor is no disagreement), or where one is
+//!    past the roll-off (or under the noise floor) while the other's 3 × 3 neighbourhood, brought
+//!    to its exposure, stays below
 //!    [`CLIPPING_CONSISTENCY`] (above [`FLOOR_CONSISTENCY`]): differences exposure and clipping
 //!    do not explain. A clipped sample is never compared by value.
 //! 3. The candidates are opened by a 3 × 3 square (dropping isolated pixels and thin lines along
@@ -31,7 +34,7 @@
 //! Elsewhere the selected input is the reference at confidence 0.
 //!
 //! Bounds: every pass is over the reference proxy grid (at most 1 Mi pixels). The aligned proxies
-//! hold 8 bytes a pixel per input, detection a further 12 bytes per pixel per input and the map
+//! hold 8 bytes a pixel per input, detection a further 13 bytes per pixel per input and the map
 //! 8 bytes a pixel. A region is at least one opened 3 × 3 core grown by the margin, 81 pixels, so
 //! there are at most `pixels / 81` regions (12,945 on the largest proxy). `cancel` is checked
 //! between passes and inputs.
@@ -317,21 +320,24 @@ pub fn detect_motion(
     }
     let (w, h) = (aligned.width, aligned.height);
     let pixels = w * h;
-    // 1. Smoothed, exposure-normalized log luminance.
+    // 1. Smoothed, exposure-normalized log luminance, and whether it saw its whole neighbourhood.
     let mut normalized = Vec::with_capacity(n);
+    let mut whole = Vec::with_capacity(n);
     for (input, resolved) in aligned.inputs.iter().zip(&exposures.inputs) {
         cancel.check()?;
         let mut plane = vec![f32::NAN; pixels];
+        let mut complete = vec![false; pixels];
         for y in 0..h {
             for x in 0..w {
                 let i = y * w + x;
                 if !input.usable(i) {
                     continue;
                 }
-                let (mut sum, mut count) = (0.0_f64, 0_u32);
+                let (mut sum, mut count, mut neighbours) = (0.0_f64, 0_u32, 0_u32);
                 for ny in y.saturating_sub(1)..(y + 2).min(h) {
                     for nx in x.saturating_sub(1)..(x + 2).min(w) {
                         let j = ny * w + nx;
+                        neighbours += 1;
                         if input.usable(j) {
                             sum += f64::from(input.log_luma[j]);
                             count += 1;
@@ -339,10 +345,37 @@ pub fn detect_motion(
                     }
                 }
                 plane[i] = (sum / f64::from(count) - resolved.offset_ev) as f32;
+                complete[i] = count == neighbours;
             }
         }
         normalized.push(plane);
+        whole.push(complete);
     }
+    // Two inputs' neighbourhood means over the pixels both recorded usably, exposure-normalized:
+    // where either lost part of its neighbourhood, its own mean would weigh pixels the other's
+    // does not, and the edge of a surface one exposure records near its roll-off would read as a
+    // disagreement.
+    let shared = |a: usize, b: usize, i: usize| -> (f32, f32) {
+        let (x, y) = (i % w, i / w);
+        let (inputs, offsets) = (&aligned.inputs, &exposures.inputs);
+        let (mut sum_a, mut sum_b, mut count) = (0.0_f64, 0.0_f64, 0_u32);
+        for ny in y.saturating_sub(1)..(y + 2).min(h) {
+            for nx in x.saturating_sub(1)..(x + 2).min(w) {
+                let j = ny * w + nx;
+                if inputs[a].usable(j) && inputs[b].usable(j) {
+                    sum_a += f64::from(inputs[a].log_luma[j]);
+                    sum_b += f64::from(inputs[b].log_luma[j]);
+                    count += 1;
+                }
+            }
+        }
+        // Both centres are usable, so the count is at least one.
+        let count = f64::from(count);
+        (
+            (sum_a / count - offsets[a].offset_ev) as f32,
+            (sum_b / count - offsets[b].offset_ev) as f32,
+        )
+    };
     cancel.check()?;
     // 2. Candidates: two usable samples that disagree, or a sample past the roll-off (or under
     // the floor) where another exposure says it should have recorded the point usably.
@@ -373,6 +406,11 @@ pub fn detect_motion(
                 }
                 let vb = normalized[b][i];
                 if !vb.is_nan() {
+                    let (va, vb) = if whole[a][i] && whole[b][i] {
+                        (va, vb)
+                    } else {
+                        shared(a, b, i)
+                    };
                     return (va - vb).abs() > threshold;
                 }
                 let other = &aligned.inputs[b];
@@ -390,7 +428,7 @@ pub fn detect_motion(
             })
         });
     }
-    drop((normalized, bounds));
+    drop((normalized, whole, bounds));
     cancel.check()?;
     // 3. Open, grow, label.
     mask = morphology(&mask, w, h, 1, false);
