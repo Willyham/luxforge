@@ -45,7 +45,7 @@ Source handles, stroke capture, hit tests and overlays map through the core's cu
 
 ## Catalog, originals and preparation
 
-The current catalog is format 13, with full immutable recipe snapshots, the shared stroke store and per-entry artifact references. A photograph enters through `pick.develop`, then `source.prepare` and client adoption (`job.adopt`). Tests and tools may use `EditorService::import`, the blocking helper for that same Develop-and-prepare path. No legacy import endpoint, Corrections-owned import pipeline or extra managed copy of the original is added.
+The current catalog is format 14, with full immutable recipe snapshots, the shared stroke store and per-entry artifact references. A photograph enters through `pick.develop`, then `source.prepare` and client adoption (`job.adopt`). Tests and tools may use `EditorService::import`, the blocking helper for that same Develop-and-prepare path. No legacy import endpoint, Corrections-owned import pipeline or extra managed copy of the original is added.
 
 The verified source and artifact preparation contract applies to actions, drafts, render, samples, analysis and export. A preparation miss returns the evaluated stack's typed needs through `preparation-required` and the one source job; preparation reads and hashes on a worker. Corrections must also validate and hydrate its typed stroke references through the catalog's existing paths. A missing/corrupt stroke or patch, unavailable module, or unsupported payload fails explicitly, naming the resource and affected operation/layer, while history remains readable.
 
