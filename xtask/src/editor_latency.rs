@@ -3204,15 +3204,10 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
                 first,
                 script::Step::Usage(script::UsageStep::Advance(USAGE_ADVANCE_S)),
             );
-            // Last, for an opted-in launch: its one attempt has ended and `usage.read` says so.
-            if mode.collects() {
-                steps.push(script::Step::Usage(script::UsageStep::Await(
-                    script::UsageAwait {
-                        attempts: Some(1),
-                        ..script::UsageAwait::default()
-                    },
-                )));
-            }
+            // Last: for an opted-in launch, its one attempt has ended and `usage.read` says so; an
+            // opted-out launch waits for collection to read off, so every mode runs the same steps
+            // and captures the same frames.
+            steps.push(script::Step::Usage(script::UsageStep::Await(usage_await(mode))));
             // Then every mode alike: a fixed window, so each launch outlives the release's picture
             // at rest and the opted-out launch's peak memory compares with the opted-in ones'.
             steps.push(script::Step::Observe(script::IdleStep {
@@ -3846,6 +3841,22 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
 /// How far a statistics run's script moves the statistics clock before the gesture: past the
 /// first window's ten minutes and its minute of jitter.
 const USAGE_ADVANCE_S: u64 = 660;
+
+/// The statistics run's last wait: an opted-in launch's first attempt has ended, or an opted-out
+/// launch's collection reads off, so every mode's script has the same steps.
+pub(crate) fn usage_await(mode: UsageMode) -> script::UsageAwait {
+    if mode.collects() {
+        script::UsageAwait {
+            attempts: Some(1),
+            ..script::UsageAwait::default()
+        }
+    } else {
+        script::UsageAwait {
+            effective: Some(false),
+            ..script::UsageAwait::default()
+        }
+    }
+}
 
 /// The window at the end of every statistics run's script, after its attempt.
 const USAGE_TAIL_MS: u64 = 6_000;
