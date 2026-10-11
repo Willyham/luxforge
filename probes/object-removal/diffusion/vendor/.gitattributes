@@ -1,0 +1,2 @@
+# Retain exact upstream bytes, including original CRLF line endings.
+* -text
