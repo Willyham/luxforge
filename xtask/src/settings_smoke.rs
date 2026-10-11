@@ -618,14 +618,20 @@ fn models_tab(frame: &Frame) -> &Value {
     &settings(frame)["models"]
 }
 
-/// The one model row and the `module.status` resource row it was drawn from.
+/// The proof model's one row and the `module.status` resource row it was drawn from. A developer
+/// run also lists `luxforge.ai`'s developer models, which the scenario leaves alone.
 fn model_rows(frame: &Frame) -> Result<(&Value, &Value)> {
     let tab = models_tab(frame);
     let row = tab["rows"]
         .as_array()
+        .map(|rows| {
+            rows.iter()
+                .filter(|row| row["module_id"] == MODELS_PROOF_MODULE)
+                .collect::<Vec<_>>()
+        })
         .filter(|rows| rows.len() == 1)
-        .map(|rows| &rows[0])
-        .ok_or_else(|| format!("The Models tab does not list the one model: {tab}"))?;
+        .map(|rows| rows[0])
+        .ok_or_else(|| format!("The Models tab does not list the proof's one model: {tab}"))?;
     let status = tab["status"][MODELS_PROOF_MODULE]["resources"]
         .as_array()
         .and_then(|rows| rows.iter().find(|row| row["id"] == PROOF_MODEL_RESOURCE))
