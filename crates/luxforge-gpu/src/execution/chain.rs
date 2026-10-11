@@ -99,6 +99,8 @@ pub fn pack_words(texels: TexelMap, offset: (u32, u32), steps: &[GpuStep], words
     let header = MAP_WORDS + STEP_WORDS * steps.len();
     let (mut word, mut block) = (header, 0);
     for step in steps {
+        // A spatial step's resident blocks come before its base.
+        block += step.resident_len();
         words.extend([word as u32, block as u32]);
         words.extend(step.position().words());
         word += step.word_count();
@@ -106,6 +108,7 @@ pub fn pack_words(texels: TexelMap, offset: (u32, u32), steps: &[GpuStep], words
     }
     let mut block = 0;
     for step in steps {
+        block += step.resident_len();
         match step {
             GpuStep::Colour { program, .. } => words.extend_from_slice(&program.words),
             GpuStep::Masked(masked) => masked.pack_words(words, block),
@@ -316,6 +319,9 @@ mod tests {
             clamps: false,
             mask: None,
             halos: Vec::new(),
+            contained: false,
+            resident: Vec::new(),
+            resident_key: 0,
         }))
     }
 

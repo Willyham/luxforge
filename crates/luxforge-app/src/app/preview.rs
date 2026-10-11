@@ -645,6 +645,7 @@ impl Presentation {
             mask_draft: None,
             mask_map: None,
             mask_handles: true,
+            corrections: None,
             draft: None,
             gpu: None,
             gpu_hold: false,
@@ -2156,6 +2157,15 @@ impl Editor {
         });
         let raster = frame.raster();
         let picture = self.displayed_picture();
+        // The open photograph's committed picture at rest, drawn by the reference renderer: a
+        // settled preview, timed as the status bar times it. A zoom's hand-over, a drag's frame
+        // and a frame under the GPU's picture are not.
+        if !zoom && draft_revision.is_none() && picture == "reference" && frame.proxy().is_none() {
+            self.usage_preview_settled(
+                luxforge_core::usage::Renderer::Reference,
+                frame.render_ms(),
+            );
+        }
         self.event("preview_displayed", || {
             json!({
                 "entry_id":entry,
@@ -2256,6 +2266,10 @@ impl Editor {
         // A frame of an open mask gesture says what the gesture is and how it becomes history,
         // rather than repeating the entry it was drawn on.
         if let Some(line) = self.mask_gesture_status() {
+            return line;
+        }
+        // So does the Corrections mode: its gesture, its last sentence or its hint.
+        if let Some(line) = self.correction_status() {
             return line;
         }
         let sentence = match (&self.status.happened, &self.document.state) {

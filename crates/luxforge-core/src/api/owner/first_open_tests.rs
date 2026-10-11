@@ -55,8 +55,14 @@ impl ToolModule for Probe {
     fn label(&self, action: &ActionDescriptor, input: &ActionInput) -> String {
         self.inner.label(action, input)
     }
-    fn planned_label(&self, input: &ActionInput, layers: &[Layer], fallback: &str) -> String {
-        self.inner.planned_label(input, layers, fallback)
+    fn planned_label(
+        &self,
+        input: &ActionInput,
+        before: &[Layer],
+        layers: &[Layer],
+        fallback: &str,
+    ) -> String {
+        self.inner.planned_label(input, before, layers, fallback)
     }
     fn settings(
         &self,

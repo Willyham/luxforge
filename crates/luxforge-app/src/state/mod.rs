@@ -5,6 +5,7 @@ pub(crate) mod canvas;
 pub(crate) mod capabilities;
 pub(crate) mod control_tree;
 pub(crate) mod copy_settings;
+pub(crate) mod corrections;
 pub(crate) mod develop;
 pub(crate) mod document;
 pub(crate) mod fields;
@@ -31,6 +32,7 @@ pub(crate) mod testing;
 pub(crate) mod themes;
 pub(crate) mod title;
 pub(crate) mod tools;
+pub(crate) mod usage;
 
 use crate::{coalesce::Coalesce, crop_draft::CropDraft, mask_draft::MaskDraft};
 use fields::Fields;
@@ -97,6 +99,9 @@ pub(crate) enum MenuTarget {
     /// A theme's row in the Settings sheet's Appearance tab, by its id: Export…, Copy import
     /// report and, for a stored theme, Delete.
     Theme(String),
+    /// A correction's row in the Corrections band, by its operation: Heal, Clone, New automatic
+    /// source, Move up, Move down and Delete.
+    Correction(String),
 }
 
 /// Why a start that needs the editable state is refused with no photograph open.
@@ -341,6 +346,12 @@ pub(crate) struct Inputs<'a> {
     pub(crate) mask_panel: &'a masks::MaskPanel,
     /// The open mask shape gesture.
     pub(crate) mask_draft: Option<&'a MaskDraft>,
+    /// The Corrections workspace's view state and list.
+    pub(crate) corrections: &'a corrections::CorrectionsPanel,
+    /// What the open Corrections gesture is, for the band's drafting row and the draft bar.
+    pub(crate) correction_draft: Option<corrections::DraftingCorrection>,
+    /// The content stage's size the Corrections readouts measure pixels against.
+    pub(crate) correction_content: Option<(u32, u32)>,
     /// The mask the generated module sections are bound to, which is what a masked slider edits.
     /// `None` binds them to the global layer, as they have always been.
     pub(crate) target: Option<&'a MaskId>,
@@ -365,6 +376,8 @@ pub(crate) struct Inputs<'a> {
     pub(crate) palette: &'a palette::Palette,
     /// The Settings sheet.
     pub(crate) settings: &'a settings::Settings,
+    /// Usage statistics: the startup notice and the Privacy tab.
+    pub(crate) usage: &'a usage::Usage,
     /// The person's preferences and the writes outstanding.
     pub(crate) preferences: &'a preferences::PreferenceWriter,
     /// The theme library and the theme on screen.
@@ -442,10 +455,14 @@ pub(crate) struct Workspace {
     pub(crate) canvas: canvas::CanvasModel,
     pub(crate) tools: tools::ToolsModel,
     pub(crate) masks: masks::MasksModel,
+    /// The Corrections band, drawn under the histogram while its mode is active.
+    pub(crate) corrections: corrections::CorrectionsModel,
     pub(crate) histogram: histogram::HistogramModel,
     pub(crate) status: status::StatusBarModel,
     pub(crate) palette: palette::PaletteModel,
     pub(crate) settings: settings::SettingsModel,
+    /// The usage statistics startup notice, while it is on screen.
+    pub(crate) usage_notice: Option<usage::UsageNotice>,
     /// The state panel's pinned last block. It keeps itself across derivations and is rebuilt only
     /// when a sample lands or the section opens or closes.
     pub(crate) performance: performance::PerformanceModel,
@@ -468,6 +485,7 @@ impl Workspace {
         self.performance.refresh(inputs);
         self.canvas = canvas::derive(inputs);
         self.masks = masks::derive(inputs);
+        self.corrections = corrections::derive(inputs);
         self.tools = tools::derive(inputs);
         self.histogram = histogram::derive(inputs, &self.histogram);
         self.status = status::derive(inputs);
@@ -491,7 +509,9 @@ impl Workspace {
             inputs.preferences,
             inputs.themes,
             inputs.view_state,
+            inputs.usage,
         );
+        self.usage_notice = usage::notice(inputs.usage);
     }
 
     /// Every picker control the panel derived, by the module whose pick mode it selects, with the
@@ -654,6 +674,7 @@ mod tests {
         mask_panel: masks::MaskPanel,
         crop_section: CropSection,
         mask_draft: Option<MaskDraft>,
+        corrections: corrections::CorrectionsPanel,
         session: ClientSession,
         status: String,
         busy: bool,
@@ -672,6 +693,7 @@ mod tests {
         performance: performance::PerformanceHistory,
         palette: palette::Palette,
         settings: settings::Settings,
+        usage: usage::Usage,
         preferences: preferences::PreferenceWriter,
         themes: themes::Themes,
         version_form: VersionForm,
@@ -698,6 +720,7 @@ mod tests {
                 mask_panel: masks::MaskPanel::default(),
                 crop_section: CropSection::default(),
                 mask_draft: None,
+                corrections: corrections::CorrectionsPanel::default(),
                 session: ClientSession::default(),
                 status: "ready".into(),
                 busy: false,
@@ -719,6 +742,7 @@ mod tests {
                 performance: performance::PerformanceHistory::default(),
                 palette: palette::Palette::default(),
                 settings: settings::Settings::default(),
+                usage: usage::Usage::default(),
                 preferences: preferences::PreferenceWriter::default(),
                 themes: themes::Themes::default(),
                 version_form: VersionForm::default(),
@@ -798,6 +822,9 @@ mod tests {
                 draft: self.draft.as_ref(),
                 mask_panel: &self.mask_panel,
                 mask_draft: self.mask_draft.as_ref(),
+                corrections: &self.corrections,
+                correction_draft: None,
+                correction_content: None,
                 target: self
                     .mask_panel
                     .selected_mask
@@ -816,6 +843,7 @@ mod tests {
                 hover: &self.hover,
                 palette: &self.palette,
                 settings: &self.settings,
+                usage: &self.usage,
                 preferences: &self.preferences,
                 themes: &self.themes,
                 version_form: &self.version_form,
@@ -1641,7 +1669,7 @@ mod tests {
         let (action, x, _) = tools::point_pick(&modules).expect("a canvas pick");
         let (action, x) = (action.to_owned(), x.to_owned());
         let mut scene = Scene::new(modules).all_expanded().opened(Vec::new());
-        // The pixel proof tool declares the only number controls today, so its section is listed.
+        // The point fixture declares number fields, so its developer section is listed.
         scene.developer = true;
         scene.fields.set(&action, &x, "007".into());
         let workspace = scene.derive();
@@ -1708,6 +1736,8 @@ mod tests {
         let patch = modules
             .iter()
             .filter(|module| module.applies_to(luxforge_core::SourceTag::Jpeg))
+            // A section's slider: Corrections' operation edit is a patch with no control.
+            .filter(|module| !module.controls.is_empty())
             .flat_map(|module| module.actions.iter())
             .find(|action| action.patch)
             .expect("a built-in declares a field patch")
@@ -1804,7 +1834,7 @@ mod tests {
             .collect();
         assert!(
             !developer.is_empty(),
-            "the pixel proof module marks itself as a developer tool"
+            "the point fixture marks itself as a developer tool"
         );
         let workspace = scene.derive();
         assert!(workspace.tools.developer.is_empty());
@@ -1896,7 +1926,7 @@ mod tests {
             }
         }
         assert!(
-            !section(&workspace, "luxforge.pixel").pickers()[0].selected,
+            !section(&workspace, crate::state::testing::POINT_MODULE).pickers()[0].selected,
             "another module's picker is not selected by the Basic mode"
         );
     }
@@ -2510,11 +2540,19 @@ mod tests {
             "the descriptor's own icon"
         );
         assert!(crop.enabled);
-        assert_eq!(strip[2].id, crop.id, "the modules' modes follow Mask");
+        // The declared brush workspace follows Mask, then the crop frames.
+        let corrections = &strip[2];
+        assert_eq!(
+            corrections.id, "luxforge.corrections",
+            "Corrections follows Mask"
+        );
+        assert_eq!(corrections.shortcut.as_deref(), Some("Q"));
+        assert_eq!(corrections.icon.as_deref(), Some("heal"));
+        assert_eq!(strip[3].id, crop.id, "the crop frame follows Corrections");
         assert_eq!(
             strip.len(),
-            3,
-            "the pointer, the mask mode and the crop frame alone: {:?}",
+            4,
+            "the pointer, the mask mode, Corrections and the crop frame alone: {:?}",
             strip.iter().map(|mode| &mode.id).collect::<Vec<_>>()
         );
         // Every module that declares a pick — a point pick or a sample apply — stays out, for
@@ -3338,7 +3376,11 @@ mod tests {
                 .filter(|control| matches!(control, ControlModel::Group(_)))
                 .count()
         };
-        for id in ["luxforge.pixel", "luxforge.presence", "luxforge.vignette"] {
+        for id in [
+            crate::state::testing::POINT_MODULE,
+            "luxforge.presence",
+            "luxforge.vignette",
+        ] {
             let module = modules.iter().find(|module| module.id == id).unwrap();
             let [luxforge_core::Control::Group(luxforge_core::GroupControl { controls, .. })] =
                 module.controls.as_slice()
@@ -3683,6 +3725,10 @@ mod tests {
         let mut built_on_demand = 0;
         for (left, right) in from_collapsed.iter().zip(&from_open) {
             assert_eq!(left.section.module_id, right.section.module_id);
+            // The Corrections section has no controls: its band is its mode's.
+            if crate::state::corrections::is_brush_mode(&open.modules, &right.section.module_id) {
+                continue;
+            }
             assert!(right.section.shows_controls());
             assert_eq!(
                 left.controls, right.controls,

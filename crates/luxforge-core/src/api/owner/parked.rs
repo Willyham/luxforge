@@ -181,6 +181,7 @@ impl Owner {
             query.method == method && query.asset() == &asset
         });
         let (cancel, pending) = (Cancel::new(), Arc::new(()));
+        let auto_tone = self.auto_tone_usage(method, &asset);
         self.analysis_queries.push(AnalysisQuery {
             client,
             method: method.to_owned(),
@@ -194,9 +195,29 @@ impl Owner {
             move |reads, cancel| plan.evaluate_steps(reads, cancel),
             move |result| {
                 let _pending = pending;
+                if let Some(started) = auto_tone {
+                    started.ended(&result);
+                }
                 deliver(result);
             },
         ));
+    }
+
+    /// The start of an Auto tone solve, whose terminal outcome is a usage `operation.end`: the
+    /// consent generation, the moment and the open photograph's image ID. `None` for every other
+    /// analysis query and while collection is off.
+    fn auto_tone_usage(&self, method: &str, asset: &crate::AssetId) -> Option<AutoToneUsage> {
+        if method != "query.auto-tone" {
+            return None;
+        }
+        let usage = &self.service.usage;
+        let generation = usage.on()?;
+        Some(AutoToneUsage {
+            collector: Arc::clone(usage.collector()),
+            generation,
+            started: std::time::Instant::now(),
+            image: usage.open_image(generation, asset.as_str()),
+        })
     }
 
     /// Cancel every analysis query `client` asked that `superseded` names: each is answered
@@ -326,5 +347,34 @@ impl Owner {
             }
         };
         self.call_round(call, replay);
+    }
+}
+
+/// An Auto tone solve's usage start, carried to its answer on the analysis worker.
+pub(super) struct AutoToneUsage {
+    collector: Arc<crate::usage::Collector>,
+    generation: crate::usage::Generation,
+    started: std::time::Instant,
+    image: Option<crate::usage::ImageId>,
+}
+
+impl AutoToneUsage {
+    /// Record the solve's terminal outcome in the generation it began in: completed, cancelled
+    /// (superseded or disconnected) or failed.
+    pub(super) fn ended(self, result: &Result<Value, Error>) {
+        use crate::usage::{DurationMs, EventKind, OperationEnd, Outcome};
+        let outcome = match result {
+            Ok(_) => Outcome::Completed,
+            Err(error) if error.kind == crate::ErrorKind::Cancelled => Outcome::Cancelled,
+            Err(_) => Outcome::Failed,
+        };
+        self.collector.record_in(
+            self.generation,
+            EventKind::OperationEnd(OperationEnd::auto_tone(
+                outcome,
+                DurationMs::from_duration(self.started.elapsed()),
+                self.image,
+            )),
+        );
     }
 }

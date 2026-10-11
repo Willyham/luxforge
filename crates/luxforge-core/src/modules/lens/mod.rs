@@ -234,7 +234,13 @@ impl ToolModule for LensModule {
             }
         }
     }
-    fn planned_label(&self, input: &ActionInput, layers: &[Layer], fallback: &str) -> String {
+    fn planned_label(
+        &self,
+        input: &ActionInput,
+        _before: &[Layer],
+        layers: &[Layer],
+        fallback: &str,
+    ) -> String {
         if input.action_id == RESET {
             return "Reset Lens correction".into();
         }

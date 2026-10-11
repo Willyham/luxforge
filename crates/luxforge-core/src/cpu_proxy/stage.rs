@@ -87,10 +87,10 @@ impl ModuleRegistry {
                     | EffectStage::Geometry
                     | EffectStage::Finish,
                 ) => {}
-                Some(EffectStage::Pixel) => {
+                Some(EffectStage::Repair) => {
                     return Err(Error::validation(format!(
-                        "layer {index} is not proxy-eligible: effect {} is at the pixel stage, \
-                         whose coordinates are content pixels and cannot be rescaled",
+                        "layer {index} is not proxy-eligible: effect {} is a repair layer, which \
+                         the CPU proxy does not draw; the reference renderer draws it",
                         layer.effect_id
                     )));
                 }

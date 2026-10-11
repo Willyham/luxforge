@@ -5,6 +5,8 @@
 //! resolution among them; `validate` the rules a descriptor is registered against; `values` the
 //! checks a request's values meet against their declarations, the settings check among them; and
 //! `labels` how a label or a refusal names a value.
+#[cfg(test)]
+mod brush_tests;
 mod chord;
 mod labels;
 #[cfg(test)]
@@ -31,8 +33,9 @@ pub use types::{
     QueryChoiceControl, RailDecoration, ResetAction, resolve_control, resolve_group_reset,
 };
 pub use types::{
-    ChoiceControl, ColorControl, ControlVariant, IdentityKind, RangeControl, ResolvedControl,
-    ResolvedReset, TaskControl, ToggleControl, ViewControl, WheelControl, WheelStyle,
+    BrushEdit, BrushSource, ChoiceControl, ColorControl, ControlVariant, EffectOperations,
+    IdentityKind, MAX_OPERATIONS, OPERATIONS_FIELD, RangeControl, ResolvedControl, ResolvedReset,
+    TaskControl, ToggleControl, ViewControl, WheelControl, WheelStyle,
 };
 pub(crate) use types::{MAX_SECRET_LENGTH, PRESET_SETTINGS, SETTINGS_ORIGIN};
 pub(crate) use validate::{

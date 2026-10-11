@@ -166,6 +166,7 @@ pub(crate) fn tools_panel<'a>(
     plot: &'a HistogramModel,
     masks: &'a crate::state::masks::MasksModel,
     masking: bool,
+    corrections: &'a crate::state::corrections::CorrectionsModel,
 ) -> Element<'a, Message> {
     if let Some(message) = model.status.message() {
         return scrollable(column![
@@ -184,6 +185,12 @@ pub(crate) fn tools_panel<'a>(
     // The histogram sits above the first module section with no header of its own, as the Develop
     // workspace layout reserves.
     panel = panel.push(inspector(plot));
+    // The Corrections band sits where the Masks band does in Mask mode, followed by the sections.
+    if corrections.active {
+        panel = panel.push(crate::view::corrections_panel::corrections_band(
+            corrections,
+        ));
+    }
     if masking {
         panel = panel.push(crate::view::masks_panel::masks_panel(masks, menu, plot));
         // The adjustments below the list are the maskable modules' own sections, bound to the open

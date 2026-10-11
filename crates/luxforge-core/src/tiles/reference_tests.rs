@@ -104,7 +104,16 @@ fn auto_tone_grid_cache_ignores_basic_and_later_colour_but_tracks_input_and_geom
     let cropped = super::grid::read(&next(changed), 0, &ReferenceReads, &cancel).unwrap();
     assert!(!Arc::ptr_eq(&first.sample, &cropped.sample));
     assert_eq!(cropped.sample.rgb.len(), 32 * 24);
-    let input_recipe = recipe_of(vec![Layer::pixel(10, 10, [255, 255, 255]), basic()], vec![]);
+    let input_recipe = recipe_of(
+        vec![
+            Layer::new(
+                crate::CURVE_EFFECT,
+                json!({"luminance": [[0.0, 0.1], [1.0, 1.0]]}),
+            ),
+            basic(),
+        ],
+        vec![],
+    );
     let input =
         super::grid::read(&next(input_recipe.clone()), 1, &ReferenceReads, &cancel).unwrap();
     assert!(!Arc::ptr_eq(&first.sample, &input.sample));
@@ -862,4 +871,86 @@ fn disconnect_cancels_the_active_call_before_its_next_pixel_read() {
     );
     assert!(!executed.load(Ordering::Relaxed));
     service.stop();
+}
+
+/// A region read is the block means of the stage it names, exactly: on JPEG and RAW sources,
+/// through stacks with spatial layers, at reductions whose blocks are cut by the stage's edge and
+/// across band boundaries, each mean summed row by row, left to right, in `f64`, over one whole
+/// read of the same stage.
+#[test]
+fn a_region_read_is_the_exact_block_means_of_its_stage() {
+    use super::region::{RegionRequest, RegionStage, read};
+    let registry = Arc::new(ModuleRegistry::developer());
+    let context = RenderContext::default();
+    let cancel = Cancel::never();
+    for (kind, source) in sources(61, 47) {
+        for (name, recipe) in stacks() {
+            let evaluation = evaluation(&registry, &context, &source, &recipe);
+            for layer in [0, recipe.layers.len().min(2)] {
+                for (reduction, rect) in [
+                    (
+                        1,
+                        Region {
+                            x0: 3,
+                            y0: 5,
+                            width: 20,
+                            height: 11,
+                        },
+                    ),
+                    (
+                        4,
+                        Region {
+                            x0: 9,
+                            y0: 2,
+                            width: 60,
+                            height: 60,
+                        },
+                    ),
+                    (16, EVERYTHING),
+                ] {
+                    let request = RegionRequest {
+                        stage: RegionStage::Before(layer),
+                        rect,
+                        reduction,
+                    };
+                    let what = format!("{kind} {name} before {layer} at {reduction}");
+                    let region = read(&evaluation, &request, &ReferenceReads, &cancel)
+                        .unwrap_or_else(|error| panic!("{what}: {error}"));
+                    assert_eq!(region.rect.x0 % reduction, 0, "{what}");
+                    let whole = ReferenceReads
+                        .session(&evaluation, &cancel)
+                        .read(
+                            before(&registry, &recipe, layer),
+                            region.rect,
+                            ReadValues::Linear,
+                        )
+                        .unwrap();
+                    for by in 0..region.size[1] {
+                        for bx in 0..region.size[0] {
+                            let mut sum = [0.0_f64; 3];
+                            let mut count = 0.0;
+                            let (x0, y0) = (
+                                region.rect.x0 + bx * reduction,
+                                region.rect.y0 + by * reduction,
+                            );
+                            for y in y0..(y0 + reduction).min(region.rect.y1()) {
+                                for x in x0..(x0 + reduction).min(region.rect.x1()) {
+                                    let value = whole.linear(x, y).unwrap();
+                                    for channel in 0..3 {
+                                        sum[channel] += f64::from(value[channel]);
+                                    }
+                                    count += 1.0;
+                                }
+                            }
+                            assert_eq!(
+                                region.at(bx, by),
+                                Some(sum.map(|channel| channel / count)),
+                                "{what} block ({bx}, {by})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

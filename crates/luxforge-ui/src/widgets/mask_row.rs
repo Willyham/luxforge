@@ -399,6 +399,135 @@ pub fn component_note<'a, M: 'a>(content: impl Into<String>) -> Element<'a, M> {
     .into()
 }
 
+/// Plain data for one correction's row in the Corrections band: the grip, the kind's icon, the
+/// name (`Heal 5`), a short description (`spot · auto`) and the opacity, which a hovered row
+/// replaces with its delete button. A drafting correction's row is drawn in italics.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CorrectionRowModel {
+    pub icon: Option<Icon>,
+    pub name: String,
+    pub description: String,
+    pub trailing: String,
+    pub selected: bool,
+    pub hovered: bool,
+    pub drafting: bool,
+    pub enabled: bool,
+    pub delete_tooltip: String,
+}
+
+/// What a correction row publishes. `None` leaves that part inert.
+pub struct CorrectionRowMessages<M> {
+    pub on_select: Option<M>,
+    pub on_drag_start: Option<M>,
+    pub on_delete: Option<M>,
+    /// A secondary press on the row: its menu.
+    pub on_menu: Option<M>,
+    pub on_hover_enter: Option<M>,
+    pub on_hover_exit: Option<M>,
+}
+
+/// Renders one correction's row, [`theme::MASK_ROW_HEIGHT`] tall.
+pub fn correction_row<'a, M: Clone + 'a>(
+    model: &CorrectionRowModel,
+    messages: CorrectionRowMessages<M>,
+) -> Element<'a, M> {
+    let enabled = model.enabled && !model.drafting;
+    let grip = drag_handle(
+        icon(Icon::Grip, theme::GRIP_SIZE, Token::TextFaint),
+        messages.on_drag_start.filter(|_| enabled),
+    );
+    let kind: Element<'a, M> = match model.icon {
+        Some(kind) => icon(
+            kind,
+            theme::HEADER_ICON_SIZE,
+            if model.selected {
+                Token::Accent
+            } else {
+                Token::TextSecondary
+            },
+        ),
+        None => Space::new().into(),
+    };
+    let ink = match (enabled || model.drafting, model.selected) {
+        (false, _) => Token::TextTertiary,
+        (true, true) => Token::TextCurrentRow,
+        (true, false) => Token::TextLabel,
+    };
+    let font = if model.drafting {
+        iced::Font {
+            style: iced::font::Style::Italic,
+            ..theme::FONT
+        }
+    } else {
+        theme::FONT
+    };
+    let label = row![
+        text(model.name.clone())
+            .size(theme::SIZE_CONTROL)
+            .font(font)
+            .wrapping(Wrapping::None)
+            .style(theme::ink(ink)),
+        container(truncated_text(
+            model.description.clone(),
+            theme::SIZE_CAPTION,
+            font,
+            Token::TextTertiary,
+        ))
+        .width(Length::Fill),
+    ]
+    .spacing(theme::COMPONENT_ROW_SPACING)
+    .align_y(Alignment::Center)
+    .width(Length::Fill);
+    let trailing: Element<'a, M> = if model.hovered && enabled && messages.on_delete.is_some() {
+        small_button(
+            Icon::Trash,
+            theme::SMALL_ICON_SIZE,
+            Token::TextSecondary,
+            &model.delete_tooltip,
+            false,
+            true,
+            messages.on_delete,
+        )
+    } else {
+        container(
+            text(model.trailing.clone())
+                .size(theme::SIZE_CAPTION)
+                .wrapping(Wrapping::None)
+                .style(theme::ink(Token::TextSecondary)),
+        )
+        .center_x(Length::Fixed(theme::HEADER_BUTTON_SIZE))
+        .into()
+    };
+    let content = row![
+        grip,
+        container(kind)
+            .center_x(Length::Fixed(theme::KIND_ICON_WIDTH))
+            .center_y(Length::Shrink),
+        label,
+        trailing,
+    ]
+    .spacing(theme::COMPONENT_ROW_SPACING)
+    .align_y(Alignment::Center);
+    let control = row_button(
+        content.into(),
+        theme::COMPONENT_ROW_PADDING,
+        model.selected.then_some(Token::ListRowCurrent),
+        model.hovered,
+        messages.on_select.filter(|_| enabled),
+    );
+    let mut area = mouse_area(control);
+    if let Some(menu) = messages.on_menu.filter(|_| enabled) {
+        area = area.on_right_press(menu);
+    }
+    if let Some(enter) = messages.on_hover_enter {
+        area = area.on_enter(enter);
+    }
+    if let Some(exit) = messages.on_hover_exit {
+        area = area.on_exit(exit);
+    }
+    area.into()
+}
+
 /// A row's name: it takes what the row's other parts leave and ends in an ellipsis first.
 fn name<'a, M: 'a>(name: &str, selected: bool, enabled: bool) -> Element<'a, M> {
     let ink = match (enabled, selected) {

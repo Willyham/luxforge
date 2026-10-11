@@ -24,6 +24,9 @@ pub(crate) enum EvidenceMessage {
     /// not the editor's own latency — and a stroke is the one gesture whose positions arrive that way
     /// from a hand.
     PacedStrokeTick,
+    /// One tick of a paced Corrections press or handle drag: its next pointer position, for the
+    /// same reason as `PacedStrokeTick`.
+    PacedCorrectionTick,
     /// A scripted double-click's second press, once its gap has passed. Exists only while a
     /// double-click step waits for it, which is also when the timer that produces it exists.
     DoubleClickSecond,

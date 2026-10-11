@@ -167,7 +167,7 @@ Each step is evaluated by one scalar `f64` function with a fixed operation order
 **Fusion and canonical order.** The canonical stack is `[source] [pixel, colour, spatial…] [orientation?] [lens?] [perspective?] [crop?] [finish…]`. In `ModuleRegistry::compile`:
 
 - The first `Processing::Warp` opens a segment whose entry is `Entry::Resample` with a one-step chain, reading the frame of the segment before it (content, colour and orientation).
-- A later `Processing::Warp`, or the crop's `Processing::Resample`, whose current segment's entry is a warp chain with no work after it (no colour, point replacement or spatial work, exact geometry the identity), is composed into that chain instead of opening a segment. The fused entry is one resample: Lens, Perspective and a straightened crop interpolate once.
+- A later `Processing::Warp`, or the crop's `Processing::Resample`, whose current segment's entry is a warp chain with no work after it (no colour or spatial work, exact geometry the identity), is composed into that chain instead of opening a segment. The fused entry is one resample: Lens, Perspective and a straightened crop interpolate once.
 - An exact step after the chain (an integer crop) stays the segment's exact geometry after the resample, as today.
 - A crop with no warp before it compiles exactly as today.
 
@@ -185,7 +185,7 @@ Compare with `keep_geometry` splices the framing entry's whole geometry tail, in
 
 ## Masks, overlays and picking
 
-Masks keep their normalized content positions and height-based sizes; applying or removing a warp never rewrites mask or stroke coordinates. Pixel replacements, range-mask sampling and neutral picking address the same content stage.
+Masks keep their normalized content positions and height-based sizes; applying or removing a warp never rewrites mask or stroke coordinates. Range-mask sampling and neutral picking address the same content stage.
 
 `render.transform` answers:
 

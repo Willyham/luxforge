@@ -349,7 +349,7 @@ mod tests {
 
         // Commits: an action, then two strokes a mask command stores and the entries resolve.
         let pixel = service
-            .apply_pixel(&asset, mutation(0, "pixel"), 0, 0, [1, 2, 3])
+            .apply_exposure(&asset, mutation(0, "pixel"), 0.1)
             .unwrap();
         assert_coherent(&service, &asset, "an action");
         paint(
@@ -438,7 +438,7 @@ mod tests {
         assert_coherent(&service, &other, "a second import");
         assert_coherent(&service, &asset, "the first asset after a second import");
         service
-            .apply_pixel(&other, mutation(0, "other-pixel"), 1, 1, [9, 9, 9])
+            .apply_exposure(&other, mutation(0, "other-pixel"), 0.9)
             .unwrap();
         assert_coherent(&service, &other, "a commit to the second asset");
         assert_coherent(&service, &asset, "the first asset after the second moved");
@@ -682,12 +682,10 @@ mod tests {
         for index in 0..CACHED_ENTRIES + 2 {
             let revision = service.revision(&asset).unwrap();
             service
-                .apply_pixel(
+                .apply_exposure(
                     &asset,
-                    mutation(revision, &format!("pixel-{index}")),
-                    index as u32,
-                    0,
-                    [index as u8, 1, 2],
+                    mutation(revision, &format!("exposure-{index}")),
+                    f64::from(index as u32 + 1) / 10.0,
                 )
                 .unwrap();
             entries.push(service.state(&asset).unwrap().current_entry);
@@ -868,7 +866,7 @@ mod tests {
         crate::editor::stroke_writes::take();
         let revision = service.revision(&asset).unwrap();
         service
-            .apply_pixel(&asset, mutation(revision, "pixel"), 0, 0, [1, 2, 3])
+            .apply_exposure(&asset, mutation(revision, "pixel"), 0.1)
             .unwrap();
         let three = service.current_entry_id(&asset).unwrap();
         read_counts::take();

@@ -379,6 +379,7 @@ impl Editor {
                 else {
                     return Task::none();
                 };
+                self.usage_interaction(luxforge_core::usage::Feature::NavigatePhoto, false);
                 return self.switch_to(index);
             }
             DevelopMessage::Select {
@@ -412,6 +413,7 @@ impl Editor {
             DevelopMessage::Show(index) => return self.switch_to(index),
             DevelopMessage::Collapse => {
                 if self.develop.state.set.is_some() {
+                    self.usage_interaction(luxforge_core::usage::Feature::PanelToggle, false);
                     self.develop.state.collapsed = !self.develop.state.collapsed;
                 }
             }

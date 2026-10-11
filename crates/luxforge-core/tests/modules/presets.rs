@@ -539,6 +539,7 @@ impl Composer {
                     preset: true,
                     analysis: None,
                     shortcut: None,
+                    accepts_candidate: false,
                     parameters: vec![parameter(
                         "count",
                         ParameterKind::Integer { min: 0, max: 64 },
@@ -552,6 +553,7 @@ impl Composer {
                     preset: true,
                     analysis: None,
                     shortcut: None,
+                    accepts_candidate: false,
                     parameters: vec![parameter(
                         "exposure",
                         ParameterKind::Number {

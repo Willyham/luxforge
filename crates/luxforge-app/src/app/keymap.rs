@@ -104,6 +104,9 @@ impl CompareKey {
 /// the canvas modes the registry offers.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct KeyContext {
+    /// The usage statistics notice is on screen, so an Escape nothing else takes answers it No
+    /// thanks.
+    pub(crate) usage_notice: bool,
     pub(crate) gallery_open: bool,
     pub(crate) comparing: bool,
     /// A crop draft or a mask shape gesture is open, so Enter applies it and Escape cancels it
@@ -139,6 +142,8 @@ pub(crate) struct KeyContext {
     pub(crate) mask_typing: bool,
     /// The preset Amount text field closes on Escape without changing settings.
     pub(crate) preset_typing: bool,
+    /// A Corrections band slider's text field is open, so Escape closes it with nothing sent.
+    pub(crate) correction_typing: bool,
     /// One of the Masks panel's menus is open, so Escape closes it before anything else hears it.
     pub(crate) mask_menu_open: bool,
     /// The New mask or Add component menu is open, with the letter of each kind it lists: while it
@@ -162,6 +167,9 @@ pub(crate) struct KeyContext {
     /// The chords the registered modules declare for their actions, with the action each runs
     /// ([`crate::state::host_commands::action_shortcuts`]).
     pub(crate) actions: Vec<(Chord, String)>,
+    /// The Corrections mode is active, by its module: its keys act on the selection and the next
+    /// press, and its letter leaves it.
+    pub(crate) corrections: Option<String>,
 }
 
 /// What of Copy settings is open over the workspace. Escape cancels any of them; Return answers
@@ -211,7 +219,32 @@ pub(crate) fn chord_of(key: &Key, modifiers: &iced::keyboard::Modifiers) -> Opti
 
 /// One event as one message, or nothing. `status` is Iced's: a key a text field already consumed
 /// arrives as `Captured` and never reaches a letter shortcut or a draft key.
+///
+/// The usage statistics notice holds no key of its own: Escape answers it No thanks only when
+/// nothing else in the window — a sheet, a menu, a draft, a mode, a field — takes Escape, so it
+/// never cancels work or traps the keyboard.
 pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Option<Message> {
+    let message = route(event, status, context);
+    if message.is_none()
+        && context.usage_notice
+        && status == Status::Ignored
+        && matches!(
+            event,
+            Event::Keyboard(Keys::KeyPressed {
+                key: Key::Named(Named::Escape),
+                ..
+            })
+        )
+    {
+        return Some(Message::Usage(
+            crate::app::message::usage::UsageMessage::Decline,
+        ));
+    }
+    message
+}
+
+/// Every key but the usage statistics notice's Escape.
+fn route(event: &Event, status: Status, context: &KeyContext) -> Option<Message> {
     if matches!(event, Event::Window(iced::window::Event::CloseRequested)) {
         return Some(Message::Close);
     }
@@ -428,6 +461,13 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
     if context.preset_typing && matches!(key, Key::Named(Named::Escape)) {
         return Some(Message::Preset(PresetMessage::AmountCancel));
     }
+    if context.correction_typing && matches!(key, Key::Named(Named::Escape)) {
+        return Some(Message::Corrections(
+            crate::app::message::corrections::CorrectionMessage::Typing(
+                crate::app::message::corrections::TypingEdit::Cancel,
+            ),
+        ));
+    }
     // So does an open Masks panel menu: Escape puts the menu away before it reaches an armed brush
     // or the mode.
     if context.mask_menu_open && matches!(key, Key::Named(Named::Escape)) {
@@ -488,6 +528,57 @@ pub(crate) fn keymap(event: &Event, status: Status, context: &KeyContext) -> Opt
             Key::Named(Named::Enter) => return Some(Message::Draft(DraftMessage::Commit)),
             Key::Named(Named::Escape) => return Some(Message::Draft(DraftMessage::Cancel)),
             _ => {}
+        }
+    }
+    // The Corrections workspace's keys (`docs/design/corrections-workspace.md#keys`). Escape with a
+    // draft open was answered above by cancelling it; here it deselects, clears a set source and
+    // leaves, one level at a time.
+    if let Some(mode) = &context.corrections {
+        use crate::app::message::corrections::CorrectionMessage as C;
+        let corrections = |message: C| Some(Message::Corrections(message));
+        match key {
+            Key::Named(Named::Escape) if !context.drafting => return corrections(C::Escape),
+            Key::Named(Named::Backspace | Named::Delete) if !*repeat => {
+                return corrections(C::Delete(None));
+            }
+            Key::Named(Named::ArrowUp) => {
+                return corrections(if modifiers.alt() {
+                    C::Shift(-1)
+                } else {
+                    C::Step(-1)
+                });
+            }
+            Key::Named(Named::ArrowDown) => {
+                return corrections(if modifiers.alt() {
+                    C::Shift(1)
+                } else {
+                    C::Step(1)
+                });
+            }
+            _ => {}
+        }
+        if character(key, "/") && !*repeat {
+            return corrections(C::NewSource(None));
+        }
+        for (letter, shifted, up) in [("[", "{", false), ("]", "}", true)] {
+            if character(key, letter) || character(key, shifted) {
+                return corrections(C::Nudge {
+                    feather: modifiers.shift(),
+                    up,
+                });
+            }
+        }
+        if character(key, "h") && modifiers.is_empty() && !*repeat {
+            return corrections(C::ToggleHidden);
+        }
+        // The mode's own letter leaves it.
+        if !*repeat
+            && context.modes.iter().any(|(letter, module)| {
+                module == mode && character(key, letter.to_lowercase().to_string().as_str())
+            })
+            && plain(modifiers)
+        {
+            return Some(Message::View(ViewMessage::SetMode(POINTER_MODE.into())));
         }
     }
     // The brush's own keys, in Mask mode: `[` and `]` size it, `Shift+[` and `Shift+]` feather it.
@@ -792,6 +883,18 @@ pub(super) fn raw_event(
     status: iced::event::Status,
     _: iced::window::Id,
 ) -> Option<Message> {
+    // A key press, a button press, a scroll or a touch is a deliberate interaction for usage
+    // statistics' idleness: one cheap call, and no message of its own. A pointer move is not.
+    if matches!(
+        event,
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { .. })
+            | iced::Event::Mouse(
+                iced::mouse::Event::ButtonPressed(_) | iced::mouse::Event::WheelScrolled { .. }
+            )
+            | iced::Event::Touch(iced::touch::Event::FingerPressed { .. })
+    ) {
+        super::usage_supervisor::interacted();
+    }
     match &event {
         iced::Event::Keyboard(_)
         | iced::Event::Window(
@@ -1207,6 +1310,7 @@ mod tests {
 
     fn context() -> KeyContext {
         KeyContext {
+            usage_notice: false,
             comparing: false,
             gallery_open: false,
             drafting: false,
@@ -1221,6 +1325,7 @@ mod tests {
             modes: vec![('R', "luxforge.crop".into())],
             mask_typing: false,
             preset_typing: false,
+            correction_typing: false,
             mask_menu_open: false,
             kind_menu: None,
             mask_keys: false,
@@ -1231,7 +1336,159 @@ mod tests {
             development_set: false,
             copy_settings_modal: None,
             actions: vec![(Chord::command('U'), "auto-tone".into())],
+            corrections: None,
         }
+    }
+
+    /// The Corrections keys act only in its mode: `⌫`, `/`, the arrows and `⌥` with them, the
+    /// brackets (with `⇧` for feather), `H`, the mode's own letter to leave, and Escape once no
+    /// draft is open — which an open draft's Escape cancels first.
+    #[test]
+    fn the_corrections_keys_act_only_in_its_mode() {
+        use crate::app::message::corrections::CorrectionMessage as C;
+        let module = "luxforge.corrections";
+        let mode = KeyContext {
+            corrections: Some(module.into()),
+            mode_active: true,
+            modes: vec![('Q', module.into())],
+            ..context()
+        };
+        let press = |key: Key, modifiers: Modifiers, context: &KeyContext| {
+            keymap(&pressed(key, modifiers), Status::Ignored, context)
+        };
+        let none = Modifiers::empty();
+        assert!(matches!(
+            press(Key::Named(Named::Backspace), none, &mode),
+            Some(Message::Corrections(C::Delete(None)))
+        ));
+        assert!(matches!(
+            press(letter("/"), none, &mode),
+            Some(Message::Corrections(C::NewSource(None)))
+        ));
+        assert!(matches!(
+            press(Key::Named(Named::ArrowUp), none, &mode),
+            Some(Message::Corrections(C::Step(-1)))
+        ));
+        assert!(matches!(
+            press(Key::Named(Named::ArrowDown), Modifiers::ALT, &mode),
+            Some(Message::Corrections(C::Shift(1)))
+        ));
+        assert!(matches!(
+            press(letter("]"), none, &mode),
+            Some(Message::Corrections(C::Nudge {
+                feather: false,
+                up: true
+            }))
+        ));
+        assert!(matches!(
+            press(letter("{"), Modifiers::SHIFT, &mode),
+            Some(Message::Corrections(C::Nudge {
+                feather: true,
+                up: false
+            }))
+        ));
+        assert!(matches!(
+            press(letter("h"), none, &mode),
+            Some(Message::Corrections(C::ToggleHidden))
+        ));
+        assert!(matches!(
+            press(letter("q"), none, &mode),
+            Some(Message::View(ViewMessage::SetMode(target))) if target == POINTER_MODE
+        ));
+        assert!(matches!(
+            press(Key::Named(Named::Escape), none, &mode),
+            Some(Message::Corrections(C::Escape))
+        ));
+        let drafting = KeyContext {
+            drafting: true,
+            ..mode.clone()
+        };
+        assert!(matches!(
+            press(Key::Named(Named::Escape), none, &drafting),
+            Some(Message::Draft(DraftMessage::Cancel))
+        ));
+        // Outside the mode its letter enters it and its keys are not its.
+        let outside = KeyContext {
+            modes: vec![('Q', module.into())],
+            ..context()
+        };
+        assert!(matches!(
+            press(letter("q"), none, &outside),
+            Some(Message::View(ViewMessage::SetMode(target))) if target == module
+        ));
+        assert!(!matches!(
+            press(letter("/"), none, &outside),
+            Some(Message::Corrections(_))
+        ));
+        // A field that took the key keeps it.
+        assert!(
+            keymap(
+                &pressed(Key::Named(Named::Backspace), none),
+                Status::Captured,
+                &mode
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn usage_escape_answers_the_notice_only_when_nothing_else_takes_it() {
+        use crate::app::message::usage::UsageMessage;
+        let escape = pressed(Key::Named(Named::Escape), Modifiers::empty());
+        let notice = KeyContext {
+            usage_notice: true,
+            ..context()
+        };
+        assert!(matches!(
+            keymap(&escape, Status::Ignored, &notice),
+            Some(Message::Usage(UsageMessage::Decline))
+        ));
+        assert!(matches!(
+            keymap(
+                &escape,
+                Status::Ignored,
+                &KeyContext {
+                    select: true,
+                    ..notice.clone()
+                }
+            ),
+            Some(Message::Usage(UsageMessage::Decline))
+        ));
+        // A draft, the sheet or a field takes Escape first.
+        assert!(matches!(
+            keymap(
+                &escape,
+                Status::Ignored,
+                &KeyContext {
+                    crop: true,
+                    drafting: true,
+                    ..notice.clone()
+                }
+            ),
+            Some(Message::Draft(DraftMessage::Cancel))
+        ));
+        assert!(matches!(
+            keymap(
+                &escape,
+                Status::Ignored,
+                &KeyContext {
+                    settings_open: true,
+                    ..notice.clone()
+                }
+            ),
+            Some(Message::Settings(SettingsMessage::Close))
+        ));
+        assert!(keymap(&escape, Status::Captured, &notice).is_none());
+        assert!(keymap(&escape, Status::Ignored, &context()).is_none());
+        // Every other key goes where it always went.
+        assert!(
+            keymap(
+                &pressed(letter("q"), Modifiers::empty()),
+                Status::Ignored,
+                &notice
+            )
+            .is_none()
+        );
     }
 
     #[test]

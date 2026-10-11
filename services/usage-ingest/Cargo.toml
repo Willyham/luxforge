@@ -1,0 +1,28 @@
+# The usage statistics ingress: a small, stateless, validating HTTP service. It is a standalone
+# package with its own (empty) workspace and Cargo.lock, so the desktop workspace, its tests and
+# `cargo xtask check` build none of it. Run it with `--manifest-path services/usage-ingest/Cargo.toml`.
+[workspace]
+
+[package]
+name = "luxforge-usage-ingest"
+version = "0.0.0"
+edition = "2024"
+license = "GPL-3.0-or-later"
+rust-version = "1.94"
+publish = false
+description = "Validating ingress for Luxforge usage statistics batches"
+
+[dependencies]
+bytes = "=1.12.1"
+http-body-util = "=0.1.5"
+hyper = { version = "=1.12.0", default-features = false, features = ["server", "client", "http1"] }
+hyper-util = { version = "=0.1.21", default-features = false, features = ["tokio"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.149"
+tokio = { version = "=1.53.1", default-features = false, features = ["rt-multi-thread", "net", "time", "sync", "macros", "signal", "io-util"] }
+
+[dev-dependencies]
+tokio = { version = "=1.53.1", default-features = false, features = ["io-util"] }
+
+[lints.rust]
+unsafe_code = "forbid"

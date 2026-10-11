@@ -208,7 +208,7 @@ fn branches_versions_previews_and_restores_keep_their_artifacts() {
     // Undo and edit again: `second` is left on an abandoned branch.
     service.undo(&asset, mutation(2, "undo")).unwrap();
     let branch = service
-        .apply_pixel(&asset, mutation(3, "branch"), 0, 0, [1, 2, 3])
+        .apply_exposure(&asset, mutation(3, "branch"), 0.1)
         .unwrap()
         .current_entry_id;
     let lineage = service.lineage(&asset, None, 10).unwrap();
@@ -252,8 +252,10 @@ fn branches_versions_previews_and_restores_keep_their_artifacts() {
         first_frame.rgba
     );
     let branch_frame = service.render_entry(&asset, &branch).unwrap();
-    assert_eq!(branch_frame.pixel(0, 0), Some([1, 2, 3, 255]));
-    assert_eq!(branch_frame.pixel(1, 0), first_frame.pixel(1, 0));
+    assert_ne!(
+        branch_frame.rgba, first_frame.rgba,
+        "the branch holds the first entry's artifact layer and its own exposure edit"
+    );
     // Every entry that holds the layer records what it references; Original records nothing.
     assert!(references(&service, &original).is_empty());
     assert_eq!(references(&service, &first), [a.as_str()]);
@@ -381,7 +383,7 @@ fn a_missing_artifact_fails_evaluation_explicitly_and_rewrites_nothing() {
         service.locate_entry(&asset, &entry, 0, 0).unwrap_err(),
         // A new edit plans against the current stack, so it is refused too.
         service
-            .apply_pixel(&asset, mutation(1, "pixel"), 0, 0, [1, 2, 3])
+            .apply_exposure(&asset, mutation(1, "pixel"), 0.1)
             .unwrap_err(),
     ];
     for error in refusals {
@@ -520,17 +522,17 @@ fn a_commit_naming_an_unknown_or_missing_artifact_or_the_wrong_effect_writes_not
     assert_eq!(error.kind, ErrorKind::SourceUnavailable);
     assert_eq!(error.detail, format!("artifact {absent} is missing"));
     // Only an effect that declares artifacts may hold one: the admission every write passes
-    // refuses a stack whose pixel layer lists one.
+    // refuses a stack whose Basic layer lists one.
     let present = publish(&mut service, [0.8, 0.8, 1.0]);
-    let mut pixel = Layer::pixel(0, 0, [1, 2, 3]);
-    pixel.artifacts.push(present.clone());
+    let mut basic = Layer::new(crate::BASIC_EFFECT, json!({"exposure": 0.5}));
+    basic.artifacts.push(present.clone());
     let stack = Recipe {
-        layers: vec![pixel.clone()],
+        layers: vec![basic.clone()],
         ..before.current_entry.snapshot.recipe.clone()
     };
     for error in [
         service.registry().validate_recipe(&stack).unwrap_err(),
-        service.registry().validate_layer(&pixel).unwrap_err(),
+        service.registry().validate_layer(&basic).unwrap_err(),
     ] {
         assert_eq!(error.kind, ErrorKind::Validation);
         assert!(

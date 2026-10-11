@@ -349,7 +349,6 @@ Every harness command's default run is a functional run: it proves the journey a
 | S0 sampled peak RSS (empty / 24 / 60 MP) | 111 / 506 / 772 MiB; 965 MiB after sixteen 60 MP loads |
 | S0 idle CPU after settling | 0.033% of one core over 30 s |
 | Core import of a 24 / 60 MP JPEG | 55 / 118 ms |
-| Pixel edit after a rotate on 24 MP | 0.2 ms (sampling path) |
 | Core one transform on 24 MP after the module registry (p50 / p95, 20 samples) | 12.2 / 13.5 ms; 200 composed transforms 11.4 / 11.9 ms; registration of the built-in modules 0.18 ms and first render after open 0.05 ms on the 480×320 fixture (release acceptance run) |
 | Editor RSS after M1/M2 journey with a small fixture | about 101 MiB, 0.2% CPU idle |
 
@@ -3272,9 +3271,9 @@ boundary are pulled, never materialized, a bounded rectangle at a time with thei
 its rows: a spatial operation's input one row of its tile region at a time, and a straightened
 crop's taps one block of 64 output columns by the chunk's rows at a time, through the rectangle of
 at most 16,384 pixels those taps read, so each pixel before the resample is evaluated about once
-per block instead of once per tap. A segment with a point replacement is pulled pixel by pixel.
+per block instead of once per tap.
 Complete-buffer tests compare the rows with the point evaluator for Basic, Mixer and their combined
-recipe, a viewed source, a partial final chunk, replacements on either side of a colour run, colour
+recipe, a viewed source, a partial final chunk, colour
 after a straightened crop at 4 and -30 degrees and after Presence, masked colour and a masked
 Presence layer before a crop, on a stage narrower than one tap block and on one several blocks
 wide.
@@ -5520,6 +5519,72 @@ median of about 1105 ms in both builds. No theme is stored in these runs, so the
 not open `themes.json`; with a theme chosen it is one bounded document read more, not measured
 here. Idle CPU stayed 1.3 to 1.4% of one core.
 
+## Usage statistics, measured on the M4
+
+What optional usage statistics cost, opted out against opted in ([acceptance](../design/usage-statistics.md#acceptance-and-evidence)), against its planning budgets: a producer's p95 under 10 µs, no sustained interactive latency increase above 1 ms or 5% (whichever is larger), and no redraw attributable to collection or delivery. Every launch is eligible through explicit test eligibility with an isolated configuration, opted out (`off`) or opted in with a loopback receiver that accepts at once (`fast`), holds each request open past the transport's timeouts (`slow`) or is not listening (`offline`); none uses production reporting or anyone's consent.
+
+**Host and build.** Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, Metal, background hidden-window launches of the `release` editor (SHA-256 `14e0d37c…`, Cargo.lock `df565edb…`) and a release xtask, generated 24 MP and 60 MP JPEGs. Measured 11 October 2026 with `usage-measure` ([development](../engineering/development.md)). The one-minute load stayed between 2.1 and 3.6 on a 15-second log through each run, except where a row says otherwise.
+
+**Statistics.** Nearest-rank p50 / p95. The monotonic clock ticks every 41.7 ns on Apple silicon, so a figure of 0.042 µs is one tick; the means are the samples' sums over their counts, each sample including one clock read.
+
+| Producer, one call in the xtask process | p50 / p95 µs | Mean µs |
+| --- | --- | --- |
+| `record` with collection off (200,000 calls) | 0 / 0.042 | 0.014 |
+| `record` into a bank with room | 0.042 / 0.042 | 0.043 |
+| `record` into a full bank (dropped and counted) | 0.041 / 0.042 | 0.024 |
+| `record` from four threads at once while a fifth detaches a window every millisecond | 0.71 / 1.67 | |
+| `Supervisor::interacted`, each key press, click and scroll | 0.042 / 0.042 | 0.037 |
+| The keyed image ID, once per open | 0.042 / 0.042 | 0.033 |
+| One fresh read of the process counters the sampler takes at most once a minute (CPU time and memory; GPU allocations are left out unless the Performance section has opened the device) | 0.50 / 0.54 | |
+
+Every producer is well inside 10 µs at p95, the contended row included.
+
+| A catalog owner in the process, reference renderer, opted out / in | 24 MP p50 / p95 ms | 60 MP p50 / p95 ms |
+| --- | --- | --- |
+| `pick.develop` of one file (3 runs each) | 8.70 / 9.05 · 8.60 / 8.68 | 8.57 / 8.61 · 8.69 / 9.06 |
+| `source.prepare` (3 each) | 25.9 / 27.4 · 25.9 / 25.9 | 59.2 / 62.2 · 57.4 / 57.5 |
+| `edit.set-basic` commit (90 each) | 5.06 / 5.65 · 5.05 / 5.25 | 5.10 / 5.29 · 5.01 / 5.29 |
+| `export.jpeg` (9 each) | 64.2 / 85.2 · 63.8 / 84.7 | 143.9 / 160.1 · 143.7 / 159.6 |
+
+Opted in and opted out are the same within the runs' spread: the owner's producers record committed counts and categories and nothing image-sized.
+
+| `editor-latency --mode drag`, Basic exposure at Fit, input to presented frame (90 inputs per mode, 3 launches each, modes rotating) | 24 MP p50 / p95 ms | 60 MP p50 / p95 ms |
+| --- | --- | --- |
+| `off` | 8.25 / 9.13 | 8.27 / 8.50 |
+| `fast` | 8.27 / 9.05 | 8.33 / 9.04 |
+| `slow` | 8.26 / 9.20 | 8.24 / 9.04 |
+| `offline` | 8.27 / 9.50 | 8.28 / 9.45 |
+
+The statistics clock is moved past the first window just before each drag, so an opted-in launch sends while it runs. p50 moves by at most 0.06 ms and p95 by at most 0.95 ms (60 MP `offline`), within the 1 ms budget; a second run of the same drags (load 2.1 to 3.6) put the 60 MP `off` p95 at 9.18 ms and every mode's between 8.49 and 9.57 ms, so the p95 differences are the run-to-run spread rather than a cost of collection. This run's load ended its last 60 MP launches at 4.2. Peak footprint over each launch, every mode ending with the same wait and a six-second window: 1,624 to 1,657 MiB at 24 MP and 1,896 to 1,918 MiB at 60 MP, opted out within that range (1,641 and 1,918); an earlier version of the script gave opted-out launches one wait fewer, which alone accounted for a 20 MiB difference.
+
+| Idle and hidden, one launch per mode and repeat over 24 MP, Performance closed, the statistics clock moved past the first window (6 ten-second windows per mode, load 2.1 to 3.5) | `off` | `fast` | `offline` |
+| --- | --- | --- | --- |
+| Presented and idle: process CPU, % of one core, p50 / p95 | 0.25 / 0.26 | 0.23 / 0.25 | 0.23 / 0.26 |
+| Hidden through the native evidence step: process CPU | 0.23 / 0.27 | 0.22 / 0.28 | 0.25 / 0.28 |
+| Frames drawn, views built and update-loop wakes per window, presented and hidden | 1 | 1 | 1 |
+
+A window's own start counts one frame, one view and one update, so a statistics worker that sends, refuses or waits adds no redraw, view or wake, presented or hidden.
+
+| Close, from the editor's shutdown event to the process's exit (3 launches each) | p50 / p95 ms |
+| --- | --- |
+| Quitting five seconds after the clock's move: `off` | 1226 / 1234 |
+| The same, `fast` | 1222 / 1242 |
+| The same, while the `slow` receiver still holds the window's request | 1233 / 1250 |
+| After the drags, 24 MP and 60 MP, every mode | 1202 to 1259 at p50 |
+
+The close is the wall clock between the shutdown event's time (the launch's start plus its elapsed time) and the exit the harness's 50 ms poll saw, so each figure is late by up to one poll. A request in flight does not delay it: quitting cancels it and nothing waits. Before the fix below, every opted-in launch closed about 200 ms later than an opted-out one (1,420 to 1,470 against 1,230 to 1,250 ms at p50), in flight or not: the statistics sampler's first read opened the system's Metal device for GPU allocations, and a process that has opened it quits about 200 ms later (a launch that read it once at startup, opted out, closed in 1,529 ms). The statistics sampler now leaves GPU allocations out until the Performance section has opened that device, so the Performance section, expanded, still costs a quit that much; that is the panel's existing behaviour and is not measured further here.
+
+**Storage, traffic and transport, load-independent.** Measured by tests rather than by the timing tool, on the same Mac:
+
+- The application-owned statistics heap (`luxforge-core`'s `slow_usage_statistics_storage_stays_within_256_kib_however_long_and_hard_it_runs`, a counting allocator around the real supervisor, sampler and collector with a fake transport): 42,957 bytes before consent, a peak of 110,731 bytes in every phase (an hour of typical editing, an hour's flood, a day offline and the return), 108,732 bytes at the end of the day offline and 1,560 bytes once another process's opt-out is read: within the 256 KiB bound, with no growth while offline. Over that run, 105 requests, the largest body 65,525 bytes and the shortest gap 60 s.
+- A week of mixed use on the fake clock (`usage_a_week_of_mixed_use_keeps_every_bound_with_no_daily_cap_and_no_backlog`): every gap at least 60 s, every body within 64 KiB and 512 events, nothing sent while hidden, no event older than 30 minutes, constant storage, and the seventh day's request count within three of the first's.
+- A loopback capture through the real HTTP transport (`luxforge-net`'s `slow_usage_a_loopback_capture_shows_a_request_a_minute_at_most_and_no_hourly_or_daily_cap`, JSON lines with `LUXFORGE_USAGE_TRAFFIC_CAPTURE=FILE`): 254 requests and 16.3 MB on the wire, the largest request 65,716 bytes and the shortest gap 60 s; typical editing 6 requests an hour (41 KB), a flood 59 and 60 an hour (7.8 MB in two hours), a receiver answering `503` eight attempts in a day at the cooldowns (60 s, then 20, 40, 80, 160 minutes and every 360 minutes), and 120 requests in the seven hours after it recovered, with no backlog sent.
+- The transport's own heap for one 65,000-byte batch, on the sending thread (`luxforge-net`'s `usage_overhead`): plain HTTP 283 KB at its peak on the first request and 267 KB after, 16 KB left; TLS with the test roots 618 KB at its peak on the first request, which builds and keeps its client configuration (19 KB), and 600 KB after, under 1 KB left. Not counted: what the Security framework and the platform verifier allocate outside the Rust allocator, the kernel's socket buffers, and the worker's stack, a 2 MiB reservation of which only touched pages are resident.
+- This Mac's device profile against `sw_vers` and `sysctl` (`usage_this_macs_profile_matches_what_the_system_reports_without_its_strings`): macOS 26.5, Apple M4 Pro tier, 14 physical and logical cores, the 64 GiB memory band for 48 GiB, within 2 KiB, and no brand string, hostname, user name or product name in it.
+- Collection leaves originals, recipes, history and exports unchanged (`usage_collection_leaves_originals_recipes_and_exports_unchanged`, and its photo-sized variant over the generated 24 MP and 60 MP JPEGs with `LUXFORGE_GENERATED_FIXTURES`): the same source hashes, recipe and history (identifiers and times aside) and byte-identical exports with collection on and off.
+
+**Outstanding.** Authentic RAWs (no corpus on this Mac, so RAW preservation and RAW timing are unrun), Windows and Linux (no native measurement), a TLS receiver in a timing run (the timed receivers are plain HTTP on loopback; TLS cost is the test's heap figure above) and an import timed in the editor rather than in the owner. A `process.sample` needs a minute of real presented activity, which the evidence clock's moves do not give, so no launch here recorded one.
+
 ## Software adapters
 
 The owner decided on 2026-10-05 that a session with no usable hardware adapter first tries the platform's software adapter (lavapipe on Linux, WARP on Windows) and draws through the GPU path on it, once it is measured fast enough that dragging is not badly laggy ([decisions](../decisions.md#gpu-first-rendering), [GPU-first](../design/gpu-first.md#proposals-with-recorded-defaults)). This is that measurement, against thresholds the GPU-first integrator set on 2026-10-06 for the owner to confirm: at 24 MP at Fit, a drag's tick at p95 within 33 ms for a pointwise stack and within 100 ms for a Detail and Presence stack. **Lavapipe misses them**, so it is not adopted (`adapters::SOFTWARE_ADAPTER_ADOPTED` stays off): a pointwise drag's Fit tick is 2.7 to 7.3 times the 33 ms and a Detail drag under Presence 3.5 to 7.2 times the 100 ms.
@@ -5590,6 +5655,43 @@ LUXFORGE_DRAG_BENCH_OUTPUT=/absolute/NEW_DIR cargo test --release --locked -p lu
 It writes `drag-ticks.json` (every tick, the adapter, the host and the environment) and `drag-ticks.md`; `LUXFORGE_DRAG_BENCH_TICKS`, `LUXFORGE_DRAG_BENCH_REFERENCE_TICKS` and `LUXFORGE_DRAG_BENCH_STACKS` (`basic`, `basic-curve-mixer`, `detail-presence`, `detail-presence-detail-drag`, `masked-presence-3`) measure less, and `LUXFORGE_GPU_ADAPTER=software` asks wgpu for the software adapter alone on a host that has a hardware one too.
 
 In the container: an image `FROM rust:1.94.0-trixie` adding `build-essential pkg-config cmake nasm clang libx11-dev libxkbcommon-dev libwayland-dev libvulkan-dev libvulkan1 mesa-vulkan-drivers vulkan-tools jq` (and, for the editor's own launches under Xvfb, `xvfb xauth libxkbcommon-x11-0 libxcursor1 libxi6 libxinerama1 libxrandr2`, without which it panics before its window opens), with `VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/lvp_icd.json`, `WGPU_BACKEND=vulkan`, `CARGO_TARGET_DIR=/target` and `CARGO_HOME=/cargo`; the worktree mounted read-only at `/src`, named volumes at `/target` and `/cargo` so the host's `target/` is untouched, and a writable directory for the output. Build with `cargo test --release --locked -p luxforge-app --bin luxforge --no-run`, copy the test executable out, and run it with `app::gpu_drag_bench::drag_tick_benchmark --ignored --exact --nocapture` and `LUXFORGE_DRAG_BENCH_OUTPUT`, once as it is and once with `docker run --cpuset-cpus 0-3`.
+
+## Corrections qualified on the M4
+
+The offline Clone/Heal workflow's native qualification ([Corrections](../design/corrections.md), TASK-012): the release gate over the repair families, the RAW journeys and the photographic review. Apple M4 Pro (14 cores, 48 GiB), macOS 26.5.2, the `Apple M4 Pro` adapter on Metal, 10 October 2026, on a host shared with other agents' builds (one-minute loads of 4 to 41), which bears on no figure here: every one is a pixel or a pass, not a time. Build `63898f0e` with the histogram scenario's fix uncommitted (`e26baa69`).
+
+### The repair families against the reference
+
+`verify --tier rendered --manifest` with the private three-source manifest ran the whole corpus through the gate: 341 stacks, every picture at rest within its class at every view, every sample, and every histogram and export but one stack's. The repair families are 36 stacks, 144 views at rest: Clone and Heal, spots and strokes, a chain whose sources are earlier destinations, an overlap before Detail, a stroke healed from across the frame, a spot at the frame's edge, and, added by this qualification, the same corrections under a straightened crop and a Perspective warp (the four generated JPEGs) and under the source's lens profile and a warp (the lens zone plate and the three RAWs). Mean ΔE00 / worst 16 × 16 block / p99 ΔE00 / \|signed mean ΔL\*\|, the largest over the family's views at rest, against the spatial limits 1.0 / 2.5 / 5.0 / 0.5:
+
+| Family | Sources | Stacks | At rest within | Largest at rest | Histogram, sample, export within | Motion past a limit (not gated) | Largest in motion |
+| --- | --- | ---: | ---: | --- | --- | ---: | --- |
+| Clone | 4 JPEG | 8 | 32 of 32 | 0.000 / 0.026 / 0.00 / 0.000 | 8, 8, 8 of 8 | 4 of 32 | 0.04 / 18.8 / 0.0 / 0.00 |
+| Clone | 3 RAW | 6 | 24 of 24 | 0.017 / 0.206 / 0.59 / 0.000 | 6, 6, 6 of 6 | 12 of 24 | 1.47 / 6.19 / 6.05 / 0.17 |
+| Heal | 4 JPEG | 8 | 32 of 32 | 0.011 / 1.135 / 0.38 / 0.011 | 7, 8, 7 of 8; 1 gap each | 6 of 32 | 2.80 / 12.7 / 10.2 / 3.48 |
+| Heal | 3 RAW | 6 | 24 of 24 | 0.024 / 0.244 / 0.68 / 0.000 | 6, 6, 6 of 6 | 9 of 24 | 1.47 / 6.19 / 5.98 / 0.20 |
+| Heal under geometry | 4 JPEG, lens zone plate | 5 | 20 of 20 | 0.005 / 0.027 / 0.29 / 0.000 | 5, 5, 5 of 5 | 12 of 20 | 12.5 / 28.1 / 40.7 / 2.21 |
+| Heal under geometry | 3 RAW | 3 | 12 of 12 | 0.017 / 0.212 / 0.60 / 0.000 | 3, 3, 3 of 3 | 6 of 12 | 1.62 / 5.62 / 6.61 / 0.19 |
+
+- **The gap.** `repair-heal-spots` on the 60 MP JPEG: its stroke healed from across the frame needs a window wider than the device's 8,192-texel limit, so the tile worker cannot draw its tiles (`unplannable`) and the export is the reference's (`texture-limit`), as the [contract](../design/corrections.md#rendering-task-003) declares. Its picture at rest and samples are within the limits; its histogram and export are unmeasured on the GPU, and the gate is incomplete for that stack alone. Closing it needs a repair read set that a tile can hold as several textures rather than one bounding box.
+- **Motion.** A drag's frame at Fit, 33% and 50% evaluates the repair at the reduced stage, where offsets round to that stage's pixels and Heal solves on its pixels ([numerics](../design/corrections-numerics.md#reduced-stages)); the zone plate and the lens zone plate, whose chirp aliases at any reduction, carry the largest differences. Reported, not gated, as for every family.
+- **Exact references.** The CPU units are held bit for bit to the independent `f64` reference and the repair frame to it on JPEG bytes and RAW-precision values by the ordinary tests (`repair::`, `render::repair_tests`), which `check` ran in the same tier.
+
+### The RAW journeys
+
+`smoke --scenario raw-corrections` over each manifest source (`artifacts/qualify/raw-corrections-*-2` in the qualifying worktree), six background launches each, 64 checks, all passing on the Z6 NEF, the X100VI RAF and the Air 2S DNG: a Clone's destination reads its source's developed pixels within 12 codes; history preview, Restore and its undo, reopen and Locate show the photograph as they should; the overlay is placed by the core's `render.transform` through the lens profile (applied on the Z6 and Air 2S; the X100VI has none) and a Perspective warp; and each original keeps its hash. The GPU's exports against the reference export of the same entry, over every pixel, by the spatial limits:
+
+| Source | Corrections only | Under the lens profile and a warp |
+| --- | --- | --- |
+| Air 2S DNG, 5464 × 3640 | 0.196 / 2.26 / 2.44 / 0.000 | 0.200 / 2.23 / 2.37 / 0.000 |
+| Z6 NEF, 4024 × 6048 | 0.067 / 1.57 / 1.58 / 0.000 | 0.043 / 0.99 / 1.30 / 0.000 |
+| X100VI RAF, 7728 × 5152 | 0.001 / 0.39 / 0.00 / 0.000 | 0.004 / 0.51 / 0.00 / 0.000 |
+
+The run's own owner, with no GPU, exported the warped entry through `export.plan`, `batch.export` and `export.jpeg`, each read with `job.read`: the batch and single files are the same bytes, their pixels are the desktop's reference export's exactly, and the desktop's GPU export is within the same limits of them. The Air 2S's worst block, 2.26 of 2.5, is the closest any export comes to a limit.
+
+### Timing
+
+Interaction latency, render, sample and export times, memory and idle cost with a correction stack wait for a quiet host: `verify --tier full --manifest` runs `editor-latency --mode corrections` on the 24 and 60 MP JPEGs and each manifest RAW. Not measured yet; a skipped measurement is not a pass.
 
 ## Method
 

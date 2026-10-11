@@ -297,7 +297,15 @@ impl GpuStep {
         }
     }
 
-    /// The block words the step packs.
+    /// The resident block words a spatial step packs before its base ([`GpuSpatial::resident`]).
+    fn resident_len(&self) -> usize {
+        match self {
+            Self::Spatial(spatial) => spatial.resident_len(),
+            _ => 0,
+        }
+    }
+
+    /// The block words the step packs from its base.
     fn block_count(&self) -> usize {
         match self {
             Self::Colour { program, .. } => program.block.len(),
@@ -309,8 +317,8 @@ impl GpuStep {
     }
 
     /// Each storage block the step packs, shared, in packing order: a colour step's or the tail's
-    /// program's, a masked step's components' then its units', a spatial step's program's then its
-    /// mask's components'. The marks hold none.
+    /// program's, a masked step's components' then its units', a spatial step's resident blocks,
+    /// then its program's, then its mask's components'. The marks hold none.
     fn each_block<'a>(&'a self, visit: &mut impl FnMut(&'a Arc<[u32]>)) {
         match self {
             Self::Colour { program, .. } => visit(&program.block),
@@ -321,6 +329,9 @@ impl GpuStep {
             }
             Self::Geometry(tail) => visit(&tail.program().block),
             Self::Spatial(spatial) => {
+                for block in &spatial.resident {
+                    visit(block);
+                }
                 for (_, program) in spatial.programs() {
                     visit(&program.block);
                 }
@@ -1286,7 +1297,12 @@ impl SpatialSlot {
         let dispatched = groups.encode(encoder, compiled, programs, &run, &places);
         self.texels += written(&run, &places);
         self.dispatched += dispatched;
-        (dispatched, dirty.map(|_| whole))
+        // A step whose plan names where its output changes ([`spatial::GpuSpatial::contained`])
+        // hands that change on; any other that ran whole changed anywhere.
+        match single.filter(|spatial| spatial.contained) {
+            Some(_) => (dispatched, dirty),
+            None => (dispatched, dirty.map(|_| whole)),
+        }
     }
 }
 

@@ -596,26 +596,37 @@ fn described(rules: &Rules<'_>) -> Checked<Value> {
 }
 
 /// The rules every `patch: true` action of every registered module keeps, field patch or not
-/// (`set-raw` merges itself under its own rule): the generic check of an empty patch fills in
-/// nothing, each declared default alone is exactly that one field, and a value a field's
+/// (`set-raw` merges itself under its own rule): the generic check of an empty patch — one naming
+/// only the objects the action addresses, such as the correction an `update-correction` edits —
+/// fills in nothing, each declared default alone is exactly that one field, and a value a field's
 /// declaration refuses is refused naming the field.
 pub fn patch_actions(registry: &ModuleRegistry) -> Checked<Value> {
     let mut checked = Vec::new();
     for descriptor in registry.descriptors() {
         for action in descriptor.actions.iter().filter(|action| action.patch) {
             let what = format!("{} {}", descriptor.id, action.id);
-            let empty = check_parameters(action, &json!({})).map_err(|error| {
-                format!("{what}: an empty patch failed the generic check: {error}")
-            })?;
+            // A required identity stays required on a patch, which demands no other field.
+            let target: Map<String, Value> = action
+                .parameters
+                .iter()
+                .filter(|parameter| parameter.required && parameter.kind.is_identity())
+                .map(|parameter| (parameter.name.clone(), example_identity(&parameter.kind)))
+                .collect();
+            let empty =
+                check_parameters(action, &Value::Object(target.clone())).map_err(|error| {
+                    format!("{what}: an empty patch failed the generic check: {error}")
+                })?;
             ensure(
-                empty.is_empty(),
+                empty == target,
                 format!("{what}: the generic check filled {empty:?} into an empty patch"),
             )?;
             for parameter in &action.parameters {
                 let Some(default) = &parameter.default else {
                     continue;
                 };
-                let sent = json!({parameter.name.clone(): default});
+                let mut sent = target.clone();
+                sent.insert(parameter.name.clone(), default.clone());
+                let sent = Value::Object(sent);
                 let one = check_parameters(action, &sent)
                     .map_err(|error| format!("{what}: {sent} was refused: {error}"))?;
                 ensure(
@@ -626,7 +637,9 @@ pub fn patch_actions(registry: &ModuleRegistry) -> Checked<Value> {
                     continue;
                 };
                 for (value, reason) in field.refused() {
-                    let sent = json!({parameter.name.clone(): value});
+                    let mut sent = target.clone();
+                    sent.insert(parameter.name.clone(), value);
+                    let sent = Value::Object(sent);
                     let error = check_parameters(action, &sent)
                         .err()
                         .ok_or_else(|| format!("{what}: {sent} was accepted"))?;
@@ -642,4 +655,15 @@ pub fn patch_actions(registry: &ModuleRegistry) -> Checked<Value> {
         }
     }
     Ok(json!(checked))
+}
+
+/// A well-formed identity of the kind a module action may name, for a request that must address
+/// one: the only kind a module declares is a correction of its own operation list.
+fn example_identity(kind: &luxforge_core::ParameterKind) -> Value {
+    match kind {
+        luxforge_core::ParameterKind::Identity {
+            of: luxforge_core::IdentityKind::Correction,
+        } => json!("correction-1"),
+        other => panic!("a module action declares no {} identity", other.name()),
+    }
 }

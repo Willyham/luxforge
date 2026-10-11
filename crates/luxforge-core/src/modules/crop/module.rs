@@ -637,7 +637,7 @@ impl ToolModule for CropModule {
 mod tests {
     use super::*;
     use crate::{
-        PIXEL_EFFECT,
+        BASIC_EFFECT,
         modules::{ParameterKind, check_parameters},
     };
     use serde_json::json;
@@ -854,7 +854,7 @@ mod tests {
         );
         assert_eq!(
             module
-                .describe(PIXEL_EFFECT, EFFECT_FORMAT, &json!({}))
+                .describe(BASIC_EFFECT, EFFECT_FORMAT, &json!({}))
                 .unwrap_err()
                 .kind,
             ErrorKind::Incompatible
@@ -990,7 +990,7 @@ mod tests {
         );
 
         let existing = crop_layer(payload);
-        let layers = [existing.clone(), Layer::pixel(0, 0, [1, 2, 3])];
+        let layers = [existing.clone(), Layer::new(BASIC_EFFECT, json!({}))];
         assert_eq!(
             planned(CROP_ACTION, half, &layers).unwrap(),
             ActionPlan::NoOp,
@@ -1245,7 +1245,7 @@ mod tests {
         for (case, effect, format, kind) in [
             (
                 "wrong effect",
-                PIXEL_EFFECT,
+                BASIC_EFFECT,
                 EFFECT_FORMAT,
                 ErrorKind::Incompatible,
             ),
@@ -1362,8 +1362,6 @@ mod tests {
             (ratio - 1.5).abs() <= 2.0 / f64::from(rect.height),
             "original is the crop layer's own 480x320 input stage ratio, not {ratio} from {rect:?}"
         );
-        // Effect identities the host uses to find the layers of a stack.
-        assert_eq!(Layer::pixel(0, 0, [1, 2, 3]).effect_id, PIXEL_EFFECT);
     }
 
     /// The crop's answer to the carry hook is `CropPayload::carried`, stored as the layer's payload:
@@ -1413,7 +1411,7 @@ mod tests {
         );
         assert!(
             module
-                .carry(PIXEL_EFFECT, EFFECT_FORMAT, &json!({}), INPUT, turned)
+                .carry(BASIC_EFFECT, EFFECT_FORMAT, &json!({}), INPUT, turned)
                 .is_err()
         );
     }

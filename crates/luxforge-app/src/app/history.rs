@@ -129,6 +129,7 @@ impl Editor {
                     return Task::none();
                 }
                 self.document.compare_return = None;
+                self.usage_interaction(luxforge_core::usage::Feature::CompareOriginal, true);
                 self.gpu_compare_end();
                 return self.comparison_preview();
             }
@@ -157,6 +158,19 @@ impl Editor {
                 }
                 let params = json!({"asset_id":state.asset.id,"entry_id":entry_id});
                 let asset = state.asset.id.clone();
+                let version = self
+                    .document
+                    .versions
+                    .iter()
+                    .any(|version| version.entry_id == entry_id);
+                self.usage_interaction(
+                    if version {
+                        luxforge_core::usage::Feature::VersionSelect
+                    } else {
+                        luxforge_core::usage::Feature::HistoryPreview
+                    },
+                    true,
+                );
                 self.busy = true;
                 self.status.text = "Selecting history state…".into();
                 let proxy = self.drawn();
@@ -403,6 +417,7 @@ impl Editor {
         self.document.compare_return = Some(previous);
         self.presentation.compare_after = Some(after);
         self.document.compare_hold = false;
+        self.usage_interaction(luxforge_core::usage::Feature::CompareSlider, true);
         self.gpu_compare_begin();
         self.status.text = "Drag to compare Before and After · tap \\ or Escape to exit".into();
         self.comparison_preview()
@@ -415,6 +430,7 @@ impl Editor {
         self.document.compare_return = None;
         self.presentation.compare_after = None;
         self.document.compare_hold = false;
+        self.usage_interaction(luxforge_core::usage::Feature::CompareSlider, true);
         self.gpu_compare_end();
         self.comparison_preview()
     }

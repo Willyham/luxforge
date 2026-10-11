@@ -76,6 +76,10 @@ mod gpu_preview_tests;
 #[cfg(test)]
 pub(crate) mod gpu_qualification;
 #[cfg(test)]
+mod gpu_repair_plan_tests;
+#[cfg(test)]
+mod gpu_repair_tests;
+#[cfg(test)]
 mod gpu_rest_tests;
 #[cfg(test)]
 mod gpu_source_tests;
@@ -93,6 +97,9 @@ mod gpu_white_balance_tests;
 mod gpu_window_tests;
 // The shared lowering from core semantic plans to executable display and tile-worker plans.
 pub(crate) mod copy_settings;
+pub(crate) mod corrections;
+#[cfg(test)]
+mod corrections_tests;
 mod decoded_handles;
 pub(crate) mod gpu_plan;
 pub(crate) mod gpu_settle;
@@ -156,6 +163,7 @@ mod remembered_tests;
 pub(crate) mod renderer;
 #[cfg(test)]
 mod renderer_tests;
+// Consumed by the usage statistics supervisor, which a later task adds.
 pub(crate) mod select;
 pub(crate) mod select_catalog;
 #[cfg(test)]
@@ -188,6 +196,18 @@ pub(crate) mod themes;
 #[cfg(test)]
 mod themes_tests;
 pub(crate) mod thumbnails;
+pub(crate) mod usage;
+pub(crate) mod usage_device;
+#[cfg(test)]
+mod usage_device_tests;
+mod usage_events;
+#[cfg(test)]
+mod usage_events_tests;
+pub(crate) mod usage_supervisor;
+#[cfg(test)]
+mod usage_supervisor_tests;
+#[cfg(test)]
+mod usage_tests;
 mod view_state;
 #[cfg(test)]
 mod view_state_tests;
@@ -409,6 +429,12 @@ pub(crate) struct Editor {
     /// The selected gradient's handles, drawn while nothing is held so a committed gradient can be
     /// dragged again. Local view state holding no core draft: a press on a handle opens one.
     pub(crate) resting: Option<masks::RestingHandles>,
+    /// The Corrections workspace's view state: selection, hover, hidden pins, the set source and
+    /// the New correction settings, and the list read for the entry on screen.
+    pub(crate) corrections: state::corrections::CorrectionsPanel,
+    /// The Corrections workspace's pins' map, the press held before its draft opens and what it
+    /// says next ([`corrections`]).
+    pub(crate) correction_reads: corrections::Corrections,
     /// One active and one replaceable pending job filling every mask's coverage thumbnail, and the
     /// settled stack it describes.
     pub(crate) thumbnailer: thumbnails::Thumbnailer,
@@ -469,6 +495,13 @@ pub(crate) struct Editor {
     /// The interface's theme, which Iced reads again after every update and hands to every style
     /// function and canvas draw. An Iced value, so it lives here rather than in the view model.
     pub(crate) theme: luxforge_ui::Theme,
+    /// Usage statistics: the startup notice and the Privacy tab ([`usage`]).
+    pub(crate) usage: state::usage::Usage,
+    /// The open photograph's usage image ID, kept for the GUI-local events that act on it.
+    pub(crate) usage_image: usage_events::UsageImage,
+    /// The window visibility last reported to the usage statistics supervisor
+    /// ([`usage_supervisor`]), once the native gate is ready.
+    pub(crate) usage_reported_presented: Option<bool>,
 }
 
 /// What the hooks compare the state a message left behind with: the state before it was
@@ -515,7 +548,7 @@ type AfterMessage = fn(&mut Editor, &Before) -> Task<Message>;
 /// a waiting reset runs before a quiet step settles, the mask selection follows the stack before
 /// the crop and the sync look at the draft, and the overlays and thumbnails refresh last, against
 /// the view and the stack everything before them left.
-const AFTER_MESSAGE: [AfterMessage; 27] = [
+const AFTER_MESSAGE: [AfterMessage; 29] = [
     view_state::after_message,
     performance::after_message,
     visibility::after_message,
@@ -530,6 +563,7 @@ const AFTER_MESSAGE: [AfterMessage; 27] = [
     motion::after_message,
     renderer::after_message,
     mask_panel::after_message,
+    corrections::after_message,
     crop::after_message,
     sync::after_message,
     overlay::after_message,
@@ -543,6 +577,7 @@ const AFTER_MESSAGE: [AfterMessage; 27] = [
     long_work::after_message,
     drawn_frames::after_message,
     themes::after_message,
+    usage::after_message,
 ];
 
 /// The seams whose work reads the screen just derived: what a capability section or a curve shows
@@ -653,6 +688,8 @@ impl Editor {
             mask_panel: Default::default(),
             armed: None,
             resting: None,
+            corrections: Default::default(),
+            correction_reads: Default::default(),
             thumbnailer: Default::default(),
             coverage_worker: Default::default(),
             palette: Default::default(),
@@ -678,6 +715,12 @@ impl Editor {
             renderer: renderer::RendererReport::new(config.launch_renderer()),
             workspace: Default::default(),
             theme: luxforge_ui::Theme::luxforge_dark(),
+            usage: state::usage::Usage {
+                eligible: config.usage_eligible,
+                ..Default::default()
+            },
+            usage_image: Default::default(),
+            usage_reported_presented: None,
         };
         // The workers wake the event loop through one channel instead of a poll. The closure is
         // installed once and stays valid for the life of the process; the subscription that carries
@@ -732,6 +775,12 @@ impl Editor {
         );
         let launch = editor.renderer.launch();
         editor.event("launch_renderer", || renderer::launch_record(launch));
+        // What the launch knows of its renderer before the surface checks its stage, for the
+        // usage statistics device profile; a refused stage's path is already final.
+        editor.usage_observe();
+        if editor.usage.eligible {
+            editor.event("usage_supervisor", usage_supervisor::summary);
+        }
         if let Some(problem) = &config.live_problem {
             editor.event("live_session_problem", || json!({"problem": problem}));
         }
@@ -999,6 +1048,7 @@ impl Editor {
     /// them builds them from it on demand ([`state::tools::controls_of`]).
     pub(crate) fn inputs(&self) -> state::Inputs<'_> {
         state::Inputs {
+            usage: &self.usage,
             document: &self.document,
             modules: &self.modules,
             modules_ready: self.modules_ready,
@@ -1030,6 +1080,9 @@ impl Editor {
             draft: self.crop(),
             mask_panel: &self.mask_panel,
             mask_draft: self.mask_shape(),
+            corrections: &self.corrections,
+            correction_draft: self.correction_draft_info(),
+            correction_content: self.correction_content(),
             // The generated sections follow the open mask while Mask mode is active, and the global
             // layer everywhere else: one target at a time, so a field always shows the layer the
             // control in front of it would edit.
@@ -1112,6 +1165,7 @@ impl Editor {
             Message::Pointer(message) => self.pointer_update(message),
             Message::Crop(message) => self.crop_update(message),
             Message::Mask(message) => self.mask_message(message),
+            Message::Corrections(message) => self.correction_message(message),
             Message::Draft(message) => self.draft_message(message),
             Message::Preset(message) => self.preset_update(message),
             Message::CopySettings(message) => self.copy_settings_update(message),
@@ -1119,6 +1173,7 @@ impl Editor {
             Message::Performance(message) => self.performance_update(message),
             Message::Visibility(message) => self.visibility_update(message),
             Message::Settings(message) => self.settings_update(message),
+            Message::Usage(message) => self.usage_update(message),
             Message::Preferences(message) => self.preferences_update(message),
             Message::Theme(message) => self.theme_update(message),
             Message::Export(message) => self.export_update(message),
@@ -1173,6 +1228,7 @@ impl Editor {
             mask_draft: self.drawn_mask().map(|mask| &mask.shape),
             mask_map: self.drawn_mask().and_then(|mask| mask.map.as_ref()),
             mask_handles: self.session.workspace.mask_handles,
+            corrections: self.correction_canvas(),
             draft: self.crop(),
             ..self.presentation.surfaces(self.overlays.request.as_ref())
         };
@@ -1329,9 +1385,12 @@ impl Editor {
     /// What the keyboard table depends on right now.
     fn key_context(&self) -> keymap::KeyContext {
         keymap::KeyContext {
+            usage_notice: self.workspace.usage_notice.is_some(),
             gallery_open: self.gallery_page().is_some(),
             comparing: self.document.compare_return.is_some() || self.compare_key.is_down(),
-            drafting: self.crop().is_some() || self.held_mask().is_some(),
+            drafting: self.crop().is_some()
+                || self.held_mask().is_some()
+                || self.correction_gesture().is_some(),
             crop: self.crop().is_some(),
             slider_drafting: self.slider_gesture().is_some(),
             mask_brush: self.mask_mode_active(),
@@ -1350,6 +1409,7 @@ impl Editor {
                 self.presets.library.interaction.editing,
                 crate::state::tools::ValueEdit::Typing(_)
             ),
+            correction_typing: self.corrections.typing.is_some(),
             mask_menu_open: self.mask_menu_open(),
             kind_menu: self.kind_menu_open().map(|menu| {
                 let letters = self
@@ -1385,6 +1445,9 @@ impl Editor {
                 None
             },
             actions: state::host_commands::action_shortcuts(&self.modules),
+            corrections: self
+                .corrections_active()
+                .then(|| self.session.workspace.mode.clone()),
         }
     }
 

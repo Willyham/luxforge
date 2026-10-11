@@ -3,6 +3,7 @@
 //! controls use, so a script proves the real paths rather than a parallel implementation.
 use crate::app::Before;
 use crate::app::outcome::{Outcome, Presented, Requested};
+mod corrections;
 mod develop;
 mod grid;
 mod long_work;
@@ -10,6 +11,7 @@ mod loupe;
 mod select;
 mod select_catalog;
 mod select_missing;
+mod usage;
 use crate::state::MenuTarget;
 use crate::state::palette::PaletteAction;
 use crate::{
@@ -110,6 +112,9 @@ pub(crate) struct Evidence {
     /// A paced stroke step's positions still to send, one per tick of its own gated timer. `None`
     /// when no paced stroke is running, which is also when its timer does not exist.
     pub(crate) paced_stroke: Option<PacedStroke>,
+    /// A paced Corrections press or handle drag's positions still to send, one per tick of its own
+    /// gated timer.
+    pub(crate) paced_correction: Option<corrections::PacedCorrection>,
     /// The gallery page shown instead of the workspace for a scripted capture.
     /// Requested tools-panel scroll fraction, retained beside the capture for correlation.
     pub(crate) tools_scroll: Option<f64>,
@@ -122,6 +127,8 @@ pub(crate) struct Evidence {
     /// When a `wait` step's frame may be captured. The evidence tick checks it, so a wait adds no
     /// timer of its own.
     pub(crate) wait_until: Option<Instant>,
+    /// A running usage `await` step, which the evidence tick checks as it checks a `wait`.
+    pub(crate) usage_await: Option<usage::UsageAwaiting>,
     /// A running `gpu_warmed` step, which the evidence tick checks as it checks a `wait`.
     pub(crate) warm_wait: Option<WarmWait>,
     /// The run's second client, registered on the owner at the first `agent` step and disconnected
@@ -221,10 +228,12 @@ impl Evidence {
             had_errors: false,
             paced_slider: None,
             paced_stroke: None,
+            paced_correction: None,
             second_click: None,
             tools_scroll: None,
             capability_wait: None,
             wait_until: None,
+            usage_await: None,
             warm_wait: None,
             agent: None,
             agent_wait: None,
@@ -547,6 +556,14 @@ pub(crate) enum Settle {
     Develop,
     /// The large previews Develop decodes ahead of a move are decoded.
     DevelopAhead,
+    /// The usage statistics startup claim has settled: its notice is on screen, or the claim
+    /// answered not to show it.
+    UsageNotice,
+    /// The usage statistics consent's read, or its last outstanding write, answered.
+    Usage,
+    /// The Corrections workspace has finished what a step started: its draft ended or was refused,
+    /// its request answered, and its list and pins describe the entry on screen.
+    Corrections,
 }
 
 impl Settle {
@@ -584,6 +601,9 @@ impl Settle {
             Self::LongWork => "long_work",
             Self::Develop => "develop",
             Self::DevelopAhead => "develop_ahead",
+            Self::UsageNotice => "usage_notice",
+            Self::Usage => "usage",
+            Self::Corrections => "corrections",
         }
     }
 
@@ -945,11 +965,13 @@ impl Editor {
                     std::process::exit(3);
                 }
                 self.wait_elapsed();
+                return self.usage_await_tick();
             }
             EvidenceMessage::ViewIdleDeadline => return self.view_idle_deadline(),
             EvidenceMessage::IdleDeadline => return self.idle_deadline(),
             EvidenceMessage::PacedSliderTick => return self.slider_paced_tick(),
             EvidenceMessage::PacedStrokeTick => return self.stroke_paced_tick(),
+            EvidenceMessage::PacedCorrectionTick => return self.correction_paced_tick(),
             EvidenceMessage::DoubleClickSecond => return self.double_click_second(),
             EvidenceMessage::Capture => {
                 if self.evidence.as_ref().is_some_and(Evidence::suspended) {
@@ -1206,6 +1228,8 @@ impl Editor {
             record
         };
         self.event("script_step", || record);
+        // A script step stands in for a person's deliberate operation.
+        super::usage_supervisor::interacted();
         match step {
             Step::Api { method, params } => self.api_step(method, params),
             Step::Agent { method, params } => self.agent_step(method, params),
@@ -1389,12 +1413,15 @@ impl Editor {
             Step::ThemeImportOmarchy { path } => self.theme_import_omarchy_step(path),
             Step::Flag { id, value } => self.flag_step(id, value),
             Step::Preference(fields) => self.preference_step(fields),
+            Step::Usage(step) => self.usage_step(step),
             Step::Wait { ms } => self.wait_step(ms),
+            Step::Open { path } => self.open_step(path),
             Step::GpuWarmed { quiet_ms, ms } => self.warm_wait_step(quiet_ms, ms),
             Step::Key { key } => self.key_step(key),
             Step::Pan { x, y } => self.pan_step(x, y),
             Step::Capability(step) => self.capability_step(step),
             Step::Mask(step) => self.mask_step(step),
+            Step::Correction(step) => self.correction_step(step),
             Step::Export(step) => self.export_step(step),
             Step::Select(step) => self.select_step(step),
             Step::Missing(step) => self.missing_step(step),
@@ -3548,6 +3575,18 @@ impl Editor {
         Task::none()
     }
 
+    /// Open a file as Open… does, with the script's path in place of the dialog's answer. The
+    /// request's end arms the capture, as each `--open`'s does.
+    fn open_step(&mut self, path: String) -> Task<Message> {
+        let Ok(path) = std::path::absolute(&path) else {
+            return self.fail_step(format!("{path} cannot be made absolute"));
+        };
+        if !path.is_file() {
+            return self.fail_step(format!("{} is not a file", path.display()));
+        }
+        self.open(path)
+    }
+
     fn warm_wait_step(&mut self, quiet_ms: u64, ms: u64) -> Task<Message> {
         if let Some(evidence) = &mut self.evidence {
             let started = Instant::now();
@@ -4325,17 +4364,25 @@ impl Editor {
                 Err(reason) => return self.fail_step(reason),
             }
         } else {
-            let pressed = if key == luxforge_evidence::KEY_ESCAPE {
-                Key::Named(Named::Escape)
-            } else {
-                Key::Character(key.to_lowercase().into())
+            let (modifiers, name) = match key.split_once('+') {
+                Some(("Option", rest)) => (Modifiers::ALT, rest),
+                Some(("Shift", rest)) if !rest.is_empty() => (Modifiers::SHIFT, rest),
+                _ => (Modifiers::empty(), key.as_str()),
+            };
+            let pressed = match name {
+                luxforge_evidence::KEY_ESCAPE => Key::Named(Named::Escape),
+                "Backspace" => Key::Named(Named::Backspace),
+                "Return" => Key::Named(Named::Enter),
+                "ArrowUp" => Key::Named(Named::ArrowUp),
+                "ArrowDown" => Key::Named(Named::ArrowDown),
+                other => Key::Character(other.to_lowercase().into()),
             };
             iced::Event::Keyboard(KeyEvent::KeyPressed {
                 key: pressed.clone(),
                 modified_key: pressed,
                 physical_key: Physical::Unidentified(NativeCode::Unidentified),
                 location: Location::Standard,
-                modifiers: Modifiers::empty(),
+                modifiers,
                 text: None,
                 repeat: false,
             })
@@ -4361,11 +4408,28 @@ impl Editor {
                 self.await_step(Settle::Session);
                 self.dispatch(Message::Key(event, status))
             }
+            // Entering the Corrections mode waits for its list and pins as well as the session.
+            Some(Message::View(ViewMessage::SetMode(mode)))
+                if mode != self.session.workspace.mode
+                    && crate::state::corrections::is_brush_mode(&self.modules, &mode) =>
+            {
+                self.await_step(Settle::Corrections);
+                self.dispatch(Message::Key(event, status))
+            }
             Some(Message::View(ViewMessage::SetMode(mode)))
                 if mode != self.session.workspace.mode =>
             {
                 self.await_step(Settle::Session);
                 self.dispatch(Message::Key(event, status))
+            }
+            // A Corrections key waits for what it started.
+            Some(Message::Corrections(_)) | Some(Message::Draft(_))
+                if self.corrections_active() =>
+            {
+                self.await_step(Settle::Corrections);
+                let task = self.dispatch(Message::Key(event, status));
+                self.settle_corrections();
+                task
             }
             // A Select key waits for what it asked the owner for; a refused switch has nothing to
             // wait for and is captured with its reason.
@@ -4585,6 +4649,17 @@ impl Editor {
         if self.settings.open == Some(tab) {
             self.capture_next_frame();
             return Task::none();
+        }
+        if tab == SettingsTab::Privacy {
+            if !self.usage.eligible {
+                return self.fail_step(
+                    "this launch has no Privacy tab: it was started without usage statistics \
+                     test eligibility",
+                );
+            }
+            // The tab shows the consent, which opening it reads again.
+            self.await_step(Settle::Usage);
+            return self.update(Message::Settings(SettingsMessage::Open(tab)));
         }
         self.arm_settings_settle();
         self.update(Message::Settings(SettingsMessage::Open(tab)))
@@ -5222,6 +5297,8 @@ impl Editor {
                 }
             }
             Outcome::FlagsRead | Outcome::FlagsWritten => self.settle_step(Settle::Flags, by),
+            Outcome::UsageNotice => self.settle_step(Settle::UsageNotice, by),
+            Outcome::UsageAnswered => self.settle_step(Settle::Usage, by),
             // A theme chosen is drawn by a read and stored by a write, which answer in either
             // order: the step settles on whichever lands last.
             Outcome::PreferencesWritten | Outcome::ThemeDrawn => {
@@ -5357,6 +5434,9 @@ impl Editor {
         }
         let result = json!({"run_id":self.log.run_id,"status":"captured","had_input_errors":had_errors,"frames":frames,"script":script,"elapsed_ms":self.log.started.elapsed().as_secs_f64()*1000.,"build_version":env!("CARGO_PKG_VERSION"),"os":std::env::consts::OS,"arch":std::env::consts::ARCH});
         let state = self.snapshot();
+        // As an ordinary quit does, once the last state is read: statistics are cancelled and
+        // discarded, never sent on the way out or waited for.
+        super::usage_supervisor::shutdown();
         let log = self.log.diagnostics.take();
         self.live_server.take();
         self.owner.disconnect(self.client);
@@ -5706,6 +5786,8 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
                     .map(|_| Message::Evidence(EvidenceMessage::DoubleClickSecond)),
             );
         }
+        // A paced Corrections press or handle drag's own timer, gated the same way.
+        subscriptions.extend(corrections::subscription(evidence));
         // A loupe `arrows` step's presses after its first, gated the same way.
         subscriptions.extend(loupe::subscription(evidence));
         // A `grid_scroll` step's frame clock, gated the same way.
@@ -5720,6 +5802,7 @@ pub(super) fn subscription(editor: &Editor) -> Subscription<Message> {
 /// Fit.
 pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     editor.settle_when_quiet();
+    editor.settle_corrections();
     editor.settle_capability();
     editor.settle_agent_host();
     let arrows = editor.loupe_arrows_when_warm();
@@ -6287,10 +6370,12 @@ mod tests {
             had_errors: false,
             paced_slider: None,
             paced_stroke: None,
+            paced_correction: None,
             second_click: None,
             tools_scroll: None,
             capability_wait: None,
             wait_until: None,
+            usage_await: None,
             warm_wait: None,
             agent: None,
             agent_wait: None,

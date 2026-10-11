@@ -8,7 +8,7 @@
     {
       "id": "TASK-001",
       "description": "Implement protected persistent usage consent, the once-only startup claim and schema-described host commands.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Produce the authoritative consent store and runtime generation/eligibility seam consumed by TASK-004 and TASK-007; no desktop notice or network delivery in this task.",
@@ -99,7 +99,7 @@
     {
       "id": "TASK-002",
       "description": "Implement the typed event/device registry, bounded event banks and strict pseudonymous wire encoder with privacy fixtures.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Produce the producer/snapshot interface consumed by TASK-004, TASK-005 and TASK-006, plus checked-in current schema and synthetic valid/invalid examples. This is executable implementation of the design contract, not another contract-review task.",
@@ -167,7 +167,7 @@
     {
       "id": "TASK-003",
       "description": "Build the standalone stateless ingestion validator for the chosen HTTPS batch contract.",
-      "status": "ready",
+      "status": "completed",
       "dependencies": [],
       "extra_context": [
         "Proposed output: services/usage-ingest/, a standalone Rust package with its own empty [workspace] table and Cargo.lock outside the root workspace, so desktop builds, core tests and cargo xtask check gain no server dependency. Extend the repository's pinning, notice and advisory checks to its lockfile. The HTTP framework is delegated; project code remains GPL-3.0-or-later.",
@@ -230,7 +230,7 @@
     {
       "id": "TASK-004",
       "description": "Connect consented event windows to one bounded background sender using the existing transport.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001",
         "TASK-002"
@@ -307,7 +307,7 @@
     {
       "id": "TASK-005",
       "description": "Instrument shipped operations at their authoritative boundaries, with a checked-in coverage inventory.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-002"
       ],
@@ -389,7 +389,7 @@
     {
       "id": "TASK-006",
       "description": "Add consented low-frequency process performance sampling and the approved CPU/GPU/OS/memory device context.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-002"
       ],
@@ -468,7 +468,7 @@
     {
       "id": "TASK-007",
       "description": "Add the non-blocking startup notice and Settings Privacy controls through the shared consent commands.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-001"
       ],
@@ -553,7 +553,7 @@
     {
       "id": "TASK-008",
       "description": "Deliver the integrated working client with local receiver evidence and current user/developer documentation.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-004",
         "TASK-005",
@@ -650,7 +650,7 @@
     {
       "id": "TASK-009",
       "description": "Prepare the pinned Vector, ClickHouse and private Grafana reference stack with bounded device/profile retention and no IP tracking.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-003"
       ],
@@ -707,7 +707,7 @@
     {
       "id": "TASK-010",
       "description": "Qualify native responsiveness, storage/traffic bounds and source preservation after working client delivery.",
-      "status": "pending",
+      "status": "in_progress",
       "dependencies": [
         "TASK-008"
       ],
@@ -777,7 +777,7 @@
     {
       "id": "TASK-011",
       "description": "Verify actual client-to-reference-backend privacy and protocol behavior, and prepare the production activation handoff.",
-      "status": "pending",
+      "status": "completed",
       "dependencies": [
         "TASK-008",
         "TASK-009"

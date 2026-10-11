@@ -83,6 +83,17 @@ pub struct HostConfig {
     /// one, such as `luxforge-json`, whose owner holds the reference renderer's service instead
     /// ([`crate::tiles::ReferenceTiles`]), so every export there is the reference renderer's.
     pub tiles: Option<Arc<dyn crate::tiles::TileService>>,
+    /// The process-wide usage statistics collector the owner's producers record into
+    /// (`docs/design/usage-statistics.md`). The desktop shares one with its own GUI-local
+    /// producers and its statistics supervisor, which alone starts and stops it; every other host
+    /// keeps the default, a collector that is never started, so every producer records nothing.
+    pub usage: Arc<crate::usage::Collector>,
+    /// The process-wide usage statistics consent runtime ([`crate::usage::consent::Usage`]), shared
+    /// by every catalog owner of the process: its eligibility, collection gate and consented
+    /// identity. Its consent record is read from and written to `preferences.json` under
+    /// [`Self::preferences_dir`]. Every host but an eligible desktop or an explicit test host
+    /// passes a headless one, which is never eligible.
+    pub usage_consent: Arc<crate::usage::consent::Usage>,
 }
 
 impl HostConfig {
@@ -102,6 +113,8 @@ impl HostConfig {
             launch_flags: Default::default(),
             renderer: crate::Renderer::headless(),
             tiles: None,
+            usage: Arc::new(crate::usage::Collector::new()),
+            usage_consent: Arc::new(crate::usage::consent::Usage::headless()),
         }
     }
 }
@@ -118,6 +131,8 @@ impl std::fmt::Debug for HostConfig {
             .field("launch_flags", &self.launch_flags)
             .field("renderer", &self.renderer)
             .field("tiles", &self.tiles.as_ref().map(|tiles| tiles.status()))
+            .field("usage", &self.usage.gate().current().is_some())
+            .field("usage_consent", &self.usage_consent)
             .finish()
     }
 }
@@ -310,9 +325,19 @@ impl CapabilityHost {
         &self.config.launch_flags
     }
 
+    /// The process-wide usage statistics consent runtime ([`HostConfig::usage_consent`]).
+    pub(crate) fn usage_consent(&self) -> &crate::usage::consent::Usage {
+        &self.config.usage_consent
+    }
+
     /// The renderer the host said it draws with when it started ([`HostConfig::renderer`]).
     pub(crate) fn launch_renderer(&self) -> crate::Renderer {
         self.config.renderer
+    }
+
+    /// The process-wide usage statistics collector ([`HostConfig::usage`]).
+    pub(crate) fn usage(&self) -> &Arc<crate::usage::Collector> {
+        &self.config.usage
     }
 
     /// The host's GPU provider of the tile contract, if it has one ([`HostConfig::tiles`]).
@@ -356,6 +381,13 @@ impl CapabilityHost {
         let Some(done) = jobs.complete(job_id, result) else {
             return;
         };
+        // A finished task publishes no more candidates; a cancelled one's are released. A job the
+        // table forgot to make room for this one takes its candidates with it.
+        let candidates = service.candidates();
+        if done.record.kind == JobKind::Task {
+            candidates.finished(job_id, done.record.status == JobStatus::Cancelled);
+        }
+        candidates.retain(|job_id| jobs.kind(job_id).is_some());
         if done.record.status == JobStatus::Ready
             && let Some(origin) = &done.origin
         {

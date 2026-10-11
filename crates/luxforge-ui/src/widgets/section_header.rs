@@ -228,6 +228,75 @@ pub fn band_header<'a, M: Clone + 'a>(
         .into()
 }
 
+/// A panel's band with its own reset, as the Corrections band draws it: [`band_header`]'s title,
+/// accent dot and right-aligned hint, then a reset button that publishes `on_reset` while
+/// `can_reset`, dimmed otherwise.
+pub fn band_header_with_reset<'a, M: Clone + 'a>(
+    title: &str,
+    active: bool,
+    hint: Option<String>,
+    expanded: bool,
+    on_toggle: M,
+    reset_tooltip: &str,
+    on_reset: Option<M>,
+) -> Element<'a, M> {
+    let chevron = if expanded {
+        Icon::ChevronDown
+    } else {
+        Icon::ChevronRight
+    };
+    let mut leading = row![
+        icon(chevron, theme::DISCLOSURE_SIZE, Token::TextSecondary),
+        text(title.to_owned())
+            .size(theme::SIZE_TITLE)
+            .font(theme::FONT_SEMIBOLD)
+            .wrapping(Wrapping::None)
+            .style(theme::ink(Token::Text)),
+    ]
+    .spacing(theme::MODULE_HEADER_SPACING)
+    .align_y(Alignment::Center);
+    if active {
+        leading = leading.push(accent_dot());
+    }
+    let trailing: Element<'a, M> = match hint {
+        Some(hint) => container(
+            truncated_text(hint, theme::SIZE_CAPTION, theme::FONT, Token::TextTertiary)
+                .line_height(LineHeight::Absolute(theme::CAPTION_LINE_HEIGHT.into())),
+        )
+        .width(Length::Fill)
+        .align_x(Horizontal::Right)
+        .into(),
+        None => Space::new().width(Length::Fill).into(),
+    };
+    let reset = header_icon_button(
+        &IconButtonModel {
+            icon: Icon::Reset,
+            tooltip: reset_tooltip.to_owned(),
+            enabled: on_reset.is_some(),
+            selected: false,
+        },
+        on_reset,
+    );
+    let header = row![container(leading).width(Length::Shrink), trailing, reset]
+        .spacing(theme::MODULE_HEADER_SPACING)
+        .align_y(Alignment::Center)
+        .height(Length::Fill);
+    let band = button(header)
+        .padding(Padding {
+            top: 0.0,
+            right: theme::MODULE_HEADER_PADDING_RIGHT,
+            bottom: 0.0,
+            left: theme::MODULE_HEADER_PADDING_LEFT,
+        })
+        .width(Length::Fill)
+        .height(Length::Fixed(theme::MODULE_HEADER_HEIGHT))
+        .style(theme::button_band)
+        .on_press(on_toggle);
+    column![hairline(theme::band_border_surface), band]
+        .width(Length::Fill)
+        .into()
+}
+
 /// Renders a whole module section: its band and, when `body` is given, the body under it with the
 /// section padding and the row spacing. The caller passes `None` for a collapsed or unavailable
 /// section.

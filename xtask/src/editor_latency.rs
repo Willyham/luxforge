@@ -28,6 +28,7 @@
 //! report counts them, and the release still redevelops the mosaic before the committed frame.
 //!
 //! [design]: ../../../docs/design/basic-and-histogram.md
+use crate::usage_receiver::{UsageMode, UsageSetup};
 use crate::{
     scenario::{
         Launch, Launched, Run, drawn_wheel,
@@ -45,6 +46,9 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     time::{Duration, Instant},
 };
+
+mod corrections;
+pub use corrections::CORRECTION_POSITIONS;
 
 /// The Basic module's patch action and the field the gesture drags, named as the module declares
 /// them.
@@ -612,7 +616,7 @@ const ORDER: [Flag; 11] = [
 /// Sample the editor's CPU time and RSS about every 50 ms until it exits, within the launch's
 /// deadline counted from the moment the watch starts, just after the spawn. What it returns is the
 /// process's `rss_samples`, their peak as `peak_rss_mib`, and `process_cpu_seconds`.
-fn sampled(root: &Path, name: &str) -> Watcher {
+pub(crate) fn sampled(root: &Path, name: &str) -> Watcher {
     let (root, late) = (
         root.to_path_buf(),
         format!("The {name} run exceeded its deadline"),
@@ -649,9 +653,14 @@ fn sampled(root: &Path, name: &str) -> Watcher {
             .zip(last_cpu_seconds)
             .map(|(first, last)| last - first)
             .filter(|delta| *delta >= 0.01);
+        let exited_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let exited_unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(f64::NAN, |since| since.as_secs_f64() * 1000.0);
         Ok((
             Some(status),
-            json!({"rss_samples":rss,"peak_rss_mib":peak,"process_cpu_seconds":process_cpu_seconds}),
+            json!({"rss_samples":rss,"peak_rss_mib":peak,"process_cpu_seconds":process_cpu_seconds,
+                "exited_ms":exited_ms,"exited_unix_ms":exited_unix_ms}),
         ))
     })
 }
@@ -1157,11 +1166,10 @@ fn curve_view_steps(field: &FieldTarget, source: SourceTag, masking: bool) -> Ve
         None => Vec::new(),
         Some(CurveOwner::Proof) => {
             // The latency source is JPEG; the RAW section is absent from its tools model entirely.
-            let mut steps: Vec<script::Step> =
-                ["luxforge.basic", "luxforge.pixel", "luxforge.crop"]
-                    .into_iter()
-                    .map(|module| script::Step::section(module, false))
-                    .collect();
+            let mut steps: Vec<script::Step> = ["luxforge.basic", "luxforge.crop"]
+                .into_iter()
+                .map(|module| script::Step::section(module, false))
+                .collect();
             steps.push(script::Step::section(CONTROLS_MODULE, true));
             steps.push(script::Step::tools_scroll(1.0));
             steps
@@ -1237,6 +1245,10 @@ pub enum Mode {
     /// `mask-range` scenario's figure is taken on four masked colour layers, three of whose masks
     /// bind the whole stage, and is therefore not a baseline for the gesture itself.
     Paint,
+    /// The Corrections workspace's gestures ([`corrections`]): one paced brush stroke with a set
+    /// source, so each position drafts a repair, its release to the repaired frame, and one paced
+    /// drag of its source handle. `--samples` is the positions of each gesture.
+    Corrections,
     /// Native brush hover after a committed masked adjustment, without pressing the pointer.
     /// Fractions are routed through the real window widgets and captured with cursor geometry.
     Hover,
@@ -1255,6 +1267,7 @@ impl Mode {
             Self::Commit => "commit",
             Self::Burst => "burst",
             Self::Paint => "paint",
+            Self::Corrections => "corrections",
             Self::Hover => "hover",
             Self::CropStart => "crop-start",
         }
@@ -1457,6 +1470,11 @@ pub struct Options<'a> {
     /// The editor's window, `[width, height]` logical points, in place of its default: what a
     /// person's own window draws the photograph at, such as a full-screen Fit stage.
     pub window: Option<[u32; 2]>,
+    /// Drag and commit modes only: launch with usage statistics test eligibility, an isolated
+    /// configuration holding a refusal (`off`) or an opt-in, and a loopback receiver of that kind
+    /// ([`UsageMode`]); the script moves the statistics clock past the first window's ten minutes
+    /// just before the gesture, so an opted-in launch sends while the gesture runs.
+    pub usage: Option<UsageMode>,
 }
 
 fn zoom_step(options: &Options) -> Option<script::Step> {
@@ -2013,24 +2031,46 @@ fn paced_stroke_events(events: &[Value], positions: usize) -> Result<&[Value]> {
     Ok(&events[stroke_step..])
 }
 
+/// The events a paced gesture logs: each position the evidence timer hands the desktop, each
+/// `draft.set` the gesture raised and the preview job that answered one, by generation.
+#[derive(Clone, Copy, Debug)]
+struct GestureEvents {
+    position: &'static str,
+    set: &'static str,
+    preview: &'static str,
+}
+
+/// A paced mask stroke's events.
+const MASK_STROKE: GestureEvents = GestureEvents {
+    position: "mask_stroke_position",
+    set: "mask_draft_set",
+    preview: "mask_draft_preview",
+};
+
 /// Pair one measured paint input with its owner round-trip, worker result and presented frame.
 fn paced_stroke_phase_samples(
     events: &[Value],
     positions: usize,
 ) -> Result<(usize, Vec<PaintPhaseSample>)> {
-    let events = paced_stroke_events(events, positions)?;
+    phase_samples(paced_stroke_events(events, positions)?, MASK_STROKE)
+}
+
+/// Pair each of a paced gesture's `draft.set`s with the preview job its own preview event names,
+/// and each of those generations with its worker result and the frame that presented it. Returns
+/// how many sets queued a preview and the samples of those that reached the screen.
+fn phase_samples(events: &[Value], names: GestureEvents) -> Result<(usize, Vec<PaintPhaseSample>)> {
     let mut pending: Option<f64> = None;
     let mut inputs: Vec<(f64, u64, [f64; 4], Option<usize>)> = Vec::new();
     for event in events {
         match event["event"].as_str() {
-            Some("mask_draft_set") => pending = Some(elapsed(event)?),
-            Some("mask_draft_preview") => {
+            Some(name) if name == names.set => pending = Some(elapsed(event)?),
+            Some(name) if name == names.preview => {
                 let Some(sent) = pending.take() else {
-                    return Err("A mask_draft_preview answered no mask_draft_set".into());
+                    return Err(format!("A {} answered no {}", names.preview, names.set).into());
                 };
                 let generation = event["detail"]["generation"]
                     .as_u64()
-                    .ok_or("A mask draft preview named no generation")?;
+                    .ok_or_else(|| format!("A {} named no generation", names.preview))?;
                 let positions = event["detail"]["positions"]
                     .as_u64()
                     .and_then(|positions| usize::try_from(positions).ok());
@@ -2044,13 +2084,13 @@ fn paced_stroke_phase_samples(
                 .map(|leg| {
                     legs[leg]
                         .as_f64()
-                        .ok_or_else(|| format!("A mask draft preview has no {leg} timing"))
+                        .ok_or_else(|| format!("A {} has no {leg} timing", names.preview))
                 })
                 .into_iter()
                 .collect::<std::result::Result<Vec<_>, _>>()?;
-                let legs: [f64; 4] = legs
-                    .try_into()
-                    .map_err(|_| "A mask draft preview has an invalid owner timing count")?;
+                let legs: [f64; 4] = legs.try_into().map_err(|_| {
+                    format!("A {} has an invalid owner timing count", names.preview)
+                })?;
                 inputs.push((sent, generation, legs, positions));
             }
             _ => {}
@@ -2140,7 +2180,12 @@ fn paced_stroke_gpu_samples(
     events: &[Value],
     positions: usize,
 ) -> Result<(usize, Vec<PaintGpuSample>)> {
-    let events = paced_stroke_events(events, positions)?;
+    gpu_samples(paced_stroke_events(events, positions)?, MASK_STROKE)
+}
+
+/// A paced gesture's GPU ticks and those of them the surface drew, as
+/// [`paced_stroke_gpu_samples`] reads a stroke's, by the gesture's own event names.
+fn gpu_samples(events: &[Value], names: GestureEvents) -> Result<(usize, Vec<PaintGpuSample>)> {
     let mut pending: Option<(f64, Option<usize>)> = None;
     // The newest position handed to the desktop: a `draft.set` carries it and every one before it.
     // The set's own points are the simplified path, fewer than the positions it carries.
@@ -2148,15 +2193,15 @@ fn paced_stroke_gpu_samples(
     let mut ticks = Vec::new();
     for event in events {
         match event["event"].as_str() {
-            Some("mask_stroke_position") => {
+            Some(name) if name == names.position => {
                 newest = event["detail"]["index"]
                     .as_u64()
                     .and_then(|index| usize::try_from(index).ok());
             }
-            Some("mask_draft_set") => {
+            Some(name) if name == names.set => {
                 pending = Some((elapsed(event)?, newest.map(|index| index + 1)));
             }
-            Some("mask_draft_preview") => pending = None,
+            Some(name) if name == names.preview => pending = None,
             Some("gpu_preview_tick") if event["detail"]["path"] == "gpu" => {
                 if let Some((sent, carried)) = pending.take() {
                     let detail = &event["detail"];
@@ -2225,30 +2270,46 @@ fn stroke_press(
     positions: usize,
     presented: &[(f64, Option<usize>)],
 ) -> Result<(f64, Option<f64>)> {
-    let events = paced_stroke_events(events, positions)?;
+    let (first_set, first_frame) = press_timing(
+        paced_stroke_events(events, positions)?,
+        MASK_STROKE,
+        presented,
+    )?;
+    Ok((
+        first_set.ok_or("The press sent no mask draft.set")?,
+        first_frame,
+    ))
+}
+
+/// A paced gesture's press, as [`stroke_press`] reads a stroke's: from its first position to its
+/// first `draft.set` and to the first of its frames presented, either `None` when there was none.
+fn press_timing(
+    events: &[Value],
+    names: GestureEvents,
+    presented: &[(f64, Option<usize>)],
+) -> Result<(Option<f64>, Option<f64>)> {
     let press = events
         .iter()
         .find(|event| {
-            event["event"] == json!("mask_stroke_position")
-                && event["detail"]["index"].as_u64() == Some(0)
+            event["event"] == names.position && event["detail"]["index"].as_u64() == Some(0)
         })
-        .ok_or("The paced stroke logged no press")?;
+        .ok_or_else(|| format!("The paced gesture logged no {} press", names.position))?;
     let press = elapsed(press)?;
     let first_set = events
         .iter()
-        .filter(|event| event["event"] == json!("mask_draft_set"))
+        .filter(|event| event["event"] == names.set)
         .map(elapsed)
         .collect::<Result<Vec<_>>>()?
         .into_iter()
         .find(|at| *at >= press)
-        .ok_or("The press sent no mask draft.set")?;
+        .map(|at| at - press);
     let first_frame = presented
         .iter()
         .map(|(displayed_ms, _)| *displayed_ms)
         .filter(|at| *at >= press)
         .reduce(f64::min)
         .map(|at| at - press);
-    Ok((first_set - press, first_frame))
+    Ok((first_set, first_frame))
 }
 
 /// Every paced position's own wait for the screen: from its `mask_stroke_position`, logged in the
@@ -2264,7 +2325,16 @@ fn position_latencies(
     positions: usize,
     frames: &[(f64, Option<usize>)],
 ) -> Result<Vec<(usize, f64)>> {
-    let events = paced_stroke_events(events, positions)?;
+    carried_latencies(paced_stroke_events(events, positions)?, MASK_STROKE, frames)
+}
+
+/// Every paced position's wait for the first presented frame that carries it, as
+/// [`position_latencies`] reads a stroke's, by the gesture's own event names.
+fn carried_latencies(
+    events: &[Value],
+    names: GestureEvents,
+    frames: &[(f64, Option<usize>)],
+) -> Result<Vec<(usize, f64)>> {
     let mut presented: Vec<(f64, usize)> = frames
         .iter()
         .filter_map(|(displayed_ms, carried)| Some((*displayed_ms, (*carried)?)))
@@ -2273,12 +2343,12 @@ fn position_latencies(
     let mut latencies = Vec::new();
     for event in events
         .iter()
-        .filter(|event| event["event"] == json!("mask_stroke_position"))
+        .filter(|event| event["event"] == names.position)
     {
         let index = event["detail"]["index"]
             .as_u64()
             .and_then(|index| usize::try_from(index).ok())
-            .ok_or("A stroke position carries no index")?;
+            .ok_or_else(|| format!("A {} carries no index", names.position))?;
         let at = elapsed(event)?;
         if let Some((shown, _)) = presented
             .iter()
@@ -3154,15 +3224,19 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
         ),
     )?;
     ensure(
-        !options.no_gpu_render || matches!(options.mode, Mode::Drag | Mode::Commit | Mode::Paint),
-        "--reference-renderer measures a drag, a commit or a stroke; pass --mode drag, commit or paint",
+        !options.no_gpu_render
+            || matches!(
+                options.mode,
+                Mode::Drag | Mode::Commit | Mode::Paint | Mode::Corrections
+            ),
+        "--reference-renderer measures a drag, a commit or a stroke; pass --mode drag, commit, paint or corrections",
     )?;
     if let Some(ms) = options.warm_ms {
         ensure(
-            matches!(options.mode, Mode::Drag | Mode::Paint)
+            matches!(options.mode, Mode::Drag | Mode::Paint | Mode::Corrections)
                 && (1..=script::MAX_WAIT_MS).contains(&ms),
             format!(
-                "--warm waits 1 to {} ms before a drag or a stroke; pass --mode drag or paint",
+                "--warm waits 1 to {} ms before a drag or a stroke; pass --mode drag, paint or corrections",
                 script::MAX_WAIT_MS
             ),
         )?;
@@ -3177,11 +3251,22 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
             "--contend and --idle measure different things; run them separately",
         )?;
     }
+    ensure(
+        options.usage.is_none() || matches!(options.mode, Mode::Drag | Mode::Commit),
+        "--usage measures a drag or a commit; pass --mode drag or --mode commit",
+    )?;
     if options.mode == Mode::Burst {
         return run_burst(root, out, bin, &options);
     }
     if options.mode == Mode::Paint {
         return run_paint(root, out, bin, &options);
+    }
+    if options.mode == Mode::Corrections {
+        ensure(
+            !options.mask,
+            "--mask binds a slider gesture to a mask; --mode corrections paints no slider",
+        )?;
+        return corrections::run(root, out, bin, &options);
     }
     if options.mode == Mode::Hover {
         return run_hover(root, out, bin, &options);
@@ -3238,7 +3323,34 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
     if options.contend.is_some() {
         fs::create_dir_all(&contention)?;
     }
-    let steps = measured_script(options, field, kind, &values, drag, &contention);
+    let mut steps = measured_script(options, field, kind, &values, drag, &contention);
+    let usage_setup = match options.usage {
+        Some(mode) => {
+            // Just before the gesture (and any warm wait or queued exports): the statistics clock
+            // moves past the first window's ten minutes, so an opted-in launch sends while the
+            // gesture runs. An opted-out launch moves its clock too, and sends nothing.
+            let first =
+                setup_steps(options, field, kind).len() + usize::from(options.zoom.is_some());
+            steps.insert(
+                first,
+                script::Step::Usage(script::UsageStep::Advance(USAGE_ADVANCE_S)),
+            );
+            // Last: for an opted-in launch, its one attempt has ended and `usage.read` says so; an
+            // opted-out launch waits for collection to read off, so every mode runs the same steps
+            // and captures the same frames.
+            steps.push(script::Step::Usage(script::UsageStep::Await(usage_await(
+                mode,
+            ))));
+            // Then every mode alike: a fixed window, so each launch outlives the release's picture
+            // at rest and the opted-out launch's peak memory compares with the opted-in ones'.
+            steps.push(script::Step::Observe(script::IdleStep {
+                settle_ms: 1,
+                ms: USAGE_TAIL_MS,
+            }));
+            Some(UsageSetup::start(&out.join("usage"), mode)?)
+        }
+        None => None,
+    };
     ensure(
         steps.len() <= script::MAX_SCRIPT_STEPS,
         "The latency script exceeds the 64-step evidence bound",
@@ -3254,6 +3366,12 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
     )
     .watch(sampled(root, "gesture"));
     let gesture = rendered_by(gesture, options);
+    let gesture = match &usage_setup {
+        Some(setup) => gesture
+            .usage_receiver(&setup.url)
+            .evidence_config(&setup.config),
+        None => gesture,
+    };
     let Launched {
         dir: evidence,
         watched: usage,
@@ -3398,6 +3516,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
     // the plan of the same revision is drawn once it is held — so it is recorded, not checked.
     let first_input = setup_steps(options, field, kind).len()
         + usize::from(options.zoom.is_some())
+        + usize::from(options.usage.is_some())
         + usize::from(options.warm_ms.is_some())
         + options.contend.unwrap_or(0);
     // The GPU stage's compile queue just before the first input: what the warm list handed it, and
@@ -3719,7 +3838,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         },
         "view_setup":match &field.curve {
             Some(CurveOwner::Proof) => json!({"developer":true,"proof_section":CONTROLS_MODULE,
-                "collapsed":["luxforge.basic","luxforge.pixel","luxforge.crop"],
+                "collapsed":["luxforge.basic","luxforge.crop"],
                 "raw_section":"absent for the JPEG latency source",
                 "tools_scroll":1.0}),
             Some(CurveOwner::Module(module)) => json!({"developer":false,"section":module,
@@ -3810,15 +3929,120 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         );
     }
     report_geometry(&mut result, options);
+    if let Some(setup) = &usage_setup {
+        let report = usage_report(setup, &events, &usage, last)?;
+        if let Some(close) = report["close_after_shutdown_ms"].as_f64()
+            && let Some(rows) = result["rows"].as_array_mut()
+        {
+            rows.push(stats::scalar(
+                "close_after_shutdown_event",
+                "ms",
+                Some(close),
+            ));
+        }
+        write_json(&out.join("usage-receiver.json"), &setup.record())?;
+        result["usage"] = report;
+    }
     stamp(&mut result, &header);
     write_json(&out.join("latency.json"), &result)?;
     ensure(hash(&source)? == source_hash, "The source changed")?;
 
-    if options.idle {
+    // The held catalog's idle launch is an ordinary launch, which can have no test receiver; a
+    // statistics run measures idleness inside its own launch instead.
+    if options.idle && usage_setup.is_none() {
         hold_and_idle(run, options, &source, last, &usage)?;
     }
     println!("PASS editor latency: {}", out.display());
     Ok(())
+}
+
+/// How far a statistics run's script moves the statistics clock before the gesture: past the
+/// first window's ten minutes and its minute of jitter.
+const USAGE_ADVANCE_S: u64 = 660;
+
+/// The statistics run's last wait: an opted-in launch's first attempt has ended, or an opted-out
+/// launch's collection reads off, so every mode's script has the same steps.
+pub(crate) fn usage_await(mode: UsageMode) -> script::UsageAwait {
+    if mode.collects() {
+        script::UsageAwait {
+            attempts: Some(1),
+            ..script::UsageAwait::default()
+        }
+    } else {
+        script::UsageAwait {
+            effective: Some(false),
+            ..script::UsageAwait::default()
+        }
+    }
+}
+
+/// The window at the end of every statistics run's script, after its attempt.
+const USAGE_TAIL_MS: u64 = 6_000;
+
+/// A statistics run's own record: the mode, what the receiver saw, the statistics diagnostics the
+/// last frame recorded, and the close: from the editor's `shutdown` event to the process's exit as
+/// the harness saw it (which also counts the launch's own start-up offset, the same in every
+/// mode). An opted-in run must have attempted a request (its script's last step waits for
+/// `usage.read` to say so), the fast receiver must have accepted it, and an opted-out run sent
+/// none.
+fn usage_report(
+    setup: &UsageSetup,
+    events: &[Value],
+    watched: &Value,
+    last: &Value,
+) -> Result<Value> {
+    let requests = setup.requests();
+    let diagnostics = last["state"]["usage"]["diagnostics"].clone();
+    let attempts = diagnostics["attempts"].as_u64();
+    match setup.mode {
+        UsageMode::Off => ensure(
+            requests.is_empty() && attempts.unwrap_or(0) == 0,
+            "An opted-out launch sent statistics",
+        )?,
+        UsageMode::Offline => ensure(
+            requests.is_empty() && attempts.is_some_and(|attempts| attempts >= 1),
+            format!("The offline launch made no refused attempt: {diagnostics}"),
+        )?,
+        UsageMode::Fast => ensure(
+            !requests.is_empty() && diagnostics["accepted"].as_u64() >= Some(1),
+            format!("The fast receiver accepted nothing: {diagnostics}"),
+        )?,
+        UsageMode::Slow => ensure(
+            !requests.is_empty() && attempts.is_some_and(|attempts| attempts >= 1),
+            format!("The slow receiver saw no request: {diagnostics}"),
+        )?,
+    }
+    let close = close_after_shutdown(events, watched);
+    Ok(json!({
+        "mode": setup.mode.name(),
+        "advance_s": USAGE_ADVANCE_S,
+        "requests": requests,
+        "diagnostics": diagnostics,
+        "close_after_shutdown_ms": close,
+        "close_note": CLOSE_NOTE,
+    }))
+}
+
+/// How [`close_after_shutdown`] is measured.
+pub(crate) const CLOSE_NOTE: &str = "From the editor's shutdown event to the exit the harness observed, both on the wall clock: the event's time is the launch's start (its run ID) plus its elapsed time, the exit's the harness's clock when its 50 ms poll saw it, so the figure is late by up to one poll and the poll's own process read.";
+
+/// Milliseconds from the launch's last `shutdown` event to the process's exit as `watched`
+/// ([`sampled`]) saw it, on the wall clock: the editor's run ID names its start in nanoseconds
+/// since the epoch, and each event's elapsed time counts from there.
+pub(crate) fn close_after_shutdown(events: &[Value], watched: &Value) -> Option<f64> {
+    let shutdown = events
+        .iter()
+        .rev()
+        .find(|event| event["event"] == "shutdown")?;
+    let started_ns = shutdown["run_id"]
+        .as_str()?
+        .split_once('-')?
+        .1
+        .parse::<u128>()
+        .ok()?;
+    let at = started_ns as f64 / 1e6 + shutdown["elapsed_ms"].as_f64()?;
+    let close = watched["exited_unix_ms"].as_f64()? - at;
+    close.is_finite().then_some(close)
 }
 
 /// Which path drew a drag's drained inputs, why each CPU tick took the CPU path, and the whole run's
@@ -4509,6 +4733,7 @@ mod tests {
             masks: 1,
             mask_presence: false,
             window: None,
+            usage: None,
         };
         let geometry = geometry_preconditions(&options);
         // A JPEG's Lens precondition is the section and its Apply.
@@ -4650,6 +4875,7 @@ mod tests {
                             masks: 1,
                             mask_presence: false,
                             window: None,
+                            usage: None,
                         };
                         let mut tag = format!("crop{}-mask{mask}-basic{basic}", crop.is_some());
                         if let Some(zoom) = zoom {
@@ -4759,6 +4985,7 @@ mod tests {
             masks: 1,
             mask_presence: false,
             window: None,
+            usage: None,
             zoom: None,
             moving_pan: false,
         };
@@ -4812,6 +5039,7 @@ mod tests {
             masks: MAX_MASKS,
             mask_presence: true,
             window: None,
+            usage: None,
             zoom: Some(100.0),
             moving_pan: false,
         };
@@ -4876,6 +5104,7 @@ mod tests {
             masks: 1,
             mask_presence: false,
             window: None,
+            usage: None,
             zoom: Some(100.0),
             moving_pan: true,
         };
@@ -4963,6 +5192,7 @@ mod tests {
             masks: 1,
             mask_presence: false,
             window: None,
+            usage: None,
         };
         let field = FieldTarget::lookup("set-perspective", "horizontal").unwrap();
         let values = field.gesture_values(30);
@@ -5036,6 +5266,7 @@ mod tests {
             masks: 1,
             mask_presence: false,
             window: None,
+            usage: None,
         }
     }
 
@@ -5286,8 +5517,7 @@ mod tests {
             json!({"aspect":"16:9","angle":8.0}),
         )];
         expected.extend(
-            ["luxforge.basic", "luxforge.pixel", "luxforge.crop"]
-                .map(|module| script::Step::section(module, false)),
+            ["luxforge.basic", "luxforge.crop"].map(|module| script::Step::section(module, false)),
         );
         expected.push(script::Step::section(CONTROLS_MODULE, true));
         expected.push(script::Step::tools_scroll(1.0));
@@ -5481,6 +5711,7 @@ mod tests {
             masks: 1,
             mask_presence: false,
             window: None,
+            usage: None,
             zoom: None,
             moving_pan: false,
         };
@@ -5912,7 +6143,7 @@ mod tests {
             assert_eq!(f64::from(fraction as f32), *expected);
         }
         let setup = curve_view_steps(&field, SourceTag::Jpeg, false);
-        assert_eq!(setup.len(), 5);
+        assert_eq!(setup.len(), 4);
         assert_eq!(setup.last().unwrap(), &script::Step::tools_scroll(1.0));
         let burst = burst_step(&values, Control::Curve, &field).to_value();
         assert_eq!(burst["curve"]["points"].as_array().unwrap().len(), 31);
@@ -6087,6 +6318,7 @@ mod tests {
             masks: 1,
             mask_presence: false,
             window: None,
+            usage: None,
         };
         let values = gesture_values(4, Control::Slider, &field);
         let plain = gesture_script(&options, &field, SourceTag::Jpeg, &values, true);
