@@ -104,16 +104,33 @@ impl Editor {
                 let opened = result.is_ok();
                 let refreshed = self.dispatch(Message::Sync(SyncMessage::Refreshed(result)));
                 if !opened {
+                    if self.develop.file_open == Some(generation) {
+                        self.develop.file_open = None;
+                    }
                     return refreshed;
                 }
                 // An open is what happened even when it is the photograph already on screen.
                 if let Some(state) = &self.document.state {
-                    let name =
-                        state::title::document_name(&state.asset, self.develop.state.set.as_ref());
+                    let name = state::title::document_name(
+                        &state.asset,
+                        self.develop.state.strip.as_ref(),
+                    );
                     self.status.happened =
                         Some(state::status::Happened::opened(state).naming(name));
                 }
-                return Task::batch([refreshed, presets_task(self.owner.clone(), self.client)]);
+                // A file opened: its catalog folder becomes the Develop folder.
+                let folder = match self.document.state.as_ref() {
+                    Some(state) => {
+                        let asset = state.asset.id.clone();
+                        self.develop_file_opened(generation, asset)
+                    }
+                    None => Task::none(),
+                };
+                return Task::batch([
+                    refreshed,
+                    folder,
+                    presets_task(self.owner.clone(), self.client),
+                ]);
             }
             SyncMessage::Refreshed(result) => {
                 // Overtaken by a selection or a state this desktop already holds: whatever
@@ -239,14 +256,14 @@ impl Editor {
                             sync.themes,
                             sync.usage,
                         );
-                        let set = match sync.development_set {
-                            Some(revision) => self.development_set_changed(revision),
+                        let strip = match sync.library {
+                            Some(sequence) => self.develop_library_changed(sequence),
                             None => Task::none(),
                         };
                         if sync.capabilities {
-                            return Task::batch([flags, set, self.reload_capabilities()]);
+                            return Task::batch([flags, strip, self.reload_capabilities()]);
                         }
-                        return Task::batch([flags, set]);
+                        return Task::batch([flags, strip]);
                     }
                     Err(error) => self.status.text = format!("Live refresh failed: {error}"),
                 }
@@ -294,6 +311,7 @@ impl Editor {
     ) -> Task<Message> {
         if let Some(reason) = self.mask_tool_refusal() {
             self.status.text = reason;
+            self.develop.reopen = false;
             return Task::none();
         }
         self.controls.ui.analysis_serial += 1;
@@ -302,9 +320,9 @@ impl Editor {
         if let Some(queued) = &queued {
             self.activity.request_started = queued.started;
         }
-        // A file opened is opened alone: Develop has no development set for it.
-        let alone = self.develop_opened_alone();
         let generation = self.activity.requested;
+        // A file opened leaves the Develop folder for its own, once it answers.
+        self.develop_file_opening(generation);
         self.open_generation.store(generation, Ordering::Release);
         // Preserve the last displayed photo, but prevent an older in-flight render from becoming
         // the image for this newer open request.
@@ -317,7 +335,7 @@ impl Editor {
             .unwrap_or_default();
         self.event("open_requested", || json!({"file":file}));
         let proxy = self.drawn();
-        let import = import_task(
+        import_task(
             self.owner.clone(),
             self.client,
             path,
@@ -325,8 +343,7 @@ impl Editor {
             self.open_generation.clone(),
             proxy,
             queued.map(|queued| queued.result),
-        );
-        Task::batch([alone, import])
+        )
     }
 
     pub(super) fn open_failed(&mut self, error_code: &str, message: &str) {
@@ -464,7 +481,7 @@ impl Editor {
         .map(|happened| {
             happened.naming(state::title::document_name(
                 &refresh.state.asset,
-                self.develop.state.set.as_ref(),
+                self.develop.state.strip.as_ref(),
             ))
         });
         // A composite that skipped settings says so beside what it did, and one that applied

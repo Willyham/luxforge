@@ -21,7 +21,7 @@ pub(crate) const STATUS_BAR_HEIGHT: f32 = 25.0;
 pub(crate) const DIVIDER_WIDTH: f32 = 1.0;
 
 /// Develop's filmstrip under the canvas, its rule over it included: the development-set board's
-/// 92 pt. It is on screen while Develop has a development set and the strip is not collapsed.
+/// 92 pt. It is on screen while Develop holds a filmstrip and the strip is not collapsed.
 pub(crate) const FILMSTRIP_HEIGHT: f32 = 92.0;
 
 /// The photograph's inset from the canvas at Fit, at the top and on both sides.

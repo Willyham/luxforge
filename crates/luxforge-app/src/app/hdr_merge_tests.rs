@@ -1,9 +1,9 @@
 //! HDR merges in the Select workspace against a real owner, merging real files through a synthetic
 //! camera (`OwnerHandle::merge_synthetic_frames`): everything after each frame's development is the
-//! production path. A bracket header's Pick merged and a selection's Import merged, the core's
-//! refusal said in the menu, the one pending row with its Cancel and a failure naming its input, the
-//! result leading its collapsed stack with its badge and in the Development set, `S` expanding and
-//! collapsing it, an original picked as any file is, a merge reused, Remove merge with library undo
+//! production path. A bracket header's Merge HDR and a selection's, the core's refusal said in the
+//! menu, the one pending row with its Cancel and a failure naming its input, the result in the
+//! catalog folder the plan names, leading its collapsed stack with its badge while Select stays
+//! shown, `S` expanding and collapsing it, an original picked as any file is, a merge reused, Remove merge with library undo
 //! and redo, and Put back merge for a merge in Removed. Each owner call runs as its task would,
 //! through the `*_now` function the task runs, its answer handed back as the task's message; what
 //! the desktop sends is compared with what a second JSON client writes, and every effect is read
@@ -14,21 +14,18 @@ use super::select_owner_tests::{
 use crate::{
     app::{
         Editor,
-        develop::read_set_now,
-        message::{
-            Message, develop::DevelopMessage, select::SelectMessage, select_merge::MergeMessage,
-        },
+        message::{Message, select::SelectMessage, select_merge::MergeMessage},
         select_merge::{expanded_now, plan_now, start_now},
         tasks::call,
     },
     state::{
         select::{Block, InfoModel, MomentAction},
-        select_merge::{MergeAction, MergeMode, MergeRequest, ev_words, plan_refusal},
+        select_merge::{MergeAction, MergeRequest, ev_words, plan_refusal},
     },
 };
 use iced::{Point, Size, keyboard::Modifiers};
 use luxforge_core::{
-    ClientId, OwnerHandle, SourceTag, SyntheticFrame,
+    SourceTag, SyntheticFrame,
     catalog_types::{
         CameraBody, CaptureTime, Dimensions, ExifOrientation, Exposure, FileRecord, FileSignature,
         HeaderMetadata, HeaderState, IndexRoot, IndexedFolder, MergePlan, RootKind, RowItem,
@@ -400,19 +397,6 @@ fn plan(editor: &mut Editor) -> Value {
     params
 }
 
-/// Read the owner's development set into Develop, as the task Pick merged's end asks for does.
-fn follow_set(editor: &mut Editor) {
-    let serial = editor
-        .develop
-        .state
-        .set
-        .as_ref()
-        .expect("Develop follows the owner's set")
-        .serial;
-    let result = read_set_now(&editor.owner, editor.client);
-    let _ = editor.update(Message::Develop(DevelopMessage::SetRead { serial, result }));
-}
-
 /// Shift-click the cell at `item`.
 fn extend(editor: &mut Editor, item: u32) {
     let layout = &editor.select.layout;
@@ -468,32 +452,19 @@ fn active(editor: &Editor) -> luxforge_core::catalog_types::ViewRow {
     editor.select.state.rows.row(at).expect("its row").clone()
 }
 
-/// The members of the owner's development set, read through `client`.
-fn members(owner: &OwnerHandle, client: ClientId) -> Vec<String> {
-    let (page, _) = call(owner, client, "development-set.read", json!({})).unwrap();
-    page["members"]
-        .as_array()
-        .map(|members| {
-            members
-                .iter()
-                .map(|member| member["asset_id"].as_str().unwrap_or_default().to_owned())
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-/// Pick merged from the bracket's header: one pending row while it runs, with the originals still
-/// shown; then the result active and selected in Select, leading its collapsed stack with its badge
-/// and in the Development set Develop now follows; `S` expands and collapses it through the owner;
-/// an original is picked as any file is, and only that pick is Develop N's.
+/// Merge HDR from the bracket's header: one pending row while it runs, with the originals still
+/// shown; then the result active and selected in Select, which stays shown, in the catalog folder
+/// the plan named, leading its collapsed stack with its badge, never shown picked; `S` expands and
+/// collapses it through the owner; an original is picked as any file is, and only that pick is
+/// Develop N's.
 #[test]
-fn hdr_merge_pick_merged_from_a_bracket_header_leads_a_collapsed_stack_in_the_set() {
+fn hdr_merge_from_a_bracket_header_leads_a_collapsed_stack_in_the_plans_folder() {
     let bench = Bench::new("pick");
     let mut editor = bench.open();
     let agent = editor.owner.register();
     assert_eq!(editor.select.state.summary.as_ref().unwrap().count, 5);
     let (number, labels) = bracket_header(&editor).expect("the bracket's header");
-    assert_eq!(labels, ["Pick all 3", "Import merged", "Pick merged"]);
+    assert_eq!(labels, ["Pick all 3", "Merge HDR"]);
     let actions = editor
         .select
         .state
@@ -509,8 +480,8 @@ fn hdr_merge_pick_merged_from_a_bracket_header_leads_a_collapsed_stack_in_the_se
             _ => None,
         })
         .unwrap();
-    assert!(actions[2].primary() && !actions[1].primary() && !actions[0].primary());
-    assert_eq!(actions[2], MomentAction::Merge(MergeMode::Pick));
+    assert!(actions[1].primary() && !actions[0].primary());
+    assert_eq!(actions[1], MomentAction::Merge);
 
     // Pressed with the camera held at its first read: the pending row before the frames.
     bench.reading.shut();
@@ -518,11 +489,11 @@ fn hdr_merge_pick_merged_from_a_bracket_header_leads_a_collapsed_stack_in_the_se
         &mut editor,
         MergeMessage::Header {
             moment: number,
-            action: 2,
+            action: 1,
         },
     );
-    let request = start(&mut editor);
-    assert_eq!(request.mode, MergeMode::Pick);
+    assert_eq!(editor.status.text, "Merging HDR\u{2026}");
+    start(&mut editor);
     let (title, _, button, failed) = pending_row(&editor).expect("the pending row");
     assert_eq!(title, "Merging HDR \u{b7} 3 exposures");
     assert_eq!(button, "Cancel");
@@ -533,7 +504,7 @@ fn hdr_merge_pick_merged_from_a_bracket_header_leads_a_collapsed_stack_in_the_se
         "nothing is hidden before the merge is published"
     );
     // What the desktop sent is what a JSON client writes: the frames by identity, as planned, into
-    // the folder the plan suggested and the desktop made, into the development set.
+    // the folder the plan suggested and the desktop made.
     let files: Vec<Value> = (0..3)
         .map(|at| match editor.select.state.rows.row(at).unwrap().item {
             RowItem::File { file_id } => json!(file_id),
@@ -554,7 +525,6 @@ fn hdr_merge_pick_merged_from_a_bracket_header_leads_a_collapsed_stack_in_the_se
     assert_eq!(created["kind"], "hdr");
     assert_eq!(created["targets"], planned_targets(&files));
     assert_eq!(created["plan_id"], json!(plan.plan_id));
-    assert_eq!(created["add_to_development_set"], true);
     assert_eq!(created["mutation"]["actor"], "desktop");
     let (record, _) = call(
         &editor.owner,
@@ -576,7 +546,11 @@ fn hdr_merge_pick_merged_from_a_bracket_header_leads_a_collapsed_stack_in_the_se
         .as_str()
         .unwrap()
         .to_owned();
-    assert!(editor.status.text.contains("added to the Development set"));
+    assert!(
+        editor.status.text.starts_with("Merged ") && editor.status.text.ends_with("Undo \u{2318}Z"),
+        "{}",
+        editor.status.text
+    );
     settle(&mut editor);
     assert!(
         pending_row(&editor).is_none(),
@@ -585,19 +559,13 @@ fn hdr_merge_pick_merged_from_a_bracket_header_leads_a_collapsed_stack_in_the_se
     let summary = editor.select.state.summary.clone().unwrap();
     assert_eq!(summary.count, 3, "two singles and the result: {summary:?}");
     assert_eq!(summary.collapsed, 3);
-    assert_eq!(summary.in_development_set, 1);
     assert_eq!(
         summary.picked, 0,
         "Develop N counts only pending file picks"
     );
     assert_eq!(editor.workspace.select.title.picks, 0);
     assert!(
-        editor
-            .workspace
-            .select
-            .status
-            .line
-            .ends_with("1 in the Development set"),
+        editor.workspace.select.status.line.ends_with("0 picked"),
         "{}",
         editor.workspace.select.status.line
     );
@@ -614,26 +582,31 @@ fn hdr_merge_pick_merged_from_a_bracket_header_leads_a_collapsed_stack_in_the_se
     assert_eq!(stack.role, StackRole::Leader);
     assert_eq!(stack.exposures, 3);
     assert_eq!(stack.collapsed, 3);
-    assert!(leader.in_development_set);
     let at = editor.session.browse.selection.active.unwrap();
     assert!(
-        editor.select.state.rows.cell(at).unwrap().picked,
-        "the in-set check"
+        !editor.select.state.rows.cell(at).unwrap().picked,
+        "a result is never shown picked"
     );
+    // In the catalog folder the plan named, as a second client reads it.
+    let folders: luxforge_core::catalog_types::CatalogFolders = serde_json::from_value(
+        call(&editor.owner, agent, "folder.list", json!({}))
+            .unwrap()
+            .0,
+    )
+    .unwrap();
+    let named = folders
+        .folders
+        .iter()
+        .find(|held| Some(held.name.as_str()) == folder["name"].as_str())
+        .expect("the plan's folder");
+    assert_eq!(leader.folder_id.as_ref(), Some(&named.id));
+    assert_eq!(named.count, 1);
     let InfoModel::One(info) = &editor.workspace.select.info else {
         panic!("one item: {:?}", editor.workspace.select.info);
     };
     let band = info.stack.as_ref().expect("the stack band");
     assert_eq!(band.title, "HDR \u{b7} 3 exposures");
-    assert!(band.in_set);
     assert_eq!(band.note.as_deref(), Some("3 originals beneath it"));
-    // The set as a second client reads it, and Develop following it.
-    assert_eq!(members(&editor.owner, agent), [result.as_str()]);
-    follow_set(&mut editor);
-    let set = editor.develop.state.set.as_ref().unwrap();
-    assert_eq!(set.photos.len(), 1);
-    assert_eq!(set.photos[0].asset_id.to_string(), result);
-    assert!(editor.develop.state.folder_query.is_none());
 
     // `S` expands the stack through the owner: the originals follow the result, each with its
     // exposure; `S` on an original collapses it again.
@@ -687,7 +660,7 @@ fn planned_targets(files: &[Value]) -> Value {
 }
 
 /// A selection's menu says why two frames that are no bracket cannot merge, in the core's words;
-/// the bracket's frames selected merge with Import merged, leaving the set alone; the same frames
+/// the bracket's frames selected merge with Merge HDR; the same frames
 /// again reuse the result; Remove merge shows the originals again, and library undo and redo move
 /// the merge, edited, back and forth, legibly; a merge found in Removed is offered back.
 #[test]
@@ -711,33 +684,26 @@ fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
         .menu
         .clone()
         .expect("the menu");
-    assert_eq!(menu.entries[0].label, "Pick merged");
+    assert_eq!(menu.entries[0].label, "Merge HDR");
     assert_eq!(
         menu.entries[0].hint,
-        Some("Merge HDR and add to Development set")
+        Some("Merge the frames into one HDR photograph in the catalog")
     );
-    assert_eq!(menu.entries[1].label, "Import merged");
-    for entry in &menu.entries[..2] {
-        assert!(entry.action.is_none());
-        assert_eq!(entry.reason.as_deref(), Some(reason.as_str()));
-    }
+    assert_eq!(menu.entries[1].label, "Merge options\u{2026}");
+    assert!(menu.entries[0].action.is_none());
+    assert_eq!(menu.entries[0].reason.as_deref(), Some(reason.as_str()));
     act(&mut editor, MergeAction::CloseMenu);
 
-    // The bracket's frames, selected: Import merged.
+    // The bracket's frames, selected: Merge HDR.
     click(&mut editor, 0);
     extend(&mut editor, 2);
     context(&mut editor, 2);
     plan(&mut editor);
     let menu = editor.workspace.select.merge.menu.clone().unwrap();
-    assert!(menu.entries[1].action.is_some(), "{menu:?}");
-    assert_eq!(menu.entries[2].trailing.as_deref(), Some("3 frames"));
-    act(&mut editor, MergeAction::Start(MergeMode::Import));
+    assert!(menu.entries[0].action.is_some(), "{menu:?}");
+    assert_eq!(menu.entries[1].trailing.as_deref(), Some("3 frames"));
+    act(&mut editor, MergeAction::Start);
     start(&mut editor);
-    assert!(
-        sent_merge(&editor, "merge.create")
-            .get("add_to_development_set")
-            .is_none()
-    );
     let record = follow(&mut editor);
     assert_eq!(record["status"], "ready", "{record}");
     let merge_id = record["result"]["merge_id"].as_str().unwrap().to_owned();
@@ -746,13 +712,7 @@ fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
         .unwrap()
         .to_owned();
     settle(&mut editor);
-    assert!(
-        members(&editor.owner, agent).is_empty(),
-        "Import leaves the set"
-    );
     assert_eq!(editor.select.state.summary.as_ref().unwrap().count, 3);
-    let leader = active(&editor);
-    assert!(!leader.in_development_set);
 
     // Edited by an agent, as any photograph is.
     let asset = json!(result);
@@ -770,7 +730,7 @@ fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
     .unwrap();
     let edited = kit::recipe(&editor.owner, agent, &asset).unwrap();
 
-    // The same frames again, picked: the result reused and added to the set.
+    // The same frames again: the result reused.
     act(
         &mut editor,
         MergeAction::Expand(
@@ -784,7 +744,7 @@ fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
     extend(&mut editor, first + 2);
     context(&mut editor, first + 2);
     plan(&mut editor);
-    act(&mut editor, MergeAction::Start(MergeMode::Pick));
+    act(&mut editor, MergeAction::Start);
     start(&mut editor);
     let record = follow(&mut editor);
     assert_eq!(record["status"], "ready", "{record}");
@@ -792,7 +752,6 @@ fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
     assert_eq!(record["result"]["merge_id"], json!(merge_id));
     assert!(editor.status.text.contains("is this merge already"));
     settle(&mut editor);
-    assert_eq!(members(&editor.owner, agent), [result.as_str()]);
     assert!(
         matches!(&active(&editor).item, RowItem::Photo { asset_id } if asset_id.to_string() == result)
     );
@@ -821,13 +780,9 @@ fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
     );
     settle(&mut editor);
     assert_eq!(editor.select.state.summary.as_ref().unwrap().count, 5);
-    assert!(
-        members(&editor.owner, agent).is_empty(),
-        "the result left the set"
-    );
     assert_eq!(newest_change(&editor.owner, agent)["actor"], "desktop");
 
-    // Undo puts it back, edited, with its membership; redo removes it again. Each is said.
+    // Undo puts it back, edited; redo removes it again. Each is said.
     let _ = editor.update(Message::Select(SelectMessage::Undo));
     settle(&mut editor);
     assert!(
@@ -851,7 +806,6 @@ fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
                 stack.role == StackRole::Leader && stack.expansion == Some(StackExpansion::Expanded)
             })
     );
-    assert_eq!(members(&editor.owner, agent), [result.as_str()]);
     assert_eq!(
         kit::recipe(&editor.owner, agent, &asset).unwrap(),
         edited,
@@ -870,7 +824,7 @@ fn hdr_merge_from_a_selection_refuses_imports_reuses_removes_and_puts_back() {
     let (number, labels) = bracket_header(&editor).expect("the bracket again");
     let pick = labels
         .iter()
-        .position(|label| label == "Pick merged")
+        .position(|label| label == "Merge HDR")
         .unwrap();
     merge(
         &mut editor,

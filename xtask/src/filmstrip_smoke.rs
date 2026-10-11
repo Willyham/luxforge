@@ -29,7 +29,7 @@ use crate::{
     *,
 };
 use luxforge_core::{ApiRequest, ClientId, EditorService, OwnerHandle};
-use luxforge_evidence::{self as script, DevelopStep, SelectStep, SetStep};
+use luxforge_evidence::{self as script, DevelopStep, SelectStep, StripStep};
 
 pub const SCENARIO: &str = "filmstrip";
 /// What `reproduce.md` says the run does before it launches.
@@ -74,13 +74,13 @@ pub fn plan(count: usize) -> Plan {
         steps.push(develop(&format!("ready-{at}"), DevelopStep::Ready));
         steps.push(develop(
             &format!("next-{at}"),
-            DevelopStep::Step(SetStep::Next),
+            DevelopStep::Step(StripStep::Next),
         ));
         steps.push(develop(&format!("settled-{at}"), DevelopStep::Settle));
     }
     steps.extend([
         develop("ready-back", DevelopStep::Ready),
-        develop("previous", DevelopStep::Step(SetStep::Previous)),
+        develop("previous", DevelopStep::Step(StripStep::Previous)),
         develop("settled-back", DevelopStep::Settle),
         develop("cell", DevelopStep::Cell(0)),
         develop("settled-cell", DevelopStep::Settle),

@@ -1,5 +1,5 @@
 //! HDR merges in the Select workspace ([HDR merge design](../../../../docs/design/hdr-merge.md),
-//! "Grid workflow"), as plain data: the requests Pick merged and Import merged send, the Merge
+//! "Grid workflow"), as plain data: the requests Merge HDR sends, the Merge
 //! options… form, the one pending merge row this desktop draws while its job runs, a merge's end
 //! in words, and the words a result's stack badge and its originals' notes show. Every decision is
 //! the owner's: the plan says whether the frames merge and why not, the job says how far it has
@@ -14,39 +14,14 @@ use luxforge_core::{
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::LazyLock};
 
-/// Pick merged's hint: what it does beyond Import merged.
-pub(crate) const PICK_HINT: &str = "Merge HDR and add to Development set";
-/// Import merged's hint.
-pub(crate) const IMPORT_HINT: &str = "Merge HDR into the catalog only";
+/// Merge HDR's hint in the selection's menu.
+pub(crate) const MERGE_HINT: &str = "Merge the frames into one HDR photograph in the catalog";
+/// Merge HDR's label, in a bracket's header, the selection's menu and the options form.
+pub(crate) const MERGE_LABEL: &str = "Merge HDR";
 /// The most and fewest frames a merge takes, as the core plans them: the selection's merge
 /// actions are offered for these many selected.
 pub(crate) const MIN_FRAMES: u32 = 2;
 pub(crate) const MAX_FRAMES: u32 = 9;
-
-/// Which of the two creation modes a gesture asks for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum MergeMode {
-    /// Pick merged: the result joins the current development set as it is published.
-    Pick,
-    /// Import merged: the result is only imported.
-    Import,
-}
-
-impl MergeMode {
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::Pick => "Pick merged",
-            Self::Import => "Import merged",
-        }
-    }
-
-    pub(crate) fn hint(self) -> &'static str {
-        match self {
-            Self::Pick => PICK_HINT,
-            Self::Import => IMPORT_HINT,
-        }
-    }
-}
 
 /// Alignment's or deghosting's choice: the core's default, or off.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -107,12 +82,11 @@ impl MergeOptions {
     }
 }
 
-/// One merge request as the desktop makes it: which frames, which mode, the options, and where
+/// One merge request as the desktop makes it: which frames, the options, and where
 /// in the view it was asked for, so the pending row is drawn there.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct MergeRequest {
     pub(crate) targets: Targets,
-    pub(crate) mode: MergeMode,
     pub(crate) options: MergeOptions,
     /// The view the gesture was made in and the position of its first frame.
     pub(crate) source: Option<ViewSource>,
@@ -150,7 +124,7 @@ fn add_options(params: &mut Value, options: &MergeOptions) {
 }
 
 /// `merge.create`'s parameters: an HDR merge of `request`'s frames as planned (`plan_id`), into
-/// `folder`, joining the current development set for Pick merged.
+/// `folder`.
 pub(crate) fn create_params(
     request: &MergeRequest,
     plan_id: &str,
@@ -165,9 +139,6 @@ pub(crate) fn create_params(
         "mutation": mutation,
     });
     add_options(&mut params, &request.options);
-    if request.mode == MergeMode::Pick {
-        params["add_to_development_set"] = json!(true);
-    }
     params
 }
 
@@ -271,7 +242,7 @@ impl PendingMerge {
         }
     }
 
-    /// The row's title: what is merged, in the mode asked.
+    /// The row's title: what is merged.
     pub(crate) fn title(&self) -> String {
         format!(
             "{} \u{b7} {} exposures",
@@ -326,24 +297,15 @@ pub(crate) fn failure_text(record: &Value) -> String {
 }
 
 /// What the status bar says once a merge's job ended `ready`.
-pub(crate) fn finished_text(answer: &MergeAnswer, mode: MergeMode) -> String {
-    match (answer.reused, mode) {
-        (true, MergeMode::Pick) => format!(
-            "{} is this merge already \u{b7} in the Development set",
-            answer.file_name
-        ),
-        (true, MergeMode::Import) => format!("{} is this merge already", answer.file_name),
-        (false, MergeMode::Pick) => format!(
-            "Merged {} \u{b7} added to the Development set \u{b7} Undo \u{2318}Z",
-            answer.file_name
-        ),
-        (false, MergeMode::Import) => {
-            format!("Merged {} \u{b7} Undo \u{2318}Z", answer.file_name)
-        }
+pub(crate) fn finished_text(answer: &MergeAnswer) -> String {
+    if answer.reused {
+        format!("{} is this merge already", answer.file_name)
+    } else {
+        format!("Merged {} \u{b7} Undo \u{2318}Z", answer.file_name)
     }
 }
 
-/// The Merge options… form: the frames and mode it was opened for, the plan it shows, what the
+/// The Merge options… form: the frames it was opened for, the plan it shows, what the
 /// person changed, and a refusal from planning again.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct MergeForm {
@@ -413,12 +375,12 @@ impl SelectMerge {
 /// A merge gesture of the menu, the form, the pending row or the Info panel.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum MergeAction {
-    /// The selection's Pick merged or Import merged, with the defaults.
-    Start(MergeMode),
+    /// The selection's Merge HDR, with the defaults.
+    Start,
     /// Merge options… for the selection.
     Options,
-    /// The form's Pick merged or Import merged, with its options.
-    FormStart(MergeMode),
+    /// The form's Merge HDR, with its options.
+    FormStart,
     FormClose,
     Alignment(Toggle),
     Deghost(Toggle),
@@ -527,15 +489,10 @@ pub(crate) fn derive(merge: &SelectMerge) -> MergeModel {
                 } else {
                     refusal.clone()
                 };
-                for mode in [MergeMode::Pick, MergeMode::Import] {
-                    let mut item = entry(
-                        mode.label(),
-                        reason.is_none().then_some(MergeAction::Start(mode)),
-                    );
-                    item.hint = Some(mode.hint());
-                    item.reason = reason.clone();
-                    entries.push(item);
-                }
+                let mut item = entry(MERGE_LABEL, reason.is_none().then_some(MergeAction::Start));
+                item.hint = Some(MERGE_HINT);
+                item.reason = reason;
+                entries.push(item);
                 let mut options = entry(
                     "Merge options\u{2026}",
                     refusal.is_none().then_some(MergeAction::Options),
@@ -770,8 +727,6 @@ pub(crate) struct StackBand {
     pub(crate) title: String,
     pub(crate) note: Option<String>,
     pub(crate) leader: bool,
-    /// A leader in the current development set.
-    pub(crate) in_set: bool,
     /// Whether the stack's originals are shown: always, for an original.
     pub(crate) expanded: bool,
     /// The expansion its Expand or Collapse stack button asks for.
@@ -779,7 +734,7 @@ pub(crate) struct StackBand {
 }
 
 /// The stack band of a row with `stack`.
-pub(crate) fn stack_band(stack: &RowStack, in_set: bool, reason: Option<&str>) -> StackBand {
+pub(crate) fn stack_band(stack: &RowStack, reason: Option<&str>) -> StackBand {
     let (long, _) = stack_words(stack.exposures);
     let leader = stack.role == StackRole::Leader;
     let title = if leader {
@@ -813,7 +768,6 @@ pub(crate) fn stack_band(stack: &RowStack, in_set: bool, reason: Option<&str>) -
         title,
         note,
         leader,
-        in_set: leader && in_set,
         expanded,
         toggle: if expanded {
             StackExpansion::Collapsed
@@ -835,12 +789,11 @@ mod tests {
     use super::*;
     use luxforge_core::catalog_types::FileId;
 
-    fn request(mode: MergeMode) -> MergeRequest {
+    fn request() -> MergeRequest {
         MergeRequest {
             targets: Targets::Files {
                 file_ids: vec![FileId(1), FileId(2), FileId(3)],
             },
-            mode,
             options: MergeOptions::default(),
             source: None,
             anchor: 0,
@@ -849,7 +802,7 @@ mod tests {
     }
 
     /// The defaults send nothing but the frames; every option changed is sent as an agent writes
-    /// it, and Pick merged alone joins the development set.
+    /// it.
     #[test]
     fn hdr_merge_requests_send_only_what_was_chosen() {
         let mutation = MutationRequest {
@@ -857,31 +810,30 @@ mod tests {
             actor: "desktop".into(),
         };
         let folder = CatalogFolderId::new();
-        let pick = request(MergeMode::Pick);
+        let defaults = request();
         assert_eq!(
-            plan_params(&pick.targets, &pick.options),
+            plan_params(&defaults.targets, &defaults.options),
             json!({"targets": {"kind": "files", "file_ids": [1, 2, 3]}})
         );
         assert_eq!(
-            create_params(&pick, "plan", &folder, &mutation),
+            create_params(&defaults, "plan", &folder, &mutation),
             json!({
                 "kind": "hdr",
                 "targets": {"kind": "files", "file_ids": [1, 2, 3]},
                 "plan_id": "plan",
                 "folder_id": folder,
-                "add_to_development_set": true,
                 "mutation": {"request_id": "r", "actor": "desktop"},
             })
         );
-        let mut import = request(MergeMode::Import);
-        import.options = MergeOptions {
+        let mut chosen = request();
+        chosen.options = MergeOptions {
             alignment: Toggle::Off,
             deghost: Toggle::Off,
             reference: Some("/a/2.NEF".into()),
             overrides: vec![("/a/1.NEF".into(), -2.0)],
             folder: FolderPick::Proposed,
         };
-        let params = create_params(&import, "plan", &folder, &mutation);
+        let params = create_params(&chosen, "plan", &folder, &mutation);
         assert_eq!(params["alignment"], "off");
         assert_eq!(params["deghost"], "off");
         assert_eq!(params["reference"], "/a/2.NEF");
@@ -889,7 +841,6 @@ mod tests {
             params["exposure_overrides"],
             json!([{"path": "/a/1.NEF", "offset_ev": -2.0}])
         );
-        assert!(params.get("add_to_development_set").is_none());
     }
 
     #[test]

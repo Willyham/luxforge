@@ -88,7 +88,7 @@ impl Editor {
                 );
                 self.await_select(Task::batch([task, scrolled]))
             }
-            SelectStep::Merge { position, mode } => self.merge_step(position, mode),
+            SelectStep::Merge { position } => self.merge_step(position),
             SelectStep::Merged => self.merged_step(),
         }
     }
@@ -441,22 +441,9 @@ impl Editor {
         self.settle_step(Settle::Select, by);
     }
 
-    /// The owner's own answers a merge's frames are checked against: the session's development set
-    /// (`development-set.read`) and every HDR merge on the activity board, running or recent, by
-    /// job (`activity.list`).
+    /// The owner's own answers a merge's frames are checked against: every HDR merge on the
+    /// activity board, running or recent, by job (`activity.list`).
     pub(super) fn owner_merges(&self) -> Value {
-        let set = match call(&self.owner, self.client, "development-set.read", json!({})) {
-            Ok((set, _)) => json!({
-                "set_id": set["set_id"],
-                "revision": set["revision"],
-                "members": set["members"].as_array().into_iter().flatten().map(|member| json!({
-                    "asset_id": member["asset_id"],
-                    "merge_id": member["merge_id"],
-                    "removed": member["removed"],
-                })).collect::<Vec<_>>(),
-            }),
-            Err(error) => json!({ "error": error }),
-        };
         let merges = match call(&self.owner, self.client, "activity.list", json!({})) {
             Ok((board, _)) => json!(
                 ["active", "recent"]
@@ -468,6 +455,6 @@ impl Editor {
             ),
             Err(error) => json!({ "error": error }),
         };
-        json!({ "owner_set": set, "owner_merge_jobs": merges })
+        json!({ "owner_merge_jobs": merges })
     }
 }

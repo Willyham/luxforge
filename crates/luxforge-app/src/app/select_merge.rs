@@ -1,5 +1,5 @@
 //! HDR merges in the Select workspace ([HDR merge design](../../../../docs/design/hdr-merge.md),
-//! "Grid workflow"): a bracket's Pick merged and Import merged, the same for a selection of frames
+//! "Grid workflow"): a bracket's Merge HDR, the same for a selection of frames
 //! through the grid's menu, Merge options…, the one pending merge row, the result's stack and its
 //! originals, and Remove merge and Put back merge. Its model is `state/select_merge.rs`; the grid
 //! draws the pending row, the badges and the notes, and `view/select_merge.rs` the menu, the form
@@ -26,8 +26,9 @@
 //!   asked, answered as any evaluation is. Picking an original is an ordinary pick.
 //! - **Remove merge and Put back merge** are library changes (`merge.remove`, `merge.restore`)
 //!   sent synchronously like every library gesture of Select, which `Cmd+Z` undoes.
-//! - **Pick merged** adds the result to the owner's development set as it is published; Develop
-//!   follows that set from then on, so `D` shows it beside the set's other photographs.
+//! - **The result** is a photograph of the catalog in the folder the plan names, and Select
+//!   stays where it is. When that folder is the Develop folder, or beneath it, the filmstrip
+//!   shows it once it is read again, as after any library change.
 use crate::app::{
     Editor,
     message::{Message, select::SelectMessage, select_merge::MergeMessage},
@@ -36,8 +37,8 @@ use crate::app::{
 };
 use crate::state::select::{Block, LibraryGesture, MomentAction};
 use crate::state::select_merge::{
-    self as model, FolderPick, MergeAction, MergeForm, MergeMenu, MergeMenuKind, MergeMode,
-    MergeOptions, MergeRequest, PendingMerge, PutBack, Started,
+    self as model, FolderPick, MergeAction, MergeForm, MergeMenu, MergeMenuKind, MergeOptions,
+    MergeRequest, PendingMerge, PutBack, Started,
 };
 use iced::Task;
 use luxforge_core::{
@@ -226,18 +227,16 @@ impl Editor {
         let merge = &mut self.select.state.merge;
         match action {
             MergeAction::CloseMenu => merge.menu = None,
-            MergeAction::Start(mode) => {
+            MergeAction::Start => {
                 merge.menu = None;
-                let Some(request) = self.selection_request(mode, MergeOptions::default()) else {
+                let Some(request) = self.selection_request(MergeOptions::default()) else {
                     return Task::none();
                 };
                 return self.start_merge(request);
             }
             MergeAction::Options => {
                 merge.menu = None;
-                let Some(request) =
-                    self.selection_request(MergeMode::Pick, MergeOptions::default())
-                else {
+                let Some(request) = self.selection_request(MergeOptions::default()) else {
                     return Task::none();
                 };
                 let folders = self
@@ -265,12 +264,11 @@ impl Editor {
                 return Task::batch([lists, self.plan_form()]);
             }
             MergeAction::FormClose => merge.form = None,
-            MergeAction::FormStart(mode) => {
+            MergeAction::FormStart => {
                 let Some(form) = &merge.form else {
                     return Task::none();
                 };
-                let mut request = form.request.clone();
-                request.mode = mode;
+                let request = form.request.clone();
                 return self.start_merge(request);
             }
             MergeAction::Alignment(toggle) => {
@@ -353,12 +351,9 @@ impl Editor {
         let Some((index, action)) = state.content.action(number, action) else {
             return Task::none();
         };
-        let mode = match action {
-            MomentAction::PickAll(_) => {
-                return self.pick_all(number);
-            }
-            MomentAction::Merge(mode) => mode,
-        };
+        if let MomentAction::PickAll(_) = action {
+            return self.pick_all(number);
+        }
         let Some((summary, moment)) = state
             .summary
             .as_ref()
@@ -373,7 +368,6 @@ impl Editor {
         };
         let request = MergeRequest {
             targets: Targets::Files { file_ids: files },
-            mode,
             options: MergeOptions::default(),
             source: Some(summary.query.source.clone()),
             anchor: moment.start,
@@ -385,11 +379,7 @@ impl Editor {
     /// The selection as a merge's frames: by identity when every selected row is held and is a
     /// file (or every one a photograph), otherwise the selection itself, which the owner resolves
     /// and refuses with its own reason.
-    fn selection_request(
-        &mut self,
-        mode: MergeMode,
-        options: MergeOptions,
-    ) -> Option<MergeRequest> {
+    fn selection_request(&mut self, options: MergeOptions) -> Option<MergeRequest> {
         let summary = self.select.state.summary.as_ref()?;
         let selection = self.selection();
         if selection.count == 0 {
@@ -418,7 +408,6 @@ impl Editor {
         };
         Some(MergeRequest {
             targets,
-            mode,
             options,
             source: Some(summary.query.source.clone()),
             anchor: selection.ranges.first().map_or(0, |range| range.0),
@@ -437,13 +426,7 @@ impl Editor {
         merge.pending = None;
         merge.put_back = None;
         merge.starting = Some(request.clone());
-        self.status.text = format!(
-            "{}\u{2026}",
-            match request.mode {
-                MergeMode::Pick => "Merging HDR to add to the Development set",
-                MergeMode::Import => "Merging HDR",
-            }
-        );
+        self.status.text = "Merging HDR\u{2026}".into();
         self.rebuild_grid();
         let (owner, client) = (self.owner.clone(), self.client);
         let sent = request.clone();
@@ -542,7 +525,6 @@ impl Editor {
                 Task::none()
             }
             Some("ready") => {
-                let mode = pending.request.mode;
                 self.select.state.merge.pending = None;
                 let answer = match parse::<MergeAnswer>(record["result"].clone()) {
                     Ok(answer) => answer,
@@ -552,7 +534,7 @@ impl Editor {
                         return Task::none();
                     }
                 };
-                self.merge_finished(&answer, mode)
+                self.merge_finished(&answer)
             }
             Some("cancelled") => {
                 self.select.state.merge.pending = None;
@@ -571,9 +553,9 @@ impl Editor {
     }
 
     /// A merge ended `ready`: its result, new or reused, is selected and made active in the view
-    /// read again, where it leads its stack; Pick merged's result is in the owner's development
-    /// set, which Develop follows from now on.
-    fn merge_finished(&mut self, answer: &MergeAnswer, mode: MergeMode) -> Task<Message> {
+    /// read again, where it leads its stack. Select stays shown; the Develop folder's strip is
+    /// read again when the result may be in it.
+    fn merge_finished(&mut self, answer: &MergeAnswer) -> Task<Message> {
         self.event("select_merge_finished", || {
             json!({
                 "merge_id": answer.merge_id,
@@ -581,7 +563,7 @@ impl Editor {
                 "reused": answer.reused,
             })
         });
-        self.status.text = model::finished_text(answer, mode);
+        self.status.text = model::finished_text(answer);
         if let Some(change) = answer.change {
             self.select.own_change = Some(change.0);
         }
@@ -590,8 +572,8 @@ impl Editor {
         }]);
         self.select.reveal_held = true;
         let mut tasks = vec![self.read_events(), self.read_counts()];
-        if mode == MergeMode::Pick {
-            tasks.push(self.follow_owner_set());
+        if let Some(change) = answer.change {
+            tasks.push(self.develop_library_changed(change.0));
         }
         if let Some(query) = self
             .select
@@ -750,7 +732,7 @@ impl Editor {
         if !frames {
             return Task::none();
         }
-        let Some(request) = self.selection_request(MergeMode::Pick, MergeOptions::default()) else {
+        let Some(request) = self.selection_request(MergeOptions::default()) else {
             return Task::none();
         };
         self.select.merge_plans += 1;
@@ -796,7 +778,6 @@ impl Editor {
             "starting": merge.starting.is_some(),
             "pending": merge.pending.as_ref().map(|pending| json!({
                 "job_id": pending.job,
-                "mode": pending.request.mode.label(),
                 "frames": pending.request.frames,
                 "fraction": pending.fraction,
                 "message": pending.message,

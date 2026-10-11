@@ -1033,7 +1033,7 @@ fn select_picks_undoes_and_redoes_through_the_journal_on_a_real_owner() {
                     .iter()
                     .map(|action| action.label())
                     .collect::<Vec<_>>(),
-                ["Pick all 3", "Import merged", "Pick merged"]
+                ["Pick all 3", "Merge HDR"]
             );
             (
                 number as u32,

@@ -31,7 +31,8 @@ pub enum MenuEntry<M> {
     /// A rule between two groups of items.
     Separator,
     /// A quiet line under the item before it, aligned with its label, saying what it does beyond
-    /// its name ("Merge HDR and add to Development set"). It wraps; it is not pressable.
+    /// its name ("Merge the frames into one HDR photograph in the catalog"). It wraps; it is not
+    /// pressable.
     Hint(String),
 }
 

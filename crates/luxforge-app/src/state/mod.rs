@@ -435,8 +435,8 @@ pub(crate) struct Inputs<'a> {
     pub(crate) select: &'a select::SelectState,
     /// Long-running work: the board as last read, each job's rate and the view waiting on a job.
     pub(crate) long_work: &'a long_work::LongWorkState,
-    /// Developing picks and the development set: Develop N's confirmation, a Develop running, the
-    /// set, and the cached preview drawn while a photograph of it prepares.
+    /// Developing picks and the filmstrip: Develop N's confirmation, a Develop running, the
+    /// filmstrip, and the cached preview drawn while a photograph of it prepares.
     pub(crate) develop: &'a develop::DevelopState,
 }
 
@@ -506,7 +506,8 @@ impl Workspace {
             .and_then(|job| job.entry.progress.as_ref())
             .and_then(|progress| progress.fraction);
         self.develop = develop::derive(inputs.develop, progress);
-        self.develop.can_enter |= inputs.document.state.is_some();
+        self.develop.can_enter |=
+            inputs.select.catalog.develop_folder.is_some() || inputs.document.state.is_some();
         self.settings = settings::derive(
             inputs.settings,
             inputs.preferences,

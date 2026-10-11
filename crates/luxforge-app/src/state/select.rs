@@ -736,8 +736,7 @@ pub(crate) enum Block {
     },
     /// A burst or a bracket of `frames` consecutive items, with its header: its pick count in the
     /// accent ("1 picked") and, for a bracket over files, its actions: Pick all while its frames
-    /// are not all picked, then Import merged and the primary Pick merged when a merge can take
-    /// that many frames. `index` is the moment's in the summary's `groups.moments`.
+    /// are not all picked, then the primary Merge HDR when a merge can take that many frames. `index` is the moment's in the summary's `groups.moments`.
     Moment {
         index: u32,
         bracket: bool,
@@ -766,20 +765,20 @@ pub(crate) enum Block {
 pub(crate) enum MomentAction {
     /// Pick all N: `pick.set` of the frames' files.
     PickAll(u32),
-    /// Pick merged or Import merged of the frames.
-    Merge(super::select_merge::MergeMode),
+    /// Merge HDR of the frames.
+    Merge,
 }
 
 impl MomentAction {
     pub(crate) fn label(self) -> String {
         match self {
             Self::PickAll(frames) => format!("Pick all {frames}"),
-            Self::Merge(mode) => mode.label().to_owned(),
+            Self::Merge => super::select_merge::MERGE_LABEL.to_owned(),
         }
     }
 
     pub(crate) fn primary(self) -> bool {
-        self == Self::Merge(super::select_merge::MergeMode::Pick)
+        self == Self::Merge
     }
 }
 
@@ -984,9 +983,9 @@ pub(crate) fn grid_content(summary: &ViewSummary, collapsed: &BTreeSet<u32>) -> 
 }
 
 /// A moment's header buttons: for a bracket over files, Pick all while its frames are not all
-/// picked, then Import merged and the primary Pick merged while a merge takes that many frames.
+/// picked, then the primary Merge HDR while a merge takes that many frames.
 fn moment_actions(bracket_of_files: bool, picked: u32, frames: u32) -> Vec<MomentAction> {
-    use super::select_merge::{MAX_FRAMES, MIN_FRAMES, MergeMode};
+    use super::select_merge::{MAX_FRAMES, MIN_FRAMES};
     let mut actions = Vec::new();
     if !bracket_of_files {
         return actions;
@@ -995,8 +994,7 @@ fn moment_actions(bracket_of_files: bool, picked: u32, frames: u32) -> Vec<Momen
         actions.push(MomentAction::PickAll(frames));
     }
     if (MIN_FRAMES..=MAX_FRAMES).contains(&frames) {
-        actions.push(MomentAction::Merge(MergeMode::Import));
-        actions.push(MomentAction::Merge(MergeMode::Pick));
+        actions.push(MomentAction::Merge);
     }
     actions
 }
@@ -1316,8 +1314,7 @@ pub(crate) struct CellFacts {
 pub(crate) fn cell_facts(row: &ViewRow) -> CellFacts {
     CellFacts {
         aspect: aspect(row),
-        // A result in the current development set carries the accent check a picked file does.
-        picked: row.picked || (matches!(row.item, RowItem::Photo { .. }) && row.in_development_set),
+        picked: row.picked,
         in_catalog: matches!(row.item, RowItem::File { .. }) && row.developed_as.is_some(),
         availability: if row.availability == FileAvailability::Offline {
             Availability::Offline
@@ -2573,9 +2570,10 @@ pub(crate) fn item_info(
         pick: None,
         moment,
         metadata,
-        stack: row.stack.as_ref().map(|stack| {
-            super::select_merge::stack_band(stack, row.in_development_set, row.reason.as_deref())
-        }),
+        stack: row
+            .stack
+            .as_ref()
+            .map(|stack| super::select_merge::stack_band(stack, row.reason.as_deref())),
     }
 }
 
@@ -2643,19 +2641,11 @@ fn status_line(state: &SelectState, selection: &SelectionModel) -> String {
         };
     };
     if files {
-        let mut line = format!(
+        format!(
             "Camera previews \u{b7} auto-organized \u{b7} {} in view \u{b7} {} picked",
             thousands(summary.count),
             thousands(summary.picked)
-        );
-        // Merged photographs Pick merged added: in the Development set, not among Develop N's.
-        if summary.in_development_set > 0 {
-            line = format!(
-                "{line} \u{b7} {} in the Development set",
-                thousands(summary.in_development_set)
-            );
-        }
-        line
+        )
     } else {
         format!(
             "{} in view \u{b7} {} selected",

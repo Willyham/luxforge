@@ -481,8 +481,8 @@ pub(crate) struct Editor {
     pub(crate) select: select::Select,
     /// Long-running work: the watch on the owner's activity board and what it last read.
     pub(crate) long_work: long_work::LongWork,
-    /// Developing picks and the development set: Develop N's confirmation, the set and its
-    /// filmstrip, and the large previews a move draws first.
+    /// Developing picks and the Develop folder: Develop N's confirmation, the filmstrip and moving
+    /// through it, and the large previews a move draws first.
     pub(crate) develop: develop::Develop,
     /// GPU display/analysis resources for committed and drafted content, and the warm
     /// list of the committed stack.
@@ -1438,7 +1438,7 @@ impl Editor {
                 || self.select.state.forget.is_some(),
             loupe_open: self.loupe_open(),
             develop_confirm: self.develop.state.confirm.is_some(),
-            development_set: self.develop.state.set.is_some(),
+            filmstrip: self.develop.state.strip.is_some(),
             copy_settings_modal: if self.view_state.copy_settings.confirm.is_some() {
                 Some(keymap::CopySettingsModal::Confirm)
             } else if self.view_state.copy_settings.chooser.is_some() {

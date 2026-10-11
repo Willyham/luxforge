@@ -610,7 +610,7 @@ fn hints() -> Element<'static, ()> {
     ])
 }
 
-/// The development set's filmstrip at the card's width: as many cells as fit from `first`, the
+/// A catalog folder's filmstrip at the card's width: as many cells as fit from `first`, the
 /// active one outlined, and those without a preview yet empty.
 fn strip(first: usize, total: usize, active: usize, loading: &[usize]) -> Element<'static, ()> {
     // The gallery's card is about 684 pt wide; the strip holds what fits there.
@@ -618,7 +618,7 @@ fn strip(first: usize, total: usize, active: usize, loading: &[usize]) -> Elemen
     let window = first..(first + capacity).min(total);
     filmstrip(
         &FilmstripModel {
-            title: "Development set".into(),
+            title: "2026 \u{203a} Konstanz".into(),
             caption: None,
             cells: window
                 .map(|index| (!loading.contains(&index)).then(|| thumbnail(index)))

@@ -759,7 +759,7 @@ impl Editor {
             }
             SelectMessage::Press(press) => {
                 // A double-click on a photograph of a catalog view opens it in Develop, with the
-                // view's photographs as the development set.
+                // photograph's own catalog folder as the Develop folder.
                 let open = (press.double && self.select.state.over_catalog()).then_some(press.item);
                 self.press(press);
                 if let Some(position) = open {
@@ -878,7 +878,7 @@ impl Editor {
             return Task::none();
         }
         if shown == Shown::Develop {
-            return self.enter_develop_set();
+            return self.enter_develop();
         }
         if let Some(reason) = self.gesture_refusal(Starting::Workspace) {
             self.status.text = reason;
@@ -1961,6 +1961,8 @@ impl Editor {
             ),
             self.read_events(),
             self.read_counts(),
+            // The Develop folder's strip, which the change may have changed.
+            self.develop_library_changed(sequence),
         ];
         // The indexed folders, which adding or removing one, or undoing or redoing that, changes.
         if matches!(
@@ -2114,7 +2116,6 @@ impl Editor {
                     "title": band.title,
                     "note": band.note,
                     "leader": band.leader,
-                    "in_set": band.in_set,
                     "expanded": band.expanded,
                 })),
             }),
@@ -2187,7 +2188,7 @@ impl Editor {
             "pick_all": state.content.blocks.iter().filter_map(|block| match block {
                 Block::Moment { index, actions, .. } => actions.iter().find_map(|action| match action {
                     model::MomentAction::PickAll(_) => Some(json!([index, action.label()])),
-                    model::MomentAction::Merge(_) => None,
+                    model::MomentAction::Merge => None,
                 }),
                 _ => None,
             }).collect::<Vec<_>>(),
@@ -2284,8 +2285,8 @@ impl Editor {
     }
 
     /// The rows the desktop holds that are in an HDR stack, as their cells draw them: the item,
-    /// its role and place in the stack, the leader's badge words and whether it is in the
-    /// Development set, an original's EV offset and note. At most the first [`STACK_ROWS`]
+    /// its role and place in the stack, the leader's badge words, an original's EV offset and
+    /// note. At most the first [`STACK_ROWS`]
     /// positions are looked at.
     fn stacks_summary(&self) -> Value {
         let state = &self.select.state;
@@ -2301,7 +2302,6 @@ impl Editor {
                     "item": row.item,
                     "file_name": row.file_name,
                     "picked": row.picked,
-                    "in_set": row.in_development_set,
                     "merge_id": stack.merge_id,
                     "role": stack.role,
                     "exposures": stack.exposures,

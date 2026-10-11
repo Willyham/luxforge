@@ -1,5 +1,5 @@
 //! The catalog's regions in the Select workspace ([catalog board](../../../../docs/design/catalog/catalog.png)):
-//! the Catalog sources' folders by year and collections with their menus and names typed in place,
+//! the Catalog sources' folder tree and collections with their menus and names typed in place,
 //! the filter bar over the catalog with Save as smart collection… and the view's count, the
 //! Metadata browser, and the Info panel over photographs (one photograph's Organize band, or the
 //! batch form), drawn from `state/select_catalog.rs`'s model.
@@ -108,7 +108,7 @@ fn naming_input<'a>(placeholder: &str, value: &str) -> Element<'a, Message> {
 // -- Sources ---------------------------------------------------------------------------------------
 
 /// The Catalog section: its heading with the `+` for a new folder or collection, All photographs
-/// and Recently developed, the folders by year, the collections, then Missing originals and
+/// and Recently developed, the folder tree, the collections, then Missing originals and
 /// Removed.
 pub(crate) fn catalog_section<'a>(
     shell: &'a [SourceRow],
@@ -156,11 +156,10 @@ pub(crate) fn catalog_section<'a>(
     rows.into()
 }
 
-/// One folder, year or collection row: pressed to view it (or open it), right-clicked for its
+/// One folder or collection row: pressed to view it (or open it), right-clicked for its
 /// menu, or a name being typed in its place.
 fn catalog_row(model: &CatalogRow) -> Element<'_, Message> {
     let glyph = match model.icon {
-        CatalogIcon::Year => Icon::FolderGroup,
         CatalogIcon::Folder => Icon::Folder,
         CatalogIcon::Collection => Icon::Collection,
         CatalogIcon::Smart => Icon::SmartCollection,

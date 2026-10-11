@@ -1,4 +1,4 @@
-//! Evidence steps on HDR merges in Select: a bracket header's Pick merged or Import merged pressed
+//! Evidence steps on HDR merges in Select: a bracket header's Merge HDR pressed
 //! through the header's own message once the grid is scrolled to it, captured once the merge's
 //! pending row shows the job's first progress; then the merge's end, captured once the view read
 //! again holds its result, selected. Each step is judged from the state the grid is derived from,
@@ -9,9 +9,7 @@ use crate::app::{
     message::{Message, select::SelectMessage, select_merge::MergeMessage},
 };
 use crate::state::select::{Block, MomentAction};
-use crate::state::select_merge::MergeMode;
 use iced::Task;
-use luxforge_evidence::MergeMode as ScriptMode;
 use serde_json::json;
 
 /// What a running merge step still waits for.
@@ -31,17 +29,13 @@ enum Reached {
 }
 
 impl Editor {
-    /// Press the merge action `mode` names in the header of the bracket holding view position
+    /// Press Merge HDR in the header of the bracket holding view position
     /// `position`, as the header does: the grid's moment number is its place among the grid's
     /// moments, and the action's its place among the header's actions.
-    pub(super) fn merge_step(&mut self, position: u32, mode: ScriptMode) -> Task<Message> {
+    pub(super) fn merge_step(&mut self, position: u32) -> Task<Message> {
         if !self.select_shown() {
             return self.fail_step("Select is not shown");
         }
-        let mode = match mode {
-            ScriptMode::Pick => MergeMode::Pick,
-            ScriptMode::Import => MergeMode::Import,
-        };
         let state = &self.select.state;
         let Some(summary) = &state.summary else {
             return self.fail_step("Select holds no view");
@@ -69,15 +63,14 @@ impl Editor {
                     number,
                     actions
                         .iter()
-                        .position(|action| *action == MomentAction::Merge(mode)),
+                        .position(|action| *action == MomentAction::Merge),
                 )
             });
         let (number, action) = match found {
             Some((number, Some(action))) => (number as u32, action as u32),
             Some(_) => {
                 return self.fail_step(format!(
-                    "the moment holding position {position} offers no {}",
-                    mode.label()
+                    "the moment holding position {position} offers no Merge HDR"
                 ));
             }
             None => return self.fail_step(format!("no moment holds position {position}")),
