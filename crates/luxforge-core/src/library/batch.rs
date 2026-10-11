@@ -36,6 +36,8 @@ pub(crate) const REMOVED: &str = "removed";
 pub(crate) const DRAFT_OPEN: &str = "draft-open";
 /// A photograph whose history the caller's session is previewing.
 pub(crate) const HISTORY_SELECTED: &str = "history-selected";
+/// A photograph a running task holds locked, such as a generative fill.
+pub(crate) const LOCKED: &str = "locked";
 /// A photograph none of the set's settings apply to.
 pub(crate) const NOT_APPLICABLE: &str = "not-applicable";
 /// A photograph that already has every setting of the set that applies to it.

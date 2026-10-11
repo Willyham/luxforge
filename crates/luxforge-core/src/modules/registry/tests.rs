@@ -915,13 +915,17 @@ fn the_one_assembly_serves_test_modules_only_in_developer_mode() {
             "luxforge.vignette",
             "luxforge.controls",
             "luxforge.candidates",
+            "luxforge.ai",
         ]
     );
     let tests: Vec<String> = ids(&developer)
         .into_iter()
         .filter(|id| !ids(&ordinary).contains(id))
         .collect();
-    assert_eq!(tests, ["luxforge.controls", "luxforge.candidates"]);
+    assert_eq!(
+        tests,
+        ["luxforge.controls", "luxforge.candidates", "luxforge.ai"]
+    );
     for id in &tests {
         assert!(developer.module(id).unwrap().descriptor().developer, "{id}");
     }

@@ -4,6 +4,7 @@
 pub(crate) mod basic;
 #[cfg(test)]
 pub(crate) mod brush_consumer;
+pub(crate) mod ai;
 mod candidate_proof;
 mod capabilities_proof;
 mod capability;
@@ -81,7 +82,8 @@ pub(crate) use capabilities_proof::{
 pub use capabilities_proof::{
     PROOF_GENERATE_PATH, PROOF_PALETTE, PROOF_PALETTE_PATH, palette_bytes,
 };
-pub use capability::CapabilityModule;
+pub use ai::DeveloperModels;
+pub use capability::{CapabilityModule, HostView, TaskAdmission, TaskNeeds};
 pub use controls::{CONTROLS_EFFECT, controls_module};
 #[cfg(test)]
 pub(crate) use corrections::patch_testing as corrections_patch_testing;

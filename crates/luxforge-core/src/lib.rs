@@ -126,6 +126,7 @@ pub use modules::{
     palette_bytes, resolve_control, resolve_group_reset, temperature_tint_from_gains,
 };
 pub use modules::{Chord, HOST_CHORDS, host_chord};
+pub use modules::{DeveloperModels, HostView, TaskAdmission, TaskNeeds};
 pub use modules::{OriginalContext, OriginalLayer, OriginalPreferences};
 pub use presets::{
     DerivedSettings, GroupOnKind, GroupState, ImportReport, ImportedPreset, KindSkip,

@@ -718,6 +718,185 @@
           }
         ],
         "title": "Candidates proof"
+      },
+      {
+        "actions": [],
+        "availability": {
+          "kind": "available"
+        },
+        "canvas": null,
+        "capabilities": [
+          {
+            "id": "download-fake-generator",
+            "kind": "download-artifact",
+            "purpose": "Install Developer fake generator",
+            "resource": "fake-generator"
+          },
+          {
+            "backends": [
+              "cpu"
+            ],
+            "id": "run-fake-generator",
+            "kind": "local-runtime",
+            "model": "generator",
+            "precision": "fp32",
+            "purpose": "Generate fills with Developer fake generator",
+            "resident_bytes": 67108864,
+            "resource": "fake-generator"
+          },
+          {
+            "id": "download-fake-text-encoder",
+            "kind": "download-artifact",
+            "purpose": "Install Developer fake text encoder",
+            "resource": "fake-text-encoder"
+          }
+        ],
+        "collapsed": false,
+        "controls": [],
+        "developer": true,
+        "effects": [],
+        "hint": "Generative fill over the Corrections band's brush",
+        "id": "luxforge.ai",
+        "layout": "stacked",
+        "queries": [],
+        "reset": null,
+        "resources": [
+          {
+            "bytes": 46,
+            "format": "luxforge-fake-generator",
+            "id": "fake-generator",
+            "license": "GPL-3.0-or-later",
+            "provenance": "A Luxforge developer fixture: a deterministic stand-in for a generative model, run by the fake inference runtime",
+            "sha256": "ed04660c7aef25e09c822083df086a020160d9d8a80a082b37557e5070b65206",
+            "title": "Developer fake generator",
+            "url": "https://developer.luxforge.invalid/models/fake-generator/1/fake-generator.bin",
+            "version": "1"
+          },
+          {
+            "bytes": 49,
+            "format": "luxforge-fake-text-encoder",
+            "id": "fake-text-encoder",
+            "license": "GPL-3.0-or-later",
+            "provenance": "A Luxforge developer fixture: stands in for a generative model's text encoder, which a prompt needs",
+            "sha256": "76f363a0a32ab7362bad24a0f2e2c4f329dd1fa57be4f9c84395542527933fdb",
+            "title": "Developer fake text encoder",
+            "url": "https://developer.luxforge.invalid/models/fake-text-encoder/1/fake-text-encoder.bin",
+            "version": "1"
+          }
+        ],
+        "tasks": [
+          {
+            "asset": true,
+            "id": "fill-generative",
+            "notes": "Fills the region a brush selection paints on this photograph with a generative model and publishes each fill as a candidate patch, from consecutive seeds, one after another in one job: Generate is one request, Regenerate another for the same selection. The region is each stroke's footprint as painted, feathered over 15% of its radius; the effect stroke adds what the object casts. A prompt makes the fill Replace, which needs the model's text encoder installed: without it the request is not-ready naming the resource, and nothing is generated. Refused resource-limit before anything is read when the region's bounds would not fit one candidate (67108864 bytes of patch at 8 bytes a pixel and its preview), cover more than half the frame, or would not bind with the stack's artifacts within 268435456 bytes. While it runs, the photograph is locked: every edit of it is refused conflict (data.reason locked) until the job ends. Offered only while the ai.generative flag is on. Each candidate is labelled Generative fill or Replace \"…\" and carries the model's provenance; accept one with edit.accept-correction-patch. Result: {tier, model, candidates, seeds, next_seed, rect, prompt}.",
+            "parameters": [
+              {
+                "default": null,
+                "kind": "points",
+                "name": "selection-points",
+                "notes": "the selection: a brush stroke's path in the content stage's normalized coordinates, as a correction's points",
+                "points_max": 16384,
+                "points_min": 1,
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 0.25,
+                "min": 0.0005,
+                "name": "selection-radius",
+                "notes": "the selection's brush radius",
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": "content heights"
+              },
+              {
+                "default": null,
+                "kind": "points",
+                "name": "effect-points",
+                "notes": "the effect region: a second stroke over what the object casts, such as its shadow",
+                "points_max": 16384,
+                "points_min": 1,
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "number",
+                "max": 0.25,
+                "min": 0.0005,
+                "name": "effect-radius",
+                "notes": "the effect stroke's radius; default the selection's",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": "content heights"
+              },
+              {
+                "default": null,
+                "kind": "enum",
+                "name": "model",
+                "notes": "the installed generative model to fill with",
+                "options": [
+                  "fake-generator"
+                ],
+                "precision": null,
+                "required": true,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": 3,
+                "kind": "integer",
+                "max": 4,
+                "min": 1,
+                "name": "candidates",
+                "notes": "how many candidates to generate, one after another",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "string",
+                "max_length": 256,
+                "name": "prompt",
+                "notes": "what to fill the region with instead of removing; makes the fill Replace and needs the model's text encoder; a blank prompt is none",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              },
+              {
+                "default": null,
+                "kind": "integer",
+                "max": 9007199254740991,
+                "min": 0,
+                "name": "seed",
+                "notes": "the first candidate's seed, candidate n taking seed + n; default a new one each request",
+                "precision": null,
+                "required": false,
+                "step": null,
+                "unit": null
+              }
+            ],
+            "profile": false,
+            "reads": "repair-input",
+            "title": "Generative fill",
+            "uses": [
+              "run-fake-generator",
+              "download-fake-text-encoder"
+            ]
+          }
+        ],
+        "title": "AI editing"
       }
     ]
   },
@@ -1105,6 +1284,123 @@
         ],
         "required": [
           "asset_id"
+        ]
+      },
+      "task.fill-generative": {
+        "mutates": true,
+        "mutation": "request",
+        "notes": "Fills the region a brush selection paints on this photograph with a generative model and publishes each fill as a candidate patch, from consecutive seeds, one after another in one job: Generate is one request, Regenerate another for the same selection. The region is each stroke's footprint as painted, feathered over 15% of its radius; the effect stroke adds what the object casts. A prompt makes the fill Replace, which needs the model's text encoder installed: without it the request is not-ready naming the resource, and nothing is generated. Refused resource-limit before anything is read when the region's bounds would not fit one candidate (67108864 bytes of patch at 8 bytes a pixel and its preview), cover more than half the frame, or would not bind with the stack's artifacts within 268435456 bytes. While it runs, the photograph is locked: every edit of it is refused conflict (data.reason locked) until the job ends. Offered only while the ai.generative flag is on. Each candidate is labelled Generative fill or Replace \"…\" and carries the model's provenance; accept one with edit.accept-correction-patch. Result: {tier, model, candidates, seeds, next_seed, rect, prompt}. Checks the task's requirements (not-ready with data.requirements) and a live grant for each capability it uses (consent-required naming the first missing one) before anything is queued, then queues a task job on the module lane; returns {job_id, status, deduplicated}, and a retry with the same request_id returns the first job and starts none; the job's result, read with job.read, is {result, artifacts} when it succeeds",
+        "optional": {
+          "candidates": "how many candidates to generate, one after another",
+          "effect-points": "the effect region: a second stroke over what the object casts, such as its shadow",
+          "effect-radius": "the effect stroke's radius; default the selection's",
+          "prompt": "what to fill the region with instead of removing; makes the fill Replace and needs the model's text encoder; a blank prompt is none",
+          "seed": "the first candidate's seed, candidate n taking seed + n; default a new one each request"
+        },
+        "parameters": [
+          {
+            "default": null,
+            "kind": "points",
+            "name": "selection-points",
+            "notes": "the selection: a brush stroke's path in the content stage's normalized coordinates, as a correction's points",
+            "points_max": 16384,
+            "points_min": 1,
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "number",
+            "max": 0.25,
+            "min": 0.0005,
+            "name": "selection-radius",
+            "notes": "the selection's brush radius",
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": "content heights"
+          },
+          {
+            "default": null,
+            "kind": "points",
+            "name": "effect-points",
+            "notes": "the effect region: a second stroke over what the object casts, such as its shadow",
+            "points_max": 16384,
+            "points_min": 1,
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "number",
+            "max": 0.25,
+            "min": 0.0005,
+            "name": "effect-radius",
+            "notes": "the effect stroke's radius; default the selection's",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": "content heights"
+          },
+          {
+            "default": null,
+            "kind": "enum",
+            "name": "model",
+            "notes": "the installed generative model to fill with",
+            "options": [
+              "fake-generator"
+            ],
+            "precision": null,
+            "required": true,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": 3,
+            "kind": "integer",
+            "max": 4,
+            "min": 1,
+            "name": "candidates",
+            "notes": "how many candidates to generate, one after another",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "string",
+            "max_length": 256,
+            "name": "prompt",
+            "notes": "what to fill the region with instead of removing; makes the fill Replace and needs the model's text encoder; a blank prompt is none",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          },
+          {
+            "default": null,
+            "kind": "integer",
+            "max": 9007199254740991,
+            "min": 0,
+            "name": "seed",
+            "notes": "the first candidate's seed, candidate n taking seed + n; default a new one each request",
+            "precision": null,
+            "required": false,
+            "step": null,
+            "unit": null
+          }
+        ],
+        "required": [
+          "mutation",
+          "asset_id",
+          "selection-points",
+          "selection-radius",
+          "model"
         ]
       },
       "task.generate-proof-patches": {

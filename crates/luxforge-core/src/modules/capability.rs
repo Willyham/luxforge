@@ -6,10 +6,67 @@
 //! `docs/design/module-capabilities.md`.
 //!
 //! [`ModuleRegistry::register`]: super::ModuleRegistry::register
-use super::{ModuleDescriptor, Processing, ToolModule};
-use crate::{Error, artifacts::PreparedArtifact, capabilities::context::ModuleContext};
+use super::{ModuleDescriptor, Processing, Stage, ToolModule};
+use crate::{
+    Error,
+    artifacts::PreparedArtifact,
+    capabilities::{context::ModuleContext, resources::ResourceRow, resources::ResourceState},
+};
 use serde_json::{Map, Value};
 use std::{path::Path, sync::Arc};
+
+/// What one request of a task needs beyond the task's declaration, which the host checks before
+/// it queues the task ([`CapabilityModule::task_needs`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TaskNeeds {
+    /// The declared capabilities this request uses, in the task's order; `None` uses every one the
+    /// task declares. A resource it uses that is not installed is an unmet requirement, as for
+    /// every task, so a request that needs an optional resource asks for it here.
+    pub uses: Option<Vec<String>>,
+    /// Toggle flags ([`crate::flags`]) that must be on: one that is off is an unmet requirement.
+    pub flags: Vec<&'static str>,
+    /// The task holds its asset locked while it runs: the host refuses every edit of that asset,
+    /// and another locking task on it, until the job ends, however it ends.
+    pub locks_asset: bool,
+}
+
+/// What the host knows once it has bound a task's request, for the module's admission
+/// ([`CapabilityModule::admit_task`]): nothing has been read or allocated yet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TaskAdmission {
+    /// The size of the stage the task reads, for a task that declares `reads`.
+    pub stage: Option<Stage>,
+    /// The bytes of every artifact the asset's current stack binds.
+    pub artifact_bytes: u64,
+}
+
+/// The host state a module's own status fields are computed from ([`CapabilityModule::status`]):
+/// read from tables the host already holds, never opening anything.
+pub struct HostView<'a> {
+    pub(crate) resources: &'a [ResourceRow],
+    pub(crate) runtime: bool,
+    pub(crate) flag: &'a dyn Fn(&str) -> bool,
+}
+
+impl HostView<'_> {
+    /// The state of one of the module's resources.
+    pub fn resource(&self, id: &str) -> ResourceState {
+        self.resources
+            .iter()
+            .find(|row| row.id == id)
+            .map_or(ResourceState::NotInstalled, |row| row.state)
+    }
+
+    /// Whether the host has a local inference runtime.
+    pub fn runtime(&self) -> bool {
+        self.runtime
+    }
+
+    /// Whether a toggle flag is on now.
+    pub fn flag(&self, id: &str) -> bool {
+        (self.flag)(id)
+    }
+}
 
 /// The hooks the capability host and the compile of an artifact-bound layer call. Every one runs
 /// only for a declaration that needs it, so each default is what a module that declares no such
@@ -66,6 +123,38 @@ pub trait CapabilityModule: ToolModule {
             "module {} declares no tasks",
             self.descriptor().id
         )))
+    }
+    /// What one request of a task needs beyond its declaration: the capabilities it uses, the flags
+    /// that gate it and whether it locks its asset. Called on the owner after the parameters were
+    /// checked against their declarations (`parameters` holds them with their defaults), so it reads
+    /// only the request; a refusal is the request's. The default uses every declared capability,
+    /// needs no flag and locks nothing.
+    fn task_needs(
+        &self,
+        task_id: &str,
+        parameters: &Map<String, Value>,
+    ) -> Result<TaskNeeds, Error> {
+        let _ = (task_id, parameters);
+        Ok(TaskNeeds::default())
+    }
+    /// Admit one request of a task once the host has bound it, before it is queued: a request the
+    /// module cannot serve within its limits is refused here, by name, before anything is read or
+    /// allocated. Called on the owner; `O(request)`. The default admits everything.
+    fn admit_task(
+        &self,
+        task_id: &str,
+        parameters: &Map<String, Value>,
+        admission: &TaskAdmission,
+    ) -> Result<(), Error> {
+        let _ = (task_id, parameters, admission);
+        Ok(())
+    }
+    /// Fields of the module's own that `module.status` adds to its answer, such as what the module
+    /// offers with what is installed now. Called on the owner from tables the host holds. The
+    /// default adds none.
+    fn status(&self, view: &HostView<'_>) -> Map<String, Value> {
+        let _ = view;
+        Map::new()
     }
 }
 
