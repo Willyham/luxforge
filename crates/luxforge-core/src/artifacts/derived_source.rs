@@ -25,7 +25,7 @@
 //! (`crate::editor` `derived_source`), and a collection removes only objects nothing retains and no
 //! writer of this process published.
 // A derived photograph's preparation reads through here. The HDR merge's publication
-// (`tasks/library/hdr-merge.json` TASK-004 and TASK-006) writes through here; until it does, only
+// (`docs/design/hdr-merge.md`) writes through here; until it does, only
 // the tests and the qualification harness call the writer.
 #![cfg_attr(not(test), allow(dead_code))]
 use super::{
