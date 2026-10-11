@@ -3,11 +3,15 @@
 use crate::args::Args;
 use crate::models;
 
-pub const USAGE: &str = "  models [--models DIR]                    verify every pinned model file by size and SHA-256;
-                                           a file that differs is refused by name and the command fails";
+pub const USAGE: &str = "  models [--models DIR] [--generative [--gen-models DIR]]
+                                           verify every pinned model file by size and SHA-256;
+                                           a file that differs is refused by name and the command fails.
+                                           --generative also verifies the generative candidates present";
 
 pub fn run(mut a: Args) -> Result<(), String> {
     let dir = models::directory(a.path("--models")?);
+    let generative = a.flag("--generative");
+    let gen_dir = models::generative_directory(a.path("--gen-models")?);
     a.done()?;
     println!("models directory {}", dir.display());
     let mut refused = Vec::new();
@@ -30,6 +34,22 @@ pub fn run(mut a: Args) -> Result<(), String> {
             Err(e) => {
                 println!("REFUSED  {:<22} {} (optional)", m.id, m.file);
                 refused.push(e);
+            }
+        }
+    }
+    if generative {
+        println!("generative models directory {}", gen_dir.display());
+        for m in models::GENERATIVE {
+            if !gen_dir.join(m.file).exists() {
+                println!("--       {:<22} absent", m.id);
+                continue;
+            }
+            match m.verified(&gen_dir) {
+                Ok(path) => println!("ok       {:<22} {}", m.id, path.display()),
+                Err(e) => {
+                    println!("REFUSED  {:<22} {}", m.id, m.file);
+                    refused.push(e);
+                }
             }
         }
     }

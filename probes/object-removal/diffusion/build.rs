@@ -46,12 +46,15 @@ const METAL_KERNELS: &[&str] = &[
 /// opened without a text encoder) the encoder's absent weights are not required. Each anchor must
 /// match exactly once.
 const HOOK_INCLUDE_ANCHOR: &str = "#include \"diffusion_engine.h\"\n";
-const HOOK_INCLUDE: &str = "#include \"diffusion_engine.h\"\n#include \"luxforge_condition_hook.h\"\n";
-const HOOK_ANCHOR: &str = "SDCondition StableDiffusionGGML::get_learned_condition(const ConditionerParams& params) {
+const HOOK_INCLUDE: &str =
+    "#include \"diffusion_engine.h\"\n#include \"luxforge_condition_hook.h\"\n";
+const HOOK_ANCHOR: &str =
+    "SDCondition StableDiffusionGGML::get_learned_condition(const ConditionerParams& params) {
     return conditioning_cache_->get(*cond_stage_model, n_threads, params);
 }
 ";
-const HOOK_REPLACEMENT: &str = "SDCondition StableDiffusionGGML::get_learned_condition(const ConditionerParams& params) {
+const HOOK_REPLACEMENT: &str =
+    "SDCondition StableDiffusionGGML::get_learned_condition(const ConditionerParams& params) {
     SDCondition luxforge_supplied;
     if (luxforge_condition_supplied(params.text, luxforge_supplied)) {
         return luxforge_supplied;

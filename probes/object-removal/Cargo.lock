@@ -1562,11 +1562,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39"
 
 [[package]]
+name = "luxforge-removal-diffusion"
+version = "0.0.0"
+dependencies = [
+ "cc",
+]
+
+[[package]]
 name = "luxforge-removal-probe"
 version = "0.0.0"
 dependencies = [
  "iced",
  "image",
+ "luxforge-removal-diffusion",
  "ort",
  "serde",
  "serde_json",

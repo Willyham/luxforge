@@ -49,7 +49,11 @@ unsafe extern "C" {
     fn lf_sd_set_log_level(level: i32);
     fn lf_sd_set_progress(cb: Option<ProgressC>, user: *mut c_void);
     fn lf_sd_system_info() -> *const c_char;
-    fn lf_sd_open(options: *const OpenOptionsC, error: *mut c_char, error_len: usize) -> *mut c_void;
+    fn lf_sd_open(
+        options: *const OpenOptionsC,
+        error: *mut c_char,
+        error_len: usize,
+    ) -> *mut c_void;
     fn lf_sd_close(ctx: *mut c_void);
     fn lf_sd_cancel(ctx: *mut c_void);
     fn lf_sd_model_version(ctx: *const c_void) -> *const c_char;
@@ -239,7 +243,9 @@ impl Context {
             mask: request.mask.map_or(std::ptr::null(), <[u8]>::as_ptr),
             width: request.width,
             height: request.height,
-            ref_rgb: request.reference.map_or(std::ptr::null(), |(rgb, _, _)| rgb.as_ptr()),
+            ref_rgb: request
+                .reference
+                .map_or(std::ptr::null(), |(rgb, _, _)| rgb.as_ptr()),
             ref_width: request.reference.map_or(0, |(_, w, _)| w),
             ref_height: request.reference.map_or(0, |(_, _, h)| h),
             prompt: prompt.as_ptr(),
@@ -293,7 +299,11 @@ pub fn save_condition(text: &str, path: &Path) -> Result<(), String> {
             ERROR_LEN,
         )
     };
-    if status == 0 { Ok(()) } else { Err(message(&error)) }
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(message(&error))
+    }
 }
 
 /// Use the conditioning in `path` whenever `text` is the prompt, without the text encoder, or
@@ -311,7 +321,11 @@ pub fn supply_condition(text: &str, path: Option<&Path>) -> Result<(), String> {
             ERROR_LEN,
         )
     };
-    if status == 0 { Ok(()) } else { Err(message(&error)) }
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(message(&error))
+    }
 }
 
 #[cfg(test)]
@@ -326,7 +340,8 @@ mod tests {
 
     #[test]
     fn a_missing_conditioning_file_is_refused_by_name() {
-        let error = supply_condition("x", Some(Path::new("/nonexistent/condition.bin"))).unwrap_err();
+        let error =
+            supply_condition("x", Some(Path::new("/nonexistent/condition.bin"))).unwrap_err();
         assert!(error.contains("/nonexistent/condition.bin"), "{error}");
     }
 

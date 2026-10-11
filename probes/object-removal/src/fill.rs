@@ -154,6 +154,66 @@ pub struct Details {
     pub seam_band: usize,
 }
 
+/// The square crop a model fills, at its native size `size`².
+pub struct ModelInput<'a> {
+    pub size: usize,
+    /// The crop, per channel (R, G, B), codes `0..255` as `f32`, row-major. The object is still
+    /// in it: a model that must not see it zeroes or replaces the hole itself.
+    pub image: &'a [Vec<f32>; 3],
+    /// `size`², 1 where the model fills (any model pixel a region pixel contributed to) and 0
+    /// where it is known.
+    pub hole: &'a [u8],
+}
+
+/// A model's fill of a [`ModelInput`]: per channel (R, G, B), `size`² codes, any range (the
+/// caller clamps to `0..255`).
+pub type ModelOutput = [Vec<f32>; 3];
+
+/// An inpainting model behind the shared crop, upscale, grain, blend and composite stages.
+pub trait Inpaint {
+    fn inpaint(&mut self, input: &ModelInput) -> Result<ModelOutput, String>;
+}
+
+/// LaMa over a loaded session: RGB (or BGR) as `code / 255` with the hole zeroed, and the hole as
+/// 1; it returns `0..255` codes.
+pub struct Lama<'s> {
+    pub session: &'s mut dyn Session,
+    pub bgr: bool,
+}
+
+impl Inpaint for Lama<'_> {
+    fn inpaint(&mut self, input: &ModelInput) -> Result<ModelOutput, String> {
+        let n = input.size;
+        let order = if self.bgr { [2, 1, 0] } else { [0, 1, 2] };
+        let mut image_t = Vec::with_capacity(3 * n * n);
+        for &c in &order {
+            image_t.extend(
+                input.image[c]
+                    .iter()
+                    .zip(input.hole)
+                    .map(|(v, &h)| if h != 0 { 0.0 } else { v / 255.0 }),
+            );
+        }
+        let image_t = Tensor::f32([1, 3, n, n], image_t);
+        let mask_t = Tensor::f32([1, 1, n, n], input.hole.iter().map(|&h| h as f32).collect());
+        let mut outputs = self
+            .session
+            .run(&[("image", &image_t), ("mask", &mask_t)])?;
+        let raw = runtime::take(&mut outputs, "output")?.into_f32()?;
+        if raw.len() != 3 * n * n {
+            return Err(format!(
+                "the model returned {} values, expected 3 × {n}²",
+                raw.len()
+            ));
+        }
+        let mut out: ModelOutput = Default::default();
+        for (k, &c) in order.iter().enumerate() {
+            out[c] = raw[k * n * n..(k + 1) * n * n].to_vec();
+        }
+        Ok(out)
+    }
+}
+
 /// Removes the masked region. `lama` is a loaded LaMa session (`image`, `mask` → `output`).
 pub fn remove(
     image: &Rgb8,
@@ -169,6 +229,21 @@ pub fn remove_detailed(
     image: &Rgb8,
     region: &Mask,
     lama: &mut dyn Session,
+    params: &Params,
+) -> Result<(Rgb8, Report, Details), String> {
+    let mut model = Lama {
+        session: lama,
+        bgr: params.bgr,
+    };
+    remove_with(image, region, &mut model, params)
+}
+
+/// [`remove_detailed`] with any model at `params.model_size`: the same crop, upscale, grain,
+/// blend and composite around it.
+pub fn remove_with(
+    image: &Rgb8,
+    region: &Mask,
+    model: &mut dyn Inpaint,
     params: &Params,
 ) -> Result<(Rgb8, Report, Details), String> {
     let size = (image.width, image.height);
@@ -189,35 +264,26 @@ pub fn remove_detailed(
     let plan = plan_crop(bounds, size, params);
     let scale = plan.side as f32 / n as f32;
     let (model_in, hole) = model_input(image, region, &plan, n);
-    let order = if params.bgr { [2, 1, 0] } else { [0, 1, 2] };
-    let mut image_t = Vec::with_capacity(3 * n * n);
-    for &c in &order {
-        image_t.extend(model_in.c[c].iter().map(|v| v / 255.0));
-    }
-    let image_t = Tensor::f32([1, 3, n, n], image_t);
-    let mask_t = Tensor::f32([1, 1, n, n], hole.iter().map(|&h| h as f32).collect());
     clock.lap("crop and resample");
 
     // 2. Model.
-    let mut outputs = lama.run(&[("image", &image_t), ("mask", &mask_t)])?;
-    let raw = runtime::take(&mut outputs, "output")?.into_f32()?;
-    if raw.len() != 3 * n * n {
-        return Err(format!(
-            "the model returned {} values, expected 3 × {n}²",
-            raw.len()
-        ));
+    let raw = model.inpaint(&ModelInput {
+        size: n,
+        image: &model_in.c,
+        hole: &hole,
+    })?;
+    if raw.iter().any(|c| c.len() != n * n) {
+        return Err(format!("the model returned planes that are not {n}²"));
     }
     let output_range = raw
         .iter()
+        .flatten()
         .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), &v| {
             (lo.min(v), hi.max(v))
         });
     let mut model_out = Planes::new(n, n);
-    for (k, &c) in order.iter().enumerate() {
-        model_out.c[c] = raw[k * n * n..(k + 1) * n * n]
-            .iter()
-            .map(|v| v.clamp(0.0, 255.0))
-            .collect();
+    for c in 0..3 {
+        model_out.c[c] = raw[c].iter().map(|v| v.clamp(0.0, 255.0)).collect();
     }
     clock.lap("model");
 
@@ -297,7 +363,7 @@ pub fn remove_detailed(
     };
     let details = Details {
         plan,
-        model_input: model_in.to_rgb8(),
+        model_input: model_in.zeroed(&hole).to_rgb8(),
         model_mask: hole.iter().map(|&h| h * 255).collect(),
         model_output: model_out.to_rgb8(),
         output_range,
@@ -498,6 +564,19 @@ impl Planes {
         }
     }
 
+    /// A copy with the hole's pixels zeroed.
+    fn zeroed(&self, hole: &[u8]) -> Planes {
+        let mut out = Planes::new(self.width, self.height);
+        for c in 0..3 {
+            out.c[c] = self.c[c]
+                .iter()
+                .zip(hole)
+                .map(|(&v, &h)| if h != 0 { 0.0 } else { v })
+                .collect();
+        }
+        out
+    }
+
     fn to_rgb8(&self) -> Rgb8 {
         let mut data = Vec::with_capacity(self.width * self.height * 3);
         for i in 0..self.width * self.height {
@@ -509,8 +588,9 @@ impl Planes {
     }
 }
 
-/// The model's input image (codes `0..255`, hole zeroed) and hole (0 or 1) at `n`². A model pixel
-/// is in the hole when any source pixel that contributed to it has non-zero coverage.
+/// The model's input image (codes clamped to `0..255`, the object still in it) and hole (0 or 1)
+/// at `n`². A model pixel is in the hole when any source pixel that contributed to it has
+/// non-zero coverage.
 fn model_input(image: &Rgb8, region: &Mask, plan: &CropPlan, n: usize) -> (Planes, Vec<u8>) {
     let s = plan.side as usize;
     let (w, h) = (image.width, image.height);
@@ -590,8 +670,8 @@ fn model_input(image: &Rgb8, region: &Mask, plan: &CropPlan, n: usize) -> (Plane
         }
     }
     for c in 0..3 {
-        for (v, &hl) in img.c[c].iter_mut().zip(&hole) {
-            *v = if hl != 0 { 0.0 } else { v.clamp(0.0, 255.0) };
+        for v in img.c[c].iter_mut() {
+            *v = v.clamp(0.0, 255.0);
         }
     }
     (img, hole)
@@ -1001,7 +1081,7 @@ fn mix(mut z: u64) -> u64 {
 
 /// A standard normal value determined by the seed, a stream and absolute image coordinates, so
 /// grain does not depend on the order or window it is generated in.
-fn gaussian(seed: u64, stream: u64, x: i64, y: i64) -> f64 {
+pub(crate) fn gaussian(seed: u64, stream: u64, x: i64, y: i64) -> f64 {
     let key = mix(seed ^ mix(stream.wrapping_mul(0x9e37_79b9_7f4a_7c15)))
         ^ mix((x as u64) ^ (y as u64).rotate_left(32));
     let a = mix(key);
@@ -1546,6 +1626,42 @@ pub(crate) mod tests {
         );
     }
 
+    /// Stands in for a generative model: it repaints the whole crop, known pixels included, with
+    /// values that overshoot the 8-bit range, as a diffusion model's decoded output does.
+    struct RepaintAll;
+
+    impl Inpaint for RepaintAll {
+        fn inpaint(&mut self, input: &ModelInput) -> Result<ModelOutput, String> {
+            let n = input.size;
+            let mut out: ModelOutput = Default::default();
+            for (c, plane) in out.iter_mut().enumerate() {
+                *plane = (0..n * n)
+                    .map(|i| ((i * 37 + c * 101) % 400) as f32 - 70.0)
+                    .collect();
+            }
+            Ok(out)
+        }
+    }
+
+    #[test]
+    fn fill_with_a_model_that_repaints_the_whole_crop_is_exact_outside() {
+        let size = (300, 200);
+        let image = noise_image(size.0, size.1, 30.0, 3);
+        let regions = [
+            soft_rect(size, rect(120, 70, 60, 40), 3.0),
+            soft_rect(size, rect(0, 0, 50, 30), 0.0),
+            soft_rect(size, rect(10, 20, 280, 160), 2.0),
+        ];
+        for (k, region) in regions.iter().enumerate() {
+            for params in all_params() {
+                let (out, _, details) =
+                    remove_with(&image, region, &mut RepaintAll, &params).unwrap();
+                assert_exact_outside(&image, &out, region, &format!("region {k} {params:?}"));
+                assert!(details.output_range.0 < 0.0 && details.output_range.1 > 255.0);
+            }
+        }
+    }
+
     #[test]
     fn fill_leaves_zero_coverage_pixels_byte_identical() {
         let size = (300, 200);
@@ -2001,7 +2117,8 @@ mod contract {
         let region = mask_from(size, |x, y| if hole_rect.contains(x, y) { 255 } else { 0 });
         let plan = plan_crop(hole_rect, size, &Params::default());
         let n = 512;
-        let (zeroed, hole) = model_input(&image, &region, &plan, n);
+        let (with_object, hole) = model_input(&image, &region, &plan, n);
+        let zeroed = with_object.zeroed(&hole);
         let (content, none) = model_input(&image, &mask_from(size, |_, _| 0), &plan, n);
         assert!(none.iter().all(|&h| h == 0));
         let mut white = content.clone();
