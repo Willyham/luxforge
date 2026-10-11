@@ -109,6 +109,8 @@ fn run() -> Result<(), (String, String)> {
         resource_dir: paths.as_ref().map(Paths::module_resources),
         secrets,
         transport: Arc::new(HttpTransport::system()),
+        // A developer run serves the deterministic fake to a local-runtime capability.
+        inference: developer.then(luxforge_core::inference::fake::FakeInference::shared),
         ..HostConfig::unconfigured()
     };
     let (owner, join) = OwnerHandle::start_with_host(&catalog, Arc::new(registry), host)

@@ -5,7 +5,7 @@
 //! notice with Allow and Don't allow; a headless client receives the same failure.
 use super::{
     descriptor::{AdapterCost, AdapterDescriptor, CapabilityDescriptor, ResourceDescriptor},
-    grants::{GrantKind, GrantScope},
+    grants::GrantScope,
 };
 #[cfg(test)]
 use crate::ErrorKind;
@@ -106,7 +106,7 @@ pub(crate) fn consent_required(
     disclosure: Disclosure,
     denied: bool,
 ) -> Error {
-    let kind = GrantKind::of(&capability.kind);
+    let kind = scope.kind();
     let detail = if denied {
         format!(
             "{} needs permission to use {} ({}); it was not allowed for this scope",

@@ -204,8 +204,8 @@ pub struct CapabilityDescriptor {
     pub purpose: String,
 }
 
-/// The implemented capabilities. `managed-storage` and `local-runtime` are not kinds until their
-/// first consumer defines them.
+/// The implemented capabilities. `managed-storage` is not a kind until its first consumer defines
+/// it, so a descriptor naming it is refused as an unknown variant.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case")]
 pub enum CapabilityKind {
@@ -213,6 +213,62 @@ pub enum CapabilityKind {
     RemoteImageRequest { adapter: String, data: DataClass },
     /// Install a declared resource from its pinned URL.
     DownloadArtifact { resource: String },
+    /// Hold one declared resource loaded by the host's local inference runtime between tasks, in
+    /// a host-owned slot that counts `resident_bytes` against the host's resident budget: opened
+    /// as a `model` on the first of `backends` the runtime offers, at `precision`. Loaded by
+    /// `module.runtime.load` or by the first task that uses it, never by a listing, a catalog open
+    /// or a launch; unloaded by `module.runtime.unload`, after an idle interval, on a memory signal
+    /// and when the resource is removed. Needs no grant: nothing leaves the machine.
+    LocalRuntime {
+        resource: String,
+        model: ModelKind,
+        resident_bytes: u64,
+        backends: Vec<String>,
+        precision: crate::inference::Precision,
+    },
+}
+
+/// What a `local-runtime` capability opens its resource as.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ModelKind {
+    /// A tensor session ([`crate::inference::Session`]).
+    Session,
+    /// A generative model ([`crate::inference::Generator`]).
+    Generator,
+}
+
+impl ModelKind {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Session => "session",
+            Self::Generator => "generator",
+        }
+    }
+}
+
+/// The most a `local-runtime` capability may declare one model holds resident: 64 GiB.
+pub(crate) const MAX_RESIDENT_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+/// The most backends a `local-runtime` capability may name.
+pub(crate) const MAX_BACKENDS: usize = 8;
+
+/// Which stage of the asset a task's host-planned read reads ([`TaskDescriptor::reads`]). The host
+/// chooses the stage boundary from this and plans the read when the task is requested.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReadBoundary {
+    /// The stage the repair layer receives: after source development and before colour, in upright
+    /// content coordinates, which a fill reads its crop from. Its input identity is a new top
+    /// correction's.
+    RepairInput,
+}
+
+impl ReadBoundary {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::RepairInput => "repair-input",
+        }
+    }
 }
 
 /// A pinned file a module may install: exact bytes, hash and origin.
@@ -259,6 +315,12 @@ pub struct TaskDescriptor {
     /// The action a client may offer to apply the task's artifact with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub apply: Option<TaskApply>,
+    /// The stage of its asset the task reads through its context's host-planned reference read
+    /// ([`crate::ModuleContext`]): the host binds the asset's current entry when the task is
+    /// requested, and the task reads bounded rectangles of that stage on its lane. Only a task that
+    /// takes an asset may declare one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reads: Option<ReadBoundary>,
 }
 
 /// Apply names a declared action and its `artifact` parameter, which receives the task's result.
@@ -504,6 +566,71 @@ fn validate_capability<'a>(
                 )));
             }
         }
+        CapabilityKind::LocalRuntime {
+            resource,
+            resident_bytes,
+            backends,
+            ..
+        } => validate_local_runtime(module, id, resource, *resident_bytes, backends)?,
+    }
+    Ok(())
+}
+
+/// A `local-runtime` capability holds one declared resource that a `download-artifact` capability
+/// can install, held by no other `local-runtime` capability (`module.runtime.load` names the
+/// resource), with a resident budget of 1 byte to [`MAX_RESIDENT_BYTES`] and 1 to [`MAX_BACKENDS`]
+/// distinct backend names.
+fn validate_local_runtime(
+    module: &ModuleDescriptor,
+    id: &str,
+    resource: &str,
+    resident_bytes: u64,
+    backends: &[String],
+) -> Result<(), Error> {
+    if module.resource(resource).is_none() {
+        return Err(Error::validation(format!(
+            "capability {id} names undeclared resource {resource}"
+        )));
+    }
+    if !module.capabilities.iter().any(|capability| {
+        matches!(&capability.kind, CapabilityKind::DownloadArtifact { resource: held } if held == resource)
+    }) {
+        return Err(Error::validation(format!(
+            "local-runtime capability {id} holds resource {resource}, which no download-artifact capability installs"
+        )));
+    }
+    if let Some(other) = module.capabilities.iter().find(|capability| {
+        capability.id != id
+            && matches!(&capability.kind, CapabilityKind::LocalRuntime { resource: held, .. } if held == resource)
+    }) {
+        return Err(Error::validation(format!(
+            "local-runtime capabilities {id} and {} both hold resource {resource}",
+            other.id
+        )));
+    }
+    if !(1..=MAX_RESIDENT_BYTES).contains(&resident_bytes) {
+        return Err(Error::validation(format!(
+            "capability {id} declares resident_bytes {resident_bytes}; it is 1..={MAX_RESIDENT_BYTES}"
+        )));
+    }
+    if backends.is_empty() || backends.len() > MAX_BACKENDS {
+        return Err(Error::validation(format!(
+            "capability {id} declares {} backends; it is 1..={MAX_BACKENDS}",
+            backends.len()
+        )));
+    }
+    let mut seen = HashSet::with_capacity(backends.len());
+    for backend in backends {
+        if !valid_name(backend) {
+            return Err(Error::validation(format!(
+                "capability {id} declares invalid backend name {backend:?}"
+            )));
+        }
+        if !seen.insert(backend.as_str()) {
+            return Err(Error::validation(format!(
+                "capability {id} declares backend {backend} twice"
+            )));
+        }
     }
     Ok(())
 }
@@ -623,6 +750,14 @@ fn validate_task<'a>(
                 "task {id} uses remote-image-request capability {used} without declaring asset and profile"
             )));
         }
+    }
+    if let Some(reads) = task.reads
+        && !task.asset
+    {
+        return Err(Error::validation(format!(
+            "task {id} reads the {} stage without declaring asset",
+            reads.name()
+        )));
     }
     if task.profile
         && module
@@ -1223,6 +1358,170 @@ mod tests {
         assert!(
             registry.module("test.other").is_none(),
             "nothing was registered"
+        );
+    }
+
+    /// The capability descriptor with a `local-runtime` capability holding its palette.
+    fn local_runtime() -> ModuleDescriptor {
+        let mut descriptor = capability_descriptor();
+        descriptor.capabilities.push(CapabilityDescriptor {
+            id: "fill".into(),
+            kind: CapabilityKind::LocalRuntime {
+                resource: "palette".into(),
+                model: ModelKind::Generator,
+                resident_bytes: 1 << 20,
+                backends: vec!["coreml".into(), "cpu".into()],
+                precision: crate::inference::Precision::Fp16,
+            },
+            purpose: "Fill a selection.".into(),
+        });
+        descriptor
+    }
+
+    #[test]
+    fn a_local_runtime_capability_round_trips_and_managed_storage_is_refused() {
+        let descriptor = local_runtime();
+        descriptor.validate().unwrap();
+        let value = serde_json::to_value(&descriptor).unwrap();
+        assert_eq!(
+            value["capabilities"][2],
+            json!({
+                "id": "fill", "kind": "local-runtime", "resource": "palette",
+                "model": "generator", "resident_bytes": 1 << 20,
+                "backends": ["coreml", "cpu"], "precision": "fp16",
+                "purpose": "Fill a selection.",
+            })
+        );
+        assert_eq!(ModuleDescriptor::deserialize(&value).unwrap(), descriptor);
+        // A task that reads a stage says which; one that does not serializes no `reads`.
+        assert!(value["tasks"][0].get("reads").is_none());
+        let mut reading = capability_descriptor();
+        reading.tasks[0].reads = Some(ReadBoundary::RepairInput);
+        reading.validate().unwrap();
+        let value = serde_json::to_value(&reading).unwrap();
+        assert_eq!(value["tasks"][0]["reads"], json!("repair-input"));
+        assert_eq!(ModuleDescriptor::deserialize(&value).unwrap(), reading);
+        // managed-storage stays an unknown kind until its first consumer defines it.
+        let refused = serde_json::from_value::<CapabilityDescriptor>(json!({
+            "id": "store", "kind": "managed-storage", "purpose": "Keep files.",
+        }))
+        .unwrap_err();
+        assert!(refused.to_string().contains("managed-storage"), "{refused}");
+    }
+
+    #[test]
+    fn local_runtime_and_read_declarations_are_refused_by_name() {
+        type Change = fn(&mut ModuleDescriptor);
+        fn runtime(d: &mut ModuleDescriptor) -> &mut CapabilityKind {
+            &mut d.capabilities[2].kind
+        }
+        let cases: Vec<(Change, &str)> = vec![
+            (
+                |d| {
+                    if let CapabilityKind::LocalRuntime { resource, .. } = runtime(d) {
+                        *resource = "missing".into();
+                    }
+                },
+                "capability fill names undeclared resource missing",
+            ),
+            (
+                |d| {
+                    d.capabilities.remove(1);
+                },
+                "local-runtime capability fill holds resource palette, which no download-artifact capability installs",
+            ),
+            (
+                |d| {
+                    let mut copy = d.capabilities[2].clone();
+                    copy.id = "second".into();
+                    d.capabilities.push(copy);
+                },
+                "local-runtime capabilities fill and second both hold resource palette",
+            ),
+            (
+                |d| {
+                    if let CapabilityKind::LocalRuntime { resident_bytes, .. } = runtime(d) {
+                        *resident_bytes = 0;
+                    }
+                },
+                "capability fill declares resident_bytes 0",
+            ),
+            (
+                |d| {
+                    if let CapabilityKind::LocalRuntime { resident_bytes, .. } = runtime(d) {
+                        *resident_bytes = MAX_RESIDENT_BYTES + 1;
+                    }
+                },
+                "capability fill declares resident_bytes 68719476737",
+            ),
+            (
+                |d| {
+                    if let CapabilityKind::LocalRuntime { backends, .. } = runtime(d) {
+                        backends.clear();
+                    }
+                },
+                "capability fill declares 0 backends; it is 1..=8",
+            ),
+            (
+                |d| {
+                    if let CapabilityKind::LocalRuntime { backends, .. } = runtime(d) {
+                        *backends = (0..=MAX_BACKENDS).map(|n| format!("b{n}")).collect();
+                    }
+                },
+                "capability fill declares 9 backends; it is 1..=8",
+            ),
+            (
+                |d| {
+                    if let CapabilityKind::LocalRuntime { backends, .. } = runtime(d) {
+                        backends[0] = "Core ML".into();
+                    }
+                },
+                "capability fill declares invalid backend name \"Core ML\"",
+            ),
+            (
+                |d| {
+                    if let CapabilityKind::LocalRuntime { backends, .. } = runtime(d) {
+                        backends[1] = "coreml".into();
+                    }
+                },
+                "capability fill declares backend coreml twice",
+            ),
+            (
+                |d| {
+                    d.tasks[0].asset = false;
+                    d.tasks[0].profile = false;
+                    d.tasks[0].uses = vec!["fill".into()];
+                    d.tasks[0].reads = Some(ReadBoundary::RepairInput);
+                },
+                "task generate-test-tint reads the repair-input stage without declaring asset",
+            ),
+        ];
+        for (change, expected) in cases {
+            let mut descriptor = local_runtime();
+            change(&mut descriptor);
+            let detail = rejection(&descriptor);
+            assert!(
+                detail.contains(expected),
+                "expected {expected:?}, got {detail:?}"
+            );
+        }
+        // A task may use a local-runtime capability without an asset or a profile.
+        let mut local = local_runtime();
+        local.tasks[0].uses = vec!["palette".into(), "fill".into()];
+        local.tasks[0].asset = false;
+        local.tasks[0].profile = false;
+        local.validate().unwrap();
+    }
+
+    #[test]
+    fn no_permission_gates_a_local_runtime_capability() {
+        let descriptor = local_runtime();
+        let error =
+            crate::capabilities::grants::GrantKind::of(&descriptor.capabilities[2]).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Validation);
+        assert_eq!(
+            error.detail,
+            "capability fill is local-runtime, which no permission gates"
         );
     }
 }
