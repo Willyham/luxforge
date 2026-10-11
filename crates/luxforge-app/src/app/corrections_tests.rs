@@ -234,10 +234,12 @@ fn alt() -> Modifiers {
 }
 
 /// The mode strip lists Corrections right after Mask with its icon and letter, the palette offers
-/// it, and the band reads the declared limit.
+/// it, and the band reads the declared limit. Like the Masks band, the band is the mode's own tab:
+/// it replaces the module sections while the mode is active, and leaving the mode puts the
+/// sections back with no Corrections section among them.
 #[test]
 fn the_mode_follows_mask_and_its_band_reads_the_declared_limit() {
-    let correcting = Correcting::opened();
+    let mut correcting = Correcting::opened();
     let modes = &correcting.editor.workspace.canvas.modes;
     let mask = modes
         .iter()
@@ -258,21 +260,36 @@ fn the_mode_follows_mask_and_its_band_reads_the_declared_limit() {
             .collect::<Vec<_>>(),
         ["Heal", "Clone"]
     );
-    // The section stands in for nothing while the band is shown.
-    assert!(
-        correcting
-            .editor
-            .workspace
-            .tools
-            .all()
-            .all(|section| section.module_id != MODULE)
-    );
+    // The band replaces the module sections, as the Masks band does.
+    assert_eq!(correcting.editor.workspace.tools.all().count(), 0);
     assert!(
         correcting
             .editor
             .status
             .text
             .starts_with("Corrections \u{b7} Heal")
+    );
+    // A correction exists, so a section outside the mode would have something to say.
+    add_spot(&mut correcting, [0.4, 0.4]);
+    let _ = call(
+        &correcting.owner(),
+        correcting.editor.client,
+        "workspace.set",
+        json!({ "mode": POINTER_MODE }),
+    );
+    correcting.adopt_session();
+    assert!(!correcting.editor.corrections_active());
+    assert!(!correcting.editor.workspace.corrections.active);
+    let sections: Vec<&str> = correcting
+        .editor
+        .workspace
+        .tools
+        .all()
+        .map(|section| section.module_id.as_str())
+        .collect();
+    assert!(
+        sections.contains(&"luxforge.basic") && !sections.contains(&MODULE),
+        "the module sections come back with no Corrections section: {sections:?}"
     );
 }
 

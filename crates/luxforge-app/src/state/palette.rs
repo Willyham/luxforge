@@ -125,8 +125,8 @@ pub(crate) struct PaletteModel {
 
 /// The palette for these inputs and the tools panel just derived from them. Closed, it is empty:
 /// only the open palette's field, rows and keys read it, so a closed palette costs a message
-/// nothing. `sections_shown` is false while Mask mode's panel has no mask open and so draws no
-/// section to reveal.
+/// nothing. `sections_shown` is false while Mask mode's panel has no mask open, or the Corrections
+/// band stands in for the sections, and so the panel draws no section to reveal.
 pub(crate) fn derive(
     inputs: &Inputs<'_>,
     tools: &ToolsModel,

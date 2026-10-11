@@ -413,13 +413,25 @@ pub(crate) fn geometry_launch(
     ];
     for &name in geometries {
         if let Some(edit) = geometry_edit(name) {
-            // The lens section commits only when the source has a profile to turn on.
+            // The lens section commits only when the source has a profile to turn on. The
+            // Corrections band replaces the module sections, so its mode is left for the section
+            // and entered again.
             let step = Step::new(name, edit);
-            steps.push(if name == "lens" {
-                step
+            if name == "lens" {
+                steps.push(
+                    Step::new(format!("{name}-leave"), key("q"))
+                        .commits(0)
+                        .mode("pointer"),
+                );
+                steps.push(step);
+                steps.push(
+                    Step::new(format!("{name}-mode"), key("q"))
+                        .commits(0)
+                        .mode(MODULE),
+                );
             } else {
-                step.commits(1)
-            });
+                steps.push(step.commits(1));
+            }
         }
         steps.push(
             Step::new(format!("{name}-map"), script::Step::api("render.transform")).commits(0),
