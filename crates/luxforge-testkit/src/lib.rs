@@ -15,6 +15,7 @@
 pub mod client;
 pub mod derived;
 pub mod fixtures;
+pub mod hdr_bracket;
 mod process;
 mod proof;
 

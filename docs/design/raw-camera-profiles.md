@@ -112,7 +112,10 @@ RAW payloads and generated outputs remain outside the repository.
 ## Acceptance
 
 - No Luxforge production branch selects processing by camera name or mode ID.
-- The catalog contains 259 camera/phone profiles and 316 recording modes.
+- The catalog contains 259 camera/phone profiles and 316 recording modes, and
+  one synthetic test body, `Luxforge` `Synthetic Bracket` (one 16-bit
+  uncompressed DNG mode), whose files only `luxforge_testkit::hdr_bracket`
+  writes for the HDR merge tests.
   The retained 341-source corpus freezes 315 modes on 258 exact identities;
   the owner Air 2S fixture supplies the remaining profile/mode. Every retained
   source passes strict M4 decode/development regression. Controlled colour and
