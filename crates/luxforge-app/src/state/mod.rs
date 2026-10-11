@@ -23,6 +23,7 @@ pub(crate) mod presets;
 pub(crate) mod query_choice;
 pub(crate) mod select;
 pub(crate) mod select_catalog;
+pub(crate) mod select_merge;
 pub(crate) mod select_missing;
 pub(crate) mod settings;
 pub(crate) mod status;

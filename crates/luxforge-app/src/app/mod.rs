@@ -162,6 +162,7 @@ pub(crate) mod select;
 pub(crate) mod select_catalog;
 #[cfg(test)]
 mod select_folders_tests;
+pub(crate) mod select_merge;
 pub(crate) mod select_missing;
 #[cfg(test)]
 mod select_missing_tests;

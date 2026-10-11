@@ -5736,7 +5736,7 @@ fn a_kind_menus_letters_start_its_kinds_while_it_is_open() {
         .iter()
         .filter_map(|entry| match entry {
             luxforge_ui::MenuEntry::Item(item) => Some((item.label.clone(), item.trailing.clone())),
-            luxforge_ui::MenuEntry::Separator => None,
+            luxforge_ui::MenuEntry::Separator | luxforge_ui::MenuEntry::Hint(_) => None,
         })
         .collect();
     assert_eq!(

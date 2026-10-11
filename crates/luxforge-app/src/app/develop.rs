@@ -733,6 +733,27 @@ impl Editor {
         )
     }
 
+    /// This desktop added a photograph to the owner's development set (Select's Pick merged): Develop
+    /// follows that set from now on rather than the last catalog folder, and reads it into the set it
+    /// shows, a set it did not show yet starting empty while it is read.
+    pub(crate) fn follow_owner_set(&mut self) -> Task<Message> {
+        self.develop.state.folder_query = None;
+        if self.develop.state.set.is_none() {
+            self.develop.set_serial += 1;
+            let mut set = DevelopSet::new(self.develop.set_serial, Vec::new(), 0);
+            set.reading = true;
+            self.develop.state.set = Some(set);
+        }
+        let Some(serial) = self.develop.state.set.as_ref().map(|set| set.serial) else {
+            return Task::none();
+        };
+        let (owner, client) = (self.owner.clone(), self.client);
+        owner_task(
+            move || read_set_now(&owner, client),
+            move |result| Message::Develop(DevelopMessage::SetRead { serial, result }),
+        )
+    }
+
     /// Catalog views select or clear the Develop folder; import browsing preserves it.
     /// Changing that selection fences an outstanding set read for the previous folder.
     pub(crate) fn remember_develop_folder(

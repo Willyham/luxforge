@@ -88,6 +88,8 @@ pub(crate) enum SelectMessage {
     Pick,
     /// A bracket header's Pick all, by the grid's moment number.
     PickAll(u32),
+    /// An HDR merge's gesture or answer (`app/select_merge.rs`).
+    Merge(super::select_merge::MergeMessage),
     /// `Cmd+Z` and `Shift+Cmd+Z`, or the title bar's Undo and Redo: library undo and redo.
     Undo,
     Redo,

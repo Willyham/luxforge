@@ -15,7 +15,9 @@ use crate::app::{
     select::session_now,
     tasks::{call, owner_task, request},
 };
-use crate::state::select::{Block, PickFilter, QueryChange, SelectMenu, Shown, SourcePress};
+use crate::state::select::{
+    Block, MomentAction, PickFilter, QueryChange, SelectMenu, Shown, SourcePress,
+};
 use iced::Task;
 use luxforge_core::{MutationRequest, catalog_types::RowItem};
 use luxforge_evidence::{
@@ -199,7 +201,12 @@ impl Editor {
             .blocks
             .iter()
             .filter_map(|block| match block {
-                Block::Moment { index, action, .. } => Some((*index, action.is_some())),
+                Block::Moment { index, actions, .. } => Some((
+                    *index,
+                    actions
+                        .iter()
+                        .any(|action| matches!(action, MomentAction::PickAll(_))),
+                )),
                 _ => None,
             })
             .enumerate()
