@@ -20,7 +20,7 @@ use crate::{
         select_owner_tests::{answer_reads, evaluate, read_rows},
         testing::{descriptors, hold_slider, patch_control},
     },
-    state::select::ReadSource,
+    state::{develop::path_title, select::ReadSource},
 };
 use crate::{app::message::select::SelectMessage, state::select::Shown};
 use iced::{
@@ -361,12 +361,13 @@ fn filmstrip_develop_n_develops_the_picks_into_the_confirmed_folder() {
     assert_eq!(plan.count, 3);
     assert_eq!(plan.events.len(), 1);
     let proposed = match &plan.events[0].folder {
-        FolderChoice::New { name, .. } => name.clone(),
-        other => panic!("a new folder is proposed: {other:?}"),
+        FolderChoice::Place { name } => name.clone(),
+        other => panic!("the event's place is proposed: {other:?}"),
     };
     let model = editor.workspace.develop.confirm.clone().expect("open");
     assert_eq!(model.title, "Develop 3 picks");
-    assert_eq!(model.events[0].field.as_deref(), Some(proposed.as_str()));
+    assert_eq!(model.events[0].field, proposed);
+    assert!(!model.events[0].folders.is_empty());
     assert_eq!(model.refusal, None);
 
     // Escape changes nothing: no request, the picks and the journal as they were.
@@ -387,7 +388,7 @@ fn filmstrip_develop_n_develops_the_picks_into_the_confirmed_folder() {
     );
     assert_eq!(scene.client.ok("pick.list", json!({})), picks);
 
-    // Typing renames the new folder; Return develops.
+    // Typing renames the place; Return develops.
     send(editor, DevelopMessage::Open);
     answer_plan(editor);
     send(
@@ -411,7 +412,7 @@ fn filmstrip_develop_n_develops_the_picks_into_the_confirmed_folder() {
     let sent = editor.develop.last.request.clone().unwrap();
     assert_eq!(
         sent["into"],
-        json!([{"event_id": plan.events[0].event_id, "folder": {"kind": "new", "name": "Lake trip"}}])
+        json!([{"event_id": plan.events[0].event_id, "folder": {"kind": "place", "name": "Lake trip"}}])
     );
     assert_eq!(sent["mutation"]["actor"], "desktop");
     assert!(sent.get("use_copies").is_none() && sent.get("confirm_removable").is_none());
@@ -421,15 +422,29 @@ fn filmstrip_develop_n_develops_the_picks_into_the_confirmed_folder() {
     assert_eq!(report.developed.len(), 3);
     assert!(report.failed.is_empty(), "{:?}", report.failed);
 
-    // The catalog holds them in the folder confirmed, and their picks are cleared.
+    // The catalog holds them under the place confirmed, and their picks are cleared.
     let folders: CatalogFolders =
         serde_json::from_value(scene.client.ok("folder.list", json!({}))).unwrap();
     let lake = folders
         .folders
         .iter()
         .find(|folder| folder.name == "Lake trip")
-        .expect("the confirmed folder");
-    assert_eq!(lake.count, 3);
+        .expect("the confirmed place")
+        .clone();
+    let beneath = |folder: &CatalogFolderId| {
+        let mut at = Some(folder.clone());
+        while let Some(id) = at {
+            if id == lake.id {
+                return true;
+            }
+            at = folders
+                .folders
+                .iter()
+                .find(|held| held.id == id)
+                .and_then(|held| held.parent_id.clone());
+        }
+        false
+    };
     assert_eq!(
         scene.client.ok("pick.list", json!({}))["picks"]
             .as_array()
@@ -469,7 +484,6 @@ fn filmstrip_develop_n_develops_the_picks_into_the_confirmed_folder() {
     );
     let assets = strip_assets(editor);
     find_folder(editor, &assets);
-    assert_eq!(editor.develop_folder(), Some(&lake.id));
     let strip = editor
         .develop
         .state
@@ -477,8 +491,11 @@ fn filmstrip_develop_n_develops_the_picks_into_the_confirmed_folder() {
         .clone()
         .expect("the folder's strip");
     assert!(!strip.reading);
-    assert_eq!(strip.folder.as_ref(), Some(&lake.id));
-    assert_eq!(strip.path, vec!["Lake trip".to_owned()]);
+    // The deepest folder holding all three: the place, or the day they share inside it.
+    let held = strip.folder.clone().expect("a folder");
+    assert_eq!(editor.develop_folder(), Some(&held));
+    assert!(beneath(&held), "{:?}", strip.path);
+    assert_eq!(strip.path.get(1).map(String::as_str), Some("Lake trip"));
     assert_eq!(strip.photos.len(), 3);
     assert_eq!(strip.active, strip.position(&first));
     let model = editor
@@ -487,7 +504,7 @@ fn filmstrip_develop_n_develops_the_picks_into_the_confirmed_folder() {
         .strip
         .clone()
         .expect("the filmstrip");
-    assert_eq!(model.title, "Lake trip");
+    assert_eq!(model.title, path_title(&strip.path));
     assert_eq!((model.total, model.active), (3, strip.active));
     run_open(editor);
     assert_eq!(
@@ -1163,15 +1180,15 @@ fn filmstrip_the_catalog_folder_viewed_is_the_develop_folder_and_survives_browsi
         .find(|folder| folder.id == lake)
         .unwrap()
         .name;
-    assert_eq!(strip.path, vec![name.clone()]);
+    assert_eq!(strip.path.last(), Some(name));
     assert_eq!(
         editor
             .workspace
             .develop
             .strip
             .as_ref()
-            .map(|model| &model.title),
-        Some(name)
+            .map(|model| model.title.clone()),
+        Some(path_title(&strip.path))
     );
 
     // Back in Select and in Develop again, the strip as read is shown with no read.

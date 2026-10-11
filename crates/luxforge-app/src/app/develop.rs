@@ -500,6 +500,7 @@ impl Editor {
                 if let Some(confirm) = &mut self.develop.state.confirm {
                     if let Some(choice) = confirm.events.get_mut(event) {
                         choice.existing = Some(folder);
+                        choice.days = false;
                     }
                     confirm.menu = None;
                 }
@@ -664,10 +665,8 @@ impl Editor {
         }
         let from = state::select::title(&self.select.state).name;
         let confirmation = Confirmation::new(plan, folders, from);
-        let first = confirmation
-            .events
-            .iter()
-            .position(|choice| choice.existing.is_none());
+        // The first event's field, its name selected for typing.
+        let first = (!confirmation.events.is_empty()).then_some(0);
         self.develop.state.confirm = Some(confirmation);
         match first {
             Some(event) => {
@@ -1518,6 +1517,7 @@ impl Editor {
                 "events": confirmation.events.iter().map(|choice| json!({
                     "name": choice.name,
                     "existing": choice.existing,
+                    "days": choice.days,
                 })).collect::<Vec<_>>(),
                 "use_copies": confirmation.use_copies,
                 "menu": confirmation.menu,
@@ -1532,6 +1532,7 @@ impl Editor {
                     "events": confirm.events.iter().map(|row| json!({
                         "label": row.label,
                         "field": row.field,
+                        "folders": row.folders,
                         "existing": row.existing,
                         "tag": row.tag,
                         "menu": row.menu.as_ref().map(|menu| menu.iter().map(|(_, label)| label).collect::<Vec<_>>()),

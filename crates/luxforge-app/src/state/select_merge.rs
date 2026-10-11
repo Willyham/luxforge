@@ -151,6 +151,11 @@ pub(crate) fn suggested_folder_params(
         FolderChoice::New { name, parent_id } => Some(
             crate::state::select_catalog::folder_create_params(name, parent_id.as_ref(), mutation),
         ),
+        // Until `merge.create` files a place itself, a place is made as the top-level folder a
+        // plan's new folder was.
+        FolderChoice::Place { name } => Some(crate::state::select_catalog::folder_create_params(
+            name, None, mutation,
+        )),
         FolderChoice::Existing { .. } => None,
     }
 }
@@ -594,7 +599,7 @@ fn form_model(form: &MergeForm, busy: bool) -> FormModel {
     });
     let proposed = plan.map(|plan| match (&plan.folder, &plan.suggested_folder) {
         (Some(folder), _) => folder.name.clone(),
-        (None, Some(FolderChoice::New { name, .. })) => {
+        (None, Some(FolderChoice::New { name, .. } | FolderChoice::Place { name })) => {
             format!("New folder \u{201c}{name}\u{201d}")
         }
         _ => plan

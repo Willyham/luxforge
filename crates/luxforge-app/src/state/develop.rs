@@ -9,7 +9,7 @@ use luxforge_core::{
     AssetId, EntryId, MutationRequest,
     catalog_types::{
         CatalogFolder, CatalogFolderId, CatalogFolders, DevelopInto, DevelopPlan, DevelopReport,
-        FolderChoice, MAX_LIBRARY_NAME, PlannedEvent, PreviewOrigin,
+        FolderChoice, LocalDay, MAX_LIBRARY_NAME, PlannedEvent, PreviewOrigin,
     },
 };
 use serde_json::{Value, json};
@@ -33,30 +33,38 @@ pub(crate) struct Confirmation {
     pub(crate) menu: Option<usize>,
 }
 
-/// Where one event's picks go: a new folder named `name`, or an existing one.
+/// Where one event's picks go: under the place named `name` — "2026 › Konstanz › 12 Sep" — or
+/// into an existing folder.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct EventChoice {
-    /// The new folder's name as typed; the plan's proposal to begin with.
+    /// The place's name as typed; the plan's proposal to begin with.
     pub(crate) name: String,
     /// An existing folder chosen instead, or proposed by the plan.
     pub(crate) existing: Option<CatalogFolderId>,
+    /// The existing folder files each photograph in its capture day's folder inside it, as the
+    /// plan proposes for a folder an earlier Develop of the event made. Or add to an existing
+    /// folder chooses it without.
+    pub(crate) days: bool,
 }
 
 impl Confirmation {
-    /// The confirmation for `plan`: each event's proposal — a new folder named after the event,
-    /// selected for typing, or the folder an earlier Develop from it made — and the copies used.
+    /// The confirmation for `plan`: each event's proposal — its place, selected for typing, or the
+    /// folder an earlier Develop from it made — and the copies used. A new folder the plan names
+    /// is offered as a place of that name, as the plan proposes no other.
     pub(crate) fn new(plan: DevelopPlan, folders: CatalogFolders, from: String) -> Self {
         let events = plan
             .events
             .iter()
             .map(|event| match &event.folder {
-                FolderChoice::New { name, .. } => EventChoice {
+                FolderChoice::Place { name } | FolderChoice::New { name, .. } => EventChoice {
                     name: name.clone(),
                     existing: None,
+                    days: false,
                 },
-                FolderChoice::Existing { folder_id } => EventChoice {
+                FolderChoice::Existing { folder_id, days } => EventChoice {
                     name: event.name.clone(),
                     existing: Some(folder_id.clone()),
+                    days: *days,
                 },
             })
             .collect();
@@ -96,7 +104,7 @@ impl Confirmation {
         count > covered
     }
 
-    /// Why Develop cannot be pressed: a new folder's name is empty or too long.
+    /// Why Develop cannot be pressed: a place's name is empty or too long.
     pub(crate) fn refusal(&self) -> Option<String> {
         self.events.iter().find_map(|choice| {
             if choice.existing.is_some() {
@@ -104,7 +112,7 @@ impl Confirmation {
             }
             let name = choice.name.trim();
             if name.is_empty() {
-                Some("Name the new catalog folder".to_owned())
+                Some("Name the place".to_owned())
             } else if name.chars().count() > MAX_LIBRARY_NAME {
                 Some(format!(
                     "A folder name holds at most {MAX_LIBRARY_NAME} characters"
@@ -126,10 +134,10 @@ impl Confirmation {
                 folder: match &choice.existing {
                     Some(folder_id) => FolderChoice::Existing {
                         folder_id: folder_id.clone(),
+                        days: choice.days,
                     },
-                    None => FolderChoice::New {
+                    None => FolderChoice::Place {
                         name: choice.name.trim().to_owned(),
-                        parent_id: None,
                     },
                 },
             })
@@ -187,18 +195,23 @@ pub(crate) struct ConfirmModel {
     pub(crate) refusal: Option<String>,
 }
 
-/// One event of the confirmation: its folder field or chosen folder, and its menu of existing
-/// folders when open.
+/// One event of the confirmation: its place's field or chosen folder, the folders its picks go
+/// into, and its menu of existing folders when open.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct EventRow {
     /// The event's own name and how many picks it holds, shown when there are several events:
     /// "Konstanz · Sep 2026 · 12 picks".
     pub(crate) label: Option<String>,
-    /// The new folder's name as typed, while a new folder is chosen.
-    pub(crate) field: Option<String>,
+    /// The place's name as typed, or the existing folder's own name, which typing over turns into
+    /// a place of that name.
+    pub(crate) field: String,
     /// The existing folder chosen, by its label.
     pub(crate) existing: Option<String>,
-    /// The tag beside it: "new folder" or "existing folder".
+    /// The folders the picks go into, beneath: "2026 › Konstanz › 12 Sep, 13 Sep", one line per
+    /// year, and "Undated › Konstanz" for picks with no capture time; for an existing folder with
+    /// day folders, "Travel › Alps › 12 Sep, 13 Sep".
+    pub(crate) folders: Vec<String>,
+    /// The tag beside it: "place" or "existing folder".
     pub(crate) tag: &'static str,
     /// The open menu: every folder by its label.
     pub(crate) menu: Option<Vec<(CatalogFolderId, String)>>,
@@ -338,17 +351,74 @@ fn event_row(
             })
             .collect()
     });
+    let folders = match &existing {
+        Some(label) if choice.days && !event.days.is_empty() => {
+            vec![format!("{label} \u{203a} {}", day_names(&event.days))]
+        }
+        Some(label) => vec![label.clone()],
+        None => place_folders(choice.name.trim(), event),
+    };
+    let field = match &choice.existing {
+        Some(folder) => confirmation
+            .folders
+            .iter()
+            .find(|held| held.id == *folder)
+            .map(|held| held.name.clone())
+            .or_else(|| event.folder_name.clone())
+            .unwrap_or_default(),
+        None => choice.name.clone(),
+    };
     EventRow {
         label: several.then(|| format!("{} \u{b7} {}", event.name, picks(event.count))),
-        field: choice.existing.is_none().then(|| choice.name.clone()),
+        field,
         tag: if choice.existing.is_some() {
             "existing folder"
         } else {
-            "new folder"
+            "place"
         },
         existing,
+        folders,
         menu,
     }
+}
+
+/// English month names as day folders are named: "12 Sep".
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// Days as their folders are named, joined: "12 Sep, 13 Sep".
+fn day_names(days: &[LocalDay]) -> String {
+    days.iter()
+        .map(|day| {
+            let (_, month, day) = day.ymd();
+            format!("{day} {}", MONTHS[month as usize - 1])
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// The folders a place choice files `event`'s picks in: under each capture year, the place and its
+/// days, and "Undated › place" for picks with no capture time.
+fn place_folders(place: &str, event: &PlannedEvent) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut at = 0;
+    while at < event.days.len() {
+        let year = event.days[at].ymd().0;
+        let end = event.days[at..]
+            .iter()
+            .position(|day| day.ymd().0 != year)
+            .map_or(event.days.len(), |offset| at + offset);
+        lines.push(format!(
+            "{year:04} \u{203a} {place} \u{203a} {}",
+            day_names(&event.days[at..end])
+        ));
+        at = end;
+    }
+    if event.undated > 0 {
+        lines.push(format!("Undated \u{203a} {place}"));
+    }
+    lines
 }
 
 // -- The filmstrip ---------------------------------------------------------------------------------

@@ -1,6 +1,7 @@
-//! The confirmation and the filmstrip as plain data: what the confirmation proposes and
-//! says, the `pick.develop` it sends for each choice — new and existing folders, a card's copies
-//! used or not — the strip's steps, window and folder reads, and the model the views draw.
+//! The confirmation and the filmstrip as plain data: what the confirmation proposes and says, the
+//! `pick.develop` it sends for each choice — a place, an existing folder with or without its day
+//! folders, a card's copies used or not — the strip's steps, window and folder reads, and the model
+//! the views draw.
 use super::*;
 use luxforge_core::catalog_types::{
     CatalogFolder, DevelopOutcome, DevelopedPick, EventId, ItemFailure, LibraryChangeSeq,
@@ -21,14 +22,17 @@ fn event(
         folder,
         folder_name: None,
         removable,
+        days: vec![day(2026, 9, 12), day(2026, 9, 13)],
+        undated: 0,
     }
 }
 
-fn new_folder(name: &str) -> FolderChoice {
-    FolderChoice::New {
-        name: name.into(),
-        parent_id: None,
-    }
+fn day(year: i32, month: u32, day: u32) -> LocalDay {
+    LocalDay::from_ymd(year, month, day).unwrap()
+}
+
+fn place(name: &str) -> FolderChoice {
+    FolderChoice::Place { name: name.into() }
 }
 
 fn card(count: u32, with_copy: u32) -> RemovablePicks {
@@ -72,16 +76,12 @@ fn mutation() -> MutationRequest {
     }
 }
 
-/// One event proposing a new folder: its name is the field's, Develop sends exactly the plan's
-/// folder by the event's identity, and the request is what an agent writes for the same choice.
+/// One event proposing its place: the place's name is the field's, the folders it will make are
+/// shown beneath, and Develop sends exactly the plan's place by the event's identity, the request
+/// an agent writes for the same choice.
 #[test]
-fn filmstrip_confirmation_proposes_the_plans_new_folder() {
-    let plan_event = event(
-        "Konstanz",
-        18,
-        new_folder("Konstanz \u{b7} Sep 2026"),
-        vec![],
-    );
+fn filmstrip_confirmation_proposes_the_plans_place() {
+    let plan_event = event("Konstanz", 18, place("Konstanz"), vec![]);
     let event_id = plan_event.event_id.clone();
     let confirm = confirmation(vec![plan_event], vec![]);
     let model = confirm_model(&confirm);
@@ -91,8 +91,12 @@ fn filmstrip_confirmation_proposes_the_plans_new_folder() {
     assert_eq!(model.events.len(), 1);
     let row = &model.events[0];
     assert_eq!(row.label, None, "one event needs no label");
-    assert_eq!(row.field.as_deref(), Some("Konstanz \u{b7} Sep 2026"));
-    assert_eq!(row.tag, "new folder");
+    assert_eq!(row.field, "Konstanz");
+    assert_eq!(row.tag, "place");
+    assert_eq!(
+        row.folders,
+        ["2026 \u{203a} Konstanz \u{203a} 12 Sep, 13 Sep"]
+    );
     assert_eq!((row.existing.as_ref(), row.menu.as_ref()), (None, None));
     assert_eq!(model.notes, Vec::<String>::new());
     assert_eq!(model.copies, None);
@@ -100,31 +104,56 @@ fn filmstrip_confirmation_proposes_the_plans_new_folder() {
     assert_eq!(
         develop_params(&confirm, &mutation()),
         json!({
-            "into": [{"event_id": event_id, "folder": {"kind": "new", "name": "Konstanz \u{b7} Sep 2026"}}],
+            "into": [{"event_id": event_id, "folder": {"kind": "place", "name": "Konstanz"}}],
             "mutation": {"request_id": "desktop-1", "actor": "desktop"},
         })
     );
 }
 
-/// Typing names the new folder (trimmed when sent); an empty name refuses Develop with its reason;
-/// choosing an existing folder sends it by identity, listed and shown by its path.
+/// An event across a new year shows a line per year, and its undated picks under Undated.
+#[test]
+fn filmstrip_confirmation_shows_the_folders_a_place_makes() {
+    let mut across = event("Alps", 9, place("Alps"), vec![]);
+    across.days = vec![day(2025, 12, 31), day(2026, 1, 1), day(2026, 1, 2)];
+    across.undated = 2;
+    let model = confirm_model(&confirmation(vec![across.clone()], vec![]));
+    assert_eq!(
+        model.events[0].folders,
+        [
+            "2025 \u{203a} Alps \u{203a} 31 Dec",
+            "2026 \u{203a} Alps \u{203a} 1 Jan, 2 Jan",
+            "Undated \u{203a} Alps",
+        ]
+    );
+    across.days.clear();
+    let model = confirm_model(&confirmation(vec![across], vec![]));
+    assert_eq!(model.events[0].folders, ["Undated \u{203a} Alps"]);
+}
+
+/// Typing names the place (trimmed when sent); an empty name refuses Develop with its reason;
+/// choosing an existing folder sends it by identity, with no day folders, listed and shown by its
+/// path; typing over it makes it a place again.
 #[test]
 fn filmstrip_confirmation_renames_or_chooses_an_existing_folder() {
     let travel = folder("Travel", None);
     let alps = folder("Alps", Some(&travel.id));
     let mut confirm = confirmation(
-        vec![event("Lake", 2, new_folder("Lake \u{b7} Sep 2026"), vec![])],
+        vec![event("Lake", 2, place("Lake"), vec![])],
         vec![travel.clone(), alps.clone()],
     );
     confirm.events[0].name = "  Lake trip ".into();
     assert_eq!(
         develop_params(&confirm, &mutation())["into"][0]["folder"],
-        json!({"kind": "new", "name": "Lake trip"})
+        json!({"kind": "place", "name": "Lake trip"})
+    );
+    assert_eq!(
+        confirm_model(&confirm).events[0].folders,
+        ["2026 \u{203a} Lake trip \u{203a} 12 Sep, 13 Sep"]
     );
     confirm.events[0].name = "   ".into();
     assert_eq!(
         confirm_model(&confirm).refusal.as_deref(),
-        Some("Name the new catalog folder")
+        Some("Name the place")
     );
     confirm.events[0].name = "x".repeat(MAX_LIBRARY_NAME + 1);
     assert!(confirm.refusal().is_some());
@@ -143,8 +172,9 @@ fn filmstrip_confirmation_renames_or_chooses_an_existing_folder() {
     confirm.menu = None;
     let model = confirm_model(&confirm);
     let row = &model.events[0];
-    assert_eq!(row.field, None);
+    assert_eq!(row.field, "Alps");
     assert_eq!(row.existing.as_deref(), Some("Travel \u{203a} Alps"));
+    assert_eq!(row.folders, ["Travel \u{203a} Alps"]);
     assert_eq!(row.tag, "existing folder");
     assert_eq!(model.refusal, None, "an existing folder needs no name");
     assert_eq!(
@@ -153,31 +183,25 @@ fn filmstrip_confirmation_renames_or_chooses_an_existing_folder() {
     );
 }
 
-/// Picks from an event that already has a folder default to it; several events are listed with
-/// their counts, each into its own folder.
+/// Picks from an event that already has a folder default to it with its day folders; several
+/// events are listed with their counts, each into its own folder.
 #[test]
 fn filmstrip_confirmation_lists_several_events_and_an_earlier_folder() {
-    let earlier = folder("Konstanz \u{b7} Sep 2026", None);
+    let year = folder("2026", None);
+    let earlier = folder("Konstanz", Some(&year.id));
     let mut proposed = event(
         "Konstanz",
         12,
         FolderChoice::Existing {
             folder_id: earlier.id.clone(),
+            days: true,
         },
         vec![],
     );
     proposed.folder_name = Some(earlier.name.clone());
     let confirm = confirmation(
-        vec![
-            proposed,
-            event(
-                "Brighton",
-                1,
-                new_folder("Brighton \u{b7} Sep 2026"),
-                vec![],
-            ),
-        ],
-        vec![earlier.clone()],
+        vec![proposed, event("Brighton", 1, place("Brighton"), vec![])],
+        vec![year.clone(), earlier.clone()],
     );
     let model = confirm_model(&confirm);
     assert_eq!(model.title, "Develop 13 picks");
@@ -193,15 +217,20 @@ fn filmstrip_confirmation_lists_several_events_and_an_earlier_folder() {
     );
     assert_eq!(
         model.events[0].existing.as_deref(),
-        Some("Konstanz \u{b7} Sep 2026")
+        Some("2026 \u{203a} Konstanz")
     );
+    assert_eq!(model.events[0].field, "Konstanz");
     assert_eq!(
-        model.events[1].field.as_deref(),
-        Some("Brighton \u{b7} Sep 2026")
+        model.events[0].folders,
+        ["2026 \u{203a} Konstanz \u{203a} 12 Sep, 13 Sep"]
     );
+    assert_eq!(model.events[1].field, "Brighton");
     let into = &develop_params(&confirm, &mutation())["into"];
-    assert_eq!(into[0]["folder"]["kind"], "existing");
-    assert_eq!(into[1]["folder"]["kind"], "new");
+    assert_eq!(
+        into[0]["folder"],
+        json!({"kind": "existing", "folder_id": earlier.id, "days": true})
+    );
+    assert_eq!(into[1]["folder"]["kind"], "place");
     assert_ne!(into[0]["event_id"], into[1]["event_id"]);
 }
 
@@ -212,12 +241,7 @@ fn filmstrip_confirmation_lists_several_events_and_an_earlier_folder() {
 fn filmstrip_confirmation_says_what_happens_to_card_picks() {
     let with = |removable: RemovablePicks, offline: u32| {
         let mut confirm = confirmation(
-            vec![event(
-                "Konstanz",
-                18,
-                new_folder("Konstanz"),
-                vec![removable],
-            )],
+            vec![event("Konstanz", 18, place("Konstanz"), vec![removable])],
             vec![],
         );
         confirm.plan.offline = offline;

@@ -345,7 +345,7 @@ fn follow(editor: &mut Editor) -> Value {
         .state
         .merge
         .running_job()
-        .expect("a merge running")
+        .unwrap_or_else(|| panic!("a merge running: {}", editor.status.text))
         .to_owned();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_time()
