@@ -93,25 +93,7 @@ impl ReadSet {
     }
 
     pub(crate) fn add(&mut self, region: Region) {
-        if region.is_empty() {
-            return;
-        }
-        let mut merged = region;
-        loop {
-            let before = self.rects.len();
-            self.rects.retain(|held| {
-                if meets(*held, merged) {
-                    merged = union(merged, *held);
-                    false
-                } else {
-                    true
-                }
-            });
-            if self.rects.len() == before {
-                break;
-            }
-        }
-        self.rects.push(merged);
+        merge(&mut self.rects, region);
         if self.rects.len() > MAX_READ_RECTS {
             let bounds = self.bounds();
             self.rects = vec![bounds];
@@ -138,6 +120,30 @@ impl ReadSet {
     pub(crate) fn pixels(&self) -> u64 {
         self.rects.iter().map(|held| held.pixels()).sum()
     }
+}
+
+/// Add `region` to the disjoint rectangles `rects`, merged with every rectangle it overlaps into
+/// their bounding box, repeatedly, so it lies wholly inside one rectangle of them.
+fn merge(rects: &mut Vec<Region>, region: Region) {
+    if region.is_empty() {
+        return;
+    }
+    let mut merged = region;
+    loop {
+        let before = rects.len();
+        rects.retain(|held| {
+            if meets(*held, merged) {
+                merged = union(merged, *held);
+                false
+            } else {
+                true
+            }
+        });
+        if rects.len() == before {
+            break;
+        }
+    }
+    rects.push(merged);
 }
 
 /// One operation's regions at the stage: what it may write and the two rectangles it reads.
@@ -230,17 +236,30 @@ impl RepairEntry {
         (set, relevant)
     }
 
-    /// The single rectangle a GPU window producing `window` holds: the read set's bounding box.
-    /// A GPU window is one texture, so the set's bounding box is what it allocates and charges.
-    pub(crate) fn window_reads(&self, window: Region) -> Region {
+    /// The bounding box of what producing `window` reads ([`Self::reads`]): the one rectangle a
+    /// caller that cannot hold a set reads, such as [`super::Entry::reads`].
+    pub(crate) fn read_bounds(&self, window: Region) -> Region {
         self.reads(window).0.bounds()
     }
 
-    /// `window` with what producing it reads: a window over which a GPU step's output is the
-    /// whole frame's at every pixel of `window`. `O(operations · rects)`.
-    pub(crate) fn closure_once(&self, window: Region) -> Region {
-        let window = intersection(window, Region::whole(self.stage));
-        union(self.window_reads(window), window)
+    /// The read set a GPU repair step holds itself ([`crate::render::gpu::repair`]): every
+    /// rectangle any operation that writes a pixel reads — its destination and its source, each
+    /// with Heal's ring — overlapping ones merged, with no bound on their count, so each operation's
+    /// destination and source each lie wholly inside one of them. Whatever window the step's output
+    /// is drawn over, it evaluates every operation of its table from these, so every pixel it
+    /// writes is the whole frame's. `O(operations²)`, no pixel.
+    pub(crate) fn step_reads(&self) -> Vec<Region> {
+        let mut rects = Vec::new();
+        for regions in self
+            .regions
+            .iter()
+            .filter(|regions| !regions.writes.is_empty())
+        {
+            for read in regions.reads {
+                merge(&mut rects, read);
+            }
+        }
+        rects
     }
 
     /// The read set of every destination: what a whole frame of the output reads beyond the
