@@ -1,5 +1,5 @@
 use super::*;
-use crate::widgets::thumbnail_grid::layout::{GridHeading, MomentHeader};
+use crate::widgets::thumbnail_grid::layout::{GridHeading, HeaderAction, MomentHeader, PendingRow};
 use std::cell::{Cell, RefCell};
 
 // -- A painter that records -----------------------------------------------------------------------
@@ -172,7 +172,7 @@ fn moment_header(kind: MomentKind) -> MomentHeader {
         detail: "3 exposures · −2 · 0 · +2 EV".into(),
         evidence: Some("from metadata".into()),
         picked: Some("1 picked".into()),
-        action: Some("Pick all 3".into()),
+        actions: vec![HeaderAction::new("Pick all 3")],
     }
 }
 
@@ -523,7 +523,9 @@ fn a_moment_header_truncates_and_gives_way_in_order() {
             plan.detail.map(|(text, _)| text.into_owned()),
             plan.picked,
             plan.tag,
-            plan.action,
+            plan.actions
+                .first()
+                .map(|action| (action.label, action.rect)),
         )
     };
     // Wide: everything, whole. The button's right edge is 10 pt in; the tag 13 pt before it, the
@@ -797,4 +799,235 @@ fn measuring_is_asked_only_for_what_is_drawn() {
     );
     assert_eq!(recorder.measured, 0);
     assert!(count.get() > 0);
+}
+
+/// A bracket's header with Pick all, Import merged and Pick merged keeps them left to right with
+/// Pick merged at the right in the accent; narrower, Pick all goes before Import merged, and the
+/// primary goes last.
+#[test]
+fn a_header_s_actions_give_way_from_the_left_and_the_primary_last() {
+    let metrics = GridMetrics::select(136.0);
+    let header = MomentHeader {
+        actions: vec![
+            HeaderAction::new("Pick all 3"),
+            HeaderAction::new("Import merged"),
+            HeaderAction::primary("Pick merged"),
+        ],
+        ..moment_header(MomentKind::Bracket)
+    };
+    let plan = |width: f32| {
+        let strip = Rectangle::new(Point::new(0.0, 0.0), Size::new(width, 28.0));
+        let mut recorder = Recorder::default();
+        plan_header(&header, strip, &metrics, &mut recorder)
+    };
+    let wide = plan(900.0);
+    let labels: Vec<_> = wide.actions.iter().map(|action| action.label).collect();
+    assert_eq!(labels, ["Pick all 3", "Import merged", "Pick merged"]);
+    assert_eq!(
+        wide.actions
+            .iter()
+            .map(|action| (action.index, action.primary))
+            .collect::<Vec<_>>(),
+        [(0, false), (1, false), (2, true)]
+    );
+    // The buttons are 6 pt apart, the last 10 pt in.
+    assert_eq!(
+        wide.actions[2].rect.x + wide.actions[2].rect.width,
+        900.0 - 10.0
+    );
+    assert_eq!(
+        wide.actions[1].rect.x + wide.actions[1].rect.width + 6.0,
+        wide.actions[2].rect.x
+    );
+    let mut seen = Vec::new();
+    for width in (40..900).rev().step_by(2) {
+        let plan = plan(width as f32);
+        let kept: Vec<u32> = plan.actions.iter().map(|action| action.index).collect();
+        if seen.last() != Some(&kept) {
+            seen.push(kept);
+        }
+    }
+    assert_eq!(seen, [vec![0, 1, 2], vec![1, 2], vec![2], vec![]]);
+}
+
+/// A primary action is drawn in the accent's button style, an ordinary one in the control's.
+#[test]
+fn a_primary_action_draws_in_the_accent() {
+    let metrics = GridMetrics::select(136.0);
+    let header = MomentHeader {
+        actions: vec![
+            HeaderAction::new("Import merged"),
+            HeaderAction::primary("Pick merged"),
+        ],
+        ..moment_header(MomentKind::Bracket)
+    };
+    let layout = GridLayout::new(
+        vec![GridBlock::Moment {
+            header,
+            frames: 4,
+            collapsed: false,
+        }],
+        metrics,
+        700.0,
+    );
+    let mut recorder = Recorder::default();
+    let scene = scene(&layout, 0.0, Size::new(700.0, 300.0));
+    paint(&scene, &|_| CellView::default(), &mut recorder);
+    let strip = header_strip(&layout.frames()[0], &metrics, 0.0);
+    let GridBlock::Moment { header, .. } = layout.block(0) else {
+        unreachable!()
+    };
+    let plan = plan_header(header, strip, &metrics, &mut Recorder::default());
+    let fill = |rect: Rectangle| {
+        recorder
+            .fills_in(rect)
+            .into_iter()
+            .find(|fill| fill.rect == rect)
+            .unwrap()
+            .color
+    };
+    let theme = Theme::luxforge_dark();
+    let status = iced::widget::button::Status::Active;
+    let accent = theme::button_accent(&theme, status).background;
+    let control = theme::button_control(&theme, status).background;
+    assert_ne!(accent, control);
+    let ink = |background: Option<iced::Background>| match background {
+        Some(iced::Background::Color(color)) => Ink::Fixed(color),
+        _ => unreachable!(),
+    };
+    assert_eq!(fill(plan.actions[1].rect), ink(accent));
+    assert_eq!(fill(plan.actions[0].rect), ink(control));
+}
+
+/// A pending row is a framed line of its own: its title and detail, its progress as an accent bar
+/// along the track at its bottom, and its button at the right; a failed one names why in the
+/// warning colour and has no bar.
+#[test]
+fn a_pending_row_draws_its_words_progress_and_button() {
+    let metrics = GridMetrics::select(136.0);
+    let row = PendingRow {
+        title: "Merging HDR · 3 exposures".into(),
+        detail: "Merging 2 of 3".into(),
+        progress: Some(0.5),
+        action: Some("Cancel".into()),
+        failed: false,
+    };
+    let layout = GridLayout::new(
+        vec![GridBlock::Pending(row.clone()), GridBlock::Singles(2)],
+        metrics,
+        700.0,
+    );
+    let mut recorder = Recorder::default();
+    paint(
+        &scene(&layout, 0.0, Size::new(700.0, 300.0)),
+        &|_| CellView::default(),
+        &mut recorder,
+    );
+    let line = &layout.lines()[0];
+    let plan = plan_pending(&layout, line, &row, 0.0, &mut Recorder::default());
+    assert_eq!(
+        plan.rect,
+        Rectangle::new(Point::new(16.0, 10.0), Size::new(668.0, 40.0))
+    );
+    let texts = recorder.texts();
+    assert!(texts.contains(&"Merging HDR · 3 exposures"), "{texts:?}");
+    assert!(texts.contains(&"Merging 2 of 3"), "{texts:?}");
+    assert!(texts.contains(&"Cancel"), "{texts:?}");
+    let (_, button) = plan.action.unwrap();
+    assert_eq!(button.x + button.width, 16.0 + 668.0 - 10.0);
+    let fills = recorder.fills_in(plan.track);
+    let done = fills
+        .iter()
+        .find(|fill| fill.color == Ink::Token(Token::Accent))
+        .unwrap();
+    assert_eq!(done.rect.width, (plan.track.width * 0.5).round());
+    // The cells start a gap under it.
+    assert_eq!(layout.cell(0).rect.y, 10.0 + 40.0 + 6.0);
+
+    let failed = PendingRow {
+        detail: "DSC_0002.NEF could not be read".into(),
+        progress: None,
+        action: Some("Dismiss".into()),
+        failed: true,
+        ..row
+    };
+    let layout = GridLayout::new(vec![GridBlock::Pending(failed)], metrics, 700.0);
+    let mut recorder = Recorder::default();
+    paint(
+        &scene(&layout, 0.0, Size::new(700.0, 300.0)),
+        &|_| CellView::default(),
+        &mut recorder,
+    );
+    assert!(recorder.ops.iter().any(|(_, op)| matches!(op,
+        Op::Text { content, color, .. }
+            if content == "DSC_0002.NEF could not be read"
+                && *color == Ink::Fixed(theme::CLIPPING_HIGHLIGHT))));
+    assert!(
+        !recorder
+            .ops
+            .iter()
+            .any(|(_, op)| matches!(op, Op::Fill(fill) if fill.color == Ink::Token(Token::Accent))),
+        "no bar"
+    );
+}
+
+/// A stack's badge sits at the top right with its long words, its short words in a narrower cell
+/// and only its icons in the narrowest; its chevron points right while it is closed and down
+/// while it is open. A note sits at the photograph's bottom left.
+#[test]
+fn a_stack_badge_fits_its_words_and_shows_its_disclosure() {
+    let view = |expanded| CellView {
+        picked: true,
+        stack: Some(CellStack {
+            label: "HDR · 3 exposures",
+            short: "HDR · 3",
+            expanded,
+        }),
+        ..CellView::default()
+    };
+    let words = |width: f32| {
+        let metrics = GridMetrics::select(width);
+        let (rect, text) = plan_stack(
+            Point::ORIGIN,
+            &view(false),
+            &metrics,
+            &mut Recorder::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            rect.x + rect.width,
+            metrics.cell.width - metrics.badge_inset
+        );
+        text
+    };
+    assert_eq!(words(200.0), "HDR · 3 exposures");
+    assert_eq!(words(136.0), "HDR · 3");
+    assert_eq!(words(60.0), "");
+
+    let metrics = GridMetrics::select(200.0);
+    let layout = GridLayout::new(vec![GridBlock::Singles(2)], metrics, 700.0);
+    let mut recorder = Recorder::default();
+    let cell = |grid: GridCell| CellView {
+        note: (grid.item == 1).then_some("−2 EV · outside the filter"),
+        ..view(grid.item == 1)
+    };
+    paint(
+        &scene(&layout, 0.0, Size::new(700.0, 300.0)),
+        &cell,
+        &mut recorder,
+    );
+    let chevrons: Vec<Icon> = recorder
+        .ops
+        .iter()
+        .filter_map(|(layer, op)| match op {
+            Op::Icon { icon, .. }
+                if *layer == 1 && matches!(icon, Icon::ChevronDown | Icon::ChevronRight) =>
+            {
+                Some(*icon)
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(chevrons, [Icon::ChevronRight, Icon::ChevronDown]);
+    assert!(recorder.texts().contains(&"−2 EV · outside the filter"));
 }

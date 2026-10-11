@@ -1,5 +1,5 @@
 //! The grid's response to input — presses, double clicks, the wheel, the scrollbar, the moment
-//! action and the viewport size — as a function of the widget, its input state, one event and a
+//! actions, a pending row's action, a stack's badge and the viewport size — as a function of the widget, its input state, one event and a
 //! text measure, so the tests drive it without a window or a renderer.
 
 use super::layout::Target;
@@ -121,6 +121,15 @@ impl<M> ThumbnailGrid<'_, M> {
                 }
                 let content = Point::new(position.x, position.y + scroll);
                 match self.layout.hit_detail(content) {
+                    Some(Target::Cell(cell))
+                        if self.on_stack.is_some()
+                            && self.stack_at(cell, position, scroll, measure) =>
+                    {
+                        if let Some(on_stack) = &self.on_stack {
+                            publish(on_stack(self.layout.cell(cell).item));
+                            response.capture = true;
+                        }
+                    }
                     Some(Target::Cell(cell)) => {
                         let previous = input
                             .last_click
@@ -144,10 +153,19 @@ impl<M> ThumbnailGrid<'_, M> {
                         }
                     }
                     Some(Target::Header(_)) => {
-                        if let Some(index) = self.action_at(position, scroll, measure)
+                        if let Some((index, action)) = self.action_at(position, scroll, measure)
                             && let Some(on_action) = &self.on_moment_action
                         {
-                            publish(on_action(self.layout.frames()[index as usize].moment));
+                            let moment = self.layout.frames()[index as usize].moment;
+                            publish(on_action(moment, action));
+                            response.capture = true;
+                        }
+                    }
+                    Some(Target::Pending(block)) => {
+                        if self.pending_at(block, position, scroll, measure)
+                            && let Some(on_action) = &self.on_pending_action
+                        {
+                            publish(on_action(self.layout.pending_number(block)));
                             response.capture = true;
                         }
                     }
@@ -210,8 +228,8 @@ impl<M> ThumbnailGrid<'_, M> {
         }
     }
 
-    /// What `position` (widget coordinates) is over that draws differently: the scrollbar, or a
-    /// moment's action button.
+    /// What `position` (widget coordinates) is over that draws differently: the scrollbar, a
+    /// moment's action button, a pending row's button or a stack's badge.
     pub(super) fn hover(
         &self,
         position: Point,
@@ -224,14 +242,71 @@ impl<M> ThumbnailGrid<'_, M> {
         {
             return Hover::Scrollbar;
         }
-        match self.action_at(position, scroll, measure) {
-            Some(frame) => Hover::Action(frame),
-            None => Hover::None,
+        let content = Point::new(position.x, position.y + scroll);
+        match self.layout.hit_detail(content) {
+            Some(Target::Header(_)) => match self.action_at(position, scroll, measure) {
+                Some((frame, action)) => Hover::Action(frame, action),
+                None => Hover::None,
+            },
+            Some(Target::Pending(block)) if self.pending_at(block, position, scroll, measure) => {
+                Hover::Pending(block)
+            }
+            Some(Target::Cell(cell))
+                if self.on_stack.is_some() && self.stack_at(cell, position, scroll, measure) =>
+            {
+                Hover::Stack(cell)
+            }
+            _ => Hover::None,
         }
     }
 
-    /// The frame whose action button is under `position`, as the header's plan places it.
-    fn action_at(&self, position: Point, scroll: f32, measure: &mut impl Measure) -> Option<u32> {
+    /// Whether `position` is on the stack badge of `cell`, as the cell's drawing places it.
+    fn stack_at(
+        &self,
+        cell: u32,
+        position: Point,
+        scroll: f32,
+        measure: &mut impl Measure,
+    ) -> bool {
+        let grid = self.layout.cell(cell);
+        let view = (self.cell)(grid);
+        let origin = Point::new(grid.rect.x, grid.rect.y - scroll);
+        paint::plan_stack(origin, &view, self.layout.metrics(), measure)
+            .is_some_and(|(rect, _)| rect.contains(position))
+    }
+
+    /// Whether `position` is on the action button of the pending row of `block`.
+    fn pending_at(
+        &self,
+        block: u32,
+        position: Point,
+        scroll: f32,
+        measure: &mut impl Measure,
+    ) -> bool {
+        let GridBlock::Pending(row) = self.layout.block(block) else {
+            return false;
+        };
+        let y = position.y + scroll;
+        let lines = self.layout.lines_between(y, y + 1.0);
+        let Some(line) = self.layout.lines()[lines]
+            .iter()
+            .find(|line| line.kind == super::LineKind::Pending(block))
+        else {
+            return false;
+        };
+        paint::plan_pending(self.layout, line, row, scroll, measure)
+            .action
+            .is_some_and(|(_, rect)| rect.contains(position))
+    }
+
+    /// The frame whose action button is under `position`, and which of its header's actions it
+    /// is, as the header's plan places them.
+    fn action_at(
+        &self,
+        position: Point,
+        scroll: f32,
+        measure: &mut impl Measure,
+    ) -> Option<(u32, u32)> {
         let content = Point::new(position.x, position.y + scroll);
         let Some(Target::Header(index)) = self.layout.hit_detail(content) else {
             return None;
@@ -243,9 +318,10 @@ impl<M> ThumbnailGrid<'_, M> {
         let metrics = self.layout.metrics();
         let strip = paint::header_strip(frame, metrics, scroll);
         let plan = paint::plan_header(header, strip, metrics, measure);
-        plan.action
-            .is_some_and(|(_, rect)| rect.contains(position))
-            .then_some(index)
+        plan.actions
+            .iter()
+            .find(|action| action.rect.contains(position))
+            .map(|action| (index, action.index))
     }
 }
 

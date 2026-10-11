@@ -11,7 +11,7 @@ use crate::Element;
 use crate::gallery_thumbnails::{SCENES, bracket, thumbnail};
 use crate::{
     CellAvailability, CellView, GridBlock, GridCell, GridHeading, GridLayout, GridLineKind,
-    GridMetrics, MomentHeader, MomentKind, caption, theme, thumbnail_grid,
+    GridMetrics, HeaderAction, MomentHeader, MomentKind, caption, theme, thumbnail_grid,
 };
 use iced::Length;
 use iced::widget::image::Handle;
@@ -61,7 +61,7 @@ fn moment(
             detail: detail.into(),
             evidence: evidence.map(Into::into),
             picked: picked.map(Into::into),
-            action: action.map(Into::into),
+            actions: action.map(HeaderAction::new).into_iter().collect(),
         },
         frames,
         collapsed: false,
@@ -76,7 +76,7 @@ fn collapsed(frames: u32) -> GridBlock {
             detail: format!("{frames} frames"),
             evidence: None,
             picked: None,
-            action: None,
+            actions: Vec::new(),
         },
         frames,
         collapsed: true,

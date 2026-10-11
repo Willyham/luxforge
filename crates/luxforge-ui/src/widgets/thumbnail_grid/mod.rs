@@ -6,8 +6,8 @@
 //! one cell as plain data ([`CellView`]); the widget asks the closure only for the cells in the
 //! visible range and draws everything — moment rows, headers, headings, cells, photographs, badges
 //! and the scrollbar — with renderer primitives, not an element per cell. It holds no
-//! authoritative state: a press, a scroll, a moment's action and a new viewport size are published
-//! as messages, and the caller decides.
+//! authoritative state: a press, a scroll, a moment's or a pending row's action, a stack's badge and
+//! a new viewport size are published as messages, and the caller decides.
 //!
 //! What it keeps between frames is bounded and derived: each glyph it draws, tessellated once per
 //! icon, size, colour and placement in a frame; the widths of the strings it has measured (at most
@@ -21,11 +21,11 @@ mod paint;
 pub(crate) use layout::LineKind;
 pub use layout::{
     GridBlock, GridCell, GridDirection, GridHeading, GridHit, GridLayout, GridMetrics,
-    MomentHeader, MomentKind,
+    HeaderAction, MomentHeader, MomentKind, PendingRow,
 };
 #[cfg(test)]
 pub(crate) use paint::asked_cells as paint_for_tests;
-pub use paint::{CellAvailability, CellView};
+pub use paint::{CellAvailability, CellStack, CellView};
 
 use crate::Icon;
 use crate::widgets::icon_button::draw_icon;
@@ -91,7 +91,9 @@ pub struct ThumbnailGrid<'a, M> {
     on_press: Option<Box<dyn Fn(GridPress) -> M + 'a>>,
     on_context: Option<Box<dyn Fn(GridContext) -> M + 'a>>,
     on_scroll: Option<Box<dyn Fn(f32) -> M + 'a>>,
-    on_moment_action: Option<Box<dyn Fn(u32) -> M + 'a>>,
+    on_moment_action: Option<Box<dyn Fn(u32, u32) -> M + 'a>>,
+    on_pending_action: Option<Box<dyn Fn(u32) -> M + 'a>>,
+    on_stack: Option<Box<dyn Fn(u32) -> M + 'a>>,
     viewport: Size,
     on_viewport: Option<Box<dyn Fn(Size) -> M + 'a>>,
     width: Length,
@@ -113,6 +115,8 @@ pub fn thumbnail_grid<'a, M>(
         on_context: None,
         on_scroll: None,
         on_moment_action: None,
+        on_pending_action: None,
+        on_stack: None,
         viewport: Size::ZERO,
         on_viewport: None,
         width: Length::Fill,
@@ -142,9 +146,23 @@ impl<'a, M> ThumbnailGrid<'a, M> {
     }
 
     /// Publishes a press on a moment header's action button, with the moment's number (the view's
-    /// moments counted in order, collapsed ones included).
-    pub fn on_moment_action(mut self, on_action: impl Fn(u32) -> M + 'a) -> Self {
+    /// moments counted in order, collapsed ones included) and which of its header's actions it is.
+    pub fn on_moment_action(mut self, on_action: impl Fn(u32, u32) -> M + 'a) -> Self {
         self.on_moment_action = Some(Box::new(on_action));
+        self
+    }
+
+    /// Publishes a press on a pending row's action button, with the row's number (the view's
+    /// pending rows counted in order).
+    pub fn on_pending_action(mut self, on_action: impl Fn(u32) -> M + 'a) -> Self {
+        self.on_pending_action = Some(Box::new(on_action));
+        self
+    }
+
+    /// Publishes a press on a cell's stack badge, with the cell's item. Without it, a press on the
+    /// badge is a press on the cell.
+    pub fn on_stack(mut self, on_stack: impl Fn(u32) -> M + 'a) -> Self {
+        self.on_stack = Some(Box::new(on_stack));
         self
     }
 
@@ -379,7 +397,7 @@ impl<M> Widget<M, Theme, Renderer> for ThumbnailGrid<'_, M> {
         let scroll = self.layout.clamp_scroll(self.scroll, bounds.height);
         let mut widths = state.caches.widths.borrow_mut();
         match self.hover(position, bounds.size(), scroll, &mut *widths) {
-            Hover::Action(_) => mouse::Interaction::Pointer,
+            Hover::Action(..) | Hover::Pending(_) | Hover::Stack(_) => mouse::Interaction::Pointer,
             _ => mouse::Interaction::Idle,
         }
     }
