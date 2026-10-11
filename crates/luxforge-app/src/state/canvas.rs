@@ -587,8 +587,8 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
     }
     // An export refused for its entry's stale frozen patches waits here for the person's answer:
     // nothing is acknowledged without Export anyway, which acknowledges what this card names.
-    if let Some(held) = inputs.export_held {
-        notices.push(stale_export_notice(held));
+    if let Some(stale) = inputs.export_held {
+        notices.push(stale_export_notice(stale));
     }
     if inputs.draft.is_some() && !super::at_current(inputs.document.state.as_ref(), inputs.session)
     {
@@ -612,9 +612,8 @@ fn notices(inputs: &Inputs<'_>) -> Vec<Notice> {
 
 /// The card an export held for its stale frozen patches shows: each patch by name with what
 /// changed since it was generated, and the two answers.
-pub(crate) fn stale_export_notice(held: &crate::app::export::HeldStale) -> Notice {
-    let mut lines: Vec<String> = held
-        .stale
+pub(crate) fn stale_export_notice(stale: &[luxforge_core::StaleCorrection]) -> Notice {
+    let mut lines: Vec<String> = stale
         .iter()
         .map(|patch| {
             let changed: Vec<&str> = patch
@@ -633,10 +632,10 @@ pub(crate) fn stale_export_notice(held: &crate::app::export::HeldStale) -> Notic
     Notice {
         tone: NoticeTone::Warning,
         icon: NoticeIcon::Triangle,
-        title: if held.stale.len() == 1 {
+        title: if stale.len() == 1 {
             "1 stale patch in this export".into()
         } else {
-            format!("{} stale patches in this export", held.stale.len())
+            format!("{} stale patches in this export", stale.len())
         },
         body: lines.join("\n"),
         actions: vec![

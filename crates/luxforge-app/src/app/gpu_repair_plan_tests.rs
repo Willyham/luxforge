@@ -835,7 +835,8 @@ fn gpu_frozen_patches_at_a_reduced_stage_meet_the_cpu_at_that_stage() {
             pixel: ramp(seed),
         })
     };
-    let shapes: [(&str, Box<dyn Fn() -> Vec<QualStep>>); 3] = [
+    type Steps<'a> = Box<dyn Fn() -> Vec<QualStep> + 'a>;
+    let shapes: [(&str, Steps<'_>); 3] = [
         (
             "a patch alone",
             Box::new(|| vec![patch([101, 61, 91, 71], 85, 1)]),
