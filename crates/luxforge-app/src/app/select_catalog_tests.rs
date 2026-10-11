@@ -1328,7 +1328,7 @@ fn catalog_browse_removes_puts_back_and_empties_removed_on_a_real_owner() {
     assert_eq!(calls[0]["params"]["mutation"]["actor"], "desktop");
     assert_eq!(
         calls[0]["answer"],
-        json!({"outcome": "applied", "deleted": 1, "remaining": 0, "deduplicated": false})
+        json!({"outcome": "applied", "deleted": 1, "merges": 0, "remaining": 0, "deduplicated": false})
     );
     // The journal holds the library changes; emptying is none.
     let methods: Vec<Value> = journal(&editor, agent)
