@@ -86,7 +86,7 @@ const IMAGES: u32 = 120;
 /// label it.
 const EVENT: &str = "Konstanz \u{b7} 12\u{2013}13 Sep";
 const EVENT_LABEL: &str = "Konstanz";
-const DEVELOP_GUIDANCE: &str = "Pick a catalog folder or choose images to develop from the grid";
+const DEVELOP_GUIDANCE: &str = "Choose a catalog folder to develop";
 /// The actor the evidence driver's second client picks as.
 const AGENT: &str = "evidence-agent";
 /// The folder whose first look is long-running work, written into the run's output directory.

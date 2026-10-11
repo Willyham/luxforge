@@ -139,7 +139,7 @@ pub fn plan(expected: &Value) -> Result<Plan> {
         click("photo", photo),
         key("photo-loupe", "e"),
         key("develop-switch", "d")
-            .status("Pick a catalog folder or choose images to develop from the grid"),
+            .status("Choose a catalog folder to develop"),
         Step::new("develop-active", script::Step::Develop(DevelopStep::Active)),
         key("select-return", "g"),
         select("folder-return", SelectStep::Folder(folder.into())),
