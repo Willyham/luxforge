@@ -599,7 +599,7 @@ fn hdr_merge_lifecycle_creation_undo_after_an_edit_and_redo_with_the_inputs_offl
     let mut bench = Bench::new("undo", 3);
     let hashes = bench.hashes();
     // A collection with an unrelated member, which the creation adds the result to through its
-    // extra items, as a development set's membership joins it.
+    // extra items.
     let collection = Collection {
         id: CollectionId::new(),
         name: "Portfolio".into(),

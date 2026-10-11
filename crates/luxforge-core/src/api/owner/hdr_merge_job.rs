@@ -1058,385 +1058,50 @@ fn hdr_merge_job_publication_failure_at_each_boundary_publishes_nothing() {
     assert_eq!(bench.untouched(), before);
 }
 
-/// Pick merged, the development set and the lane, through the registry.
-impl Bench {
-    /// `merge.create` as Pick merged, naming the set the client believes is current when `set` is.
-    fn pick_params(&self, bracket: usize, request: &str, set: Option<&Value>) -> Value {
-        let mut params = self.create_params(bracket, request);
-        params["add_to_development_set"] = json!(true);
-        if let Some(set) = set {
-            params["set_id"] = set.clone();
-        }
-        params
-    }
-
-    /// Pick merged of one bracket and its result.
-    fn picked(&self, bracket: usize, request: &str, set: Option<&Value>) -> Value {
-        let job = self.ok("merge.create", self.pick_params(bracket, request, set));
-        let read = self.settled(&job["job_id"]);
-        assert_eq!(read["status"], "ready", "{read}");
-        read["result"].clone()
-    }
-
-    fn set(&self) -> Value {
-        self.ok("development-set.read", json!({}))
-    }
-
-    /// The current set's members, in order.
-    fn members(&self) -> Vec<Value> {
-        self.set()["members"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|member| member["asset_id"].clone())
-            .collect()
-    }
-
-    /// Replace the current set with one of `member`, or with none, answering the new set's identity.
-    fn replace_set(&self, member: Option<&Value>, request: &str) -> Value {
-        let source = match member {
-            Some(member) => json!({"kind": "assets", "asset_ids": [member]}),
-            None => json!({"kind": "none"}),
-        };
-        let replaced = self.ok(
-            "development-set.replace",
-            json!({"source": source, "mutation": envelope(request)}),
-        );
-        replaced["set_id"].clone()
-    }
-
-    fn as_actor(&self, request: &str, actor: &str) -> Value {
-        json!({"request_id": request, "actor": actor})
-    }
-}
-
-/// Pick merged appends its result to the current set once, in the change that publishes it, keeping
-/// the members and their order, and starts a one-result set when there is none; Import merged
-/// leaves the set alone; Pick merged of an exact existing result appends it in a change of its own,
-/// once, and a retry is answered as first.
+/// Merge HDR publishes a change of its result and its stack alone; an exact repeat reuses that
+/// result with no library change and reading no input, and so does its retry; `merge.create`
+/// takes no development-set parameter.
 #[test]
-fn hdr_merge_job_pick_merged_appends_the_result_once_and_import_leaves_the_set() {
-    let bench = Bench::new("pick", 3);
+fn hdr_merge_job_publishes_alone_and_reuses_an_exact_repeat_without_a_change() {
+    let bench = Bench::new("one-action", 2);
     let before = bench.untouched();
-    let photograph = json!(bench.photograph);
-
-    // With no set, Pick merged starts a set of the one result.
-    assert_eq!(bench.set()["count"], 0);
-    let first = bench.picked(0, "pick-no-set", None);
+    let first = bench.merged(0, "merge");
     assert_eq!(first["reused"], false);
-    assert!(first["change"].is_u64(), "{first}");
-    let read = bench.set();
-    assert_eq!(read["count"], 1);
-    assert_eq!(read["members"][0]["asset_id"], first["result_asset_id"]);
-    assert!(read["set_id"].is_string());
-
-    // Import merged leaves the person's set as it is.
-    let set = bench.replace_set(Some(&photograph), "open");
-    let revision = bench.set()["revision"].clone();
-    let imported = bench.merged(1, "import");
-    assert_eq!(bench.members(), std::slice::from_ref(&photograph));
-    assert_eq!(bench.set()["revision"], revision, "Import changes no set");
-
-    // Pick merged appends after the members, in the same change that publishes the result.
-    let picked = bench.picked(2, "pick", Some(&set));
-    assert_eq!(picked["reused"], false);
-    assert!(picked["change"].is_u64());
-    let read = bench.set();
-    assert_eq!(read["set_id"], set, "the same set");
-    assert!(read["revision"].as_u64() > revision.as_u64());
+    let change = first["change"].as_u64().expect("one library change");
     assert_eq!(
-        bench.members(),
-        [photograph.clone(), picked["result_asset_id"].clone()]
-    );
-    assert_eq!(
-        bench.count(
-            "SELECT COUNT(*) FROM library_changes c
-             WHERE EXISTS (SELECT 1 FROM library_change_rows r
-                 WHERE r.change_seq = c.sequence AND r.item_kind = 'merge-stack')
-             AND EXISTS (SELECT 1 FROM library_change_rows r
-                 WHERE r.change_seq = c.sequence AND r.item_kind = 'set-member')"
-        ),
-        2,
-        "each Pick that published recorded its membership in the change that made the result"
-    );
-
-    // An exact active result is not merged again; Pick appends it once.
-    let reads = bench.reads();
-    let existing = bench.picked(1, "pick-existing", Some(&set));
-    assert_eq!(existing["reused"], true);
-    assert_eq!(existing["merge_id"], imported["merge_id"]);
-    assert!(existing["change"].is_u64(), "{existing}");
-    let members = [
-        photograph.clone(),
-        picked["result_asset_id"].clone(),
-        imported["result_asset_id"].clone(),
-    ];
-    assert_eq!(bench.members(), members);
-    let revision = bench.set()["revision"].clone();
-    // A second Pick of it, and an Import, change nothing.
-    let again = bench.picked(1, "pick-existing-again", Some(&set));
-    assert_eq!(again["reused"], true);
-    assert!(again["change"].is_null(), "{again}");
-    assert_eq!(bench.members(), members);
-    assert_eq!(bench.set()["revision"], revision);
-    assert!(bench.merged(1, "import-existing")["change"].is_null());
-    // A retry of the first is that answer, not a second append.
-    let retried = bench.picked(1, "pick-existing", Some(&set));
-    assert_eq!(retried["reused"], true);
-    assert_eq!(retried["change"], existing["change"]);
-    assert_eq!(bench.members(), members);
-
-    assert_eq!(bench.count("SELECT COUNT(*) FROM merges"), 3);
-    assert_eq!(bench.reads(), reads, "reuse reads no input");
-    assert_eq!(bench.untouched(), before);
-    bench.originals_unchanged();
-}
-
-/// A `set_id` that is not the current set is a conflict at admission, naming both sets, and starts
-/// nothing, for a new merge and for an exact existing result; without `add_to_development_set` it
-/// is not looked at.
-#[test]
-fn hdr_merge_job_pick_merged_names_a_set_that_is_not_current_as_a_conflict() {
-    let bench = Bench::new("pick-stale", 2);
-    let photograph = json!(bench.photograph);
-    bench.merged(0, "import");
-    let stale = bench.replace_set(Some(&photograph), "open-1");
-    let current = bench.replace_set(Some(&photograph), "open-2");
-    let reads = bench.reads();
-
-    let refused = bench.failure(
-        "merge.create",
-        bench.pick_params(1, "stale-new", Some(&stale)),
-    );
-    assert_eq!(refused["code"], "conflict", "{refused}");
-    assert!(
-        refused["message"]
-            .as_str()
-            .unwrap()
-            .contains(stale.as_str().unwrap()),
-        "{refused}"
-    );
-    assert_eq!(refused["data"]["current"], current);
-    let refused = bench.failure(
-        "merge.create",
-        bench.pick_params(0, "stale-existing", Some(&stale)),
-    );
-    assert_eq!(refused["code"], "conflict", "{refused}");
-    // With no set at all, any named set is gone.
-    bench.replace_set(None, "close");
-    let refused = bench.failure(
-        "merge.create",
-        bench.pick_params(1, "no-set", Some(&current)),
-    );
-    assert_eq!(refused["code"], "conflict", "{refused}");
-    assert!(refused["data"]["current"].is_null());
-    assert_eq!(bench.count("SELECT COUNT(*) FROM merges"), 1);
-    assert_eq!(bench.reads(), reads, "nothing started");
-    assert_eq!(bench.set()["count"], 0, "no set was made");
-
-    // Import merged takes no set: a named one is not looked at.
-    let mut params = bench.create_params(1, "import-with-set");
-    params["set_id"] = stale;
-    let job = bench.ok("merge.create", params);
-    assert_eq!(bench.settled(&job["job_id"])["status"], "ready");
-    assert_eq!(bench.set()["count"], 0);
-    bench.originals_unchanged();
-}
-
-/// A set replaced, or opened where there was none, while the merge runs fails the whole publication
-/// with a named conflict: no result, stack or membership is visible, the other set is as it was,
-/// and a new request against the current set publishes.
-#[test]
-fn hdr_merge_job_pick_merged_fails_whole_when_the_set_is_replaced_while_it_runs() {
-    let bench = Bench::new("pick-replaced", 2);
-    let before = bench.untouched();
-    let photograph = json!(bench.photograph);
-    let assets = bench.count("SELECT COUNT(*) FROM assets");
-    let changes = bench.count("SELECT COUNT(*) FROM library_changes");
-    let members = bench.count("SELECT COUNT(*) FROM development_set_members");
-
-    // The set the request was made against is replaced.
-    let original = bench.replace_set(Some(&photograph), "open-1");
-    let gate = Arc::new(Gate::new());
-    gate.shut();
-    bench.hold_at(Stage::Aligning, gate.clone());
-    let started = bench.ok(
-        "merge.create",
-        bench.pick_params(0, "pick-a", Some(&original)),
-    );
-    gate.wait_reached(1, "the merge's alignment");
-    let replacement = bench.replace_set(Some(&photograph), "open-2");
-    gate.open();
-    let read = bench.settled(&started["job_id"]);
-    assert_eq!(read["status"], "failed", "{read}");
-    assert_eq!(read["error"]["code"], "conflict", "{read}");
-    assert!(
-        read["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains(original.as_str().unwrap()),
-        "{read}"
-    );
-    assert_eq!(read["error"]["data"]["current"], replacement);
-
-    // A set opened where there was none.
-    bench.replace_set(None, "close");
-    let gate = Arc::new(Gate::new());
-    gate.shut();
-    bench.hold_at(Stage::Aligning, gate.clone());
-    let started = bench.ok("merge.create", bench.pick_params(0, "pick-b", None));
-    gate.wait_reached(1, "the merge's alignment");
-    let opened = bench.replace_set(Some(&photograph), "open-3");
-    gate.open();
-    let read = bench.settled(&started["job_id"]);
-    assert_eq!(read["status"], "failed", "{read}");
-    assert_eq!(read["error"]["code"], "conflict", "{read}");
-    assert_eq!(read["error"]["data"]["current"], opened);
-
-    assert_eq!(bench.count("SELECT COUNT(*) FROM merges"), 0);
-    assert_eq!(bench.count("SELECT COUNT(*) FROM merge_stacks"), 0);
-    assert_eq!(bench.count("SELECT COUNT(*) FROM assets"), assets);
-    assert_eq!(bench.count("SELECT COUNT(*) FROM library_changes"), changes);
-    assert_eq!(
-        bench.count("SELECT COUNT(*) FROM development_set_members"),
-        members + 1,
-        "only the replacement's own member"
-    );
-    assert_eq!(bench.set()["set_id"], opened);
-    assert_eq!(bench.members(), std::slice::from_ref(&photograph));
-    assert!(bench.spools().is_empty());
-
-    // Against the current set, a new request publishes with its member.
-    bench.lane(|lane| lane.hooks.stage = None);
-    let result = bench.picked(0, "pick-c", Some(&opened));
-    assert_eq!(
-        bench.members(),
-        [photograph, result["result_asset_id"].clone()]
-    );
-    assert_eq!(bench.count("SELECT COUNT(*) FROM merges"), 1);
-    assert_eq!(bench.untouched(), before);
-    bench.originals_unchanged();
-}
-
-/// `library.undo` of a Pick merge takes the result out of the set and leaves every other member,
-/// those another actor added after it too; `library.redo` puts it back at its own place.
-#[test]
-fn hdr_merge_job_undoing_a_pick_merge_takes_only_its_member_out_of_the_set() {
-    let bench = Bench::new("pick-undo", 2);
-    let photograph = json!(bench.photograph);
-    let imported = bench.merged(0, "import")["result_asset_id"].clone();
-    bench.replace_set(Some(&photograph), "open");
-    let picked = bench.picked(1, "pick", None);
-    let result = picked["result_asset_id"].clone();
-    // Another actor adds a member after it.
-    bench.ok(
-        "development-set.add",
-        json!({"asset_ids": [imported], "mutation": bench.as_actor("agent-add", "agent")}),
-    );
-    let full = [photograph.clone(), result.clone(), imported.clone()];
-    assert_eq!(bench.members(), full);
-
-    let undone = bench.ok(
-        "library.undo",
-        json!({"mutation": bench.as_actor("undo", "test")}),
-    );
-    assert_eq!(undone["outcome"], "applied", "{undone}");
-    assert_eq!(bench.members(), [photograph.clone(), imported.clone()]);
-    assert_eq!(
-        bench.ok("merge.inspect", json!({"merge_id": picked["merge_id"]}))["state"],
-        "undone"
-    );
-    let redone = bench.ok(
-        "library.redo",
-        json!({"mutation": bench.as_actor("redo", "test")}),
-    );
-    assert_eq!(redone["outcome"], "applied", "{redone}");
-    assert_eq!(bench.members(), full, "back between the members it was");
-    assert_eq!(
-        bench.ok("merge.inspect", json!({"merge_id": picked["merge_id"]}))["state"],
-        "active"
-    );
-    assert_eq!(bench.reads(), 6, "undo and redo merge nothing");
-    bench.originals_unchanged();
-}
-
-/// `merge.rerun` takes the replaced result out of every development set it is a member of, as
-/// Remove does, and puts the new result at its place in the current set, in the change that
-/// publishes it; `library.undo` puts the replaced result back in each set, at its place, and takes
-/// the new one out; `library.redo` makes the replacement again.
-#[test]
-fn hdr_merge_job_rerun_takes_the_replaced_results_place_in_the_development_set() {
-    let bench = Bench::new("rerun-set", 2);
-    let photograph = json!(bench.photograph);
-    // The old result is a member of a retired set and, between two others, of the current one.
-    let old = bench.picked(0, "pick-alone", None);
-    let old_result = old["result_asset_id"].clone();
-    bench.replace_set(Some(&photograph), "open");
-    let other = bench.merged(1, "import")["result_asset_id"].clone();
-    bench.ok(
-        "development-set.add",
-        json!({"asset_ids": [old_result, other], "mutation": envelope("add")}),
-    );
-    let before = [photograph.clone(), old_result.clone(), other.clone()];
-    assert_eq!(bench.members(), before);
-    let memberships = |asset: &Value| {
         bench.count(&format!(
-            "SELECT COUNT(*) FROM development_set_members m
-             JOIN assets a ON a.row_id = m.asset_row WHERE a.id = '{}'",
-            asset.as_str().unwrap()
-        ))
-    };
-    assert_eq!(memberships(&old_result), 2);
-
-    let rerun = bench.ok(
-        "merge.rerun",
-        json!({"merge_id": old["merge_id"], "deghost": "off", "mutation": envelope("rerun")}),
-    );
-    let new = bench.settled(&rerun["job_id"]);
-    assert_eq!(new["status"], "ready", "{new}");
-    let new = new["result"].clone();
-    let new_result = new["result_asset_id"].clone();
-    let after = [photograph.clone(), new_result.clone(), other.clone()];
-    assert_eq!(
-        bench.members(),
-        after,
-        "the new result in the old one's place"
-    );
-    assert!(
-        bench.set()["members"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .all(|member| member.get("removed").is_none()),
-        "no removed member is left behind"
-    );
-    assert_eq!(memberships(&old_result), 0, "out of every set");
-    assert_eq!(memberships(&new_result), 1, "only in the current set");
-    assert_eq!(
-        bench.count(
-            "SELECT COUNT(*) FROM library_change_rows WHERE item_kind = 'set-member'
-             AND change_seq = (SELECT max(change_seq) FROM library_change_rows)"
-        ),
-        3,
-        "one change: the old result out of both sets and the new one in"
+            "SELECT COUNT(*) FROM library_change_rows WHERE change_seq = {change}
+             AND item_kind IN ('asset-removal', 'merge-stack')"
+        )),
+        bench.count(&format!(
+            "SELECT COUNT(*) FROM library_change_rows WHERE change_seq = {change}"
+        )),
+        "the change holds the result's removal and the merge's stack alone"
     );
 
-    let undone = bench.ok("library.undo", json!({"mutation": envelope("undo")}));
-    assert_eq!(undone["outcome"], "applied", "{undone}");
-    assert_eq!(bench.members(), before);
-    assert_eq!(memberships(&old_result), 2, "back in both sets");
-    assert_eq!(memberships(&new_result), 0);
-    let state =
-        |merge: &Value| bench.ok("merge.inspect", json!({"merge_id": merge}))["state"].clone();
-    assert_eq!(state(&old["merge_id"]), "active");
-    assert_eq!(state(&new["merge_id"]), "undone");
+    let reads = bench.reads();
+    let changes = bench.count("SELECT COUNT(*) FROM library_changes");
+    for request in ["merge-again", "merge-again"] {
+        let again = bench.merged(0, request);
+        assert_eq!(
+            (&again["reused"], &again["merge_id"]),
+            (&json!(true), &first["merge_id"]),
+            "{again}"
+        );
+        assert!(again["change"].is_null(), "{again}");
+    }
+    assert_eq!(bench.count("SELECT COUNT(*) FROM library_changes"), changes);
+    assert_eq!(bench.count("SELECT COUNT(*) FROM merges"), 1);
+    assert_eq!(bench.reads(), reads, "reuse reads no input");
 
-    let redone = bench.ok("library.redo", json!({"mutation": envelope("redo")}));
-    assert_eq!(redone["outcome"], "applied", "{redone}");
-    assert_eq!(bench.members(), after);
-    assert_eq!(memberships(&old_result), 0);
-    assert_eq!(state(&old["merge_id"]), "removed");
-    assert_eq!(state(&new["merge_id"]), "active");
+    for field in ["add_to_development_set", "set_id"] {
+        let mut params = bench.create_params(1, field);
+        params[field] = json!(true);
+        let refused = bench.failure("merge.create", params);
+        assert_eq!(refused["code"], "validation", "{refused}");
+    }
+    assert_eq!(bench.count("SELECT COUNT(*) FROM merges"), 1);
+    assert_eq!(bench.untouched(), before);
     bench.originals_unchanged();
 }
 

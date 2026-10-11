@@ -11,9 +11,8 @@
 //!   ([`Desired::Written`]), from Removed and `undone`: so the journal's generic undo hides the
 //!   result in Removed and marks its merge undone, deactivating the stack, and redo restores both,
 //!   with the result's source, history and edits untouched and nothing merged again. A caller's
-//!   own items (a development-set membership) join the same change through `extra`. A rerun's
-//!   publication first replaces the merge it reruns, as Remove would its result, sets included,
-//!   and puts the new result where the old one was in the current set.
+//!   own items join the same change through `extra`. A rerun's publication first replaces the
+//!   merge it reruns, as Remove would its result.
 //! - **The `merge-stack` item** is the merge's state (`merge_stacks`). Writing `active` claims each
 //!   input path for the merge (`stack_claims`), refused with `conflict` naming the stack that
 //!   already claims one; writing `removed` or `undone` releases them. A merge Empty Removed deleted
@@ -29,17 +28,14 @@
 // Stack browsing (`docs/design/hdr-merge.md`) calls what the `merge.*` commands and
 // Remove and Put back do not yet; until it does, only the tests do.
 #![cfg_attr(not(test), allow(dead_code))]
-use super::{
-    development_set,
-    journal::{self, Desired, Outcome, Request},
-};
+use super::journal::{self, Desired, Outcome, Request};
 use crate::{
     AssetId, EditorService, Error, SourceKind,
     artifacts::derived_source::PublishedSource,
     catalog_types::{
-        AssetRemovalValue, AssetRowId, CatalogFolderId, DevelopmentSetId, FileAvailability,
-        FileSignature, HeaderMetadata, LibraryItem, MergeId, MergeKind, MergeMatch,
-        MergeProvenance, MergeRecord, MergeStackValue, MergeState, StackClaim, StackMember, Volume,
+        AssetRemovalValue, AssetRowId, CatalogFolderId, FileAvailability, FileSignature,
+        HeaderMetadata, LibraryItem, MergeId, MergeKind, MergeMatch, MergeProvenance, MergeRecord,
+        MergeStackValue, MergeState, StackClaim, StackMember, Volume,
     },
     editor::{
         AssetRecord, NewAsset, decode, derived_source::link_asset_source, encode,
@@ -66,9 +62,8 @@ pub(crate) struct Publication<'a> {
     pub place: Option<&'a str>,
     /// Every volume an input is on, recorded or refreshed with the merge.
     pub volumes: &'a [Volume],
-    /// The merge a rerun replaces: while its stack is active, its result goes to Removed, leaving
-    /// its development sets, and its stack is deactivated in the same change, so the new result
-    /// leads the inputs instead and takes the old one's place in the current set.
+    /// The merge a rerun replaces: while its stack is active, its result goes to Removed and its
+    /// stack is deactivated in the same change, so the new result leads the inputs instead.
     pub replaces: Option<&'a MergeId>,
 }
 
@@ -90,9 +85,8 @@ impl EditorService {
     /// or anything the result's rows or `extra` write is refused.
     ///
     /// `extra` is the caller's part of the same transaction and library change, run once the merge
-    /// and its result exist: the items it answers (a development set's new member, with its own
-    /// item-level inverse) are recorded after the result's and the stack's, so the merge's undo
-    /// reverts exactly them too.
+    /// and its result exist: the items it answers, each with its own item-level inverse, are
+    /// recorded after the result's and the stack's, so the merge's undo reverts exactly them too.
     pub(crate) fn publish_merge(
         &mut self,
         request: Request<'_>,
@@ -121,9 +115,9 @@ impl EditorService {
                 return Ok(published);
             }
             recheck_inputs(tx, provenance)?;
-            let (mut changes, place) = match publication.replaces {
+            let mut changes = match publication.replaces {
                 Some(old) => replace(tx, old, now)?,
-                None => (Vec::new(), None),
+                None => Vec::new(),
             };
             for volume in publication.volumes {
                 upsert_volume(tx, volume)?;
@@ -184,15 +178,6 @@ impl EditorService {
                     },
                 ),
             ]);
-            // A rerun's result takes the replaced result's place in the current set, after the
-            // replaced result left it earlier in the change; undo takes it out before putting the
-            // replaced one back.
-            if let Some((set, position)) = place {
-                changes.push((
-                    development_set::item(&set, &asset_id),
-                    Desired::UnlessPresent(development_set::value_at(position)?),
-                ));
-            }
             changes.extend(extra(tx, &merge_id, &asset_id)?);
             let label = format!("Merged {}", publication.file_name);
             let outcome = journal::apply(tx, request, changes, |_| label)?;
@@ -208,14 +193,15 @@ impl EditorService {
 /// A rerun's replacement of `old`, written before the new merge claims its inputs: while `old`'s
 /// stack is active, its result goes to Removed as of `now_ms` and its stack to `removed`, releasing
 /// its claims, each recorded as written so the change's undo restores both after undoing the new
-/// merge. As Remove does ([`lifecycle`]), the result leaves every development set it is a member
-/// of, each an item-level `set-member` change the journal applies in order. Answers the changes and,
-/// when the result was a member of the current set, that set and its place there, which the new
-/// result takes. An inactive `old` changes nothing: its result is in Removed already, out of every
-/// set.
-fn replace(tx: &Transaction<'_>, old: &MergeId, now_ms: i64) -> Result<Replaced, Error> {
+/// merge, as Remove does ([`lifecycle`]). Answers the changes. An inactive `old` changes nothing:
+/// its result is in Removed already.
+fn replace(
+    tx: &Transaction<'_>,
+    old: &MergeId,
+    now_ms: i64,
+) -> Result<Vec<(LibraryItem, Desired)>, Error> {
     if state(tx, old)? != Some(MergeState::Active) {
-        return Ok((Vec::new(), None));
+        return Ok(Vec::new());
     }
     let result: String = tx
         .prepare_cached("SELECT result_asset_id FROM merges WHERE id = ?1")?
@@ -223,9 +209,7 @@ fn replace(tx: &Transaction<'_>, old: &MergeId, now_ms: i64) -> Result<Replaced,
     let result = AssetId::parse(result)?;
     let writes = [
         (
-            LibraryItem::AssetRemoval {
-                asset_id: result.clone(),
-            },
+            LibraryItem::AssetRemoval { asset_id: result },
             value(AssetRemovalValue { removed_ms: now_ms })?,
         ),
         (
@@ -243,19 +227,8 @@ fn replace(tx: &Transaction<'_>, old: &MergeId, now_ms: i64) -> Result<Replaced,
         super::items::write(tx, &item, Some(&to))?;
         changes.push((item, Desired::Written { before }));
     }
-    let current = development_set::current(tx)?.map(|set| set.id);
-    let mut place = None;
-    for (set, position) in development_set::memberships_of(tx, &result)? {
-        changes.push((development_set::item(&set, &result), Desired::Value(None)));
-        if current.as_ref() == Some(&set) {
-            place = Some((set, position));
-        }
-    }
-    Ok((changes, place))
+    Ok(changes)
 }
-
-/// What a rerun's replacement changes, and the current set's place its result leaves.
-type Replaced = (Vec<(LibraryItem, Desired)>, Option<(DevelopmentSetId, u64)>);
 
 /// The record of a merge's result photograph: a derived source, no file of its own. Its locator
 /// and file identity name the photograph, unique as the catalog requires, and its fingerprint is
@@ -412,48 +385,30 @@ fn insert_merge(
     Ok(())
 }
 
-/// The merge a request published, when it published one: a retry is answered from it.
+/// The merge a request published, when it published one: a retry is answered from it. An exact
+/// active match's reuse publishes nothing and records no change, so its retry is answered as a new
+/// request, reusing the result again.
 pub(crate) fn published_by(
     connection: &Connection,
     request: Request<'_>,
 ) -> Result<Option<PublishedMerge>, Error> {
-    Ok(published_or_picked(connection, request)?.map(|(published, _)| published))
-}
-
-/// [`published_by`], and whether the request only added an existing merge's result to the
-/// development set (Pick merged of an exact match, which publishes nothing): its change holds that
-/// set member and no stack.
-pub(crate) fn published_or_picked(
-    connection: &Connection,
-    request: Request<'_>,
-) -> Result<Option<(PublishedMerge, bool)>, Error> {
     let Some(change) = journal::find(connection, request)? else {
         return Ok(None);
     };
     let detail = journal::inspect(connection, change.sequence.0)?;
-    let stacked = detail.rows.iter().find_map(|row| match &row.item {
-        LibraryItem::MergeStack { merge_id } => Some(merge_id.clone()),
-        _ => None,
-    });
-    let (merge_id, picked) = match stacked {
-        Some(merge_id) => (merge_id, false),
-        None => {
-            let mut picked = None;
-            for row in &detail.rows {
-                if let LibraryItem::SetMember { asset_id, .. } = &row.item {
-                    picked = merge_of(connection, asset_id)?;
-                    break;
-                }
-            }
-            let merge_id = picked.ok_or_else(|| {
-                Error::conflict(format!(
-                    "request {} recorded a library change that published no merge",
-                    request.request_id
-                ))
-            })?;
-            (merge_id, true)
-        }
-    };
+    let merge_id = detail
+        .rows
+        .iter()
+        .find_map(|row| match &row.item {
+            LibraryItem::MergeStack { merge_id } => Some(merge_id.clone()),
+            _ => None,
+        })
+        .ok_or_else(|| {
+            Error::conflict(format!(
+                "request {} recorded a library change that published no merge",
+                request.request_id
+            ))
+        })?;
     let result: Option<String> = connection
         .prepare_cached("SELECT result_asset_id FROM merges WHERE id = ?1")?
         .query_row([merge_id.as_str()], |row| row.get(0))
@@ -463,14 +418,11 @@ pub(crate) fn published_or_picked(
             "merge {merge_id}, which this request published, was deleted by emptying Removed"
         ))
     })?;
-    Ok(Some((
-        PublishedMerge {
-            merge_id,
-            result: AssetId::parse(result)?,
-            outcome: Outcome::deduplicated(detail.change),
-        },
-        picked,
-    )))
+    Ok(Some(PublishedMerge {
+        merge_id,
+        result: AssetId::parse(result)?,
+        outcome: Outcome::deduplicated(detail.change),
+    }))
 }
 
 /// A merge's state, or `None` when the catalog no longer has it.
@@ -639,48 +591,30 @@ pub(crate) fn merges_of(
 
 /// What removing a merge's result (`to` is `removed`) or putting it back (`active`) changes beside
 /// its `asset-removal`: its merge's `merge-stack`, deactivated or, for Put back, active again
-/// (refused when another active stack now claims an input), and its development-set memberships.
-/// Removing a result whose stack is not active leaves the stack's state as it is, so an undone
-/// merge stays labelled undone. `merge` is the result's merge and state ([`merges_of`]); a
-/// photograph that is no merge's result has none, and changes nothing here.
+/// (refused when another active stack now claims an input). Removing a result whose stack is not
+/// active leaves the stack's state as it is, so an undone merge stays labelled undone. `merge` is
+/// the result's merge and state ([`merges_of`]); a photograph that is no merge's result has none,
+/// and changes nothing here.
 ///
 /// This is where everything else that follows a merge result's visibility joins its Remove, in
-/// the same change, through the one function general Remove and Remove merge share: the result
-/// leaves every development set it is a member of (`set-member` items going absent), so undoing
-/// the Remove puts back exactly the memberships it took. Put back restores the memberships the
-/// change that last removed it took, at their places, in the sets still kept; a member the person
-/// has added again since keeps its place. Ordinary picks and the originals are never touched.
+/// the same change, through the one function general Remove and Remove merge share. Ordinary picks
+/// and the originals are never touched.
 pub(crate) fn lifecycle(
-    connection: &Connection,
-    result: &AssetId,
     merge: Option<&(MergeId, MergeState)>,
     to: MergeState,
-) -> Result<Vec<(LibraryItem, Desired)>, Error> {
+) -> Result<Option<(LibraryItem, Desired)>, Error> {
     let Some((merge_id, now)) = merge else {
-        return Ok(Vec::new());
+        return Ok(None);
     };
-    let mut changes = Vec::new();
-    if to == MergeState::Active || *now == MergeState::Active {
-        changes.push((
-            LibraryItem::MergeStack {
-                merge_id: merge_id.clone(),
-            },
-            Desired::Value(Some(value(MergeStackValue { state: to })?)),
-        ));
+    if to != MergeState::Active && *now != MergeState::Active {
+        return Ok(None);
     }
-    if to == MergeState::Active {
-        for (set, position) in development_set::taken_by_removal(connection, result)? {
-            changes.push((
-                development_set::item(&set, result),
-                Desired::UnlessPresent(development_set::value_at(position)?),
-            ));
-        }
-    } else {
-        for (set, _) in development_set::memberships_of(connection, result)? {
-            changes.push((development_set::item(&set, result), Desired::Value(None)));
-        }
-    }
-    Ok(changes)
+    Ok(Some((
+        LibraryItem::MergeStack {
+            merge_id: merge_id.clone(),
+        },
+        Desired::Value(Some(value(MergeStackValue { state: to })?)),
+    )))
 }
 
 /// The results of `merges`, as `asset.remove` and `asset.restore` take their photographs: what
