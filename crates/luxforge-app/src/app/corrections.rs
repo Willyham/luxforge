@@ -888,6 +888,15 @@ impl Editor {
         self.correction_select(Some(list[next].clone()));
     }
 
+    /// Whether Escape with no draft open has nothing left to put down here, and so leaves the
+    /// mode, which asks the session to follow.
+    pub(crate) fn correction_escape_leaves(&self) -> bool {
+        self.correction_reads.held.is_none()
+            && self.corrections.notice.is_none()
+            && self.corrections.selected.is_none()
+            && matches!(self.corrections.source, crate::brush::SourceChoice::Auto)
+    }
+
     /// Escape with no draft open, one level at a time: put the press held before its draft down,
     /// then deselect, then clear a set source, then leave the mode.
     fn correction_escape(&mut self) -> Task<Message> {

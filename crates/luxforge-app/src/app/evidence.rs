@@ -4439,6 +4439,13 @@ impl Editor {
                 self.await_step(Settle::Session);
                 self.dispatch(Message::Key(event, status))
             }
+            // The Escape that leaves the Corrections mode waits for the session to follow it.
+            Some(Message::Corrections(
+                crate::app::message::corrections::CorrectionMessage::Escape,
+            )) if self.corrections_active() && self.correction_escape_leaves() => {
+                self.await_step(Settle::Session);
+                self.dispatch(Message::Key(event, status))
+            }
             // A Corrections key waits for what it started.
             Some(Message::Corrections(_)) | Some(Message::Draft(_))
                 if self.corrections_active() =>
