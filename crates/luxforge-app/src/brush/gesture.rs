@@ -107,6 +107,31 @@ impl SourceChoice {
             Self::Offset([dx, dy]) => Some([pointer[0] + dx, pointer[1] + dy]),
         }
     }
+
+    /// [`Self::crosshair`] where a press of `radius` at the pointer would sample, on a content
+    /// stage of `content` pixels: a kept offset is carried as the press carries it, inside the
+    /// frame and turned to the other side by an edge ([`luxforge_core::SourceFit::Turn`]).
+    pub(crate) fn crosshair_within(
+        &self,
+        pointer: [f64; 2],
+        radius: f64,
+        content: (u32, u32),
+    ) -> Option<[f64; 2]> {
+        let source = self.crosshair(pointer)?;
+        if !matches!(self, Self::Offset(_)) {
+            return Some(source);
+        }
+        Some(
+            luxforge_core::fit_correction_source(
+                &[pointer],
+                radius,
+                source,
+                content,
+                luxforge_core::SourceFit::Turn,
+            )
+            .unwrap_or(source),
+        )
+    }
 }
 
 /// What a press that caught no target is.

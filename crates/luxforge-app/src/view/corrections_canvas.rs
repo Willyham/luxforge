@@ -440,21 +440,10 @@ impl CorrectionsCanvas<'_> {
             );
             stroke_outline(frame, &slash, 1.5, WHITE, false);
         }
-        // A kept offset is carried to a press here as the press would carry it: inside the frame,
-        // turned to the other side by an edge.
-        let crosshair = self.data.source.crosshair(at).map(|source| {
-            if !matches!(self.data.source, SourceChoice::Offset(_)) {
-                return source;
-            }
-            luxforge_core::fit_correction_source(
-                &[at],
-                self.data.radius,
-                source,
-                self.placement.map.content(),
-                luxforge_core::SourceFit::Turn,
-            )
-            .unwrap_or(source)
-        });
+        let crosshair =
+            self.data
+                .source
+                .crosshair_within(at, self.data.radius, self.placement.map.content());
         if let Some(source) = crosshair
             && let Some(centre) = self.placement.canvas_point(source[0], source[1])
         {
