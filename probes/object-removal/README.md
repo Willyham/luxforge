@@ -16,6 +16,21 @@ The probe never downloads. Fetch the pinned files once into the checkout's ignor
 
 Building `ort` fetches pyke's prebuilt ONNX Runtime static library, hash-checked by `ort-sys`.
 
+The generative candidates' weights go in the ignored `private/models/generative/` (`--gen-models` or `LUXFORGE_GENERATIVE_MODELS` elsewhere), pinned the same way and refused the same way; `removal-probe models --generative` checks the ones present. Every URL is pinned to a Hugging Face commit; every file's size and SHA-256 matched the publisher's LFS record when it was fetched.
+
+| File | Bytes | SHA-256 | Source | Licence |
+| --- | ---: | --- | --- | --- |
+| `moebius-unet.onnx` | 906,698,976 | `e3f90f52…` | `simonw/Moebius-ONNX@5bf1ef5d` `unet.onnx` (an fp32, static 512² export of hustvl/Moebius `ft_places2`) | Apache-2.0 (export); Moebius MIT on its card, Apache-2.0 in its repository |
+| `moebius-vae-encoder.onnx` | 136,757,093 | `b8b81d41…` | same, `vae_encoder.onnx` | as above |
+| `moebius-vae-decoder.onnx` | 198,078,671 | `d90ef0b7…` | same, `vae_decoder.onnx` | as above |
+| `flux-2-klein-4b-Q4_0.gguf` | 2,460,378,560 | `d1023499…` | `leejet/FLUX.2-klein-4B-GGUF@3b1f5a9d` | Apache-2.0 |
+| `flux-2-klein-4b-Q8_0.gguf` | 4,300,629,440 | `0bba6951…` | same | Apache-2.0 |
+| `flux2-klein-4b-vae.safetensors` | 168,120,878 | `ca70d220…` | `black-forest-labs/FLUX.2-klein-4B@e7b7dc27` `vae/diffusion_pytorch_model.safetensors` | Apache-2.0 |
+| `klein-object-remove-lora-comfy.safetensors` | 76,038,936 | `dc197de6…` | `fal/flux-2-klein-4B-object-remove-lora@0e3f5879`, the ComfyUI-converted file | Apache-2.0 |
+| `Qwen3-4B-Q4_K_M.gguf` (text encoder, Replace only) | 2,497,281,312 | `f6f85177…` | `unsloth/Qwen3-4B-GGUF@22c9fc8a` | Apache-2.0 |
+| `Qwen3-4B-Q8_0.gguf` (text encoder, Replace only) | 4,280,405,792 | `eed55523…` | same | Apache-2.0 |
+| `qwen3-tokenizer.json` (with the text encoder) | 11,422,654 | `aeb13307…` | `black-forest-labs/FLUX.2-klein-4B@e7b7dc27` `tokenizer/tokenizer.json` | Apache-2.0 |
+
 ## Corpus
 
 `corpus.json` is the checked-in manifest of the images the harness is measured on. `removal-probe corpus` lists it and what is present; it never downloads.
@@ -42,7 +57,7 @@ cargo test --manifest-path probes/object-removal/Cargo.toml
 cargo test --manifest-path probes/object-removal/Cargo.toml -- --ignored   # needs the models and corpus
 ```
 
-The probe is its own Cargo workspace with its own lockfile, outside the editor's: the editor's build and quick tier do not build it. `cargo xtask check-repository` reads its sources and manifest with the repository's other rules. The tests that need the pinned models and the private corpus are `#[ignore]`d; the ignored suite last passed in full on the M4 (release profile, ONNX Runtime CPU and Core ML) on 2026-10-11, including the two scoring tests below.
+The probe is its own Cargo workspace with its own lockfile, outside the editor's: the editor's build and quick tier do not build it. Its `diffusion/` sub-crate builds stable-diffusion.cpp and ggml from vendored, pinned sources with the `cc` crate (no CMake, no Python); [`diffusion/THIRD_PARTY.md`](diffusion/THIRD_PARTY.md) records the pins, the source selection, the licences and the one local change. Metal compiles its kernels at the first generation on a machine (about 16 s) and caches them. `cargo xtask check-repository` reads its sources and manifest with the repository's other rules. The tests that need the pinned models and the private corpus are `#[ignore]`d; the ignored suite last passed in full on the M4 (release profile, ONNX Runtime CPU and Core ML) on 2026-10-11, including the two scoring tests below.
 
 Backends: `ort-cpu`, `ort-coreml-all`, `ort-coreml-gpu`, `ort-coreml-ane`, `ort-coreml-cpu`, `tract-cpu`, `tract-metal`, and the fixed-shape Core ML backends `ort-coreml-all-fixed`, `ort-coreml-gpu-fixed`, `ort-coreml-ane-fixed` (and `ort-coreml-cpu-fixed`). Core ML compiles each model on first load and caches it under the system temporary directory (`luxforge-removal-probe-coreml`); macOS keeps its own device-specialized copy in `~/Library/Caches/<process name>/com.apple.e5rt.e5bundlecache`, and the measured cold loads clear both. A cache compiled before a macOS update fails at load with `Unable to load model … Compile the model with Xcode`; delete the model's directory under `luxforge-removal-probe-coreml` and it compiles again. tract has no such cache: four of the five pinned models have a dynamic input dimension (`batch_size`, `num_points` or `batch`), so `runtime::Session` concretizes shapes lazily — the first `run` for a given combination of input shapes builds and optimizes a `TypedModel` plan and caches it; later runs with the same shapes reuse it. That first build is folded into "first run", not "load", in every table below.
 
@@ -240,7 +255,7 @@ Budgets, from the pointer to the drawn overlay in a hidden lab window, and from 
 
 #### What it does not do
 
-No generative model, no RAW input (the corpus is developed to JPEG first), no proposal detector, no editor integration, no download code. A generative tier waits for the owner's weights-licence decision; a detector-driven proposal pass follows if the hover measurements show that decoding on every pointer move is not enough.
+No RAW input (the corpus is developed to JPEG first), no proposal detector, no editor integration, no download code. The generative candidates run only through `generate`, measured under [Generative fill](#generative-fill); a detector-driven proposal pass follows if the hover measurements show that decoding on every pointer move is not enough.
 
 ### Decisions
 
@@ -363,6 +378,114 @@ In the lab the segmenter loads while the image opens. The segmenter was ready af
 | Road | Stroke along one bend, radius 35 | One: the whole road across the frame, of which the stroke covers 15 % | The same |
 
 EfficientViT-SAM's misses are its decoder's answers, since every point on a kayak in dark or uniform water returns the water, and no floor changes them. SAM 2.1 finds every small object here but scores them lower, which is why its floor is 0.6. Its tighter masks can leave a brush wider than a thin object short of the 70 % that "one" needs. The road is a question of intent rather than a threshold: removing the road the stroke explains is the Lightroom-like reading, and the fill over 3389 px is a blurry smear at 6.6 source pixels per model pixel.
+
+## Generative fill
+
+TASK-005's qualification of a local generative fill: whether a model built within the one-toolchain rule fills photo regions well on the owner's M4 Pro, and at what time and memory cost. Measured 2026-10-11 on the same Apple M4 Pro (`Mac16,8`, 14 cores, 48 GB; Metal reports a 40.2 GB recommended working set and no tensor units), macOS 26.5.2, `rustc` 1.94.0, release builds of the commits that add `generate`. **The host was shared**: the one-minute load average before each run was 4 to 84, recorded per run below. The klein runs are bound by the GPU, so load moved them little (a 512 px candidate took 32 s at a load of 5 and 34 to 35 s at 30 to 80); Moebius on the CPU suffered most. Every figure is a single process; memory is `/usr/bin/time -l`'s peak footprint for the whole process, which includes the decoded photograph. The raw JSON, logs, crops and sheets are in `target/evidence/task-005/`, which is not committed. The tables were assembled from that JSON by a one-off Python script that is not part of the probe and never ships.
+
+```sh
+P=probes/object-removal/target/release/removal-probe
+E=probes/object-removal/target/evidence/task-005
+# Record the removal prompt's conditioning once, with the text encoder loaded.
+$P generate --candidate klein-q4-lora --encoder q8 --record-condition $E/conditions/lora-q8enc.bin --case sky-clouds-blue --out $E/explore
+# Prompt-free removal over every case, three candidates in sequence each, then the contact sheets.
+$P generate --candidate klein-q4-lora --condition $E/conditions/lora-q8enc.bin --case all --seeds 3 --size 512 --out $E/campaign
+$P generate --candidate lama --case all --out $E/campaign
+$P sheet --dir $E/campaign --columns lama-512,klein-q4-lora-512
+# Replace with a prompt, composited over the region's own edge.
+$P generate --candidate klein-q4 --encoder q8 --reference outlined --no-blend --prompt "Replace the highlighted object with a red hot air balloon" --case sky-clouds-blue --out $E/replace
+```
+
+### The build route
+
+stable-diffusion.cpp (MIT) and its ggml (MIT) are vendored as pinned source subsets in [`diffusion/`](diffusion/) and compiled by its `build.rs` with the `cc` crate, as `crates/luxforge-raw` compiles LibRaw: Metal with its kernels embedded, the CPU backend and Accelerate, `-mcpu=apple-m1` so the library runs on every M-series Mac. No CMake, no Python, no second build system and no network access; the 139 MB of generated tokenizer tables are left out (a text encoder takes its `tokenizer.json`). **The rule holds.** One local change, staged by exact-anchor replacement, lets a recorded conditioning stand in for the text encoder ([THIRD_PARTY.md](diffusion/THIRD_PARTY.md)). Its six static libraries total 19.5 MB. Metal compiles the kernels at the first generation on a machine (16.4 s) and caches them (15 ms after).
+
+Moebius is a UNet with a learned 20-token embedding in place of a text encoder, which stable-diffusion.cpp does not load, so it runs over the probe's existing ONNX Runtime from simonw's fp32, static 512² export, with the reference pipeline's DDIM schedule (20 steps at strength 0.99, so 19 run, each twice for guidance 2.0) reimplemented in `generative.rs`. MLX was not tried: stable-diffusion.cpp met the rule, and an MLX route would be macOS-only.
+
+### What was run
+
+- **klein 4B** (Q4_0 and Q8_0 GGUF, bf16 VAE), four flow steps, CFG 1, strength 1, through stable-diffusion.cpp's masked path: the crop goes in with the region mid-grey, sampling starts from noise, and the known latents are restored after every step. Four ways of conditioning it were compared on three cases (bridge deck, pub, blue sky): **no reference** leaves a flat, pale rectangle with a hatched texture, and **the grey-holed crop as the reference** makes the model copy the grey; both are dropped. **The crop with the region outlined in red as the reference**, the input fal's LoRA was trained on, works with or without the LoRA, and the LoRA is the better of the two on 16 cases (below).
+- **fal's removal LoRA** (Apache-2.0, trained on klein *base*; applied here to the distilled 4-step klein at multiplier 1.0) with its prompt "Remove the highlighted object from the scene".
+- **Prompt-free**: every removal run took that prompt's conditioning recorded once from Qwen3-4B Q8_0 (`--record-condition`) and supplied from a file (`--condition`), with no text encoder loaded.
+- **Moebius** on `ort-cpu`, `ort-coreml-gpu-fixed` and `ort-coreml-all-fixed` (the same score on the one case run on all three; the last is fastest and is the one in the tables).
+- **LaMa** at 512, the Fast fill, as the baseline.
+- OSOR-SDXL, RORem, ObjectClear, TurboClear and a non-commercial reference ceiling were not run.
+
+Every candidate ran inside the Fast fill's pipeline: the same crop (the region's longer side tripled, squared, resampled to the model's size), the model, upscaling to the crop, grain re-synthesis, the pyramid blend (seam correction and Laplacian detail blend) and the composite. **Every pixel outside every region was unchanged in every run** (0 changed pixels, checked by `generate` on each candidate). **The pyramid blend helps a removal and spoils a Replace.** Without it (`--no-blend`, the region's own feathered edge), klein Q4 + LoRA scores 19.60 dB / 0.573 in the region and 24.32 dB / 0.649 in the edge ring over the 16 cases, against 20.16 / 0.578 and 26.60 / 0.670 with it; LaMa loses less (25.31 against 25.91 dB in the ring). For Replace, the seam correction carries the difference between the original and the new object's surroundings into the region, which shows as a lighter box around the balloon and a faint halo around the boat and the dog; without the blend both sit seamlessly (`replace/sheets/`).
+
+### Quality against LaMa on the 16 pasted cases
+
+One candidate (seed 0) per case at 512, scored against the clean image: PSNR (dB) / SSIM inside the region.
+
+| Case | LaMa | klein Q4 + LoRA | klein Q8 + LoRA | klein Q4, outlined, no LoRA | Moebius |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| bridge-deck | 21.87 / 0.802 | 22.55 / 0.822 | 22.66 / 0.816 | 22.37 / 0.820 | 20.87 / 0.795 |
+| sunflowers-bokeh | 19.99 / 0.805 | 17.83 / 0.789 | 17.91 / 0.790 | 17.00 / 0.768 | 14.59 / 0.739 |
+| kayaks-water | 17.82 / 0.171 | 17.54 / 0.209 | 17.43 / 0.211 | 17.55 / 0.211 | 17.71 / 0.180 |
+| road-terraces | 14.50 / 0.240 | 14.66 / 0.259 | 14.67 / 0.261 | 14.72 / 0.260 | 12.94 / 0.234 |
+| people-utrecht-pub | 15.00 / 0.541 | 15.41 / 0.552 | 15.57 / 0.553 | 15.23 / 0.538 | 13.37 / 0.443 |
+| people-olinda-craftsman | 17.62 / 0.415 | 19.32 / 0.470 | 19.21 / 0.467 | 18.41 / 0.458 | 17.48 / 0.422 |
+| people-juan-griego-beach | 24.77 / 0.515 | 24.73 / 0.529 | 24.79 / 0.529 | 25.03 / 0.529 | 24.44 / 0.518 |
+| sky-clouds-blue | 24.29 / 0.944 | 21.44 / 0.929 | 22.09 / 0.932 | 19.44 / 0.914 | 22.99 / 0.926 |
+| sky-evening-2024 | 21.89 / 0.791 | 21.49 / 0.791 | 21.70 / 0.789 | 20.75 / 0.789 | 21.27 / 0.781 |
+| sky-clouds-atmosphere | 30.98 / 0.707 | 30.49 / 0.710 | 30.73 / 0.709 | 30.59 / 0.703 | 30.90 / 0.720 |
+| water-minnewanka | 18.96 / 0.531 | 23.20 / 0.610 | 23.32 / 0.614 | 22.93 / 0.606 | 19.03 / 0.550 |
+| water-badukskoe | 14.71 / 0.118 | 15.00 / 0.145 | 14.92 / 0.146 | 15.05 / 0.145 | 13.42 / 0.122 |
+| water-rhine-eltville | 19.69 / 0.695 | 17.65 / 0.692 | 17.39 / 0.692 | 15.85 / 0.675 | 14.96 / 0.641 |
+| object-green-heron | 32.82 / 0.949 | 32.66 / 0.937 | 32.49 / 0.936 | 33.07 / 0.934 | 29.13 / 0.945 |
+| object-razorbill | 18.87 / 0.737 | 18.05 / 0.724 | 18.20 / 0.725 | 18.45 / 0.720 | 17.89 / 0.724 |
+| object-bicycle-bk | 10.72 / 0.065 | 10.61 / 0.073 | 10.75 / 0.074 | 10.53 / 0.074 | 10.18 / 0.065 |
+
+| Candidate | Mean region dB / SSIM | Mean edge ring dB / SSIM | Region dB above LaMa | Region SSIM above LaMa |
+| --- | ---: | ---: | ---: | ---: |
+| LaMa 512 | 20.28 / 0.564 | 25.91 / 0.643 | — | — |
+| klein Q4 + LoRA | 20.16 / 0.578 | 26.60 / 0.670 | 6 of 16 | 11 of 16 |
+| klein Q8 + LoRA | 20.24 / 0.578 | 26.50 / 0.670 | 8 of 16 | 10 of 16 |
+| klein Q4, outlined, no LoRA | 19.81 / 0.572 | 26.39 / 0.667 | 8 of 16 | 8 of 16 |
+| Moebius | 18.82 / 0.550 | 24.07 / 0.615 | 1 of 16 | 6 of 16 |
+
+PSNR against the one true background understates a generative fill, which invents a plausible background rather than the one that was there; the sheets (`target/evidence/task-005/campaign/sheets/CASE.png`: input, truth, LaMa, Moebius, klein outlined, klein Q4 + LoRA, klein Q8 + LoRA) show the difference. **klein rebuilds structure that LaMa smears**: the road through the terraces continues across the region (LaMa leaves a green smear, Moebius a broken stub); the hidden sunflower's petals and centre are completed; the bicycle's rear wheel and kickstand are redrawn; the pub's second walker gets a head and shoulders and the window lettering continues; the moored boat on Minnewanka is rebuilt (+4.2 dB over LaMa). **Where it is weaker**: on open sky it paints a soft, smooth cloud that is blurrier than the clouds around it (blue sky −2.9 dB, Rhine sunset −2.0 dB), and it scores 2.2 dB under LaMa on the sunflowers, where it completes the hidden flower in a different pose from the truth. **Moebius** is below LaMa on 15 of 16 cases by PSNR, smears structure (the road, the bicycle, the pub window) and is 20 times slower; on the CPU it takes 2 to 3.5 minutes a candidate. Q8 is indistinguishable from Q4 (mean +0.08 dB, equal SSIM).
+
+### Time, memory and download
+
+`generate --seeds 3` on the blue-sky case, three candidates in sequence in one process. "First" includes the lazy weight load (stable-diffusion.cpp maps the file at open and loads weights at the first generation; the operating system's file cache was warm, and a cold read from disk was not measured).
+
+| Candidate | Size | Open ms | First candidate ms | Warm candidates ms | Three in sequence s | Step ms (median) | Peak footprint GB | Load avg before / after |
+| --- | ---: | ---: | ---: | --- | ---: | ---: | ---: | --- |
+| LaMa (ort-cpu) | 512 | 3,852 | 2,063 | 2,157, 2,087 | 7.1 | — | 0.94 | 15 / 21 |
+| Moebius (Core ML all, fixed) | 512 | 14,947 | 37,763 | 27,093, 34,351 | 99.7 | 1,831 (two UNet runs) | 5.18 | 51 / 43 |
+| Moebius (ort-cpu) | 512 | 13,005 | 135,251 | 210,237, 169,017 | 515.5 | 8,284 | 6.21 | 43 / 36 |
+| klein Q4 + LoRA | 512 | 174 | 39,315 | 35,208, 34,287 | 110.6 | 7,069 | 4.18 | 36 / 57 |
+| klein Q4 + LoRA | 768 | 83 | 76,204 | 72,678, 74,894 | 225.4 | 14,775 | 4.19 | 84 / 36 |
+| klein Q4 + LoRA | 1024 | 51 | 138,618 | 139,044, 138,144 | 418.1 | 27,899 | 4.25 | 12 / 36 |
+| klein Q4 + LoRA, reference encoded at 512 | 1024 | 51 | 80,712 | 79,715, 81,793 | 242.7 | 15,272 | 4.13 | 5 / 6 |
+| klein Q8 + LoRA | 512 | 91 | 38,411 | 34,697, 36,055 | 112.1 | 7,168 | 6.65 | 57 / 84 |
+| klein Q8 + LoRA | 768 | 150 | 81,515 | 73,754, 68,632 | 224.8 | 14,693 | 6.68 | 36 / 12 |
+| klein Q8 + LoRA | 1024 | 172 | 143,156 | 134,804, 181,843 | 461.5 | 28,575 | 6.68 | 36 / 31 |
+| klein Q4 + LoRA, Qwen3-4B Q4_K_M encoder loaded | 512 | 597 | 36,128 | 32,570, 33,969 | 103.1 | 6,969 | 6.63 | 31 / 15 |
+
+- **klein's step time grows with its token count**: the image, the reference image and 512 text tokens are all in every step, about 2.5 to 3.2 ms per token per step. Four steps are four fifths of a candidate; the rest is the VAE (encoding the crop and the reference, decoding the result). Encoding the reference at half the working size (`--reference-size 512` at 1024; the shim tells the runtime to encode it at its own size, since by default it is resized to the output's area) cuts a 1024 px candidate from 127 to 139 s to 79 to 84 s, but the fill no longer lines up with its surroundings: on four cases the edge ring fell by 2.0 to 10.0 dB (the boat on Minnewanka from 24.9 to 20.0 dB in the region). A 256 px reference at 512 does the same (34 s to 23 to 27 s; the boat from 23.2 to 19.8 dB), so the reference stays at the working size. Working at 1024 rather than 512 sharpens the fill: on the same four cases SSIM rose on three (the boat from 0.610 to 0.699, the pub from 0.552 to 0.571, the bicycle from 0.073 to 0.130) for four times the time.
+- **Memory** does not grow with size: stable-diffusion.cpp reserves its compute buffers up front (2 GiB for the transformer, 1 GiB for the VAE). Without a text encoder klein Q4 peaks at 4.1 to 4.25 GB, Q8 at 6.7 GB. With the text encoder for Replace, Q4 peaks at 6.6 GB with Qwen3-4B Q4_K_M and 7.9 to 8.4 GB with Q8_0.
+- **Downloads**: klein Q4 with its VAE, the LoRA and the shipped conditioning 2.72 GB (Q8 4.56 GB); the optional text encoder 4.29 GB at Q8_0 with its tokenizer, 2.51 GB at Q4_K_M; Moebius 1.24 GB; LaMa 93 MB.
+
+### The shipped empty-scene embedding
+
+The conditioning is the text encoder's output for a fixed prompt, a 512 × 7680 tensor (15.7 MB as f32). Recorded once and supplied from a file with no text encoder loaded, it **reproduces the prompted removal byte for byte**: on three cases at seed 0 the candidates are identical files to those of the run that encoded the prompt with Qwen3-4B Q8_0, and the same holds for the plain klein run against its own Q4_K_M encoding. Without the encoder the process peaks 2.4 GB lower (4.1 against 6.5 GB) and loads in 50 to 170 ms. The tolerance for an embedding computed by a different encoder build (a different quantisation, or a later runtime) is set by what a person could tell apart: per seed, at most 0.5 dB region PSNR and 0.005 SSIM from the prompted candidate, about a seventh of the seed-to-seed spread (3.3 dB between seeds 0 and 1 on the blue sky), so the difference is smaller than a Regenerate. The Q4_K_M encoder's embedding against the Q8_0 one met it: 21.22, 24.71 and 24.96 dB against 21.44, 24.75 and 24.92 dB, SSIM within 0.001.
+
+### Replace with a prompt
+
+klein Q4 with the crop outlined as the reference and Qwen3-4B Q8_0 encoding "Replace the highlighted object with …" (`target/evidence/task-005/replace/CASE/`). The model output places the asked-for object in a coherent scene: a red hot-air balloon among the clouds, a rowing boat on the lake, a dog on the bridge deck, an olive tree in the pub window. It also redraws what the object overlapped: the walker behind the pub's olive tree loses his head to its branches. With the pyramid blend the composite leaves a lighter box around the balloon and a faint halo around the boat and the dog; without it the balloon and the boat sit seamlessly. A Replace takes the time of a removal at its size (34 to 37 s at 512, 133 s at 1024) and peaks at 7.9 GB at 512 and 8.1 GB at 1024 with the Q8_0 encoder loaded.
+
+### Go or no-go
+
+| Model | Runtime and build route | Verdict | Minimum machine memory |
+| --- | --- | --- | --- |
+| **FLUX.2 klein 4B Q4_0 + fal's removal LoRA**, outlined reference, prompt-free | stable-diffusion.cpp `master-956-1b0ba10` with ggml `d25b121c`, Metal, vendored and built with `cc` | **Go on quality**: it rebuilds structure no other candidate does, at LaMa's level or better on the scores. **The starting time budget is not met**: 35 s per candidate at 512, 74 s at 768, 139 s at 1024 (three in sequence 1.8, 3.8 and 7.0 minutes) against 30 s per 1024 px candidate and 90 s for three | Measured peak 4.25 GB without the text encoder, 8.1 to 8.4 GB with Replace's Q8_0 encoder. Proposed: 16 GB for removal, 24 GB for Replace; not yet measured on a smaller machine |
+| FLUX.2 klein 4B Q8_0 + LoRA | as above | No-go: no measurable gain over Q4 for 1.8 GB more download and 2.4 GB more memory | — |
+| FLUX.2 klein 4B without a reference (masked path only) | as above | No-go: a flat, hatched rectangle | — |
+| Moebius (`ft_places2`) | ONNX Runtime, Core ML | No-go: below LaMa on 15 of 16 cases, no structure, 25 to 35 s a candidate | — |
+
+The resource drafts for the model that passed, its files and its optional text encoder, are in [`resources/generative.json`](resources/generative.json).
 
 ## Backend parity
 

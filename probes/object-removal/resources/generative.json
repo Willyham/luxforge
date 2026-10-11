@@ -1,0 +1,97 @@
+{
+  "status": "Draft resource descriptors from TASK-005's measurements on the M4 Pro (2026-10-11), for TASK-013 to turn into the luxforge.ai module's resources. Only the model that passed is listed; the text encoder is a separate, optional resource for Replace. Field names follow ResourceDescriptor plus the design's use_restriction and runtime requirements; multi-file resources list their files.",
+  "resources": [
+    {
+      "id": "generative-klein-4b-q4",
+      "title": "FLUX.2 klein 4B, 4-bit, with the object removal LoRA",
+      "trade_off": "Rebuilds structure and objects behind the region; about 35 s per 512 px candidate and 2.3 min per 1024 px candidate on an M4 Pro; needs 16 GB of memory",
+      "version": "klein-4b-q4_0-3b1f5a9d-lora-0e3f5879",
+      "license": "Apache-2.0",
+      "use_restriction": null,
+      "provenance": "Black Forest Labs FLUX.2 klein 4B (black-forest-labs/FLUX.2-klein-4B@e7b7dc27), quantised to GGUF Q4_0 by leejet (leejet/FLUX.2-klein-4B-GGUF@3b1f5a9d); fal's removal LoRA (fal/flux-2-klein-4B-object-remove-lora@0e3f5879, ComfyUI-converted file); the empty-scene conditioning computed by Luxforge from Qwen3-4B Q8_0 for the LoRA's prompt",
+      "redirect_origins": ["https://us.aws.cdn.hf.co"],
+      "files": [
+        {
+          "role": "transformer",
+          "url": "https://huggingface.co/leejet/FLUX.2-klein-4B-GGUF/resolve/3b1f5a9dc3abb32238b053aeb3d823c30afdacbd/flux-2-klein-4b-Q4_0.gguf",
+          "bytes": 2460378560,
+          "sha256": "d1023499ef3f2f82ff7c50e6778495195c1b6cc34835741778868428111f9ff4",
+          "format": "gguf"
+        },
+        {
+          "role": "vae",
+          "url": "https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/e7b7dc27f91deacad38e78976d1f2b499d76a294/vae/diffusion_pytorch_model.safetensors",
+          "bytes": 168120878,
+          "sha256": "ca70d2202afe6415bdbcb8793ba8cd99fd159cfe6192381504d6c4d3036e0f04",
+          "format": "safetensors"
+        },
+        {
+          "role": "lora",
+          "url": "https://huggingface.co/fal/flux-2-klein-4B-object-remove-lora/resolve/0e3f58790356bf1319b263fc56b333c294b42ff7/kDEkt5q7tDLKOpQJIVMPx_pytorch_lora_weights_comfy_converted.safetensors",
+          "bytes": 76038936,
+          "sha256": "dc197de62e174863f83fc4052465603f4389de7c3a78e17f3d41a1f6f11488ec",
+          "format": "safetensors"
+        },
+        {
+          "role": "conditioning",
+          "url": null,
+          "url_note": "Produced by Luxforge, not by a publisher: the prompt 'Remove the highlighted object from the scene' encoded once by Qwen3-4B Q8_0 through the pinned stable-diffusion.cpp (LFSDCOND v1, c_crossattn 512 x 7680 f32). Shipped with the module or hosted by the project; regenerated whenever the encoder, the prompt or the runtime's conditioning changes",
+          "bytes": 15728691,
+          "sha256": "ba26d15a8b280abf7f436cbd817d2caaba412b9e186aa6a2163cf6a73c199141",
+          "format": "lfsdcond-1"
+        }
+      ],
+      "download_bytes": 2720267065,
+      "runtime": {
+        "backend": "stable-diffusion.cpp master-956-1b0ba10 with ggml d25b121c, Metal",
+        "precision": "transformer Q4_0 with bf16 layers, VAE bf16, LoRA applied at multiplier 1.0",
+        "settings": "4 flow steps, CFG 1.0, strength 1.0, masked denoising, the crop with the region outlined in red as the reference image",
+        "measured_peak_footprint_bytes": 4250000000,
+        "resident_budget_bytes": 5368709120,
+        "minimum_machine_memory_gb": 16,
+        "minimum_machine_memory_basis": "Measured peak process footprint 4.18 to 4.25 GB at 512 to 1024 px with no text encoder; 16 GB proposed so the model, the editor's renderer ceilings and the held candidates fit inside Metal's working-set limit (about 10.7 GB on a 16 GB Mac). Not yet measured on a 16 GB machine"
+      }
+    },
+    {
+      "id": "generative-klein-text-encoder-q8",
+      "title": "Text encoder for Replace (Qwen3-4B, 8-bit)",
+      "trade_off": "Needed only to type a prompt in Replace; adds 4.3 GB to the download and about 2.4 to 4.2 GB of memory while it is loaded",
+      "optional_for": "generative-klein-4b-q4",
+      "version": "qwen3-4b-q8_0-22c9fc8a",
+      "license": "Apache-2.0",
+      "use_restriction": null,
+      "provenance": "Alibaba Qwen3-4B, quantised to GGUF Q8_0 by Unsloth (unsloth/Qwen3-4B-GGUF@22c9fc8a); tokenizer from black-forest-labs/FLUX.2-klein-4B@e7b7dc27",
+      "redirect_origins": ["https://us.aws.cdn.hf.co"],
+      "files": [
+        {
+          "role": "llm",
+          "url": "https://huggingface.co/unsloth/Qwen3-4B-GGUF/resolve/22c9fc8a8c7700b76a1789366280a6a5a1ad1120/Qwen3-4B-Q8_0.gguf",
+          "bytes": 4280405792,
+          "sha256": "eed555233267a33c7e8ee31682762cc7751b3f6d224039086e0e846f05fffa5d",
+          "format": "gguf"
+        },
+        {
+          "role": "tokenizer",
+          "url": "https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/e7b7dc27f91deacad38e78976d1f2b499d76a294/tokenizer/tokenizer.json",
+          "bytes": 11422654,
+          "sha256": "aeb13307a71acd8fe81861d94ad54ab689df773318809eed3cbe794b4492dae4",
+          "format": "json"
+        }
+      ],
+      "download_bytes": 4291828446,
+      "alternative": {
+        "file": "Qwen3-4B-Q4_K_M.gguf",
+        "url": "https://huggingface.co/unsloth/Qwen3-4B-GGUF/resolve/22c9fc8a8c7700b76a1789366280a6a5a1ad1120/Qwen3-4B-Q4_K_M.gguf",
+        "bytes": 2497281312,
+        "sha256": "f6f851777709861056efcdad3af01da38b31223a3ba26e61a4f8bf3a2195813a",
+        "note": "Its removal conditioning scored within 0.22 dB of the Q8_0 one per seed; Replace was inspected with Q8_0 only"
+      },
+      "runtime": {
+        "backend": "stable-diffusion.cpp, Metal, loaded beside the transformer",
+        "measured_peak_footprint_bytes_with_transformer": 8400000000,
+        "minimum_machine_memory_gb": 24,
+        "minimum_machine_memory_basis": "Measured peak footprint with the transformer: 6.63 GB with the Q4_K_M encoder, 8.4 GB with Q8_0, at 512 px"
+      }
+    }
+  ]
+}
