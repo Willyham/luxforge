@@ -551,7 +551,10 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(ids(false), ["developer"]);
-        assert_eq!(ids(true), ["developer", "proof.choice", "proof.number", "ai.generative"]);
+        assert_eq!(
+            ids(true),
+            ["developer", "proof.choice", "proof.number", "ai.generative"]
+        );
     }
 
     #[test]

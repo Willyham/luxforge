@@ -280,8 +280,8 @@ impl Context {
                     let src = ((y - band.y0) * band.width + (area.x0 - band.x0)) as usize;
                     let dst = ((y - area.y0) * area.width) as usize;
                     for (x, p) in pixels[src..src + area.width as usize].iter().enumerate() {
-                        for c in 0..3 {
-                            input.c[c][dst + x] = p[c];
+                        for (plane, &value) in input.c.iter_mut().zip(p) {
+                            plane[dst + x] = value;
                         }
                     }
                 }
@@ -354,8 +354,8 @@ impl Context {
         }
         let mut model = Planes::new(n, n);
         for (i, p) in generated.chunks_exact(3).enumerate() {
-            for c in 0..3 {
-                model.c[c][i] = p[c].clamp(0.0, 1.0) * 255.0;
+            for (plane, &value) in model.c.iter_mut().zip(p) {
+                plane[i] = value.clamp(0.0, 1.0) * 255.0;
             }
         }
         let mut fill = Planes {
@@ -375,8 +375,7 @@ impl Context {
                 for c in 0..3 {
                     // Grain makes up only the fine texture enlarging the answer lost: the ring's
                     // high-pass energy the enlarged fill lacks.
-                    let deficit =
-                        ring.highpass[c].powi(2) - inner.map_or(0.0, |s| s[c].powi(2));
+                    let deficit = ring.highpass[c].powi(2) - inner.map_or(0.0, |s| s[c].powi(2));
                     added[c] = deficit.max(0.0).sqrt() / gain;
                 }
             }
@@ -405,8 +404,7 @@ impl Context {
             n,
             scale,
         );
-        let correction =
-            blend::pyramid_correction(&fill, &self.input, area, window, &cov, levels);
+        let correction = blend::pyramid_correction(&fill, &self.input, area, window, &cov, levels);
         for c in 0..3 {
             for (v, d) in fill.c[c].iter_mut().zip(&correction.c[c]) {
                 *v += d;

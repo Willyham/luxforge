@@ -50,7 +50,8 @@ fn linear_image(stage: Stage, seed: u64) -> Vec<[f32; 3]> {
     (0..stage.height)
         .flat_map(|y| (0..stage.width).map(move |x| (x, y)))
         .map(|(x, y)| {
-            let base = 0.1 + 0.8 * x as f32 / stage.width as f32 + 0.3 * y as f32 / stage.height as f32;
+            let base =
+                0.1 + 0.8 * x as f32 / stage.width as f32 + 0.3 * y as f32 / stage.height as f32;
             [0, 1, 2].map(|c| base * (0.7 + 0.15 * c as f32) + 0.05 * uniform(&mut state))
         })
         .collect()
@@ -63,7 +64,10 @@ fn reader(
     reads: &mut Vec<Region>,
 ) -> impl FnMut(Region) -> Result<Vec<[f32; 3]>, Error> {
     move |region: Region| {
-        assert!(region.x1() <= stage.width && region.y1() <= stage.height, "{region:?}");
+        assert!(
+            region.x1() <= stage.width && region.y1() <= stage.height,
+            "{region:?}"
+        );
         reads.push(region);
         let mut out = Vec::with_capacity(region.pixels() as usize);
         for y in region.y0..region.y1() {
@@ -81,8 +85,12 @@ fn soft_rect(stage: Stage, r: Region, soft: u32) -> Coverage {
     let mut values = Vec::with_capacity(outer.pixels() as usize);
     for y in outer.y0..outer.y1() {
         for x in outer.x0..outer.x1() {
-            let dx = (r.x0 as i64 - x as i64).max(x as i64 - r.x1() as i64 + 1).max(0);
-            let dy = (r.y0 as i64 - y as i64).max(y as i64 - r.y1() as i64 + 1).max(0);
+            let dx = (r.x0 as i64 - x as i64)
+                .max(x as i64 - r.x1() as i64 + 1)
+                .max(0);
+            let dy = (r.y0 as i64 - y as i64)
+                .max(y as i64 - r.y1() as i64 + 1)
+                .max(0);
             let d = dx.max(dy) as f32;
             values.push(if soft == 0 {
                 f32::from(d == 0.0)
@@ -149,7 +157,10 @@ fn the_plan_keeps_every_window_inside_the_square() {
         let inside = plan.crop.inside;
         for r in [plan.window, plan.area] {
             assert!(r.x0 >= inside.x0 && r.y0 >= inside.y0, "{r:?} {inside:?}");
-            assert!(r.x1() <= inside.x1() && r.y1() <= inside.y1(), "{r:?} {inside:?}");
+            assert!(
+                r.x1() <= inside.x1() && r.y1() <= inside.y1(),
+                "{r:?} {inside:?}"
+            );
             assert!(r.x0 <= b.x0 && r.y0 <= b.y0 && r.x1() >= b.x1() && r.y1() >= b.y1());
         }
         assert!((3..=7).contains(&plan.levels));
@@ -168,13 +179,16 @@ fn reflection_repeats_past_the_edges() {
 fn dilation_matches_brute_force() {
     let (w, h) = (37_usize, 23_usize);
     let mut state = 5_u64;
-    let mask: Vec<bool> = (0..w * h).map(|_| mix(&mut state) % 17 == 0).collect();
+    let mask: Vec<bool> = (0..w * h)
+        .map(|_| mix(&mut state).is_multiple_of(17))
+        .collect();
     for r in [0_usize, 1, 3, 10, 40] {
         let fast = dilate(&mask, w, h, r);
         for y in 0..h {
             for x in 0..w {
-                let want = (y.saturating_sub(r)..(y + r + 1).min(h))
-                    .any(|yy| (x.saturating_sub(r)..(x + r + 1).min(w)).any(|xx| mask[yy * w + xx]));
+                let want = (y.saturating_sub(r)..(y + r + 1).min(h)).any(|yy| {
+                    (x.saturating_sub(r)..(x + r + 1).min(w)).any(|xx| mask[yy * w + xx])
+                });
                 assert_eq!(fast[y * w + x], want, "r {r} at ({x}, {y})");
             }
         }
@@ -336,7 +350,11 @@ fn the_reduction_equals_its_reference_whatever_bands_it_reads() {
             assert!(kept >= plan.inside.pixels(), "{s:?} {r:?} tile {tile}");
             assert!(reads[0].width <= plan.inside.width + 4 && span <= plan.inside.height + 4);
             for (a, b) in got.pixels.iter().zip(&want.0) {
-                assert_eq!(a.map(f32::to_bits), b.map(f32::to_bits), "{s:?} {r:?} tile {tile}");
+                assert_eq!(
+                    a.map(f32::to_bits),
+                    b.map(f32::to_bits),
+                    "{s:?} {r:?} tile {tile}"
+                );
             }
             assert_eq!(got.hole, want.1, "{s:?} {r:?} tile {tile}");
             // Each read is a band of whole rows, one after another, within the tile.
@@ -395,7 +413,10 @@ fn the_model_hole_holds_every_covered_pixel_and_no_more_than_its_reach() {
     }
     let near = dilate(&touched, n, n, 1);
     for (i, &m) in context.model_mask.iter().enumerate() {
-        assert!(m == 0.0 || near[i], "model pixel {i} is in the hole, far from the line");
+        assert!(
+            m == 0.0 || near[i],
+            "model pixel {i} is in the hole, far from the line"
+        );
     }
     assert!(context.model_image.iter().all(|v| (0.0..=1.0).contains(v)));
 }
@@ -476,7 +497,7 @@ fn reference_up(src: &[f32], w: usize, h: usize, tw: usize, th: usize) -> Vec<f3
     let taps = |i: usize, len: usize| -> Vec<(usize, f64)> {
         let c = |j: i64| j.clamp(0, len as i64 - 1) as usize;
         let k = (i / 2) as i64;
-        if i % 2 == 0 {
+        if i.is_multiple_of(2) {
             vec![(c(k - 1), 0.125), (c(k), 0.75), (c(k + 1), 0.125)]
         } else {
             vec![(c(k), 0.5), (c(k + 1), 0.5), (c(k), 0.0)]
@@ -503,7 +524,9 @@ fn reference_up(src: &[f32], w: usize, h: usize, tw: usize, th: usize) -> Vec<f3
 fn the_pyramid_levels_equal_their_references() {
     let mut state = 4;
     for (w, h) in [(97, 61), (2, 3), (1, 1), (64, 64)] {
-        let src: Vec<f32> = (0..w * h).map(|_| 200.0 * uniform(&mut state) - 50.0).collect();
+        let src: Vec<f32> = (0..w * h)
+            .map(|_| 200.0 * uniform(&mut state) - 50.0)
+            .collect();
         let (nw, nh, got) = down(&src, w, h);
         assert_eq!((nw, nh), (w.div_ceil(2), h.div_ceil(2)));
         let want = reference_down(&src, w, h);
@@ -525,7 +548,13 @@ fn the_pyramid_levels_equal_their_references() {
 /// The reference push-pull: the definition's recursion over levels, each level's estimate
 /// `S_k / W_k` blended with the expanded coarser result by `min(4 W_k, 1)`, the finest `skip`
 /// levels taking the coarser result alone.
-fn reference_push_pull(values: &[f32], weight: &[f32], w: usize, h: usize, skip: usize) -> Vec<f32> {
+fn reference_push_pull(
+    values: &[f32],
+    weight: &[f32],
+    w: usize,
+    h: usize,
+    skip: usize,
+) -> Vec<f32> {
     let mut sizes = vec![(w, h)];
     let mut weights = vec![weight.to_vec()];
     let mut sums = vec![values.to_vec()];
@@ -568,7 +597,11 @@ fn push_pull_equals_its_reference_and_extends_a_band_smoothly() {
             let (x, y) = (i % w, i / w);
             let inside = (20..55).contains(&x) && (15..40).contains(&y);
             let band = (14..61).contains(&x) && (9..46).contains(&y);
-            if band && !inside { 0.5 + 0.5 * uniform(&mut state) } else { 0.0 }
+            if band && !inside {
+                0.5 + 0.5 * uniform(&mut state)
+            } else {
+                0.0
+            }
         })
         .collect();
     let values: Vec<f32> = weight.iter().map(|&wt| wt * 12.0).collect();
@@ -583,7 +616,11 @@ fn push_pull_equals_its_reference_and_extends_a_band_smoothly() {
         // A constant known on the band is that constant in the hole.
         for y in 20..35 {
             for x in 28..48 {
-                assert!((got[y * w + x] - 12.0).abs() < 0.05, "({x}, {y}): {}", got[y * w + x]);
+                assert!(
+                    (got[y * w + x] - 12.0).abs() < 0.05,
+                    "({x}, {y}): {}",
+                    got[y * w + x]
+                );
             }
         }
     }
@@ -626,7 +663,14 @@ fn the_pyramid_blend_is_the_whole_difference_outside_and_none_inside() {
 fn the_robust_sigma_is_its_reference() {
     let mut state = 2;
     let mut samples: Vec<f32> = (0..1001)
-        .map(|_| 10.0 * (uniform(&mut state) - 0.5) + if mix(&mut state) % 50 == 0 { 400.0 } else { 0.0 })
+        .map(|_| {
+            10.0 * (uniform(&mut state) - 0.5)
+                + if mix(&mut state).is_multiple_of(50) {
+                    400.0
+                } else {
+                    0.0
+                }
+        })
         .collect();
     let mut sorted = samples.clone();
     sorted.sort_by(f32::total_cmp);
@@ -747,7 +791,10 @@ fn a_candidate_keeps_the_input_where_coverage_is_zero_and_is_deterministic() {
     }
     assert!(changed > 0);
     assert!(a.linear.iter().all(|v| v.is_finite()));
-    assert_eq!((a.preview_width, a.preview_height), (bounds.width, bounds.height));
+    assert_eq!(
+        (a.preview_width, a.preview_height),
+        (bounds.width, bounds.height)
+    );
     assert_eq!(a.preview.len(), (bounds.width * bounds.height * 3) as usize);
     // Another seed draws other grain, only where it adds any.
     let c = context.finish(&answer, 4).unwrap();
@@ -765,9 +812,15 @@ fn the_seam_correction_takes_out_a_colour_offset() {
     let image = vec![grey; (s.width * s.height) as usize];
     let coverage = soft_rect(s, rect(300, 200, 200, 160), 0);
     let mut reads = Vec::new();
-    let context =
-        Context::prepare(coverage.clone(), s, 256, 1 << 22, &mut reader(&image, s, &mut reads), &ok)
-            .unwrap();
+    let context = Context::prepare(
+        coverage.clone(),
+        s,
+        256,
+        1 << 22,
+        &mut reader(&image, s, &mut reads),
+        &ok,
+    )
+    .unwrap();
     let codes = grey.map(|v| context.encoding.code(v));
     let bright = codes.map(|c| (c + 30.0) / 255.0);
     // The answer keeps the known pixels and fills the hole 30 codes too bright.
@@ -785,14 +838,18 @@ fn the_seam_correction_takes_out_a_colour_offset() {
     let (mut sum, mut count) = (0_f64, 0);
     for (i, &c) in candidate.coverage.iter().enumerate() {
         if c > 0.0 {
-            for k in 0..3 {
+            for (k, &expected) in codes.iter().enumerate() {
                 let code = context.encoding.code(candidate.linear[i * 3 + k]);
-                sum += f64::from((code - codes[k]).abs());
+                sum += f64::from((code - expected).abs());
                 count += 1;
             }
         }
     }
-    assert!(sum / f64::from(count) < 0.5, "mean error {} codes", sum / f64::from(count));
+    assert!(
+        sum / f64::from(count) < 0.5,
+        "mean error {} codes",
+        sum / f64::from(count)
+    );
 }
 
 #[test]

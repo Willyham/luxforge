@@ -205,7 +205,11 @@ impl AiModule {
         }
     }
 
-    fn request(&self, task_id: &str, parameters: &Map<String, Value>) -> Result<FillRequest, Error> {
+    fn request(
+        &self,
+        task_id: &str,
+        parameters: &Map<String, Value>,
+    ) -> Result<FillRequest, Error> {
         if task_id != FILL_GENERATIVE {
             return Err(Error::validation(format!("unknown task {task_id}")));
         }

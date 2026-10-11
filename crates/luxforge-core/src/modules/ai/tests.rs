@@ -12,7 +12,7 @@ use super::{
 use crate::{
     AssetId, EditorService, ModuleRegistry,
     api::ApiFailure,
-    artifacts::{PREPARED_ARTIFACT_BYTES, candidates::MAX_CANDIDATE_BYTES},
+    artifacts::PREPARED_ARTIFACT_BYTES,
     capabilities::{
         grants::GRANT,
         host::HostConfig,
@@ -344,7 +344,12 @@ fn generate_regenerate_accept_undo_redo_and_reopen_without_the_model() {
         READ_CANDIDATE,
         json!({"job_id": first["job_id"], "candidate": 1, "part": "patch"}),
     );
-    assert_eq!(whole["total"], json!(width * height * 8), "{}", whole["total"]);
+    assert_eq!(
+        whole["total"],
+        json!(width * height * 8),
+        "{}",
+        whole["total"]
+    );
     let slice = owner.ok(
         READ_CANDIDATE,
         json!({"job_id": first["job_id"], "candidate": 1, "part": "patch", "offset": 8, "length": 16}),
@@ -365,7 +370,11 @@ fn generate_regenerate_accept_undo_redo_and_reopen_without_the_model() {
         json!({"job_id": first["job_id"], "candidate": 2, "part": "preview"}),
     );
     assert_ne!(preview["data"], other["data"]);
-    assert_eq!(owner.asset_revision(&asset), revision, "generating edits nothing");
+    assert_eq!(
+        owner.asset_revision(&asset),
+        revision,
+        "generating edits nothing"
+    );
 
     // Regenerate: another job from the next seed; the first job's candidates stay live.
     let second = owner.generate(with(
@@ -376,10 +385,7 @@ fn generate_regenerate_accept_undo_redo_and_reopen_without_the_model() {
     assert_eq!(owner.states(&first["job_id"]), ["live", "live", "live"]);
     assert_eq!(owner.states(&second["job_id"]), ["live", "live"]);
     // The same request again makes the same candidate.
-    let again = owner.generate(with(
-        selection(&asset),
-        json!({"seed": 7, "candidates": 1}),
-    ));
+    let again = owner.generate(with(selection(&asset), json!({"seed": 7, "candidates": 1})));
     let read = |job: &Value| {
         owner.ok(
             READ_CANDIDATE,
@@ -438,10 +444,10 @@ fn a_cancel_mid_generation_leaves_the_recipe_untouched_and_publishes_nothing() {
     let [asset, _] = fixture.assets.clone();
     let owner = fixture.ready();
     let revision = owner.asset_revision(&asset);
-    fixture
-        .controls()
-        .set_step_delay(Duration::from_millis(20));
-    let queued = owner.fill(with(selection(&asset), json!({"seed": 1}))).unwrap();
+    fixture.controls().set_step_delay(Duration::from_millis(20));
+    let queued = owner
+        .fill(with(selection(&asset), json!({"seed": 1})))
+        .unwrap();
     let job = queued["job_id"].clone();
     owner.until(&job, |record| {
         record["progress"]["message"]
@@ -455,7 +461,10 @@ fn a_cancel_mid_generation_leaves_the_recipe_untouched_and_publishes_nothing() {
     assert!(owner.states(&job).is_empty(), "{record}");
     assert_eq!(owner.asset_revision(&asset), revision);
     assert_eq!(
-        owner.accept_as(owner.edit, &asset, &job, 0).unwrap_err().code,
+        owner
+            .accept_as(owner.edit, &asset, &job, 0)
+            .unwrap_err()
+            .code,
         "validation"
     );
 }
@@ -488,9 +497,7 @@ fn a_running_fill_locks_its_photograph_only_and_a_cancel_releases_it() {
         assert_eq!(data["method"], TASK);
         assert_eq!(data["asset_id"], json!(asset));
     };
-    let basic = |asset: &AssetId, revision: u64| {
-        json!({"asset_id": asset, "mutation": mutation_json(revision, &uuid::Uuid::new_v4().to_string()), "exposure": 0.5})
-    };
+    let basic = |asset: &AssetId, revision: u64| json!({"asset_id": asset, "mutation": mutation_json(revision, &uuid::Uuid::new_v4().to_string()), "exposure": 0.5});
     locked(owner.fail("edit.set-basic", basic(&asset, revision)));
     locked(owner.accept_as(owner.edit, &asset, &job, 0).unwrap_err());
     locked(owner.fail(
@@ -555,7 +562,10 @@ fn every_refusal_is_named_and_generates_nothing() {
         missing.contains(&("flag".into(), "ai.generative".into())),
         "{missing:?}"
     );
-    assert!(missing.iter().any(|(_, id)| id.contains("fake-generator")), "{missing:?}");
+    assert!(
+        missing.iter().any(|(_, id)| id.contains("fake-generator")),
+        "{missing:?}"
+    );
 
     owner.flag(true);
     owner.install(&FAKE_GENERATOR);
@@ -570,7 +580,10 @@ fn every_refusal_is_named_and_generates_nothing() {
         "{refused:?}"
     );
     // A blank prompt is none.
-    owner.generate(with(selection(&asset), json!({"prompt": "   ", "candidates": 1})));
+    owner.generate(with(
+        selection(&asset),
+        json!({"prompt": "   ", "candidates": 1}),
+    ));
     // A prompt past 256 characters, by the declared schema.
     let long = with(selection(&asset), json!({"prompt": "a".repeat(257)}));
     assert_eq!(owner.fill(long).unwrap_err().code, "validation");
@@ -615,7 +628,10 @@ fn every_refusal_is_named_and_generates_nothing() {
     owner.flag(false);
     let refused = owner.fill(selection(&asset)).unwrap_err();
     assert_eq!(refused.code, "not-ready");
-    assert_eq!(requirements(&refused), [("flag".into(), "ai.generative".into())]);
+    assert_eq!(
+        requirements(&refused),
+        [("flag".into(), "ai.generative".into())]
+    );
     assert_eq!(fixture.controls().generations(), 2);
 }
 
@@ -648,7 +664,6 @@ fn admission_refuses_a_region_past_a_candidate_or_the_artifact_budget() {
     let refused = admit(&across, large, 0).unwrap_err();
     assert_eq!(refused.kind.code(), "resource-limit", "{refused}");
     assert_eq!(refused.data.unwrap()["limit"], "candidate");
-    assert!(MAX_CANDIDATE_BYTES < 6000 * 4200 * 8);
 
     // A small region admits, until the stack's artifacts leave no room for its patch.
     let small = task(json!([[0.5, 0.5]]), 0.05);
@@ -670,7 +685,12 @@ fn the_developer_transport_serves_only_the_pinned_models_and_install_checks_thei
     fs::create_dir_all(&root).unwrap();
     for file in [FAKE_GENERATOR, FAKE_TEXT_ENCODER] {
         use sha2::{Digest, Sha256};
-        assert_eq!(hex(&Sha256::digest(file.bytes)), file.sha256, "{}", file.resource);
+        assert_eq!(
+            hex(&Sha256::digest(file.bytes)),
+            file.sha256,
+            "{}",
+            file.resource
+        );
         let path = root.join(file.resource);
         fs::write(&path, file.bytes).unwrap();
         module.validate_resource(file.resource, &path).unwrap();

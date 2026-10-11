@@ -39,6 +39,7 @@ Flags today:
 | `developer` | toggle | launch | on in debug builds, off in optimized builds | always | The desktop serves the test modules (the pixel and controls proofs) and shows the Developer button and its components gallery |
 | `proof.choice` | choice: `first`, `second`, `third` | live | `first` | developer runs only | Nothing; a fixture for the choice control |
 | `proof.number` | number: 0 to 100, step 5 | live | 50 | developer runs only | Nothing; a fixture for the number control |
+| `ai.generative` | toggle | live | off | developer runs only, after the proof flags | Whether `task.fill-generative` is offered ([AI editing](ai-editing.md#the-delivered-workflow)); never how an accepted fill renders. Listed only where `luxforge.ai` is registered, which is developer runs while its one model is the developer fake |
 
 The two proof flags follow the proof modules' rule: they exist only when the running host serves the test modules, and change nothing, so the choice and number controls have a real flag to render and test. A stored proof value is kept, and listed as unrecognized, by a host that does not list them.
 
