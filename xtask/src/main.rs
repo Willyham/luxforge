@@ -72,6 +72,8 @@ mod settings_smoke;
 mod smoke;
 mod stats;
 mod theme_smoke;
+mod usage_measure;
+mod usage_receiver;
 mod usage_smoke;
 mod verify;
 mod viewport_smoke;
@@ -528,6 +530,10 @@ fn main_result() -> Result {
             let parameter = a
                 .value("--parameter")?
                 .map(|v| v.to_string_lossy().into_owned());
+            let usage = a
+                .value("--usage")?
+                .map(|value| usage_receiver::UsageMode::parse(&value.to_string_lossy()))
+                .transpose()?;
             a.done()?;
             let _gate = launch::TimingGate::acquire()?;
             editor_latency::run(
@@ -559,6 +565,7 @@ fn main_result() -> Result {
                     masks,
                     mask_presence,
                     window,
+                    usage,
                 },
             )?;
         }
@@ -673,6 +680,44 @@ fn main_result() -> Result {
                     }
                 )?
             );
+        }
+        "usage-measure" => {
+            let out = absolute(&root, &a.path("--output")?);
+            let bin = a
+                .value("--binary")?
+                .map(|path| absolute(&root, Path::new(&path)))
+                .map_or_else(|| binary(&root), Ok)?;
+            let samples = samples(&mut a, 30)?;
+            let repeats = a
+                .value("--repeats")?
+                .map(|value| value.to_string_lossy().parse::<usize>())
+                .transpose()?
+                .unwrap_or(3);
+            let mut sources = Vec::new();
+            while let Some(source) = a.value("--source")? {
+                sources.push(absolute(&root, Path::new(&source)));
+            }
+            let only = a.value("--only")?.map(|value| {
+                value
+                    .to_string_lossy()
+                    .split(',')
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            });
+            a.done()?;
+            // Timing runs never overlap, whether they were started by `verify` or by hand.
+            let _gate = launch::TimingGate::acquire()?;
+            usage_measure::run(
+                &root,
+                &out,
+                &bin,
+                usage_measure::Options {
+                    sources,
+                    samples,
+                    repeats,
+                    only,
+                },
+            )?;
         }
         "catalog-measure" => {
             let out = absolute(&root, &a.path("--output")?);

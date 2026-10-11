@@ -40,6 +40,7 @@ use luxforge_evidence::{
     self as script, BrushStep, CurveStep, CurveStepEvent, DraftStep, MaskStep, PaintStep,
     Reference, SliderEnd, SliderStep, ViewStep, WorkspaceStep,
 };
+use crate::usage_receiver::{UsageMode, UsageSetup};
 use std::{
     collections::{BTreeMap, BTreeSet},
     time::{Duration, Instant},
@@ -539,7 +540,7 @@ const ORDER: [Flag; 11] = [
 /// Sample the editor's CPU time and RSS about every 50 ms until it exits, within the launch's
 /// deadline counted from the moment the watch starts, just after the spawn. What it returns is the
 /// process's `rss_samples`, their peak as `peak_rss_mib`, and `process_cpu_seconds`.
-fn sampled(root: &Path, name: &str) -> Watcher {
+pub(crate) fn sampled(root: &Path, name: &str) -> Watcher {
     let (root, late) = (
         root.to_path_buf(),
         format!("The {name} run exceeded its deadline"),
@@ -576,9 +577,14 @@ fn sampled(root: &Path, name: &str) -> Watcher {
             .zip(last_cpu_seconds)
             .map(|(first, last)| last - first)
             .filter(|delta| *delta >= 0.01);
+        let exited_ms = start.elapsed().as_secs_f64() * 1000.0;
+        let exited_unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(f64::NAN, |since| since.as_secs_f64() * 1000.0);
         Ok((
             Some(status),
-            json!({"rss_samples":rss,"peak_rss_mib":peak,"process_cpu_seconds":process_cpu_seconds}),
+            json!({"rss_samples":rss,"peak_rss_mib":peak,"process_cpu_seconds":process_cpu_seconds,
+                "exited_ms":exited_ms,"exited_unix_ms":exited_unix_ms}),
         ))
     })
 }
@@ -1383,6 +1389,11 @@ pub struct Options<'a> {
     /// The editor's window, `[width, height]` logical points, in place of its default: what a
     /// person's own window draws the photograph at, such as a full-screen Fit stage.
     pub window: Option<[u32; 2]>,
+    /// Drag and commit modes only: launch with usage statistics test eligibility, an isolated
+    /// configuration holding a refusal (`off`) or an opt-in, and a loopback receiver of that kind
+    /// ([`UsageMode`]); the script moves the statistics clock past the first window's ten minutes
+    /// just before the gesture, so an opted-in launch sends while the gesture runs.
+    pub usage: Option<UsageMode>,
 }
 
 fn zoom_step(options: &Options) -> Option<script::Step> {
@@ -3116,6 +3127,10 @@ pub fn run(root: &Path, out: &Path, bin: &Path, options: Options) -> Result {
             "--contend and --idle measure different things; run them separately",
         )?;
     }
+    ensure(
+        options.usage.is_none() || matches!(options.mode, Mode::Drag | Mode::Commit),
+        "--usage measures a drag or a commit; pass --mode drag or --mode commit",
+    )?;
     if options.mode == Mode::Burst {
         return run_burst(root, out, bin, &options);
     }
@@ -3177,7 +3192,37 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
     if options.contend.is_some() {
         fs::create_dir_all(&contention)?;
     }
-    let steps = measured_script(options, field, kind, &values, drag, &contention);
+    let mut steps = measured_script(options, field, kind, &values, drag, &contention);
+    let usage_setup = match options.usage {
+        Some(mode) => {
+            // Just before the gesture (and any warm wait or queued exports): the statistics clock
+            // moves past the first window's ten minutes, so an opted-in launch sends while the
+            // gesture runs. An opted-out launch moves its clock too, and sends nothing.
+            let first =
+                setup_steps(options, field, kind).len() + usize::from(options.zoom.is_some());
+            steps.insert(
+                first,
+                script::Step::Usage(script::UsageStep::Advance(USAGE_ADVANCE_S)),
+            );
+            // Last, for an opted-in launch: its one attempt has ended and `usage.read` says so.
+            if mode.collects() {
+                steps.push(script::Step::Usage(script::UsageStep::Await(
+                    script::UsageAwait {
+                        attempts: Some(1),
+                        ..script::UsageAwait::default()
+                    },
+                )));
+            }
+            // Then every mode alike: a fixed window, so each launch outlives the release's picture
+            // at rest and the opted-out launch's peak memory compares with the opted-in ones'.
+            steps.push(script::Step::Observe(script::IdleStep {
+                settle_ms: 1,
+                ms: USAGE_TAIL_MS,
+            }));
+            Some(UsageSetup::start(&out.join("usage"), mode)?)
+        }
+        None => None,
+    };
     ensure(
         steps.len() <= script::MAX_SCRIPT_STEPS,
         "The latency script exceeds the 64-step evidence bound",
@@ -3193,6 +3238,12 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
     )
     .watch(sampled(root, "gesture"));
     let gesture = rendered_by(gesture, options);
+    let gesture = match &usage_setup {
+        Some(setup) => gesture
+            .usage_receiver(&setup.url)
+            .evidence_config(&setup.config),
+        None => gesture,
+    };
     let Launched {
         dir: evidence,
         watched: usage,
@@ -3350,6 +3401,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
     // the plan of the same revision is drawn once it is held — so it is recorded, not checked.
     let first_input = setup_steps(options, field, kind).len()
         + usize::from(options.zoom.is_some())
+        + usize::from(options.usage.is_some())
         + usize::from(options.warm_ms.is_some())
         + options.contend.unwrap_or(0);
     // The GPU stage's compile queue just before the first input: what the warm list handed it, and
@@ -3768,15 +3820,95 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         );
     }
     report_geometry(&mut result, options);
+    if let Some(setup) = &usage_setup {
+        let report = usage_report(setup, &events, &usage, last)?;
+        if let Some(close) = report["close_after_shutdown_ms"].as_f64() {
+            if let Some(rows) = result["rows"].as_array_mut() {
+                rows.push(stats::scalar("close_after_shutdown_event", "ms", Some(close)));
+            }
+        }
+        write_json(&out.join("usage-receiver.json"), &setup.record())?;
+        result["usage"] = report;
+    }
     stamp(&mut result, &header);
     write_json(&out.join("latency.json"), &result)?;
     ensure(hash(&source)? == source_hash, "The source changed")?;
 
-    if options.idle {
+    // The held catalog's idle launch is an ordinary launch, which can have no test receiver; a
+    // statistics run measures idleness inside its own launch instead.
+    if options.idle && usage_setup.is_none() {
         hold_and_idle(run, options, &source, last, &usage)?;
     }
     println!("PASS editor latency: {}", out.display());
     Ok(())
+}
+
+/// How far a statistics run's script moves the statistics clock before the gesture: past the
+/// first window's ten minutes and its minute of jitter.
+const USAGE_ADVANCE_S: u64 = 660;
+
+/// The window at the end of every statistics run's script, after its attempt.
+const USAGE_TAIL_MS: u64 = 6_000;
+
+/// A statistics run's own record: the mode, what the receiver saw, the statistics diagnostics the
+/// last frame recorded, and the close: from the editor's `shutdown` event to the process's exit as
+/// the harness saw it (which also counts the launch's own start-up offset, the same in every
+/// mode). An opted-in run must have attempted a request (its script's last step waits for
+/// `usage.read` to say so), the fast receiver must have accepted it, and an opted-out run sent
+/// none.
+fn usage_report(setup: &UsageSetup, events: &[Value], watched: &Value, last: &Value) -> Result<Value> {
+    let requests = setup.requests();
+    let diagnostics = last["state"]["usage"]["diagnostics"].clone();
+    let attempts = diagnostics["attempts"].as_u64();
+    match setup.mode {
+        UsageMode::Off => ensure(
+            requests.is_empty() && attempts.unwrap_or(0) == 0,
+            "An opted-out launch sent statistics",
+        )?,
+        UsageMode::Offline => ensure(
+            requests.is_empty() && attempts.is_some_and(|attempts| attempts >= 1),
+            format!("The offline launch made no refused attempt: {diagnostics}"),
+        )?,
+        UsageMode::Fast => ensure(
+            !requests.is_empty() && diagnostics["accepted"].as_u64() >= Some(1),
+            format!("The fast receiver accepted nothing: {diagnostics}"),
+        )?,
+        UsageMode::Slow => ensure(
+            !requests.is_empty() && attempts.is_some_and(|attempts| attempts >= 1),
+            format!("The slow receiver saw no request: {diagnostics}"),
+        )?,
+    }
+    let close = close_after_shutdown(events, watched);
+    Ok(json!({
+        "mode": setup.mode.name(),
+        "advance_s": USAGE_ADVANCE_S,
+        "requests": requests,
+        "diagnostics": diagnostics,
+        "close_after_shutdown_ms": close,
+        "close_note": CLOSE_NOTE,
+    }))
+}
+
+/// How [`close_after_shutdown`] is measured.
+pub(crate) const CLOSE_NOTE: &str = "From the editor's shutdown event to the exit the harness observed, both on the wall clock: the event's time is the launch's start (its run ID) plus its elapsed time, the exit's the harness's clock when its 50 ms poll saw it, so the figure is late by up to one poll and the poll's own process read.";
+
+/// Milliseconds from the launch's last `shutdown` event to the process's exit as `watched`
+/// ([`sampled`]) saw it, on the wall clock: the editor's run ID names its start in nanoseconds
+/// since the epoch, and each event's elapsed time counts from there.
+pub(crate) fn close_after_shutdown(events: &[Value], watched: &Value) -> Option<f64> {
+    let shutdown = events
+        .iter()
+        .rev()
+        .find(|event| event["event"] == "shutdown")?;
+    let started_ns = shutdown["run_id"]
+        .as_str()?
+        .split_once('-')?
+        .1
+        .parse::<u128>()
+        .ok()?;
+    let at = started_ns as f64 / 1e6 + shutdown["elapsed_ms"].as_f64()?;
+    let close = watched["exited_unix_ms"].as_f64()? - at;
+    close.is_finite().then_some(close)
 }
 
 /// Which path drew a drag's drained inputs, why each CPU tick took the CPU path, and the whole run's
@@ -4467,6 +4599,7 @@ mod tests {
             masks: 1,
             mask_presence: false,
             window: None,
+            usage: None,
         };
         let geometry = geometry_preconditions(&options);
         // A JPEG's Lens precondition is the section and its Apply.
@@ -4608,6 +4741,7 @@ mod tests {
                             masks: 1,
                             mask_presence: false,
                             window: None,
+                            usage: None,
                         };
                         let mut tag = format!("crop{}-mask{mask}-basic{basic}", crop.is_some());
                         if let Some(zoom) = zoom {
@@ -4717,6 +4851,7 @@ mod tests {
             masks: 1,
             mask_presence: false,
             window: None,
+            usage: None,
             zoom: None,
             moving_pan: false,
         };
@@ -4770,6 +4905,7 @@ mod tests {
             masks: MAX_MASKS,
             mask_presence: true,
             window: None,
+            usage: None,
             zoom: Some(100.0),
             moving_pan: false,
         };
@@ -4834,6 +4970,7 @@ mod tests {
             masks: 1,
             mask_presence: false,
             window: None,
+            usage: None,
             zoom: Some(100.0),
             moving_pan: true,
         };
@@ -4921,6 +5058,7 @@ mod tests {
             masks: 1,
             mask_presence: false,
             window: None,
+            usage: None,
         };
         let field = FieldTarget::lookup("set-perspective", "horizontal").unwrap();
         let values = field.gesture_values(30);
@@ -4994,6 +5132,7 @@ mod tests {
             masks: 1,
             mask_presence: false,
             window: None,
+            usage: None,
         }
     }
 
@@ -5407,6 +5546,7 @@ mod tests {
             masks: 1,
             mask_presence: false,
             window: None,
+            usage: None,
             zoom: None,
             moving_pan: false,
         };
@@ -6013,6 +6153,7 @@ mod tests {
             masks: 1,
             mask_presence: false,
             window: None,
+            usage: None,
         };
         let values = gesture_values(4, Control::Slider, &field);
         let plain = gesture_script(&options, &field, SourceTag::Jpeg, &values, true);
