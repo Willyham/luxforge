@@ -306,6 +306,17 @@ fn host_entries(inputs: &Inputs<'_>) -> Vec<(String, String, PaletteAction)> {
             PaletteAction::Settings(crate::state::settings::SettingsTab::Experiments),
         ),
     ]);
+    // Models only where the sheet lists it: a registered module holds a model.
+    if crate::state::models::model_modules(inputs.modules)
+        .next()
+        .is_some()
+    {
+        entries.push((
+            "Settings \u{b7} Models".to_owned(),
+            "module.status \u{b7} module.resource.remove \u{b7} module.runtime.unload".to_owned(),
+            PaletteAction::Settings(crate::state::settings::SettingsTab::Models),
+        ));
+    }
     // Privacy only where the sheet lists it: a launch eligible for usage statistics.
     if inputs.usage.eligible {
         entries.push((

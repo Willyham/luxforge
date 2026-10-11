@@ -60,6 +60,8 @@ pub(super) fn host_config(config: &Config, tiles: Arc<GpuTiles>) -> HostConfig {
             config.developer,
             Arc::new(HttpTransport::system()),
         ),
+        // What a model's machine minimum is held against in the Models tab and at install.
+        machine_memory_bytes: luxforge_core::capabilities::host::installed_memory_bytes(),
         launch_flags: config.launch_flags.clone(),
         // What the launch knows of its renderer before the window opens, which every client's
         // session reports until the photo surface has checked its GPU stage.

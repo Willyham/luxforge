@@ -11,6 +11,15 @@
 //! evidence directory, whose relaunch note the Catalog row shows until Use Default. Nothing is
 //! committed, and the photograph is untouched throughout.
 //!
+//! The Models tab follows the Privacy tab, against the developer models proof and a loopback proof
+//! endpoint this process starts, which serves its two files with HTTP ranges and cuts the first
+//! download of the encoder part-way: the tab listing the model with its trade-off, use
+//! restriction, requirement and this machine's memory; the interrupted download kept and named
+//! with what it holds; the next download resuming from that byte and installing both files; the
+//! model loaded through `module.runtime.load`, then released with Unload now and removed with
+//! Remove, each through the tab's own button. Every Models frame is checked against the
+//! `module.status` answer it was drawn from, and the endpoint's record shows the ranged request.
+//!
 //! The launch has explicit usage statistics test eligibility with a loopback receiver, so it shows
 //! the startup notice and the Privacy tab. Once the opens are captured the notice is claimed and
 //! drawn with its two buttons, answered Share statistics, and later the Privacy tab is opened,
@@ -29,7 +38,13 @@ use crate::{
     smoke::{self, APP, Scenario},
     *,
 };
-use luxforge_evidence::{self as script};
+use luxforge_core::{
+    MODELS_PROOF_MODULE, PROOF_DECODER_PATH, PROOF_ENCODER_PATH, PROOF_MODEL_RESOURCE,
+    PROOF_MODEL_RESTRICTION, PROOF_MODEL_TRADEOFF,
+};
+use luxforge_evidence::{self as script, CapabilityAction, CapabilityStep};
+use luxforge_testbase::ProofEndpoint;
+use luxforge_testkit::proof_protocol;
 
 /// The usage statistics test receiver the launch is eligible with: loopback, on the discard port,
 /// where nothing listens.
@@ -47,6 +62,15 @@ const CATALOG_FILE: &str = "catalog.sqlite";
 /// The evidence directory the table's plan names, for `smoke --list`, the plan checks and the
 /// script dumps: a run plans over its own launch's evidence directory instead.
 const LISTED_EVIDENCE: &str = "/out/app";
+/// The proof endpoint the table's plan names in its download grant; a run names the one it
+/// started.
+const LISTED_ENDPOINT: &str = "http://127.0.0.1:1";
+/// The key the proof endpoint is started with; the models proof sends none.
+const ENDPOINT_KEY: &str = "settings-models";
+/// Where the first download of the encoder is cut, in bytes, and where the next one resumes.
+const CUT: u64 = 1000;
+/// The proof model's two files together.
+const MODEL_BYTES: u64 = 9000;
 
 /// The canvas backgrounds the scenario sets, as the capture must show them.
 const DARK: [u8; 3] = [0x19, 0x19, 0x1b];
@@ -56,15 +80,65 @@ const CANVAS_TOLERANCE: f64 = 0.0;
 
 /// The table's plan.
 pub fn plan(_: &[PathBuf]) -> Plan {
-    planned(Path::new(LISTED_EVIDENCE))
+    planned(Path::new(LISTED_EVIDENCE), LISTED_ENDPOINT)
 }
 
 /// The row's own run: the table's launch, its catalog folder chosen inside its own evidence
-/// directory.
-pub fn run(run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> Result {
-    smoke::launch_planned(run, scenario, sources, |run, _| {
-        Ok(vec![planned(&evidence(run)?)])
-    })
+/// directory, and a loopback proof endpoint in this process that serves the models proof's files,
+/// cutting the encoder's first download part-way. A replay checks the recorded run's endpoint and
+/// what it saw, which are in its `result.json`.
+pub fn run(mut run: Run, scenario: &'static Scenario, sources: Vec<PathBuf>) -> Result {
+    let endpoint = ProofEndpoint::start(ENDPOINT_KEY, proof_protocol())?;
+    endpoint.cut_next_model(CUT as usize);
+    let recorded = if run.replaying() {
+        Some(read_json(&run.out().join("result.json"))?)
+    } else {
+        None
+    };
+    let base = match &recorded {
+        Some(result) => result["models_endpoint"]["base"]
+            .as_str()
+            .ok_or("The recorded run names no models endpoint")?
+            .to_owned(),
+        None => endpoint.base_url(),
+    };
+    run.record("models_endpoint", json!({"base": base}));
+    let launched = base.clone();
+    smoke::launch_planned_with(
+        run,
+        scenario,
+        sources,
+        |run, _| Ok(vec![planned(&evidence(run)?, &base)]),
+        move |launch| launch.proof_endpoint(&launched),
+        |run, _| {
+            let seen = match &recorded {
+                Some(result) => result["models_endpoint"]["requests"].clone(),
+                None => json!(
+                    endpoint
+                        .requests()
+                        .iter()
+                        .map(
+                            |request| json!({"path": request.path, "range": request.header("range"),
+                                              "status": request.status})
+                        )
+                        .collect::<Vec<_>>()
+                ),
+            };
+            run.record(
+                "models_endpoint",
+                json!({"base": endpoint_base(run)?, "requests": seen}),
+            );
+            Ok(())
+        },
+    )
+}
+
+/// The proof endpoint this run recorded.
+fn endpoint_base(run: &Run) -> Result<String> {
+    Ok(run.recorded_value("models_endpoint")["base"]
+        .as_str()
+        .ok_or("The run recorded no models endpoint")?
+        .to_owned())
 }
 
 /// The launch's evidence directory as an absolute path, which the catalog step must name: in a
@@ -86,7 +160,24 @@ fn preference(name: &str, field: &str, value: Value) -> Step {
     Step::new(name, script::Step::preference([(field, value)])).commits(0)
 }
 
-fn planned(evidence: &Path) -> Plan {
+/// One capability step on the models proof, whose frame waits for the jobs it starts.
+fn models_step(name: &str, action: CapabilityAction) -> Step {
+    Step::new(name, CapabilityStep::new(MODELS_PROOF_MODULE, action)).commits(0)
+}
+
+/// One request through the API on the models proof's model, as any client sends it.
+fn models_api(name: &str, method: &str) -> Step {
+    Step::new(
+        name,
+        script::Step::call(
+            method,
+            json!({"module_id": MODELS_PROOF_MODULE, "resource_id": PROOF_MODEL_RESOURCE}),
+        ),
+    )
+    .commits(0)
+}
+
+fn planned(evidence: &Path, endpoint: &str) -> Plan {
     Plan::new(vec![
         Step::opened("opened"),
         // The startup notice, claimed once the opens are captured, and answered.
@@ -131,6 +222,32 @@ fn planned(evidence: &Path) -> Plan {
         Step::new("privacy-details", script::UsageStep::Details(true)).commits(0),
         Step::new("privacy-off", script::UsageStep::Share(false)).commits(0),
         Step::new("privacy-on", script::UsageStep::Share(true)).commits(0),
+        // The Models tab: the model listed, its download granted, interrupted and resumed, the
+        // model loaded, then Unload now and Remove through the tab's own buttons.
+        Step::new("models", script::Step::settings_tab("models")).commits(0),
+        Step::new(
+            "models-allowed",
+            script::Step::call(
+                "module.permission.grant",
+                json!({"module_id": MODELS_PROOF_MODULE, "capability": "model",
+                       "scope": {"resource": PROOF_MODEL_RESOURCE, "version": "1", "origin": endpoint}}),
+            ),
+        )
+        .commits(0),
+        models_api("models-interrupted", "module.resource.install"),
+        models_step("models-partial", CapabilityAction::Settle),
+        models_api("models-resuming", "module.resource.install"),
+        models_step("models-installed", CapabilityAction::Settle),
+        models_api("models-loading", "module.runtime.load"),
+        models_step("models-loaded", CapabilityAction::Settle),
+        models_step(
+            "models-unloaded",
+            CapabilityAction::Unload(PROOF_MODEL_RESOURCE.into()),
+        ),
+        models_step(
+            "models-removed",
+            CapabilityAction::Remove(PROOF_MODEL_RESOURCE.into()),
+        ),
         // The display preferences with the sheet closed, so the canvas and the title bar are
         // drawn undimmed.
         Step::new("closed-again", script::Step::key(script::KEY_ESCAPE)).commits(0),
@@ -482,6 +599,7 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
     )?;
 
     usage_statistics(launch, &mut checks)?;
+    models(run, launch, &mut checks)?;
     general_preferences(run, launch, &mut checks)?;
     checks.write(
         &launch.evidence,
@@ -493,6 +611,208 @@ pub fn verify(run: &mut Run, launches: &[Checked]) -> Result {
 
 fn usage(frame: &Frame) -> &Value {
     &frame.state()["usage"]
+}
+
+/// The Models tab as a frame recorded it.
+fn models_tab(frame: &Frame) -> &Value {
+    &settings(frame)["models"]
+}
+
+/// The one model row and the `module.status` resource row it was drawn from.
+fn model_rows(frame: &Frame) -> Result<(&Value, &Value)> {
+    let tab = models_tab(frame);
+    let row = tab["rows"]
+        .as_array()
+        .filter(|rows| rows.len() == 1)
+        .map(|rows| &rows[0])
+        .ok_or_else(|| format!("The Models tab does not list the one model: {tab}"))?;
+    let status = tab["status"][MODELS_PROOF_MODULE]["resources"]
+        .as_array()
+        .and_then(|rows| rows.iter().find(|row| row["id"] == PROOF_MODEL_RESOURCE))
+        .ok_or_else(|| format!("The held status lists no {PROOF_MODEL_RESOURCE}: {tab}"))?;
+    Ok((row, status))
+}
+
+/// Every Models frame against the `module.status` answer it was drawn from: the row's state from
+/// the resource's state and the resident set, a kept partial download named exactly when one is
+/// staged and nothing is installing it, Remove offered exactly when there is something to remove, the fit and requirement from
+/// the status's own, the loaded models from the resident set and the machine line from the
+/// machine's memory.
+fn correlated(step: &str, frame: &Frame) -> Result<Value> {
+    let tab = models_tab(frame);
+    let (row, status) = model_rows(frame)?;
+    let runtime = &tab["status"][MODELS_PROOF_MODULE]["runtime"];
+    let loaded: Vec<&Value> = runtime["models"]
+        .as_array()
+        .map(|models| models.iter().collect())
+        .unwrap_or_default();
+    let state = row["state"].as_str().unwrap_or_default();
+    let staged = status["staged_bytes"].as_u64().filter(|bytes| *bytes > 0);
+    let expected_state = match (status["state"].as_str(), loaded.first()) {
+        (Some("installed"), Some(model)) if model["state"] == "loaded" => state == "Loaded",
+        (Some("installed"), Some(_)) => state == "Loading",
+        (Some("installed"), None) => state == "Installed",
+        (Some("installing"), _) => state.starts_with("Installing"),
+        (Some("failed"), _) => state.starts_with("Failed: "),
+        (Some("not-installed"), _) => state.starts_with("Not installed"),
+        _ => false,
+    };
+    let memory = tab["status"][MODELS_PROOF_MODULE]["machine"]["memory_bytes"].as_u64();
+    let machine = tab["machine"].as_str().unwrap_or_default();
+    let resident: Vec<&Value> = tab["resident"]
+        .as_array()
+        .map(|rows| rows.iter().collect())
+        .unwrap_or_default();
+    ensure(
+        expected_state
+            // A row names a kept partial download while nothing is installing it.
+            && state.contains("downloaded, resumes")
+                == (staged.is_some() && status["state"] != "installing")
+            && row["removable"] == json!(status["state"] == "installed" || staged.is_some())
+            && row["fits"] == status["fits"]
+            && row["tradeoff"] == PROOF_MODEL_TRADEOFF
+            && row["use_restriction"] == PROOF_MODEL_RESTRICTION
+            && row["requirement"] == "Needs 2 GB of memory · 64.0 MB while loaded · fake · fp32"
+            && status["requirements"]["min_memory_bytes"] == 2u64 << 30
+            && resident.len() == loaded.len()
+            && resident
+                .iter()
+                .zip(&loaded)
+                .all(|(drawn, held)| drawn["resource_id"] == held["resource_id"])
+            // The machine's own memory, which the desktop read from the operating system.
+            && memory.is_some_and(|memory| memory >= 1 << 30)
+            && machine.starts_with("This machine has ")
+            && machine.ends_with("of memory. Proof segmenter needs 2 GB.")
+            && tab["tiers"] == json!([])
+            && tab["errors"] == json!([]),
+        format!("Step {step:?}'s Models tab does not match the module.status it holds: {tab}"),
+    )?;
+    Ok(
+        json!({"state": state, "status": status["state"], "staged_bytes": staged,
+              "resident": loaded.len(), "machine": machine}),
+    )
+}
+
+/// The Models tab: listed with this machine's memory, the interrupted download kept and named, the
+/// resumed one installing both files from the cut byte, the model loaded and listed resident, then
+/// Unload now and Remove, each correlated to `module.status` and the endpoint's record.
+fn models(run: &Run, launch: &Checked, checks: &mut Checks) -> Result {
+    let steps = [
+        "models",
+        "models-allowed",
+        "models-interrupted",
+        "models-partial",
+        "models-resuming",
+        "models-installed",
+        "models-loading",
+        "models-loaded",
+        "models-unloaded",
+        "models-removed",
+    ];
+    let mut seen = serde_json::Map::new();
+    for step in steps {
+        let frame = launch.at(step)?;
+        ensure(
+            settings(frame)["open"] == "models",
+            format!(
+                "Step {step:?} is not on the Models tab: {}",
+                settings(frame)
+            ),
+        )?;
+        seen.insert(step.into(), correlated(step, frame)?);
+    }
+    let listed = launch.at("models")?;
+    let (row, status) = model_rows(listed)?;
+    ensure(
+        row["state"] == "Not installed"
+            && row["detail"] == "v1 · 8.8 KB · 2 files"
+            && status["bytes"] == MODEL_BYTES
+            && status["fits"] == true,
+        format!("The Models tab did not list the model uninstalled: {row}"),
+    )?;
+    let drawn = colour_at(listed, RAIL_FOOT)?;
+    ensure(
+        near(drawn, BAR),
+        format!("The Models tab is not drawn: the rail's foot is {drawn:?}, not the Bar surface"),
+    )?;
+    let partial = launch.at("models-partial")?;
+    let (row, status) = model_rows(partial)?;
+    ensure(
+        status["staged_bytes"] == CUT
+            && row["state"].as_str().is_some_and(|state| {
+                state.ends_with("1000 B of 8.8 KB downloaded, resumes on the next download")
+            })
+            && row["removable"] == true,
+        format!("The interrupted download was not kept and named: {row}"),
+    )?;
+    let installed = launch.at("models-installed")?;
+    let (row, status) = model_rows(installed)?;
+    let path = status["path"].as_str().map(PathBuf::from);
+    ensure(
+        row["state"] == "Installed"
+            && status["state"] == "installed"
+            && status.get("staged_bytes").is_none()
+            && status["files"]
+                == json!([{"name": PROOF_MODEL_RESOURCE, "bytes": 6000}, {"name": "decoder", "bytes": 3000}])
+            && row["remove_request"]["method"] == "module.resource.remove"
+            && row["remove_request"]["params"]["resource_id"] == PROOF_MODEL_RESOURCE,
+        format!("The resumed download did not install both files: {row} {status}"),
+    )?;
+    let loaded = launch.at("models-loaded")?;
+    let tab = models_tab(loaded);
+    ensure(
+        model_rows(loaded)?.0["state"] == "Loaded"
+            && tab["resident"][0]["resource_id"] == PROOF_MODEL_RESOURCE
+            && tab["resident"][0]["unload_request"]
+                == json!({"method": "module.runtime.unload",
+                          "params": {"module_id": MODELS_PROOF_MODULE, "resource_id": PROOF_MODEL_RESOURCE}}),
+        format!("The loaded model is not listed resident with its Unload now request: {tab}"),
+    )?;
+    let unloaded = launch.at("models-unloaded")?;
+    ensure(
+        model_rows(unloaded)?.0["state"] == "Installed"
+            && models_tab(unloaded)["resident"] == json!([]),
+        format!("Unload now left the model loaded: {}", models_tab(unloaded)),
+    )?;
+    let removed = launch.at("models-removed")?;
+    let (row, status) = model_rows(removed)?;
+    ensure(
+        row["state"] == "Not installed"
+            && row["removable"] == false
+            && status["state"] == "not-installed"
+            && path.as_ref().is_some_and(|path| !path.exists()),
+        format!("Remove left the model installed: {row} {status} {path:?}"),
+    )?;
+    // The endpoint saw the encoder whole and cut, then from the cut byte, and the decoder once.
+    let requests = &run.recorded_value("models_endpoint")["requests"];
+    let encoder: Vec<&Value> = requests
+        .as_array()
+        .ok_or("The run recorded nothing the models endpoint saw")?
+        .iter()
+        .filter(|request| request["path"] == PROOF_ENCODER_PATH)
+        .collect();
+    let decoder = requests
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|request| request["path"] == PROOF_DECODER_PATH)
+        .count();
+    ensure(
+        encoder.len() == 2
+            && encoder[0]["range"].is_null()
+            && encoder[1]["range"] == format!("bytes={CUT}-")
+            && encoder[1]["status"] == 206
+            && decoder == 1,
+        format!(
+            "The endpoint did not see one cut download and one resumed from byte {CUT}: {requests}"
+        ),
+    )?;
+    checks.note(
+        installed,
+        "the Models tab over a download cut at 1000 bytes and resumed with a Range request",
+        json!({"steps": seen, "endpoint": requests}),
+    );
+    Ok(())
 }
 
 /// The usage statistics steps: the notice claimed, drawn and answered, and the Privacy tab's
@@ -571,7 +891,7 @@ fn usage_statistics(launch: &Checked, checks: &mut Checks) -> Result {
     ensure(
         settings(privacy)["open"] == "privacy"
             && settings(privacy)["tabs"]
-                == json!(["general", "appearance", "experiments", "privacy"])
+                == json!(["general", "appearance", "models", "experiments", "privacy"])
             && usage(privacy)["privacy"]["switch"] == true
             && usage(privacy)["privacy"]["error"].is_null()
             && usage(privacy)["privacy"]["details_open"] == false,

@@ -48,7 +48,7 @@ fn version() -> Option<Version> {
         .flatten()
 }
 
-fn memory() -> Option<u64> {
+pub(super) fn memory() -> Option<u64> {
     // SAFETY: `status` is zeroed plain data with its length field set; the call only writes it.
     let (ok, status) = unsafe {
         let mut status: MEMORYSTATUSEX = zeroed();

@@ -40,6 +40,9 @@ pub struct ProofProtocol {
     pub grid_bytes: usize,
     /// The samples in one grid.
     pub grid_samples: usize,
+    /// The model proof's files, each with the path it is served at under the base URL. A `GET`
+    /// with `Range: bytes=<from>-` is answered `206 Partial Content` from that byte.
+    pub models: Vec<(&'static str, Vec<u8>)>,
 }
 
 /// One request the endpoint answered, without its credential.
@@ -78,6 +81,8 @@ struct State {
     palette_delay: Option<Duration>,
     fail_next: Option<u16>,
     wrong_palette: bool,
+    /// Close the next model file's answer after this many body bytes.
+    cut_next_model: Option<usize>,
     recorded: VecDeque<ProofRequest>,
 }
 
@@ -113,11 +118,16 @@ pub struct ProofEndpoint {
 const IN_PROCESS_ORIGIN: &str = "https://proof.example";
 
 /// One answer of the endpoint.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ProofAnswer {
     pub status: u16,
     pub content_type: &'static str,
     pub body: Vec<u8>,
+    /// Header fields beyond the content type: a partial answer's `Content-Range`.
+    pub headers: Vec<(&'static str, String)>,
+    /// A started endpoint closes the connection after this many body bytes, having promised all
+    /// of them; an endpoint answered in process hands back the whole answer.
+    pub cut_after: Option<usize>,
 }
 
 impl ProofEndpoint {
@@ -140,12 +150,25 @@ impl ProofEndpoint {
                     &request.headers,
                     &request.body,
                 );
-                respond(
-                    out,
-                    &status_line(answer.status),
-                    &format!("Content-Type: {}\r\n", answer.content_type),
-                    &answer.body,
-                );
+                let mut headers = format!("Content-Type: {}\r\n", answer.content_type);
+                for (name, value) in &answer.headers {
+                    headers.push_str(&format!("{name}: {value}\r\n"));
+                }
+                match answer.cut_after {
+                    // The whole length is promised and the connection closed part-way: a dropped
+                    // transfer, as the client sees one.
+                    Some(cut) => {
+                        let head = format!(
+                            "HTTP/1.1 {}\r\nContent-Length: {}\r\nConnection: close\r\n{headers}\r\n",
+                            status_line(answer.status),
+                            answer.body.len()
+                        );
+                        let _ = out.write_all(head.as_bytes());
+                        let _ = out.write_all(&answer.body[..cut.min(answer.body.len())]);
+                        let _ = out.flush();
+                    }
+                    None => respond(out, &status_line(answer.status), &headers, &answer.body),
+                }
             },
         )?);
         Ok(endpoint)
@@ -162,6 +185,7 @@ impl ProofEndpoint {
                 palette_delay: None,
                 fail_next: None,
                 wrong_palette: false,
+                cut_next_model: None,
                 recorded: VecDeque::new(),
             }),
             generation: Gate::new(),
@@ -249,6 +273,12 @@ impl ProofEndpoint {
         self.shared.lock().wrong_palette = wrong;
     }
 
+    /// Close the next answer to a model file after `bytes` of its body, having promised all of
+    /// it, so a download is interrupted part-way and the next one resumes.
+    pub fn cut_next_model(&self, bytes: usize) {
+        self.shared.lock().cut_next_model = Some(bytes);
+    }
+
     /// The requests answered so far, oldest first; at most the last 64.
     pub fn requests(&self) -> Vec<ProofRequest> {
         self.shared.lock().recorded.iter().cloned().collect()
@@ -320,6 +350,8 @@ fn status_line(status: u16) -> String {
         401 => "Unauthorized",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        206 => "Partial Content",
+        416 => "Range Not Satisfiable",
         _ => "Error",
     };
     format!("{status} {reason}")
@@ -363,6 +395,21 @@ fn reply(
     let protocol = &shared.protocol;
     let palette_path = path == protocol.palette_path;
     let generate_path = path == protocol.generate_path;
+    let model = protocol
+        .models
+        .iter()
+        .find(|(served, _)| *served == path)
+        .map(|(_, bytes)| bytes);
+    if let Some(bytes) = model {
+        let answer = model_answer(shared, method, header("range"), bytes);
+        record.status = answer.status;
+        let mut state = shared.lock();
+        if state.recorded.len() == MAX_RECORDED {
+            state.recorded.pop_front();
+        }
+        state.recorded.push_back(record);
+        return answer;
+    }
     let (status, content_type, answer) = match method {
         "GET" if palette_path => {
             let palette = if shared.lock().wrong_palette {
@@ -438,6 +485,57 @@ fn reply(
         status,
         content_type,
         body: answer,
+        ..ProofAnswer::default()
+    }
+}
+
+/// One model file: whole for a plain `GET`, from the asked byte to the end for
+/// `Range: bytes=<from>-`, `416` for a range past its end or of another form, and cut part-way
+/// when [`ProofEndpoint::cut_next_model`] asked for it.
+fn model_answer(shared: &Shared, method: &str, range: Option<&str>, bytes: &[u8]) -> ProofAnswer {
+    let octets = "application/octet-stream";
+    if method != "GET" {
+        return ProofAnswer {
+            status: 405,
+            content_type: "application/json",
+            body: br#"{"error":"method not allowed"}"#.to_vec(),
+            ..ProofAnswer::default()
+        };
+    }
+    let cut_after = shared.lock().cut_next_model.take();
+    let from = match range {
+        None => {
+            return ProofAnswer {
+                status: 200,
+                content_type: octets,
+                body: bytes.to_vec(),
+                cut_after,
+                ..ProofAnswer::default()
+            };
+        }
+        Some(range) => range
+            .strip_prefix("bytes=")
+            .and_then(|rest| rest.strip_suffix('-'))
+            .and_then(|from| from.parse::<usize>().ok())
+            .filter(|from| *from < bytes.len()),
+    };
+    match from {
+        Some(from) => ProofAnswer {
+            status: 206,
+            content_type: octets,
+            body: bytes[from..].to_vec(),
+            headers: vec![(
+                "Content-Range",
+                format!("bytes {from}-{}/{}", bytes.len() - 1, bytes.len()),
+            )],
+            cut_after,
+        },
+        None => ProofAnswer {
+            status: 416,
+            content_type: octets,
+            headers: vec![("Content-Range", format!("bytes */{}", bytes.len()))],
+            ..ProofAnswer::default()
+        },
     }
 }
 

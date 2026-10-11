@@ -50,7 +50,7 @@ fn resource(id: &str, bytes: &[u8]) -> ResourceDescriptor {
         format: "fake-model".into(),
         license: "CC0-1.0".into(),
         provenance: "Generated for tests".into(),
-        redirect_origins: Vec::new(),
+        ..ResourceDescriptor::default()
     }
 }
 

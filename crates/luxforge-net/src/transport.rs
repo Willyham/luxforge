@@ -160,6 +160,7 @@ impl Transport for HttpTransport {
             redirects,
             control,
             progress,
+            mut head,
         } = options;
         let mut endpoint =
             parse_endpoint(request.endpoint.url.as_str(), &[request.endpoint.class])?;
@@ -241,6 +242,10 @@ impl Transport for HttpTransport {
                 endpoint = target;
                 followed += 1;
                 continue;
+            }
+            // The caller judges the final head before any of its body reaches the sink.
+            if let Some(check) = head.as_deref_mut() {
+                check(status, &fields)?;
             }
             let received = read_body(&mut response, max_response_bytes, sink, progress, &pace)?;
             return Ok(TransportResponse {

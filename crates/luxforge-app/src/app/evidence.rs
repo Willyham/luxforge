@@ -4669,6 +4669,18 @@ impl Editor {
             self.await_step(Settle::Usage);
             return self.update(Message::Settings(SettingsMessage::Open(tab)));
         }
+        if tab == SettingsTab::Models {
+            // The tab shows the model module's status, which opening it reads again: the frame is
+            // captured once that read has answered.
+            let Some(module) = crate::state::models::model_modules(&self.modules)
+                .next()
+                .map(|module| module.id.clone())
+            else {
+                return self.fail_step("this launch has no Models tab: no module holds a model");
+            };
+            self.await_capability(&module, true);
+            return self.update(Message::Settings(SettingsMessage::Open(tab)));
+        }
         self.arm_settings_settle();
         self.update(Message::Settings(SettingsMessage::Open(tab)))
     }
