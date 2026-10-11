@@ -4,7 +4,7 @@ Status: planned, implementation not authorized. On 2026-10-11 the owner asked fo
 
 ## Boards
 
-Proposed boards for both merge kinds, drawn at 1440 × 900 logical points and rendered at 2×. Each one is also a standalone HTML page under [merges/html](merges/html/index.html). The bracket is made from the catalog boards' ferry frames. The panorama frames are cut from the owner's Sapa drone photograph. Names, values, sizes and times are illustrative.
+Proposed boards for both merge kinds, drawn at 1440 × 900 logical points and rendered at 2×. Each one is also a standalone HTML page under [merges/html](merges/html/index.html). The bracket is made from the catalog boards' ferry frames. The panorama frames are cut from the owner's Sapa drone photograph. Names, values, sizes and times are illustrative. The boards draw the earlier pair of actions, Pick merged and Import merged, and a Development set; these are now one action, **Merge HDR** or **Merge panorama**, which makes the result in its catalog folder, and the sheet's buttons are Cancel and Merge.
 
 | Board | Shows |
 | --- | --- |
@@ -19,15 +19,15 @@ Proposed boards for both merge kinds, drawn at 1440 × 900 logical points and re
 Choices the boards make within the design:
 
 - **The panorama badge** has an icon of its own: a wide frame with curved top and bottom.
-- **The sheet's footer** says "⌥-click Pick merged or Import merged to merge with the last settings, without this preview".
+- **The sheet's footer** says "⌥-click Merge HDR or Merge panorama to merge with the last settings, without this preview".
 - **Overlay colours.** The deghost overlay tints each region by the exposure it came from (violet below the reference, blue the reference, teal above), with fallback regions hatched. The crop is the accent rectangle with corner ticks, and frame outlines are white with numbered circles.
 - **Clicking a frame** in the panorama sheet's frame strip makes it the reference.
-- **Status lines.** HDR's picture is labelled "Display preview, not the saved pixels". The status bar after a merge names the result and the Development set.
+- **Status lines.** HDR's picture is labelled "Display preview, not the saved pixels". The status bar after a merge names the result and its folder.
 - **Counts.** View counts add "1 merge" beside the photograph count, rather than counting the result as a photograph of the event.
 
 ## Outcome and boundaries
 
-Overlapping frames shot by turning one camera become one editable panorama in Select. **Pick merged** and **Import merged** create it as [HDR merges](hdr-merge.md) do: a virtual result in the grid that leads a collapsed stack of its originals. Its durable float pixels are saved under the catalog's artifacts, with its own recipe, history, folder and collection memberships. Opening, editing or exporting it never requires another merge, and the originals stay byte-identical and independently pickable. Removal, library undo and redo, Put back, retention, Empty Removed and rerun are the HDR lifecycle unchanged. A panorama is a second **merge kind** over the boundary HDR built: a derived image source, a merge record with versioned provenance, and a result-led stack.
+Overlapping frames shot by turning one camera become one editable panorama in Select. **Merge panorama** creates it in its catalog folder as [HDR merges](hdr-merge.md) do: a virtual result in the grid that leads a collapsed stack of its originals. Its durable float pixels are saved under the catalog's artifacts, with its own recipe, history, folder and collection memberships. Opening, editing or exporting it never requires another merge, and the originals stay byte-identical and independently pickable. Removal, library undo and redo, Put back, retention, Empty Removed and rerun are the HDR lifecycle unchanged. A panorama is a second **merge kind** over the boundary HDR built: a derived image source, a merge record with versioned provenance, and a result-led stack.
 
 This design covers:
 
@@ -63,8 +63,8 @@ Export uses the existing JPEG contract within its 65,535-pixel side.
 
 The [HDR workflow](hdr-merge.md#grid-workflow) applies with these differences. The [boards](#boards) draw both kinds.
 
-- **Selection only.** With 2–32 suitable frames selected, the selection menu offers a **Panorama** group: **Pick merged…** ("Merge panorama and add to Development set") and **Import merged…** ("Merge panorama into the catalog only"). With 2–9 frames selected it also offers the **HDR** group with the same two items. Opening the menu plans the selection for each kind it offers, at once. A refusal disables that kind's items, with the plan's reason as their tooltip. A bracket header keeps its HDR actions only. There is no panorama header, detector or grouping.
-- **The preview opens first.** Each item, and each header action, opens that kind's [merge preview](#the-merge-preview), with the chosen action as its primary button. Holding ⌥ drops the items' ellipsis, and ⌥-click on a header action or item merges at once with the kind's last settings, skipping the preview.
+- **Selection only.** With 2–32 suitable frames selected, the selection menu offers **Merge panorama…** ("Merge the frames into one panorama in the catalog"). With 2–9 frames selected it also offers **Merge HDR…**. Opening the menu plans the selection for each kind it offers, at once. A refusal disables that kind's item, with the plan's reason as its tooltip. A bracket header keeps its HDR action only. There is no panorama header, detector or grouping.
+- **The preview opens first.** Each item, and the header's Merge HDR, opens that kind's [merge preview](#the-merge-preview). Holding ⌥ drops the items' ellipsis, and ⌥-click on the header action or an item merges at once with the kind's last settings, skipping the preview.
 - **Plan before work.** `merge.plan` with `kind: panorama` reads headers only, like HDR's. It checks suitability and estimates the output from focal length, sensor size and frame count. It reports that registration, which needs pixels, decides the final size. A refusal that needs pixels (frames that do not overlap, no usable features) comes from the preview or the job, naming the frames, before anything is published.
 - **Boundary Warp is a merge parameter**, not an edit: a different amount is a rerun into a new result. The projection's Auto resolves after registration, and the resolved projection is shown in the preview, on the result's Info band and in provenance.
 - **Running.** One row before the first selected frame says "Merging panorama · N photos" with its stage ("Reading 2 of 7", "Matching", "Stitching", "Saving"), a bar and Cancel. A failure names the frame ("DSC_0004.NEF: shares no detail with the other frames") or the stage, with Dismiss.
@@ -73,11 +73,11 @@ The [HDR workflow](hdr-merge.md#grid-workflow) applies with these differences. T
 
 ## The merge preview
 
-Decided by the owner on 2026-10-11, for both kinds ([decisions](../decisions.md#panorama-merges)). Like Lightroom's Photo Merge preview, **Pick merged** and **Import merged** open a sheet with a picture of the merge and its settings, rather than merging at once. It replaces HDR's Merge options… sheet. The [boards](#boards) draw it.
+Decided by the owner on 2026-10-11, for both kinds ([decisions](../decisions.md#panorama-merges)). Like Lightroom's Photo Merge preview, **Merge HDR** and **Merge panorama** open a sheet with a picture of the merge and its settings, rather than merging at once. It replaces HDR's Merge options… sheet. The [boards](#boards) draw it.
 
 ### What the person sees
 
-- **The sheet** is titled "Merge HDR · N exposures" or "Merge panorama · N photos". Its buttons are Cancel, Import merged and Pick merged; the action that opened it is the primary.
+- **The sheet** is titled "Merge HDR · N exposures" or "Merge panorama · N photos". Its buttons are Cancel and Merge, the primary.
 - **The picture** is the merge drawn from the frames' analysis proxies (long side about 1,024 to 2,048 pixels), display-referred for viewing only, never the saved pixels.
 - **The status line** under the picture names the preview's scope ("Preview from 1,024-pixel frames") and its key diagnostic. For HDR, that is the alignment residual and whether highlights or shadows were extended. For a panorama, it is the resolved projection, the field of view and the crop's loss.
 - **Settings.** HDR's settings are the frames with their exposures and Reference, Alignment and Deghosting (Auto or Off) and the folder. A panorama's are the projection (Auto, Perspective, Cylindrical, Spherical), Boundary Warp 0–100, the frames with Reference, and the folder.
@@ -88,11 +88,11 @@ Decided by the owner on 2026-10-11, for both kinds ([decisions](../decisions.md#
   - A panorama's **frame outlines** number each frame 1…N in stack order.
 
   Seams are not drawn.
-- **Preparing.** Opening the sheet starts the preview at once. While it reads and aligns, the picture area shows "Reading 2 of 7" or "Aligning" with a bar. The settings are live, and the merge buttons are already enabled: merging before the preview is ready continues the same work.
+- **Preparing.** Opening the sheet starts the preview at once. While it reads and aligns, the picture area shows "Reading 2 of 7" or "Aligning" with a bar. The settings are live, and Merge is already enabled: merging before the preview is ready continues the same work.
 - **Changes.** A setting change redraws the picture from the retained proxies and registration: a projection, Boundary Warp, Deghosting or overlay change is a redraw. A change that needs registration again (Alignment, Reference, an exposure override) runs it on the proxies. Neither reads the frames again.
-- **Refusals.** A refusal the preview finds ("Cannot stitch: DSC_4107.NEF shares no detail with the other frames") replaces the picture, disables both merge buttons and keeps the sheet open, so the person can change settings or Cancel.
-- **Merging.** Pick merged or Import merged closes the sheet and shows the pending row. The merge reuses the preview's spooled frames, proxies and registration, so nothing is read or aligned twice, and the settings shown are the ones merged. Cancel discards the preview's spool.
-- **Last settings.** ⌥-click merges at once with the kind's last settings: the settings of the person's last merge of that kind, kept in the desktop's [remembered state](preferences.md). The folder is excluded and comes from the plan as today. With none remembered, ⌥-click uses the defaults.
+- **Refusals.** A refusal the preview finds ("Cannot stitch: DSC_4107.NEF shares no detail with the other frames") replaces the picture, disables Merge and keeps the sheet open, so the person can change settings or Cancel.
+- **Merging.** Merge closes the sheet and shows the pending row. The merge reuses the preview's spooled frames, proxies and registration, so nothing is read or aligned twice, and the settings shown are the ones merged. Cancel discards the preview's spool.
+- **Last settings.** ⌥-click on Merge HDR or Merge panorama merges at once with the kind's last settings: the settings of the person's last merge of that kind, kept in the desktop's [remembered state](preferences.md). The folder is excluded and comes from the plan as today. With none remembered, ⌥-click uses the defaults.
 
 ### Commands
 
@@ -245,7 +245,7 @@ HDR's boundary was built for one kind. A panorama needs these changes. They also
   - the warp mesh and crop.
 
   `match_key` hashes kind-tagged parameters. `MergeInput.frame` keeps the shared header fields, with exposure as recorded.
-- **Catalog format.** Format 15 carries these shapes. Earlier catalogs are refused; there are no migrations. The HDR design's stored-shape paragraphs are updated in the same change.
+- **Catalog format.** Format 16 carries these shapes. Earlier catalogs are refused; there are no migrations. The HDR design's stored-shape paragraphs are updated in the same change.
 - **Commands.** `merge.plan`, `merge.create` and `merge.rerun` take `kind` (`hdr` or `panorama`; `merge.plan` requires it). Kind-specific options live under `hdr` or `panorama`, and a field of the other kind is refused as `validation`. HDR's existing top-level option fields move under `hdr` in the same change. Input bounds are per kind (HDR 2–9, panorama 2–32). Refusals are typed per provider, and their messages name the kind.
 - **Jobs.** The job kinds are `hdr-merge` and `panorama-merge`. They share one merge lane: one running merge of either kind and one waiting, with a further request refused as `resource-limit`. Stages are named per kind. A panorama's are `reading`, `matching`, `stitching` and `saving`.
 - **Spool reads.** The spool is shared, and both kinds read it by bands rather than one seek and read a row. This is the read pattern behind HDR's measured 60 MP × 9 fusion limit, and HDR's fusion benefits from it too. A panorama's spool may hold proxies' features and seam maps beside the frames.
@@ -263,10 +263,10 @@ Ordinary correctness, recovery and rendered checks ship with the working feature
 
 1. The independent reference fixtures above, and large-source fixtures above 128 MP: exact round trips, tile renders against the reference within the declared tolerance, and the overview pyramid.
 2. Originals' hashes stay identical across success, cancellation, failures, undo/redo, removal, restoration and purge. Index rebuild and reopen preserve provenance and stacks of both kinds.
-3. Failure injection at every source-publication boundary, retries, concurrent mutation and set replacement, for panoramas and HDR through the shared lane.
-4. A real-owner multi-client comparison of both creation modes, reuse, refusal by name, mixed-kind claims, rerun with another Boundary Warp, and every desktop request matching the documented one.
+3. Failure injection at every source-publication boundary, retries and concurrent mutation, for panoramas and HDR through the shared lane.
+4. A real-owner multi-client comparison of creation into the proposed folder, reuse, refusal by name, mixed-kind claims, rerun with another Boundary Warp, and every desktop request matching the documented one.
 5. A background rendered `panorama-merge` journey from generated frames:
-   - Pick merged through the preview sheet, with Boundary Warp changed and the overlays on, and once by ⌥-click;
+   - Merge panorama through the preview sheet, with Boundary Warp changed and the overlays on, and once by ⌥-click;
    - progress;
    - one collapsed panorama tile;
    - its expanded originals;

@@ -19,18 +19,21 @@
 //! A file that is another photograph's original with other bytes is refused (`conflict`, naming
 //! that photograph): its original changed since it was developed, and two photographs are never
 //! made of one file. Identical bytes are never added twice, within a batch too.
-use super::{Developed, plan::Destination};
+use super::{
+    Developed,
+    filing::{Destination, Filer},
+};
 use crate::{
     AssetId, AssetRecord, EditorService, Error,
     catalog_types::{
-        AssetSourceValue, AvailabilityRow, DevelopOutcome, DevelopedPick, FileAvailability,
-        ItemFailure, LibraryItem,
+        AssetSourceValue, AvailabilityRow, CaptureTime, DevelopOutcome, DevelopedPick,
+        FileAvailability, ItemFailure, LibraryItem,
     },
     editor::{
         NewAsset, NewPhotograph, ReadOriginal, insert_photograph, source_signature, upsert_volume,
     },
     library::{
-        availability, items,
+        availability,
         journal::{self, Desired, Outcome, Request},
         locate,
     },
@@ -305,14 +308,15 @@ fn original_available(locator: &Path, identity: &str, byte_len: u64) -> bool {
     })
 }
 
-/// Record a batch in the owner's transaction, as one part of the Develop's request: the batch's
-/// new catalog folder when it is the first to put a photograph in it, each new photograph's rows, each
-/// relinked photograph's source, a linked or relinked photograph put back from Removed, and each
-/// file's pick cleared, in that order per file, so the change's undo — which writes its rows back in
-/// reverse — re-picks each file before sending its photograph back or returning it to Removed, and
-/// deletes the folder last. A new photograph and the folder are written here
-/// and recorded as written (`developed-asset`, `catalog-folder`); a relinked photograph's original
-/// is recorded available.
+/// Record a batch in the owner's transaction, as one part of the Develop's request: the catalog
+/// folders the batch is the first to put a photograph in, parents first (a year, a place, a day:
+/// [`Filer`]), each new photograph filed by its own capture day as its header records it, then
+/// each new photograph's rows, each relinked photograph's source, a linked or relinked photograph
+/// put back from Removed, and each file's pick cleared, in that order per file, so the change's
+/// undo — which writes its rows back in reverse — re-picks each file before sending its photograph
+/// back or returning it to Removed, and deletes the folders last, children first. A new photograph
+/// and the folders are written here and recorded as written (`developed-asset`,
+/// `catalog-folder`); a relinked photograph's original is recorded available.
 pub(crate) fn write(
     tx: &Transaction<'_>,
     request: Request<'_>,
@@ -321,29 +325,28 @@ pub(crate) fn write(
     decided: &[Decided],
     now_ms: i64,
 ) -> Result<Outcome, Error> {
-    let mut changes = Vec::with_capacity(1 + 2 * decided.len());
-    let creates = decided
-        .iter()
-        .any(|decided| matches!(decided.becomes, Becomes::Created(_)));
-    if let (Destination::New { folder, .. }, true) = (destination, creates) {
-        let item = LibraryItem::CatalogFolder {
-            folder_id: folder.id.clone(),
-        };
-        if items::read(tx, &item)?.is_none() {
-            let value = serde_json::to_value(folder)
-                .map_err(|error| Error::internal(format!("cannot encode a folder: {error}")))?;
-            items::write(tx, &item, Some(&value))?;
-            changes.push((item, Desired::Written { before: None }));
-        }
+    // Each new photograph's folder, by its own capture day, the folders it needs made first.
+    let mut filer = Filer::new(destination, now_ms);
+    let mut filed = Vec::with_capacity(decided.len());
+    for decided in decided {
+        filed.push(match decided.becomes {
+            Becomes::Created(_) => {
+                let capture = decided.developed.file.header.capture.as_ref();
+                Some(filer.folder(tx, capture.map(CaptureTime::local_day))?)
+            }
+            Becomes::Linked(_) | Becomes::Relinked { .. } => None,
+        });
     }
-    let folder_id = destination.id();
+    let mut changes = filer.changes;
+    changes.reserve(2 * decided.len());
     let mut relinked = Vec::new();
     // The photographs this batch has put back already: two identical files link to one.
     let mut put_back: Vec<&AssetId> = Vec::new();
-    for decided in decided {
+    for (decided, folder_id) in decided.iter().zip(&filed) {
         let file = &decided.developed.file;
         match &decided.becomes {
             Becomes::Created(photograph) => {
+                let folder_id = folder_id.as_ref().expect("a new photograph is filed");
                 upsert_volume(tx, &file.volume)?;
                 let canonical = file.path.to_string_lossy();
                 let file_name = file

@@ -551,13 +551,23 @@ pub struct Collections {
     pub collections: Vec<Collection>,
 }
 
-/// The catalog folder an event's picks are developed into: an existing folder, or a new one with
+/// The catalog folder an event's picks are developed into, each photograph resolved by its own
+/// camera-local capture day as it is developed: a place, an existing folder, or a new one with
 /// this name (and parent).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum FolderChoice {
+    /// Year › place › day: the top-level folder named after its capture day's year ("2026"), the
+    /// folder `name` in it, and the day's folder in that ("12 Sep"); a photograph with no capture
+    /// time goes to the top-level "Undated", then `name`. Each folder is found by its name among
+    /// its siblings, ignoring case, or made.
+    Place { name: String },
+    /// That folder; with `days`, the folder of a photograph's capture day inside it ("12 Sep"),
+    /// and the folder itself for one with no capture time.
     Existing {
         folder_id: CatalogFolderId,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        days: bool,
     },
     New {
         name: String,
@@ -593,17 +603,30 @@ pub struct RemovablePicks {
 pub struct PlannedEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub event_id: Option<EventId>,
-    /// The event's name, which a new folder takes by default ("Konstanz · Sep 2026").
+    /// The event's name ("Konstanz · 12–13 Sep").
     pub name: String,
     pub count: u32,
-    /// The proposal: the folder an earlier Develop from the same event span made, or a new folder
-    /// named after the event.
+    /// The proposal: the folder an earlier Develop of the same event made, with day folders in
+    /// it, or the event's place (its place, else the user-named folder on disk that names it,
+    /// else "Unknown place"); for an undated event, the folder the newest photograph developed
+    /// from its folder on disk is in, or a place named after that folder.
     pub folder: FolderChoice,
     /// The proposed existing folder's name, for the confirmation to show.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub folder_name: Option<String>,
+    /// The distinct camera-local capture days of its picks, ascending: the day folders a place
+    /// or `days` choice files them in.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub days: Vec<super::LocalDay>,
+    /// How many of its picks have no capture time the index knows.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub undated: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub removable: Vec<RemovablePicks>,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 /// What `pick.plan` answers: what a Develop of these picks would do, per event.
