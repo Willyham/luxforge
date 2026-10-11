@@ -151,6 +151,38 @@ impl InferenceRuntime for CompositeInference {
         Ok(prepared)
     }
 
+    /// The members serving one of `backends` prepare the model, each once with its own names for
+    /// them, and the files they wrote are answered together.
+    fn prepare_for(
+        &self,
+        model: &ModelFile,
+        backends: &[String],
+        cancel: &Cancel,
+    ) -> Result<Vec<PathBuf>, Error> {
+        let mut prepared = Vec::new();
+        for member in &self.members {
+            let names: Vec<String> = self
+                .routes
+                .iter()
+                .filter(|route| {
+                    Arc::ptr_eq(&route.runtime, member) && backends.contains(&route.offered)
+                })
+                .map(|route| route.member.clone())
+                .collect();
+            if !names.is_empty() {
+                prepared.extend(member.prepare_for(model, &names, cancel)?);
+            }
+        }
+        Ok(prepared)
+    }
+
+    fn forget(&self, sha256: &str) -> usize {
+        self.members
+            .iter()
+            .map(|member| member.forget(sha256))
+            .sum()
+    }
+
     fn open_session(
         &self,
         model: &ModelFile,
@@ -345,6 +377,74 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A member that answers one derived path per prepare, so a test sees which members were asked.
+    struct Deriving {
+        backends: Vec<String>,
+        asked: std::sync::Mutex<Vec<Vec<String>>>,
+    }
+
+    impl InferenceRuntime for Deriving {
+        fn identity(&self) -> RuntimeIdentity {
+            RuntimeIdentity {
+                name: "deriving".into(),
+                version: "1".into(),
+            }
+        }
+        fn backends(&self) -> Vec<String> {
+            self.backends.clone()
+        }
+        fn prepare(&self, model: &ModelFile, _: &Cancel) -> Result<Vec<PathBuf>, Error> {
+            Ok(vec![model.path().with_extension("derived")])
+        }
+        fn prepare_for(
+            &self,
+            model: &ModelFile,
+            backends: &[String],
+            cancel: &Cancel,
+        ) -> Result<Vec<PathBuf>, Error> {
+            self.asked.lock().unwrap().push(backends.to_vec());
+            self.prepare(model, cancel)
+        }
+        fn open_session(
+            &self,
+            _: &ModelFile,
+            _: &OpenOptions,
+            _: &Cancel,
+        ) -> Result<Box<dyn Session>, Error> {
+            Err(Error::validation("opens nothing"))
+        }
+    }
+
+    #[test]
+    fn prepare_for_asks_only_the_members_serving_the_named_backends() {
+        let dir = luxforge_testbase::paths::temp_dir("composite-prepare-for");
+        let model = model(&dir);
+        let onnx = Arc::new(Deriving {
+            backends: vec!["coreml".into(), "cpu".into()],
+            asked: Default::default(),
+        });
+        let composite = CompositeInference::new()
+            .with(onnx.clone())
+            .unwrap()
+            .with_alias("fake", FakeInference::shared(), FAKE_BACKEND)
+            .unwrap();
+        let fake_only = composite
+            .prepare_for(&model, &["fake".into()], &Cancel::never())
+            .unwrap();
+        assert!(fake_only.is_empty());
+        assert!(onnx.asked.lock().unwrap().is_empty());
+        let both = composite
+            .prepare_for(
+                &model,
+                &["gpu".into(), "cpu".into(), "fake".into()],
+                &Cancel::never(),
+            )
+            .unwrap();
+        assert_eq!(both, [model.path().with_extension("derived")]);
+        assert_eq!(*onnx.asked.lock().unwrap(), [vec!["cpu".to_owned()]]);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

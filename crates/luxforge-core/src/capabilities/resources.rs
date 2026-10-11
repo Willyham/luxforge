@@ -29,6 +29,7 @@ use super::{
 use crate::{
     Error, ErrorKind, JobId, ModuleRegistry, atomic_file,
     editor::now_ms,
+    inference::{InferenceRuntime, ModelFile, ModelIdentity},
     jobs::{JobControl, PERMISSION_REVOKED},
 };
 use serde::{Deserialize, Serialize};
@@ -106,10 +107,24 @@ pub(crate) struct InstalledMarker {
     pub bytes: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub files: Vec<FilePin>,
+    /// What the inference runtime derived from the model inside this directory when it was
+    /// installed (`luxforge-onnx`'s fixed-shape Core ML copy and its record), by path under the
+    /// directory. Removed with it, and counted against the resource quota.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub derived: Vec<DerivedFile>,
     pub license: String,
     pub provenance: String,
     pub actor: String,
     pub installed_ms: i64,
+}
+
+/// One file the inference runtime derived from an installed model, by its path under the version
+/// directory, and its size.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DerivedFile {
+    pub path: String,
+    pub bytes: u64,
 }
 
 impl InstalledMarker {
@@ -142,11 +157,15 @@ impl InstalledMarker {
                 .all(|(held, declared)| *held == FilePin::of(declared))
     }
 
-    /// The bytes every file the marker records takes.
+    /// The bytes every file the marker records takes, the derived ones too.
     fn total_bytes(&self) -> u64 {
-        self.files
+        let pinned = self
+            .files
             .iter()
-            .fold(self.bytes, |total, file| total.saturating_add(file.bytes))
+            .fold(self.bytes, |total, file| total.saturating_add(file.bytes));
+        self.derived
+            .iter()
+            .fold(pinned, |total, file| total.saturating_add(file.bytes))
     }
 }
 
@@ -436,6 +455,10 @@ pub(crate) struct InstallJob {
     pub quota: u64,
     pub actor: String,
     pub control: Arc<JobControl>,
+    /// The inference runtime and the backends the `local-runtime` capability holding the resource
+    /// names: the runtime is asked to derive what it needs for them from the installed model
+    /// before the install is marked done.
+    pub runtime: Option<(Arc<dyn InferenceRuntime>, Vec<String>)>,
 }
 
 /// A staged file that hashes and counts what it is given and refuses to grow past the declared
@@ -755,7 +778,7 @@ fn stage_and_publish(job: &InstallJob, staging: &Path) -> Result<Value, Error> {
     check_quota(&job.store, resource, job.quota)?;
     let partial = staging.join(PARTIAL_FILE);
     fs::remove_file(&partial).map_err(|error| write_failure(&partial, error.kind()))?;
-    publish(job, staging)?;
+    let prepared = publish(job, staging)?;
     let mut result = json!({
         "resource_id": resource.id,
         "version": resource.version,
@@ -769,6 +792,12 @@ fn stage_and_publish(job: &InstallJob, staging: &Path) -> Result<Value, Error> {
             .zip(&hashes)
             .map(|(file, sha256)| json!({"name": file.name, "bytes": file.bytes, "sha256": sha256}))
             .collect();
+    }
+    if !prepared.derived.is_empty() {
+        result["derived"] = json!(prepared.derived);
+    }
+    if let Some(error) = &prepared.error {
+        result["prepare_error"] = json!({"code": error.kind.code(), "message": error.detail});
     }
     Ok(result)
 }
@@ -928,10 +957,58 @@ fn download(
     }
 }
 
-/// Move the verified staging directory into place and write `installed.json` last. A version
-/// directory without a matching marker, left by a crash or an older interrupted install, is
-/// replaced. A failure after the move removes the version directory again.
-fn publish(job: &InstallJob, staging: &Path) -> Result<(), Error> {
+/// What preparing an installed model came to: the files the runtime derived, or why it derived
+/// nothing.
+struct Prepared {
+    derived: Vec<DerivedFile>,
+    error: Option<Error>,
+}
+
+/// Ask the runtime to derive what it needs from the model `target` now holds, ahead of its first
+/// open. A cancel ends the install; any other failure is reported with it and leaves the model
+/// installed, since an open derives what it needs again and reports its own failure. A derived
+/// path outside the version directory is not the install's to record.
+fn prepare(job: &InstallJob, target: &Path) -> Result<Prepared, Error> {
+    let Some((runtime, backends)) = &job.runtime else {
+        return Ok(Prepared {
+            derived: Vec::new(),
+            error: None,
+        });
+    };
+    let resource = &job.resource;
+    let model = ModelFile::new(
+        ModelIdentity {
+            id: resource.id.clone(),
+            version: resource.version.clone(),
+            sha256: resource.sha256.clone(),
+        },
+        target.join(&resource.id),
+    );
+    job.control.set_progress(Some(1.0), "preparing the model");
+    match runtime.prepare_for(&model, backends, &job.control.render_cancel()) {
+        Ok(paths) => Ok(Prepared {
+            derived: paths
+                .iter()
+                .filter_map(|path| {
+                    let name = path.strip_prefix(target).ok()?.to_str()?.to_owned();
+                    let bytes = fs::metadata(path).ok()?.len();
+                    Some(DerivedFile { path: name, bytes })
+                })
+                .collect(),
+            error: None,
+        }),
+        Err(error) if error.kind == ErrorKind::Cancelled => Err(error),
+        Err(error) => Ok(Prepared {
+            derived: Vec::new(),
+            error: Some(error),
+        }),
+    }
+}
+
+/// Move the verified staging directory into place, prepare the model, and write `installed.json`
+/// last. A version directory without a matching marker, left by a crash or an older interrupted
+/// install, is replaced. A failure after the move removes the version directory again.
+fn publish(job: &InstallJob, staging: &Path) -> Result<Prepared, Error> {
     let resource = &job.resource;
     let target = job.store.version_dir(&job.module_id, resource);
     let parent = target
@@ -946,6 +1023,13 @@ fn publish(job: &InstallJob, staging: &Path) -> Result<(), Error> {
         fs::rename(staging, &target)
     })();
     moved.map_err(|error| write_failure(&target, error.kind()))?;
+    let prepared = match prepare(job, &target) {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&target);
+            return Err(error);
+        }
+    };
     let marker = InstalledMarker {
         module_id: job.module_id.clone(),
         resource_id: resource.id.clone(),
@@ -954,6 +1038,7 @@ fn publish(job: &InstallJob, staging: &Path) -> Result<(), Error> {
         sha256: resource.sha256.clone(),
         bytes: resource.bytes,
         files: resource.pinned_files().skip(1).map(FilePin::of).collect(),
+        derived: prepared.derived.clone(),
         license: resource.license.clone(),
         provenance: resource.provenance.clone(),
         actor: job.actor.clone(),
@@ -966,18 +1051,20 @@ fn publish(job: &InstallJob, staging: &Path) -> Result<(), Error> {
     if written.is_err() {
         let _ = fs::remove_dir_all(&target);
     }
-    written
+    written.map(|()| prepared)
 }
 
 /// Remove one installed resource version on the transfer lane, with every file of it: its marker
-/// first, so an interruption leaves a directory that is no longer installed, then the directory,
-/// then any parent it leaves empty; and any interrupted transfer of it. It never touches a catalog,
-/// a recipe or an artifact.
+/// first, so an interruption leaves a directory that is no longer installed, then the directory
+/// with everything the runtime derived inside it, then any parent it leaves empty; any interrupted
+/// transfer of it; and, given the runtime of a model, what the runtime keeps of each file outside
+/// the directory (the Core ML compile cache). It never touches a catalog, a recipe or an artifact.
 pub(crate) fn remove(
     store: &ResourceStore,
     module_id: &str,
     resource: &ResourceDescriptor,
     control: &JobControl,
+    runtime: Option<&dyn InferenceRuntime>,
 ) -> Result<Value, Error> {
     control.checkpoint()?;
     let target = store.version_dir(module_id, resource);
@@ -1004,12 +1091,20 @@ pub(crate) fn remove(
     remove_path(&staging)
         .map_err(|error| atomic_file::file_error(staging.display(), error.kind()))?;
     prune_empty(store, &staging);
-    Ok(json!({
+    let mut answer = json!({
         "resource_id": resource.id,
         "version": resource.version,
         "removed": existed,
         "discarded_partial": staged,
-    }))
+    });
+    if let Some(runtime) = runtime {
+        let compiled: usize = resource
+            .pinned_files()
+            .map(|file| runtime.forget(file.sha256))
+            .sum();
+        answer["compiled_removed"] = json!(compiled);
+    }
+    Ok(answer)
 }
 
 /// Injected write failures for tests, keyed by resource root so parallel tests never see each

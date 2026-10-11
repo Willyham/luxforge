@@ -65,7 +65,7 @@ impl Models {
             secrets: Arc::new(MemorySecretStore::new()),
             transport: Arc::new(luxforge_net::HttpTransport::system()),
             machine_memory_bytes,
-            inference: Some(luxforge_core::inference::fake::FakeInference::shared()),
+            inference: Some(luxforge_onnx::host_runtime(None, true)),
             ..HostConfig::unconfigured()
         };
         let (owner, join) =
@@ -211,7 +211,7 @@ fn the_models_tab_is_listed_only_with_a_model_and_shows_it_against_this_machine(
     );
     assert_eq!(
         row.requirement.as_deref(),
-        Some("Needs 2 GB of memory · 64.0 MB while loaded · cpu · fp32")
+        Some("Needs 2 GB of memory · 64.0 MB while loaded · fake · fp32")
     );
     assert_eq!(row.fits, Some(true));
     assert!(!row.removable);
@@ -325,6 +325,7 @@ fn unload_now_and_remove_go_through_the_tab_and_copy_the_requests_they_send() {
         panic!("one loaded model: {:?}", tab.resident)
     };
     assert_eq!(resident.title, "Proof segmenter");
+    // The placement is the session's own: the composite hands the fake its own `cpu`.
     assert_eq!(resident.detail, "Loaded · 64.0 MB · cpu · fp32");
     assert_eq!(
         tab.resident_line.as_deref(),
