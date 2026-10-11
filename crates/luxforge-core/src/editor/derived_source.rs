@@ -9,7 +9,7 @@
 //! whole immutable history — or its publication by a writer of this process; recipe and layer
 //! artifact references are separate and never involved. Only emptying Removed deletes an
 //! asset-source reference, and only then can a collection remove the source's objects.
-// The HDR merge's publication (`tasks/library/hdr-merge.json` TASK-004 and TASK-006) composes the
+// The HDR merge's publication (`docs/design/hdr-merge.md`) composes the
 // writers; until it does, only the tests and the qualification harness publish a source.
 #![cfg_attr(not(test), allow(dead_code))]
 use super::{AssetRecord, EditorService, SourceSignature, decode, now_ms, write};

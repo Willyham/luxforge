@@ -26,7 +26,7 @@
 //!
 //! Everything here is SQL on the owner and, at publication, one stat an input; no payload is read
 //! or hashed.
-// Stack browsing (`tasks/library/hdr-merge.json` TASK-007) calls what the `merge.*` commands and
+// Stack browsing (`docs/design/hdr-merge.md`) calls what the `merge.*` commands and
 // Remove and Put back do not yet; until it does, only the tests do.
 #![cfg_attr(not(test), allow(dead_code))]
 use super::{
