@@ -137,6 +137,7 @@ pub(crate) fn workspace<'a>(
     model: &'a Workspace,
     surfaces: Surfaces<'a>,
     strip: crate::app::develop::StripImages<'a>,
+    remove: crate::app::remove::RemoveImages<'a>,
 ) -> Element<'a, Message> {
     let title = container(title_bar::title_bar(model))
         .width(Length::Fill)
@@ -176,6 +177,7 @@ pub(crate) fn workspace<'a>(
                 &model.masks,
                 model.canvas.mask_panel,
                 &model.corrections,
+                remove,
             ))
             .width(Length::Fixed(TOOLS_PANEL_WIDTH))
             .height(Length::Fill)

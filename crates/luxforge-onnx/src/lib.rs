@@ -213,6 +213,16 @@ impl InferenceRuntime for OnnxRuntime {
 /// [`luxforge_core::inference::fake::FAKE_HOST_BACKEND`], through a composite that serves each
 /// backend name from one of them. Nothing starts until a model opens.
 pub fn host_runtime(cache_dir: Option<PathBuf>, developer: bool) -> Arc<dyn InferenceRuntime> {
+    host_runtime_paced(cache_dir, developer, std::time::Duration::ZERO)
+}
+
+/// [`host_runtime`] whose developer fake sleeps `fake_step` in each generation step, so an
+/// evidence run can capture a generation while it is running. ONNX Runtime is unaffected.
+pub fn host_runtime_paced(
+    cache_dir: Option<PathBuf>,
+    developer: bool,
+    fake_step: std::time::Duration,
+) -> Arc<dyn InferenceRuntime> {
     use luxforge_core::inference::{
         CompositeInference,
         fake::{FAKE_BACKEND, FAKE_HOST_BACKEND, FakeInference},
@@ -221,11 +231,12 @@ pub fn host_runtime(cache_dir: Option<PathBuf>, developer: bool) -> Arc<dyn Infe
     if !developer {
         return onnx;
     }
+    let fake = FakeInference::new();
+    fake.controls().set_step_delay(fake_step);
+    let fake: Arc<dyn InferenceRuntime> = Arc::new(fake);
     CompositeInference::new()
         .with(onnx)
-        .and_then(|composite| {
-            composite.with_alias(FAKE_HOST_BACKEND, FakeInference::shared(), FAKE_BACKEND)
-        })
+        .and_then(|composite| composite.with_alias(FAKE_HOST_BACKEND, fake, FAKE_BACKEND))
         .expect("ONNX Runtime offers no backend named fake")
         .shared()
 }

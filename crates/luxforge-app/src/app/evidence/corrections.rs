@@ -345,6 +345,7 @@ impl Editor {
             && !committing
             && !self.busy
             && !self.correction_reads.reading()
+            && self.remove_settled()
             && self.sync.poll.idle()
             && !self.presentation.queue.is_busy()
             && !self.drag_frame_waiting()

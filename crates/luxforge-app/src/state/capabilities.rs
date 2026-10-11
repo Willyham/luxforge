@@ -48,6 +48,10 @@ pub(crate) struct ModuleStatus {
     pub(crate) permissions: PermissionCounts,
     #[serde(default)]
     pub(crate) jobs: Vec<JobRecord>,
+    /// A fill module's tiers (`fill_tiers`): whether each is offered now and why not, and its
+    /// models' files ([`crate::state::remove`]). Empty for every other module.
+    #[serde(default)]
+    pub(crate) fill_tiers: Vec<crate::state::remove::FillTier>,
 }
 
 /// `error.data.consent` of a `consent-required` failure: the scope a grant would cover, exactly as

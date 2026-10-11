@@ -230,6 +230,13 @@ impl Editor {
                                 .own_requests
                                 .retain(|request| !sync.own.contains(request));
                         }
+                        // A flag decides whether a fill tier is offered: Remove reads its tiers
+                        // again.
+                        let tiers = if sync.flags && self.remove_active() {
+                            self.remove_refresh_tiers()
+                        } else {
+                            Task::none()
+                        };
                         let flags = self.settings_changed_elsewhere(
                             sync.flags,
                             sync.preferences,
@@ -237,9 +244,9 @@ impl Editor {
                             sync.usage,
                         );
                         if sync.capabilities {
-                            return Task::batch([flags, self.reload_capabilities()]);
+                            return Task::batch([flags, tiers, self.reload_capabilities()]);
                         }
-                        return flags;
+                        return Task::batch([flags, tiers]);
                     }
                     Err(error) => self.status.text = format!("Live refresh failed: {error}"),
                 }

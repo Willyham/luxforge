@@ -43,6 +43,10 @@ pub(crate) struct Boot {
 /// first write, and the transport builds its TLS configuration on its first request. `tiles` is
 /// the launch's GPU tile worker, which the owner's export lane streams every export through and
 /// which starts nothing until the first export asks it.
+/// Each step of the developer fake generator in an evidence run: a three-candidate generation of
+/// eight steps each takes about two seconds, long enough to capture its progress.
+const EVIDENCE_FAKE_STEP: std::time::Duration = std::time::Duration::from_millis(80);
+
 pub(super) fn host_config(config: &Config, tiles: Arc<GpuTiles>) -> HostConfig {
     let secrets: Arc<dyn SecretStore> = match &config.evidence {
         Some(_) => Arc::new(MemorySecretStore::new()),
@@ -66,10 +70,17 @@ pub(super) fn host_config(config: &Config, tiles: Arc<GpuTiles>) -> HostConfig {
         renderer: super::renderer::launched(config.launch_renderer().refused()),
         tiles: Some(tiles),
         // ONNX Runtime, compiling under the data root; a developer run also serves the
-        // deterministic fake, as the `fake` backend. Nothing starts until a model opens.
-        inference: Some(luxforge_onnx::host_runtime(
+        // deterministic fake, as the `fake` backend. Nothing starts until a model opens. An
+        // evidence run paces the fake's steps, so a generation is still running when its frame is
+        // captured.
+        inference: Some(luxforge_onnx::host_runtime_paced(
             paths.map(Paths::inference_cache),
             config.developer,
+            if config.evidence.is_some() {
+                EVIDENCE_FAKE_STEP
+            } else {
+                std::time::Duration::ZERO
+            },
         )),
         ..HostConfig::unconfigured()
     }
