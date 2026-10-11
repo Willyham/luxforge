@@ -48,7 +48,6 @@ const EVIDENCE_FAKE_STEP: std::time::Duration = std::time::Duration::from_millis
 /// first write, and the transport builds its TLS configuration on its first request. `tiles` is
 /// the launch's GPU tile worker, which the owner's export lane streams every export through and
 /// which starts nothing until the first export asks it.
-
 pub(super) fn host_config(config: &Config, tiles: Arc<GpuTiles>) -> HostConfig {
     let secrets: Arc<dyn SecretStore> = match &config.evidence {
         Some(_) => Arc::new(MemorySecretStore::new()),
