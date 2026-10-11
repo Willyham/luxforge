@@ -8,9 +8,10 @@ use crate::{
     corrections_raw_smoke as raw_corrections, corrections_smoke as corrections, crop_smoke as crop,
     curve_smoke as curve, detail_smoke as detail, develop_picks_smoke as develop_picks,
     export_smoke as export, filmstrip_smoke as filmstrip, gallery_smoke as gallery,
-    gpu_preview_smoke as gpu_preview, gpu_preview_zoom_smoke as gpu_preview_zoom,
-    grading_smoke as grading, histogram_smoke as histogram, information_smoke as information,
-    lens_smoke as lens, look_smoke as look, loupe_smoke as loupe, mask_brush_smoke as mask_brush,
+    generative_smoke as generative, gpu_preview_smoke as gpu_preview,
+    gpu_preview_zoom_smoke as gpu_preview_zoom, grading_smoke as grading,
+    histogram_smoke as histogram, information_smoke as information, lens_smoke as lens,
+    look_smoke as look, loupe_smoke as loupe, mask_brush_smoke as mask_brush,
     mask_combine_smoke as mask_combine, mask_interactions_smoke as mask_interactions,
     mask_panel_smoke as mask_panel, mask_range_smoke as mask_range, mask_smoke as mask,
     minify_smoke as minify, mixer_smoke as mixer, no_gpu_render_smoke as no_gpu_render,
@@ -899,6 +900,22 @@ pub static SCENARIOS: &[Scenario] = &[
         window: Some(PANELLED),
         note: Some(corrections::NOTE),
         own: Some(corrections::run),
+    },
+    Scenario {
+        name: generative::SCENARIO,
+        about: generative::ABOUT,
+        launches: &[LaunchSpec {
+            plan: generative::plan,
+            // The fill tiers, their fake models and the fake runtime are served only by a host
+            // that serves the developer modules.
+            developer: true,
+            ..APP
+        }],
+        verify: generative::verify,
+        source: Source::Fixtures(&[corrections::FIXTURE]),
+        window: Some(PANELLED),
+        note: None,
+        own: None,
     },
     Scenario {
         name: mask_range::SCENARIO,

@@ -231,7 +231,10 @@ fn the_models_tab_is_listed_only_with_a_model_and_shows_it_against_this_machine(
     let summary = models.editor.settings_summary();
     assert_eq!(summary["open"], "models");
     let rows = summary["models"]["rows"].as_array().unwrap();
-    let proof = rows.iter().find(|row| row["title"] == "Proof segmenter").unwrap();
+    let proof = rows
+        .iter()
+        .find(|row| row["title"] == "Proof segmenter")
+        .unwrap();
     assert_eq!(proof["state"], "Not installed");
     let status = &summary["models"]["status"][MODULE];
     assert_eq!(status["machine"]["memory_bytes"], 16u64 << 30);

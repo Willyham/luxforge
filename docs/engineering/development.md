@@ -1139,7 +1139,9 @@ Each step is an object with exactly one key.
 - In an `api` or `agent` step's `params`, a `job_id` may be written `{"started_by": "task.NAME"}`
   instead of an identity: the job the run's latest earlier call of that task started, once it has
   ended ready. `gpu-qualification` resolves it, sending a task with a request envelope and waiting
-  for its job; the desktop's evidence driver refuses it, so a desktop script writes the identity.
+  for its job. The desktop's evidence driver resolves a fill task's reference (`task.fill-…`) to
+  the newest job the desktop's Remove started on the open photograph, and refuses any other, so a
+  desktop script writes any other job's identity.
 - `draft` drives the crop draft: `start`, `reapply`, `angle` (typed into the angle's box and
   submitted), `nudge` (`-1` or `1`: one press of the angle's − or + button), `angle_rail` (a drag
   through rail fractions, then its release), `preset` (a declared aspect option, by name), `rect` (`[x, y, width, height]` in box pixels, applied as two corner gestures,

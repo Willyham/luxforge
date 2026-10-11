@@ -28,17 +28,11 @@ use crate::{
     state::{
         MenuTarget,
         capabilities::Operation,
-        remove::{
-            FillJob, FillTier, RemoveNotice, RemoveSelection, chosen_tier, fill_module,
-        },
+        remove::{FillJob, FillTier, RemoveNotice, RemoveSelection, chosen_tier, fill_module},
         settings::SettingsTab,
     },
 };
-use iced::{
-    Subscription, Task,
-    futures::stream::BoxStream,
-    widget::image::Handle,
-};
+use iced::{Subscription, Task, futures::stream::BoxStream, widget::image::Handle};
 use luxforge_core::{
     AssetId, CandidateState, ClientId, DecodedPreview, ErrorKind, OwnerHandle,
     jobs::{JOB_CANCEL, JOB_READ, JobRecord, JobStatus},
@@ -104,6 +98,8 @@ pub(crate) struct Remove {
     pub(crate) last_copied: Option<Value>,
     /// What the running evidence step waits for.
     pub(crate) wait: Option<RemoveWait>,
+    /// The progress or reason last said on the status bar.
+    said: Option<String>,
 }
 
 /// The candidate previews the strip and the canvas draw, borrowed so each handle keeps its id and
@@ -155,13 +151,18 @@ pub(crate) fn decode_base64(text: &str) -> Result<Vec<u8>, String> {
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
     for (index, quantum) in bytes.chunks_exact(4).enumerate() {
         let last = index + 1 == bytes.len() / 4;
-        let padding = quantum.iter().rev().take_while(|byte| **byte == b'=').count();
+        let padding = quantum
+            .iter()
+            .rev()
+            .take_while(|byte| **byte == b'=')
+            .count();
         if padding > 2 || (padding > 0 && !last) {
             return Err("base64 padding is misplaced".into());
         }
         let mut word = 0u32;
         for byte in &quantum[..4 - padding] {
-            word = (word << 6) | value(*byte).ok_or("base64 text has a byte outside its alphabet")?;
+            word =
+                (word << 6) | value(*byte).ok_or("base64 text has a byte outside its alphabet")?;
         }
         word <<= 6 * padding as u32;
         let decoded = [(word >> 16) as u8, (word >> 8) as u8, word as u8];
@@ -314,6 +315,17 @@ impl Editor {
         Some((module.id.clone(), tiers))
     }
 
+    /// The newest job of the photograph on screen that this desktop started with the fill task
+    /// `method`: what an evidence step names `{"started_by": "task.fill-…"}`.
+    pub(crate) fn remove_job_started_by(&self, method: &str) -> Option<String> {
+        let (_, tiers) = self.fill_tiers()?;
+        if !tiers.iter().any(|tier| tier.task == method) {
+            return None;
+        }
+        let asset = &self.document.state.as_ref()?.asset.id;
+        self.remove.newest(asset).map(|job| job.job_id.clone())
+    }
+
     /// The Corrections mode is on screen with Remove chosen.
     pub(crate) fn remove_active(&self) -> bool {
         self.remove.chosen && self.corrections_active() && fill_module(&self.modules).is_some()
@@ -338,8 +350,8 @@ impl Editor {
             .ok_or(crate::state::NO_PHOTOGRAPH)?;
         let asset = state.asset.id.clone();
         let (_, tiers) = self.fill_tiers().ok_or("No module fills a selection")?;
-        let tier = chosen_tier(tiers, self.remove.tier.as_deref())
-            .ok_or("No fill tier is offered")?;
+        let tier =
+            chosen_tier(tiers, self.remove.tier.as_deref()).ok_or("No fill tier is offered")?;
         let model = tier
             .installed_model()
             .ok_or("The tier's model is not installed")?;
@@ -355,8 +367,14 @@ impl Editor {
         } else {
             selection.seed
         };
-        let prompt = Some(self.remove.prompt.split_whitespace().collect::<Vec<_>>().join(" "))
-            .filter(|prompt| !prompt.is_empty());
+        let prompt = Some(
+            self.remove
+                .prompt
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" "),
+        )
+        .filter(|prompt| !prompt.is_empty());
         let mut params = json!({
             "asset_id": asset,
             "selection-points": selection.points,
@@ -484,7 +502,12 @@ impl Editor {
             }
             RemoveMessage::Tier(tier) => self.remove.tier = Some(tier),
             RemoveMessage::Prompt(text) => {
-                let max = self.workspace.corrections.remove.as_ref().map_or(256, |model| model.prompt_max);
+                let max = self
+                    .workspace
+                    .corrections
+                    .remove
+                    .as_ref()
+                    .map_or(256, |model| model.prompt_max);
                 self.remove.prompt = text.chars().take(max).collect();
             }
             RemoveMessage::Generate => return self.remove_generate(false),
@@ -574,7 +597,10 @@ impl Editor {
                         self.remove_reads.previews.drain(..excess);
                     }
                     Err(error) => {
-                        self.event("remove_preview_failed", || json!({"job_id": key.0, "candidate": key.1, "error": error}));
+                        self.event(
+                            "remove_preview_failed",
+                            || json!({"job_id": key.0, "candidate": key.1, "error": error}),
+                        );
                         self.remove_reads.failed.insert(key);
                     }
                 }
@@ -645,7 +671,10 @@ impl Editor {
                     self.status.text = "The fill task named no job".into();
                     return;
                 };
-                self.event("remove_started", || json!({"job_id": job_id, "seed": start.seed}));
+                self.event(
+                    "remove_started",
+                    || json!({"job_id": job_id, "seed": start.seed}),
+                );
                 self.remove.jobs.push(FillJob {
                     job_id,
                     asset: start.asset,
@@ -662,8 +691,15 @@ impl Editor {
                 });
             }
             Err(error) => {
-                self.event("remove_refused", || json!({"code": error.code, "message": error.message, "data": error.data}));
-                let text = match error.data.as_ref().and_then(|data| data.get("requirements")) {
+                self.event(
+                    "remove_refused",
+                    || json!({"code": error.code, "message": error.message, "data": error.data}),
+                );
+                let text = match error
+                    .data
+                    .as_ref()
+                    .and_then(|data| data.get("requirements"))
+                {
                     Some(_) if error.code == "not-ready" => {
                         format!("{} \u{b7} install what it needs first", error.message)
                     }
@@ -721,7 +757,10 @@ impl Editor {
                 return Task::none();
             }
         };
-        self.event("remove_accept", || json!({"method": method, "params": params}));
+        self.event(
+            "remove_accept",
+            || json!({"method": method, "params": params}),
+        );
         self.remove.accepting = Some((key.0, key.1, revision));
         self.remove_reads.last_request = Some((method.clone(), params.clone()));
         self.command(method, params)
@@ -758,12 +797,8 @@ impl Editor {
             job.next_seed = Some(seed);
         }
         job.error = record.error.as_ref().map(|error| error.message.clone());
-        let (status, error, serial, asset) = (
-            job.status,
-            job.error.clone(),
-            job.serial,
-            job.asset.clone(),
-        );
+        let (status, error, serial, asset) =
+            (job.status, job.error.clone(), job.serial, job.asset.clone());
         // A new job's first candidate is previewed as soon as it is published.
         let newest = self.remove.newest(&asset).map(|job| job.job_id.as_str()) == Some(job_id);
         let published = self
@@ -786,10 +821,17 @@ impl Editor {
         }
         match status {
             JobStatus::Ready => {
-                let count = self.remove.job(job_id).map_or(0, |job| job.candidates.len());
+                let count = self
+                    .remove
+                    .job(job_id)
+                    .map_or(0, |job| job.candidates.len());
                 self.status.text = format!(
                     "{count} {} \u{b7} choose one and Accept",
-                    if count == 1 { "candidate" } else { "candidates" }
+                    if count == 1 {
+                        "candidate"
+                    } else {
+                        "candidates"
+                    }
                 );
             }
             JobStatus::Failed => {
@@ -872,7 +914,12 @@ impl Editor {
         let Released::Add { path, .. } = press.release(view, content) else {
             return Task::none();
         };
-        let Some(asset) = self.document.state.as_ref().map(|state| state.asset.id.clone()) else {
+        let Some(asset) = self
+            .document
+            .state
+            .as_ref()
+            .map(|state| state.asset.id.clone())
+        else {
             return Task::none();
         };
         let radius = self.remove_radius();
@@ -890,7 +937,10 @@ impl Editor {
         self.remove.clear_draft();
         self.remove.serial += 1;
         let serial = self.remove.serial;
-        self.event("remove_selection", || json!({"points": points.len(), "radius": radius}));
+        self.event(
+            "remove_selection",
+            || json!({"points": points.len(), "radius": radius}),
+        );
         self.remove.selection = Some(RemoveSelection {
             asset,
             points,
@@ -903,7 +953,8 @@ impl Editor {
         } else {
             "Replace"
         };
-        self.status.text = format!("Selection painted \u{b7} {action} fills it \u{b7} Esc clears it");
+        self.status.text =
+            format!("Selection painted \u{b7} {action} fills it \u{b7} Esc clears it");
         Task::none()
     }
 
@@ -978,10 +1029,15 @@ impl Editor {
 
     /// Whether Remove has finished what the running evidence step started.
     pub(crate) fn remove_settled(&self) -> bool {
+        // The fill module's status read, which lists the tiers, is Remove's too.
+        let reading_tiers = self.remove_active()
+            && fill_module(&self.modules)
+                .is_some_and(|module| self.capabilities.module(&module.id).pending > 0);
         if self.remove.pending > 0
             || self.remove_reads.starting.is_some()
             || self.remove.accepting.is_some()
             || !self.remove_reads.reading.is_empty()
+            || reading_tiers
         {
             return false;
         }
@@ -1083,7 +1139,10 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
     let (owner, client) = (editor.owner.clone(), editor.client);
     for key in strip {
         let held = editor.remove_images().image(&key.0, key.1).is_some();
-        if held || editor.remove_reads.reading.contains(&key) || editor.remove_reads.failed.contains(&key) {
+        if held
+            || editor.remove_reads.reading.contains(&key)
+            || editor.remove_reads.failed.contains(&key)
+        {
             continue;
         }
         editor.remove_reads.reading.insert(key.clone());
@@ -1119,12 +1178,13 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
                 {
                     let job_id = job_id.clone();
                     move || {
-                        tasks::call(&owner, client, JOB_READ, json!({"job_id": job_id}))
-                            .and_then(|(value, _)| {
+                        tasks::call(&owner, client, JOB_READ, json!({"job_id": job_id})).and_then(
+                            |(value, _)| {
                                 serde_json::from_value::<JobRecord>(value)
                                     .map(Box::new)
                                     .map_err(|error| error.to_string())
-                            })
+                            },
+                        )
                     }
                 },
                 move |result| Message::Remove(RemoveMessage::Polled { job_id, result }),
@@ -1132,6 +1192,37 @@ pub(super) fn after_message(editor: &mut Editor, _: &Before) -> Task<Message> {
         }
     }
     Task::batch(tasks)
+}
+
+/// After the screen is derived: while Remove is chosen, the status bar says a running
+/// generation's progress as the job reports it, and why no tier is offered with its action, each
+/// once when it changes, so a sentence the person's own gesture set is not repeated over.
+pub(super) fn after_derive(editor: &mut Editor) -> Task<Message> {
+    let line = editor
+        .workspace
+        .corrections
+        .remove
+        .as_ref()
+        .filter(|model| {
+            editor.remove_active() && (model.running.is_some() || model.unoffered.is_some())
+        })
+        .map(|model| model.hint.clone());
+    if line != editor.remove_reads.said {
+        match &line {
+            Some(line) => editor.status.text = line.clone(),
+            // A reason that no longer holds is not left on the status bar: the hint replaces it,
+            // unless something has been said since.
+            None => {
+                if editor.remove_reads.said.as_ref() == Some(&editor.status.text)
+                    && let Some(hint) = editor.remove_status()
+                {
+                    editor.status.text = hint;
+                }
+            }
+        }
+        editor.remove_reads.said = line;
+    }
+    Task::none()
 }
 
 /// One reader per fill job of this desktop's still queued or running.

@@ -24,7 +24,7 @@ mod missing;
 pub use catalog::{CatalogStep, FacetColumn};
 pub use corrections::{
     CorrectionHandle, CorrectionStep, DragStep as CorrectionDrag, PressModifier, PressStep,
-    RowFieldStep,
+    RemoveStep, RemoveUntil, RowFieldStep,
 };
 pub use develop::{DevelopStep, SetStep};
 pub use missing::{MissingFilterStep, MissingStep};

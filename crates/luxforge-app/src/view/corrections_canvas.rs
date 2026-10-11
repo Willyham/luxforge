@@ -493,7 +493,8 @@ impl CorrectionsCanvas<'_> {
                 self.placement
                     .canvas_point(f64::from(px) / cw, f64::from(py) / ch)
             };
-            if let (Some(a), Some(b), Some(d)) = (corner(x, y), corner(x + w, y), corner(x, y + h)) {
+            if let (Some(a), Some(b), Some(d)) = (corner(x, y), corner(x + w, y), corner(x, y + h))
+            {
                 // The rectangle's mapped top edge and side, so a straightened or rotated photograph
                 // turns the preview with it.
                 let width = (b.x - a.x).hypot(b.y - a.y);

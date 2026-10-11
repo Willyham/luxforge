@@ -37,8 +37,9 @@ pub(crate) struct Boot {
 }
 
 /// Each step of the developer fake generator in an evidence run: a three-candidate generation of
-/// eight steps each takes about two seconds, long enough to capture its progress.
-const EVIDENCE_FAKE_STEP: std::time::Duration = std::time::Duration::from_millis(80);
+/// eight steps each takes about three and a half seconds, long enough to capture its progress and
+/// cancel it.
+const EVIDENCE_FAKE_STEP: std::time::Duration = std::time::Duration::from_millis(150);
 
 /// Where the capability host keeps module settings, grants and resources, under the run's
 /// resolved paths, and the secret store and network transport it uses. An evidence run keeps all
