@@ -6,7 +6,9 @@
 //! three 1536 × 1024 DNGs at 0, −2 and +2 EV: a still one (`Brackets/Still`, seed 1) and a
 //! handheld one with a moving ball (`Brackets/Handheld`, seed 2). It makes a new catalog, adds
 //! `Brackets` to the indexed folders and asks the core for its `merge.plan` of the still bracket
-//! (`hdr-merge-expected.json`), hashing every frame.
+//! (`hdr-merge-expected.json`), hashing every frame. Writing the brackets admits their synthetic
+//! body, a RAW test camera, in this process; each editor launch is started with
+//! `LUXFORGE_TEST_CAMERAS=1`, without which the editor refuses it.
 //!
 //! The first launch, in [`first_plan`] order: `G`; the still bracket's folder, whose header offers
 //! Import merged and Pick merged; Pick merged, captured while its pending row shows the job's
@@ -40,7 +42,8 @@ pub const NOTE: &str = "The run first writes two synthetic RAW brackets with \
     `luxforge_testkit::hdr_bracket::write_bracket` (three 1536 × 1024 DNGs each at 0, −2 and +2 EV: \
     `generated/Brackets/Still`, seed 1, and `generated/Brackets/Handheld`, seed 2, handheld with a \
     moving ball), makes `generated/catalog.sqlite` with `Brackets` indexed, and asks the core for \
-    the still bracket's `merge.plan` (`hdr-merge-expected.json`). The first launch merges, develops, \
+    the still bracket's `merge.plan` (`hdr-merge-expected.json`). Both launches set \
+    `LUXFORGE_TEST_CAMERAS=1`, so the editor admits the brackets' synthetic test body. The first launch merges, develops, \
     removes and puts back over that catalog with `--catalog`; the run then reads the catalog it \
     left (`hdr-merge-after-first.json`), renames `Brackets` to `Brackets offline`, and the second \
     launch reopens the same catalog and opens the result from its catalog folder; the folder is \
@@ -363,9 +366,10 @@ pub fn run(mut run: Run, scenario: &'static Scenario, _: Vec<PathBuf>) -> Result
         if !run.replaying() {
             run.hash(&frames)?;
         }
+        // The brackets are of a RAW test camera, which the editor admits only when asked.
         let window = |launch: Launch| match scenario.window {
-            Some(window) => launch.window(window),
-            None => launch,
+            Some(window) => launch.window(window).test_cameras(),
+            None => launch.test_cameras(),
         };
         let first = first_plan(&expected)?;
         let launched = run.launch(window(
