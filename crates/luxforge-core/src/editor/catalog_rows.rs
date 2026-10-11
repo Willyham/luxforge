@@ -609,7 +609,7 @@ pub(crate) mod library_rows {
             tx.prepare_cached(&format!("DELETE FROM {table} WHERE asset_id = ?1"))?
                 .execute([id])?;
         }
-        for table in ["collection_members", "capture", "development_set_members"] {
+        for table in ["collection_members", "capture"] {
             tx.prepare_cached(&format!(
                 "DELETE FROM {table} WHERE asset_row = (SELECT row_id FROM assets WHERE id = ?1)"
             ))?
@@ -661,7 +661,7 @@ pub(crate) mod library_rows {
             tx.prepare_cached(&format!("DELETE FROM {table} WHERE asset_id IN {THESE}"))?
                 .execute([&ids])?;
         }
-        for table in ["collection_members", "capture", "development_set_members"] {
+        for table in ["collection_members", "capture"] {
             tx.prepare_cached(&format!(
                 "DELETE FROM {table} WHERE asset_row IN (SELECT row_id FROM assets WHERE id IN {THESE})"
             ))?

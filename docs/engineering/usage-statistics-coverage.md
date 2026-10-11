@@ -37,7 +37,7 @@ Recorded by the desktop when the gesture completes, because no command records t
 
 | Operation | Inputs | Event |
 | --- | --- | --- |
-| Switch to Select or Develop | the workspace switcher; opening a photograph or a development set from Select | `workspace.enter` |
+| Switch to Select or Develop | the workspace switcher; opening a photograph from Select | `workspace.enter` |
 | Fit, 100%, a zoom stop, a typed zoom | title bar, `F`, `1`, `⌘+`/`⌘−`, palette | `interaction` `zoom`, with the image |
 | Pinch zoom, scroll and Space pan | trackpad, scroll, Space drag | none: no completion signal exists, and a timer would wake an idle desktop (open) |
 | State or tools panel shown or hidden; Select's sources panel or both panels; the filmstrip collapsed | panel buttons, shortcuts, palette, Performance's open | `interaction` `panel-toggle` |
@@ -96,10 +96,6 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `collection.remove` | `interaction` collection-remove | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
 | `collection.rename` | `interaction` collection-rename | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
 | `collection.update-smart` | `interaction` collection-smart-update | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
-| `development-set.add` | `interaction` development-set-add | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
-| `development-set.read` | Exempt (read) | Reads the development set. |
-| `development-set.remove` | `interaction` development-set-remove | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
-| `development-set.replace` | Exempt (internal) | Session state: the photographs Develop steps through, set when Select opens photographs or a view in Develop; the desktop records `workspace.enter` at the switch. |
 | `disk.folders` | Exempt (read) | Lists folders on disk. |
 | `draft.begin` | Exempt (internal) | Starts a drag's draft; the gesture records once, at `draft.commit`. |
 | `draft.cancel` | Exempt (internal) | A cancelled drag records nothing. |
@@ -203,7 +199,7 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `mask.set-linear` | `interaction` mask-edit (+ `tool.commit` if layers changed) | On a committed change, with the image; recorded from the committed action, so the method and a drawn gesture's `draft.commit` record the same event. |
 | `mask.set-luminance-range` | `interaction` mask-edit (+ `tool.commit` if layers changed) | On a committed change, with the image; recorded from the committed action, so the method and a drawn gesture's `draft.commit` record the same event. |
 | `mask.set-radial` | `interaction` mask-edit (+ `tool.commit` if layers changed) | On a committed change, with the image; recorded from the committed action, so the method and a drawn gesture's `draft.commit` record the same event. |
-| `merge.create` | `interaction` `hdr-merge` | When accepted, with no image; Pick merged's membership change is part of it. A refusal or a retry records nothing; the merge job's terminal outcome records no `operation.end` (open). |
+| `merge.create` | `interaction` `hdr-merge` | When accepted, with no image. A refusal or a retry records nothing; the merge job's terminal outcome records no `operation.end` (open). |
 | `merge.inspect` | Exempt (read) | Reads a merge. |
 | `merge.plan` | Exempt (read) | Plans an HDR merge; its `merge.create` is the operation. |
 | `merge.remove` | `interaction` merge-remove | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |

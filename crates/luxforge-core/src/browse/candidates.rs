@@ -50,8 +50,8 @@ pub(super) struct Extra {
     /// query needs it.
     pub last_edited_ms: i64,
     pub availability: FileAvailability,
-    /// A file that Moments without a pick leaves out: picked, or in a moment with a picked frame
-    /// (`view::decide`).
+    /// An item that Moments without a pick leaves out: a picked file, a file in a moment with a
+    /// picked frame or an active stack's original, or an active stack's result (`view::decide`).
     pub decided: bool,
 }
 
@@ -205,7 +205,7 @@ pub(super) struct Candidates {
     /// Aligned with `keys` as read; views reorder them.
     pub facts: Vec<FrameFacts>,
     pub names: Names,
-    /// The active HDR stacks the source holds, and the current development set.
+    /// The active HDR stacks the source holds.
     pub stacks: Stacks,
 }
 
@@ -299,9 +299,8 @@ pub(super) struct Reader<'a> {
 /// catalog folder or collection since merged away or deleted finds nothing from it, so the smart
 /// collection answers an empty view rather than an error its sources panel would show.
 ///
-/// With them come the active HDR stacks the source holds (`super::stacks`) and the current
-/// development set: over files, each stack's result joins the files as a photograph, Picked when it
-/// is in the set.
+/// With them come the active HDR stacks the source holds (`super::stacks`): over files, each
+/// stack's result joins the files as a photograph, never Picked.
 pub(super) fn read(
     reader: &mut Reader<'_>,
     source: &ViewSource,
@@ -316,15 +315,6 @@ pub(super) fn read(
             candidates.stacks = stacks::over_photos(loaded, |row| {
                 keys.binary_search(&ViewItem::Photo(row)).is_ok()
             });
-        }
-    }
-    candidates.stacks.in_set = stacks::in_set(connection)?;
-    if candidates.over_files && !candidates.stacks.is_empty() {
-        let in_set = &candidates.stacks.in_set;
-        for (key, extra) in candidates.keys.iter().zip(&mut candidates.extras) {
-            if let ViewItem::Photo(row) = key {
-                extra.picked = in_set.contains(row);
-            }
         }
     }
     Ok(candidates)

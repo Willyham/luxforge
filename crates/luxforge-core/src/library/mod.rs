@@ -32,8 +32,6 @@
 //! - `remove.rs`: removing photographs to Removed, putting them back, and emptying Removed.
 //! - `merge.rs`: publishing a merge's result with its provenance and stack, the stack's state as a
 //!   journal item, one active stack per input, exact-match reuse.
-//! - `development_set.rs`: the development set the owner holds for every client, its replacement,
-//!   its members as journal items, and what a merge's publication adds to it.
 pub(crate) mod items;
 pub(crate) mod journal;
 pub(crate) mod picks;
@@ -74,10 +72,6 @@ mod remove_tests;
 // Merges.
 /// Merge publication, provenance, stacks and their lifecycle.
 pub(crate) mod merge;
-
-// The development set.
-/// The current development set, its members and their journal item.
-pub(crate) mod development_set;
 
 // Batch preset and export.
 /// Batch preset and export: what both share, the naming, and the report as it grows.
