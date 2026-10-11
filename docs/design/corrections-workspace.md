@@ -52,6 +52,7 @@ A new correction is selected when it commits, so its source is visible immediate
 ### Setting a source
 
 - **`⌥`-click** (Alt elsewhere) sets the source for new corrections, as in Photoshop. While `⌥` is held, the cursor becomes the source crosshair at brush size, and pins ignore the press. The next press stores the offset from the source to its own position. Following presses keep that offset, which is what cloning a pattern across several strokes needs. While painting, an accent crosshair at the offset follows the brush and shows exactly what is sampled.
+- **A source stays on the photograph.** Every source's whole footprint lies inside the content frame, a stage pixel in from each edge (the footprint's part inside the frame, where it is wider than the frame). A kept offset carried to a press by an edge or a corner turns to the other side on each axis where it would leave, keeping its distance from the destination, and moves inward where the other side does not hold it either; the crosshair and the live source show where it lands. A source placed at a position (the first press after an `⌥`-click, a `⌘`-drag) moves inward just far enough. The core owns the rule (`luxforge_core::fit_correction_source`, `SourceFit::Turn` and `Clamp`) and stores a sent source by it, so the overlay draws the source where it commits. The frame is the content stage the repair reads, before crop and geometry, so a source can lie in a part a crop hides or, at a percentage zoom, outside the view.
 - The band's **Source** control shows **Auto** or **Set** with the offset (`150 px above`). Choosing **Auto**, or pressing Escape with nothing selected and no press held, clears it.
 - Shift is not a source key. Both reference applications use it for straight lines, and it does the same here.
 
@@ -61,15 +62,15 @@ Every correction has a **pin**: a 12 pt white ring on a translucent dark fill. A
 
 The **selected** correction shows:
 
-- **Its outline** (white), the envelope of the painted path at its radius.
+- **Its outline** (white), the edge of the area its coverage covers: the union of the brush's capsules along the stored path, traced over the distance to the path, so a stroke brushed back over itself has the outline of one pass and a hole it encloses is outlined too. The faint footprint of an automatic add fills the same area once.
 - **Its source** (dashed white) with a smaller hollow source pin, and the arrow from source to destination.
 - **A size handle** (white square) on the right of a spot's outline. A stroke is resized from its row.
 
 Drags, each one draft and one entry on release (`Move Heal 5`, `Move Heal 5 source`, `Resize Heal 2`), and a release that moved nothing writes nothing:
 
 - **Pin**: moves the destination by translating its whole path. The source stays where it is and the offset changes, as in Lightroom. This keeps a carefully chosen source in place while the repair is nudged.
-- **Source pin or dashed outline**: moves the source. The correction's source becomes a set source.
-- **Size handle**: changes a spot's radius about its centre.
+- **Source pin or dashed outline**: moves the source, which stops with its whole footprint inside the frame. The correction's source becomes a set source.
+- **Size handle**: changes a spot's radius about its centre; a source the larger footprint would push past the frame moves inward, as it does for the row's Size.
 
 Hit order is the selected correction's handles, then pins from the top of the stack down. A press anywhere else adds. Pins within 9 pt of the pointer catch it, and when two overlap the topmost wins; `↑`/`↓` reach the other. `⌥` and `⌘` presses bypass pins. With pins hidden (`H`), there are no hit targets and every press adds.
 
