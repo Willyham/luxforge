@@ -466,7 +466,13 @@ impl Editor {
                     return self.start_batch(BatchKind::Export { folder }, params);
                 }
             }
-            CatalogAction::Remove => self.ask_remove(),
+            CatalogAction::Remove => {
+                // Over files the one thing Remove takes away is a merge, its result active.
+                if self.select_shown() && !self.select.state.over_catalog() {
+                    return self.remove_active_merge();
+                }
+                self.ask_remove();
+            }
             CatalogAction::Restore => {
                 self.close_catalog_menus();
                 if !model::over_removed(&self.select.state) || self.catalog_selection().count == 0 {

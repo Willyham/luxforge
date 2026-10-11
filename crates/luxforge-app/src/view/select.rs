@@ -10,7 +10,10 @@
 use crate::{
     app::{
         loupe::LoupeImages,
-        message::{Message, loupe::LoupeMessage, select::SelectMessage, view::ViewMessage},
+        message::{
+            Message, loupe::LoupeMessage, select::SelectMessage, select_merge::MergeMessage,
+            view::ViewMessage,
+        },
         select_previews::GridImages,
     },
     layout::{
@@ -27,6 +30,7 @@ use crate::{
             SelectPanel, SelectStatus, SelectTitle, SelectionModel, Shown, SourceIcon, SourcePress,
             SourceRow, SourcesModel, StripModel,
         },
+        select_merge,
     },
     view::state_panel,
     window_frame,
@@ -36,8 +40,9 @@ use iced::{
     alignment::Vertical,
     widget::{Column, Space, column, container, mouse_area, row, scrollable, stack, text, tooltip},
 };
+use luxforge_core::catalog_types::{StackExpansion, StackRole};
 use luxforge_ui::{
-    ButtonSize, ButtonTone, CatalogSheetModel, CellAvailability, CellView, ChipEnd,
+    ButtonSize, ButtonTone, CatalogSheetModel, CellAvailability, CellStack, CellView, ChipEnd,
     FilterChipModel, FilterOption, FilterSegmentsModel, GridCell, GridLayout, Icon,
     IconButtonModel, LabelledButtonModel, MenuEntry, MenuItem, NoticeCardModel, SearchFieldModel,
     SelectStripModel, SourceCount, SourceHeadingModel, SourceRowModel, Tone as NoticeTone, Volume,
@@ -617,7 +622,14 @@ fn centre<'a>(
         })
         .on_press(|press| Message::Select(SelectMessage::Press(press)))
         .on_context(|context| Message::Select(SelectMessage::Context(context)))
-        .on_moment_action(|moment| Message::Select(SelectMessage::PickAll(moment)))
+        .on_moment_action(|moment, action| {
+            Message::Select(SelectMessage::Merge(MergeMessage::Header {
+                moment,
+                action,
+            }))
+        })
+        .on_pending_action(|_| Message::Select(SelectMessage::Merge(MergeMessage::Pending)))
+        .on_stack(|item| Message::Select(SelectMessage::Merge(MergeMessage::Disclosure(item))))
         .on_scroll(|offset| Message::Select(SelectMessage::Scrolled(offset)))
         .viewport(viewport)
         .on_viewport(|size| Message::Select(SelectMessage::Viewport(size)))
@@ -652,6 +664,21 @@ fn centre<'a>(
     if let Some(sheet) = &model.catalog.sheet {
         layers = layers.push(crate::view::select_catalog::sheet(sheet));
     }
+    // A merge found in Removed, offered back; the merge menu where a right-click opened it; and
+    // Merge options….
+    if let Some(put_back) = &model.merge.put_back {
+        layers = layers.push(
+            container(crate::view::select_merge::put_back(put_back))
+                .center_x(Length::Fill)
+                .padding(Padding::default().top(theme::SPACING * 1.75)),
+        );
+    }
+    if let Some(menu) = &model.merge.menu {
+        layers = layers.push(crate::view::select_merge::menu(menu, viewport));
+    }
+    if let Some(form) = &model.merge.form {
+        layers = layers.push(crate::view::select_merge::form(form));
+    }
     // Over the catalog: its own filter bar, and the Metadata browser under it while open.
     let mut regions = match &model.catalog.filter {
         Some(catalog) => column![crate::view::select_catalog::filter_bar(
@@ -683,6 +710,29 @@ fn cell_view<'a>(
     let shown = rows.shown(cell.item, cell.span);
     let facts = rows.cell(shown).unwrap_or_default();
     let unreadable = images.unreadable(shown);
+    // A merge's result leads its stack with a badge; each original says its exposure, and why it
+    // is shown when the filter would not show it.
+    let row = rows.row(shown);
+    let stack = row.and_then(|row| row.stack.as_ref());
+    let badge = stack
+        .filter(|stack| stack.role == StackRole::Leader)
+        .map(|stack| {
+            let (label, short) = select_merge::stack_words(stack.exposures);
+            CellStack {
+                label,
+                short,
+                expanded: stack
+                    .expansion
+                    .is_some_and(|expansion| expansion != StackExpansion::Collapsed),
+            }
+        });
+    let note = stack.and_then(|stack| {
+        select_merge::stack_note(stack, row.and_then(|row| row.reason.as_deref()))
+    });
+    let exposure = stack
+        .filter(|stack| stack.role == StackRole::Original)
+        .and_then(|stack| stack.offset_ev)
+        .and_then(select_merge::ev_words);
     CellView {
         // The decoded preview while the cache holds it; the placeholder at the photograph's shape
         // while it loads.
@@ -703,8 +753,11 @@ fn cell_view<'a>(
         // says so, quietly, as the loupe does.
         label: content
             .label(cell.item)
+            .or(exposure)
             .or_else(|| images.approximate(shown).then_some(APPROXIMATE)),
         edited: facts.edited,
+        stack: badge,
+        note,
     }
 }
 
@@ -856,6 +909,9 @@ fn item_view(item: &ItemInfo) -> Element<'_, Message> {
         column![preview_placeholder(item.aspect)].spacing(theme::PANEL_SECTION_SPACING);
     if let Some(pick) = &item.pick {
         content = content.push(pick_band(pick));
+    }
+    if let Some(stack) = &item.stack {
+        content = content.push(crate::view::select_merge::stack_band(stack));
     }
     if !item.moment.is_empty() {
         content = content.push(band("Moment", &item.moment));

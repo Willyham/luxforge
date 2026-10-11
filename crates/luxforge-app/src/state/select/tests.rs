@@ -129,7 +129,7 @@ fn moment(
         detail: detail.into(),
         evidence: evidence.map(Into::into),
         picked: None,
-        action: bracket.then(|| format!("Pick all {frames}")),
+        actions: moment_actions(bracket, 0, frames),
         frames,
         collapsed,
     }
@@ -143,7 +143,7 @@ fn numbered(block: Block, number: u32, picked: Option<&str>) -> Block {
             title,
             detail,
             evidence,
-            action,
+            actions,
             frames,
             collapsed,
             ..
@@ -154,7 +154,7 @@ fn numbered(block: Block, number: u32, picked: Option<&str>) -> Block {
             detail,
             evidence,
             picked: picked.map(Into::into),
-            action,
+            actions,
             frames,
             collapsed,
         },
@@ -234,10 +234,17 @@ fn a_select_group_layout_becomes_days_cameras_moments_and_singles() {
     // bracket does.
     let mut all = trip.clone();
     all.groups.moments[1].picked = 3;
-    assert!(grid_content(&all, &BTreeSet::new()).blocks.iter().any(|block| matches!(
-        block,
-        Block::Moment { index: 1, action: None, picked: Some(picked), .. } if picked == "3 picked"
-    )));
+    assert!(
+        grid_content(&all, &BTreeSet::new())
+            .blocks
+            .iter()
+            .any(|block| matches!(
+                block,
+                Block::Moment { index: 1, actions, picked: Some(picked), .. }
+                    if picked == "3 picked"
+                        && actions.iter().all(|action| !matches!(action, MomentAction::PickAll(_)))
+            ))
+    );
     let mut photos = trip.clone();
     photos.query = ViewQuery::of(ViewSource::AllPhotographs);
     assert!(
@@ -246,10 +253,7 @@ fn a_select_group_layout_becomes_days_cameras_moments_and_singles() {
             .iter()
             .all(|block| !matches!(
                 block,
-                Block::Moment {
-                    action: Some(_),
-                    ..
-                }
+                Block::Moment { actions, .. } if !actions.is_empty()
             ))
     );
     // The bracket's frames carry their steps as footers; nothing else has one.
