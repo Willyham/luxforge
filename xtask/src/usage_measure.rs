@@ -630,7 +630,8 @@ fn drag(report: &mut Report, options: &Options, bin: &Path) -> Result {
 
 /// The presence launch's script: the native window shown, the Performance section closed, the
 /// statistics clock moved past the first window, two idle windows presented, the window hidden,
-/// two observation windows, shown again, and for an opted-in launch the attempt's end.
+/// two observation windows, shown again, and the attempt's end (opted in) or collection read off
+/// (opted out), so every mode runs the same steps.
 fn presence_script(mode: UsageMode) -> Vec<script::Step> {
     let mut steps = vec![
         script::Step::WindowVisibility {
@@ -649,14 +650,9 @@ fn presence_script(mode: UsageMode) -> Vec<script::Step> {
             action: "show_window".into(),
         },
     ];
-    if mode.collects() {
-        steps.push(script::Step::Usage(script::UsageStep::Await(
-            script::UsageAwait {
-                attempts: Some(1),
-                ..script::UsageAwait::default()
-            },
-        )));
-    }
+    steps.push(script::Step::Usage(script::UsageStep::Await(
+        editor_latency::usage_await(mode),
+    )));
     steps
 }
 
