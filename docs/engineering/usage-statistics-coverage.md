@@ -259,6 +259,7 @@ A job records its terminal outcome once, through the job table's one finishing p
 | `source.missing` | Exempt (read) | Lists missing originals. |
 | `source.prepare` | `operation.end` source-preparation | The job's terminal outcome (completed, cancelled, refused, failed) and duration from queueing, with the image when it prepared one; recorded only in the generation it was queued in. |
 | `source.relink` | `interaction` originals-relink | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
+| `task.fill-generative` | Exempt (internal) | Generates candidates while the `ai.generative` experiment is on, and edits nothing; accepting one is `edit.accept-correction-patch`, which records the commit. |
 | `theme.delete` | `interaction` theme-delete | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |
 | `theme.export` | `interaction` `theme-export` | When it answers: the desktop writes the file it returns. |
 | `theme.import` | `interaction` theme-import | When it changed something (announced in the event log): never for a no-op, a refusal or a retry. |

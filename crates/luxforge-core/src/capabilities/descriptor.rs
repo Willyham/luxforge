@@ -1213,10 +1213,17 @@ mod tests {
     fn descriptors_without_capabilities_serialize_exactly_as_before() {
         for descriptor in ModuleRegistry::builtin().descriptors() {
             let value = serde_json::to_value(descriptor).unwrap();
-            for key in ["settings", "capabilities", "resources", "tasks"] {
-                assert!(
+            let declared = [
+                ("settings", descriptor.settings.is_none()),
+                ("capabilities", descriptor.capabilities.is_empty()),
+                ("resources", descriptor.resources.is_empty()),
+                ("tasks", descriptor.tasks.is_empty()),
+            ];
+            for (key, empty) in declared {
+                assert_eq!(
                     value.get(key).is_none(),
-                    "{} serializes an empty {key}",
+                    empty,
+                    "{} serializes {key} exactly when it declares one",
                     descriptor.id
                 );
             }

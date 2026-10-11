@@ -97,7 +97,8 @@ wire_enum! {
 
 impl Tool {
     /// The tool a built-in module's identity belongs to, or `None` for anything that is not a
-    /// shipped adjustment tool: an external or developer module, Presets, or an unknown identity.
+    /// shipped adjustment tool: an external or developer module, Presets, AI editing (whose
+    /// accepted patch is a Corrections layer), or an unknown identity.
     pub fn from_module_id(module: &str) -> Option<Self> {
         Some(match module {
             "luxforge.basic" => Self::Basic,
@@ -411,9 +412,11 @@ mod tests {
         for descriptor in registry.descriptors() {
             match Tool::from_module_id(&descriptor.id) {
                 Some(tool) => mapped.push(tool),
-                None => assert_eq!(
-                    descriptor.id, "luxforge.presets",
-                    "only Presets, which commits under each changed group's own tool, is not one"
+                None => assert!(
+                    ["luxforge.presets", "luxforge.ai"].contains(&descriptor.id.as_str()),
+                    "only Presets, which commits under each changed group's own tool, and AI \
+                     editing, whose accepted patch commits under Corrections, are not one: {}",
+                    descriptor.id
                 ),
             }
         }
