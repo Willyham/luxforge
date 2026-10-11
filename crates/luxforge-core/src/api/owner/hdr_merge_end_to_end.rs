@@ -1,6 +1,7 @@
 //! HDR merging end to end through the production RAW path: synthetic brackets of real DNGs
-//! (`luxforge_testkit::hdr_bracket`, a synthetic body the camera catalog admits) are read, indexed,
-//! grouped, decoded and developed exactly as a person's DNGs are, merged by `merge.plan` and
+//! (`luxforge_testkit::hdr_bracket`, of a synthetic RAW test camera that writing a bracket admits
+//! for the process) are read, indexed, grouped, decoded and developed exactly as a person's DNGs
+//! are, merged by `merge.plan` and
 //! `merge.create` through the real owner and registry with the shared verified development (no
 //! synthetic camera), and the result opened, compared with the scene's ground truth and exported.
 use super::*;
@@ -17,7 +18,8 @@ use crate::{
 use std::{sync::atomic::AtomicBool, thread::JoinHandle};
 
 // The generator, compiled in from its one source: the core cannot name `luxforge-testkit`, which
-// depends on it.
+// depends on it. Its `Bracket::write`, which every test here calls before reading a frame, admits
+// the RAW test cameras through the core's own `luxforge_raw`.
 #[allow(dead_code)]
 #[path = "../../../../luxforge-testkit/src/hdr_bracket.rs"]
 mod hdr_bracket;

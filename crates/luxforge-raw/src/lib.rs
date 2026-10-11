@@ -49,13 +49,57 @@ use profiles::{Catalog, Crop, Mode};
 pub use profiles::{DngOpticalRole, DngOptics};
 
 /// The camera catalog as static data, which the build script generated from `data/cameras.json`
-/// after validating it: nothing is parsed at run time.
+/// after validating it, beside the test camera table from `data/test-cameras.json`, validated the
+/// same way: nothing is parsed at run time.
 mod catalog {
     include!(concat!(env!("OUT_DIR"), "/camera_catalog.rs"));
 }
 
+/// The shipped camera catalog: the real bodies, without the test cameras.
 fn camera_catalog() -> &'static Catalog {
     &catalog::CATALOG
+}
+
+/// Whether this process admits the test cameras: false until [`admit_test_cameras`].
+static TEST_CAMERAS: AtomicBool = AtomicBool::new(false);
+
+/// Admit the test cameras (`data/test-cameras.json`, such as the synthetic body
+/// `luxforge_testkit::hdr_bracket` records) for the rest of this process: from now on every
+/// catalog lookup, Rust's and the native adapter's, consults them after the shipped catalog. Until
+/// it is called, a file from a test camera is refused as any camera outside the catalog is. Only
+/// tests call it, and the editor when started with `LUXFORGE_TEST_CAMERAS=1`; calling it again
+/// does nothing.
+pub fn admit_test_cameras() {
+    TEST_CAMERAS.store(true, Ordering::Release);
+}
+
+/// Whether [`admit_test_cameras`] has been called in this process.
+pub fn test_cameras_admitted() -> bool {
+    TEST_CAMERAS.load(Ordering::Acquire)
+}
+
+/// The catalogs a lookup consults, in order: the shipped catalog, then the test cameras once
+/// admitted. The two share no camera or mode, which the build script checks.
+fn admitted_catalogs() -> impl Iterator<Item = &'static Catalog> {
+    std::iter::once(camera_catalog())
+        .chain(test_cameras_admitted().then_some(&catalog::TEST_CATALOG))
+}
+
+/// Every camera a lookup admits: the shipped ones, then the test cameras once admitted.
+fn admitted_cameras() -> impl Iterator<Item = &'static profiles::Camera> {
+    admitted_catalogs().flat_map(|catalog| catalog.cameras.iter())
+}
+
+/// The admitted catalog that holds `make` `model`, else the shipped one, which then refuses it.
+fn catalog_for(make: &str, model: &str) -> &'static Catalog {
+    admitted_catalogs()
+        .find(|catalog| {
+            catalog
+                .cameras
+                .iter()
+                .any(|camera| camera.make == make && camera.model == model)
+        })
+        .unwrap_or_else(camera_catalog)
 }
 
 /// What read a source, as `RawMetadata::backend` names it: LibRaw identifies the file and reads
@@ -133,9 +177,7 @@ pub struct RawMode(&'static Mode);
 impl RawMode {
     /// The catalog's mode with identifier `id`.
     pub fn from_id(id: &str) -> Option<Self> {
-        camera_catalog()
-            .cameras
-            .iter()
+        admitted_cameras()
             .flat_map(|camera| camera.modes.iter())
             .find(|mode| mode.id == id)
             .map(Self)
@@ -155,7 +197,7 @@ impl RawMode {
 
     /// A catalogued one-channel source without a CFA has no white-balance capability.
     pub fn is_monochrome(self) -> bool {
-        camera_catalog().cameras.iter().any(|camera| {
+        admitted_cameras().any(|camera| {
             camera.cfa_size == [0, 0]
                 && camera.channels == 1
                 && camera.modes.iter().any(|mode| mode.id == self.0.id)
@@ -164,9 +206,7 @@ impl RawMode {
 
     /// The camera's declared DNG optical roles, derived from its static catalog record.
     pub fn dng_optics(self) -> Option<&'static DngOptics> {
-        let camera = camera_catalog()
-            .cameras
-            .iter()
+        let camera = admitted_cameras()
             .find(|camera| camera.modes.iter().any(|mode| mode.id == self.0.id))?;
         self.0
             .processing
@@ -454,6 +494,7 @@ unsafe extern "C" {
         length: usize,
         cancel: CancelCallback,
         cancel_context: *mut c_void,
+        test_cameras: c_int,
         handle_out: *mut *mut c_void,
         identity: *mut NativeIdentity,
         err: *mut c_char,
@@ -482,6 +523,7 @@ unsafe extern "C" {
         length: usize,
         cancel: CancelCallback,
         cancel_context: *mut c_void,
+        test_cameras: c_int,
         handle_out: *mut *mut c_void,
         identity: *mut NativeIdentity,
         err: *mut c_char,
@@ -516,6 +558,7 @@ type NativeOpen = unsafe extern "C" fn(
     usize,
     CancelCallback,
     *mut c_void,
+    c_int,
     *mut *mut c_void,
     *mut NativeIdentity,
     *mut c_char,
@@ -551,6 +594,9 @@ impl<'a> NativeHandle<'a> {
         let mut identity = NativeIdentity::blank();
         let mut handle = std::ptr::null_mut();
         let mut error = [0 as c_char; 256];
+        // The native table of test cameras is consulted only once this process admits them, as
+        // the Rust catalog lookups are.
+        let test_cameras = c_int::from(test_cameras_admitted());
         // SAFETY: bytes outlive the returned guard through its lifetime, and the native handle
         // keeps borrowing them until the guard closes it; identity, handle and error are
         // writable for the synchronous call, and the context lives for the call.
@@ -560,6 +606,7 @@ impl<'a> NativeHandle<'a> {
                 bytes.len(),
                 cancel,
                 context,
+                test_cameras,
                 &mut handle,
                 &mut identity,
                 error.as_mut_ptr(),
@@ -796,11 +843,12 @@ impl RawSource {
         } else {
             Vec::new()
         };
+        let (make, model) = (c_text(&identity.make), c_text(&identity.model));
         let (profile, recording) = classify_mode(
-            camera_catalog(),
+            catalog_for(&make, &model),
             &identity,
-            &c_text(&identity.make),
-            &c_text(&identity.model),
+            &make,
+            &model,
             &c_text(&identity.decoder),
             bytes,
         )?;
