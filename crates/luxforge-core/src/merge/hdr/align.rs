@@ -35,14 +35,20 @@
 //!    log-brightness offset `β`, minimizing the Huber-weighted (`k = 1.345 σ`, `σ` the robust
 //!    deviation, at least [`MIN_SIGMA_EV`]) residual `L_input(q) − L_reference(p) − β` over at most
 //!    [`MAX_REGISTRATION_SAMPLES`] grid samples a level, bilinear in the input, for at most
-//!    [`MAX_ITERATIONS`] iterations a level.
+//!    [`MAX_ITERATIONS`] iterations a level. Each level is read through the widest of
+//!    [`PREFILTERS`] that keeps [`PREFILTER_KEEP`] of the samples the two frames share, over whole
+//!    usable neighbourhoods only, passing over the widest where the residuals already predict more
+//!    than [`SYSTEMATIC_PX`]; else as it is. Unfiltered, detail near the level's sampling limit,
+//!    softened by the bilinear sampling of the input alone and aliased by each frame's grid,
+//!    pulls the fit wherever the two grids are a fraction of a pixel apart.
 //! 4. **Acceptance.** On the proxy itself: at least [`MIN_SUPPORT`] shared usable samples,
 //!    [`MIN_INLIER_FRACTION`] of them within [`INLIER_EV`] of the fit, a predicted one-sigma
 //!    position error of at most [`MAX_UNCERTAINTY_PX`] proxy pixels, and a motion within
 //!    [`MAX_ROTATION_DEG`] and [`MAX_SHIFT_FRACTION`] of each side. Otherwise a typed
-//!    [`Refusal`]. An accepted fit that moves no frame corner further than [`SNAP_SIGMAS`] of its
-//!    predicted error, nor than [`SNAP_LIMIT_PX`], is recorded as the identity, with how far it
-//!    was: a still frame is copied exactly and costs the coverage nothing.
+//!    [`Refusal`]. The predicted error reported adds [`SYSTEMATIC_PX`] in quadrature. An accepted
+//!    fit that moves no frame corner further than [`SNAP_SIGMAS`] of that predicted error, nor
+//!    than [`SNAP_LIMIT_PX`], is recorded as the identity, with how far it was: a still frame is
+//!    copied exactly and costs the coverage nothing.
 //! 5. **Chaining.** An input the reference cannot fix (typically a wide bracket's extreme
 //!    exposure, which shares only a narrow band of usable range with it) is fitted to an already
 //!    aligned input instead, the one furthest from the reference in measured brightness first,
@@ -58,9 +64,10 @@
 //! Every level is bounded by the proxy (at most 1 Mi pixels); the scratch of one pair's two
 //! pyramids and the input's gradients is at most about 24 bytes a proxy pixel (24 MiB), and a
 //! search on a finer level than the coarsest adds both frames' smoothed and ranked copies of it,
-//! at most 20 bytes a proxy pixel more on the proxy itself, all released before the next input. A
-//! search visits the smaller frame's usable pixels at every shift. `cancel` is checked before each
-//! input, level and iteration.
+//! at most 20 bytes a proxy pixel more on the proxy itself, released before the refinement, which
+//! adds the prefiltered pair of the level it reads, at most 22 bytes a proxy pixel more, one level
+//! at a time; all are released before the next input. A search visits the smaller frame's usable
+//! pixels at every shift. `cancel` is checked before each input, level and iteration.
 
 use super::exposure::median_of_sorted;
 use super::frame::{FrameMetadata, MAX_INPUTS, MIN_INPUTS, Refusal};
@@ -93,6 +100,15 @@ pub const DISTINCT_PEAK_MARGIN: f64 = 0.02;
 pub const MIN_TEXTURE: f64 = 1e-3;
 /// The most samples one refinement level reads.
 pub const MAX_REGISTRATION_SAMPLES: usize = 1 << 18;
+/// The refinement reads a level through a prefilter (see `Level::prefiltered`) only while the
+/// filtered frames still share at least this fraction of the samples the two share as they are,
+/// and at least [`MIN_SEARCH_PIXELS`]. A frame that records only narrow regions between its
+/// roll-off and its floor (a wide bracket's extreme exposure) loses most of them to the filter's
+/// whole neighbourhoods, and what is left is bounded by one-sided edges that pull a fit more than
+/// the unfiltered detail does.
+pub const PREFILTER_KEEP: f64 = 0.8;
+/// The refinement's prefilters, widest first: the binomials `[1 4 6 4 1]/16` and `[1 2 1]/4`.
+pub const PREFILTERS: [&[f64]; 2] = [&[1.0, 4.0, 6.0, 4.0, 1.0], &[1.0, 2.0, 1.0]];
 /// The most Gauss-Newton iterations per level.
 pub const MAX_ITERATIONS: usize = 30;
 /// The smallest robust residual deviation the Huber weights assume, in EV.
@@ -105,18 +121,27 @@ pub const INLIER_EV: f64 = 0.25;
 pub const MIN_INLIER_FRACTION: f64 = 0.5;
 /// The largest predicted one-sigma position error of an accepted fit, in proxy pixels.
 pub const MAX_UNCERTAINTY_PX: f64 = 0.1;
+/// The one-sigma position error, in pixels of the level fitted, that a fit's residuals do not
+/// show: what the sampling and the refinement's interpolation leave of the frames' detail through
+/// its prefilter, the same in every sample of one fit, so that it does not average away (the
+/// synthetic brackets' well-exposed handheld frames land up to about 0.05 proxy pixel from their
+/// motion, and still frames up to about 0.01). Added in quadrature to the residuals' prediction
+/// in the reported uncertainty, and so in the snap to the identity; the acceptance and the
+/// confidence rest on the residuals alone. A level whose residuals already predict more than this is
+/// limited by its noise, not its detail, and is not read through the widest prefilter, which
+/// costs more of its information than it removes of the error.
+pub const SYSTEMATIC_PX: f64 = 0.03;
 /// The largest rotation handheld alignment corrects.
 pub const MAX_ROTATION_DEG: f64 = 3.0;
 /// The largest translation it corrects, as a fraction of the frame's width or height.
 pub const MAX_SHIFT_FRACTION: f64 = 0.08;
 /// A fit that moves no frame corner by more than this many of its own predicted one-sigma
-/// position errors...
+/// position errors (with [`SYSTEMATIC_PX`])...
 pub const SNAP_SIGMAS: f64 = 3.0;
 /// ...and by no more than this, in full-resolution pixels, is the identity: a still frame is
 /// copied, not resampled, and costs the coverage nothing. The registration's strictest declared
-/// accuracy, so the identity is never further from a fit than the fit is trusted to be; a fit
-/// as precise as a well-exposed frame's (a few thousandths of a pixel) snaps only within a few
-/// hundredths.
+/// accuracy, so the identity is never further from a fit than the fit is trusted to be; with
+/// [`SYSTEMATIC_PX`], three predicted errors reach it through a 2× proxy or coarser.
 pub const SNAP_LIMIT_PX: f64 = 0.1;
 /// With alignment off, a displacement of at least this many coarse pixels...
 pub const FRAMING_TOLERANCE_PX: i32 = 2;
@@ -335,7 +360,8 @@ pub enum AlignmentEvidence {
     /// shares too little usable range with the reference's), the coarse search's correlation, the
     /// shared usable samples on the proxy, the fraction agreeing within [`INLIER_EV`], the robust
     /// residual deviation and measured log-brightness offset from the reference in EV, the
-    /// predicted one-sigma position error in full-resolution pixels, and a confidence in
+    /// predicted one-sigma position error in full-resolution pixels (the residuals' and
+    /// [`SYSTEMATIC_PX`] in quadrature), and a confidence in
     /// `[0, 1]`, all of the last fitted pair; and, when that pair's fit was within its own
     /// uncertainty of no motion and so recorded as the identity, the furthest it moved a frame
     /// corner (`snapped_px`, see [`SNAP_SIGMAS`]).
@@ -687,6 +713,61 @@ impl Level {
             offset: self.offset,
             value,
             usable: self.usable.clone(),
+            gradient: None,
+        }
+    }
+
+    /// The level the refinement reads: the separable binomial `taps²` (one of [`PREFILTERS`]) of
+    /// each pixel whose whole neighbourhood under it is usable, and usable only there. A level
+    /// holds detail up to its sampling limit, which the refinement's bilinear sampling softens in
+    /// the input alone, by an amount that depends on the sub-pixel phase between the two grids,
+    /// and which each frame's grid aliases differently: matched as it is, that detail pulls a fit
+    /// by up to a few tenths of a pixel wherever the grids are half a pixel apart, the more the
+    /// further the exposures (each records the detail through its own clipping and noise).
+    /// Filtered, it is gone. Filtering whole neighbourhoods only makes every value the same
+    /// weighted mean of recorded pixels in both frames, so the edge of what a frame recorded (its
+    /// roll-off, its noise floor) shifts neither frame's values.
+    fn prefiltered(&self, taps: &[f64]) -> Self {
+        let radius = taps.len() / 2;
+        let norm: f64 = taps.iter().sum();
+        let (w, h) = (self.width, self.height);
+        // Across, NaN wherever a tap is unusable.
+        let mut across = vec![f32::NAN; w * h];
+        for y in 0..h {
+            for x in radius..w.saturating_sub(radius) {
+                let first = y * w + x - radius;
+                if self.usable[first..=first + 2 * radius].iter().all(|&u| u) {
+                    let sum: f64 = taps
+                        .iter()
+                        .zip(&self.value[first..=first + 2 * radius])
+                        .map(|(tap, &v)| tap * f64::from(v))
+                        .sum();
+                    across[y * w + x] = (sum / norm) as f32;
+                }
+            }
+        }
+        let mut value = vec![0.0; w * h];
+        let mut usable = vec![false; w * h];
+        for y in radius..h.saturating_sub(radius) {
+            for x in 0..w {
+                let sum: f64 = taps
+                    .iter()
+                    .enumerate()
+                    .map(|(k, tap)| tap * f64::from(across[(y + k - radius) * w + x]))
+                    .sum();
+                if sum.is_finite() {
+                    value[y * w + x] = (sum / norm) as f32;
+                    usable[y * w + x] = true;
+                }
+            }
+        }
+        Self {
+            width: w,
+            height: h,
+            scale: self.scale,
+            offset: self.offset,
+            value,
+            usable,
             gradient: None,
         }
     }
@@ -1227,6 +1308,39 @@ fn fit(
         .rev()
     {
         cancel.check()?;
+        // Through the widest prefilter that keeps enough of what the two share (see
+        // [`PREFILTER_KEEP`]), passing over the widest when noise, not detail, limits the fit
+        // here (see [`SYSTEMATIC_PX`]); else as it is.
+        let mut residuals = normal(
+            reference_level,
+            level,
+            &parameters,
+            width,
+            height,
+            f64::INFINITY,
+        )
+        .residuals;
+        let all = residuals.len() as f64;
+        let precision = predicted_error(
+            reference_level,
+            level,
+            &parameters,
+            width,
+            height,
+            robust_sigma(&mut residuals),
+        );
+        let widest = usize::from(precision > SYSTEMATIC_PX);
+        let filtered = PREFILTERS[widest..].iter().find_map(|taps| {
+            let pair = (
+                reference_level.prefiltered(taps),
+                level.prefiltered(taps).with_gradient(),
+            );
+            let kept = shared(&pair.0, &pair.1, &parameters, width, height);
+            (kept >= MIN_SEARCH_PIXELS && kept as f64 >= PREFILTER_KEEP * all).then_some(pair)
+        });
+        let (reference_level, level) = filtered
+            .as_ref()
+            .map_or((reference_level, level), |(r, l)| (r, l));
         let mut sigma = MIN_SIGMA_EV.max(robust_sigma(
             &mut normal(
                 reference_level,
@@ -1297,20 +1411,14 @@ fn fit(
         .into());
     }
     let residual_ev = robust_sigma(&mut final_normal.residuals);
-    let weighted = normal(
+    let uncertainty = predicted_error(
         base_reference,
         base,
         &parameters,
         width,
         height,
-        MIN_SIGMA_EV.max(residual_ev),
+        residual_ev,
     );
-    let weakest = weakest_direction(&weighted.h, base);
-    let uncertainty = if weakest > 0.0 {
-        MIN_SIGMA_EV.max(residual_ev) / weakest.sqrt()
-    } else {
-        f64::INFINITY
-    };
     if uncertainty > MAX_UNCERTAINTY_PX {
         return Err(Refusal::LowTexture { input }.into());
     }
@@ -1319,7 +1427,7 @@ fn fit(
         .clamp(0.0, 1.0);
     // A fit no further from no motion than its own uncertainty, and a small bound, is a still
     // frame's: the identity, copied exactly, rather than a resample a hundredth of a pixel away.
-    let uncertainty_px = uncertainty * base.scale;
+    let uncertainty_px = uncertainty.hypot(SYSTEMATIC_PX) * base.scale;
     let identity = RigidTransform::identity(width, height);
     let moved = transform.corner_distance(&identity, width, height);
     let (transform, snapped_px) = if moved <= SNAP_LIMIT_PX.min(SNAP_SIGMAS * uncertainty_px) {
@@ -1472,10 +1580,7 @@ fn normal(
     let transform = parameters.transform(width, height);
     let affine = transform.affine();
     let (s, c) = parameters.rotation.sin_cos();
-    let stride = ((reference.width * reference.height) as f64 / MAX_REGISTRATION_SAMPLES as f64)
-        .sqrt()
-        .ceil()
-        .max(1.0) as usize;
+    let stride = sample_stride(reference);
     let k = 1.345 * sigma;
     let mut h = [[0.0_f64; 4]; 4];
     let mut g = [0.0_f64; 4];
@@ -1511,6 +1616,58 @@ fn normal(
         }
     }
     Normal { h, g, residuals }
+}
+
+/// The predicted one-sigma position error of a fit at `parameters` whose residuals' robust
+/// deviation is `residual_ev`, in the level's pixels: the deviation (at least [`MIN_SIGMA_EV`])
+/// over the root of the information its weakest direction of motion rests on.
+fn predicted_error(
+    reference: &Level,
+    level: &Level,
+    parameters: &Parameters,
+    width: u32,
+    height: u32,
+    residual_ev: f64,
+) -> f64 {
+    let sigma = MIN_SIGMA_EV.max(residual_ev);
+    let weighted = normal(reference, level, parameters, width, height, sigma);
+    let weakest = weakest_direction(&weighted.h, level);
+    if weakest > 0.0 {
+        sigma / weakest.sqrt()
+    } else {
+        f64::INFINITY
+    }
+}
+
+/// How many samples [`normal`] reads at `parameters`: its grid's reference pixels whose input
+/// sample and gradient are usable.
+fn shared(
+    reference: &Level,
+    level: &Level,
+    parameters: &Parameters,
+    width: u32,
+    height: u32,
+) -> usize {
+    let affine = parameters.transform(width, height).affine();
+    let stride = sample_stride(reference);
+    let mut count = 0;
+    for y in (0..reference.height).step_by(stride) {
+        for x in (0..reference.width).step_by(stride) {
+            if reference.at(x, y).is_some() {
+                let (q, _) = reference.map(&affine, x as f64, y as f64);
+                count += usize::from(level.sample_gradient(q.0, q.1).is_some());
+            }
+        }
+    }
+    count
+}
+
+/// The grid step that keeps one level's samples within [`MAX_REGISTRATION_SAMPLES`].
+fn sample_stride(reference: &Level) -> usize {
+    ((reference.width * reference.height) as f64 / MAX_REGISTRATION_SAMPLES as f64)
+        .sqrt()
+        .ceil()
+        .max(1.0) as usize
 }
 
 /// Solve `h · x = g` by Gaussian elimination with partial pivoting; `None` when singular.
