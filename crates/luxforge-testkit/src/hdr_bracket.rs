@@ -3,7 +3,9 @@
 //! synthetic body, `Luxforge Synthetic Bracket`, which the RAW camera catalog
 //! (`crates/luxforge-raw/data/cameras.json`) admits like any DNG camera, so each file is read,
 //! indexed, decoded and developed exactly as a person's DNG is. [`write_bracket`] materialises one
-//! into a folder; [`Bracket`] also answers the scene's ground truth.
+//! into a folder; [`Bracket`] also answers the scene's ground truth. [`Bracket::photo_samples`]
+//! and [`Bracket::photo_dng`] record the same bracket at 24 or 60 MP ([`PhotoSize`]), band by
+//! band, for measuring merges at photo size.
 //!
 //! The scene holds real HDR range: a sky and a lit window that clip in the metered (0 EV) frame
 //! and are recorded by the shorter exposures, a sun no exposure records, a doorway in deep shadow
@@ -159,10 +161,59 @@ impl Rigid {
 
     /// The reference point a frame's pixel `q` recorded.
     pub fn unmap(&self, q: (f64, f64)) -> (f64, f64) {
+        self.unmap_about(Self::centre(), q)
+    }
+
+    /// [`Self::unmap`] about the centre `o` of a frame of another size.
+    fn unmap_about(&self, o: (f64, f64), q: (f64, f64)) -> (f64, f64) {
         let (s, c) = sin_cos_small(self.rotation_rad);
-        let o = Self::centre();
         let (dx, dy) = (q.0 - self.shift.0 - o.0, q.1 - self.shift.1 - o.1);
         (o.0 + c * dx + s * dy, o.1 - s * dx + c * dy)
+    }
+}
+
+/// A photo-sized recording of a bracket's scene, for measuring merges at the sizes cameras record
+/// (`cargo xtask hdr-merge-measure`): the same body in a recording mode of its own for each size
+/// (`crates/luxforge-raw/data/cameras.json`), with the same [`CROP_ORIGIN`] border on every side.
+/// The scene is the test frame's magnified to the photo's width, so a frame holds the same
+/// subjects; a handheld frame's shifts are magnified with it and its rotations kept. Only the
+/// files are made at these sizes: [`Bracket::truth`] and the other ground-truth answers are the
+/// test size's.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PhotoSize {
+    /// 6000 × 4000 developed pixels.
+    Mp24,
+    /// 9504 × 6336 developed pixels.
+    Mp60,
+}
+
+impl PhotoSize {
+    pub const ALL: [Self; 2] = [Self::Mp24, Self::Mp60];
+
+    /// The developed frame: the DNG default crop.
+    pub fn frame(self) -> (u32, u32) {
+        match self {
+            Self::Mp24 => (6000, 4000),
+            Self::Mp60 => (9504, 6336),
+        }
+    }
+
+    /// The sensor: the frame and an 8-pixel border on every side.
+    pub fn sensor(self) -> (u32, u32) {
+        let (width, height) = self.frame();
+        (width + 16, height + 16)
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Mp24 => "24mp",
+            Self::Mp60 => "60mp",
+        }
+    }
+
+    /// Developed pixels per pixel of the test frame's scene.
+    fn magnification(self) -> f64 {
+        f64::from(self.frame().0) / f64::from(WIDTH)
     }
 }
 
@@ -409,32 +460,179 @@ impl Bracket {
         let gain = exp2i(frame.offset_ev);
         let mut samples = Vec::with_capacity(grid.len() * 2);
         for (site, rgb) in grid.iter().enumerate() {
-            let (sx, sy) = (site as u32 % SENSOR_WIDTH, site as u32 / SENSOR_WIDTH);
-            // RGGB from the sensor's origin.
-            let channel = match (sy % 2, sx % 2) {
-                (0, 0) => 0,
-                (1, 1) => 2,
-                _ => 1,
-            };
-            let row = CAMERA[channel];
-            let camera = row[0] * rgb[0] + row[1] * rgb[1] + row[2] * rgb[2];
-            let mut electrons = gain * camera * RANGE;
-            if self.spec.noise {
-                let mut noise = Noise::new(self.spec.seed, at as u64, site as u64);
-                electrons +=
-                    electrons.max(0.0).sqrt() * noise.gaussian() + READ_NOISE_DN * noise.gaussian();
-            }
-            let value = (f64::from(BLACK) + electrons)
-                .round()
-                .clamp(0.0, f64::from(WHITE)) as u16;
+            let place = (site as u32 % SENSOR_WIDTH, site as u32 / SENSOR_WIDTH);
+            let value = self.site_value(at, site as u64, place, gain, *rgb);
             samples.extend_from_slice(&value.to_le_bytes());
         }
         self.container(at, samples)
     }
 
+    /// Frame `at`'s little-endian 16-bit sensor samples for `rows` of the sensor of `size`, row by
+    /// row: what [`Self::dng`] records at the test size, recorded at a photo size. Each site's 2 × 2
+    /// samples of the magnified scene, the lens's blur (which reads the two sensor rows on either
+    /// side of `rows`), the exposure and the site's noise: the same bytes however a frame's rows
+    /// are split, so a caller may make its bands on as many threads as it likes.
+    ///
+    /// # Panics
+    /// When `rows` is empty or runs past the sensor.
+    pub fn photo_samples(&self, at: usize, size: PhotoSize, rows: std::ops::Range<u32>) -> Vec<u8> {
+        let (width, height) = size.sensor();
+        assert!(
+            rows.start < rows.end && rows.end <= height,
+            "rows of the sensor"
+        );
+        let frame = &self.frames[at];
+        let magnification = size.magnification();
+        let (frame_width, frame_height) = size.frame();
+        let centre = (
+            (f64::from(frame_width) - 1.0) / 2.0,
+            (f64::from(frame_height) - 1.0) / 2.0,
+        );
+        let motion = Rigid {
+            rotation_rad: frame.motion.rotation_rad,
+            shift: (
+                frame.motion.shift.0 * magnification,
+                frame.motion.shift.1 * magnification,
+            ),
+        };
+        let (ox, oy) = (f64::from(CROP_ORIGIN.0), f64::from(CROP_ORIGIN.1));
+        // The sharp rows the blur reads, each blurred across as it is made.
+        let top = rows.start.saturating_sub(2);
+        let bottom = (rows.end + 2).min(height);
+        let w = i64::from(width);
+        let mut across = Vec::with_capacity(((bottom - top) * width) as usize);
+        let mut sharp = Vec::with_capacity(width as usize);
+        for sy in top..bottom {
+            sharp.clear();
+            for sx in 0..width {
+                let (qx, qy) = (f64::from(sx) - ox, f64::from(sy) - oy);
+                let mut sum = [0.0; 3];
+                for (dx, dy) in SUBSAMPLES {
+                    let (px, py) = motion.unmap_about(centre, (qx + dx, qy + dy));
+                    let rgb = scene(
+                        self.spec.seed,
+                        px / magnification,
+                        py / magnification,
+                        frame.subject,
+                    );
+                    for (total, value) in sum.iter_mut().zip(rgb) {
+                        *total += value;
+                    }
+                }
+                sharp.push(sum.map(|total| total / 4.0));
+            }
+            for x in 0..w {
+                let mut sum = [0.0; 3];
+                for (k, tap) in BLUR_TAPS.iter().enumerate() {
+                    let sx = (x + k as i64 - 2).clamp(0, w - 1);
+                    for (total, value) in sum.iter_mut().zip(sharp[sx as usize]) {
+                        *total += tap * value;
+                    }
+                }
+                across.push(sum.map(|total| total / 16.0));
+            }
+        }
+        let gain = exp2i(frame.offset_ev);
+        let mut samples = Vec::with_capacity(((rows.end - rows.start) * width * 2) as usize);
+        for sy in rows {
+            for sx in 0..width {
+                let mut rgb = [0.0; 3];
+                for (k, tap) in BLUR_TAPS.iter().enumerate() {
+                    let y = (i64::from(sy) + k as i64 - 2).clamp(0, i64::from(height) - 1) as u32;
+                    for (total, value) in rgb
+                        .iter_mut()
+                        .zip(across[((y - top) * width + sx) as usize])
+                    {
+                        *total += tap * value;
+                    }
+                }
+                let site = u64::from(sy) * u64::from(width) + u64::from(sx);
+                let value =
+                    self.site_value(at, site, (sx, sy), gain, rgb.map(|total| total / 16.0));
+                samples.extend_from_slice(&value.to_le_bytes());
+            }
+        }
+        samples
+    }
+
+    /// Frame `at`'s DNG at `size` around its whole sensor's samples ([`Self::photo_samples`] of
+    /// every row, in order).
+    ///
+    /// # Panics
+    /// When `samples` is not the whole sensor's.
+    pub fn photo_dng(&self, at: usize, size: PhotoSize, samples: Vec<u8>) -> Vec<u8> {
+        let (width, height) = size.sensor();
+        assert_eq!(
+            samples.len(),
+            width as usize * height as usize * 2,
+            "the whole sensor's samples"
+        );
+        self.container_sized(at, size.sensor(), size.frame(), samples)
+    }
+
+    /// Write every frame into `dir` at `size`, made if missing, a band at a time on this thread:
+    /// the paths, in capture order.
+    pub fn write_photo(&self, dir: &Path, size: PhotoSize) -> io::Result<Vec<PathBuf>> {
+        fs::create_dir_all(dir)?;
+        let height = size.sensor().1;
+        let mut paths = Vec::with_capacity(self.frames.len());
+        for (at, frame) in self.frames.iter().enumerate() {
+            let mut samples = Vec::new();
+            for top in (0..height).step_by(256) {
+                samples.extend(self.photo_samples(at, size, top..(top + 256).min(height)));
+            }
+            let path = dir.join(&frame.file_name);
+            fs::write(&path, self.photo_dng(at, size, samples))?;
+            paths.push(path);
+        }
+        Ok(paths)
+    }
+
+    /// The value frame `at` records at sensor site `site`, at `(sx, sy)`: its channel's camera
+    /// response to the optical image `rgb` at the frame's exposure `gain`, the site's noise, the
+    /// black level, rounding and clipping.
+    fn site_value(
+        &self,
+        at: usize,
+        site: u64,
+        (sx, sy): (u32, u32),
+        gain: f64,
+        rgb: [f64; 3],
+    ) -> u16 {
+        // RGGB from the sensor's origin.
+        let channel = match (sy % 2, sx % 2) {
+            (0, 0) => 0,
+            (1, 1) => 2,
+            _ => 1,
+        };
+        let row = CAMERA[channel];
+        let camera = row[0] * rgb[0] + row[1] * rgb[1] + row[2] * rgb[2];
+        let mut electrons = gain * camera * RANGE;
+        if self.spec.noise {
+            let mut noise = Noise::new(self.spec.seed, at as u64, site);
+            electrons +=
+                electrons.max(0.0).sqrt() * noise.gaussian() + READ_NOISE_DN * noise.gaussian();
+        }
+        (f64::from(BLACK) + electrons)
+            .round()
+            .clamp(0.0, f64::from(WHITE)) as u16
+    }
+
     /// Frame `at`'s TIFF/DNG container around its samples: the raw CFA image in IFD0 with the
     /// DNG tags, and an Exif IFD with its exposure and capture time.
     fn container(&self, at: usize, samples: Vec<u8>) -> Vec<u8> {
+        self.container_sized(at, (SENSOR_WIDTH, SENSOR_HEIGHT), (WIDTH, HEIGHT), samples)
+    }
+
+    /// [`Self::container`] for a sensor of `(width, height)` sites whose default crop, at
+    /// [`CROP_ORIGIN`], is `frame`.
+    fn container_sized(
+        &self,
+        at: usize,
+        (sensor_width, sensor_height): (u32, u32),
+        (frame_width, frame_height): (u32, u32),
+        samples: Vec<u8>,
+    ) -> Vec<u8> {
         let frame = &self.frames[at];
         let second = CAPTURE_SECOND_OF_DAY + frame.captured_after_ms / 1000;
         let time = format!(
@@ -466,8 +664,8 @@ impl Bracket {
         ];
         let mut ifd0 = vec![
             Tag::long(254, &[0]),
-            Tag::long(256, &[SENSOR_WIDTH]),
-            Tag::long(257, &[SENSOR_HEIGHT]),
+            Tag::long(256, &[sensor_width]),
+            Tag::long(257, &[sensor_height]),
             Tag::short(258, &[16]),
             Tag::short(259, &[1]),
             Tag::short(262, &[32_803]),
@@ -476,7 +674,7 @@ impl Bracket {
             Tag::long(273, &[0]),
             Tag::short(274, &[1]),
             Tag::short(277, &[1]),
-            Tag::long(278, &[SENSOR_HEIGHT]),
+            Tag::long(278, &[sensor_height]),
             Tag::long(279, &[samples.len() as u32]),
             Tag::short(284, &[1]),
             Tag::ascii(305, "luxforge-testkit hdr_bracket"),
@@ -493,7 +691,7 @@ impl Bracket {
             Tag::long(50_714, &[u32::from(BLACK)]),
             Tag::long(50_717, &[u32::from(WHITE)]),
             Tag::long(50_719, &[CROP_ORIGIN.0, CROP_ORIGIN.1]),
-            Tag::long(50_720, &[WIDTH, HEIGHT]),
+            Tag::long(50_720, &[frame_width, frame_height]),
             Tag::srational(50_721, &matrix),
             Tag::srational(50_722, &matrix),
             Tag::rational(50_728, &neutral),
@@ -524,13 +722,16 @@ impl Bracket {
 /// The 2 × 2 point samples a pixel integrates, about its centre.
 const SUBSAMPLES: [(f64, f64); 4] = [(-0.25, -0.25), (0.25, -0.25), (-0.25, 0.25), (0.25, 0.25)];
 
+/// The lens's taps, over 16 ([`blur`]).
+const BLUR_TAPS: [f64; 5] = [1.0, 4.0, 6.0, 4.0, 1.0];
+
 /// The lens: a separable binomial blur `[1 4 6 4 1] / 16` (a Gaussian of about one pixel's
 /// deviation), edges clamped. It keeps the scene's hard edges from aliasing on the sensor, as a
 /// real lens and filter stack do: registration on an aliased frame is biased by a sub-pixel phase
 /// the frames do not share. Nearly isotropic, so a frame turned by a fraction of a degree sees the
 /// same blur.
 fn blur(image: &[[f64; 3]]) -> Vec<[f64; 3]> {
-    const TAPS: [f64; 5] = [1.0, 4.0, 6.0, 4.0, 1.0];
+    const TAPS: [f64; 5] = BLUR_TAPS;
     let (w, h) = (i64::from(SENSOR_WIDTH), i64::from(SENSOR_HEIGHT));
     let pass = |source: &[[f64; 3]], across: bool| -> Vec<[f64; 3]> {
         let mut out = Vec::with_capacity(source.len());
@@ -973,6 +1174,73 @@ mod tests {
             bracket.sha256(),
             "234982072f6724a1cf63db44c4638d6f09a04e11cc39edf2d92d2ab5c613a045"
         );
+    }
+
+    /// A photo-sized frame's rows are the same bytes however they are split into bands, at the
+    /// sensor's top and bottom edges (where the blur clamps) as in its middle, and are pinned.
+    #[test]
+    fn hdr_bracket_photo_rows_are_alike_in_any_band_and_pinned() {
+        let bracket = Bracket::new(&BracketSpec {
+            handheld: true,
+            moving_subject: Some(2),
+            ..BracketSpec::default()
+        });
+        for size in PhotoSize::ALL {
+            let height = size.sensor().1;
+            for (start, middle, end) in [
+                (0, 2, 5),
+                (1800, 1801, 1804),
+                (height - 5, height - 1, height),
+            ] {
+                for at in 0..3 {
+                    let whole = bracket.photo_samples(at, size, start..end);
+                    let mut split = bracket.photo_samples(at, size, start..middle);
+                    split.extend(bracket.photo_samples(at, size, middle..end));
+                    assert_eq!(whole, split, "{size:?} frame {at} rows {start}..{end}");
+                    assert_eq!(
+                        whole.len(),
+                        (end - start) as usize * size.sensor().0 as usize * 2
+                    );
+                }
+            }
+        }
+        let rows: Vec<u8> = (0..3)
+            .flat_map(|at| bracket.photo_samples(at, PhotoSize::Mp24, 2000..2002))
+            .collect();
+        assert_eq!(
+            format!("{:x}", Sha256::digest(&rows)),
+            "967d37ec735402b3ecb7c1305266dfe6c03951fa3c1c97924b2863790608e598"
+        );
+    }
+
+    /// A photo-sized DNG names its sensor and its default crop at the size's own dimensions.
+    #[test]
+    fn hdr_bracket_photo_dng_records_its_size() {
+        let bracket = Bracket::new(&BracketSpec::default());
+        let size = PhotoSize::Mp24;
+        let (width, height) = size.sensor();
+        let dng = bracket.photo_dng(1, size, vec![0; (width * height * 2) as usize]);
+        let long = |tag: u16| -> Vec<u32> {
+            let count = u16::from_le_bytes([dng[8], dng[9]]) as usize;
+            let entry = (0..count)
+                .map(|i| 10 + 12 * i)
+                .find(|&at| u16::from_le_bytes([dng[at], dng[at + 1]]) == tag)
+                .expect("the tag");
+            let values = u32::from_le_bytes(dng[entry + 4..entry + 8].try_into().unwrap()) as usize;
+            let read = |at: usize| u32::from_le_bytes(dng[at..at + 4].try_into().unwrap());
+            if values == 1 {
+                vec![read(entry + 8)]
+            } else {
+                let offset = read(entry + 8) as usize;
+                (0..values).map(|i| read(offset + 4 * i)).collect()
+            }
+        };
+        assert_eq!(long(256), [width]);
+        assert_eq!(long(257), [height]);
+        assert_eq!(long(278), [height]);
+        assert_eq!(long(279), [width * height * 2]);
+        assert_eq!(long(50_720), [6000, 4000]);
+        assert_eq!(dng.len() % 2, 0);
     }
 
     /// The scene clips in the metered frame where the shortest exposure records it, holds shadow
