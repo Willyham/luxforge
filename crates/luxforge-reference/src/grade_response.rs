@@ -15,6 +15,7 @@
 //! `grade-align` command renders and reads files, and calls these.
 
 use super::colour::{self, Oklab};
+use super::preview_error::{ciede2000, lab_from_linear};
 
 /// One patch's change from its neutral rendering, in Oklab.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -46,89 +47,9 @@ pub fn patch_mean(pixels: impl IntoIterator<Item = [f64; 3]>) -> [f64; 3] {
     sum.map(|value| value / count.max(1) as f64)
 }
 
-// -------------------------------------------------------------------------------------------
-// CIEDE2000
-// -------------------------------------------------------------------------------------------
-
-/// CIE `L*a*b*` (D65) of a linear sRGB colour.
-pub fn lab_d65(rgb: [f64; 3]) -> [f64; 3] {
-    let x = 0.412_456_4 * rgb[0] + 0.357_576_1 * rgb[1] + 0.180_437_5 * rgb[2];
-    let y = 0.212_672_9 * rgb[0] + 0.715_152_2 * rgb[1] + 0.072_175 * rgb[2];
-    let z = 0.019_333_9 * rgb[0] + 0.119_192 * rgb[1] + 0.950_304_1 * rgb[2];
-    let white = [0.950_47, 1.0, 1.088_83];
-    let f = |t: f64| {
-        let delta: f64 = 6.0 / 29.0;
-        if t > delta.powi(3) {
-            t.cbrt()
-        } else {
-            t / (3.0 * delta * delta) + 4.0 / 29.0
-        }
-    };
-    let (fx, fy, fz) = (f(x / white[0]), f(y / white[1]), f(z / white[2]));
-    [116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)]
-}
-
-/// The CIEDE2000 colour difference between two `L*a*b*` colours (Sharma, Wu and Dalal 2005), with
-/// unit weighting factors.
-pub fn delta_e_2000(first: [f64; 3], second: [f64; 3]) -> f64 {
-    let [l1, a1, b1] = first;
-    let [l2, a2, b2] = second;
-    let c1 = a1.hypot(b1);
-    let c2 = a2.hypot(b2);
-    let c_bar = (c1 + c2) / 2.0;
-    let g = 0.5 * (1.0 - (c_bar.powi(7) / (c_bar.powi(7) + 25f64.powi(7))).sqrt());
-    let a1p = (1.0 + g) * a1;
-    let a2p = (1.0 + g) * a2;
-    let c1p = a1p.hypot(b1);
-    let c2p = a2p.hypot(b2);
-    let hue = |b: f64, a: f64| {
-        if a == 0.0 && b == 0.0 {
-            0.0
-        } else {
-            b.atan2(a).to_degrees().rem_euclid(360.0)
-        }
-    };
-    let h1p = hue(b1, a1p);
-    let h2p = hue(b2, a2p);
-    let dl = l2 - l1;
-    let dc = c2p - c1p;
-    let dh = if c1p * c2p == 0.0 {
-        0.0
-    } else if (h2p - h1p).abs() <= 180.0 {
-        h2p - h1p
-    } else if h2p - h1p > 180.0 {
-        h2p - h1p - 360.0
-    } else {
-        h2p - h1p + 360.0
-    };
-    let dhp = 2.0 * (c1p * c2p).sqrt() * (dh.to_radians() / 2.0).sin();
-    let l_bar = (l1 + l2) / 2.0;
-    let c_bar_p = (c1p + c2p) / 2.0;
-    let h_bar = if c1p * c2p == 0.0 {
-        h1p + h2p
-    } else if (h1p - h2p).abs() <= 180.0 {
-        (h1p + h2p) / 2.0
-    } else if h1p + h2p < 360.0 {
-        (h1p + h2p + 360.0) / 2.0
-    } else {
-        (h1p + h2p - 360.0) / 2.0
-    };
-    let t = 1.0 - 0.17 * (h_bar - 30.0).to_radians().cos()
-        + 0.24 * (2.0 * h_bar).to_radians().cos()
-        + 0.32 * (3.0 * h_bar + 6.0).to_radians().cos()
-        - 0.20 * (4.0 * h_bar - 63.0).to_radians().cos();
-    let d_theta = 30.0 * (-((h_bar - 275.0) / 25.0).powi(2)).exp();
-    let rc = 2.0 * (c_bar_p.powi(7) / (c_bar_p.powi(7) + 25f64.powi(7))).sqrt();
-    let sl = 1.0 + 0.015 * (l_bar - 50.0).powi(2) / (20.0 + (l_bar - 50.0).powi(2)).sqrt();
-    let sc = 1.0 + 0.045 * c_bar_p;
-    let sh = 1.0 + 0.015 * c_bar_p * t;
-    let rt = -(2.0 * d_theta).to_radians().sin() * rc;
-    ((dl / sl).powi(2) + (dc / sc).powi(2) + (dhp / sh).powi(2) + rt * (dc / sc) * (dhp / sh))
-        .sqrt()
-}
-
 /// The CIEDE2000 difference between two responses, each applied to the same neutral patch: the
-/// colours both editors would reach from one common starting point.
+/// colours both editors would reach from one common starting point, through the preview-error
+/// measure's CIELAB and CIEDE2000 ([`crate::preview_error`]).
 pub fn response_difference(neutral: [f64; 3], first: Response, second: Response) -> f64 {
     let base = colour::to_oklab(neutral);
     let reach = |response: Response| {
@@ -138,19 +59,26 @@ pub fn response_difference(neutral: [f64; 3], first: Response, second: Response)
             b: base.b + response.db,
         })
     };
-    delta_e_2000(lab_d65(reach(first)), lab_d65(reach(second)))
+    ciede2000(
+        lab_from_linear(reach(first)),
+        lab_from_linear(reach(second)),
+    )
 }
 
 /// The median of a set of differences by nearest rank, the definition every figure in the
 /// workspace reads (`luxforge_testbase::Distribution`, which this crate may not depend on): the
 /// `ceil(n / 2)`th smallest. `NaN` for none.
 pub fn median(values: &[f64]) -> f64 {
+    median_in_place(&mut values.to_vec())
+}
+
+/// [`median`] of a buffer the caller owns, reordered in place rather than copied.
+fn median_in_place(values: &mut [f64]) -> f64 {
     if values.is_empty() {
         return f64::NAN;
     }
-    let mut sorted = values.to_vec();
-    sorted.sort_by(f64::total_cmp);
-    sorted[sorted.len().div_ceil(2) - 1]
+    let rank = values.len().div_ceil(2) - 1;
+    *values.select_nth_unstable_by(rank, f64::total_cmp).1
 }
 
 // -------------------------------------------------------------------------------------------
@@ -170,17 +98,32 @@ impl Sampled {
     /// The responses at `value`, linearly interpolated between the two sampled values around it;
     /// `None` outside the sampled span.
     pub fn at(&self, value: f64) -> Option<Vec<Response>> {
-        let upper = self
+        let mut responses = Vec::new();
+        self.at_into(value, &mut responses).then_some(responses)
+    }
+
+    /// [`Self::at`] into a buffer the caller reuses: `false`, with `out` cleared, outside the
+    /// sampled span.
+    fn at_into(&self, value: f64, out: &mut Vec<Response>) -> bool {
+        out.clear();
+        let Some(upper) = self
             .samples
             .iter()
-            .position(|(sampled, _)| *sampled >= value)?;
+            .position(|(sampled, _)| *sampled >= value)
+        else {
+            return false;
+        };
         let (high, high_responses) = &self.samples[upper];
-        if *high == value || upper == 0 {
-            return (*high == value).then(|| high_responses.clone());
+        if *high == value {
+            out.extend_from_slice(high_responses);
+            return true;
+        }
+        if upper == 0 {
+            return false;
         }
         let (low, low_responses) = &self.samples[upper - 1];
         let t = (value - low) / (high - low);
-        Some(
+        out.extend(
             low_responses
                 .iter()
                 .zip(high_responses)
@@ -188,37 +131,54 @@ impl Sampled {
                     dl: a.dl + t * (b.dl - a.dl),
                     da: a.da + t * (b.da - a.da),
                     db: a.db + t * (b.db - a.db),
-                })
-                .collect(),
-        )
+                }),
+        );
+        true
+    }
+}
+
+/// One sample a fit matches: its responses and the patches it is judged on, those it affects (its
+/// own response at least [`AFFECTED`] from neutral) or every patch when it affects none, so a
+/// setting that reaches only the shadows is judged on the shadows, not drowned by the unchanged
+/// patches around them. The patches are found once per sample, not once per candidate.
+struct Target<'a> {
+    responses: &'a [Response],
+    patches: Vec<usize>,
+}
+
+impl<'a> Target<'a> {
+    fn new(neutrals: &[[f64; 3]], responses: &'a [Response]) -> Self {
+        let affected: Vec<usize> = (0..responses.len().min(neutrals.len()))
+            .filter(|&patch| {
+                response_difference(neutrals[patch], Response::default(), responses[patch])
+                    >= AFFECTED
+            })
+            .collect();
+        let patches = if affected.is_empty() {
+            (0..responses.len().min(neutrals.len())).collect()
+        } else {
+            affected
+        };
+        Self { responses, patches }
     }
 
-    /// The median CIEDE2000 between these responses at `value` and `target`'s, over the patches
-    /// the target affects (its own response at least [`AFFECTED`] from neutral), or over every patch
-    /// when it affects none: a setting that reaches only the shadows is judged on the shadows, not
-    /// drowned by the unchanged patches around them.
-    fn distance(&self, value: f64, target: &[Response]) -> f64 {
-        let Some(responses) = self.at(value) else {
+    /// The median CIEDE2000 between `responses`, in the same patch order, and this target's over
+    /// its patches, through a `scratch` buffer the caller reuses; infinite for `None`, a value
+    /// outside the sampled span.
+    fn distance(
+        &self,
+        neutrals: &[[f64; 3]],
+        responses: Option<&[Response]>,
+        scratch: &mut Vec<f64>,
+    ) -> f64 {
+        let Some(responses) = responses else {
             return f64::INFINITY;
         };
-        let differences = |only_affected: bool| -> Vec<f64> {
-            responses
-                .iter()
-                .zip(target)
-                .zip(&self.neutrals)
-                .filter(|((_, other), neutral)| {
-                    !only_affected
-                        || response_difference(**neutral, Response::default(), **other) >= AFFECTED
-                })
-                .map(|((own, other), neutral)| response_difference(*neutral, *own, *other))
-                .collect()
-        };
-        let affected = differences(true);
-        if affected.is_empty() {
-            median(&differences(false))
-        } else {
-            median(&affected)
-        }
+        scratch.clear();
+        scratch.extend(self.patches.iter().map(|&patch| {
+            response_difference(neutrals[patch], responses[patch], self.responses[patch])
+        }));
+        median_in_place(scratch)
     }
 }
 
@@ -267,14 +227,24 @@ pub fn fit_monotone(luxforge: &Sampled, lightroom: &Sampled) -> Vec<FitPoint> {
     let candidates: Vec<f64> = (0..=steps)
         .map(|step| (low + step as f64 * SEARCH_STEP).min(high))
         .collect();
-    // Each target's distance at every candidate, searched once.
-    let distances: Vec<Vec<f64>> = lightroom
+    // Luxforge's responses at every candidate, interpolated once for all the targets, and each
+    // target's patches, judged against Luxforge's neutrals as every difference is.
+    let neutrals = &luxforge.neutrals;
+    let at_candidates: Vec<Option<Vec<Response>>> =
+        candidates.iter().map(|value| luxforge.at(*value)).collect();
+    let targets: Vec<Target> = lightroom
         .samples
         .iter()
-        .map(|(_, target)| {
-            candidates
+        .map(|(_, responses)| Target::new(neutrals, responses))
+        .collect();
+    let mut scratch = Vec::new();
+    // Each target's distance at every candidate, searched once.
+    let distances: Vec<Vec<f64>> = targets
+        .iter()
+        .map(|target| {
+            at_candidates
                 .iter()
-                .map(|value| luxforge.distance(*value, target))
+                .map(|responses| target.distance(neutrals, responses.as_deref(), &mut scratch))
                 .collect()
         })
         .collect();
@@ -306,22 +276,28 @@ pub fn fit_monotone(luxforge: &Sampled, lightroom: &Sampled) -> Vec<FitPoint> {
     let pooled = blocks
         .iter()
         .flat_map(|(value, count)| std::iter::repeat_n(*value, *count));
+    // A pooled value may lie between candidates: its responses are interpolated again.
+    let mut responses = Vec::new();
+    let mut distance_at = |value: f64, target: &Target| {
+        let inside = luxforge.at_into(value, &mut responses);
+        target.distance(neutrals, inside.then_some(&responses[..]), &mut scratch)
+    };
     lightroom
         .samples
         .iter()
+        .zip(&targets)
         .zip(pooled)
         .zip(&distances)
-        .map(|(((lightroom_value, target), value), row)| {
-            let residual = luxforge.distance(value, target);
+        .map(|((((lightroom_value, _), target), value), row)| {
+            let residual = distance_at(value, target);
             let at_end = value == low || value == high;
             let inward = if value == high {
                 value - SEARCH_STEP
             } else {
                 value + SEARCH_STEP
             };
-            let shortfall = at_end
-                && residual > SHORTFALL_RESIDUAL
-                && luxforge.distance(inward, target) > residual;
+            let shortfall =
+                at_end && residual > SHORTFALL_RESIDUAL && distance_at(inward, target) > residual;
             let nearest = row.iter().copied().fold(f64::INFINITY, f64::min);
             let within: Vec<f64> = row
                 .iter()
