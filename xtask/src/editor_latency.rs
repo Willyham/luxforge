@@ -1807,10 +1807,10 @@ fn setup_steps(options: &Options, field: &FieldTarget, source: SourceTag) -> Vec
 /// The most exports a contended run queues: the export lane's one running job and four waiting.
 const CONTEND_MAX: usize = 5;
 
-/// The idle check a drag run with `--idle` makes after its release has dissolved from the drag's
-/// last GPU frame: a settle long enough for the dissolve and the committed stack's picture at rest,
-/// its tiles and their counts, then the longest window an evidence step takes.
-const IDLE_AFTER_DISSOLVE: script::IdleStep = script::IdleStep {
+/// The idle check a drag run with `--idle` makes once its release's committed picture has settled:
+/// a settle long enough for the committed stack's picture at rest, its tiles and its dissolve in,
+/// and its counts, then the longest window an evidence step takes.
+const IDLE_AFTER_SETTLE: script::IdleStep = script::IdleStep {
     settle_ms: 4000,
     ms: script::MAX_WAIT_MS,
 };
@@ -1829,7 +1829,7 @@ fn contention_steps(dir: &Path, count: usize) -> Vec<script::Step> {
 
 /// What a drag run adds after its release, before the burst step: the export lane's activity read
 /// back for a contended run, and for `--idle` the Performance section closed — its one-second
-/// sampler would wake the editor — and an idle check after the release's dissolve.
+/// sampler would wake the editor — and an idle check once the release's picture has settled.
 fn after_release_steps(options: &Options) -> Vec<script::Step> {
     let mut steps = Vec::new();
     if options.contend.is_some() {
@@ -1837,7 +1837,7 @@ fn after_release_steps(options: &Options) -> Vec<script::Step> {
     }
     if options.idle {
         steps.push(script::Step::Performance { expanded: false });
-        steps.push(script::Step::Idle(IDLE_AFTER_DISSOLVE));
+        steps.push(script::Step::Idle(IDLE_AFTER_SETTLE));
     }
     steps
 }
@@ -3703,24 +3703,27 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
         ));
     }
     let idle = if options.idle && drag {
-        Some(idle_after_dissolve(&events)?)
+        // The GPU draws a picture at rest in tiles at Fit and below 100%; at 100% and above its
+        // view plan is the picture at rest, and the reference renderer draws no GPU picture.
+        let rest = !options.no_gpu_render && options.zoom.is_none_or(|zoom| zoom < 100.0);
+        Some(idle_after_settle(&events, rest)?)
     } else {
         None
     };
     if let Some(idle) = &idle {
         let check = &idle["check"];
         rows.push(stats::scalar(
-            "idle_after_dissolve_process_cpu_percent_one_core",
+            "idle_after_settle_process_cpu_percent_one_core",
             "%",
             check["process_cpu_percent_one_core"].as_f64(),
         ));
         rows.push(counter(
-            "idle_after_dissolve_drawn_frames",
+            "idle_after_settle_drawn_frames",
             "frames",
             check["drawn_frames_delta"].as_u64(),
         ));
         rows.push(counter(
-            "idle_after_dissolve_views",
+            "idle_after_settle_views",
             "views",
             check["views_delta"].as_u64(),
         ));
@@ -3912,7 +3915,7 @@ fn gesture(run: &mut Run, options: &Options, field: &FieldTarget) -> Result {
     result["paths"] = paths(drained, &events);
     result["compile_queue_before_gesture"] = compile_queue;
     result["contention"] = contended.map_or(Value::Null, |(_, report)| report);
-    result["idle_after_dissolve"] = idle.unwrap_or(Value::Null);
+    result["idle_after_settle"] = idle.unwrap_or(Value::Null);
     if options.contend.is_some() {
         // The exports are there to hold the pool, not evidence: what they wrote is in the report.
         let _ = fs::remove_dir_all(&contention);
@@ -4201,32 +4204,39 @@ fn contention_windows(
 }
 
 /// The idle check a drag run with `--idle` made after its release: what the editor drew, updated
-/// and spent in its window, and the dissolves that ran before it, at least one of which must have
-/// — the release's committed frame replacing the drag's last GPU frame.
-fn idle_after_dissolve(events: &[Value]) -> Result<Value> {
+/// and spent in its window, once the release's committed picture had settled. A release settles
+/// with the committed stack's counts adopted (`analysis_adopted`), the last of what it brings on
+/// every path, and, where the GPU draws the picture at rest in tiles (`rest`), that picture's first
+/// draw (`gpu_rest_drawn`), which may dissolve in over the view plan's frame; a check before the
+/// release, or before its settle, is refused. Times are from the release (`slider_draft_commit`).
+fn idle_after_settle(events: &[Value], rest: bool) -> Result<Value> {
     let (at, check) = events
         .iter()
         .enumerate()
         .rev()
         .find(|(_, event)| event["event"] == "idle_check")
         .ok_or("The idle step recorded no idle check")?;
-    let before = |name: &str| {
-        events[..at]
-            .iter()
-            .filter(|event| event["event"] == name)
-            .count()
-    };
-    let started = before("gpu_dissolve_started");
+    let release = events[..at]
+        .iter()
+        .rposition(|event| event["event"] == "slider_draft_commit")
+        .ok_or("The idle check ran before the drag's release")?;
+    let released_ms = elapsed(&events[release])?;
+    let settled = &events[release + 1..at];
+    let first = |name: &str| settled.iter().find(|event| event["event"] == name);
+    let adopted = first("analysis_adopted").ok_or(
+        "The release's counts were not adopted before the idle check: its picture had not settled",
+    )?;
+    let drawn = first("gpu_rest_drawn");
     ensure(
-        started > 0,
-        "No dissolve ran before the idle check: the release's frame replaced no GPU frame",
+        !rest || drawn.is_some(),
+        "The release's picture at rest was not drawn before the idle check",
     )?;
     Ok(json!({
         "check": check["detail"],
-        "dissolves_started": started,
-        "dissolves_ended": before("gpu_dissolve_ended"),
-        "dissolves_cancelled": before("gpu_dissolve_cancelled"),
-        "method": "In the gesture's own launch, after the release: the Performance section closed, then an idle evidence step with evidence's own ticks and captures suspended, a settle for the dissolve and the committed frame's exact phase, then a window over which the surface's drawn frames, the views built and the process's CPU time are counted. The window's own start counts one frame and one view.",
+        "counts_adopted_ms": elapsed(adopted)? - released_ms,
+        "rest_drawn_ms": drawn.map(elapsed).transpose()?.map(|ms| ms - released_ms),
+        "rest_dissolved_from": drawn.map(|drawn| drawn["detail"]["dissolve"].clone()),
+        "method": "In the gesture's own launch, after the release: the Performance section closed, then an idle evidence step with evidence's own ticks and captures suspended, a settle for the release's committed picture (its picture at rest, its dissolve in, and its counts, which the report finds before the window), then a window over which the surface's drawn frames, the views built and the process's CPU time are counted. The window's own start counts one frame and one view.",
     }))
 }
 
@@ -6352,7 +6362,7 @@ mod tests {
             steps[5..7],
             [
                 script::Step::Performance { expanded: false },
-                script::Step::Idle(IDLE_AFTER_DISSOLVE)
+                script::Step::Idle(IDLE_AFTER_SETTLE)
             ]
         );
         let commit = measured_script(&idle, &field, SourceTag::Jpeg, &values, false, &dir);
@@ -6427,19 +6437,53 @@ mod tests {
         );
     }
 
-    /// The idle check after a release reports its window and the dissolves before it, and a run
-    /// with no dissolve before its check is refused.
+    /// The idle check after a release reports its window and the release's settle before it: the
+    /// counts adopted and, where the GPU draws a picture at rest, its first draw, each timed from
+    /// the release. A check before the release, before the counts, or, where a picture at rest is
+    /// drawn, before it, is refused; an earlier drag's settle does not stand for the release's.
     #[test]
-    fn idle_after_a_dissolve_needs_a_dissolve_before_its_check() {
+    fn idle_after_a_release_needs_its_settle_before_its_check() {
+        let event = |name: &str, ms: f64| json!({"event": name, "elapsed_ms": ms});
         let check = json!({"event":"idle_check","elapsed_ms":9000.0,"detail":{"passed":true,
             "drawn_frames_delta":1,"views_delta":1,"process_cpu_percent_one_core":0.25}});
-        let started = json!({"event":"gpu_dissolve_started","elapsed_ms":100.0});
-        let ended = json!({"event":"gpu_dissolve_ended","elapsed_ms":260.0});
-        let report = idle_after_dissolve(&[started, ended, check.clone()]).unwrap();
-        assert_eq!(report["dissolves_started"], 1);
-        assert_eq!(report["dissolves_ended"], 1);
-        assert_eq!(report["check"]["process_cpu_percent_one_core"], 0.25);
-        assert!(idle_after_dissolve(&[check]).is_err());
+        let release = event("slider_draft_commit", 100.0);
+        let drawn = json!({"event":"gpu_rest_drawn","elapsed_ms":900.0,
+            "detail":{"version":7,"dissolve":5}});
+        let adopted = event("analysis_adopted", 945.0);
+        let settled = [
+            release.clone(),
+            event("preview_displayed", 110.0),
+            drawn.clone(),
+            adopted.clone(),
+            check.clone(),
+        ];
+        for rest in [true, false] {
+            let report = idle_after_settle(&settled, rest).unwrap();
+            assert_eq!(report["counts_adopted_ms"], 845.0);
+            assert_eq!(report["rest_drawn_ms"], 800.0);
+            assert_eq!(report["rest_dissolved_from"], 5);
+            assert_eq!(report["check"]["process_cpu_percent_one_core"], 0.25);
+            assert_eq!(report["check"]["drawn_frames_delta"], 1);
+        }
+        // At 100% or under the reference renderer no picture at rest is drawn in tiles.
+        let counted = [release.clone(), adopted.clone(), check.clone()];
+        let report = idle_after_settle(&counted, false).unwrap();
+        assert_eq!(report["rest_drawn_ms"], Value::Null);
+        assert!(
+            idle_after_settle(&counted, true).is_err(),
+            "no picture at rest"
+        );
+        // An earlier drag's settle is not the release's.
+        let earlier = [drawn, adopted, release, check.clone()];
+        assert!(
+            idle_after_settle(&earlier, false).is_err(),
+            "nothing settled"
+        );
+        assert!(
+            idle_after_settle(std::slice::from_ref(&check), false).is_err(),
+            "no release"
+        );
+        assert!(idle_after_settle(&[], false).is_err(), "no check");
     }
 
     /// A stroke position drawn on the GPU pairs its `mask_draft_set` with the GPU tick of its own
