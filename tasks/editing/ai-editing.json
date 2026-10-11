@@ -3,7 +3,7 @@
   "plan_id": "ai-editing",
   "title": "AI editing: Remove, Select, generative fill and Replace, and sky replacement on local models",
   "objective": "Bring AI editing into Luxforge on local, user-downloaded models behind one inference port and one analysis cache: detection-driven object removal with a fill that rebuilds structure rather than blur, automatic masks that list what each photograph contains, a generative tier with variations and prompted Replace, an optional deterministic sky replacement over the Select Sky mask, and the typed remote-provider shape delivered last, every result a durable artifact rendered without the model.",
-  "context_summary": "Decided by the owner on 2026-10-05 (docs/decisions.md, AI editing): the scope is accepted, models are chosen quality-first with no licence or provenance gate beyond a one-line use restriction, ONNX Runtime is the measured runtime, stale patches keep rendering, budgets are raised for quality rather than results reduced, remote consent is remembered per provider, and sky replacement is in scope. Its harness and foundation tasks are ready on the merged GPU-first renderer, with the Corrections foundation scheduled beside its first stage. The plan builds on the September 2026 object removal research, the standalone object removal prototype measured on the M4 (probes/object-removal and docs/design/object-removal.md on the claude/object-removal-research-d3374b branch, not on main), the implemented module capabilities (resources, consent, tasks, derived artifacts, two capability lanes), the implemented Settings and flags surface, and the delivered mask model and Masks panel. It takes AI Remove over from the Corrections proposal and depends by name on that proposal's foundation: the repair stage with its bounded regional primitive, the Corrections brush descriptor and draft target, and the repair layer's frozen-patch operation with prefix invalidation; those land under the Corrections plan and this plan's Remove task waits for them to be merged; until the repair stage exists the analysis input is the developed content stage, which is the repair stage's output when there are no repairs. Under GPU-first every new coverage kind and composite needs a GPU program within the declared tolerance, which the mask-kind, Remove, sky and depth tasks each require. The delivered tile service answers bounded stage rectangles through the desktop GPU tile worker or the reference renderer in luxforge-json; module tasks still need a host-planned read in ModuleContext. Owner, 2026-10-07: all AI analysis, guide, fill-crop and remote repair-crop inputs use the reference renderer. A generation locks its photograph while another photograph remains editable; progress and cancellation stay responsive. Qualification measures permitted editing during inference and combined model/renderer residency, re-checking the 24 GB generative starting minimum. Every new layer needs a CPU reference and a GPU program within the declared tolerance. No cross-file task IDs are used.",
+  "context_summary": "Decided by the owner on 2026-10-05 (docs/decisions.md, AI editing): the scope is accepted, models are chosen quality-first with no licence or provenance gate beyond a one-line use restriction, ONNX Runtime is the measured runtime, stale patches keep rendering, budgets are raised for quality rather than results reduced, remote consent is remembered per provider, and sky replacement is in scope. Its harness and foundation tasks are ready on the merged GPU-first renderer, with the Corrections foundation scheduled beside its first stage. The plan builds on the September 2026 object removal research, the standalone object removal prototype measured on the M4 (probes/object-removal and docs/design/object-removal.md on the claude/object-removal-research-d3374b branch, not on main), the implemented module capabilities (resources, consent, tasks, derived artifacts, two capability lanes), the implemented Settings and flags surface, and the delivered mask model and Masks panel. It takes AI Remove over from the Corrections design and builds on its delivered foundation: the repair stage, the Corrections brush and drafts, the candidate seam (job.read, job.read-candidate, job.release-candidates, ModuleContext::reserve_candidate and publish_candidate) and frozen patches accepted through edit.accept-correction-patch with input-identity staleness. Owner, 2026-10-11: generative fill goes first. The generative workflow is built over the fake generator with a brush selection directly on the inference foundation, beside the generative qualification, without waiting for the Fast tier, the analysis cache or Select; object picking and the Fast tier join the same Remove mode when they land. Under GPU-first every new coverage kind and composite needs a GPU program within the declared tolerance, which the mask-kind, Remove, sky and depth tasks each require. The delivered tile service answers bounded stage rectangles through the desktop GPU tile worker or the reference renderer in luxforge-json; module tasks still need a host-planned read in ModuleContext. Owner, 2026-10-07: all AI analysis, guide, fill-crop and remote repair-crop inputs use the reference renderer. A generation locks its photograph while another photograph remains editable; progress and cancellation stay responsive. Qualification measures permitted editing during inference and combined model/renderer residency, re-checking the 24 GB generative starting minimum. Every new layer needs a CPU reference and a GPU program within the declared tolerance. No cross-file task IDs are used.",
   "tasks": [
     {
       "id": "TASK-001",
@@ -66,7 +66,7 @@
     {
       "id": "TASK-002",
       "description": "Bring the object removal prototype onto main as the AI harness and extend it with a corpus manifest and scoring.",
-      "status": "ready",
+      "status": "in_progress",
       "dependencies": [],
       "extra_context": [
         "The prototype is the probes/object-removal Cargo workspace on the claude/object-removal-research-d3374b branch (its own lockfile, outside the editor's workspace, ort 2.0.0-rc.13 with the Core ML provider and tract 0.23.8): runtime::Session over interchangeable backends including fixed-shape Core ML copies, pinned models verified by size and SHA-256, the stroke-to-decision rules, the guided-filter region refinement, the LaMa fill pipeline with grain and pyramid blending, the removal-probe commands (models, inspect, segment, fill, remove, bench, parity) and the removal-lab window with its scripted hidden-window mode. Its README holds the M4 measurements of 2026-09-28 and 29.",
@@ -224,17 +224,17 @@
     },
     {
       "id": "TASK-005",
-      "description": "Qualify the generative tier: Moebius and FLUX.2 klein 4B on the M4 within the one-toolchain rule, with the shipped prompt embedding, candidates, memory and quality against the Fast fill.",
+      "description": "Qualify the generative tier: build the runtime within the one-toolchain rule and run Moebius and FLUX.2 klein 4B on the M4, with the shipped prompt embedding, candidates, memory and quality against the prototype's Fast fill.",
       "status": "pending",
       "dependencies": [
-        "TASK-002",
-        "TASK-003"
+        "TASK-002"
       ],
       "extra_context": [
         "Moebius is a 0.22 B latent inpainter that takes an image and a binary mask, about 0.9 GB per checkpoint, Apache-2.0 in its repository and MIT on its model card (confirm which before pinning); FLUX.2 klein 4B is Apache-2.0 with a 7.75 GB bf16 transformer, a 168 MB VAE and the Qwen3-4B text encoder (8 GB bf16, 3.5 GB at 4-bit), no Fill checkpoint, a RePaint-style diffusers inpainting pipeline and an Apache-2.0 removal LoRA from fal trained on 100 pairs. Published Apple-silicon figures for klein at 1024 and 4 steps: about 17 s including load at 4-bit on an M4 Max with a 6.5 GB peak, 24 to 31 s on an M1 Max; none for an M4 Pro.",
         "Runtime candidates: stable-diffusion.cpp (MIT; Metal, Vulkan, CUDA; GGUF; supports klein with Metal, its masked path for klein undocumented) through its Rust binding or directly, built from vendored pinned sources with the cc crate as LibRaw is, with no CMake and no Python; MLX behind a C ABI only as a macOS comparison. An ONNX export of klein does not run on Core ML. If no runtime builds within the rule, the task records it and the generative tier waits for the remote tier.",
-        "Measured: cold load, warm time per candidate at 512, 768 and 1024, three candidates in a row, peak memory, download size; quality on the corpus and the ground truth against the Fast fill as the fill-quality task froze it (the prototype's 512 px fill is scored too, so an early run is not wasted), with a blinded owner preference and a reference ceiling from a non-commercial model run for evaluation only; whether a precomputed empty-scene embedding reproduces the prompted result within tolerance so the text encoder can stay out of the removal download.",
-        "OSOR-SDXL and RORem are measured beside the Apache candidates under the owner's quality-first policy of 2026-10-05, and ObjectClear and TurboClear are measured too; every candidate is ranked on quality, and a model whose terms restrict the person's use is recorded with that restriction for its card and is never a default pick."
+        "Measured: cold load, warm time per candidate at 512, 768 and 1024, three candidates in a row, peak memory, download size; quality on the corpus and the ground truth against the prototype's 512 px LaMa fill (the comparison with the frozen Fast pipeline is the final qualification's, so this task does not wait for the fill-quality study), with a reference ceiling from a non-commercial model run for evaluation only; whether a precomputed empty-scene embedding reproduces the prompted result within tolerance so the text encoder can stay out of the removal download. The owner's blinded preference is held at the end, in the local provider's native qualification, and is not an input to this task's go or no-go, which rests on the measured scores.",
+        "OSOR-SDXL and RORem are measured beside the Apache candidates under the owner's quality-first policy of 2026-10-05, and ObjectClear and TurboClear are measured too; every candidate is ranked on quality, and a model whose terms restrict the person's use is recorded with that restriction for its card and is never a default pick.",
+        "This task is the generative proof of concept: the runtime is built in the harness (probes/object-removal, its own workspace and lockfile) from vendored, pinned sources with the cc crate, so the build route it proves is the one the local provider crate later uses. Its output is consumed by the local provider: the model set, the runtime and its build route, the measured minimum machine memory and the resource descriptor drafts."
       ],
       "context_links": [
         {
@@ -264,7 +264,7 @@
         }
       ],
       "acceptance_criteria": [
-        "The report records, per model and runtime, load, time per candidate at each size, three-candidate time, peak memory, download size and the quality scores and blinded preference against the Fast fill, with the host's load.",
+        "The report records, per model and runtime, load, time per candidate at each size, three-candidate time, peak memory, download size and the quality scores against the prototype's Fast fill, with the host's load.",
         "A go or no-go is recorded for each model with the runtime that passed, its build route within the one-toolchain rule, its measured minimum machine memory, and whether the shipped embedding matches the prompted output.",
         "Pinned resource descriptor drafts exist for every model that passed, the text encoder as a separate optional resource, each with its plain-language trade-off label and any use restriction."
       ],
@@ -272,7 +272,7 @@
         "approach": "mixed",
         "steps": [
           "Build each runtime from pinned sources in the harness, run the candidates on the corpus with fixed seeds, and record the figures.",
-          "Compare embedding-conditioned and prompted outputs, then hold the blinded comparison with the owner."
+          "Compare embedding-conditioned and prompted outputs and score every candidate against the ground truth and the prototype's fill."
         ],
         "commands": [
           "cargo test --manifest-path probes/object-removal/Cargo.toml"
@@ -284,15 +284,17 @@
     },
     {
       "id": "TASK-006",
-      "description": "Add the inference port to the core, the ONNX Runtime crate behind it, the deterministic fake, and the local-runtime capability with activation and unload.",
-      "status": "ready",
+      "description": "Add the inference port to the core, the ONNX Runtime crate behind it, the deterministic fake, the host-planned reference read in ModuleContext, and the local-runtime capability with activation and unload.",
+      "status": "in_progress",
       "dependencies": [
         "TASK-001"
       ],
       "extra_context": [
         "The port is two traits the core declares and never implements natively: Session (open a verified model file on a named backend; run named tensors in and out; report placement and precision) and Generator (image, mask, optional prompt or embedding, seed; yield candidates one at a time, cancellably). A new crate, luxforge-onnx, implements Session over ort 2.0.0-rc.13 statically linked with the Core ML provider on macOS and DirectML on Windows, writes the fixed-shape Core ML copy of a model once at install time, keeps the compile cache under the application data root keyed by model hash, runtime version and OS build, and is handed to the host through HostConfig as luxforge-net's transport is. A deterministic fake backend implementing both traits lives in luxforge-core beside the proof modules and is served only to developer runs and tests: the core-free-test-base rule keeps every workspace crate out of luxforge-testbase and the core-builds-once rule keeps the core from naming luxforge-testkit, so the fake can live nowhere else.",
+        "The Generator trait is what the generative workflow and the local provider share: an input crop in the model's encoded domain with its mask, an optional prompt or precomputed embedding, a seed and a step count; it yields one candidate at a time with per-step progress and cancellation and reports the provenance fields (model identity, version and hash, runtime, backend, precision, seed, steps, sampler, prompt hash). The fake generator is deterministic in its inputs and seed, can be told to be slow or to fail, and is registered only in developer runs and tests.",
         "A dependency rule row in xtask/src/repository.rs keeps ort, ort-sys and every runtime crate out of luxforge-core's manifest, with an allowed and a refused case in its tests; add a new xtask archive check against the pinned version, SHA-256 and published attestation, with explicit failure tests; no such archive-attestation check exists today.",
         "The local-runtime capability is defined by this consumer: a module declaring it may hold loaded sessions between tasks in a host-owned slot with a declared resident budget per model, is unloaded on a memory signal or after an idle interval (recorded default 10 minutes), is never loaded by module.list, a catalog open or a launch, and reports its resident set through module.status. The capability brings two generated methods, module.runtime.load {module_id, resource_id} (a tool's warm-up on pick) and module.runtime.unload {module_id, resource_id?} (the Models tab's Unload now), so loading and releasing are requests any client can send. CapabilityKind gains local-runtime; today serde rejects that unknown variant before registration, and managed-storage stays unsupported.",
+        "Every AI pixel read uses a host-planned bounded stage read, and the generative fill needs it before the analysis cache exists, so it is part of this foundation. ModuleContext has no pixel-read port today: add one that holds an immutable evaluation and cancellation off the owner, using the reference reads in luxforge_core::tiles, independently of the host's production GPU provider. TileSession::read reads ReadStage::Before {layer, mode} rectangles in ReadValues::Linear, bounded to one evaluated frame per read; TileService::stream provides output-stage RGBA8 bands for export, not arbitrary-prefix bands. The host selects the stage boundary (the repair stage's input for a fill, its output for analysis) and sampling mode; the module reduces tiled reads on its lane. TILE_QUEUE_CAPACITY is nine (eight clients plus desktop); define bounded admission for module reads without silently enlarging it. Owner, 2026-10-07: every AI input uses reference reads on every host. The read reports the input identity (source, dimensions, development, earlier corrections) the Corrections candidate seam records, so a candidate generated from it is accepted or refused by edit.accept-correction-patch's existing check.",
         "Nothing in this task renders, and no model ships: it is proven with the fake and with one pinned model file the test downloads nowhere (the harness's installed EfficientViT-SAM, opt-in)."
       ],
       "context_links": [
@@ -327,11 +329,18 @@
           "target": "docs/design/module-capabilities.md",
           "locator": "Lifecycle, jobs and resources",
           "relevance": "The activation the contract deferred and the lanes a loaded session serves."
+        },
+        {
+          "kind": "file",
+          "label": "Tile service",
+          "target": "crates/luxforge-core/src/tiles.rs",
+          "relevance": "The reference reads, TileSession::read and the queue the module read port admits through."
         }
       ],
       "acceptance_criteria": [
         "luxforge-core builds and tests without any runtime crate, the new dependency rule refuses one, and the desktop and luxforge-json link luxforge-onnx through HostConfig; the developer-only fake in the core drives every core test and scenario that needs a session or a generator, and luxforge-testbase's manifest is unchanged.",
         "On the M4 the opt-in test opens the pinned segmenter on the CPU provider and on Core ML over the fixed-shape copy, matches the two within the recorded tolerance, and reports placement and precision.",
+        "ModuleContext's read returns a bounded linear rectangle of the host-chosen stage from the reference renderer off the owner, with its input identity, honours cancellation and bounded admission, and is byte-identical to the reference renderer's own read of the same rectangle.",
         "A module declaring local-runtime loads once ahead of its tasks through module.runtime.load or on its first task, is reported by module.status, unloads through module.runtime.unload, after the idle interval and on the memory signal, and is never loaded by module.list, a catalog open or a launch; the capability's registration rules and the archive hash check have tests.",
         "The performance-rules checklist is answered: no owner-thread or interface-thread inference, bounded resident memory, cancellation between runs."
       ],
@@ -500,7 +509,7 @@
         "query.pick-object {asset_id, prompt} is the picker's programmatic form: a point, points with labels, a box or a stroke become prompts as the prototype's stroke module does, candidates are scored on predicted IoU, stability, stroke coverage and object coverage, parts yield to wholes, duplicates are suppressed largest first, and the decision is One, Several or Nothing with fixed tie order. task.select-object publishes the chosen candidate as an alpha artifact through the guided upsampler against the cached guide.",
         "The desktop's hover overlay is sampled from the candidate's logits over its bounds, under a pixel cap, so the frame uploads within its budget; the hover's pointer-to-overlay latency is measured in a hidden window as the prototype measured it.",
         "The analysis cache's budget adds a memory target, so it is a named constant in the architecture's limits table and an owner-accepted budget (decisions, 2026-09-30: a cache whose budget adds to a memory target needs the owner's acceptance), not a private default.",
-        "Every AI pixel read uses a host-planned bounded stage read. ModuleContext has no pixel-read port today: add one that holds an immutable evaluation and cancellation off the owner, using the reference reads in luxforge_core::tiles, independently of the host's production GPU provider. TileSession::read reads ReadStage::Before {layer, mode} rectangles in ReadValues::Linear, bounded to one evaluated frame per read; TileService::stream provides output-stage RGBA8 bands for export, not arbitrary-prefix bands. Reduce tiled reads on the module lane, with the host selecting the stage boundary and sampling mode. TILE_QUEUE_CAPACITY is nine (eight clients plus desktop); define bounded admission for module reads without silently enlarging it. Owner, 2026-10-07: every AI input uses reference reads on every host. Source, repair-prefix, model, runtime and precision remain explicit identities; identical reference inputs do not promise identical inference across execution providers.",
+        "Every AI pixel read uses the host-planned reference read the inference foundation adds to ModuleContext, at the repair stage's output for analysis. Owner, 2026-10-07: every AI input uses reference reads on every host. Source, repair-prefix, model, runtime and precision remain explicit identities; identical reference inputs do not promise identical inference across execution providers.",
         "Owner, 2026-10-07: qualify the permitted editing and UI responsiveness during inference, and model machine minima against combined resident models, candidates, cache and renderer resources. Report the two separate 2 GiB renderer budgets as ceilings, not allocations; measure residency and omitted GPU overhead separately, and re-check the 24 GB generative starting minimum. Run timing once feature work is complete.",
         "Owner, 2026-10-07: a new generation locks only its photograph, through the command service as well as the desktop; another photograph remains editable and progress and cancellation stay responsive. Accepted patches render without inference. Qualification exercises permitted editing on another photograph while inference runs; it does not require same-photograph slider edits during generation."
       ],
@@ -634,13 +643,13 @@
         "TASK-009"
       ],
       "extra_context": [
-        "This task waits for the Corrections foundation to be merged: the repair stage with its bounded regional primitive, the Corrections brush descriptor and draft target, and the repair layer's frozen-patch operation with prefix invalidation. It adds no second repair stage and no second brush; a Remove selection is a Corrections draft and an accepted fill is a patch operation in the repair layer.",
+        "The Corrections foundation is delivered: the repair stage, the Corrections brush and drafts, the candidate seam and frozen patches accepted through edit.accept-correction-patch. This task adds no second repair stage, brush or accept path. The generative workflow may land first (owner, 2026-10-11) and then already provides the Remove mode in the Corrections band, the brush selection, the Fill tier setting, the candidate strip and Accept; this task adds the Fast tier and the object picker's gestures to that mode rather than a second one. Whichever lands first creates the mode.",
         "Remove is a takeover canvas mode of the Corrections module (mode strip, proposed letter Q), with hover highlight, click, Alt-click, box and stroke through the picker; the selection is the object core, the stroke footprint and an effect region (the contact-band suggestion, off until the person turns Detect shadow on, refined with Add and Subtract); Several shows numbered pins with Confirm and Cancel; Nothing removes the painted footprint.",
         "task.fill-fast {asset_id, selection, effect_region?} runs the frozen Fast pipeline on the module lane against a held revision and prefix (the generative and remote tiers are separate tasks of the same request and result shape, so an optional model is never a prerequisite of Fast); its result is candidates addressed by job and index, at most 4 of at most 64 MiB per job and 1 GiB across jobs, the oldest finished job's released first and reported on job.read, never dropped because another job completed or the tool was left; the Corrections accept action rechecks revision and prefix, publishes the chosen patch as an artifact and commits one operation labelled Remove, storing the selection, transforms, prefix hash and provenance. Escape cancels the job; a late, cancelled or stale candidate cannot touch the recipe.",
         "The enlargement notice shows when the crop's enlargement exceeds the recorded threshold; the Fast tier's models install from the Remove mode's resource card. The decision-5 outcome (stale patches) is implemented as recorded.",
-        "Admission: a region of at most 32 MP and half the frame; the crop is bounded only by the frame and reduced to the model's input size, with the enlargement notice past the recorded threshold. Accept checks that the stack's artifacts bind within the 256 MiB prepared-artifact budget and refuses by name past it. The repair composite's GPU program is the Corrections foundation's; this task proves the committed patch renders within the declared tolerance on the GPU on the corpus, display, samples and export alike.",
+        "Admission: a region whose bounding box fits one candidate (64 MiB of patch and preview at eight bytes a pixel, about 8 MP) and at most half the frame, refused resource-limit by name, the cap raised only with a measurement under the quality-first rule; the crop is bounded only by the frame and reduced to the model's input size, with the enlargement notice past the recorded threshold. Accept checks that the stack's artifacts bind within the 256 MiB prepared-artifact budget and refuses by name past it. The repair composite's GPU program is the Corrections foundation's; this task proves the committed patch renders within the declared tolerance on the GPU on the corpus, display, samples and export alike.",
         "The held-candidate budget is likewise a named constant in the limits table and an owner-accepted budget; the committed patch is held to the reference by cargo xtask gpu-qualification for the picture, samples and export through the delivered GPU tile worker.",
-        "Read the fill crop's held repair input stage in linear values through the same host-planned tiled-read port as analysis, from the reference renderer on every host, with input identity recorded in provenance. Add a repair recipe to fixtures/preview/corpus.json with a checked-in patch fixture reproduced by the fake backend, source IDs and evidence-script steps, so gpu-qualification judges the stored composite at every affected view and output. The repair foundation must support artifact reads through storage blocks or a new binding contract on both GPU devices; no arbitrary artifact texture binding exists today.",
+        "Read the fill crop's held repair input stage in linear values through the host-planned reference read the inference foundation adds, from the reference renderer on every host, with input identity recorded in provenance. Add a repair recipe to fixtures/preview/corpus.json with a checked-in patch fixture reproduced by the fake backend, source IDs and evidence-script steps, so gpu-qualification judges the stored composite at every affected view and output. The repair foundation must support artifact reads through storage blocks or a new binding contract on both GPU devices; no arbitrary artifact texture binding exists today.",
         "Owner, 2026-10-07: qualify the permitted editing and UI responsiveness during inference, and model machine minima against combined resident models, candidates, cache and renderer resources. Report the two separate 2 GiB renderer budgets as ceilings, not allocations; measure residency and omitted GPU overhead separately, and re-check the 24 GB generative starting minimum. Run timing once feature work is complete.",
         "Owner, 2026-10-07: a new generation locks only its photograph, through the command service as well as the desktop; another photograph remains editable and progress and cancellation stay responsive. Accepted patches render without inference. Qualification exercises permitted editing on another photograph while inference runs; it does not require same-photograph slider edits during generation."
       ],
@@ -705,47 +714,71 @@
     },
     {
       "id": "TASK-012",
-      "description": "Deliver the generative workflow in the Remove tool and API over the fake generator: the Fill tier choice, the candidate strip with Regenerate, the Replace prompt, Accept with generative provenance, the experiment flag and the generative scenario.",
+      "description": "Deliver the generative workflow over the fake generator: the Remove mode with a brush selection, the Fill tier choice, the generative fill task and its pipeline on the candidate seam, the candidate strip with Regenerate, the Replace prompt, Accept through the Corrections patch action with generative provenance, the experiment flag and the generative scenario.",
       "status": "pending",
       "dependencies": [
-        "TASK-011"
+        "TASK-006"
       ],
       "extra_context": [
-        "The workflow is provider-independent so that a local no-go leaves it finished for the remote tier: it runs over the developer-only fake generator in the core, which yields deterministic candidates with the provenance fields a real model fills (model identity, version and hash, runtime, backend, precision, seed, steps, sampler, prompt hash).",
-        "task.fill-generative {asset_id, selection, effect_region?, model, candidates?, prompt?, seed?} shares the Fast task's request and result shape and the candidate retention rule; Generate yields three candidates from consecutive seeds, Regenerate is a new job for the same selection, the strip shows every live candidate, and Accept is the same Corrections accept action with the generative provenance stored. A prompt of at most 256 characters labels the entry Replace; the text encoder resource, when absent, is offered and nothing is generated.",
-        "The Fill setting offers Generative only when a generative model is installed and the ai.generative experiment flag admits it; the flag gates presence, never how a committed patch renders. Escape cancels a running generation at a step boundary and a late, cancelled or stale candidate cannot touch the recipe.",
-        "The generative smoke scenario runs over the fake: the tier choice, a generation's progress, the strip with three candidates, Regenerate, a prompt, Accept and the history label, correlated to state and logs."
+        "Owner, 2026-10-11: generative fill is delivered ahead of the Fast tier, the analysis cache and Select. This task builds on the inference foundation alone (the Generator trait, the fake generator and the host-planned reference read) and on the delivered Corrections foundation: the candidate seam (ModuleContext::reserve_candidate and publish_candidate, job.read, job.read-candidate, job.release-candidates) and frozen patches accepted by edit.accept-correction-patch, which pins the candidate, checks its input identity and commits one patch operation. It adds no second candidate store, accept path or repair stage.",
+        "The workflow is provider-independent so that a local no-go leaves it finished for the remote tier: it runs over the developer-only fake generator, which yields deterministic candidates with the provenance fields a real model fills (model identity, version and hash, runtime, backend, precision, seed, steps, sampler, prompt hash).",
+        "The luxforge.ai module is created here with one task, task.fill-generative {asset_id, selection, effect_region?, model, candidates?, prompt?, seed?}, whose request and result shape the Fast and remote tiers later share. The selection is a Corrections brush stroke: its footprint as painted, feathered over 15% of the brush radius, the design's Nothing case; the object picker, pins and the effect-region suggestion join this mode with the Fast tier. Remove is a mode of the Corrections band beside Clone and Heal, under the existing Q workspace; its Fill setting lists the tiers whose models are installed, so with only a generative model it shows Generative alone.",
+        "The fill pipeline around the model is the design's and is shared with the Fast tier: read the region plus one region-length of context through the reference read at the repair stage's input, square and reflection-pad it, encode from linear light to the model's display-referred input with a recorded inverse, reduce to the model's native size, run the Generator, decode, resize back, re-synthesise grain, correct colour and tone at the edge by pyramid push-pull, carry detail across the edge with a Laplacian pyramid, and composite so every pixel with zero coverage is copied byte for byte. Port the grain, push-pull and pyramid stages from the prototype (probes/object-removal, on main once the harness lands, or the claude/object-removal-research-d3374b branch) into the module with exact-buffer tests against f64 references; numerical details are the implementer's within that contract.",
+        "Generate yields three candidates from consecutive seeds in sequence, one job; Regenerate is a new job for the same selection; the strip shows every live candidate under the seam's retention rule. Accept is edit.accept-correction-patch with the generative provenance stored and the entry labelled Generative fill, or Replace \"…\" with a prompt. A prompt of at most 256 characters makes it Replace; the text encoder resource, when absent, is offered and nothing is generated.",
+        "Admission, refused resource-limit by name before any allocation: the region's bounding box fits one candidate (64 MiB of patch and preview at eight bytes a pixel, about 8 MP) and at most half the frame, the stack's artifacts bind within the 256 MiB prepared-artifact budget, a prompt of at most 256 characters; the candidate cap is raised only with a measurement under the quality-first rule.",
+        "The Fill setting offers Generative only when a generative model is installed and the ai.generative experiment flag (registered in luxforge_core::flags) admits it; the flag gates presence, never how a committed patch renders. In developer runs the fake generator counts as an installed model. Escape cancels a running generation at a step boundary and a late, cancelled or stale candidate cannot touch the recipe.",
+        "The generative smoke scenario runs over the fake: the tier choice, a brush selection, a generation's progress, the strip with three candidates, Regenerate, a prompt, Accept and the history label, correlated to state and logs."
       ],
       "context_links": [
         {
           "kind": "file",
           "label": "AI editing design",
           "target": "docs/design/ai-editing.md",
-          "locator": "Candidates, seeds and provenance",
-          "relevance": "The strip, seeds, Accept, the prompt rules and the retention rule."
+          "locator": "Generative fill and Replace",
+          "relevance": "The tiers, the pipeline around the model, candidates, seeds, provenance and admission."
         },
         {
           "kind": "file",
-          "label": "Flags registry",
+          "label": "Module capabilities design",
+          "target": "docs/design/module-capabilities.md",
+          "locator": "Job candidates",
+          "relevance": "The delivered candidate seam the fill publishes through and the accept seam."
+        },
+        {
+          "kind": "file",
+          "label": "Corrections design",
+          "target": "docs/design/corrections.md",
+          "locator": "Candidates",
+          "relevance": "edit.accept-correction-patch, the patch operation, input identity and stale patches."
+        },
+        {
+          "kind": "file",
+          "label": "Corrections workspace",
+          "target": "docs/design/corrections-workspace.md",
+          "relevance": "The Q mode, the band, the brush and the draft bar the Remove mode joins."
+        },
+        {
+          "kind": "file",
+          "label": "Candidate store",
+          "target": "crates/luxforge-core/src/artifacts/candidates.rs",
+          "relevance": "MAX_CANDIDATE_BYTES and the bounds the admission rule follows."
+        },
+        {
+          "kind": "file",
+          "label": "Corrections module",
+          "target": "crates/luxforge-core/src/modules/corrections/actions.rs",
+          "relevance": "The accept action and patch operation the generative fill commits through."
+        },
+        {
+          "kind": "file",
+          "label": "Feature flags",
           "target": "crates/luxforge-core/src/flags.rs",
-          "relevance": "Where the ai.generative experiment flag is declared."
-        },
-        {
-          "kind": "file",
-          "label": "Develop workspace",
-          "target": "docs/design/develop-workspace.md",
-          "locator": "Module panels",
-          "relevance": "The density and controls the strip and the prompt field follow."
-        },
-        {
-          "kind": "file",
-          "label": "UI components",
-          "target": "docs/design/ui-components.md",
-          "relevance": "The control vocabulary a candidate strip and a prompt field extend."
+          "relevance": "Where ai.generative is registered."
         }
       ],
       "acceptance_criteria": [
         "Generate, Regenerate, the prompt, candidate choice and Accept each send a request Copy as JSON request shows, and the same journey runs through luxforge-json over the fake; the accepted entry stores the generative provenance and renders without any model.",
+        "The fill pipeline's crop, encoding inverse, grain estimate, push-pull and pyramid blend pass exact-buffer tests against their references, every candidate is byte-identical to its input outside the coverage, and a region past the candidate cap or half the frame is refused resource-limit by name.",
         "Candidates follow the retention rule across Generate, Regenerate and a second client; a prompt over 256 characters is refused by name; Replace without the text encoder offers the download and generates nothing; cancellation leaves the recipe untouched.",
         "The generative scenario passes with frames correlated to state and logs; the flag's presence rule and the desktop parity tests cover every new control; the performance-rules checklist is answered.",
         "Generation locks only its photograph through the shared command service, permits editing another photograph, and keeps progress and cancellation responsive; a stored accepted patch renders without inference."
@@ -1190,6 +1223,7 @@
       "task_ids": [
         "TASK-003",
         "TASK-004",
+        "TASK-005",
         "TASK-006",
         "TASK-008"
       ]
@@ -1197,14 +1231,16 @@
     {
       "wave": 3,
       "task_ids": [
-        "TASK-005",
-        "TASK-007"
+        "TASK-007",
+        "TASK-012"
       ]
     },
     {
       "wave": 4,
       "task_ids": [
-        "TASK-009"
+        "TASK-009",
+        "TASK-013",
+        "TASK-016"
       ]
     },
     {
@@ -1217,27 +1253,14 @@
     {
       "wave": 6,
       "task_ids": [
-        "TASK-012",
         "TASK-014",
         "TASK-015",
-        "TASK-017"
-      ]
-    },
-    {
-      "wave": 7,
-      "task_ids": [
-        "TASK-013",
-        "TASK-016"
-      ]
-    },
-    {
-      "wave": 8,
-      "task_ids": [
+        "TASK-017",
         "TASK-018"
       ]
     },
     {
-      "wave": 9,
+      "wave": 7,
       "task_ids": [
         "TASK-019"
       ]
