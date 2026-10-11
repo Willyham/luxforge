@@ -5344,6 +5344,9 @@ impl Editor {
         }
         let result = json!({"run_id":self.log.run_id,"status":"captured","had_input_errors":had_errors,"frames":frames,"script":script,"elapsed_ms":self.log.started.elapsed().as_secs_f64()*1000.,"build_version":env!("CARGO_PKG_VERSION"),"os":std::env::consts::OS,"arch":std::env::consts::ARCH});
         let state = self.snapshot();
+        // As an ordinary quit does, once the last state is read: statistics are cancelled and
+        // discarded, never sent on the way out or waited for.
+        super::usage_supervisor::shutdown();
         let log = self.log.diagnostics.take();
         self.live_server.take();
         self.owner.disconnect(self.client);
