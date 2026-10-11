@@ -883,3 +883,71 @@ fn the_overlay_draw_is_logged_once_per_message_at_most() {
     );
     assert!(drawn[0]["drawn_ms"].as_f64().unwrap() >= 0.0);
 }
+
+/// Usage statistics: a committing gesture records its one `tool.commit` `corrections` at the
+/// core's commit, with the photograph's image; the mode, selection, a set source and `H` are view
+/// state and record nothing, and nothing a gesture records carries a coordinate or a setting.
+#[test]
+fn usage_corrections_gestures_record_their_commits_at_the_core_and_view_state_nothing() {
+    use luxforge_core::usage::{EventKind, ImageKey, SessionClock, SessionStart, Tool, Trigger};
+    let mut c = Correcting::opened();
+    let key = ImageKey::from_bytes([0x24; 32]);
+    let usage = c.owner().usage().clone();
+    usage.start(
+        Trigger::OptIn,
+        SessionStart::parse("2026-10-09T14:03:12Z").unwrap(),
+        SessionClock::manual().0,
+        key.clone(),
+    );
+    let events = || -> Vec<EventKind> {
+        let Some(session) = usage.session() else {
+            return Vec::new();
+        };
+        let Some(window) = session.detach() else {
+            return Vec::new();
+        };
+        window
+            .events()
+            .iter()
+            .map(|event| event.kind)
+            .filter(|kind| !matches!(kind, EventKind::SessionStart { .. }))
+            .collect()
+    };
+    let fingerprint = &c.editor.document.state.as_ref().unwrap().asset.fingerprint;
+    let image = key.image_id_of_hex(fingerprint).unwrap();
+    let commit = EventKind::ToolCommit {
+        tool: Tool::Corrections,
+        image,
+    };
+
+    // A set source, `H` twice and the mode left and entered again: view state.
+    c.press([0.3, 0.15], alt(), CanvasHit::Add);
+    c.release([0.3, 0.15]);
+    c.key(Key::Character("h".into()), Keys::empty());
+    c.key(Key::Character("h".into()), Keys::empty());
+    c.key(Key::Character("q".into()), Keys::empty());
+    c.enter();
+    assert_eq!(events(), []);
+
+    // A spot from the set source, then a painted stroke: one commit each.
+    add_spot(&mut c, [0.3, 0.3]);
+    assert_eq!(events(), [commit]);
+    c.press([0.6, 0.6], Modifiers::default(), CanvasHit::Add);
+    for step in 1..=10 {
+        c.drag([0.6 + 0.01 * f64::from(step), 0.6]);
+    }
+    c.release([0.7, 0.6]);
+    c.commit();
+    assert_eq!(events(), [commit], "a stroke's moves record nothing");
+
+    // Selecting a row records nothing; `⌫` deletes it with one commit.
+    c.message(CorrectionMessage::Select(Some("correction-1".into())));
+    assert_eq!(events(), []);
+    c.key(Key::Named(Named::Backspace), Keys::empty());
+    c.run_sent();
+    assert_eq!(events(), [commit]);
+    // The band's reset: one commit.
+    c.message(CorrectionMessage::Reset);
+    c.run_sent();
+    assert_eq!(events(), [commit]);
+}
