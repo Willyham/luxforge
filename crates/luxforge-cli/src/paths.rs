@@ -59,6 +59,11 @@ impl Paths {
         self.data.join("modules").join("resources")
     }
 
+    /// Where the local model runtime keeps what it compiles, such as Core ML's compiled models.
+    pub fn inference_cache(&self) -> PathBuf {
+        self.data.join("inference")
+    }
+
     /// The catalog an ordinary launch opens with no location stored: [`CATALOG_FILE`] in the
     /// configuration directory.
     pub fn default_catalog(&self) -> PathBuf {
