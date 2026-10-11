@@ -1,5 +1,6 @@
 //! Small, safe wrappers around platform FFI: process CPU and memory counters, GPU counters where
-//! reported, and the Windows file change time used to verify source signatures.
+//! reported, the Windows file change time used to verify source signatures, and a volume's free
+//! space ([`disk::available_bytes`]).
 //!
 //! The platform code is FFI, so it lives in this leaf crate, the second one allowed `unsafe` after
 //! `luxforge-raw`. Every `unsafe` block sits beside a `SAFETY:` comment and nothing unsafe crosses
@@ -13,6 +14,7 @@ use std::fmt;
 
 #[cfg(feature = "allocation-counter")]
 pub mod allocations;
+pub mod disk;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
