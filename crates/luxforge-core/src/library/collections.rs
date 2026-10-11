@@ -331,7 +331,7 @@ pub(crate) fn list(connection: &Connection) -> Result<Collections, Error> {
             collections,
             |collection| collection.id.as_str(),
             |collection| collection.parent_id.as_ref().map(CollectionId::as_str),
-            |collection| &collection.name,
+            |collection| tree::by_name(&collection.name),
         ),
     })
 }

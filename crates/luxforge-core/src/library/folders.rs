@@ -257,7 +257,8 @@ pub(crate) fn move_assets(
     }))
 }
 
-/// `folder.list`: every folder, parents before children and siblings by name ignoring case, each
+/// `folder.list`: every folder, parents before children and siblings in [`tree::folder_order`]
+/// (years newest first, then days in calendar order, then names ignoring case), each
 /// with the photographs directly in it (removed ones excepted) and the capture year of its earliest
 /// photograph (the camera-local day of the one with the earliest capture instant), none when it has
 /// none dated. One query: the counts and years are one `GROUP BY` over the photographs.
@@ -289,7 +290,7 @@ pub(crate) fn list(connection: &Connection) -> Result<CatalogFolders, Error> {
             folders,
             |folder| folder.id.as_str(),
             |folder| folder.parent_id.as_ref().map(CatalogFolderId::as_str),
-            |folder| &folder.name,
+            |folder| tree::folder_order(&folder.name),
         ),
     })
 }
