@@ -28,9 +28,9 @@ Boards, drawn at 1440 × 900 logical points and rendered at 2×. Each one is als
 
 ## Entering and leaving
 
-Corrections is a mode-strip entry after Mask, with the healing icon and the tooltip "Corrections (Q)". The module's canvas declaration names icon `heal` and shortcut `q`; `Q` is Lightroom's letter, and the [AI editing design](ai-editing.md#the-flow) already proposes it. It can also be entered from the palette, or by expanding the Corrections section from the tools panel.
+Corrections is a mode-strip entry after Mask, with the healing icon and the tooltip "Corrections (Q)". The module's canvas declaration names icon `heal` and shortcut `q`; `Q` is Lightroom's letter, and the [AI editing design](ai-editing.md#the-flow) already proposes it. It can also be entered from the palette.
 
-While the mode is active, the tools panel shows the **Corrections band** under the histogram, expanded, followed by the other sections as usual. This is where the Masks band sits in Mask mode. Outside the mode, the Corrections section sits collapsed in its registry place with the hint `5 corrections`. Pins and outlines are drawn only in the mode, and the corrections render everywhere.
+The mode is a tab of its own, as Mask mode is. While it is active, the tools panel shows the **Corrections band** under the histogram, where the Masks band sits in Mask mode, and the band replaces the module sections: no adjustment applies through a correction, so nothing is drawn under it. Leaving the mode hides the band and brings the sections back. Outside the mode Corrections has no section in the tools panel; the status bar's stale-patch count, the API and the corrections' pixels do not need one. Pins and outlines are drawn only in the mode, and the corrections render everywhere.
 
 The mode is left with `Q`, another mode, or Escape once Escape has nothing else to undo (see [keys](#keys)). Leaving the mode with a stroke held cancels the stroke first.
 

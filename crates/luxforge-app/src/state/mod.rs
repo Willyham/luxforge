@@ -495,8 +495,10 @@ impl Workspace {
         self.tools = tools::derive(inputs);
         self.histogram = histogram::derive(inputs, &self.histogram);
         self.status = status::derive(inputs);
-        // The panel draws sections unless Mask mode's list has no mask open to bind them to.
-        let sections_shown = !(self.canvas.mask_panel && self.masks.selected.is_none());
+        // The panel draws sections unless Mask mode's list has no mask open to bind them to, or
+        // the Corrections band stands in for them.
+        let sections_shown = !(self.canvas.mask_panel && self.masks.selected.is_none())
+            && !self.corrections.active;
         self.palette = palette::derive(inputs, &self.tools, sections_shown);
         self.select = select::derive(inputs);
         self.long_work = long_work::derive(inputs);
@@ -3747,10 +3749,6 @@ mod tests {
         let mut built_on_demand = 0;
         for (left, right) in from_collapsed.iter().zip(&from_open) {
             assert_eq!(left.section.module_id, right.section.module_id);
-            // The Corrections section has no controls: its band is its mode's.
-            if crate::state::corrections::is_brush_mode(&open.modules, &right.section.module_id) {
-                continue;
-            }
             assert!(right.section.shows_controls());
             assert_eq!(
                 left.controls, right.controls,
