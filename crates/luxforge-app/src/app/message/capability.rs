@@ -1,5 +1,5 @@
 //! Module capabilities.
-use crate::app::capabilities::Answer;
+use crate::{app::capabilities::Answer, state::models::ModelRequest};
 use luxforge_core::jobs::JobRecord;
 use serde_json::Value;
 
@@ -33,6 +33,17 @@ pub(crate) enum CapabilityMessage {
     Remove {
         module_id: String,
         resource: String,
+    },
+    /// The Models tab's Unload now: release one loaded model through `module.runtime.unload`.
+    Unload {
+        module_id: String,
+        resource: String,
+    },
+    /// Copy the request a Models tab button sends: Remove or Unload now.
+    CopyModelRequest {
+        module_id: String,
+        resource: String,
+        request: ModelRequest,
     },
     Cancel {
         module_id: String,

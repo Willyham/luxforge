@@ -415,7 +415,7 @@ fn api_draft_view_workspace_preview_palette_and_pick_round_trip() {
         (json!({"settings":{}}), "missing field `open`"),
         (
             json!({"settings":{"open":true,"tab":"colours"}}),
-            "settings tab must be one of general, appearance, experiments, privacy, not \"colours\"",
+            "settings tab must be one of general, appearance, models, experiments, privacy, not \"colours\"",
         ),
         (
             json!({"settings":{"open":false,"tab":"general"}}),
@@ -1486,7 +1486,7 @@ fn usage_steps_round_trip_and_refuse_what_they_do_not_take() {
         (json!({"open": {"path": ""}}), "open path"),
         (
             json!({"settings": {"open": true, "tab": "telemetry"}}),
-            "settings tab must be one of general, appearance, experiments, privacy",
+            "settings tab must be one of general, appearance, models, experiments, privacy",
         ),
     ] {
         refused(json!([script]), expected);

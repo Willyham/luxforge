@@ -1291,6 +1291,7 @@ impl Machine {
                     redirects: RedirectPolicy::default(),
                     control: &job,
                     progress: &mut |_, _| {},
+                    head: None,
                 },
                 &mut io::sink(),
             )

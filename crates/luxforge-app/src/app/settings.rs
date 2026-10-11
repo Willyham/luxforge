@@ -10,6 +10,8 @@ use super::{
 };
 use crate::state::{
     MenuTarget,
+    capabilities::Operation,
+    models::{self, ModelRequest},
     preferences::{self, GeneralControl},
     settings::{FlagControl, SettingsTab, parse_number},
 };
@@ -22,12 +24,15 @@ impl Editor {
     pub(super) fn settings_update(&mut self, message: SettingsMessage) -> Task<Message> {
         match message {
             SettingsMessage::Open(tab) => {
-                // A launch that is not eligible for usage statistics has no Privacy tab to open.
-                let tab = if SettingsTab::shown(self.usage.eligible).any(|shown| shown == tab) {
-                    tab
-                } else {
-                    SettingsTab::General
-                };
+                // A launch that is not eligible for usage statistics has no Privacy tab to open, and
+                // one whose modules hold no model no Models tab.
+                let models = models::model_modules(&self.modules).next().is_some();
+                let tab =
+                    if SettingsTab::shown(self.usage.eligible, models).any(|shown| shown == tab) {
+                        tab
+                    } else {
+                        SettingsTab::General
+                    };
                 // The sheet is modal: nothing behind it stays open over it.
                 self.palette.open = false;
                 self.view_state.menu = None;
@@ -35,14 +40,33 @@ impl Editor {
                 self.settings.number_text.clear();
                 // What a `luxforge-json` process stored in the library reaches the desktop by no
                 // event, so opening the sheet lists the themes again too, and reads the usage
-                // statistics consent, which another process may have changed.
-                return Task::batch([self.read_flags(), self.list_themes(), self.read_usage()]);
+                // statistics consent, which another process may have changed. The Models tab reads
+                // the status of every module that holds a model, which a load, an unload or an
+                // idle release may have changed since it was last read.
+                let statuses = if tab == SettingsTab::Models {
+                    self.read_model_statuses()
+                } else {
+                    Task::none()
+                };
+                return Task::batch([
+                    self.read_flags(),
+                    self.list_themes(),
+                    self.read_usage(),
+                    statuses,
+                ]);
             }
             SettingsMessage::Close => {
                 self.settings.open = None;
                 self.settings.number_text.clear();
-                // A theme row's menu belongs to the sheet.
-                if matches!(self.view_state.menu, Some(MenuTarget::Theme(_))) {
+                // A theme row's and a model row's menus belong to the sheet.
+                if matches!(
+                    self.view_state.menu,
+                    Some(
+                        MenuTarget::Theme(_)
+                            | MenuTarget::Model { .. }
+                            | MenuTarget::Resident { .. }
+                    )
+                ) {
                     self.view_state.menu = None;
                 }
             }
@@ -135,6 +159,22 @@ impl Editor {
             }
         }
         Task::none()
+    }
+
+    /// Read `module.status` of every module that holds a model, as the Models tab shows them, one
+    /// round trip each through the capability driver; a module with a round trip already out is
+    /// left to its answer.
+    fn read_model_statuses(&mut self) -> Task<Message> {
+        let wanted: Vec<String> = models::model_modules(&self.modules)
+            .map(|module| module.id.clone())
+            .filter(|module| self.capabilities.module(module).pending == 0)
+            .collect();
+        Task::batch(
+            wanted
+                .into_iter()
+                .map(|module| self.capability_op(&module, Operation::Refresh))
+                .collect::<Vec<_>>(),
+        )
     }
 
     /// Read the preferences and the flags, unless a read is already out: it answers for this
@@ -233,6 +273,7 @@ impl Editor {
             })
             .collect();
         json!({
+            "models": self.models_summary(),
             "open": self.settings.open.map(SettingsTab::name),
             "tabs": self.workspace.settings.tabs.iter().map(|tab| tab.name()).collect::<Vec<_>>(),
             "general": {"rows": general, "error": self.workspace.settings.preferences_error},
@@ -246,6 +287,78 @@ impl Editor {
             "writes_outstanding": usize::from(self.settings.writing.is_some())
                 + self.settings.waiting.len()
                 + self.preferences.outstanding(),
+        })
+    }
+
+    /// What a captured frame records of the Models tab while it is open: every row and resident row
+    /// as drawn, with the request each one's button sends and Copy as JSON request copies, the
+    /// resident and machine lines, and, for correlation, the `module.status` answers they were
+    /// drawn from as the desktop holds them. `null` while the tab is closed.
+    fn models_summary(&self) -> Value {
+        let Some(tab) = &self.workspace.settings.models else {
+            return Value::Null;
+        };
+        let mutation = json!({"request_id": "<per press>", "actor": crate::state::ACTOR});
+        let rows: Vec<Value> = tab
+            .rows
+            .iter()
+            .map(|row| {
+                json!({
+                    "module_id": row.module_id, "resource_id": row.resource_id,
+                    "title": row.title, "detail": row.detail, "state": row.state,
+                    "tradeoff": row.tradeoff, "use_restriction": row.use_restriction,
+                    "requirement": row.requirement, "fits": row.fits,
+                    "removable": row.removable, "enabled": row.enabled,
+                    "menu_open": row.menu_open,
+                    "remove_request": row.removable.then(|| ModelRequest::Remove.request(
+                        &row.module_id, &row.resource_id, mutation.clone())),
+                })
+            })
+            .collect();
+        let resident: Vec<Value> = tab
+            .resident
+            .iter()
+            .map(|row| {
+                json!({
+                    "module_id": row.module_id, "resource_id": row.resource_id,
+                    "title": row.title, "detail": row.detail, "enabled": row.enabled,
+                    "menu_open": row.menu_open,
+                    "unload_request": ModelRequest::Unload.request(
+                        &row.module_id, &row.resource_id, Value::Null),
+                })
+            })
+            .collect();
+        let statuses: serde_json::Map<String, Value> = models::model_modules(&self.modules)
+            .map(|module| {
+                let status = self.capabilities.module(&module.id).status.as_ref();
+                (
+                    module.id.clone(),
+                    status.map_or(Value::Null, |status| {
+                        json!({
+                            "resources": status.resources,
+                            "machine": status.machine.as_ref().map(|machine| json!({"memory_bytes": machine.memory_bytes})),
+                            "runtime": status.runtime.as_ref().map(|runtime| json!({
+                                "held_bytes": runtime.held_bytes,
+                                "budget_bytes": runtime.budget_bytes,
+                                "models": runtime.models.iter().map(|model| json!({
+                                    "resource_id": model.resource_id, "state": model.state,
+                                    "resident_bytes": model.resident_bytes,
+                                })).collect::<Vec<_>>(),
+                            })),
+                        })
+                    }),
+                )
+            })
+            .collect();
+        json!({
+            "rows": rows,
+            "resident": resident,
+            "resident_line": tab.resident_line,
+            "machine": tab.machine,
+            "loading": tab.loading,
+            "errors": tab.errors,
+            "tiers": [],
+            "status": statuses,
         })
     }
 

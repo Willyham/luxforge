@@ -84,6 +84,7 @@ fn measure(transport: &HttpTransport, url: &str) -> (i64, i64) {
                 redirects: RedirectPolicy::default(),
                 control: &job,
                 progress: &mut |_, _| {},
+                head: None,
             },
             &mut io::sink(),
         )

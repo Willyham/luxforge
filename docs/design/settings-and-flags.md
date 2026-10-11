@@ -6,7 +6,7 @@ Luxforge has a small, typed **feature flag** registry that gates features and ex
 
 ## Scope
 
-[Optional usage statistics](usage-statistics.md) add a **Privacy** tab, listed only in a launch eligible to report. It is not a feature flag. With the production activation switch off, no ordinary launch is eligible, so the tab is shown only in an evidence run given explicit test eligibility (`--usage-test-receiver`). The switch drives the desktop's statistics supervisor, which an eligible launch starts ([implemented integration](usage-statistics.md#implemented-integration)); turning it on starts a session and turning it off cancels any upload in flight. The General, Appearance and Experiments tabs are unchanged.
+[Optional usage statistics](usage-statistics.md) add a **Privacy** tab, listed only in a launch eligible to report. It is not a feature flag. With the production activation switch off, no ordinary launch is eligible, so the tab is shown only in an evidence run given explicit test eligibility (`--usage-test-receiver`). The switch drives the desktop's statistics supervisor, which an eligible launch starts ([implemented integration](usage-statistics.md#implemented-integration)); turning it on starts a session and turning it off cancels any upload in flight. The General, Appearance and Experiments tabs are unchanged. A **Models** tab, after Appearance, is listed only when a registered module holds a model ([module capabilities](module-capabilities.md#desktop)).
 
 In scope: the flag registry, its storage beside the existing user preferences, `flags.list` and `flags.set`, launch-time resolution, developer mode as a flag, the Settings surface with its Experiments tab, the palette and keyboard routes to it, evidence steps and a rendered smoke scenario.
 
