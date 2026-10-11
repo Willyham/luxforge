@@ -108,8 +108,12 @@ fn run() -> Result<(), (String, String)> {
         config_dir: paths.as_ref().map(Paths::module_config),
         resource_dir: paths.as_ref().map(Paths::module_resources),
         secrets,
-        transport: Arc::new(HttpTransport::system()),
-        // A developer run serves the deterministic fake to a local-runtime capability.
+        // A developer run installs the developer models from memory and serves the deterministic
+        // fake to a local-runtime capability.
+        transport: luxforge_core::DeveloperModels::for_run(
+            developer,
+            Arc::new(HttpTransport::system()),
+        ),
         inference: developer.then(luxforge_core::inference::fake::FakeInference::shared),
         ..HostConfig::unconfigured()
     };

@@ -124,7 +124,10 @@ fn opening_reads_the_flags_and_each_change_is_written_in_order() {
         .iter()
         .map(|row| row.id.as_str())
         .collect();
-    assert_eq!(ids, ["developer", "proof.choice", "proof.number"]);
+    assert_eq!(
+        ids,
+        ["developer", "proof.choice", "proof.number", "ai.generative"]
+    );
 
     set(&mut editor, "proof.choice", Some(json!("second")));
     set(&mut editor, "proof.number", Some(json!(75.0)));

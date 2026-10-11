@@ -30,7 +30,7 @@ use crate::{
         settings::{FieldRead, ProfileRead, ProfileStatus},
     },
     jobs::{JobControl, JobKind, JobStatus, Jobs, NewJob, Work},
-    modules::check_declared_values,
+    modules::{TaskAdmission, check_declared_values},
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -44,6 +44,34 @@ pub const TASK_PREFIX: &str = "task.";
 pub(super) struct TaskRun {
     control: Arc<JobControl>,
     outcome: Arc<TaskOutcome>,
+    task_id: String,
+    /// The asset the task holds locked while its job runs ([`crate::TaskNeeds::locks_asset`]).
+    locks: Option<AssetId>,
+}
+
+/// The task that holds an asset locked: its job and its method.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct LockingTask {
+    pub(crate) job_id: JobId,
+    pub(crate) method: String,
+}
+
+/// The refusal of an edit, or of another locking task, on an asset a running task holds locked:
+/// `conflict`, with `data: {reason: "locked", asset_id, job_id, method}`.
+pub(crate) fn locked(asset_id: &AssetId, running: &LockingTask) -> Error {
+    Error::new(
+        crate::ErrorKind::Conflict,
+        format!(
+            "photograph {asset_id} is locked while {} runs as job {}; cancel it or wait for it to end",
+            running.method, running.job_id
+        ),
+    )
+    .with_data(json!({
+        "reason": "locked",
+        "asset_id": asset_id,
+        "job_id": running.job_id,
+        "method": running.method,
+    }))
 }
 
 /// One capability a task uses, with the scope its live grant names and, for a remote request, the
@@ -160,6 +188,17 @@ impl CapabilityHost {
         if let Some(asset_id) = &asset_id {
             asset_exists(service, asset_id)?;
         }
+        let hooks = registry
+            .capabilities(module_id)
+            .ok_or_else(|| Error::internal(format!("module {module_id} is not registered")))?;
+        // What this request needs of the task's declaration.
+        let needs = hooks.task_needs(task_id, &checked)?;
+        let locks = needs.locks_asset.then(|| asset_id.clone()).flatten();
+        if let Some(asset_id) = &locks
+            && let Some(running) = self.locking_task(jobs, asset_id)
+        {
+            return Err(locked(asset_id, &running));
+        }
         let settings = match &descriptor.settings {
             Some(_) => Some(self.settings()?.read(descriptor, self.secrets())?),
             None => None,
@@ -177,8 +216,17 @@ impl CapabilityHost {
             }
             (None, _) => None,
         };
-        let capabilities = task
+        if let Some(uses) = &needs.uses
+            && let Some(undeclared) = uses.iter().find(|used| !task.uses.contains(used))
+        {
+            return Err(Error::internal(format!(
+                "task {task_id} asked to use capability {undeclared}, which it does not declare"
+            )));
+        }
+        let capabilities = needs
             .uses
+            .as_ref()
+            .unwrap_or(&task.uses)
             .iter()
             .map(|id| {
                 descriptor.capability(id).ok_or_else(|| {
@@ -201,6 +249,15 @@ impl CapabilityHost {
 
         // Every unmet requirement, listed together before anything else is asked.
         let mut missing = Vec::new();
+        for flag in &needs.flags {
+            if !crate::flags::toggle(&self.preferences, flag)? {
+                missing.push(Requirement {
+                    kind: RequirementKind::Flag,
+                    id: (*flag).to_owned(),
+                    state: "off".into(),
+                });
+            }
+        }
         if let Some(profile) = profile
             && profile.status != ProfileStatus::Ready
         {
@@ -326,9 +383,34 @@ impl CapabilityHost {
             });
         }
 
+        // The stage a task reads is the asset's current entry as it is now, bound here in
+        // `O(layers)` and read on the lane from the reference renderer; the module admits the
+        // request against it before anything is queued.
+        let plan = match (task.reads, &asset_id) {
+            (Some(boundary), Some(asset_id)) => Some(service.stage_plan(asset_id, boundary)?),
+            _ => None,
+        };
+        hooks.admit_task(
+            task_id,
+            &checked,
+            &TaskAdmission {
+                stage: plan.as_ref().map(|plan| plan.size),
+                artifact_bytes: plan.as_ref().map_or(0, |plan| {
+                    plan.evaluation
+                        .recipe()
+                        .artifacts
+                        .iter()
+                        .map(|artifact| artifact.bytes.len() as u64)
+                        .sum()
+                }),
+            },
+        )?;
+
         let run = TaskRun {
             control: JobControl::new(),
             outcome: Arc::new(TaskOutcome::default()),
+            task_id: task_id.to_owned(),
+            locks,
         };
         let job_id = JobId::new();
         // A task that takes an asset may publish candidates generated against it as it is now.
@@ -366,11 +448,9 @@ impl CapabilityHost {
             context =
                 context.with_runtime(&capability, RuntimeGrant::new(self.runtime.clone(), load));
         }
-        // The stage a task reads is the asset's current entry as it is now, bound here in
-        // `O(layers)` and read on the lane from the reference renderer.
-        if let (Some(boundary), Some(asset_id)) = (task.reads, &asset_id) {
+        if let Some(plan) = plan {
             context = context.with_read(GrantedRead {
-                plan: service.stage_plan(asset_id, boundary)?,
+                plan,
                 reads: self.reads.clone(),
             });
         }
@@ -440,7 +520,7 @@ impl CapabilityHost {
                 kind: JobKind::Task,
                 module_id: Some(module_id.to_owned()),
                 resource_id: None,
-                asset_id: None,
+                asset_id,
                 origin: Some(origin.clone()),
                 grants: grant_ids,
                 activity: None,
@@ -485,5 +565,23 @@ impl CapabilityHost {
     /// Forget a task that will never report back.
     pub(super) fn forget_task(&mut self, job_id: &JobId) {
         self.tasks.remove(job_id);
+    }
+
+    /// The task that holds `asset_id` locked now: one whose job is queued or running. A cancelled
+    /// job releases its lock at once, though its worker stops only at its next step boundary,
+    /// since nothing it makes after that can reach the recipe. `O(live tasks)`, which is one
+    /// lane's worth.
+    pub(crate) fn locking_task(&self, jobs: &Jobs, asset_id: &AssetId) -> Option<LockingTask> {
+        self.tasks.iter().find_map(|(job_id, run)| {
+            (run.locks.as_ref() == Some(asset_id)
+                && !run.control.is_cancelled()
+                && jobs
+                    .read(job_id)
+                    .is_some_and(|record| !record.status.is_finished()))
+            .then(|| LockingTask {
+                job_id: job_id.clone(),
+                method: format!("{TASK_PREFIX}{}", run.task_id),
+            })
+        })
     }
 }

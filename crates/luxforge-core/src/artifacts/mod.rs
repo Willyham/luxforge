@@ -256,7 +256,6 @@ impl ArtifactTable {
     }
 
     /// Every bound artifact, in identity order.
-    #[cfg(test)]
     pub(crate) fn iter(&self) -> impl Iterator<Item = &Arc<PreparedArtifact>> {
         self.0.iter().flat_map(|held| held.values())
     }
