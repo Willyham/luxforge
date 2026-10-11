@@ -377,14 +377,76 @@ fn registers_through_a_reduced_proxy() {
 }
 
 #[test]
+fn a_still_fit_is_the_identity_and_a_small_motion_is_not() {
+    // A still bracket with noise: each fit lands within its own uncertainty of no motion and is
+    // recorded as the identity, with how far it was from it, so the whole frame is covered.
+    let scene = geometry::textured_scene(11);
+    let offsets = [-2.0, 0.0, 2.0];
+    let still = vec![Rigid::identity(W, H); 3];
+    let frames = bracket(&scene, W, H, &offsets, &still, Some(31));
+    let (_, registration) = register_all(&frames, 1, AlignmentMode::Auto);
+    let registration = registration.expect("aligns");
+    for input in [0, 2] {
+        let got = &registration.inputs[input];
+        assert!(got.transform.is_identity(), "input {input}: {got:?}");
+        let AlignmentEvidence::Fitted {
+            snapped_px: Some(moved),
+            uncertainty_px,
+            ..
+        } = got.evidence
+        else {
+            panic!("a fit snapped to the identity: {got:?}");
+        };
+        assert!(
+            moved > 0.0 && moved <= align::SNAP_LIMIT_PX.min(align::SNAP_SIGMAS * uncertainty_px),
+            "input {input}: {got:?}"
+        );
+    }
+    let coverage = common_coverage(
+        W as u32,
+        H as u32,
+        &registration.transforms(),
+        &Cancel::new(),
+    )
+    .unwrap();
+    assert_eq!(coverage.pixels_lost, 0, "{coverage:?}");
+
+    // A third of a pixel, far beyond either bound, is a motion: fitted and kept.
+    let motions = [
+        Rigid::identity(W, H),
+        Rigid::identity(W, H),
+        Rigid::new(W, H, 0.0, (0.3, -0.2)),
+    ];
+    let frames = bracket(&scene, W, H, &offsets, &motions, Some(31));
+    let (_, registration) = register_all(&frames, 1, AlignmentMode::Auto);
+    let got = &registration.expect("aligns").inputs[2];
+    let distance = got
+        .transform
+        .corner_distance(&transform(&motions[2], W, H), W as u32, H as u32);
+    assert!(distance <= 0.15, "{distance} px: {got:?}");
+    assert!(
+        matches!(
+            got.evidence,
+            AlignmentEvidence::Fitted {
+                snapped_px: None,
+                ..
+            }
+        ),
+        "{got:?}"
+    );
+}
+
+#[test]
 fn chains_a_wide_bracket_through_its_aligned_exposures() {
     // Across a scene spanning about 18 stops (a 14-stop ramp under the texture, centred 1.5 stops
-    // under the reference's), the inputs six stops from the reference share too little usable
-    // range with it; each is aligned through its neighbour and the motions composed.
+    // under the reference's): the input six stops under the reference shares a band under two
+    // stops wide with it, a small part of the frame that the search counts its overlap against,
+    // and is fitted to it directly, while the one six stops over shares too little and goes
+    // through its neighbour; the inputs eight stops away share no usable range with it, and each
+    // is aligned through its neighbour and the motions composed.
     let stops_per_pixel = 14.0 / W as f64;
     let centre = W as f64 / 2.0 - 1.5 / stops_per_pixel;
     let scene = geometry::with_ramp(geometry::textured_scene(11), stops_per_pixel, centre);
-    let offsets = [-6.0, -3.0, 0.0, 3.0, 6.0];
     let motions = [
         Rigid::new(W, H, 1.1, (-6.2, 3.3)),
         Rigid::new(W, H, 0.5, (2.4, -1.9)),
@@ -392,23 +454,30 @@ fn chains_a_wide_bracket_through_its_aligned_exposures() {
         Rigid::new(W, H, -0.7, (4.6, 2.2)),
         Rigid::new(W, H, -1.4, (-3.1, -5.8)),
     ];
-    let frames = bracket(&scene, W, H, &offsets, &motions, Some(21));
-    let (_, registration) = register_all(&frames, 2, AlignmentMode::Auto);
-    let registration = registration.expect("aligns");
-    for (input, want_via) in [(0, Some(1)), (1, None), (3, None), (4, Some(3))] {
-        let got = &registration.inputs[input];
-        let distance =
-            got.transform
-                .corner_distance(&transform(&motions[input], W, H), W as u32, H as u32);
-        assert!(distance <= 0.15, "input {input}: {distance} px");
-        let AlignmentEvidence::Fitted {
-            via, brightness_ev, ..
-        } = got.evidence
-        else {
-            panic!("a fit");
-        };
-        assert_eq!(via, want_via, "input {input}");
-        assert!((brightness_ev - offsets[input]).abs() <= 0.05);
+    for (offsets, vias) in [
+        ([-6.0, -3.0, 0.0, 3.0, 6.0], [None, None, None, Some(3)]),
+        ([-8.0, -4.0, 0.0, 4.0, 8.0], [Some(1), None, None, Some(3)]),
+    ] {
+        let frames = bracket(&scene, W, H, &offsets, &motions, Some(21));
+        let (_, registration) = register_all(&frames, 2, AlignmentMode::Auto);
+        let registration = registration.expect("aligns");
+        for (input, want_via) in [0, 1, 3, 4].into_iter().zip(vias) {
+            let got = &registration.inputs[input];
+            let distance = got.transform.corner_distance(
+                &transform(&motions[input], W, H),
+                W as u32,
+                H as u32,
+            );
+            assert!(distance <= 0.15, "{offsets:?} input {input}: {distance} px");
+            let AlignmentEvidence::Fitted {
+                via, brightness_ev, ..
+            } = got.evidence
+            else {
+                panic!("a fit");
+            };
+            assert_eq!(via, want_via, "{offsets:?} input {input}");
+            assert!((brightness_ev - offsets[input]).abs() <= 0.05);
+        }
     }
     // Composition is `next(first(p))`.
     let (a, b) = (transform(&motions[0], W, H), transform(&motions[3], W, H));

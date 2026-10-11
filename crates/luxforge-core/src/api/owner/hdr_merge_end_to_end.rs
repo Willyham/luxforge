@@ -442,6 +442,74 @@ fn merged_tolerance(bracket: &Bracket, bx: u32, by: u32, truth: [f64; 3]) -> [f6
     std::array::from_fn(|channel| 0.005 * truth[channel] + 1.0 / 16384.0 + 5.0 * sigma[channel])
 }
 
+/// The registration's declared tolerance through a 2× analysis proxy (hdr-merge.md, alignment
+/// evidence), in pixels at every frame corner.
+const REGISTERED_PX: f64 = 0.25;
+
+/// What a handheld five-frame bracket's ±4 EV frames are held to: the −4 EV frame's fit lands
+/// about 0.2 pixel (noise-free) to 0.33 pixel (with noise) from its generated motion, with a
+/// predicted error of a hundredth of a pixel, a bias open in the design (hdr-merge.md, the merge
+/// job's evidence); the +4 EV frame, fitted on 4% of the frame, about 0.3 pixel, within its own
+/// predicted error's three deviations.
+const WIDE_HANDHELD_PX: f64 = 0.4;
+
+/// The registration recovered each frame's motion: exactly the identity for a still frame, whose
+/// fit is within its own uncertainty of no motion, and within `tolerance` pixels at every frame
+/// corner of a handheld frame's generated motion.
+fn assert_registered(bracket: &Bracket, provenance: &MergeProvenance, tolerance: f64) {
+    let registration = &provenance.resolved.registration;
+    for (at, frame) in bracket.frames().iter().enumerate() {
+        let transform = &registration.inputs[at].transform;
+        if frame.motion == hdr_bracket::Rigid::IDENTITY {
+            assert!(
+                transform.is_identity(),
+                "input {at} is still: {:?}",
+                registration.inputs[at]
+            );
+            continue;
+        }
+        let generated = crate::merge::hdr::RigidTransform::new(
+            WIDTH,
+            HEIGHT,
+            frame.motion.rotation_rad,
+            frame.motion.shift.0,
+            frame.motion.shift.1,
+        );
+        let error = transform.corner_distance(&generated, WIDTH, HEIGHT);
+        assert!(
+            error < tolerance,
+            "input {at} is {error} pixels from its motion: {:?}",
+            registration.inputs[at]
+        );
+    }
+}
+
+/// The merged result, opened through `source.prepare`, against the scene's ground truth over its
+/// coverage, in the merged tolerance.
+fn compare_result(merging: &Merging, result: &Value, provenance: &MergeProvenance) -> Comparison {
+    let coverage = &provenance.resolved.coverage;
+    let image = merging.result_planes(&result["result_asset_id"]);
+    assert_eq!(
+        (image.width(), image.height()),
+        (coverage.rect.width, coverage.rect.height)
+    );
+    let values = viewed(&image);
+    let planes = Planes {
+        values: &values,
+        width: coverage.rect.width,
+        height: coverage.rect.height,
+        origin: (coverage.rect.x, coverage.rect.y),
+    };
+    let bracket = &merging.bracket;
+    compare(
+        bracket,
+        &planes,
+        1.0,
+        |x, y| recorded(bracket, x, y),
+        |bx, by, truth| merged_tolerance(bracket, bx, by, truth),
+    )
+}
+
 /// A bracket of three DNGs, 0, −2 and +2 EV, listed into the index, grouped as one bracket from
 /// its metadata, planned and merged through the registry with the production development: the
 /// provenance has the generated exposures from metadata with the metered frame the reference,
@@ -523,26 +591,17 @@ fn hdr_merge_end_to_end_merges_a_still_bracket_to_its_ground_truth() {
             }
         };
         assert_eq!(exposure.origin, origin);
-        let transform = &resolved.registration.inputs[at].transform;
-        let still = crate::merge::hdr::RigidTransform::identity(WIDTH, HEIGHT);
-        let moved = transform.corner_distance(&still, WIDTH, HEIGHT);
-        assert!(
-            moved < 0.1,
-            "input {at} moved {moved} pixels: {transform:?}"
-        );
     }
+    assert_registered(bracket, &provenance, REGISTERED_PX);
     let gains = resolved.development.white_balance;
     for (gain, neutral) in gains.iter().zip(hdr_bracket::NEUTRAL) {
         assert!((f64::from(*gain) * neutral - 1.0).abs() < 1e-3, "{gains:?}");
     }
-    // Registration fits every input, and the fit of a still frame is a hundredth of a pixel from
-    // the identity, not the identity: the coverage then gives up the edge pixels that fit maps
-    // just outside the frame.
+    // Every input is fitted, within its uncertainty of no motion, and so the identity: the whole
+    // frame is covered.
     let coverage = &resolved.coverage;
-    assert!(
-        coverage.rect.width >= WIDTH - 2 && coverage.rect.height >= HEIGHT - 2,
-        "{coverage:?}"
-    );
+    assert_eq!(coverage.pixels_lost, 0, "{coverage:?}");
+    assert_eq!((coverage.rect.width, coverage.rect.height), (WIDTH, HEIGHT));
     let fusion = &resolved.fusion;
     assert!(fusion.highlight_extended > 50_000, "{fusion:?}");
     assert!(fusion.shadow_extended > 5_000, "{fusion:?}");
@@ -554,25 +613,7 @@ fn hdr_merge_end_to_end_merges_a_still_bracket_to_its_ground_truth() {
     assert_eq!(resolved.motion.regions, 0, "{:?}", resolved.motion);
 
     // The result opens, and holds the scene's radiance.
-    let image = merging.result_planes(&result["result_asset_id"]);
-    assert_eq!(
-        (image.width(), image.height()),
-        (coverage.rect.width, coverage.rect.height)
-    );
-    let values = viewed(&image);
-    let planes = Planes {
-        values: &values,
-        width: coverage.rect.width,
-        height: coverage.rect.height,
-        origin: (coverage.rect.x, coverage.rect.y),
-    };
-    let found = compare(
-        bracket,
-        &planes,
-        1.0,
-        |x, y| recorded(bracket, x, y),
-        |bx, by, truth| merged_tolerance(bracket, bx, by, truth),
-    );
+    let found = compare_result(&merging, &result, &provenance);
     assert!(found.blocks > 500 && found.failures == 0, "{found:?}");
     assert!(found.recovered > 50, "{found:?}");
 
@@ -600,23 +641,7 @@ fn hdr_merge_end_to_end_aligns_and_deghosts_a_handheld_bracket() {
     let bracket = &merging.bracket;
     let resolved = &provenance.resolved;
     assert_eq!(resolved.exposures.reference, 0);
-    for (at, frame) in bracket.frames().iter().enumerate() {
-        let generated = crate::merge::hdr::RigidTransform::new(
-            WIDTH,
-            HEIGHT,
-            frame.motion.rotation_rad,
-            frame.motion.shift.0,
-            frame.motion.shift.1,
-        );
-        // The registration's declared tolerance through a 2× analysis proxy (hdr-merge.md,
-        // alignment evidence): 0.25 pixel at every frame corner.
-        let transform = &resolved.registration.inputs[at].transform;
-        let error = transform.corner_distance(&generated, WIDTH, HEIGHT);
-        assert!(
-            error < 0.25,
-            "input {at} is {error} pixels from its motion: {transform:?}"
-        );
-    }
+    assert_registered(bracket, &provenance, REGISTERED_PX);
     let coverage = &resolved.coverage;
     assert!(coverage.pixels_lost > 0, "{coverage:?}");
     assert!(
@@ -675,4 +700,97 @@ fn hdr_merge_end_to_end_aligns_and_deghosts_a_handheld_bracket() {
         }
     }
     merging.originals_unchanged();
+}
+
+/// Merge a bracket wider or finer than the default through the production path: every frame
+/// registered (the extremes, usable on a few percent of the frame, searched on a finer level or
+/// chained through a neighbour), the exposures from the settings, the coverage whole when still,
+/// and the result within the merged tolerance of the ground truth, recovering highlights.
+fn merges_a_bracket(name: &str, spec: &BracketSpec, tolerance: f64) {
+    let merging = Merging::new(name, spec);
+    let (plan, result, provenance) = merging.merge();
+    assert_eq!(plan["suitable"], true, "{plan}");
+    assert_eq!(plan["needs_fit"], false, "{plan}");
+    let bracket = &merging.bracket;
+    let resolved = &provenance.resolved;
+    assert_eq!(resolved.exposures.reference, 0);
+    for (at, frame) in bracket.frames().iter().enumerate() {
+        let exposure = &resolved.exposures.inputs[at];
+        assert!(
+            (exposure.offset_ev - f64::from(frame.offset_ev)).abs() < 1e-6,
+            "{exposure:?}"
+        );
+    }
+    assert_registered(bracket, &provenance, tolerance);
+    let coverage = &resolved.coverage;
+    if spec.handheld {
+        assert!(
+            coverage.rect.width > WIDTH - 32 && coverage.rect.height > HEIGHT - 32,
+            "{coverage:?}"
+        );
+    } else {
+        assert_eq!(coverage.pixels_lost, 0, "{coverage:?}");
+    }
+    let found = compare_result(&merging, &result, &provenance);
+    assert!(found.blocks > 500 && found.failures == 0, "{found:?}");
+    assert!(found.recovered > 50, "{found:?}");
+    merging.originals_unchanged();
+}
+
+/// Five frames two stops apart, 0, −2, +2, −4 and +4 EV, as a camera's common automatic
+/// bracketing takes them: the +4 EV frame records only the shadows, a few percent of the frame.
+#[test]
+fn hdr_merge_end_to_end_merges_a_five_frame_two_stop_still_bracket() {
+    merges_a_bracket(
+        "five-by-two-still",
+        &BracketSpec {
+            frames: 5,
+            step_ev: 2,
+            ..BracketSpec::default()
+        },
+        REGISTERED_PX,
+    );
+}
+
+/// The same five-frame bracket handheld: each frame turned and shifted, the extremes too.
+#[test]
+fn hdr_merge_end_to_end_merges_a_five_frame_two_stop_handheld_bracket() {
+    merges_a_bracket(
+        "five-by-two-handheld",
+        &BracketSpec {
+            frames: 5,
+            step_ev: 2,
+            handheld: true,
+            seed: 3,
+            ..BracketSpec::default()
+        },
+        WIDE_HANDHELD_PX,
+    );
+}
+
+/// Seven frames a stop apart, ±3 EV.
+#[test]
+fn hdr_merge_end_to_end_merges_a_seven_frame_one_stop_bracket() {
+    merges_a_bracket(
+        "seven-by-one",
+        &BracketSpec {
+            frames: 7,
+            step_ev: 1,
+            ..BracketSpec::default()
+        },
+        REGISTERED_PX,
+    );
+}
+
+/// Three frames three stops apart, ±3 EV.
+#[test]
+fn hdr_merge_end_to_end_merges_a_three_frame_three_stop_bracket() {
+    merges_a_bracket(
+        "three-by-three",
+        &BracketSpec {
+            step_ev: 3,
+            ..BracketSpec::default()
+        },
+        REGISTERED_PX,
+    );
 }
