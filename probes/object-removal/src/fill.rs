@@ -1952,7 +1952,6 @@ pub(crate) mod tests {
 /// What the pinned LaMa export does with its inputs, measured rather than assumed.
 #[cfg(test)]
 mod contract {
-    use std::path::PathBuf;
 
     use serde_json::json;
 
@@ -1993,11 +1992,7 @@ mod contract {
     #[test]
     #[ignore = "needs the pinned models and corpus"]
     fn fill_lama_contract() {
-        let corpus = std::env::var_os("LUXFORGE_REMOVAL_CORPUS")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| {
-                PathBuf::from("/Users/will/projects/lightwell/private/object-removal/corpus")
-            });
+        let corpus = crate::paths::corpus_directory(None);
         let image = Rgb8::load(&corpus.join("sapa-road.jpg"))
             .unwrap()
             .crop(rect(566, 1176, 2048, 2048));

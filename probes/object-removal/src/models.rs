@@ -100,14 +100,10 @@ pub const ALL: &[&Model] = &[
 /// Pinned models fetched only when wanted: `removal-probe models` verifies each one that is present.
 pub const OPTIONAL: &[&Model] = &[&LAMA_FP32];
 
-/// The models directory: `--models`, else `LUXFORGE_REMOVAL_MODELS`, else the main checkout's
-/// ignored `private/models/object-removal`.
+/// The models directory: `--models`, else `LUXFORGE_REMOVAL_MODELS`, else the checkout's ignored
+/// `private/models/object-removal/` (a linked worktree uses the main checkout's).
 pub fn directory(explicit: Option<PathBuf>) -> PathBuf {
-    explicit
-        .or_else(|| std::env::var_os("LUXFORGE_REMOVAL_MODELS").map(PathBuf::from))
-        .unwrap_or_else(|| {
-            PathBuf::from("/Users/will/projects/lightwell/private/models/object-removal")
-        })
+    crate::paths::models_directory(explicit)
 }
 
 pub fn sha256(path: &Path) -> Result<String, String> {
@@ -127,27 +123,102 @@ pub fn sha256(path: &Path) -> Result<String, String> {
 }
 
 impl Model {
-    /// The model's path after checking its size and SHA-256 against the pin.
+    /// The model's path after checking its size and SHA-256 against the pin. A file that does not
+    /// match is refused by name and never reaches a runtime.
     pub fn verified(&self, dir: &Path) -> Result<PathBuf, String> {
         let path = dir.join(self.file);
+        let refuse =
+            |why: String| format!("refusing model {} ({}): {why}", self.file, path.display());
         let len = std::fs::metadata(&path)
-            .map_err(|e| format!("{}: {e}", path.display()))?
+            .map_err(|e| refuse(e.to_string()))?
             .len();
         if len != self.bytes {
-            return Err(format!(
-                "{}: {len} bytes, expected {}",
-                path.display(),
-                self.bytes
-            ));
+            return Err(refuse(format!("{len} bytes, expected {}", self.bytes)));
         }
         let digest = sha256(&path)?;
         if digest != self.sha256 {
-            return Err(format!(
-                "{}: SHA-256 {digest}, expected {}",
-                path.display(),
+            return Err(refuse(format!(
+                "SHA-256 {digest}, expected {}",
                 self.sha256
-            ));
+            )));
         }
         Ok(path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SHA-256 of the ASCII bytes `abc`, from FIPS 180-2.
+    const ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    fn pinned(file: &'static str, bytes: u64, sha256: &'static str) -> Model {
+        Model {
+            id: "test",
+            file,
+            bytes,
+            sha256,
+        }
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("luxforge-models-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_file_that_matches_its_pin_is_accepted() {
+        let dir = scratch("ok");
+        std::fs::write(dir.join("tiny.onnx"), b"abc").unwrap();
+        let path = pinned("tiny.onnx", 3, ABC).verified(&dir).unwrap();
+        assert_eq!(path, dir.join("tiny.onnx"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_of_the_wrong_size_is_refused_by_name() {
+        let dir = scratch("size");
+        std::fs::write(dir.join("tiny.onnx"), b"abcd").unwrap();
+        let e = pinned("tiny.onnx", 3, ABC).verified(&dir).unwrap_err();
+        assert!(e.contains("refusing model tiny.onnx"), "{e}");
+        assert!(e.contains("4 bytes, expected 3"), "{e}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_of_the_right_size_and_the_wrong_hash_is_refused_by_name() {
+        let dir = scratch("hash");
+        std::fs::write(dir.join("tiny.onnx"), b"abd").unwrap();
+        let e = pinned("tiny.onnx", 3, ABC).verified(&dir).unwrap_err();
+        assert!(e.contains("refusing model tiny.onnx"), "{e}");
+        assert!(e.contains("SHA-256") && e.contains(ABC), "{e}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_missing_file_is_refused_by_name() {
+        let dir = scratch("missing");
+        let e = pinned("absent.onnx", 3, ABC).verified(&dir).unwrap_err();
+        assert!(e.contains("refusing model absent.onnx"), "{e}");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_pins_are_distinct_files_with_full_digests() {
+        for m in ALL.iter().chain(OPTIONAL) {
+            assert_eq!(m.sha256.len(), 64, "{}", m.file);
+            assert!(
+                m.sha256.bytes().all(|b| b.is_ascii_hexdigit()),
+                "{}",
+                m.file
+            );
+        }
+        let mut files: Vec<_> = ALL.iter().chain(OPTIONAL).map(|m| m.file).collect();
+        files.sort_unstable();
+        files.dedup();
+        assert_eq!(files.len(), ALL.len() + OPTIONAL.len());
     }
 }
