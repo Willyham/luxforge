@@ -153,6 +153,8 @@ struct Sent {
     events: usize,
     first_seq: u32,
     last_seq: u32,
+    /// The oldest event's time, in milliseconds since its session started.
+    first_t: Option<u32>,
 }
 
 type Reply = Box<dyn FnOnce(&Arc<JobControl>) -> Result<TransportResponse, Error> + Send>;
@@ -208,6 +210,7 @@ impl Transport for FakeTransport {
             let events = batch.events.len();
             let first_seq = batch.events.first().map_or(0, |event| event.seq);
             let last_seq = batch.events.last().map_or(0, |event| event.seq);
+            let first_t = batch.events.first().map(|event| event.t);
             if sent.len() >= 16 {
                 batch.events = Vec::new();
             }
@@ -228,6 +231,7 @@ impl Transport for FakeTransport {
                 events,
                 first_seq,
                 last_seq,
+                first_t,
             });
             self.replies.lock().unwrap().pop_front()
         };
@@ -664,6 +668,31 @@ fn usage_a_full_window_is_due_at_once_but_never_within_a_minute_of_the_start_or_
 }
 
 #[test]
+fn usage_the_minute_between_attempts_counts_from_the_handoff_not_from_the_steps_start() {
+    // The checks before a handoff (the stored consent reread, serializing) take time: here 30 s
+    // of it before the first, as a stalled disk might. The next attempt is a minute after that
+    // handoff itself, not a minute after its step began.
+    let mut harness = Harness::new("stamp");
+    let clock = harness.clock.clone();
+    let mut first = true;
+    harness.machine.before_handoff = Some(Box::new(move || {
+        if std::mem::take(&mut first) {
+            clock.advance(30 * SECOND);
+        }
+    }));
+    harness.simulate(10 * MINUTE, 20);
+    let sent = harness.transport.sent();
+    assert!(sent.len() >= 3, "{} attempts", sent.len());
+    for pair in sent.windows(2) {
+        assert!(
+            pair[1].at - pair[0].at >= MINUTE,
+            "handoffs {:?} apart",
+            pair[1].at - pair[0].at
+        );
+    }
+}
+
+#[test]
 fn usage_floods_send_once_a_minute_with_no_hourly_or_daily_cap() {
     let mut harness = Harness::new("flood");
     harness.jitter.permille.store(500, Ordering::SeqCst);
@@ -692,6 +721,90 @@ fn usage_floods_send_once_a_minute_with_no_hourly_or_daily_cap() {
         "no daily cap: the 25th hour sends as often as the first"
     );
     assert!(sent.iter().all(|sent| sent.body_bytes <= MAX_BODY_BYTES));
+}
+
+#[test]
+fn usage_a_week_of_mixed_use_keeps_every_bound_with_no_daily_cap_and_no_backlog() {
+    // Each day: two hours of a flood, three of typical editing, an hour offline under a flood, two
+    // hours hidden with background outcomes, a rate limit, then the rest of the day untouched.
+    let mut harness = Harness::new("week");
+    harness.jitter.permille.store(500, Ordering::SeqCst);
+    let mut hidden: Vec<(Duration, Duration)> = Vec::new();
+    let mut per_day = Vec::new();
+    let mut bounded = None;
+    for day in 0..7u32 {
+        let start = day * 24 * HOUR;
+        let before = harness.transport.count();
+        harness.simulate(start + 2 * HOUR, 20);
+        // Typical editing: six events a minute. The worker wakes when its window becomes
+        // nonempty, as a producer's event wakes it.
+        for _ in 0..3 * 60 {
+            harness.record(6);
+            harness.step();
+            let end = harness.now() + MINUTE;
+            harness.simulate(end, 0);
+        }
+        harness.transport.offline.store(true, Ordering::SeqCst);
+        harness.simulate(start + 6 * HOUR, 20);
+        harness.transport.offline.store(false, Ordering::SeqCst);
+        harness.present(false);
+        let from = harness.now();
+        harness.step();
+        for _ in 0..4 {
+            harness.record(5);
+            harness.step();
+            let end = harness.now() + 30 * MINUTE;
+            harness.simulate(end, 0);
+        }
+        hidden.push((from, harness.now()));
+        harness.present(true);
+        harness.step();
+        harness
+            .transport
+            .push(status_with(429, &[("retry-after", "900")]));
+        harness.simulate(start + 9 * HOUR, 5);
+        harness.run_until(start + 24 * HOUR);
+        per_day.push(harness.transport.count() - before);
+        let storage = harness.storage();
+        assert!(storage <= 256 * 1024, "day {day}: {storage} bytes");
+        assert_eq!(
+            *bounded.get_or_insert(storage),
+            storage,
+            "day {day}: storage does not grow"
+        );
+    }
+    let sent = harness.transport.sent();
+    for pair in sent.windows(2) {
+        assert!(
+            pair[1].at - pair[0].at >= MINUTE,
+            "attempts {:?} apart at {:?}",
+            pair[1].at - pair[0].at,
+            pair[1].at
+        );
+    }
+    for request in &sent {
+        assert!(request.body_bytes <= MAX_BODY_BYTES);
+        assert!(request.events <= MAX_EVENTS);
+        assert!(
+            hidden
+                .iter()
+                .all(|(from, to)| request.at <= *from || request.at >= *to),
+            "a request at {:?} while hidden",
+            request.at
+        );
+        // No backlog: nothing in a request is older than a window's 30 minutes (the session
+        // began at time zero and no sleep started another).
+        if let Some(first_t) = request.first_t {
+            let age = request.at - Duration::from_millis(u64::from(first_t));
+            assert!(age <= 30 * MINUTE, "{age:?} old at {:?}", request.at);
+        }
+    }
+    // No daily cap: the last day sends as much as the first.
+    assert!(per_day.iter().all(|count| *count >= 120), "{per_day:?}");
+    assert!(
+        per_day[6].abs_diff(per_day[0]) <= 3,
+        "the week's days send alike: {per_day:?}"
+    );
 }
 
 #[test]

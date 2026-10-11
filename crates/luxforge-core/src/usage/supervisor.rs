@@ -146,6 +146,10 @@ struct ManualState {
     /// Each session clock handed out, with the monotonic time it started at.
     sessions: Vec<(Arc<AtomicU32>, Duration)>,
     waiters: Vec<Thread>,
+    /// How many times [`ManualClock::advance`] has been called.
+    advances: u64,
+    /// [`ManualState::advances`] when a worker last began to wait.
+    waited_at: Option<u64>,
 }
 
 impl ManualClock {
@@ -168,6 +172,7 @@ impl ManualClock {
         let mut state = self.lock();
         state.monotonic += by;
         state.wall += by;
+        state.advances += 1;
         let now = state.monotonic;
         for (millis, started) in &state.sessions {
             let elapsed = now.saturating_sub(*started).as_millis();
@@ -185,6 +190,16 @@ impl ManualClock {
     /// wakes.
     pub fn suspend(&self, by: Duration) {
         self.lock().wall += by;
+    }
+
+    /// Whether a worker has begun to wait on this clock since the last
+    /// [`advance`](Self::advance): it has acted on everything up to that moment. A simulation that
+    /// drives a real worker thread waits for this after each move, and moves the clock by zero to
+    /// let the worker act on what it recorded meanwhile, so the worker never reads one time and
+    /// acts at another.
+    pub fn caught_up(&self) -> bool {
+        let state = self.lock();
+        state.waited_at == Some(state.advances)
     }
 }
 
@@ -218,6 +233,7 @@ impl Clock for ManualClock {
             if !state.waiters.iter().any(|waiter| waiter.id() == me.id()) {
                 state.waiters.push(me);
             }
+            state.waited_at = Some(state.advances);
         }
         thread::park();
     }
@@ -1151,7 +1167,7 @@ impl Machine {
             && self.suspended.is_none()
             && self.earliest().is_some_and(|earliest| now >= earliest)
         {
-            self.attempt(shared, now);
+            self.attempt(shared);
         }
     }
 
@@ -1194,7 +1210,7 @@ impl Machine {
     }
 
     /// The one attempt of the active window.
-    fn attempt(&mut self, shared: &Shared, now: Duration) {
+    fn attempt(&mut self, shared: &Shared) {
         let Some(live) = &self.live else {
             return;
         };
@@ -1260,7 +1276,9 @@ impl Machine {
             && shared.usage.gate().is_current(generation)
             && shared.usage.confirm_stored(&self.reader, generation);
         let outcome = cleared.then(|| {
-            self.last_attempt = Some(now);
+            // Stamped at the handoff itself, not when this step began, so two handoffs are never
+            // nearer than a minute however long the checks before this one took.
+            self.last_attempt = Some(self.clock.monotonic());
             self.totals.attempts += 1;
             self.transport.send(
                 &buffers.request,

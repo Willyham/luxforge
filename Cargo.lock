@@ -2180,10 +2180,12 @@ name = "luxforge-net"
 version = "0.0.0"
 dependencies = [
  "luxforge-core",
+ "luxforge-process",
  "luxforge-testbase",
  "rustls",
  "rustls-platform-verifier",
  "security-framework",
+ "serde_json",
  "ureq",
  "ureq-proto",
  "url",
