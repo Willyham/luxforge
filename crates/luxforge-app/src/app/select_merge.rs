@@ -1,4 +1,4 @@
-//! HDR merges in the Select workspace ([HDR merge design](../../../../docs/design/hdr-merge.md),
+//! Merges in the Select workspace ([HDR merge design](../../../../docs/design/hdr-merge.md),
 //! "Grid workflow"): a bracket's Pick merged and Import merged, the same for a selection of frames
 //! through the grid's menu, Merge options…, the one pending merge row, the result's stack and its
 //! originals, and Remove merge and Put back merge. Its model is `state/select_merge.rs`; the grid
@@ -43,8 +43,8 @@ use iced::Task;
 use luxforge_core::{
     ClientId, ClientSession, OwnerHandle,
     catalog_types::{
-        ItemRef, MergeAnswer, MergePlan, MergeState, RowItem, StackExpansion, StackRole, Targets,
-        ViewFilter, ViewSummary,
+        ItemRef, MergeAnswer, MergeKind, MergePlan, MergeState, RowItem, StackExpansion, StackRole,
+        Targets, ViewFilter, ViewSummary,
     },
 };
 use serde_json::{Value, json};
@@ -84,7 +84,7 @@ pub(crate) fn start_now(
     request: &MergeRequest,
 ) -> Result<Box<StartAnswer>, String> {
     let mut sent = Vec::new();
-    let params = model::plan_params(&request.targets, &request.options);
+    let params = model::plan_params(request.kind, &request.targets, &request.options);
     sent.push(json!({"method": "merge.plan", "params": params}));
     let plan = match call_detailed(owner, client, "merge.plan", params) {
         Ok(plan) => parse::<MergePlan>(plan)?,
@@ -226,17 +226,18 @@ impl Editor {
         let merge = &mut self.select.state.merge;
         match action {
             MergeAction::CloseMenu => merge.menu = None,
-            MergeAction::Start(mode) => {
+            MergeAction::Start(kind, mode) => {
                 merge.menu = None;
-                let Some(request) = self.selection_request(mode, MergeOptions::default()) else {
+                let Some(request) = self.selection_request(kind, mode, MergeOptions::default())
+                else {
                     return Task::none();
                 };
                 return self.start_merge(request);
             }
-            MergeAction::Options => {
+            MergeAction::Options(kind) => {
                 merge.menu = None;
                 let Some(request) =
-                    self.selection_request(MergeMode::Pick, MergeOptions::default())
+                    self.selection_request(kind, MergeMode::Pick, MergeOptions::default())
                 else {
                     return Task::none();
                 };
@@ -371,7 +372,9 @@ impl Editor {
             self.status.text = "Reading the frames\u{2026}".into();
             return Task::none();
         };
+        // A bracket's header merges are HDR's.
         let request = MergeRequest {
+            kind: MergeKind::Hdr,
             targets: Targets::Files { file_ids: files },
             mode,
             options: MergeOptions::default(),
@@ -384,9 +387,10 @@ impl Editor {
 
     /// The selection as a merge's frames: by identity when every selected row is held and is a
     /// file (or every one a photograph), otherwise the selection itself, which the owner resolves
-    /// and refuses with its own reason.
+    /// and refuses with its own reason; a merge of `kind`.
     fn selection_request(
         &mut self,
+        kind: MergeKind,
         mode: MergeMode,
         options: MergeOptions,
     ) -> Option<MergeRequest> {
@@ -417,6 +421,7 @@ impl Editor {
             Targets::Selection
         };
         Some(MergeRequest {
+            kind,
             targets,
             mode,
             options,
@@ -437,13 +442,11 @@ impl Editor {
         merge.pending = None;
         merge.put_back = None;
         merge.starting = Some(request.clone());
-        self.status.text = format!(
-            "{}\u{2026}",
-            match request.mode {
-                MergeMode::Pick => "Merging HDR to add to the Development set",
-                MergeMode::Import => "Merging HDR",
-            }
-        );
+        let noun = model::words(request.kind).noun;
+        self.status.text = match request.mode {
+            MergeMode::Pick => format!("Merging {noun} to add to the Development set\u{2026}"),
+            MergeMode::Import => format!("Merging {noun}\u{2026}"),
+        };
         self.rebuild_grid();
         let (owner, client) = (self.owner.clone(), self.client);
         let sent = request.clone();
@@ -624,7 +627,8 @@ impl Editor {
         let Some(form) = &self.select.state.merge.form else {
             return Task::none();
         };
-        let params = model::plan_params(&form.request.targets, &form.request.options);
+        let request = &form.request;
+        let params = model::plan_params(request.kind, &request.targets, &request.options);
         self.select.merge_plans += 1;
         let serial = self.select.merge_plans;
         self.select.plan_sent = Some(params.clone());
@@ -735,27 +739,34 @@ impl Editor {
         let kind = match (selection.count, leader) {
             (1, Some(stack)) => MergeMenuKind::Stack {
                 merge_id: stack.merge_id,
-                exposures: stack.exposures,
+                kind: stack.kind,
+                size: stack.size,
                 expansion: stack.expansion.unwrap_or_default(),
                 filtered,
             },
             (0 | 1, _) => return Task::none(),
+            // The selection menu's merge entries are HDR's.
             (count, _) => MergeMenuKind::Frames {
+                kind: MergeKind::Hdr,
                 count,
                 refusal: None,
             },
         };
-        let frames = matches!(kind, MergeMenuKind::Frames { .. });
+        let frames = match kind {
+            MergeMenuKind::Frames { kind, .. } => Some(kind),
+            MergeMenuKind::Stack { .. } => None,
+        };
         self.select.state.merge.menu = Some(MergeMenu { x, y, kind });
-        if !frames {
+        let Some(kind) = frames else {
             return Task::none();
-        }
-        let Some(request) = self.selection_request(MergeMode::Pick, MergeOptions::default()) else {
+        };
+        let Some(request) = self.selection_request(kind, MergeMode::Pick, MergeOptions::default())
+        else {
             return Task::none();
         };
         self.select.merge_plans += 1;
         let serial = self.select.merge_plans;
-        let params = model::plan_params(&request.targets, &request.options);
+        let params = model::plan_params(request.kind, &request.targets, &request.options);
         self.select.plan_sent = Some(params.clone());
         let (owner, client) = (self.owner.clone(), self.client);
         owner_task(
