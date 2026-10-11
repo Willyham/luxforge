@@ -145,7 +145,7 @@ pub(crate) fn decode_base64(text: &str) -> Result<Vec<u8>, String> {
         } as u32)
     }
     let bytes = text.as_bytes();
-    if bytes.len() % 4 != 0 {
+    if !bytes.len().is_multiple_of(4) {
         return Err("base64 text is not a whole number of quanta".into());
     }
     let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
