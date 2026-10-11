@@ -468,6 +468,18 @@ PSNR against the one true background understates a generative fill, which invent
 - **Memory** does not grow with size: stable-diffusion.cpp reserves its compute buffers up front (2 GiB for the transformer, 1 GiB for the VAE). Without a text encoder klein Q4 peaks at 4.1 to 4.25 GB, Q8 at 6.7 GB. With the text encoder for Replace, Q4 peaks at 6.6 GB with Qwen3-4B Q4_K_M and 7.9 to 8.4 GB with Q8_0.
 - **Downloads**: klein Q4 with its VAE, the LoRA and the shipped conditioning 2.72 GB (Q8 4.56 GB); the optional text encoder 4.29 GB at Q8_0 with its tokenizer, 2.51 GB at Q4_K_M; Moebius 1.24 GB; LaMa 93 MB.
 
+### Quiet-host remeasurement
+
+Measured again on 2026-10-11 at the owner's request, with no agent of this work running and the one-minute load average 0.6 to 3.8 before and after every run, on the same M4 Pro, release build and blue-sky case: `generate --candidate klein-q4-lora --condition … --seeds 3 --size N`, at 512, 768 and 1024 and then in reverse order, each run a process of its own measured by `/usr/bin/time -l`. The evidence is in the main checkout's ignored `private/object-removal/evidence/task-005-quiet/`.
+
+| Size | Per candidate ms (two runs) | Three in sequence s (two runs, whole process) | Peak footprint GB | Load before / after |
+| --- | --- | ---: | ---: | --- |
+| 512 | 32,542, 30,950, 30,952; 32,372, 30,947, 30,950 | 115.4 (first run, with a 14.4 s first load and Metal compile), 99.5 | 4.14 to 4.17 | 3.8 / 1.8; 1.3 / 0.6 |
+| 768 | 68,311, 67,527, 67,064; 67,869, 66,461, 66,658 | 208.2, 206.3 | 4.15 | 1.8 / 1.5; 2.2 / 1.3 |
+| 1024 | 123,024, 121,575, 121,302; 123,514, 121,450, 121,505 | 371.8, 371.2 | 4.21 to 4.22 | 1.5 / 0.8; 0.8 / 2.2 |
+
+The two runs at each size agree within 1.5%, and the same seeds gave the same scores in both, so the candidates are reproducible on this machine. A quiet host is about 10% faster than the loaded runs above (1024: 122 s against 138 s), as expected of a run bound by the GPU: these are the costs on the M4 Pro. The starting budget of 30 s per 1024 px candidate is missed about fourfold, and a 512 px candidate takes 31 s.
+
 ### The shipped empty-scene embedding
 
 The conditioning is the text encoder's output for a fixed prompt, a 512 × 7680 tensor (15.7 MB as f32). Recorded once and supplied from a file with no text encoder loaded, it **reproduces the prompted removal byte for byte**: on three cases at seed 0 the candidates are identical files to those of the run that encoded the prompt with Qwen3-4B Q8_0, and the same holds for the plain klein run against its own Q4_K_M encoding. Without the encoder the process peaks 2.4 GB lower (4.1 against 6.5 GB) and loads in 50 to 170 ms. The tolerance for an embedding computed by a different encoder build (a different quantisation, or a later runtime) is set by what a person could tell apart: per seed, at most 0.5 dB region PSNR and 0.005 SSIM from the prompted candidate, about a seventh of the seed-to-seed spread (3.3 dB between seeds 0 and 1 on the blue sky), so the difference is smaller than a Regenerate. The Q4_K_M encoder's embedding against the Q8_0 one met it: 21.22, 24.71 and 24.96 dB against 21.44, 24.75 and 24.92 dB, SSIM within 0.001.
