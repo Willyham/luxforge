@@ -1028,7 +1028,9 @@ const SOURCE_RULES: &[SourceRule] = &[
     // figures, not timings, and `luxforge-reference` may
     // depend on no workspace crate (`independent-references`), so they cannot reach
     // `Distribution`; they use the same nearest rank. Auto's production image solver also
-    // cannot depend on test tooling and needs an in-place selection within charged scratch.
+    // cannot depend on test tooling and needs an in-place selection within charged scratch, and
+    // the HDR exposure resolution's median reference and robust pairwise fit are production
+    // estimators, not timing figures.
     SourceRule {
         name: "one-distribution",
         tokens: &[
@@ -1046,6 +1048,7 @@ const SOURCE_RULES: &[SourceRule] = &[
         allowed: &[
             "crates/luxforge-testbase/src/distribution.rs",
             "crates/luxforge-core/src/modules/basic/auto/solve.rs",
+            "crates/luxforge-core/src/merge/hdr/exposure.rs",
             "crates/luxforge-reference/tests/studies/curve.rs",
             "crates/luxforge-reference/tests/studies/look.rs",
             "crates/luxforge-reference/src/grade_response.rs",
