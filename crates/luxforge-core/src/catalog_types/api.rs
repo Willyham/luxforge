@@ -324,7 +324,7 @@ host_params! {
 }
 
 host_params! {
-    /// `merge.create`: Import merged (the default) or, with `add_to_development_set`, Pick merged.
+    /// `merge.create`: Merge HDR, the result made in its catalog folder.
     pub(crate) struct MergeCreate {
         kind: MergeKind = enumeration(["hdr"]),
         targets: Targets = json(MERGE_TARGETS),
@@ -335,8 +335,6 @@ host_params! {
         alignment: Option<AlignmentMode> = enumeration(AlignmentMode::NAMES).default("auto"),
         deghost: Option<DeghostMode> = enumeration(DeghostMode::NAMES).default("auto"),
         folder_id: Option<CatalogFolderId> = catalog_folder().notes("default the folder merge.plan proposes"),
-        add_to_development_set: Option<bool> = boolean().default(false).notes("Pick merged: append the result to the current development set in the same library change that publishes it, or start a one-result set when there is none; false (Import merged) leaves the set as it is"),
-        set_id: Option<super::DevelopmentSetId> = name().notes("with add_to_development_set: the set the client believes is current, refused with conflict unless it is; ignored without it"),
     }
 }
 
@@ -392,32 +390,7 @@ host_params! {
     }
 }
 
-// The development set and stacks.
-
-host_params! {
-    /// `development-set.read`.
-    pub(crate) struct DevelopmentSetRead {
-        from: Option<u32> = integer(0, super::MAX_SET_MEMBERS as i64).default(0).notes("the index of the first member"),
-        limit: Option<usize> = integer(1, super::MAX_SET_PAGE as i64).default(1000),
-    }
-}
-
-host_params! {
-    /// `development-set.replace`.
-    pub(crate) struct DevelopmentSetReplace {
-        source: super::SetSource = json("{kind: assets, asset_ids: [...]} in order, {kind: view, revision, position}: the photographs of the caller's view around position, or {kind: none}; at most 100,000 photographs"),
-        mutation: MutationRequest,
-    }
-}
-
-host_params! {
-    /// `development-set.add` and `development-set.remove`.
-    pub(crate) struct DevelopmentSetMembers {
-        asset_ids: Vec<AssetId> = json("the photographs, at most 50,000"),
-        set_id: Option<super::DevelopmentSetId> = name().notes("refused with conflict unless the current set is this one"),
-        mutation: MutationRequest,
-    }
-}
+// Stacks.
 
 host_params! {
     /// `stack.inspect`.
@@ -631,30 +604,6 @@ mod contract_table {
             "session",
             &[Validation, Conflict],
             "the caller's selection and active item in its view, replaced, added to, removed from or toggled by items, a range or all; session.state reports them as browse.selection",
-        ),
-        method::<DevelopmentSetRead>(
-            "development-set.read",
-            "DevelopmentSetPage",
-            &[Validation, CatalogError],
-            "the catalog session's current development set: its identity, revision, size and members in order, paged",
-        ),
-        method::<DevelopmentSetReplace>(
-            "development-set.replace",
-            "DevelopmentSetReplaced",
-            &[Validation, ResourceLimit, Conflict, CatalogError],
-            "retires the current development set and starts one of the photographs given, of the caller's view around a position, or none; session state, not a library change",
-        ),
-        method::<DevelopmentSetMembers>(
-            "development-set.add",
-            "DevelopmentSetChanged",
-            &[Validation, ResourceLimit, Conflict, CatalogError],
-            "appends photographs to the current development set, each once, as one library change of set-member items; starts a set when there is none",
-        ),
-        method::<DevelopmentSetMembers>(
-            "development-set.remove",
-            "DevelopmentSetChanged",
-            &[Validation, ResourceLimit, Conflict, CatalogError],
-            "takes photographs out of the current development set as one library change; the other members keep their order",
         ),
         method::<StackInspect>(
             "stack.inspect",

@@ -584,7 +584,6 @@ pub struct StackInspection {
     /// The result is in Removed.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub removed: bool,
-    pub in_development_set: bool,
     pub expansion: StackExpansion,
     pub exposures: u32,
     pub from: u32,
