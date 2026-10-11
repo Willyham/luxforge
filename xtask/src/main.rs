@@ -30,6 +30,7 @@ mod fixtures;
 mod gallery_smoke;
 mod gazetteer;
 mod generate_catalog;
+mod generative_smoke;
 mod gpu_preview_smoke;
 mod gpu_preview_zoom_smoke;
 mod gpu_qualification;

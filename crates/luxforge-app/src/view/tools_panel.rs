@@ -167,6 +167,7 @@ pub(crate) fn tools_panel<'a>(
     masks: &'a crate::state::masks::MasksModel,
     masking: bool,
     corrections: &'a crate::state::corrections::CorrectionsModel,
+    remove: crate::app::remove::RemoveImages<'a>,
 ) -> Element<'a, Message> {
     if let Some(message) = model.status.message() {
         return scrollable(column![
@@ -189,6 +190,7 @@ pub(crate) fn tools_panel<'a>(
     if corrections.active {
         panel = panel.push(crate::view::corrections_panel::corrections_band(
             corrections,
+            remove,
         ));
     }
     if masking {

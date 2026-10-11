@@ -36,6 +36,11 @@ pub(crate) struct Boot {
     pub(crate) window: (f32, f32),
 }
 
+/// Each step of the developer fake generator in an evidence run: a three-candidate generation of
+/// eight steps each takes about three and a half seconds, long enough to capture its progress and
+/// cancel it.
+const EVIDENCE_FAKE_STEP: std::time::Duration = std::time::Duration::from_millis(150);
+
 /// Where the capability host keeps module settings, grants and resources, under the run's
 /// resolved paths, and the secret store and network transport it uses. An evidence run keeps all
 /// of it inside its evidence directory with an in-memory store, so it never touches the person's
@@ -68,10 +73,17 @@ pub(super) fn host_config(config: &Config, tiles: Arc<GpuTiles>) -> HostConfig {
         renderer: super::renderer::launched(config.launch_renderer().refused()),
         tiles: Some(tiles),
         // ONNX Runtime, compiling under the data root; a developer run also serves the
-        // deterministic fake, as the `fake` backend. Nothing starts until a model opens.
-        inference: Some(luxforge_onnx::host_runtime(
+        // deterministic fake, as the `fake` backend. Nothing starts until a model opens. An
+        // evidence run paces the fake's steps, so a generation is still running when its frame is
+        // captured.
+        inference: Some(luxforge_onnx::host_runtime_paced(
             paths.map(Paths::inference_cache),
             config.developer,
+            if config.evidence.is_some() {
+                EVIDENCE_FAKE_STEP
+            } else {
+                std::time::Duration::ZERO
+            },
         )),
         ..HostConfig::unconfigured()
     }

@@ -23,6 +23,7 @@ pub(crate) mod performance;
 pub(crate) mod preferences;
 pub(crate) mod presets;
 pub(crate) mod query_choice;
+pub(crate) mod remove;
 pub(crate) mod select;
 pub(crate) mod select_catalog;
 pub(crate) mod select_missing;
@@ -113,6 +114,9 @@ pub(crate) enum MenuTarget {
     /// A correction's row in the Corrections band, by its operation: Heal, Clone, New automatic
     /// source, Move up, Move down and Delete.
     Correction(String),
+    /// The Remove group's menu in the Corrections band: Copy as JSON request of every request its
+    /// controls send.
+    Remove,
 }
 
 /// Why a start that needs the editable state is refused with no photograph open.
@@ -121,6 +125,10 @@ pub(crate) const NO_PHOTOGRAPH: &str = "No photograph is open";
 pub(crate) const NOT_CURRENT: &str = "Return to the current state before editing";
 /// Why a start that waits for requests is refused while one is in flight.
 pub(crate) const IN_FLIGHT: &str = "Waiting for the last request";
+/// Why an edit of a photograph is refused while a generation this desktop started runs on it: the
+/// owner locks the photograph until the job ends.
+pub(crate) const GENERATING: &str =
+    "A generation is running on this photograph \u{b7} Esc cancels it";
 
 /// The editable state, as one rule: a photograph is open ([`NO_PHOTOGRAPH`]) and the current state,
 /// not a previewed entry, is on screen ([`NOT_CURRENT`]). `None` is editable. The app's one start
@@ -363,6 +371,8 @@ pub(crate) struct Inputs<'a> {
     pub(crate) correction_draft: Option<corrections::DraftingCorrection>,
     /// The content stage's size the Corrections readouts measure pixels against.
     pub(crate) correction_content: Option<(u32, u32)>,
+    /// The Remove mode's selection, jobs and candidates.
+    pub(crate) remove: &'a remove::RemovePanel,
     /// The mask the generated module sections are bound to, which is what a masked slider edits.
     /// `None` binds them to the global layer, as they have always been.
     pub(crate) target: Option<&'a MaskId>,
@@ -692,6 +702,7 @@ mod tests {
         crop_section: CropSection,
         mask_draft: Option<MaskDraft>,
         corrections: corrections::CorrectionsPanel,
+        remove: remove::RemovePanel,
         session: ClientSession,
         status: String,
         busy: bool,
@@ -738,6 +749,7 @@ mod tests {
                 crop_section: CropSection::default(),
                 mask_draft: None,
                 corrections: corrections::CorrectionsPanel::default(),
+                remove: remove::RemovePanel::default(),
                 session: ClientSession::default(),
                 status: "ready".into(),
                 busy: false,
@@ -842,6 +854,7 @@ mod tests {
                 corrections: &self.corrections,
                 correction_draft: None,
                 correction_content: None,
+                remove: &self.remove,
                 target: self
                     .mask_panel
                     .selected_mask

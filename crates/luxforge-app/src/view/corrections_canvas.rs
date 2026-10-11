@@ -75,6 +75,9 @@ pub(crate) struct CanvasData<'a> {
     pub(crate) refused: bool,
     /// The map is for an older entry; a press waits for the fresh one.
     pub(crate) waiting: bool,
+    /// Remove is chosen: its selection, the stroke being painted, a running generation's ring and
+    /// the chosen candidate are drawn in place of the pins.
+    pub(crate) remove: Option<crate::app::remove::RemoveCanvas<'a>>,
 }
 
 /// The first draw of the overlay after the editor armed the stamp, for evidence of input to
@@ -454,6 +457,118 @@ impl CorrectionsCanvas<'_> {
     }
 }
 
+/// The Remove selection's tint over the photograph.
+const SELECTION_TINT: Color = Color::from_rgba(1.0, 0.27, 0.27, 0.32);
+/// The progress ring's radius and width, in points.
+const RING_RADIUS: f32 = 14.0;
+const RING_WIDTH: f32 = 3.0;
+
+impl CorrectionsCanvas<'_> {
+    /// One painted path, filled with the selection's tint and outlined.
+    fn selection(&self, frame: &mut Frame, points: &[[f64; 2]], radius: f64, accent: bool) {
+        if points.is_empty() {
+            return;
+        }
+        let held = HeldOperation {
+            operation: String::new(),
+            points: points.to_vec(),
+            radius,
+            source: None,
+        };
+        let outline = brush_overlay::outline(&self.placement, &held);
+        frame.fill(&filled(&outline), SELECTION_TINT);
+        let colour = if accent { theme::PHOTO_ANCHOR } else { WHITE };
+        stroke_outline(frame, &joined(&outline), OUTLINE, colour, false);
+    }
+
+    /// Remove's figures: the chosen candidate composited over the region it fills, or the
+    /// selection's tint without one, the stroke being painted, and a running generation's ring at
+    /// the selection's centre.
+    fn remove(&self, frame: &mut Frame, remove: &crate::app::remove::RemoveCanvas<'_>) {
+        let content = self.placement.map.content();
+        let (cw, ch) = (f64::from(content.0.max(1)), f64::from(content.1.max(1)));
+        let mut previewed = false;
+        if let Some((handle, [x, y, w, h])) = remove.preview {
+            let corner = |px: u32, py: u32| {
+                self.placement
+                    .canvas_point(f64::from(px) / cw, f64::from(py) / ch)
+            };
+            if let (Some(a), Some(b), Some(d)) = (corner(x, y), corner(x + w, y), corner(x, y + h))
+            {
+                // The rectangle's mapped top edge and side, so a straightened or rotated photograph
+                // turns the preview with it.
+                let width = (b.x - a.x).hypot(b.y - a.y);
+                let height = (d.x - a.x).hypot(d.y - a.y);
+                let angle = (b.y - a.y).atan2(b.x - a.x);
+                let centre = Point::new(
+                    a.x + (b.x - a.x) / 2.0 + (d.x - a.x) / 2.0,
+                    a.y + (b.y - a.y) / 2.0 + (d.y - a.y) / 2.0,
+                );
+                let bounds = Rectangle::new(
+                    Point::new(centre.x - width / 2.0, centre.y - height / 2.0),
+                    Size::new(width, height),
+                );
+                frame.draw_image(
+                    bounds,
+                    canvas::Image::new(handle.clone()).rotation(iced::Radians(angle)),
+                );
+                previewed = true;
+            }
+        }
+        if let Some(points) = remove.selection
+            && !previewed
+        {
+            self.selection(frame, points, remove.radius, false);
+        }
+        if let Some(points) = remove.live {
+            self.selection(frame, points, remove.radius, true);
+        }
+        let Some(fraction) = remove.progress else {
+            return;
+        };
+        let Some(points) = remove.selection.filter(|points| !points.is_empty()) else {
+            return;
+        };
+        let (mut lo, mut hi) = ([f64::MAX; 2], [f64::MIN; 2]);
+        for [x, y] in points {
+            lo = [lo[0].min(*x), lo[1].min(*y)];
+            hi = [hi[0].max(*x), hi[1].max(*y)];
+        }
+        let Some(centre) = self
+            .placement
+            .canvas_point((lo[0] + hi[0]) / 2.0, (lo[1] + hi[1]) / 2.0)
+        else {
+            return;
+        };
+        let track = Path::circle(centre, RING_RADIUS);
+        frame.fill(&Path::circle(centre, RING_RADIUS + RING_WIDTH), PIN_FILL);
+        frame.stroke(
+            &track,
+            Stroke::default()
+                .with_color(Color { a: 0.3, ..WHITE })
+                .with_width(RING_WIDTH),
+        );
+        let sweep = fraction.unwrap_or(0.0).clamp(0.0, 1.0) as f32;
+        if sweep > 0.0 {
+            let start = -std::f32::consts::FRAC_PI_2;
+            let arc = Path::new(|builder| {
+                builder.arc(canvas::path::Arc {
+                    center: centre,
+                    radius: RING_RADIUS,
+                    start_angle: iced::Radians(start),
+                    end_angle: iced::Radians(start + sweep * std::f32::consts::TAU),
+                });
+            });
+            frame.stroke(
+                &arc,
+                Stroke::default()
+                    .with_color(theme::PHOTO_ANCHOR)
+                    .with_width(RING_WIDTH),
+            );
+        }
+    }
+}
+
 impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
     type State = Interaction;
 
@@ -546,6 +661,9 @@ impl canvas::Program<Message, Theme> for CorrectionsCanvas<'_> {
             self.live.as_ref().map_or(0, |live| live.points.len()),
         );
         let shown = !self.data.hidden;
+        if let Some(remove) = &self.data.remove {
+            self.remove(&mut frame, remove);
+        }
         // The gesture in progress: a faint footprint while its source waits for the release, or
         // its live outline and source.
         if let (true, Some(live)) = (self.data.painting, &self.live) {
@@ -704,6 +822,7 @@ mod tests {
             automatic: false,
             refused: false,
             waiting: false,
+            remove: None,
         }
     }
 
